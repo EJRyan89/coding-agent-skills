@@ -681,12 +681,14 @@ removed fails validation until its pattern follows it.
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
   which reads each Bash function once per question for each table of functions a shell's -c script extends, the
   table kept once for each content, and again only from a shallower depth, since its depth cut leaves a function
-  read at the limit with its calls unread; `tests.validation.exit_tables:CodeReader.returns` and
-  `tests.validation.exit_tables:CodeReader.assigned`, which read a function or a local's value once per key
-  `tests.validation.exit_tables:CodeReader.keyed` gives a scope, its arguments' values followed through the parameters
-  that pass them on and the key of the scope each was given in, cut at a repeated function so a recursion's call
-  sites add one key each in any order; and `tests.validation.exit_tables:CodeReader.callables`, which reads each
-  called expression once per question by the scope object it is read in
+  read at the limit with its calls unread; `tests.validation.exit_tables:CodeReader.returns`,
+  `tests.validation.exit_tables:CodeReader.assigned`, and `tests.validation.exit_tables:CodeReader.parameter`, which
+  read a function, a local's value, or a parameter once a pass in each scope
+  `tests.validation.exit_tables:CodeReader.scope` keeps, one for each function and the argument expressions one call
+  site gives it, so the scopes are bounded by the calls the source holds, with each parameter read in every scope
+  that called its own, and each read waiting its turn on the reader's list rather than nesting on Python's stack; and
+  `tests.validation.exit_tables:CodeReader.callables`, which reads each called expression once per question in each
+  scope, from a stack of its own
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
@@ -697,7 +699,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`,
   `tests/validation/test_exit_tables.py::test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each`,
   `tests/validation/test_exit_tables.py::test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn`,
-  `tests/validation/test_exit_tables.py::test_the_scope_keys_grow_with_the_functions_and_call_sites_and_each_scope_is_keyed_once`,
+  `tests/validation/test_exit_tables.py::test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes`,
+  `tests/validation/test_exit_tables.py::test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit`,
   `tests/validation/test_exit_tables.py::test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows

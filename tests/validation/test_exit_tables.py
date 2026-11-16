@@ -141,7 +141,7 @@ def test_the_reader_reads_recursion_and_long_argument_chains_in_bounded_steps(bo
     # for each scope walked the third's chain of arguments, about 21 million times without a key kept per scope.
     steps = 0
     counted: dict[str, Any] = {}
-    for name in ("returns", "value", "keyed"):
+    for name in ("returns", "value", "parameter"):
         original = getattr(exit_tables.CodeReader, name)
 
         def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
@@ -170,6 +170,44 @@ PING_PONG = (
     "def main() -> int:\n    arguments = argparse.ArgumentParser()\n    arguments.add_argument('path')\n"
     "    return ping(Path(arguments.parse_args().path), 0)\n"
 )
+# One function of four parameters with six recursive calls, each passing them on rotated, a number in one place.
+ROTATIONS = (
+    "def c():\n    return bool(argparse)\ndef k(p0, p1, p2, p3):\n    if c():\n        return p0\n"
+    + "".join(
+        f"    if c():\n        return k({', '.join(rotated)})\n"
+        for site in range(6)
+        for names in [[f"p{index}" for index in range(4)]]
+        for rotated in [
+            [
+                str(10 + site) if place == site % 4 else name
+                for place, name in enumerate(names[site % 4 + 1 :] + names[: site % 4 + 1])
+            ]
+        ]
+    )
+    + "    return p0\ndef main():\n    return k(3, 4, 5, 6)\n"
+)
+# Four functions of three parameters that call each other and themselves, by position and by keyword.
+CALL_EACH_OTHER = (
+    "def c():\n    return bool(argparse)\n"
+    "def f(a, b, d):\n    if c(): return g(d, d, a) if c() else k(five, b, one)\n"
+    "    if c(): return k(a, d, d) if c() else m(d=b, a=b, b=d)\n"
+    "def g(a, b, d):\n    if c(): return m(two, a, a)\n"
+    "def k(a, b, d):\n    if c(): return f(a, b, d)\n    if c(): return k(b, a, three)\n"
+    "    if c(): return k(b, two, b) if c() else k(b=five, a=a, d=three)\n"
+    "    r3 = k(a, four, b)\n    if c(): return r3\n"
+    "def m(a, b, d):\n    r0 = f(b=two, d=b, a=a)\n    if c(): return r0\n    if c(): return f(d, four, two)\n"
+    "    if c(): return f(a=d, b=b, d=a)\n"
+    "def main():\n    return m(one, five, three)\n"
+)
+# Twelve functions, each calling the next with one of two numbers, by position and by keyword in a conditional.
+LADDER = "".join(
+    f"def f{index}(p):\n    if c():\n        return f{index + 1}(1)\n    return f{index + 1}(2)\n"
+    for index in range(12)
+)
+KEYWORD_LADDER = "".join(
+    f"def f{index}(p):\n    return f{index + 1}(p=1) if c() else f{index + 1}(p=2)\n" for index in range(12)
+)
+LADDER_END = "def c():\n    return bool(argparse)\ndef f12(p):\n    return p\ndef main():\n    return f0(0)\n"
 
 
 def reader_of(body: str) -> exit_tables.CodeReader:
@@ -182,17 +220,26 @@ def reader_of(body: str) -> exit_tables.CodeReader:
         return exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
 
 
+RETURNED = "    return mid(3) if flag else mid(4)\n"
+
+
 @pytest.mark.parametrize(
-    "leaf",
-    [pytest.param("    return p\n", id="returned"), pytest.param("    q = p\n    return q\n", id="bound to a local")],
+    ("leaf", "mid", "start"),
+    [
+        pytest.param("    return p\n", "    return leaf(x)\n", RETURNED, id="returned"),
+        pytest.param("    q = p\n    return q\n", "    return leaf(x)\n", RETURNED, id="bound to a local in leaf"),
+        pytest.param("    return p\n", "    y = x\n    return leaf(y)\n", RETURNED, id="bound to a local in mid"),
+    ],
 )
-def test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each(leaf: str) -> None:
-    # leaf's p is given mid's x, the same expression in mid(3)'s scope and in mid(4)'s. A reader that keyed a scope by
-    # its arguments' expressions alone read leaf, and its local q, once, from mid(3), and lost exit 4.
+def test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each(
+    leaf: str, mid: str, start: str
+) -> None:
+    # leaf's p is given the same expression in mid(3)'s scope and in mid(4)'s. A reader that read a scope only as the
+    # first call to reach it gave it, by its arguments' expressions, read leaf, and its local q, once, from mid(3), and
+    # lost exit 4.
     body = (
-        f"def leaf(p):\n{leaf}def mid(x):\n    return leaf(x)\n"
-        "def main(flag):\n    argparse.ArgumentParser().parse_args()\n    return mid(3) if flag else mid(4)\n"
-        f"{ENTRY}"
+        f"def leaf(p):\n{leaf}def mid(x):\n{mid}"
+        f"def main(flag):\n    argparse.ArgumentParser().parse_args()\n{start}{ENTRY}"
     )
     table = "Exit status:\n  1  failed\n  2  a usage error\n  3  three\n"
     assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == [
@@ -202,10 +249,10 @@ def test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_ea
 
 
 def test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn() -> None:
-    # Each call of k passes its three parameters on, each to the next one's place. In every scope after the first,
-    # k's arguments are the same three names, given in a scope of k, so a key by those expressions, or by them and a
-    # cut in place of the scope they were given in, read two scopes and lost three(), exit 5. Followed through the
-    # parameters that pass them on, they are one, two, and three, given in main, in each order.
+    # Each call of k passes its three parameters on, each to the next one's place, so after the first call k's
+    # arguments are the same three names, given in a scope of k. Read as every value the scopes that called it give
+    # them, they are one, two, and three, given in main; read only as the first call gave them, three(), exit 5, was
+    # lost.
     body = (
         f"{CALLED}def three():\n    return 5\n"
         "def k(x, y, z):\n    if c():\n        return x()\n    return k(y, z, x)\n"
@@ -219,51 +266,98 @@ def test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn() -> 
 
 
 @pytest.mark.parametrize(
-    ("body", "keys", "keyings"),
+    ("body", "scopes", "codes"),
     [
-        # main's scope, check's as main calls it, and one for each of check's four recursive call sites, whichever
-        # scope of check it is made in.
-        pytest.param(WALK, 6, 130, id="four recursive call sites"),
-        # main's, two's, and each of f0 to f20's.
+        pytest.param(WALK, 7, {0, 1, 2, 3}, id="four recursive call sites"),
         pytest.param(
             f"{CALLED}{CHAIN}def f20(a0, a1):\n    return a0()\n"
             "def main():\n    argparse.ArgumentParser().parse_args()\n    return f0(two, two)\n",
-            23,
-            260,
+            24,
+            {1, 2, 4},
             id="twenty functions passing two parameters on",
         ),
-        # main's, ping's as main calls it, and pong's from that scope at each of ping's two call sites; then, past
-        # one round, one for each of the four call sites, whichever scope it is made in.
-        pytest.param(PING_PONG, 8, 130, id="two functions recursing into each other"),
+        pytest.param(PING_PONG, 7, {1, 2, 3}, id="two functions recursing into each other"),
+        pytest.param(ROTATIONS, 9, {1, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15}, id="six calls rotating four parameters"),
+        pytest.param(CALL_EACH_OTHER, 16, {0, 1}, id="four functions calling each other"),
+        pytest.param(LADDER + LADDER_END, 27, {1, 2}, id="a ladder of numbers"),
+        pytest.param(KEYWORD_LADDER + LADDER_END, 27, {1, 2}, id="a ladder of keywords in conditionals"),
     ],
 )
-def test_the_scope_keys_grow_with_the_functions_and_call_sites_and_each_scope_is_keyed_once(
-    body: str, keys: int, keyings: int
+def test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes(
+    body: str, scopes: int, codes: set[int]
 ) -> None:
-    # A key over the whole chain of scopes the arguments were given in met a new key at each recursive call site in
-    # each order, 29,462 of them for the first before RecursionError; built anew for each scope, it walked the
-    # second's chain of two parameters twice at each of its twenty functions, about a million keyings. keyings is about
-    # twice what the reader takes here: it keys each scope it reads in, and keys a new scope from the keys of the scope
-    # each argument was given in and the scope its value was, each of which it keyed once before.
-    calls = 0
-    original = exit_tables.CodeReader.keyed
+    # The reader keeps no more scopes than the source holds calls, plus one for each function it runs with no
+    # arguments and one for its module's own body, however its calls recurse and whatever values reach them. A key
+    # that followed each argument's value and the scope it was given in multiplied each function's keys by the values
+    # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
+    # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder.
+    tree = ast.parse(f"{HEADER}{body}")
+    bound = (
+        sum(isinstance(node, ast.Call) for node in ast.walk(tree))
+        + sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
+        + 1
+    )
+    counted: dict[str, Any] = {}
+    for name in ("returns", "value"):
+        original = getattr(exit_tables.CodeReader, name)
 
-    def keyed(self: exit_tables.CodeReader, scope: exit_tables.Scope) -> exit_tables.Keyed:
-        nonlocal calls
-        calls += 1
-        if calls > keyings or len(self.contents) > keys:
-            raise AssertionError(f"the reader keyed {calls} times, into {len(self.contents)} keys")
-        return original(self, scope)
+        def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
+            if len(self.scopes) > bound:
+                raise AssertionError(f"the reader kept {len(self.scopes)} scopes, past {bound}")
+            return original(self, *arguments)
 
-    with mock.patch.object(exit_tables.CodeReader, "keyed", keyed):
+        counted[name] = step
+    with mock.patch.multiple(exit_tables.CodeReader, **counted):
         reader = reader_of(body)
-    assert len(reader.contents) == keys
+    assert reader.reading.codes == codes
+    assert len(reader.scopes) == scopes
+    assert reader.passes <= 2
+
+
+DEPTH = 1500
+
+
+@pytest.mark.parametrize(
+    ("body", "codes"),
+    [
+        pytest.param(
+            "".join(f"def f{index}(h):\n    return f{index + 1}(h)\n" for index in range(DEPTH))
+            + f"def f{DEPTH}(h):\n    return h()\ndef one():\n    return 3\ndef main():\n    return f0(one)\n",
+            {1, 3},
+            id="calls that pass a parameter on",
+        ),
+        pytest.param(
+            "def main():\n    a0 = 3\n"
+            + "".join(f"    a{index + 1} = a{index}\n" for index in range(DEPTH))
+            + f"    return a{DEPTH}\n",
+            {1, 3},
+            id="locals bound each from the one before",
+        ),
+        pytest.param(
+            "import sys\n"
+            + "".join(f"def g{index}():\n    g{index + 1}()\n" for index in range(DEPTH))
+            + f"def g{DEPTH}():\n    sys.exit(9)\ndef main():\n    g0()\n    return 0\n",
+            {0, 1, 9},
+            id="calls that reach an exit",
+        ),
+    ],
+)
+def test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit(body: str, codes: set[int]) -> None:
+    # Each read waits its turn on the reader's own list, and each walk of calls or values keeps its own stack, so a
+    # chain past Python's recursion limit, at which a reader that read a call inside the read that reached it raised
+    # RecursionError, reads to its end.
+    assert sys.getrecursionlimit() < DEPTH
+    with mock.patch.object(exit_tables, "_bindings", wraps=exit_tables._bindings) as bindings:
+        reader = reader_of(body)
+    assert reader.reading.codes == codes
+    # Each function's bindings are read from it once, so a chain of locals is read in time linear in its length.
+    assert bindings.call_count <= len(reader.bindings)
 
 
 def test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once() -> None:
     # Each fi passes both its parameters on to f(i+1) inside two tables, so the function f20 calls is reached
-    # through 2**20 paths of tables. callables reads each table once for the question, in each scope, so it takes
-    # four reads for each function; a set of reads begun anew in each scope it went out to took each path.
+    # through 2**20 paths of tables. callables reads each table once for the question, in each scope, so it looks up a
+    # few names for each function; a set of reads begun anew in each scope it went out to took each path.
     chain = "".join(
         f"def f{index}(a, b):\n    return f{index + 1}({{'x': a, 'y': b}}['x'], {{'x': a, 'y': b}}['y'])\n"
         for index in range(20)
@@ -273,16 +367,16 @@ def test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once
         "def main():\n    return f0(one, two)\n"
     )
     calls = 0
-    original = exit_tables.CodeReader.callables
+    original = exit_tables.CodeReader.function_named
 
-    def callables(self: exit_tables.CodeReader, *arguments: Any) -> Any:
+    def function_named(self: exit_tables.CodeReader, *arguments: Any) -> Any:
         nonlocal calls
         calls += 1
-        if calls > 500:
-            raise AssertionError("callables was called more than 500 times")
+        if calls > 1000:
+            raise AssertionError("the reader looked up more than 1000 functions")
         return original(self, *arguments)
 
-    with mock.patch.object(exit_tables.CodeReader, "callables", callables):
+    with mock.patch.object(exit_tables.CodeReader, "function_named", function_named):
         reader = reader_of(body)
     assert reader.reading.codes == {1, 3, 4}
 
@@ -337,6 +431,90 @@ def test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once
             [],
             id="a tuple's two targets",
         ),
+        # A call whose function one scope that called its own gives and another hides reads the function it is given
+        # and is unread for the other.
+        pytest.param(
+            "def one():\n    return 3\ndef run(h):\n    return h()\ndef mid(g):\n    return run(g)\n"
+            "def main(flag):\n    return mid(one) if flag else mid(lambda: 5)\n",
+            {1, 3},
+            ["h()"],
+            id="a function one caller gives and another hides",
+        ),
+        # f is called back through w1 and through w2, each from a scope of h, which the call from f made.
+        pytest.param(
+            "def c():\n    return bool(argparse)\ndef one():\n    return 3\ndef two():\n    return 4\n"
+            "def four():\n    return 6\n"
+            "def f(q):\n    if c():\n        return q()\n"
+            "    if c():\n        return h(two, w1)\n    return h(four, w2)\n"
+            "def h(m, k):\n    t = m\n    return k(t)\ndef w1(x):\n    return f(x)\ndef w2(y):\n    return f(y)\n"
+            "def main():\n    return f(one)\n",
+            {1, 3, 4, 6},
+            [],
+            id="a function called back from two call sites",
+        ),
+        # A parameter read for two items of the tuple it is given, and a local bound in three scopes of one function,
+        # each read in the same pass.
+        pytest.param(
+            "def pair():\n    return 3, 4\ndef first(t):\n    return t\n"
+            "def main(flag):\n    a, b = first(pair())\n    return a if flag else b\n",
+            {1, 3, 4},
+            [],
+            id="a parameter read for two items",
+        ),
+        pytest.param(
+            "def leaf(p):\n    return p\ndef mid(x):\n    y = x\n    return leaf(y)\n"
+            "def main(flag):\n    return mid(3) if flag else mid(4) if flag else mid(5)\n",
+            {1, 3, 4, 5},
+            [],
+            id="a local bound in three scopes of one function",
+        ),
+        # leaf is read from mid(4)'s scope before mid(3)'s calls it, so a second pass reads it again, the exit call
+        # that reaches it among the rest.
+        pytest.param(
+            "import sys\ndef leaf(p):\n    return p\ndef mid(x):\n    return leaf(x)\n"
+            "def main(flag):\n    if flag:\n        sys.exit(mid(3) if flag else mid(4))\n    return 0\n",
+            {0, 1, 3, 4},
+            [],
+            id="a function an exit call reaches from two scopes",
+        ),
+        # A parameter read both for an item, where it is returned, and whole, inside a tuple, is read each way.
+        pytest.param(
+            "def c():\n    return bool(argparse)\ndef pair():\n    return 3, 4\n"
+            "def f(p):\n    if c():\n        return p\n    return (p, 1)\n"
+            "def main():\n    code, _ = f(pair())\n    return code\n",
+            {1, 3},
+            ["(3, 4)"],
+            id="a parameter read for an item and whole",
+        ),
+        # A call read for an item and one read whole each keep their callees' scopes apart, so g's h, given three
+        # where k's result is unpacked, is never read as a code main returns.
+        pytest.param(
+            "def three():\n    return 5\ndef two():\n    return 4\ndef g(h):\n    return h()\n"
+            "def k(h):\n    return g(h)\n"
+            "def main(flag):\n    code, _ = k(three)\n    if flag:\n        return k(two)\n    return code\n",
+            {1, 4},
+            ["5"],
+            id="calls read for an item and whole",
+        ),
+        # Within one scope, a call through a local one of whose values the reader cannot tell is unread, and reads
+        # none of the others, as it can be any of them.
+        pytest.param(
+            "def one():\n    return 3\n"
+            "def main(flag):\n    handler = one\n    handler = mystery\n    return handler()\n",
+            {1},
+            ["handler()"],
+            id="a local one of whose values the reader cannot tell",
+        ),
+        # The scope that hides it is read second, so a later pass finds the call incomplete.
+        pytest.param(
+            "def one():\n    return 3\ndef run(h):\n    return h()\ndef mid(g):\n    return run(g)\n"
+            "def main(flag):\n    return mid(lambda: 5) if flag else mid(one)\n",
+            {1, 3},
+            ["h()"],
+            id="a function one caller gives and another, read later, hides",
+        ),
+        # A call of a name nothing binds is unread.
+        pytest.param("def main():\n    return unknown()\n", {1}, ["unknown()"], id="a call of a name nothing binds"),
     ],
 )
 def test_the_reader_reads_each_value_of_a_name_once_for_each_item(
@@ -571,6 +749,21 @@ def test_an_entry_point_whose_only_usage_exit_is_an_attribute_parser_s_error_nam
     found = problems({"tools/tool.py": script("A tool.\n\nExit status:\n  0  done\n  1  failed\n", body)})
     assert len(found) == 1, found
     assert found[0].startswith("tools/tool.py can exit 2, which its exit table does not name"), found
+
+
+def test_a_table_of_functions_in_an_imported_module_is_read_in_that_module() -> None:
+    # Each module's own body has a scope of its own, so the helper's table names its own function, not one of the
+    # entry point's.
+    body = "from helpers import run\ndef main() -> int:\n    return run('a')\n"
+    body += "if __name__ == '__main__':\n    run_main(main)\n"
+    helpers = "def four() -> int:\n    return 4\nTABLE = {'a': four}\ndef run(name) -> int:\n    return TABLE[name]()\n"
+    found = problems(
+        {
+            "tools/tool.py": script("A tool.\n\nExit status:\n  1  failed\n  4  from the helper\n", body, HEADER),
+            "tools/helpers.py": helpers,
+        }
+    )
+    assert found == []
 
 
 def test_the_reader_follows_an_import_into_a_module_beside_the_entry_point() -> None:

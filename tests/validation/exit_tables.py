@@ -33,9 +33,10 @@ point fails, since it read no table.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -338,35 +339,19 @@ def relative_aliases(tree: ast.Module, package: str) -> dict[str, str]:
 Function = ast.FunctionDef | ast.AsyncFunctionDef
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Scope:
-    """Where an expression is read: its module, the function that holds it, and what that function's parameters
-    were given by the call the reader followed, each with the scope it was given in."""
+    """Where an expression is read: its module, the function that holds it, and the expression each of that function's
+    parameters is given at the call the scope stands for. The reader keeps one scope for each function, each set of
+    argument expressions it is given, which a call site fixes, and each item it is read for, and reads a parameter as
+    every value the scopes that called it give it: see CodeReader.scope."""
 
     module: Module
     function: Function | None
-    given: tuple[tuple[str, tuple[ast.expr, Scope]], ...] = ()
+    given: tuple[tuple[str, ast.expr], ...] = ()
 
-    def argument(self, name: str) -> tuple[ast.expr, Scope] | None:
+    def argument(self, name: str) -> ast.expr | None:
         return dict(self.given).get(name)
-
-
-# What a scope's key holds, in place of the key of the scope an argument's value was given in, when that scope's
-# functions include the keyed scope's own: see CodeReader.keyed.
-CUT = -1
-
-
-@dataclass(frozen=True)
-class Keyed:
-    """What the reader keeps for one scope it has keyed: the scope, kept alive so its id is not reused; the key
-    returns and assigned read a function or a value once by; its functions, by their ids: its own and those of each
-    scope a value of its arguments was given in, followed outward; and each argument's value, followed through the
-    parameters that pass it on, with the scope that value was given in."""
-
-    scope: Scope
-    key: int
-    functions: frozenset[int]
-    values: dict[str, tuple[ast.expr, Scope]]
 
 
 def _own_nodes(function: Function) -> Iterator[ast.AST]:
@@ -380,28 +365,21 @@ def _own_nodes(function: Function) -> Iterator[ast.AST]:
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _assigned(function: Function, name: str) -> list[tuple[ast.expr, int | None]]:
-    """Each value a function's own body binds to a name, by assignment or annotated assignment, with the position the
-    name takes when it is one of a tuple's targets, as `code` in `code, lines = run()`."""
-    found: list[tuple[ast.expr, int | None]] = []
+def _bindings(function: Function) -> dict[str, list[tuple[ast.expr, int | None]]]:
+    """Each value a function's own body binds to each name, by assignment or annotated assignment, with the position
+    the name takes when it is one of a tuple's targets, as `code` in `code, lines = run()`."""
+    found: dict[str, list[tuple[ast.expr, int | None]]] = {}
     for node in _own_nodes(function):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == name:
-                    found.append((node.value, None))
+                if isinstance(target, ast.Name):
+                    found.setdefault(target.id, []).append((node.value, None))
                 elif isinstance(target, ast.Tuple):
-                    found += [
-                        (node.value, index)
-                        for index, each in enumerate(target.elts)
-                        if isinstance(each, ast.Name) and each.id == name
-                    ]
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-            and node.value is not None
-        ):
-            found.append((node.value, None))
+                    for index, each in enumerate(target.elts):
+                        if isinstance(each, ast.Name):
+                            found.setdefault(each.id, []).append((node.value, index))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            found.setdefault(node.target.id, []).append((node.value, None))
     return found
 
 
@@ -438,6 +416,23 @@ class Reading:
     unread: list[tuple[Path, int, str]] = field(default_factory=list)
 
 
+def _distinct(lists: Iterable[list[tuple[Module, Function]]]) -> list[tuple[Module, Function]]:
+    """The functions the lists name, each once, in the order first named."""
+    return list({id(function): (module, function) for found in lists for module, function in found}.values())
+
+
+@dataclass(frozen=True)
+class Parts:
+    """What one called expression is made of, as CodeReader.callables reads it: the function it names; the values it
+    is read as, each with the scope it is read in; whether those are the values of a parameter, one for each scope
+    that called its own; and whether the reader can tell it at all."""
+
+    named: tuple[Module, Function] | None = None
+    values: list[tuple[ast.expr, Scope]] = field(default_factory=list)
+    callers: bool = False
+    known: bool = True
+
+
 class CodeReader:
     """Reads the codes one entry point can exit with, following into the modules its imports name."""
 
@@ -446,14 +441,24 @@ class CodeReader:
         self.folders = [entry.parent, root / SKILL_CORE_SCRIPTS, root]
         self.modules: dict[Path, Module] = {}
         self.reading = Reading()
+        # Each scope the reader keeps, by its module, its function, and the argument expressions it is given, and the
+        # scopes that called each, by the scope's id: see scope.
+        self.scopes: dict[tuple[int, int, tuple[tuple[str, int], ...], int | None], Scope] = {}
+        self.callers: dict[int, dict[int, Scope]] = {}
+        # What one pass has read, each once: a function's returns for each element in a scope, a local's value for
+        # each element in a scope, and a parameter for each element in a scope; and the scopes a read asked the
+        # callers of. A caller that reaches a scope after a read asked its callers makes the pass late: see read.
         self.returned: set[tuple[int, int | None, int]] = set()
-        # Each value a local name is bound to that the reader has read, by the same key: see assigned.
         self.assigned_read: set[tuple[int, int | None, int]] = set()
-        # Each scope the reader has keyed, by its id, and each key by the content it stands for: see keyed.
-        self.scopes: dict[int, Keyed] = {}
-        self.contents: dict[tuple[int, tuple[tuple[str, int, int], ...]], int] = {}
-        # The one scope of each module's own body, by the module's file: see callables.
-        self.module_scopes: dict[Path, Scope] = {}
+        self.parameters_read: set[tuple[int, str, int | None]] = set()
+        self.asked: set[int] = set()
+        self.late = False
+        self.passes = 0
+        # The reads waiting their turn, so no read nests inside another on Python's stack: see later.
+        self.pending: list[Callable[[], None]] = []
+        self.unread_seen: set[tuple[Path, int, str]] = set()
+        # Each function's bindings, by the function's id: see bound.
+        self.bindings: dict[int, dict[str, list[tuple[ast.expr, int | None]]]] = {}
         self.reached: set[int] = set()
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
@@ -536,113 +541,156 @@ class CodeReader:
             return other, other.functions[name]
         return None
 
-    def keyed(self, scope: Scope) -> Keyed:
-        """The key returns and assigned read a function or a value once by in a scope: the scope's function, and for
-        each argument, its value, followed through the parameters that pass it on, and the key of the scope that value
-        was given in. So two scopes whose arguments are the same expressions given in different scopes differ, as
-        leaf's scope does when `leaf(x)` is called in `mid(3)`'s scope and in `mid(4)`'s, since x is followed to 3 in
-        one and to 4 in the other.
+    def scope(
+        self,
+        module: Module,
+        function: Function | None,
+        given: tuple[tuple[str, ast.expr], ...],
+        caller: Scope | None,
+        element: int | None = None,
+    ) -> Scope:
+        """The one scope of a function given these argument expressions and read for this item of the tuple it
+        returns, or for the whole value, with the scope that called it recorded.
 
-        It stays bounded however many call sites a recursion has and in whatever order the reader meets them. Where a
-        value was given in a scope whose functions, its own and those of the scopes its values were given in, followed
-        outward, include the keyed scope's function, the key holds CUT in place of that scope's key, as it does for
-        `depth + 1` given in a scope of check to another scope of check. So each key a key holds is of a scope whose
-        functions do not include the holding scope's function, and, being among the holding scope's functions, do
-        not include the function of any key that holds it in turn: a key nests no deeper than there are functions,
-        each part is chosen from the expressions the program holds, and a recursion's call sites add no key past one
-        each. Each scope is keyed once, from the keys and followed values of the scope its arguments were given in and
-        of the scopes their values were, keyed before it, so a chain of functions that pass their parameters on is
-        keyed once per scope and never walked again.
+        A scope stands for every call that gives its function the same argument expressions, which one call site
+        fixes, read for the same item, as returns reads a function once for each item. So the reader keeps no more
+        scopes than the calls the source holds, each once for each item it is read for, plus one for each function it
+        runs given nothing (what run_main runs, a property, a function an exit is read in) and one for each module's
+        own body, however the calls recurse and whatever values reach them: never a product over a function's
+        parameters of the values reaching each. A parameter is read as the expression it is given, in every scope
+        recorded as calling its scope, so two calls of one function given the same expressions in different scopes, as
+        `leaf(x)` in `mid(3)`'s scope and in `mid(4)`'s, are both read, and every value the first scope to call it
+        gives is read among them. A caller recorded after a read of the pass asked a scope's callers makes the pass
+        late: see read.
 
-        A stated limit: two scopes of one function whose arguments are followed to the same expressions, each given in
-        a scope of that function or of one that scope came from, are read once, so a code only the later scope's
-        values lead to is not read; no repository code passes a value round a recursion so that only a deeper scope
-        reaches a code."""
-        known = self.scopes.get(id(scope))
-        if known is not None:
-            return known
-        functions = {id(scope.function)}
-        values: dict[str, tuple[ast.expr, Scope]] = {}
-        parts: list[tuple[str, int, int]] = []
-        for name, (argument, given) in scope.given:
-            passed = self.keyed(given).values.get(argument.id) if isinstance(argument, ast.Name) else None
-            value, origin = passed if passed is not None else (argument, given)
-            source = self.keyed(origin)
-            functions |= source.functions
-            values[name] = (value, origin)
-            cut = id(scope.function) in source.functions
-            parts.append((name, id(value), CUT if cut else source.key))
-        key = self.contents.setdefault((id(scope.function), tuple(parts)), len(self.contents))
-        keyed = self.scopes[id(scope)] = Keyed(scope, key, frozenset(functions), values)
-        return keyed
+        A stated limit: a parameter is read as the values every call with the same expressions gives it, so where one
+        argument chooses the function a call runs and another gives that function's value, a value may be read with a
+        function it is never given, and a code read that the program cannot exit with; no repository code passes a
+        function and its value apart like that."""
+        key = (id(module), id(function), tuple((name, id(value)) for name, value in given), element)
+        made = self.scopes.get(key)
+        if made is None:
+            made = self.scopes[key] = Scope(module, function, given)
+        callers = self.callers.setdefault(id(made), {})
+        if caller is not None and id(caller) not in callers:
+            callers[id(caller)] = caller
+            if id(made) in self.asked:
+                self.late = True
+        return made
 
     def module_scope(self, module: Module) -> Scope:
-        """The one scope of a module's own body, which callables reads a module's table of functions in."""
-        return self.module_scopes.setdefault(module.path, Scope(module, None))
+        """The one scope of a module's own body."""
+        return self.scope(module, None, (), None)
 
-    def callables(
-        self, node: ast.expr, scope: Scope, seen: set[tuple[int, int]] | None = None
-    ) -> list[tuple[Module, Function]] | None:
-        """The functions a called expression can be, or None when the reader cannot tell.
+    def callers_of(self, scope: Scope) -> list[Scope]:
+        """The scopes that called a scope so far, recording that a read asked."""
+        self.asked.add(id(scope))
+        return list(self.callers.get(id(scope), {}).values())
 
-        Each expression is read once for the question, in `seen`, by the scope object it is read in. The reader goes
-        only outward, into the scope an argument was given in, made before the scope it was given to, or into its
-        module's one scope, so one question meets each scope of a chain of calls as one object, and the same
-        expression read again in the same object leads back to its own first read. So a local rebound from itself,
-        as `handler = handler.get("a")`, or a table of functions that names itself, adds no function its first read
-        has not, since the functions are their union, and a value the reader cannot tell already answers None for
-        the whole question; and an argument two values pass on from one scope is read there once."""
-        seen = set() if seen is None else seen
-        key = (id(node), id(scope))
-        if key in seen:
-            return []
-        seen.add(key)
+    def _parts(self, node: ast.expr, scope: Scope) -> Parts:
+        """What one called expression is made of: the function it names, the values it is read as, or none it can
+        tell."""
         named = self.function_named(scope.module, node) if isinstance(node, (ast.Name, ast.Attribute)) else None
         if named is not None:
-            return [named]
+            return Parts(named=named)
         if isinstance(node, ast.Name):
-            given = scope.argument(node.id)
-            if given is not None:
-                return self.callables(*given, seen)
-            values = _assigned(scope.function, node.id) if scope.function is not None else []
+            argument = scope.argument(node.id)
+            values = self.bound(scope.function, node.id) if scope.function is not None else []
+            if argument is not None:
+                return Parts(values=[(argument, caller) for caller in self.callers_of(scope)], callers=True)
             if values and all(position is None for _, position in values):
-                return self._all([value for value, _ in values], scope, seen)
+                return Parts(values=[(value, scope) for value, _ in values])
             if node.id in scope.module.dictionaries:
-                return self._all(list(scope.module.dictionaries[node.id].values), self.module_scope(scope.module), seen)
-            return None
+                module_scope = self.module_scope(scope.module)
+                return Parts(values=[(value, module_scope) for value in scope.module.dictionaries[node.id].values])
+            return Parts(known=False)
         if isinstance(node, ast.Subscript):
-            return self.callables(node.value, scope, seen)
+            return Parts(values=[(node.value, scope)])
         if isinstance(node, ast.Dict):
-            return self._all(list(node.values), scope, seen)
+            return Parts(values=[(value, scope) for value in node.values])
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
-            return self.callables(node.func.value, scope, seen)
-        return None
+            return Parts(values=[(node.func.value, scope)])
+        return Parts(known=False)
 
-    def _all(
-        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, int]]
-    ) -> list[tuple[Module, Function]] | None:
-        found: list[tuple[Module, Function]] = []
-        for value in values:
-            each = self.callables(value, scope, seen)
-            if each is None:
-                return None
-            found += each
-        return found
+    def callables(self, node: ast.expr, scope: Scope) -> tuple[list[tuple[Module, Function]], bool]:
+        """The functions a called expression can be, and whether the reader can tell them all.
 
-    def call_scope(self, call: ast.Call, module: Module, function: Function, scope: Scope) -> Scope:
-        """The scope a followed call runs its function in, each parameter given the argument the call passes."""
+        Each expression is answered once for the question in each scope, from a stack rather than Python's, and one
+        read again while its own answer is open leads back to itself and adds nothing, so a local rebound from itself,
+        as `handler = handler.get("a")`, a table of functions that names itself, or a parameter a recursion passes on,
+        ends, since the functions are their union. Within one scope, a value the reader cannot tell among a local's or
+        a table's values leaves the whole answer untold, as a call through it can be any of them. A parameter is
+        answered in each scope that called its own: where the reader can tell it in some of them, it is the functions
+        those name, and one it cannot tell leaves the question incomplete, so the call is unread and those functions
+        are still read; where it can tell it in none, the parameter is untold, as a local's value is."""
+        root = (id(node), id(scope))
+        answers: dict[tuple[int, int], tuple[list[tuple[Module, Function]], bool]] = {}
+        parts: dict[tuple[int, int], Parts] = {}
+        incomplete = False
+        stack: list[tuple[ast.expr, Scope, bool]] = [(node, scope, False)]
+        while stack:
+            node, scope, ready = stack.pop()
+            key = (id(node), id(scope))
+            if not ready:
+                if key in answers:
+                    continue
+                answers[key] = ([], True)
+                made = parts[key] = self._parts(node, scope)
+                stack.append((node, scope, True))
+                stack += [(value, given, False) for value, given in made.values]
+                continue
+            made = parts[key]
+            results = [answers[(id(value), id(given))] for value, given in made.values]
+            if made.named is not None:
+                answers[key] = ([made.named], True)
+            elif not made.known:
+                answers[key] = ([], False)
+            elif made.callers and any(known for _, known in results):
+                incomplete = incomplete or not all(known for _, known in results)
+                answers[key] = (_distinct(found for found, _ in results), True)
+            else:
+                known = all(each for _, each in results)
+                answers[key] = (_distinct(found for found, _ in results) if known else [], known)
+        found, known = answers[root]
+        return found, known and not incomplete
+
+    def call_scope(
+        self, call: ast.Call, module: Module, function: Function, scope: Scope, element: int | None
+    ) -> Scope:
+        """The scope a followed call runs its function in, each parameter given the argument the call passes, called
+        from the scope the call is read in."""
         parameters = [*function.args.posonlyargs, *function.args.args]
         given = [
-            (parameter.arg, (argument, scope))
+            (parameter.arg, argument)
             for parameter, argument in zip(parameters, call.args, strict=False)
             if not isinstance(argument, ast.Starred)
         ]
-        given += [(keyword.arg, (keyword.value, scope)) for keyword in call.keywords if keyword.arg is not None]
-        return Scope(module, function, tuple(given))
+        given += [(keyword.arg, keyword.value) for keyword in call.keywords if keyword.arg is not None]
+        return self.scope(module, function, tuple(given), scope, element)
+
+    def bound(self, function: Function, name: str) -> list[tuple[ast.expr, int | None]]:
+        """Each value a function's own body binds to a name, read from the function once."""
+        if id(function) not in self.bindings:
+            self.bindings[id(function)] = _bindings(function)
+        return self.bindings[id(function)].get(name, [])
+
+    def later(self, read: Callable[..., None], *arguments: object) -> None:
+        """Queue a read of a function, a local, or a parameter, which read runs: see read."""
+        self.pending.append(functools.partial(read, *arguments))
+
+    def parameter(self, scope: Scope, name: str, element: int | None) -> None:
+        """Add the codes a parameter can be: the expression it is given, read in each scope that called its scope."""
+        key = (id(scope), name, element)
+        if key in self.parameters_read:
+            return
+        self.parameters_read.add(key)
+        argument = scope.argument(name)
+        for caller in self.callers_of(scope):
+            self.value(argument, caller, element)
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
-        key = (id(function), element, self.keyed(scope).key)
+        key = (id(function), element, id(scope))
         if key in self.returned:
             return
         self.returned.add(key)
@@ -662,16 +710,21 @@ class CodeReader:
         elif isinstance(node, ast.IfExp):
             self.value(node.body, scope, element)
             self.value(node.orelse, scope, element)
-        elif isinstance(node, ast.Name) and (given := scope.argument(node.id)) is not None:
-            self.value(given[0], given[1], element)
-        elif isinstance(node, ast.Name) and scope.function is not None and _assigned(scope.function, node.id):
-            self.assigned(node, scope, element)
-        elif isinstance(node, ast.Call) and (functions := self.callables(node.func, scope)) is not None:
+        elif isinstance(node, ast.Name) and scope.argument(node.id) is not None:
+            self.later(self.parameter, scope, node.id, element)
+        elif isinstance(node, ast.Name) and scope.function is not None and self.bound(scope.function, node.id):
+            self.later(self.assigned, node, scope, element)
+        elif isinstance(node, ast.Call):
+            functions, complete = self.callables(node.func, scope)
             for module, function in functions:
-                self.returns(module, function, self.call_scope(node, module, function, scope), element)
+                self.later(
+                    self.returns, module, function, self.call_scope(node, module, function, scope, element), element
+                )
+            if not complete:
+                self._unread(node, scope)
         elif isinstance(node, ast.Attribute) and node.attr in scope.module.properties:
             for method in scope.module.properties[node.attr]:
-                self.returns(scope.module, method, Scope(scope.module, method), element)
+                self.later(self.returns, scope.module, method, self.scope(scope.module, method, (), scope), element)
         elif element is None and isinstance(node, ast.Attribute) and node.attr == ERROR_CODE:
             self.reads_error_code = True
         else:
@@ -686,16 +739,15 @@ class CodeReader:
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
         """Add the codes each value the function binds to a local name can be.
 
-        Each value is read once for each element and each scope's key, as returns reads a function: a value that
+        Each value is read once a pass for each element and each scope, as returns reads a function: a value that
         reads its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first
         read has not, since the codes are their union."""
         assert scope.function is not None
-        given = self.keyed(scope).key
-        for value, position in _assigned(scope.function, node.id):
+        for value, position in self.bound(scope.function, node.id):
             if position is not None and element is not None:
                 self._unread(node, scope)
                 continue
-            key = (id(value), element if position is None else position, given)
+            key = (id(value), element if position is None else position, id(scope))
             if key in self.assigned_read:
                 continue
             self.assigned_read.add(key)
@@ -703,7 +755,10 @@ class CodeReader:
 
     def _unread(self, node: ast.expr | None, scope: Scope) -> None:
         expression = ast.unparse(node) if node is not None else "None"
-        self.reading.unread.append((scope.module.path, getattr(node, "lineno", 0), expression))
+        found = (scope.module.path, getattr(node, "lineno", 0), expression)
+        if found not in self.unread_seen:
+            self.unread_seen.add(found)
+            self.reading.unread.append(found)
 
     def exits(self, argument: ast.expr | None, scope: Scope) -> None:
         """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
@@ -716,36 +771,70 @@ class CodeReader:
 
     def reach(self, module: Module, function: Function) -> None:
         """Add the codes every function this one can call exits with or parses arguments for, followed through
-        calls by name into its own module and the modules its imports name."""
-        if id(function) in self.reached:
-            return
-        self.reached.add(id(function))
-        for node in _own_nodes(function):
-            if isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
-                # A SystemExit raised as the class, with no code, exits 0.
-                if qualified_name(node.exc, module.aliases) == SYSTEM_EXIT:
-                    self.reading.codes.add(NO_CODE)
+        calls by name into its own module and the modules its imports name, from a stack rather than Python's."""
+        stack = [(module, function)]
+        while stack:
+            module, function = stack.pop()
+            if id(function) in self.reached:
                 continue
-            if not isinstance(node, ast.Call):
-                continue
-            for keyword in node.keywords:
-                if keyword.arg == ERROR_CODE and (number := self.code_of(module, keyword.value)) is not None:
-                    self.error_codes.add(number)
-            name = qualified_name(node.func, module.aliases)
-            if name in EXIT_CALLS:
-                self.exits(call_argument(node, 0, code_keyword(name)), Scope(module, function))
-            elif isinstance(node.func, ast.Attribute) and (
-                node.func.attr in PARSING_CALLS
-                or (
-                    node.func.attr == USAGE_ERROR_CALL
-                    and _is_parser(node.func.value, module.parsers | module.method_parsers.get(function, set()))
-                )
-            ):
-                self.reading.codes.add(USAGE)
-                self.parsing.add(module.path)
-            named = self.function_named(module, node.func) if isinstance(node.func, (ast.Name, ast.Attribute)) else None
-            if named is not None:
-                self.reach(*named)
+            self.reached.add(id(function))
+            for node in _own_nodes(function):
+                if isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
+                    # A SystemExit raised as the class, with no code, exits 0.
+                    if qualified_name(node.exc, module.aliases) == SYSTEM_EXIT:
+                        self.reading.codes.add(NO_CODE)
+                    continue
+                if not isinstance(node, ast.Call):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg == ERROR_CODE and (number := self.code_of(module, keyword.value)) is not None:
+                        self.error_codes.add(number)
+                name = qualified_name(node.func, module.aliases)
+                if name in EXIT_CALLS:
+                    self.exits(call_argument(node, 0, code_keyword(name)), self.scope(module, function, (), None))
+                elif isinstance(node.func, ast.Attribute) and (
+                    node.func.attr in PARSING_CALLS
+                    or (
+                        node.func.attr == USAGE_ERROR_CALL
+                        and _is_parser(node.func.value, module.parsers | module.method_parsers.get(function, set()))
+                    )
+                ):
+                    self.reading.codes.add(USAGE)
+                    self.parsing.add(module.path)
+                if isinstance(node.func, (ast.Name, ast.Attribute)) and (
+                    named := self.function_named(module, node.func)
+                ):
+                    stack.append(named)
+
+    def read(self, entry: Module) -> None:
+        """Read what the entry point's run_main runs, a pass at a time, until a pass ends with no late caller.
+
+        Each read of a pass waits its turn in `pending` and runs from there, so however deep the calls run, no read
+        nests inside another on Python's stack, only an expression's parts, which the parser bounds. A pass reads each
+        function, local, and parameter once for each element and scope. A caller that reaches a scope after a read of
+        that pass asked the scope's callers may give it a value that read missed, so the pass is late and another
+        follows, with every caller recorded so far; each late pass records a caller no pass had, and the callers are
+        bounded by the scopes, so the passes end."""
+        while True:
+            self.passes += 1
+            self.returned.clear()
+            self.assigned_read.clear()
+            self.parameters_read.clear()
+            self.asked.clear()
+            self.reached.clear()
+            self.late = False
+            scope = self.module_scope(entry)
+            for block in main_blocks(entry.tree):
+                for target in runner_targets(block, entry.aliases):
+                    functions, complete = ([], False) if isinstance(target, ast.Call) else self.callables(target, scope)
+                    if not complete:
+                        self.value(target, scope)
+                    for each, function in functions:
+                        self.later(self.returns, each, function, self.scope(each, function, (), scope))
+            while self.pending:
+                self.pending.pop()()
+            if not self.late:
+                return
 
 
 def runner_targets(block: ast.If, aliases: dict[str, str]) -> list[ast.expr]:
@@ -764,14 +853,7 @@ def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
     module = reader.module_at(entry.path, entry.tree)
     assert module is not None
     reader.reading.codes.add(RUNNER_FAILURE)
-    scope = reader.module_scope(module)
-    for block in main_blocks(entry.tree):
-        for target in runner_targets(block, module.aliases):
-            functions = None if isinstance(target, ast.Call) else reader.callables(target, scope)
-            if functions is None:
-                reader.value(target, scope)
-            for each, function in functions or []:
-                reader.returns(each, function, Scope(each, function))
+    reader.read(module)
     if reader.reads_error_code:
         reader.reading.codes |= reader.error_codes | reader.error_defaults()
     return reader
