@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
-import secrets
 import sys
 import time
 from pathlib import Path
@@ -429,9 +428,8 @@ def _execute(
         if not recovered:
             _report_failed_recovery()
             return 1
-        # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
-        run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
         try:
+            run_id = journal.new_run_id(paths)
             return _deploy(paths, options, src, values, stdin, run_id, pin)
         except DeployError as exc:
             if not isinstance(exc, Cancelled) and exc.exit_code != USAGE_ERROR:

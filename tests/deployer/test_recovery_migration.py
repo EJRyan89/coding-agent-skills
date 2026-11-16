@@ -6,13 +6,15 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, get_args
 from unittest import mock
@@ -3100,3 +3102,75 @@ class BackupProbeTests(DeployerTestCase):
         with mock.patch("deployer.fsops.make_directories", side_effect=make_backups_then_refuse):
             self.deploy_fails("--all", "--force-item", "reviewer", pattern="Backup path is not writable")
         self.assertFalse(os.path.lexists(backups))
+
+
+# The second every run in RunIdTests starts in, so two runs can draw the same ID.
+RUN_START = "20261115-190503"
+RUN_START_TIME = time.struct_time((2026, 11, 15, 19, 5, 3, 6, 319, 0))
+
+
+@contextlib.contextmanager
+def drawn_run_tokens(*tokens: str) -> Iterator[list[str]]:
+    """Start every run in RUN_START's second and have it draw tokens in order, through the clock and the random source
+    journal.new_run_id reads; any other token the journal draws stays random. Yields the tokens not yet drawn."""
+    pending = list(tokens)
+
+    def token_hex(nbytes: int) -> str:
+        return pending.pop(0) if nbytes == 2 else secrets.token_hex(nbytes)
+
+    clock = types.SimpleNamespace(strftime=time.strftime, gmtime=lambda: RUN_START_TIME)
+    with (
+        mock.patch.object(journal, "secrets", types.SimpleNamespace(token_hex=token_hex)),
+        mock.patch.object(journal, "time", clock),
+    ):
+        yield pending
+
+
+class RunIdTests(RecoveryTestCase):
+    def test_a_failed_run_that_draws_the_committed_run_id_draws_again_and_is_rolled_back(self) -> None:
+        # Recovery reads a run whose ID is the manifest's last_run_id as committed, so a failed run that kept the
+        # committed run's ID would be completed rather than rolled back.
+        with drawn_run_tokens("5d3d") as pending:
+            self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))
+        self.assertEqual([], pending)
+        self.assertEqual(f"{RUN_START}-5d3d", self.manifest()["last_run_id"])
+        self.remove_skill("obsolete")
+        self.make_skill("alpha", "Updated alpha")
+        real_move = fsops.move
+
+        def failing_move(source: Path, destination: Path) -> None:
+            if "staging" in source.parts and source.name == "alpha" and destination == self.skills_dir / "alpha":
+                raise OSError("synthetic install move failure")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", side_effect=failing_move), drawn_run_tokens("5d3d", "0b0b") as pending:
+            # deploy_fails holds the home unchanged: the run is rolled back, leaving no .deploying-bak copy, staging
+            # folder, or lock.
+            result = self.deploy_fails("--all", pattern="reconciling the current journal")
+        self.assertEqual([], pending)
+        self.assertIn(f"Recovering uncommitted run {RUN_START}-0b0b (rolling back)...", result.output)
+        self.assertNotIn("Recovering committed run", result.output)
+        self.assertEqual(f"{RUN_START}-5d3d", self.manifest()["last_run_id"])
+
+    def test_a_run_draws_again_over_a_kept_backup_folder_an_earlier_run_left(self) -> None:
+        self.deployed(("alpha", "Alpha"))
+        # Each run's own token differs from the last, which the manifest records as committed.
+        for root, token in ((self.skills_dir, "0b01"), (self.agents_dir, "0b02"), (self.claude_agents_dir, "0b03")):
+            with self.subTest(root=root.name):
+                left = root / ".backups" / f"{RUN_START}-5d3d"
+                left.mkdir(parents=True)
+                with drawn_run_tokens("5d3d", token) as pending:
+                    result = self.deploy_ok("--all")
+                self.assertEqual([], pending)
+                self.assertIn(f"Run ID: {RUN_START}-{token}", result.output)
+                self.assertTrue(left.is_dir())
+                left.rmdir()
+
+    def test_a_run_draws_again_over_a_staging_folder_recovery_could_not_delete(self) -> None:
+        self.deployed(("alpha", "Alpha"))
+        left = self.staging_run(f"{RUN_START}-5d3d")
+        with failing_at("remove", left), drawn_run_tokens("5d3d", "0b0b") as pending:
+            result = self.deploy_ok("--all")
+        self.assertEqual([], pending)
+        self.assertIn("It holds no journal, so the next deployment deletes it.", result.output)
+        self.assertIn(f"Run ID: {RUN_START}-0b0b", result.output)
