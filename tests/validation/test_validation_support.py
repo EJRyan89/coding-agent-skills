@@ -1226,6 +1226,72 @@ def test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once()
     ]
 
 
+def attribute_chain(links: int, imported_last: bool) -> str:
+    """A function whose names each take an attribute of the name before in two branches, its first name a parameter,
+    and whose last name is called; given imported_last, the last name's second branch takes its attribute of os
+    instead, so the one import is found only after every other binding is followed."""
+    lines = ["import os", "def f(a0, c):"]
+    for link in range(1, links + 1):
+        other = "os" if imported_last and link == links else f"a{link - 1}"
+        lines += ["    if c:", f"        a{link} = a{link - 1}.x", "    else:", f"        a{link} = {other}.y"]
+    return "\n".join([*lines, f"    a{links}.run()", ""])
+
+
+@pytest.mark.parametrize("imported_last", [False, True], ids=["no import", "an import behind the last branch"])
+def test_callable_resolver_reads_each_name_of_a_two_branch_attribute_chain_once(imported_last: bool) -> None:
+    # A walk that kept a set of the names on its path read each name once per path to it, so sixteen names each
+    # bound two ways to an attribute of the one before took 2 to the 17th reads. Read once per question, the reads
+    # grow with the names: four a name bounds the work, which the per-path walk exceeds by thousands of times.
+    links = 16
+    source = attribute_chain(links, imported_last)
+    resolver = CallableResolver(ast.parse(source))
+    reads = 0
+    imported = CallableResolver._imported
+
+    def counted(self: CallableResolver, *arguments: object) -> bool:
+        nonlocal reads
+        reads += 1
+        if reads > 4 * links:
+            raise AssertionError(f"CallableResolver._imported read names more than {4 * links} times")
+        return imported(self, *arguments)  # type: ignore[arg-type]  # the arguments are passed on unchanged
+
+    with mock.patch.object(CallableResolver, "_imported", counted):
+        problems = resolver.problems("fixture.py")
+    expected = f"fixture.py:{len(source.splitlines())} cannot resolve callable alias a{links}.run; " + (
+        "use a single binding to a known callable"
+    )
+    assert problems == ([expected] if imported_last else [])
+
+
+@pytest.mark.parametrize(
+    ("source", "reported"),
+    [
+        pytest.param("writer = other.x\nother = writer.y\nwriter.run()\n", False, id="two names in a cycle"),
+        pytest.param(
+            "import os\nwriter = other.x\nother = writer.y\nother = os.path\nwriter.run()\n",
+            True,
+            id="a cycle with an import beside it",
+        ),
+        pytest.param(
+            "import os\nwriter = writer.x\nwriter = os.path\nwriter.run()\n", True, id="a name read from itself"
+        ),
+        pytest.param(
+            "def f(c):\n    writer = c\n    while c:\n        writer = writer.x\n    writer.run()\n",
+            False,
+            id="a loop rebinding a parameter's attribute",
+        ),
+    ],
+)
+def test_callable_resolver_answers_a_name_that_leads_back_to_itself(source: str, reported: bool) -> None:
+    # A name read again in one question is cut, as the path's own set cut it: whether an import is reached through
+    # the bindings does not depend on the route, so a cycle gives the answer it gave when each path kept its own set.
+    expected = [
+        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer.run; "
+        "use a single binding to a known callable"
+    ]
+    assert CallableResolver(ast.parse(source)).problems("fixture.py") == (expected if reported else [])
+
+
 def test_resolved_references_keep_their_walk_on_the_resolver_unless_it_stops() -> None:
     # What a value names depends only on the module, so a second question reads only the name it is asked about; a
     # walk an exception stopped part way through is dropped, so the next question reads every value again.
