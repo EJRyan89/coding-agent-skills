@@ -2604,9 +2604,10 @@ class _TemporaryReader:
         chosen between by a conditional, or, for a held name, its parent. Anything else, such as
         tempfile.gettempdir(), a variable of the environment, or a literal, is not held.
 
-        A stated limit: a folder rebound from itself in a loop, as `folder = folder / "part"`, leads back to its own
-        binding, which is read as not held, so a script that makes a temporary folder or file in such a folder is
-        refused even when the folder it starts from is held; no script here rebinds a folder that way."""
+        A stated limit: a folder rebound from itself, as `folder = folder / "part"`, in a loop or not, is read as not
+        held, since the rebinding reads as leading back to its own binding, so a script that makes a temporary folder
+        or file in such a folder is refused even when the folder it starts from is held; no script here rebinds a
+        folder that way."""
         if id(value) in seen:
             return False
         seen = seen | {id(value)}

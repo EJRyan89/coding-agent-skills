@@ -1177,6 +1177,11 @@ def test_resolved_references_keep_their_walk_on_the_resolver_unless_it_stops() -
             "found = found\ngetattr(found, 'path')", [("", "path")], id="a lookup's receiver bound to nothing it names"
         ),
         pytest.param("from builtins import open as opener\nopener", [("open", "")], id="a name for a builtin"),
+        pytest.param(
+            "import ctypes\ny = ctypes\nwhile flag:\n    x = y.windll\n    y = x.kernel32\ny",
+            [("ctypes", ""), ("", "kernel32")],
+            id="a group of bindings that lead back to each other names nothing beyond itself",
+        ),
     ],
 )
 def test_resolved_references_name_each_binding_outside_a_loop_that_leads_back(

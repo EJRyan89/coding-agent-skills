@@ -1094,7 +1094,10 @@ def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Refe
     Each binding's value is read once. A binding whose value may lead back to itself, as `x = x.parent` in a loop,
     names nothing through the bindings that lead back to it, whose names would never end: its attribute and receiver
     are kept with no name. So a loop that rebinds a name from itself in several branches reads as one step from each
-    binding outside the loop, never as one chain for each order the branches may run in. What a value names depends
+    binding outside the loop, never as one chain for each order the branches may run in. A stated limit: through a
+    group of two or more bindings that lead back to each other, nothing beyond the group is named, so with
+    `y = ctypes` and then `x = y.windll` and `y = x.kernel32` in a loop, `y` names `ctypes` and an unnamed
+    `kernel32`, never `ctypes.windll.kernel32`, which a walk per path would have formed. What a value names depends
     only on the module, never on the expression asked about, so the walk is kept on the resolver and a later call
     reads each value it has read again from what it kept."""
     # A walk an exception left part way through is dropped, not kept with values it never finished.
