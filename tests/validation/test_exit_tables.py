@@ -31,27 +31,59 @@ MAIN = (
 TABLE = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  2  a usage error\n"
 
 
-# The reads a test's reader may queue, the functions it may look up, and the passes it may start, together: past
-# eight times what the deepest fixture here takes, so a reader that loops fails within a second instead of running to
-# the suite's time limit.
-STEP_LIMIT = 50_000
+# The steps a test's reader may take, together: each read it queues, function it looks up, module scope it asks for,
+# and pass it starts after a late caller; each time callables' walk asks whether a value is answered; and each time
+# _functions reads whether a group's member is told. Each loop the reader runs takes one of these on every turn, so a
+# reader that loops fails within a second instead of running to the suite's time limit. The limit is past eight times
+# what the deepest fixture here takes, the ten functions calling each other at 46,641, most of them the walk's and
+# _functions' steps for each value they read.
+STEP_LIMIT = 400_000
 
 
 @pytest.fixture(autouse=True)
 def bounded_reader(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail a test whose exit-table reader queues reads, looks up functions, and starts passes past STEP_LIMIT."""
+    """Fail a test whose exit-table reader takes more than STEP_LIMIT steps: reads queued, functions looked up, module
+    scopes asked for, passes started after a late caller, answers looked up, and members' told read."""
     steps = 0
-    for name in ("later", "function_named", "module_scope"):
+
+    def step() -> None:
+        nonlocal steps
+        steps += 1
+        if steps > STEP_LIMIT:
+            raise AssertionError(f"the exit-table reader took more than {STEP_LIMIT} steps")
+
+    for name in ("later", "function_named", "module_scope", "again"):
         original = getattr(exit_tables.CodeReader, name)
 
-        def step(self: exit_tables.CodeReader, *arguments: Any, original: Any = original) -> Any:
-            nonlocal steps
-            steps += 1
-            if steps > STEP_LIMIT:
-                raise AssertionError(f"the exit-table reader took more than {STEP_LIMIT} steps")
+        def counted(self: exit_tables.CodeReader, *arguments: Any, original: Any = original) -> Any:
+            step()
             return original(self, *arguments)
 
-        monkeypatch.setattr(exit_tables.CodeReader, name, step)
+        monkeypatch.setattr(exit_tables.CodeReader, name, counted)
+
+    class Answers(dict[Any, Any]):
+        def __contains__(self, key: object) -> bool:
+            step()
+            return super().__contains__(key)
+
+    class Told(dict[Any, bool]):
+        def __getitem__(self, key: Any) -> bool:
+            step()
+            return super().__getitem__(key)
+
+    made = exit_tables.CodeReader.__init__
+
+    def answering(self: exit_tables.CodeReader, *arguments: Any) -> None:
+        made(self, *arguments)
+        self.answers = Answers()
+
+    functions = exit_tables._functions
+
+    def bounded(parts: Any, values: Any, readers: Any, outside: Any, told: Any) -> Any:
+        return functions(parts, values, readers, outside, Told(told))
+
+    monkeypatch.setattr(exit_tables.CodeReader, "__init__", answering)
+    monkeypatch.setattr(exit_tables, "_functions", bounded)
 
 
 def problems(files: dict[str, str]) -> list[str]:
@@ -1323,13 +1355,14 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
 
 
 def test_unread_returns_are_reported_in_their_order_in_the_source() -> None:
-    # The reader meets b's return before a's, and each of b's two before the one before it on its line, since it reads
-    # the last call it queues first; and which pass meets a return depends on when its caller is found. The returns are
-    # reported by file, line, and column, so the report is the same however the passes run.
+    # The reader meets b's returns before a's, since it reads the last call it queues first, and which pass meets a
+    # return depends on when its caller is found. The returns are reported by file, line, and column, an expression
+    # met at two columns of one line by the first, so the report is the same however the passes run: on b's line,
+    # other.second comes before another.first, which sorts before it by name.
     body = (
         "def c():\n    return bool(argparse)\n"
         "def a():\n    return thing.first\n"
-        "def b():\n    return other.second if c() else other.third\n"
+        "def b():\n    return other.second if c() else (another.first if c() else other.second)\n"
         "def main():\n    return a() if c() else b()\n"
         f"{ENTRY}"
     )
@@ -1337,7 +1370,19 @@ def test_unread_returns_are_reported_in_their_order_in_the_source() -> None:
     assert [problem.split(" an exit code")[0] for problem in found] == [
         "tools/tool.py:13 returns or exits with thing.first,",
         "tools/tool.py:15 returns or exits with other.second,",
-        "tools/tool.py:15 returns or exits with other.third,",
+        "tools/tool.py:15 returns or exits with another.first,",
+    ]
+    # The reader meets k.z, then h.y at its second column, and h.y again at its first, through g's parameter; h.y
+    # is reported at its first column, so before k.z.
+    body = (
+        "def c():\n    return bool(argparse)\ndef g(x):\n    return x\n"
+        "def main():\n    return g(h.y) if c() else (k.z if c() else h.y)\n"
+        f"{ENTRY}"
+    )
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert [problem.split(" an exit code")[0] for problem in found] == [
+        "tools/tool.py:15 returns or exits with h.y,",
+        "tools/tool.py:15 returns or exits with k.z,",
     ]
 
 

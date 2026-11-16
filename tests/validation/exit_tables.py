@@ -449,12 +449,13 @@ class Asking:
     followed: set[int] = field(default_factory=set)
 
 
-@dataclass(eq=False)
+@dataclass(eq=False, repr=False)
 class Group:
     """A strongly connected group of called expressions that CodeReader.callables answered together: its members, by
     their keys; the groups whose answers read one of its members' answers; and the reads that asked for one of them.
     A late caller of a scope whose callers a member asked drops the group, every group that read it, and their answers,
-    and the pass that follows runs their reads again: see CodeReader.again."""
+    and the pass that follows runs their reads again: see CodeReader.again. It has no field-by-field repr, since its
+    readers and reads lead to each other's groups, which such a repr writes out once on each path to them."""
 
     members: list[Key]
     readers: list[Group] = field(default_factory=list)
@@ -1057,13 +1058,16 @@ class CodeReader:
         what it has not read: a parameter in the callers recorded since, a call through the functions it has not
         followed. Each late pass records a caller no pass had, and the callers are bounded by the scopes, so the passes
         end; and a pass reads only what its late callers reach, so a chain of k relays, each a function handed on to
-        the next through one call, takes k passes, each reading one relay's calls.
+        the next through one call, takes k passes, each reading one relay's calls. A stated limit: where a function
+        handed on also recurses, its call's parameter reads that parameter's grown answer and is answered again over
+        every caller each pass, so k relays take time quadratic in k (1,500: about 2.5 s).
 
         The codes, the unread returns, and the scopes are those of a reader that read every scope in every caller the
-        reading records, which is what a reader that read the whole entry point again each pass found: every read is
-        monotone in the callers, as callables states, a read is run again whenever a scope it asked the callers of
-        gains one, and so the last run of each read has the callers every pass reached, and its earlier runs found
-        nothing it does not."""
+        reading records, which is what a reader that read the whole entry point again each pass found, except as
+        callables' stated limit says: where a call is not complete, its group's answer may name a function that
+        reader's walk did not, or miss one, and so a code. Every read is monotone in the callers, as callables states,
+        a read is run again whenever a scope it asked the callers of gains one, and so the last run of each read has
+        the callers every pass reached, and its earlier runs found nothing it does not."""
         scope = self.module_scope(entry)
         self.passes = 1
         for block in main_blocks(entry.tree):
