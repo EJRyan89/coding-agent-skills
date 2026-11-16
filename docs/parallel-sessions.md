@@ -333,15 +333,25 @@ The configuration every worktree shares is the check's too, since a program may 
 own configuration file with `git config --local`, without following an include, and the guard's opt-in as the guard
 reads it. Each tick but a `--dry-run` one leaves a record of it in the hub's git directory, `hub-state.json` beside
 the configuration file: whether the guard was on, whether any tick saw it on, and a SHA-256 digest of each setting's
-values, never a value. The next tick names the guard turned off since then, and each setting added, changed, or removed
-by its name, leaving out a branch's `branch.<name>.<key>` settings, which git writes in the shared file at a worktree
-branch's first `push -u` and drops with the branch, and the opt-in's own, which the guard's line covers; a first tick,
-with no record, names neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on.
-The record is the clone's only record of opting in, since a lapse removes the setting itself, so a clone no tick
-recorded is never named. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it. The
-record is a detector's memory, not a control: a session that can write the configuration can rewrite the record too.
-The check does not read a file the configuration includes, the hub's `config.worktree`, or the global or system
-configuration.
+values, never a value, keyed by the setting's name in a form that holds a name in any encoding. The next tick names the
+guard turned off since then, and each setting added, changed, or removed by its name, leaving out the opt-in's own,
+which the guard's line covers, and the `branch.<name>.<key>` settings of every branch but `main`, which git writes in
+the shared file at a worktree branch's first `push -u` and drops with the branch; a first tick, with no record, names
+neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on. The record is the
+clone's only record of opting in, since a lapse removes the setting itself, so a clone no tick recorded is never named.
+A record that cannot be read is named, and the tick writes its new record with the clone opted in, since whether the
+clone was is unknown. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
+
+The configuration's limits:
+
+- The record is a detector's memory, not a control: a session that can write the configuration can rewrite the record
+  too.
+- A file the configuration includes, the hub's `config.worktree`, and the global and system configuration are not
+  read.
+- A branch's own settings, other than `main`'s, its `remote`, `pushRemote`, and `merge` among them, are not read, so a
+  worktree branch whose pushes were sent elsewhere is not named.
+- A setting rewritten from a name alone to the name with an empty value is not named: `git config --list` lists the
+  two alike, though git reads the first as true and the second as false.
 
 #### What it understands
 

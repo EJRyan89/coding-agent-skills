@@ -9,9 +9,11 @@ import tempfile
 import unittest
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hub_state
 import json_writer
 from git_client import GitClient, GitError, GitResult
 from hub_state import (
@@ -175,7 +177,7 @@ class ConfigurationCase(HubTestCase):
         self.git(self.hub, "config", "--local", *arguments)
 
     def tick(self, *, keep: bool = True) -> list[Difference]:
-        return changes(GitClient(), self.hub, keep=keep)
+        return changes(GitClient(), self.hub, "main", keep=keep)
 
 
 class ConfigurationTests(ConfigurationCase):
@@ -261,6 +263,56 @@ class ConfigurationTests(ConfigurationCase):
             "a branch setting with no branch named is the repository's own",
         )
 
+    def test_the_hub_s_own_branch_settings_are_watched_and_a_worktree_branch_s_are_not(self) -> None:
+        self.tick()
+        self.configure("branch.main.pushRemote", "elsewhere")
+        self.configure("branch.fix/main.remote", "origin")
+        self.assertEqual(
+            [
+                Difference(
+                    "configured", "its git configuration changed since the previous tick: branch.main.pushremote added"
+                )
+            ],
+            self.tick(),
+        )
+
+    def append_configuration(self, text: bytes) -> None:
+        with (self.hub / ".git" / "config").open("ab") as configuration:
+            configuration.write(text)
+
+    def test_a_value_that_is_not_utf_8_is_digested_as_its_bytes(self) -> None:
+        self.tick()
+        self.append_configuration(b"[user]\n\tname = Jos\xe9\n")
+        self.assertEqual(
+            [Difference("configured", "its git configuration changed since the previous tick: user.name added")],
+            self.tick(),
+        )
+        self.assertEqual([], self.tick(), "the record was written, so the change is named once")
+
+    def test_a_name_that_is_not_utf_8_is_recorded_and_named_by_its_bytes(self) -> None:
+        self.tick()
+        self.append_configuration(b'[remote "caf\xe9"]\n\turl = elsewhere\n[remote "caf\\\\xe9"]\n\turl = other\n')
+        self.assertEqual(
+            [
+                Difference(
+                    "configured",
+                    "its git configuration changed since the previous tick: remote.caf\\\\xe9.url added, "
+                    "remote.caf\\xe9.url added",
+                )
+            ],
+            self.tick(),
+            "a byte and the text spelling it are told apart",
+        )
+        self.assertEqual([], self.tick(), "the record was written, so the change is named once")
+
+    def test_a_repository_git_cannot_find_raises_naming_the_folder(self) -> None:
+        outside = self.root / "not a repository"
+        outside.mkdir()
+        for check in (lambda: changes(GitClient(), outside, "main", keep=True), lambda: lapse(GitClient(), outside)):
+            with self.subTest(check=check), self.assertRaises(GitError) as raised:
+                check()
+            self.assertEqual(f"{outside.as_posix()} is not in a git repository", str(raised.exception))
+
     def test_without_keep_the_record_is_compared_and_left(self) -> None:
         self.tick()
         recorded = self.record.read_bytes()
@@ -293,6 +345,20 @@ class ConfigurationTests(ConfigurationCase):
         found = self.tick()
         self.assertEqual(["record", "record"], [difference.kind for difference in found])
         self.assertIn("could not be written: ", found[1].text)
+
+    def test_a_record_the_writer_refuses_is_named(self) -> None:
+        with mock.patch.object(hub_state, "write_record", side_effect=ValueError("refused at the write")):
+            found = self.tick()
+        self.assertEqual(
+            [
+                Difference(
+                    "record",
+                    f"its record of the previous tick, {self.record.as_posix()}, could not be written: refused at the "
+                    "write",
+                )
+            ],
+            found,
+        )
 
     def test_a_record_is_read_only_as_the_tick_writes_it(self) -> None:
         digest = "0" * 64
@@ -340,3 +406,11 @@ class LapseTests(ConfigurationCase):
     def test_a_record_that_cannot_be_read_is_named(self) -> None:
         self.record.write_text("not json", encoding="utf-8")
         self.assertEqual("record", getattr(self.lapsed(), "kind", None))
+
+    def test_a_record_that_cannot_be_read_keeps_a_clone_that_opted_in_named(self) -> None:
+        self.configure(GUARD_SETTING, "true")
+        self.tick()
+        self.record.write_text("not json", encoding="utf-8")
+        self.configure(GUARD_SETTING, "false")
+        self.assertEqual(["record"], [difference.kind for difference in self.tick()])
+        self.assertEqual("lapsed", getattr(self.lapsed(), "kind", None), "an unknown opting in is read as one")

@@ -13,7 +13,7 @@ Run it from the hub on main. One tick:
   with, so a write to the hub the hub guard did not see is named at the next tick; and its git configuration, which
   every worktree shares, against the record the previous tick left in the hub's git directory (hub_state.py's
   RECORD_NAME), naming the hub guard turned off since then and each setting added, changed, or removed, but a
-  branch's; the tick then replaces the record, and a first tick, with none, names neither;
+  branch's other than main's; the tick then replaces the record, and a first tick, with none, names neither;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
   required check Validation on that head, and the files each admitted one changes: when gh's listing, which holds
   a pull request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
@@ -386,18 +386,21 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
 def hub_differences(git: GitClient, place: Place, dry_run: bool) -> list[str]:
     """A HUB_DIFFERS line for each way the hub differs from a clean checkout of main at origin's main, but behind it,
     which the HUB line covers, then for each way its git configuration changed since the previous tick, whose record
-    the tick then replaces unless `dry_run`; one naming git's reason where the hub could not be read."""
+    the tick then replaces unless `dry_run`; one naming git's reason where the hub could not be read, once when both
+    checks fail for the same reason."""
     where = f'HUB_DIFFERS "{place.hub.as_posix()}"'
     lines: list[str] = []
     checks: tuple[Callable[[], list[Difference]], ...] = (
         lambda: differences(git, place.hub, BASE, REMOTE),
-        lambda: changes(git, place.hub, keep=not dry_run),
+        lambda: changes(git, place.hub, BASE, keep=not dry_run),
     )
     for check in checks:
         try:
             found = check()
         except GitError as exc:
-            lines.append(f"{where} could not be read: {flat_text(str(exc))}")
+            # A hub git cannot read fails both checks for the same reason, which is named once.
+            unread = f"{where} could not be read: {flat_text(str(exc))}"
+            lines += [] if unread in lines else [unread]
             continue
         lines += [f"{where} {difference.text}" for difference in found if difference.kind != "behind"]
     return lines

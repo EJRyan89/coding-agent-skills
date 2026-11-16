@@ -867,6 +867,22 @@ class HubTest(FixtureTestCase):
             self.differing(lines),
         )
 
+    def test_a_hub_neither_check_can_read_for_one_reason_is_named_once(self) -> None:
+        names = GitClient.names
+
+        def refuse_both(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
+            if arguments[0] in {"status", "config"}:
+                raise GitError("fatal: index file corrupt", returncode=128)
+            return names(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "names", refuse_both):
+            status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [f'HUB_DIFFERS "{self.hub.as_posix()}" could not be read: fatal: index file corrupt'],
+            self.differing(lines),
+        )
+
     def test_a_checkout_whose_origin_is_not_on_github_fails(self) -> None:
         git("remote", "set-url", "origin", self.origin.as_posix(), directory=self.hub)
         status, lines = self.tick(StubGh())

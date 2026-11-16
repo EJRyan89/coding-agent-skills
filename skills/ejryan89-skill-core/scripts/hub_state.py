@@ -21,11 +21,15 @@ the hub guard off by setting `coding-agent-skills.hubGuard` to anything but true
 check reads that file's own settings with `git config --local`, not following an include, and keeps, between the
 shepherd's ticks, a record of them in the hub's git directory, RECORD_NAME beside its configuration file: whether the
 guard was on, whether any tick saw it on (the clone's opting in), and a SHA-256 digest of each setting's values, never
-the values themselves. `changes` compares the hub with the record, and with `keep` writes the record anew; a first
-tick, with no record, reports nothing for it. `lapse` names a hub whose guard is off while the record says the clone
-opted in, and reads nothing else, so a clone no tick recorded is never named. A `branch.<name>.<key>` setting is left
-out of the digests, since git writes one in the shared file for a worktree's branch at its first `push -u` and drops
-it with the branch, and so is the guard's own, which its own line covers. Their kinds:
+the values themselves, keyed by the setting's name with a backslash doubled and each byte that is not UTF-8 written as
+`\\x<hex>`, so a name in any encoding has one key JSON can hold. `changes` compares the hub with the record, and with
+`keep` writes the record anew; a first tick, with no record, reports nothing for it. A record that cannot be read is
+named, and the one written in its place records the clone as opted in, since whether it was is unknown: a clone that
+never opted in is then named `lapsed` until the record is deleted. `lapse` names a hub whose guard is off while the
+record says the clone opted in, and reads nothing else, so a clone no tick recorded is never named. A
+`branch.<name>.<key>` setting of any branch but the hub's own is left out of the digests, since git writes one in the
+shared file for a worktree's branch at its first `push -u` and drops it with the branch, and so is the guard's own,
+which its own line covers. Their kinds:
 
     unguarded  its coding-agent-skills.hubGuard was true at the previous tick and is no longer
     configured its git configuration changed since the previous tick: <key> added|changed|removed, ...
@@ -33,10 +37,18 @@ it with the branch, and so is the guard's own, which its own line covers. Their 
     record     its record of the previous tick, <path>, could not be read|written: <reason>
 
 Only `changes` with `keep`, which the shepherd's tick calls, writes the record; `lapse`, which repo-cleanup calls,
-only reads it. The record is a detector's memory, not a control: whatever can write the configuration can delete or
-rewrite the record beside it. A setting in a file the configuration includes, the worktree-specific `config.worktree`, or the global or system file
-is not read. Deleting the record forgets the clone's opting in, which is how a clone that turned the guard off on
-purpose stops `lapsed`.
+only reads it. Its limits:
+
+- The record is a detector's memory, not a control: whatever can write the configuration can delete or rewrite the
+  record beside it.
+- A setting in a file the configuration includes, the worktree-specific `config.worktree`, or the global or system
+  file is not read.
+- A branch's own settings, other than the hub's own branch's, its `remote`, `pushRemote`, and `merge` among them, are
+  not read, so a worktree branch whose pushes were sent elsewhere is not named.
+- A setting rewritten from a name alone to the name with an empty value is not named: `git config --list` lists the
+  two alike, though git reads the first as true and the second as false.
+- Deleting the record forgets the clone's opting in, which is how a clone that turned the guard off on purpose stops
+  `lapsed`.
 """
 
 from __future__ import annotations
@@ -173,26 +185,38 @@ def guarded(git: GitClient, checkout: Path) -> bool:
     return result.returncode == 0 and output_line(result.stdout) == "true"
 
 
-def is_watched(key: str) -> bool:
-    """Whether a setting, named as git lists it, is one whose change the check reports: any but the guard's own and a
-    branch's."""
+def is_watched(key: str, branch: str) -> bool:
+    """Whether a setting, named as git lists it, is one whose change the check reports: any but the guard's own and
+    the settings of a branch other than `branch`, the hub's own."""
     section, _, rest = key.partition(".")
     if section.lower() == BRANCH_SECTION and "." in rest:
-        return False
+        return rest.rpartition(".")[0] == branch
     return key.lower() != GUARD_SETTING.lower()
 
 
-def configuration(git: GitClient, checkout: Path) -> Configuration:
+def raw_bytes(text: str) -> bytes:
+    """The bytes git printed for `text`, which GitClient decodes with surrogateescape, so a byte that is not UTF-8
+    comes back as the byte it was."""
+    return text.encode("utf-8", "surrogateescape")
+
+
+def setting_key(key: str) -> str:
+    """The setting's name in a form JSON holds and a line prints, one for each name: a backslash doubled, then each
+    byte that is not UTF-8 written as `\\x<hex>`."""
+    return raw_bytes(key.replace("\\", "\\\\")).decode("utf-8", "backslashreplace")
+
+
+def configuration(git: GitClient, checkout: Path, branch: str) -> Configuration:
     """The guard's state and a digest of each watched setting the configuration file of `checkout`'s repository
-    holds; a configuration git cannot read raises GitError with git's reason."""
+    holds, `branch` being the hub's own; a configuration git cannot read raises GitError with git's reason."""
     values: dict[str, list[str]] = {}
     for entry in git.names(["config", "--local", "--list"], directory=checkout):
         # With -z git ends a setting's name with a newline, which no name holds, and prints no newline for a name
         # given without a value.
         key, _, value = entry.partition("\n")
-        if is_watched(key):
-            values.setdefault(key, []).append(value)
-    settings = {key: hashlib.sha256("\0".join(listed).encode("utf-8")).hexdigest() for key, listed in values.items()}
+        if is_watched(key, branch):
+            values.setdefault(setting_key(key), []).append(value)
+    settings = {key: hashlib.sha256(raw_bytes("\0".join(listed))).hexdigest() for key, listed in values.items()}
     return Configuration(guarded(git, checkout), settings)
 
 
@@ -272,21 +296,25 @@ def configuration_differences(previous: Configuration, current: Configuration) -
     return found
 
 
-def changes(git: GitClient, checkout: Path, *, keep: bool) -> list[Difference]:
-    """How the hub's configuration changed since the record of the previous tick, nothing where there is none; with
-    `keep`, the record is then replaced by what this tick read. A configuration git cannot read raises GitError."""
+def changes(git: GitClient, checkout: Path, branch: str, *, keep: bool) -> list[Difference]:
+    """How the hub's configuration changed since the record of the previous tick, nothing where there is none, `branch`
+    being the hub's own; with `keep`, the record is then replaced by what this tick read, recording the clone as opted
+    in where the previous record could not be read. A configuration git cannot read raises GitError."""
     path = record_path(git, checkout)
-    current = configuration(git, checkout)
+    current = configuration(git, checkout, branch)
     found: list[Difference] = []
+    unread = False
     try:
         previous = read_record(path)
     except RecordError as exc:
         found.append(record_problem(path, "read", str(exc)))
-        previous = None
+        previous, unread = None, True
     if previous is not None:
         found.extend(configuration_differences(previous.configuration, current))
     if keep:
-        opted_in = current.guarded or (previous is not None and previous.opted_in)
+        # Whether a record that cannot be read said the clone opted in is unknown, so it is taken to have said so:
+        # lapse then names a guard that is off rather than forget an opting in.
+        opted_in = current.guarded or unread or (previous is not None and previous.opted_in)
         try:
             write_record(path, Record(current, opted_in))
         except (OSError, ValueError) as exc:

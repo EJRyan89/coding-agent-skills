@@ -100,7 +100,7 @@ class MainStateTests(SweepFixture):
         self.make_clone("never recorded repo")
         root = self.repos.as_posix()
         git(guarded, "config", "coding-agent-skills.hubGuard", "true")
-        hub_state.changes(GitClient(), guarded, keep=True)
+        hub_state.changes(GitClient(), guarded, "main", keep=True)
         self.sweep()
 
         code, lines = self.report()
