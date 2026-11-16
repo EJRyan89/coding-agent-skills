@@ -179,7 +179,10 @@ the setting is not tracked, someone who clones the repository and works in a sin
 While a hub is guarded the guard refuses every `git config` that may write a setting, one a wrapper whose words
 settle its program or a literal shell script runs included, so the guard is turned off from a terminal. A program the guard does not read can still write the
 configuration file by its own words, as `tee -a <hub>/.git/config` does; the guard is no sandbox, and the check
-names what such a write leaves in the hub's work tree.
+names what such a write leaves in the hub's work tree and its configuration. A `shepherd-pull-requests` tick that sees
+the guard on records the clone's opting in beside the configuration, in the hub's git directory, and `repo-cleanup`
+names the guard off for as long as that record stands, so a clone that turns the guard off on purpose also deletes
+`.git/hub-state.json` in the hub.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
 in: when git reports the setting unset or false, it exits in silence, and when git cannot read it at all, as with a
@@ -296,7 +299,9 @@ With the guard enabled:
 - **The check.** What the guard does not read, the check finds afterwards: ejryan89-skill-core's `hub_state.py`
   names each way the hub differs from a clean checkout of `main` at `origin/main`, and the `shepherd-pull-requests`
   tick prints each as a `HUB_DIFFERS` line, but behind, which its `HUB` line covers, and `repo-cleanup`'s report each
-  as a `MAIN_DIFFERS` line, from the hub or from a worktree alike.
+  as a `MAIN_DIFFERS` line, from the hub or from a worktree alike. The tick also compares the hub's configuration with
+  the record the previous tick left, as the contract below says, and prints the guard turned off and each setting
+  changed since then as `HUB_DIFFERS` lines too.
 
 ### Other runtimes
 
@@ -323,6 +328,30 @@ the guard does not read, which it allows. A write such a program makes in the hu
 `hub_state.py`, which the `shepherd-pull-requests` tick and `repo-cleanup` run, names each way the hub differs from a
 clean checkout of `main` at `origin/main`, a change or an untracked file, another branch or a detached `HEAD`, or a
 commit `origin/main` lacks.
+
+The configuration every worktree shares is the check's too, since a program may write it. The check reads the hub's
+own configuration file with `git config --local`, without following an include, and the guard's opt-in as the guard
+reads it. Each tick but a `--dry-run` one leaves a record of it in the hub's git directory, `hub-state.json` beside
+the configuration file: whether the guard was on, whether any tick saw it on, and a SHA-256 digest of each setting's
+values, never a value, keyed by the setting's name in a form that holds a name in any encoding. The next tick names the
+guard turned off since then, and each setting added, changed, or removed by its name, leaving out the opt-in's own,
+which the guard's line covers, and the `branch.<name>.<key>` settings of every branch but `main`, which git writes in
+the shared file at a worktree branch's first `push -u` and drops with the branch; a first tick, with no record, names
+neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on. The record keeps
+whether any tick saw the guard on, since an unset setting cannot tell a lapse from never opting in, so a clone no
+tick recorded is never named.
+A record that cannot be read is named, and the tick writes its new record with the clone opted in, since whether the
+clone was is unknown, so `repo-cleanup` names `lapsed` for a clone that never opted in until `.git/hub-state.json`
+is deleted. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
+
+The configuration's limits:
+
+- The record is a detector's memory, not a control: a session that can write the configuration can rewrite the record
+  too.
+- A file the configuration includes, the hub's `config.worktree`, and the global and system configuration are not
+  read.
+- A branch's own settings, other than `main`'s, its `remote`, `pushRemote`, and `merge` among them, are not read, so a
+  worktree branch whose pushes were sent elsewhere is not named.
 
 #### What it understands
 

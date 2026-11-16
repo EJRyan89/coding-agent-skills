@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
 import check_provenance
 import frontmatter
 import guidance_record
+import hub_state
 import skill_menu
 import skill_roots
 from dotnet_solution import FileRefused, read_listed_projects
@@ -496,6 +497,13 @@ READERS = [
         ),
         _guidance,
         (guidance_record.GuidanceRecordError,),
+    ),
+    Reader(
+        "hub_state.read_record",
+        "json",
+        _json({"version": 1, "guarded": True, "opted_in": True, "settings": {"alias.st": "0" * 64}}),
+        hub_state.read_record,
+        (hub_state.RecordError,),
     ),
     Reader(
         "review_analyzers.inventory:package.json",
