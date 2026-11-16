@@ -111,7 +111,9 @@ class Fence:
         without up to `indent` columns of the spaces and tabs that start it, which the fence's own indentation and the
         list items that hold it take, so an indented fence's here-document delimiter closes its body. A tab counts to
         the next multiple of four, and one that runs past `indent` gives the columns past it as spaces, as CommonMark
-        gives a partly consumed tab."""
+        gives a partly consumed tab. Inside a blockquote, a tab is counted from the end of the markers, not the line's
+        column, and a tab right after `>` is taken whole as the marker's space, where CommonMark takes one column of
+        it; no fence here sits in a blockquote."""
         line = self.text(line)
         width = 0
         for index, character in enumerate(line):

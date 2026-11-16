@@ -1984,7 +1984,9 @@ def bash_programs(text: str) -> list[tuple[int, list[str]]]:
     from 1, and its words from the program's name, each part only running settles as git_subcommands' UNREAD_PART:
     every simple command's, wherever Bash starts one, past its assignments, and the program each wrapper of
     command_wrappers' catalogue runs, and each the script eval, a shell's -c, or a trap's action runs, on the line of
-    the command that runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script."""
+    the command that runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script: an eval
+    script or trap action the grammar refuses, which Bash refuses only when it runs it, is refused as the script's own
+    text would be."""
     return [
         found
         for command in bash_syntax.simple_commands(text)

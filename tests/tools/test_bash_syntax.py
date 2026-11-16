@@ -875,6 +875,7 @@ def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(
         ("A=1\\\n : x\n", {"x": 1}),
         (">/dev/null\\\n : x\n", {"x": 1}),
         ("A=1 \\\n: x\n", {"x": 1}),
+        (">/dev/null \\\n: x\n", {"x": 1}),
         # A substitution in an unquoted body after a line its backslash continues, and in a body whose tabs `<<-`
         # strips, keeps its own line.
         ("cat <<EOF\na \\\nb $(: x)\nEOF\n: after\n", {"x": 3, "after": 5}),
