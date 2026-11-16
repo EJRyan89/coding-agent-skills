@@ -127,7 +127,7 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Test")
         self.repos.mkdir()
         self.write(self.config_file(), f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\r\n")
-        self.deploy_fails("--all", pattern="CRLF")
+        self.deploy_fails("--all", pattern="Config line 1 contains a carriage return")
 
     def test_duplicate_config_key_is_rejected(self) -> None:
         self.make_source_json()
