@@ -95,7 +95,11 @@ def find_psscriptanalyzer() -> str | None:
 
 
 def read_module_version(manifest: str) -> tuple[int, ...] | None:
-    """A PowerShell module's ModuleVersion, read from its manifest, which may be UTF-8 or UTF-16."""
+    """A PowerShell module's ModuleVersion, read from its manifest, which may be UTF-8 or UTF-16.
+
+    A stated limit: a `ModuleVersion` whose value sits on a line after its `=`, which PowerShell accepts and no
+    manifest the check reads writes, is not read, and is reported as a version it cannot tell.
+    """
     try:
         data = Path(manifest).read_bytes()
     except OSError:
