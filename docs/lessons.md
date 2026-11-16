@@ -672,7 +672,7 @@ removed fails validation until its pattern follows it.
   answer it gave
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
-  `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`
+  `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
   with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or

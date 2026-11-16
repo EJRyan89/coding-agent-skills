@@ -576,50 +576,6 @@ class SkillScriptsFixtures(unittest.TestCase):
         # A module that only hands a runner on starts a process all the same.
         self.assertTrue(CommandReader(ast.parse("import subprocess\nRUNNERS = [subprocess.run]\n")).starts_process())
 
-    def test_command_reader_finds_a_runner_behind_any_binding_of_a_name(self) -> None:
-        # The binding read first is a name that leads to no runner; the runner lies behind the other binding, which
-        # the walk still has to read.
-        script = (
-            "import subprocess\nimport threading\ndef rebound(flag):\n    other = len\n    start = subprocess.run\n"
-            "    if flag:\n        start = other\n    return threading.Thread(target=start)\n"
-        )
-        path = "skills/alpha/scripts/tool.py"
-        self.assertEqual(
-            [unreadable(path, 8, "the program `start` runs, which the module hands on as a value")],
-            CommandReader(ast.parse(script)).problems(path),
-        )
-
-    def test_command_reader_follows_each_name_of_a_rebound_loop_variable_once(self) -> None:
-        # A walk that kept a set of the names it had followed for each path followed `start` once per order the
-        # branches that rebind it from itself can run in: eight branches made hundreds of thousands of reads. Followed
-        # once per question, the reads grow with the bindings, and a runner bound before the loop is still found.
-        arms = "".join(f"        elif choice == {arm}:\n            start = start\n" for arm in range(8))
-        path = "skills/alpha/scripts/tool.py"
-        runner = skill_scripts.CommandReader._runner
-        for first, expected in (
-            ("len", []),
-            (
-                "subprocess.run",
-                [unreadable(path, 24, "the program `start` runs, which the module hands on as a value")],
-            ),
-        ):
-            script = (
-                "import subprocess\nimport threading\ndef looped(flag, choice):\n"
-                f"    start = {first}\n    while flag:\n        if not choice:\n            start = start\n{arms}"
-                "    return threading.Thread(target=start)\n"
-            )
-            reads = 0
-
-            def counted(reader: CommandReader, node: ast.expr) -> str:
-                nonlocal reads
-                reads += 1
-                if reads > 500:
-                    raise AssertionError("the command reader followed a name more than 500 times")
-                return runner(reader, node)
-
-            with self.subTest(first=first), mock.patch.object(skill_scripts.CommandReader, "_runner", counted):
-                self.assertEqual(expected, CommandReader(ast.parse(script)).problems(path))
-
     def test_command_policies_report_a_runner_taken_by_either_spelling_of_getattr(self) -> None:
         script = (
             "import builtins\n"
