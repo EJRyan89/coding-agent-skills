@@ -351,6 +351,8 @@ def test_a_substitution_in_arithmetic_quoted_or_not_runs(script: str) -> None:
         ('eval "$(printf x); git fetch"', {"fetch"}),
         ("eval \"echo '$(date)'; git fetch\"", {"fetch"}),
         ('bash -c "git push $(date)"', {"push"}),
+        ('bash -c "git $(date)"', {UNREAD_WORD}),
+        ('eval "git $(date)"', {UNREAD_WORD}),
         ("bash -c $'git push\\n'", set()),
         ('git "$(echo push)"', {UNREAD_WORD}),
         ("git $((1 + 1))", {UNREAD_WORD}),
@@ -530,6 +532,26 @@ def test_a_start_up_whose_script_no_reader_sees_gives_no_subcommand(words: list[
 def test_a_powershell_scripts_commands_give_the_git_subcommands_they_run(
     commands: list[list[str]], expected: set[str]
 ) -> None:
+    assert git_subcommands.powershell_git_subcommands(commands, no_powershell) == expected
+
+
+# A PowerShell command's word that is no literal is read as a Bash command's part only running settles is: a -c script
+# that is that word alone runs nothing this reads, and in eval's script it stands as one word.
+@pytest.mark.parametrize(
+    ("commands", "expected"),
+    [
+        ([["bash", "-c", UNREAD_WORD]], set()),
+        ([["sh", "-e", "-c", UNREAD_WORD, "git"]], set()),
+        ([["eval", UNREAD_WORD]], set()),
+        ([["eval", "git", "push", UNREAD_WORD]], {"push"}),
+        ([["eval", "git", UNREAD_WORD]], {UNREAD_WORD}),
+        ([["env", "bash", "-c", "git push"]], {"push"}),
+    ],
+)
+def test_a_powershell_word_that_is_no_literal_is_read_as_a_bash_word_only_running_settles(
+    commands: list[list[str]], expected: set[str]
+) -> None:
+    assert git_subcommands.bash_word(UNREAD_WORD) == git_subcommands.UNREAD_PART
     assert git_subcommands.powershell_git_subcommands(commands, no_powershell) == expected
 
 

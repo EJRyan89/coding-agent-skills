@@ -209,7 +209,13 @@ module-level assignment's target; validation fails on an allowance that sanction
 that `COMMAND_RUNNERS` in `tests/validation/skill_scripts.py` names, such as `run_bounded`'s command, is read at
 each caller instead.
 
-A command that runs another reads as both. In Bash, validation reads the program each command substitution, quoted
+A command that runs another reads as both. Validation reads Bash, a script, a fence, or the script a command hands a
+shell, through ejryan89-skill-core's `bash_syntax.py`, the repository's one Bash grammar, which Bash's own syntax
+check holds: a command wherever Bash starts one, a here-document's body as data, of which only the command
+substitutions of an unquoted one run, a comment to its line's end, and arithmetic as running no program. A file
+holding Bash the grammar refuses fails the policy, which names it, since Bash runs none of a script it refuses. A
+function the script defines runs no program of its name, unless Bash refuses its name as it runs the definition, as
+it refuses a quoted one. In Bash, validation reads the program each command substitution, quoted
 or not, runs, and the program a wrapper of `COMMAND_WRAPPERS` in ejryan89-skill-core's `command_wrappers.py` runs,
 such as `xargs`, `env`, `command`, `nohup`, `timeout`, `sudo`, and `setsid`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs, with `-c` read as the
 shell reads it, alone or in a bundle such as `-lc`, before or after the shell's other options; `command -v` only looks
@@ -239,8 +245,8 @@ listed by the same parser reading as this policy's. In Bash it is read through e
 `bash_syntax.py`, the repository's one Bash grammar, which Bash's own syntax check holds: wherever Bash starts a
 command, at a line's start, after an operator, in a group, a subshell, or a substitution, in each case item after its
 pattern, and in a function's body, and never in a comment or a here-document's body, of which only the command
-substitutions of an unquoted one run. A script the grammar refuses, or whose `eval` or `-c` script it refuses, fails,
-since Bash runs none of a script it refuses. A here-document a shell reads as its script, as in `bash <<EOF`,
+substitutions of an unquoted one run. A script the grammar refuses, or whose `eval` or `-c` script it refuses, a
+PowerShell script's Bash `-c` script included, fails, naming the script, since Bash runs none of a script it refuses. A here-document a shell reads as its script, as in `bash <<EOF`,
 `bash -s <<'EOF'`, or `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread; no script
 here writes one. Git, a shell, a wrapper, or `find` named by a path or with `.exe` is the program its file name
 names, matched as written in Bash, so `Git` is no git there, and in any case in PowerShell. One reader does it for validation and for audit-skill's

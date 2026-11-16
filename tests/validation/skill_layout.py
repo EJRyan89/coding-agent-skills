@@ -18,6 +18,7 @@ import json_reader
 import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
+from bash_syntax import BashSyntaxError
 from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
@@ -218,21 +219,37 @@ def own_needs(root: Path, name: str) -> set[str]:
     )
 
 
+class UnreadScript(ValueError):
+    """A skill's script whose git subcommands cannot be read, since Bash it is, or runs, is Bash the grammar refuses."""
+
+    def __init__(self, script: Path, reason: str) -> None:
+        super().__init__(reason)
+        self.script, self.reason = script, reason
+
+
 def script_git_subcommands(script: Path) -> set[str]:
     """The git subcommands one of a skill's scripts runs, by ejryan89-skill-core's git_subcommands, the reader
     audit-skill's runtime-support derivation shares: a Bash script's, a PowerShell script's as powershell_readings
     lists its commands, read once for each text in a validation run as powershell_script_commands holds it, and a
-    Python script's git calls; any other file runs none this reads."""
+    Python script's git calls; any other file runs none this reads. Raises UnreadScript, naming the script, for a
+    Bash script the grammar refuses, or one the script eval, a shell's -c, or a PowerShell script's Bash shell runs,
+    as audit-skill's reader fails it."""
     import runtime_support
 
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
         # Read as bytes, so a lone CR stays inside its line as Bash and audit-skill read it, never turned into a LF.
         text = script.read_bytes().decode("utf-8-sig")
-        return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
+        try:
+            return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
+        except BashSyntaxError as exc:
+            raise UnreadScript(script, f"not Bash the grammar reads ({exc})") from exc
     if suffix == ".ps1":
         commands = powershell_script_commands(script.read_text(encoding="utf-8-sig"))
-        return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)
+        try:
+            return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)
+        except BashSyntaxError as exc:
+            raise UnreadScript(script, f"a Bash script it runs is not Bash the grammar reads ({exc})") from exc
     if suffix == ".py":
         return runtime_support.python_git_subcommands(script.read_text(encoding="utf-8"))
     return set()
@@ -283,7 +300,12 @@ def runtime_support_problems(root: Path) -> list[str]:
                 if support.level != runtime_support.NONE
             ]
             continue
-        needs = derived_needs(root, metadata.stem)
+        try:
+            needs = derived_needs(root, metadata.stem)
+        except UnreadScript as exc:
+            script = exc.script.relative_to(root).as_posix()
+            problems.append(f"{name}: cannot read {script}: {exc.reason}; see {METADATA_DOC}")
+            continue
         for runtime, support in declared.items():
             lacking = runtime_support.lacking(runtime, needs)
             if not lacking and support.level != runtime_support.FULL:

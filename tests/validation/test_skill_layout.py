@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import file_presence
 import runtime_support
-from bash_syntax import BashSyntaxError
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
+    METADATA_DOC,
     REPOSITORY_SKILL_SHIMS,
     ExecutableFence,
     capability_guide_problems,
@@ -843,22 +843,31 @@ class SkillLayoutFixtures(unittest.TestCase):
                 write_fixture_tree(root, files)
                 self.assertEqual([unmeasured], capability_guide_problems(root))
 
-    def test_runtime_support_policy_fails_on_a_bash_script_the_grammar_refuses(self) -> None:
+    def test_runtime_support_policy_fails_on_a_bash_script_the_grammar_refuses_naming_the_script(self) -> None:
         # Bash runs none of a script it refuses, so the git commands it would run cannot be read, and reading none
-        # would pass a skill whose script reaches a remote.
+        # would pass a skill whose script reaches a remote: in a Bash script, and in the Bash a PowerShell script's
+        # shell runs.
         full = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            write_fixture_tree(
-                root,
-                {
-                    "deploy-meta/broken.json": json.dumps({"runtime_support": full}),
-                    "skills/broken/SKILL.md": "---\nname: broken\ndescription: d\n---\n",
-                    "skills/broken/scripts/update.sh": "git fetch origin\nif true; then\n",
-                },
-            )
-            with pytest.raises(BashSyntaxError, match=r"^expected `fi`$"):
-                runtime_support_problems(root)
+        for script, text, reason in (
+            ("update.sh", "git fetch origin\nif true; then\n", "not Bash the grammar reads (expected `fi`)"),
+            (
+                "update.ps1",
+                "bash -c 'git fetch origin; if true; then'\n",
+                "a Bash script it runs is not Bash the grammar reads (expected `fi`)",
+            ),
+        ):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "deploy-meta/broken.json": json.dumps({"runtime_support": full}),
+                        "skills/broken/SKILL.md": "---\nname: broken\ndescription: d\n---\n",
+                        f"skills/broken/scripts/{script}": text,
+                    },
+                )
+                problem = f"cannot read skills/broken/scripts/{script}: {reason}; see {METADATA_DOC}"
+                self.assertEqual([f"deploy-meta/broken.json: {problem}"], runtime_support_problems(root))
 
     def test_runtime_page_policy_holds_each_support_statement_to_the_metadata(self) -> None:
         partial = {"level": "partial", "needs": ["fail-closed-agent-hooks"], "reason": "No guard."}

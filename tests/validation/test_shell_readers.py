@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import functools
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,7 +18,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
+import bash_agreement
 import command_wrappers
 import git_subcommands
 import powershell_commands
@@ -25,6 +28,7 @@ import skill_scripts
 import toolchain
 from command_wrappers import UNREAD_PROGRAM
 from skill_scripts import CommandReader, PowerShellReading, shell_commands
+from validation_support import write_fixture_tree
 
 
 def shell_git_subcommands(script: str) -> set[str]:
@@ -215,6 +219,69 @@ def test_shell_command_extraction_reads_the_program_the_time_keyword_times(scrip
 )
 def test_the_git_subcommand_reader_reads_the_git_command_the_time_keyword_times(script: str) -> None:
     assert shell_git_subcommands(script) == {"push"}
+
+
+# The reader reads Bash through the one grammar, so each construct it once read its own way is read as Bash runs it.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        # A here-document's body is data, and only the substitutions of an unquoted one run.
+        ("cat <<EOF\nrg foo\nEOF", {"cat"}),
+        ("cat <<'EOF'\n$(rg foo)\nEOF", {"cat"}),
+        ("cat <<EOF\n$(rg foo)\nEOF", {"cat", "rg"}),
+        ("cat <<EOF\nit's\nEOF\nrg foo", {"cat", "rg"}),
+        # A backslash ending a comment continues nothing, so the next line runs.
+        ("# a comment \\\nrg foo", {"rg"}),
+        ("echo a # \\\\\nrg foo", {"echo", "rg"}),
+        # Arithmetic runs no program its words name.
+        ("echo $(((now - modified) / 86400))", {"echo"}),
+        # An assignment's value holding a substitution is one word, so the command after it is read.
+        ('A=$(dirname -- "$0") exec bash "$COPY"', {"dirname", "exec", "bash"}),
+        # A function's arguments run nothing, so a wrapper's name among them runs no program.
+        ("f() { :; }; f xargs rg foo", set()),
+    ],
+)
+def test_shell_command_extraction_reads_bash_as_the_grammar_reads_it(script: str, programs: set[str]) -> None:
+    bash_agreement.assert_reader_agrees([script])
+    assert shell_commands(script) == programs
+
+
+# Bash runs none of a script it refuses, so the reader gives UNREAD_BASH with the grammar's reason, for the script and
+# for one eval or a shell's -c runs, and the policy fails it naming the file it stands in.
+@pytest.mark.parametrize(
+    ("script", "reason"),
+    [
+        ("if true; then rg foo", "expected `fi`"),
+        ("echo 'open", "a single quote is not closed"),
+        ("eval 'rg \"'", "a double quote is not closed"),
+        ("bash -c 'case x in'", "a case pattern is not closed"),
+    ],
+)
+def test_shell_command_extraction_marks_bash_the_grammar_refuses(script: str, reason: str) -> None:
+    assert {f"{skill_scripts.UNREAD_BASH}{reason}"} <= shell_commands(script)
+
+
+def test_the_command_policy_fails_a_file_holding_bash_the_grammar_refuses_naming_it() -> None:
+    files = {
+        "deploy-meta/alpha.json": '{"tools": []}',
+        "skills/alpha/SKILL.md": "# alpha\n\n```bash\nif true; then echo a\n```\n",
+        "skills/alpha/scripts/run.sh": "echo 'open\n",
+        "skills/alpha/scripts/run.py": 'import subprocess\nsubprocess.run(["bash", "-c", "case x in"])\n',
+    }
+    reasons = {
+        "skills/alpha/SKILL.md": "expected `fi`",
+        "skills/alpha/scripts/run.py": "a case pattern is not closed",
+        "skills/alpha/scripts/run.sh": "a single quote is not closed",
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        problems = skill_scripts.skill_command_problems(root, set(), {"bash", "echo"})
+    assert problems == [
+        f"skill alpha: {path} runs Bash the grammar does not read ({reason}), so the programs it runs cannot be read; "
+        f"see {skill_scripts.COMMANDS_DOC}"
+        for path, reason in sorted(reasons.items())
+    ]
 
 
 def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:

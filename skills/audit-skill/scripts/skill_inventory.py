@@ -2854,8 +2854,9 @@ def script_git_subcommands(script: Path) -> set[str]:
     """The subcommand of each git command a Bash or PowerShell script runs, by ejryan89-skill-core's git_subcommands,
     the reader repository validation shares, or of each git call a Python script makes, by the shared derivation; any
     other script runs none this reads. A Python script that does not parse fails, as script_facts fails it, and so
-    does a Bash script the Bash grammar refuses, the script its eval or a shell's -c runs included, and a PowerShell
-    script, or a script a Bash script starts PowerShell on, that pwsh cannot read."""
+    does a Bash script the Bash grammar refuses, the script its eval or a shell's -c runs included, a PowerShell
+    script whose Bash shell runs such a script, and a PowerShell script, or a script a Bash script starts PowerShell
+    on, that pwsh cannot read; each failure names the script."""
     text = require_text(script)
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
@@ -2864,7 +2865,13 @@ def script_git_subcommands(script: Path) -> set[str]:
         except BashSyntaxError as exc:
             raise InputError(f"cannot read {posix(script)}: not Bash the grammar reads ({exc})") from exc
     if suffix == ".ps1":
-        return git_subcommands.powershell_git_subcommands(powershell_script_commands(text), powershell_script_commands)
+        commands = powershell_script_commands(text)
+        try:
+            return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)
+        except BashSyntaxError as exc:
+            raise InputError(
+                f"cannot read {posix(script)}: a Bash script it runs is not Bash the grammar reads ({exc})"
+            ) from exc
     if suffix != ".py":
         return set()
     try:

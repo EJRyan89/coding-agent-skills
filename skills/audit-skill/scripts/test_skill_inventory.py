@@ -2894,6 +2894,18 @@ class RuntimeSupportTests(SourceTreeTestCase):
                     rf"^cannot read {re.escape(script.as_posix())}: not Bash the grammar reads \(",
                 )
 
+    def test_a_powershell_script_whose_bash_shell_runs_bash_the_grammar_refuses_fails_naming_it(self) -> None:
+        # The -c script a PowerShell script's Bash shell runs is read as Bash, so one the grammar refuses fails the
+        # derivation as a Bash script does, naming the PowerShell script it stands in.
+        skill = self.skill("Body.\n", self.full())
+        script = write(skill.parent / "scripts" / "update.ps1", "bash -c 'git fetch; if true; then'\n")
+        with self.assertRaises(skill_inventory.InputError) as raised:
+            skill_inventory.own_needs(skill.parent)
+        self.assertEqual(
+            f"cannot read {script.as_posix()}: a Bash script it runs is not Bash the grammar reads (expected `fi`)",
+            str(raised.exception),
+        )
+
     def test_a_partial_declaration_naming_the_lack_is_not_overclaimed(self) -> None:
         partial = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}
         support = {"claude-code": "full", "codex": partial, "copilot-cli": "full"}
