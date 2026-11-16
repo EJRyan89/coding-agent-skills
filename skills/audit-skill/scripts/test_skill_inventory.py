@@ -4144,18 +4144,20 @@ def test_another_shell_s_fence_runs_the_program_each_line_s_first_word_names(tmp
         "```cmd\n"
         '> find /i "x" notes.txt\n'  # 5: after a `> ` prompt
         "echo cat\n"
+        "C:\\tools\\cat.exe x\n"  # 7: by its file name, without .exe
         "```\n"
         "```powershell\n"
-        "Cat notes.txt | Select-String x\n"  # 9: PowerShell finds a program in any case
+        "Cat notes.txt | Select-String x\n"  # 10: PowerShell finds a program in any case
         "Get-Content x\n"
+        "cat.exe x\n"  # 12
         "```\n"
         "```console\n"
-        "$ ls -la\n"  # 13: after a `$ ` prompt
+        "$ ls -la\n"  # 15: after a `$ ` prompt
         "total 0\n"
         "```\n",
     )
     lines = skill_inventory.scan([skill])
-    assert cued_lines(lines, "shell-file-command") == [2, 5, 9, 13]
+    assert cued_lines(lines, "shell-file-command") == [2, 5, 7, 10, 12, 15]
     assert not [line for line in lines if line.startswith("BASH_UNREADABLE ")]
 
 
@@ -4314,3 +4316,14 @@ def test_a_partly_consumed_tab_keeps_its_columns_so_an_unstripped_delimiter_leav
         f"BASH_UNREADABLE {skill.as_posix()} 3 a here-document is still open where the fence ends"
     ]
     assert cued_lines(lines, "shell-file-command") == []
+
+
+def test_a_script_eval_or_a_shell_runs_that_bash_refuses_names_its_fence_unread(tmp_path: Path) -> None:
+    # The script eval or a shell's -c runs is Bash too, so one the grammar refuses leaves the fence unread.
+    for command in ("eval 'if true; then'", "bash -c 'if true; then'"):
+        skill = write(tmp_path / "SKILL.md", f"```bash\ncat x\n{command}\n```\n")
+        lines = skill_inventory.scan([skill])
+        assert [line for line in lines if line.startswith("BASH_UNREADABLE ")] == [
+            f"BASH_UNREADABLE {skill.as_posix()} 1 expected `fi`"
+        ], command
+        assert cued_lines(lines, "shell-file-command") == [], command
