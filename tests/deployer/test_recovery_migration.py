@@ -3174,3 +3174,20 @@ class RunIdTests(RecoveryTestCase):
         self.assertEqual([], pending)
         self.assertIn("It holds no journal, so the next deployment deletes it.", result.output)
         self.assertIn(f"Run ID: {RUN_START}-0b0b", result.output)
+
+    def test_a_folder_the_draw_cannot_stat_fails_the_run_before_it_writes_anything(self) -> None:
+        self.deployed(("alpha", "Alpha"))
+        unreadable = self.skills_dir / ".backups" / f"{RUN_START}-5d3d"
+        real = file_presence.is_occupied
+
+        def is_occupied(path: Path) -> bool:
+            if path == unreadable:
+                raise denied(path)
+            return real(path)
+
+        with mock.patch.object(file_presence, "is_occupied", side_effect=is_occupied), drawn_run_tokens("5d3d"):
+            # deploy_fails holds the home unchanged.
+            result = self.deploy_fails("--all", pattern="Access is denied")
+        self.assertIn(forward(unreadable), result.output)
+        # The draw fails the run, before it renders, rather than the check of its backup folder before the first write.
+        self.assertNotIn("Rendered and validated.", result.output)
