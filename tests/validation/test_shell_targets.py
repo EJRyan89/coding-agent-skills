@@ -386,7 +386,7 @@ class ShellTargetsFixtures(unittest.TestCase):
                 self.assertEqual(quoted, "<a b>" in result.stdout.decode())
 
     def test_a_bash_token_validation_cannot_place_or_bash_it_cannot_read_fails_closed(self) -> None:
-        # A comment holds no token; where the grammar keeps no text of the token's own, validation cannot say
+        # A token in a comment is not read; where the grammar keeps no text of the token's own, validation cannot say
         # whether Bash quotes it, so it names the token rather than passing it.
         self.assertEqual([], shell_targets._bash_tokens("echo x  # {{X}}\n# {{Y}}"))
         for form in ("a=({{X}})", "echo $(( {{X}} ))", "echo $'\\n{{X}}'", 'echo ${Y:-"{{X}}"}', "echo $Y{{X}}"):

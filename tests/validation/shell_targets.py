@@ -15,6 +15,7 @@ from pathlib import Path
 
 import file_presence
 import frontmatter
+import whole_number
 from bash_syntax import BashSyntaxError, Word, every_command, expanded_words, here_documents, parse
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
@@ -149,7 +150,7 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
                     placed[index] = (rank, verdict)
         for document in here_documents(command):
             for marker in TOKEN_MARKER.finditer(document.body):
-                placed.setdefault(int(marker.group(1)), (2, True))
+                placed.setdefault(_marker_place(marker), (2, True))
     tree = parse(marked)
     found: list[tuple[int, str, bool | None]] = []
     for index, token in enumerate(TEMPLATE_TOKEN.finditer(text)):
@@ -161,6 +162,11 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
             quoted = None
         found.append((text.count("\n", 0, token.start()), token.group(1), quoted))
     return found
+
+
+def _marker_place(marker: re.Match[str]) -> int:
+    """The place among the text's tokens a TOKEN_MARKER names."""
+    return whole_number.read(marker.group(1), BashSyntaxError("a token marker names no place"))
 
 
 def _word_markers(word: Word) -> Iterator[tuple[int, int, bool | None]]:
@@ -175,10 +181,10 @@ def _word_markers(word: Word) -> Iterator[tuple[int, int, bool | None]]:
             continue
         runs.append([])
         quoted = True if part.quoted else None
-        yield from ((int(marker.group(1)), 1, quoted) for marker in TOKEN_MARKER.finditer(part.text))
+        yield from ((_marker_place(marker), 1, quoted) for marker in TOKEN_MARKER.finditer(part.text))
     for run in runs:
         for marker in TOKEN_MARKER.finditer("".join(character for character, _ in run)):
-            yield int(marker.group(1)), 0, all(quoted for _, quoted in run[marker.start() : marker.end()])
+            yield _marker_place(marker), 0, all(quoted for _, quoted in run[marker.start() : marker.end()])
 
 
 def _powershell_tokens(text: str) -> list[tuple[int, str, bool | None]]:
