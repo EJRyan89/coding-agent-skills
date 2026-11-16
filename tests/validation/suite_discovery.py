@@ -594,9 +594,7 @@ class _ReaderWalk:
 
     def _table(self, functions: FunctionTable) -> FunctionTable:
         """The one table kept for these definitions' content."""
-        content = tuple(
-            sorted((name, tuple(tuple(command) for command in body)) for name, body in functions.items())
-        )
+        content = tuple(sorted((name, tuple(tuple(command) for command in body)) for name, body in functions.items()))
         return self.tables.setdefault(content, functions)
 
     def reader(self, words: list[str], functions: FunctionTable) -> str:

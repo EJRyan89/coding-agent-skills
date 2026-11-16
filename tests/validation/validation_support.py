@@ -1057,9 +1057,12 @@ def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _Mod
     a for loop's iterable and a with item's expression are read as any other statement's part, so the binding they
     make reaches a read in them."""
     value = _assigned_value(binding, shape)
-    if value is not None and _within(use, value, shape):
-        if not any(isinstance(statement, LOOPS) for statement in shape.statements(value)):
-            return False
+    if (
+        value is not None
+        and _within(use, value, shape)
+        and not any(isinstance(statement, LOOPS) for statement in shape.statements(value))
+    ):
+        return False
     # Every binding's value and every read lie in a statement, and every statement in a list of its parent's.
     place = shape.places[id(shape.statements(binding)[0])]
     holder = next(

@@ -45,6 +45,20 @@ def test_an_entry_point_whose_table_names_exactly_its_codes_passes() -> None:
     assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}")}) == []
 
 
+def test_a_local_that_rebinds_itself_from_itself_is_read_once() -> None:
+    # The value reads its own name, so it leads back to itself: a reader with no set of the values it had read
+    # followed it until Python's recursion limit. Read once, it names 0 and 3.
+    body = (
+        "def main(flag) -> int:\n    argparse.ArgumentParser().parse_args()\n    code = 0\n"
+        "    code = code if flag else 3\n    return code\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}  3  a third\n", body)}) == []
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)}) == [
+        'tools/tool.py can exit 3, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
+    ]
+
+
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:
     found = problems({"tools/tool.py": script("A tool.\n"), "tools/library.py": '"""A library."""\nVALUE = 1\n'})
     assert len(found) == 1

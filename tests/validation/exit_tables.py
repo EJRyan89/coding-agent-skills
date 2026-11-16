@@ -429,6 +429,8 @@ class CodeReader:
         self.modules: dict[Path, Module] = {}
         self.reading = Reading()
         self.returned: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
+        # Each value a local name is bound to that the reader has read, by the same key: see assigned.
+        self.assigned_read: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
         self.reached: set[int] = set()
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
@@ -598,15 +600,22 @@ class CodeReader:
         return self.code_of(scope.module, node)
 
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
-        """Add the codes each value the function binds to a local name can be."""
+        """Add the codes each value the function binds to a local name can be.
+
+        Each value is read once for each element and each set of arguments the scope is given: a value that reads its
+        own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not, since
+        the codes are their union."""
         assert scope.function is not None
+        given = tuple(sorted((name, id(value)) for name, (value, _) in scope.given))
         for value, position in _assigned(scope.function, node.id):
-            if position is None:
-                self.value(value, scope, element)
-            elif element is None:
-                self.value(value, scope, position)
-            else:
+            if position is not None and element is not None:
                 self._unread(node, scope)
+                continue
+            key = (id(value), element if position is None else position, given)
+            if key in self.assigned_read:
+                continue
+            self.assigned_read.add(key)
+            self.value(value, scope, element if position is None else position)
 
     def _unread(self, node: ast.expr | None, scope: Scope) -> None:
         expression = ast.unparse(node) if node is not None else "None"

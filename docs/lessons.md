@@ -669,18 +669,28 @@ removed fails validation until its pattern follows it.
 - **Use:** `tests.validation.validation_support:bound_values`, the binding reader, which follows each name once per
   call; `tests.validation.validation_support:resolved_references`, which reads each binding's value once per resolver
   and names nothing through the bindings that lead back to it, so a value read again by another route is the one
-  answer it gave
+  answer it gave; `tests.validation.validation_support:_spread_keywords` and
+  `tests.validation.python_checks:_number_types`, which read each dict() call or partial once per question, since a
+  union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
+  which reads each Bash function once per question for each table of functions a `-c` script extends, the table kept
+  once for each content
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
-  `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`
+  `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
+  `tests/validation/test_validation_support.py::test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_reads_a_partial_that_rebuilds_itself_once`,
+  `tests/validation/test_exit_tables.py::test_a_local_that_rebinds_itself_from_itself_is_read_once`,
+  `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
   with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or
-  `node = node.parent` in each branch of a tree walk. A hit in `validation_support.py`'s `_calls_of` is the accepted
+  `node = node.parent` in each branch of a tree walk; a walk that follows a value which reads its own name, as
+  `options = dict(**options)` in a loop, with no set at all; and a walk over a table of functions that keeps the
+  functions it is in per path, which grows factorially with functions that call each other. A hit in `validation_support.py`'s `_calls_of` is the accepted
   per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
-- **Examples:** #2859, #2871
+- **Examples:** #2859, #2871, #2877
 
 ### A path taken from input is judged inside its tree before anything opens it
 
