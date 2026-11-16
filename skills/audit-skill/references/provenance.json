@@ -32,6 +32,11 @@
         "decision": "A review skill that finds no code-review-reviewer type starts a general-purpose subagent instead, so a type no definition provides is that fallback on every run: the reviewer guard among the trust boundaries in this source's docs/design.md."
       }
     ],
+    "BASH_UNREADABLE": [
+      {
+        "decision": "A skill's Bash fence is run as Bash, and Bash runs the lines before a syntax error, so a fence the one Bash grammar refuses, as Bash would refuse it, is reported unread rather than read as running nothing: Commands skills may run in this source's docs/adding-a-skill.md."
+      }
+    ],
     "BODY_OVER_500_LINES": [
       {
         "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",

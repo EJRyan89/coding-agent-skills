@@ -517,8 +517,7 @@ removed fails validation until its pattern follows it.
   to refuse what it does not understand; being a guard against accidents rather than a trust boundary, it was later
   narrowed to read git's own words alone and allow the rest, with a check of the hub's state behind it.
 - **Use:** `tools.hub_guard:read_powershell`, `option_reader:option_refusal`, `bash_syntax:simple_commands`, every
-  command Bash may run for a script, read through the one Bash grammar, `git_subcommands:CommandStarts`, which says
-  where Bash starts a command on a line read alone, and
+  command Bash may run for a script, read through the one Bash grammar, each on the line it starts, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads, and
@@ -534,8 +533,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_shell_readers.py::test_shell_command_extraction_reads_bash_as_the_grammar_reads_it`, which
   holds validation's shell command reader to the grammar's reading of a here-document's body, a comment, arithmetic,
   and a function's arguments,
-  `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
-  which holds the git subcommand reader and validation's shell command reader to the same command starts,
+  `tests/tools/test_bash_syntax.py::test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it`,
+  which holds the grammar's line for each command to the line Bash's own trace gives it,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
   sample no suite names, so real output no reader is held to is found,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,

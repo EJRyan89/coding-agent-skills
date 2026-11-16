@@ -76,6 +76,10 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ("echo a |\n time -p -p git push", {"push"}),
         ("A=1 time -p -p git push", {"push"}),
         ("find . -exec time -p -p git push \\;", {"push"}),
+        # find runs its action's first word as the program, never a keyword or an assignment: `find . -exec A=1 git push
+        # \;` fails with A=1 not found.
+        ("find . -exec A=1 git push \\;", set()),
+        ("find . -exec if git push \\;", set()),
     ],
 )
 def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str, expected: set[str]) -> None:
@@ -446,17 +450,6 @@ def test_a_quoted_or_escaped_keyword_or_assignment_is_read_as_the_program(script
 )
 def test_the_git_command_a_wrapper_runs_is_read(script: str) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == {"push"}
-
-
-def test_a_command_s_words_are_read_beside_their_spellings() -> None:
-    assert git_subcommands.spelled_words("'if' A=\"1 2\" \\! git") == [
-        ("if", "'if'"),
-        ("A=1 2", 'A="1 2"'),
-        ("!", "\\!"),
-        ("git", "git"),
-    ]
-    assert git_subcommands.spelled_words("git 'push") == [("git", "git"), ("push", "'push")]
-    assert git_subcommands.spelled_words("") == []
 
 
 # The script a pwsh or Windows PowerShell start-up runs is PowerShell, whose commands the caller's reader lists: by

@@ -58,8 +58,9 @@ QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 # Every label a fence of commands or a program may carry, by the language it names: the POSIX shells, fish, and cmd,
 # whose lines the model runs through its Bash or PowerShell tool, PowerShell, and Python, JavaScript, and TypeScript,
 # each under every name Markdown gives it. The renderer substitutes a token by these languages, validation holds every
-# such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences
-# as commands.
+# such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences as
+# commands: a Bash fence, and an untagged one that is Bash, through the Bash grammar, and each line's first word of any
+# other shell's, console's, fish's, cmd's, and PowerShell's, after a `$ ` or `> ` prompt.
 FENCE_LANGUAGES: dict[str, frozenset[str]] = {
     "shell": frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash"}),
     "fish": frozenset({"fish"}),
@@ -78,13 +79,15 @@ EXECUTABLE_FENCES = frozenset(label for labels in FENCE_LANGUAGES.values() for l
 @dataclass(frozen=True)
 class Fence:
     """A fenced code block: its opening line's index, its closing line's (None when unclosed), its info string's
-    first word, the index just past its last body line, and how many blockquotes hold it."""
+    first word, the index just past its last body line, how many blockquotes hold it, and the columns before its run
+    of backticks or tildes once those are taken off, the indentation of the fence and of the list items that hold it."""
 
     opener: int
     closer: int | None
     language: str
     stop: int
     quotes: int = 0
+    indent: int = 0
 
     def body(self) -> range:
         """The indexes of the lines between the opener and the closer, or the end of what holds an unclosed fence."""
@@ -102,6 +105,25 @@ class Fence:
                 break
             line = line[marker.end() :]
         return line
+
+    def content(self, line: str) -> str:
+        """A body line as CommonMark gives it to the fence's content: without the blockquote markers that hold it, and
+        without up to `indent` columns of the spaces and tabs that start it, which the fence's own indentation and the
+        list items that hold it take, so an indented fence's here-document delimiter closes its body. A tab counts to
+        the next multiple of four, and one that runs past `indent` gives the columns past it as spaces, as CommonMark
+        gives a partly consumed tab. Inside a blockquote, a tab is counted from the end of the markers, not the line's
+        column, and a tab right after `>` is taken whole as the marker's space, where CommonMark takes one column of
+        it; no fence here sits in a blockquote."""
+        line = self.text(line)
+        width = 0
+        for index, character in enumerate(line):
+            if width >= self.indent or character not in MARKDOWN_SPACE:
+                return line[index:]
+            following = width + 1 if character == " " else width + 4 - width % 4
+            if following > self.indent:
+                return " " * (following - self.indent) + line[index + 1 :]
+            width = following
+        return ""
 
 
 def is_blank(line: str) -> bool:
@@ -175,17 +197,21 @@ def _fence_from(lines: list[str], opener: int, match: re.Match[str]) -> Fence:
     marker, quotes = match.group("marker"), match.group("container").count(">")
     words = match.group("info").split()
     language = words[0] if words else ""
+    unquoted = Fence(opener, None, language, opener, quotes).text(lines[opener])
+    # A list item's marker takes a column for each of its characters, and a space or a tab as indentation counts it.
+    before = unquoted[: unquoted.index(marker)]
+    indent = indentation(re.sub(r"[^ \t]", " ", before))
     for later in range(opener + 1, len(lines)):
         line = lines[later]
         for _ in range(quotes):
             quote = QUOTE_MARKER.match(line)
             if quote is None:
-                return Fence(opener, None, language, later, quotes)
+                return Fence(opener, None, language, later, quotes, indent)
             line = line[quote.end() :]
         closing = line.strip(LINE_END)
         if len(closing) >= len(marker) and set(closing) == {marker[0]}:
-            return Fence(opener, later, language, later, quotes)
-    return Fence(opener, None, language, len(lines), quotes)
+            return Fence(opener, later, language, later, quotes, indent)
+    return Fence(opener, None, language, len(lines), quotes, indent)
 
 
 def code_block_lines(lines: list[str]) -> set[int]:

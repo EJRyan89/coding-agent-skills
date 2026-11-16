@@ -20,6 +20,13 @@ process substitution, arithmetic, a special parameter, a glob, or a brace expans
 process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
 subshell Bash runs it in.
 
+Every word, operator, and simple command keeps the line it starts on, counted from 1 at each LF alone, as Bash counts
+its lines, so a reader can place what it finds on the script's own line. The text of a substitution or of a
+here-document's body is a `Source`, which keeps the script line of each of its characters, so a command read from it,
+`parse` given it, keeps its line in the script too, after a continuation or a here-document. Bash's own `$LINENO`
+gives a command in a substitution, or in an unquoted here-document's body, the line where the substitution or the
+command holding the body ends or starts; the reader gives the line its text stands on.
+
 `simple_commands` lists every simple command Bash may run for a text, each substitution's included, read as the
 subshell Bash runs it in, and `command_words` gives one's words from its program's name, for a reader that judges
 what a script runs; `every_command` lists every command, compound ones and function definitions too, and
@@ -54,7 +61,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
 # Characters that end an unquoted word.
@@ -123,6 +130,31 @@ class BashSyntaxError(ValueError):
     """Text Bash would refuse, or that this grammar does not read."""
 
 
+class Source(str):
+    """Text the reader takes from a script, a substitution's or a here-document's body, which keeps the script line
+    each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
+    `lines[len(self)]` the line its end stands on. It compares and hashes as the plain text it holds."""
+
+    lines: tuple[int, ...]
+
+    def __new__(cls, text: str, lines: Sequence[int]) -> Source:
+        source = super().__new__(cls, text)
+        source.lines = tuple(lines)
+        return source
+
+
+def line_numbers(text: str) -> tuple[int, ...]:
+    """The line of each character of text, and of its end, counted from 1 at each LF alone, as Bash counts them; an LF
+    stands on the line it ends."""
+    numbers: list[int] = []
+    line = 1
+    for character in text:
+        numbers.append(line)
+        line += character == "\n"
+    numbers.append(line)
+    return tuple(numbers)
+
+
 @dataclass(frozen=True)
 class Part:
     """A piece of a word: literal text, quoted or not, a `$NAME` to look up, a leading `~`, or what only running
@@ -164,6 +196,8 @@ class Word:
     # Whether the word is the whole of an arithmetic command's (( )), or an arithmetic for's header, whose `((` Bash
     # reads where a reserved word may stand; its one part is the "dynamic" `((`.
     arithmetic: bool = False
+    # The script line the word starts on; 0 for a word a reader builds.
+    line: int = field(default=0, compare=False)
 
     @property
     def literal(self) -> str | None:
@@ -186,6 +220,8 @@ class HereDocument:
     assigns: tuple[str, ...] = ()
     # Each expansion in an unquoted body that is not a plain `$NAME`, as a word's dynamic parts hold it.
     expansions: tuple[Part, ...] = ()
+    # Whether a delimiter line closed the body, rather than the text's end, which Bash also takes for its end.
+    closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +230,8 @@ class Operator:
     # The descriptor word written right before a redirection, as 2 in 2>&1 or {fd} in {fd}>out, which Bash assigns
     # the descriptor it opens to the variable NAME names.
     descriptor: str = ""
+    # The script line the operator, or its descriptor word, starts on.
+    line: int = field(default=0, compare=False)
 
 
 Token = Word | Operator | HereDocument
@@ -212,6 +250,8 @@ class Redirect:
 class Simple:
     words: list[Word]
     redirects: list[Redirect] = field(default_factory=list)
+    # The script line its first word or redirection starts on.
+    line: int = 0
 
 
 @dataclass
@@ -300,10 +340,12 @@ class CommandList:
 
 
 class Lexer:
-    """Splits text into tokens; with nested set it reads a `$( )` body and stops at its closing parenthesis."""
+    """Splits text into tokens; with nested set it reads a `$( )` body and stops at its closing parenthesis. `lines`
+    is the script line of each character of text and of its end, as a Source keeps them; by default, text's own."""
 
-    def __init__(self, text: str, start: int = 0, nested: bool = False) -> None:
+    def __init__(self, text: str, start: int = 0, nested: bool = False, lines: Sequence[int] | None = None) -> None:
         self.text = text
+        self.lines = line_numbers(text) if lines is None else lines
         self.index = start
         self.nested = nested
         self.tokens: list[Token] = []
@@ -322,8 +364,10 @@ class Lexer:
         # Whether the last operator read is a pipe, or the one newline right after a pipe, after which `time` is the
         # time program rather than Bash's keyword, as Bash reads it.
         self.after_pipe = False
-        # The descriptor word before the redirection being read, kept for its Operator token.
+        # The descriptor word before the redirection being read, kept for its Operator token, and the line it starts
+        # on.
         self.descriptor = ""
+        self.descriptor_line = 0
         # The variables the expansions read since the word being read began assign.
         self.assigned: list[str] = []
 
@@ -351,8 +395,9 @@ class Lexer:
                 if self.nested and operator == ")" and depth == 0:
                     return self.tokens
                 depth += {"(": 1, ")": -1}.get(operator, 0)
+                line = self.descriptor_line if self.descriptor else self.lines[self.index]
                 self.index += len(operator)
-                self.tokens.append(Operator(operator, self.descriptor))
+                self.tokens.append(Operator(operator, self.descriptor, line))
                 self.descriptor = ""
                 if operator in REDIRECTIONS:
                     self.redirecting = operator not in HERE_DOCUMENTS
@@ -370,7 +415,7 @@ class Lexer:
             else:
                 word = self.word(subscripts=self.command_start and not self.redirecting)
                 if self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw):
-                    self.descriptor = word.raw
+                    self.descriptor, self.descriptor_line = word.raw, word.line
                 else:
                     self.follow_word(word)
                     self.tokens.append(word)
@@ -410,7 +455,9 @@ class Lexer:
             return False
         text = self.text[start : self.index]
         assigns = tuple(match.group(1) + match.group(2) for match in ASSIGNING.finditer(text))
-        word = Word(text, (Part("dynamic", "(("),), tuple(found), assigns=assigns, arithmetic=True)
+        word = Word(
+            text, (Part("dynamic", "(("),), tuple(found), assigns=assigns, arithmetic=True, line=self.lines[start]
+        )
         self.follow_word(word)
         self.tokens.append(word)
         return True
@@ -434,30 +481,37 @@ class Lexer:
         Bash reads it. An unquoted body joins each line its backslash continues to the next, as Bash removes that
         backslash and the LF before it compares a line with the delimiter, so a delimiter after one is body text."""
         for document in self.pending:
-            lines: list[str] = []
+            body: list[str] = []
+            numbers: list[int] = []
             while self.index < len(self.text):
-                line = self.next_line()
+                line, places = self.next_line()
                 while not document.quoted and escapes_its_end(line) and self.index < len(self.text):
-                    line = line[:-1] + self.next_line()
+                    following, following_places = self.next_line()
+                    line, places = line[:-1] + following, places[:-2] + following_places
                 compared = line.lstrip("\t") if document.strip_tabs else line
                 delimiter = document.delimiter
                 if compared == delimiter or compared.rstrip("\r") == delimiter.rstrip("\r"):
+                    document.closed = True
                     break
-                lines.append(compared)
-            document.body = "\n".join(lines)
+                body.append(compared)
+                # The line of each character the body keeps, and of the LF that ends it, which joins it to the next.
+                numbers += places[len(line) - len(compared) :]
+            document.body = Source("\n".join(body), numbers if body else [self.lines[self.index]])
             if not document.quoted:
                 substitutions, assigns, parts = expansions(document.body)
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
                 document.expansions = tuple(part for part in parts if part.kind == "dynamic")
         self.pending = []
 
-    def next_line(self) -> str:
-        """The text up to the next LF, or to the text's end, read past that LF."""
+    def next_line(self) -> tuple[str, list[int]]:
+        """The text up to the next LF, or to the text's end, read past that LF, with the script line of each of its
+        characters and of the LF or the end after it."""
         end = self.text.find("\n", self.index)
         end = len(self.text) if end < 0 else end
         line = self.text[self.index : end]
+        numbers = list(self.lines[self.index : end + 1])
         self.index = min(end + 1, len(self.text))
-        return line
+        return line, numbers
 
     def word(self, subscripts: bool = False) -> Word:
         """One word; with subscripts set it stands where Bash reads an assignment, so a subscript after a name at its
@@ -507,15 +561,16 @@ class Lexer:
                 self.index += 1
         raw = self.text[start : self.index]
         assigns = tuple(self.assigned)
+        line = self.lines[start]
         if head is None:
-            return Word(raw, tuple(parts), tuple(substitutions), array, assigns=assigns)
+            return Word(raw, tuple(parts), tuple(substitutions), array, assigns=assigns, line=line)
         whole = [Part("text", self.text[start:value_start])]
         for part in parts:
             if part.kind == "text" and len(whole) == 1:
                 add_text(whole, part.text, part.quoted)
             else:
                 whole.append(part)
-        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)), assigns)
+        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)), assigns, line=line)
 
     def assignment_head(self, subscripts: bool, substitutions: list[str]) -> tuple[str, bool, bool] | None:
         """Reads the start of an assignment, NAME or NAME[SUBSCRIPT] and the = or += after it, and returns the name,
@@ -672,12 +727,12 @@ class Lexer:
             add_text(parts, "$", quoted=quoted)
             self.index += 1
 
-    def balanced(self, start: int) -> str:
+    def balanced(self, start: int) -> Source:
         """The body of a `$( )`, `<( )`, or `>( )` that opens before start, read as commands up to its close."""
-        inner = Lexer(self.text, start, nested=True)
+        inner = Lexer(self.text, start, nested=True, lines=self.lines)
         inner.run()
         self.index = inner.index + 1
-        return self.text[start : inner.index]
+        return Source(self.text[start : inner.index], self.lines[start : inner.index + 1])
 
     def arithmetic(self, start: int, quotes: bool = False) -> list[str]:
         """The substitutions in arithmetic from start to the `))` that closes it, read past; with quotes set, as Bash
@@ -781,20 +836,23 @@ class Lexer:
                 index += 1
         raise BashSyntaxError("a $' quote is not closed")
 
-    def backquoted(self) -> str:
+    def backquoted(self) -> Source:
         """The command a backquote pair runs, with the backslashes that escape a backquote, `$`, or `\\` removed."""
         index = self.index + 1
         body: list[str] = []
+        numbers: list[int] = []
         while index < len(self.text):
             character = self.text[index]
             if character == "\\" and index + 1 < len(self.text) and self.text[index + 1] in "`$\\":
                 body.append(self.text[index + 1])
+                numbers.append(self.lines[index + 1])
                 index += 2
             elif character == "`":
                 self.index = index + 1
-                return "".join(body)
+                return Source("".join(body), [*numbers, self.lines[index]])
             else:
                 body.append(character)
+                numbers.append(self.lines[index])
                 index += 1
         raise BashSyntaxError("a backquote is not closed")
 
@@ -816,8 +874,9 @@ def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
     here-document's body, where a double quote is an ordinary character but quotes inside a `$( )` or a `${ }`, as
     Bash reads it there, the variables its expansions assign, as a word's assigns holds them, and the parts its
-    expansions make, as a word's parts hold them."""
-    lexer = Lexer(text)
+    expansions make, as a word's parts hold them. Each substitution keeps its script line, from text's when it is a
+    Source."""
+    lexer = Lexer(text, lines=source_lines(text))
     found: list[str] = []
     parts: list[Part] = []
     while lexer.index < len(lexer.text):
@@ -967,6 +1026,8 @@ class Parser:
     def simple(self) -> Command:
         words: list[Word] = []
         redirects: list[Redirect] = []
+        first = self.peek()
+        line = first.line if isinstance(first, (Word, Operator)) else 0
         conditional = self.at_reserved("[[")
         # Bash reads NAME=( ) among the assignments before a command's name, and among a declaration builtin's
         # arguments, where it reads that name as one; neither after a redirection that follows a word, as it stops
@@ -998,7 +1059,7 @@ class Parser:
             self.index += 1
             if conditional and token.literal == "]]":
                 conditional = False
-        return Simple(words, redirects)
+        return Simple(words, redirects, line)
 
     def redirect(self) -> Redirect:
         token = self.peek()
@@ -1148,10 +1209,16 @@ COMPOUND_READERS: dict[str, Callable[[Parser], Command]] = {
 }
 
 
+def source_lines(text: str) -> Sequence[int] | None:
+    """The script line of each character of text when it is a Source, else None, for its own."""
+    return text.lines if isinstance(text, Source) else None
+
+
 def parse(text: str) -> CommandList:
-    """The command tree of text, read by Bash's grammar; raises BashSyntaxError where it cannot be read."""
+    """The command tree of text, read by Bash's grammar; raises BashSyntaxError where it cannot be read. Its lines
+    are counted from 1, or, for a Source, are the script's lines it keeps."""
     try:
-        parser = Parser(Lexer(text).run())
+        parser = Parser(Lexer(text, lines=source_lines(text)).run())
         result = parser.command_list()
     except RecursionError:
         # The reader follows nesting by recursion, so nesting deeper than Python's limit is text it cannot read.
@@ -1199,21 +1266,8 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
     if isinstance(node, FunctionDefinition):
         yield from _tree_commands(node.body)
         return
-    if isinstance(node, Simple):
-        words: list[Word] = list(node.words)
-    elif isinstance(node, Case):
-        words = [node.word, *node.patterns]
-    elif isinstance(node, Loop):
-        words = [*(node.words or []), *node.header]
-    elif isinstance(node, Arithmetic):
-        words = [node.expression]
-    else:
-        words = []
-    substitutions = [text for word in words for text in word.substitutions]
-    bodies: list[tuple[str, ...]] = []
-    for redirect in node.redirects:
-        substitutions += redirect.target.substitutions if redirect.target is not None else ()
-        bodies += [redirect.here.substitutions] if redirect.here is not None else []
+    substitutions = [text for word in expanded_words(node) for text in word.substitutions]
+    bodies = [document.substitutions for document in here_documents(node)]
     for text in substitutions:
         yield from _tree_commands(parse(text))
     for document in bodies:
@@ -1233,6 +1287,32 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
         except BashSyntaxError:
             continue
         yield from _tree_commands(tree)
+
+
+def expanded_words(node: Command) -> list[Word]:
+    """The words a command expands itself, in the order the text holds them, each redirection's target included: a
+    simple command's, a case's word and its patterns, a for or select loop's words and an arithmetic for's header, and
+    an arithmetic command's expression; none of a function's definition or of the commands a compound one runs."""
+    if isinstance(node, Simple):
+        words: list[Word] = list(node.words)
+    elif isinstance(node, Case):
+        words = [node.word, *node.patterns]
+    elif isinstance(node, Loop):
+        words = [*(node.words or []), *node.header]
+    elif isinstance(node, Arithmetic):
+        words = [node.expression]
+    else:
+        words = []
+    if isinstance(node, FunctionDefinition):
+        return words
+    return words + [redirect.target for redirect in node.redirects if redirect.target is not None]
+
+
+def here_documents(node: Command) -> list[HereDocument]:
+    """The here-documents a command's own redirections read, in the order the text holds them."""
+    if isinstance(node, FunctionDefinition):
+        return []
+    return [redirect.here for redirect in node.redirects if redirect.here is not None]
 
 
 def command_bodies(node: Command) -> list[CommandList]:

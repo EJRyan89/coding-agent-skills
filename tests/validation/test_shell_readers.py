@@ -152,30 +152,6 @@ def test_shell_command_extraction_reads_unquoted_reserved_words_and_functions(sc
     assert shell_commands(script) == programs
 
 
-# The two Bash readers start a command in the same places: where shell_commands reads git as a case item's or a
-# function body's program, ejryan89-skill-core's git_subcommands reads the subcommand it runs.
-@pytest.mark.parametrize(
-    "script",
-    [
-        'case "$x" in\n  up) git push ;;\nesac',
-        "case x in y) git push;; esac",
-        "case x in (y) git push;; esac",
-        "case x in a) jq .;& b) git push;;& c) jq .;; esac",
-        "case $(echo a) in a) git push;; esac",
-        "case `uname` in Linux) git push;; esac",
-        'case "$(uname)" in Linux) git push;; esac',
-        'case "`uname`" in Linux) git push;; esac',
-        "f() { git push; }",
-        "f () { git push; }",
-        "function f { git push; }",
-        "function f() { git push; }",
-    ],
-)
-def test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs(script: str) -> None:
-    assert "git" in shell_commands(script)
-    assert shell_git_subcommands(script) == {"push"}
-
-
 # Bash's time keyword, read as Bash 5 reads it: at a pipeline's start, after `!`, a separator, or a reserved word, it
 # takes -p and then --, each unquoted and optional, before the pipeline it times. A second -p, a quoted one, or one
 # after -- is the timed command's own word. After a pipe, the newline right after one, or an assignment, `time` is the
