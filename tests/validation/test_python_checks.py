@@ -2696,7 +2696,8 @@ def rebinding_scanner(arms: int, last: str) -> str:
 )
 def test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once(last: str, refused: list[str]) -> None:
     # A walk that followed each path through the bindings read the ten bindings of `after` once per order they can
-    # be reached in, so its reads grew exponentially with the branches; read once each, they grow with the module.
+    # be reached in, so its reads grew exponentially with the branches; read once each, they no longer grow
+    # exponentially.
     reads = 0
     bound_values = validation_support.bound_values
 

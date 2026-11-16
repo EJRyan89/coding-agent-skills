@@ -655,7 +655,9 @@ removed fails validation until its pattern follows it.
 ### A walk over bindings reads each binding once per question
 
 - **Rule:** A check that follows a name back through the bindings that may reach it keeps one set of the bindings it
-  has read for the whole question, and never a set per path, whose walk reads a binding again on every path to it.
+  has read for the whole question, never a set per path, whose walk reads a binding again on every path to it, when
+  what it learns from a binding depends only on the binding and its scope; a walk that carries state along the path,
+  as `_calls_of` carries a partial's arguments, keeps it per path.
 - **Why:** A loop that rebinds a name in several branches, each from the name before it, has exponentially many paths
   through its bindings, so a walk per path makes one ordinary scanner stall a validation shard for minutes.
 - **Use:** `tests.validation.validation_support:bound_values`, the binding reader, which follows each name once per
@@ -663,7 +665,9 @@ removed fails validation until its pattern follows it.
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
-  with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner.
+  with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner. A
+  hit in `validation_support.py`'s `_references` is the case #2871 holds, and one in its `_calls_of` is the accepted
+  per-path walk, which carries a partial's arguments along each path.
 - **Examples:** #2859
 
 ### A path taken from input is judged inside its tree before anything opens it
