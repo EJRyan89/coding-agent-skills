@@ -4161,6 +4161,47 @@ def test_another_shell_s_fence_runs_the_program_each_line_s_first_word_names(tmp
     assert not [line for line in lines if line.startswith("BASH_UNREADABLE ")]
 
 
+def test_a_console_fence_with_a_prompt_reads_its_prompted_and_continuation_lines_as_written(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```console\n"
+        "$ git checkout v1\n"
+        "HEAD is now at 1a2b3c4 msg\n"  # 3: git's output, whose first word casefolds to head
+        "head of the output\n"  # 4: output, though Bash would run head if it were a command
+        "$ echo a |\n"
+        "> cat y\n"  # 6: the continuation of the command above
+        "  $ cat x\n"  # 7: a prompt after blanks
+        "$ Cat x\n"  # 8: Bash matches a command's name as written
+        "done\n"
+        "> cat z\n"  # 10: a `> ` line after output is output too
+        "```\n",
+    )
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [6, 7]
+
+
+def test_a_console_fence_without_a_prompt_reads_every_line_and_each_shell_matches_as_it_finds_a_program(
+    tmp_path: Path,
+) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```console\n"
+        "Ls is fun\n"  # 2: Bash and fish match a command's name as written
+        "cat x\n"  # 3: with no prompt to tell a command from output, every line is read
+        "```\n"
+        "```fish\n"
+        "Cat x\n"
+        "grep x y\n"  # 7
+        "```\n"
+        "```cmd\n"
+        "CAT.EXE x\n"  # 10: cmd and PowerShell find a program in any case
+        "```\n"
+        "```powershell\n"
+        "Cat x\n"  # 13
+        "```\n",
+    )
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 7, 10, 13]
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
