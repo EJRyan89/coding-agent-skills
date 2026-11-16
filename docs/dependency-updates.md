@@ -29,7 +29,7 @@ Validation and CI take these Python packages from PyPI, pinned in `requirements-
 python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
 ```
 
-In a clone that guards its hub ([The guard](parallel-sessions.md#the-guard)), run it from a worktree with the hub's interpreter, as `<hub>/.venv/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`: from the hub the guard refuses it, since `requirements-dev.txt` is a hub file, and so is `python -m pytest` naming the hub's tests.
+In a clone that guards its hub ([The guard](parallel-sessions.md#the-guard)), run it from a worktree with the hub's interpreter, as `<hub>/.venv/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`, so the hub stays a clean checkout of `main`.
 
 `pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. [Python checks](../CONTRIBUTING.md#python-checks) in the contributing guide states what validation runs with them and how to fix what each check names.
 

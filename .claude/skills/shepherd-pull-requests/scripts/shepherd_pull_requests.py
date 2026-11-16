@@ -7,6 +7,10 @@ Run it from the hub on main. One tick:
 - fast-forwards the hub to origin's main, when it runs in the hub itself, on main, with no tracked change; from a
   linked worktree it leaves the hub to the hub's own session; a hub it runs in and cannot fast-forward, because the
   fetch failed or the hub is off main, has a tracked change, or diverged, is named for the shepherd's judgment;
+- checks the hub, wherever the tick runs, with ejryan89-skill-core's hub_state.py, and names each way it differs from
+  a clean checkout of main at origin's main, other than being behind, which the HUB line covers: a change or an
+  untracked file, another branch or a detached HEAD, a commit origin's main lacks, or no origin/main to compare it
+  with, so a write to the hub the hub guard did not see is named at the next tick;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
   required check Validation on that head, and the files each admitted one changes: when gh's listing, which holds
   a pull request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
@@ -60,6 +64,8 @@ Every line is one fact:
     HUB "<path>" <what happened>       fast-forwarded <old> to <new>, current at <commit>, would fast-forward <old>
                                        to <new>, or not fast-forwarded: <reason>; the last is for the shepherd's
                                        judgment unless the tick runs in a linked worktree
+    HUB_DIFFERS "<path>" <difference>  one way the hub differs, a sentence hub_state.py gives, or `could not be
+                                       read: <reason>`; each is for the shepherd's judgment
     HOLD #<number> changes <path>      an admitted pull request that holds every other one's update while it is open
     HELD #<number> <branch> "<reason>" an admitted pull request whose body holds it from arming and merging
     PR #<number> <branch> <merge state> auto-merge <on|off> head <commit> Validation <state> <actions>
@@ -107,8 +113,8 @@ Every branch, path, state, leg, step, and check name that GitHub returned is fla
 
 Exit status:
   0  the tick ran with nothing left for the shepherd's judgment
-  1  a HUB line naming a hub it ran in and did not fast-forward, a NOT_ADMITTED, OUT_OF_STEP, CONFLICT, DEFECT,
-     RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>
+  1  a HUB line naming a hub it ran in and did not fast-forward, a HUB_DIFFERS, NOT_ADMITTED, OUT_OF_STEP, CONFLICT,
+     DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>
   2  a usage error
 """
 
@@ -131,6 +137,7 @@ from git_client import GitClient, GitError, output_line, output_lines
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
+from hub_state import differences
 from path_keys import path_key
 from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
 from pull_carried import carried
@@ -365,6 +372,17 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
         return f"not fast-forwarded: {reason}"
     after = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     return f"current at {short(after)}" if after == before else f"fast-forwarded {short(before)} to {short(after)}"
+
+
+def hub_differences(git: GitClient, place: Place) -> list[str]:
+    """A HUB_DIFFERS line for each way the hub differs from a clean checkout of main at origin's main, but behind it,
+    which the HUB line covers; one naming git's reason where the hub could not be read."""
+    where = f'HUB_DIFFERS "{place.hub.as_posix()}"'
+    try:
+        found = differences(git, place.hub, BASE, REMOTE)
+    except GitError as exc:
+        return [f"{where} could not be read: {flat_text(str(exc))}"]
+    return [f"{where} {difference.text}" for difference in found if difference.kind != "behind"]
 
 
 def malformed(what: str) -> GitHubError:
@@ -1061,6 +1079,10 @@ def tick(
     emit(f"REPOSITORY {place.repository}")
     hub, flagged = hub_line(git, place, dry_run)
     emit(hub)
+    differing = hub_differences(git, place)
+    for line in differing:
+        emit(line)
+    flagged = flagged or bool(differing)
     try:
         listed = read_pulls(client, place.repository)
     except GitHubError as exc:

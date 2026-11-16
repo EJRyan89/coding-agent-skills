@@ -716,6 +716,78 @@ class HubTest(FixtureTestCase):
         self.assertGreater(len(line), len(f'HUB "{self.hub.as_posix()}" not fast-forwarded: '))
         self.assertEqual(local, git("rev-parse", "HEAD", directory=self.hub))
 
+    def test_a_clean_hub_on_main_differs_in_nothing_whether_behind_or_not(self) -> None:
+        self.advance_origin()
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                status, lines = self.tick(StubGh(), dry_run=dry_run)
+                self.assertEqual(0, status)
+                self.assertEqual([], [line for line in lines if line.startswith("HUB_DIFFERS")])
+
+    def test_a_write_to_the_hub_is_named_at_the_next_tick_from_the_hub_or_a_worktree(self) -> None:
+        worktree = self.root / "hub-worktree"
+        git("worktree", "add", "-q", "-b", "fix/elsewhere", str(worktree), directory=self.hub)
+        (self.hub / "stray.md").write_text("stray\n", encoding="utf-8")
+        for directory in (self.hub, worktree):
+            with self.subTest(directory=directory):
+                status, lines = self.tick(StubGh(), directory=directory, dry_run=True)
+                self.assertEqual(1, status)
+                self.assertEqual(
+                    f'HUB_DIFFERS "{self.hub.as_posix()}" it has 1 uncommitted or untracked path: stray.md',
+                    self.line(lines, "HUB_DIFFERS"),
+                )
+
+    def test_a_hub_off_main_is_named_whatever_its_hub_line_says(self) -> None:
+        git("switch", "-q", "-c", "side", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" it is on side, not main', self.line(lines, "HUB_DIFFERS")
+        )
+
+    def test_a_commit_made_in_the_hub_is_named_ahead_and_never_behind(self) -> None:
+        self.advance_origin()
+        (self.hub / "local.md").write_text("local\n", encoding="utf-8")
+        git("add", "local.md", directory=self.hub)
+        git("commit", "-q", "-m", "local", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" it is 1 commit ahead of origin/main', self.line(lines, "HUB_DIFFERS")
+        )
+
+    def test_a_hub_with_no_origin_main_or_on_a_detached_head_is_named(self) -> None:
+        git("update-ref", "-d", "refs/remotes/origin/main", directory=self.hub)
+        status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" git holds no origin/main to compare it with',
+            self.line(lines, "HUB_DIFFERS"),
+        )
+        git("fetch", "-q", "origin", directory=self.hub)
+        git("switch", "-q", "--detach", directory=self.hub)
+        status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" it is on a detached HEAD, not main', self.line(lines, "HUB_DIFFERS")
+        )
+
+    def test_a_hub_git_cannot_read_is_named_with_git_s_reason(self) -> None:
+        names = GitClient.names
+
+        def refuse_status(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
+            if arguments[0] == "status" and "--untracked-files=normal" in arguments:
+                raise GitError("fatal: index file corrupt", returncode=128)
+            return names(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "names", refuse_status):
+            status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" could not be read: fatal: index file corrupt',
+            self.line(lines, "HUB_DIFFERS"),
+        )
+
     def test_a_checkout_whose_origin_is_not_on_github_fails(self) -> None:
         git("remote", "set-url", "origin", self.origin.as_posix(), directory=self.hub)
         status, lines = self.tick(StubGh())

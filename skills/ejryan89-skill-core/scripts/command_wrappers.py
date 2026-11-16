@@ -21,9 +21,9 @@ from option_reader import MACOS_ENV_LETTERS, OptionTable, option_refusal, option
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
 # program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
-# program's table beyond the shell's builtins is its getopt table, as the hub guard's option catalogue records it, and
+# program's table beyond the shell's builtins is its getopt table, as the repository's option catalogues record it, and
 # a coreutils program's every option GNU's build or the Rust coreutils' lists, as env's -f and --file, -a and --argv0,
-# and the -h and -V of the Rust coreutils' runners (tests/tools/test_prefix_programs.py holds each row to the
+# and the -h and -V of the Rust coreutils' runners (tests/tools/test_command_wrapper_catalogues.py holds each row to the
 # catalogues); sudo also takes assignments, and chrt, taskset, and
 # chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
 # program reads these, so a reader that needs another wrapper adds it here.
@@ -110,18 +110,16 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
     ),
 }
 # The prefixes a package manager installs a build of a wrapper under beside the system's own (wrapper_name): Homebrew's
-# GNU coreutils and findutils take a g, as gtimeout, genv, and gxargs, and its uutils coreutils a u, as utimeout, as
-# tools/hub_guard.py's BUILD_PREFIXES reads its runners. A wrapper is read under either prefix whether or not a package
-# builds it. Two stated limits, since no script here names either: a program of its own whose name is a prefix and a
-# wrapper's, as Windows' gsudo or CSCS's uenv, is read as that wrapper, its subcommand taken for the program; and find,
-# a shell, and every other program a reader names are matched by their own names alone, so a prefixed build of one, as
-# gfind, is read as a program of its own.
+# GNU coreutils and findutils take a g, as gtimeout, genv, and gxargs, and its uutils coreutils a u, as utimeout. A
+# wrapper is read under either prefix whether or not a package builds it. Two stated limits, since no script here names
+# either: a program of its own whose name is a prefix and a wrapper's, as Windows' gsudo or CSCS's uenv, is read as that
+# wrapper, its subcommand taken for the program; and find, a shell, and every other program a reader names are matched
+# by their own names alone, so a prefixed build of one, as gfind, is read as a program of its own.
 BUILD_PREFIXES = ("g", "u")
 # env's options whose value is a command line, split into the words it runs.
 ENV_SPLIT_OPTIONS = frozenset({"-S", "--split-string"})
 LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
-# find's actions that run the program the next word names; tools/hub_guard.py's allow-list of find's options admits
-# none of them.
+# find's actions that run the program the next word names.
 FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # The commands that run a script a word holds: a shell the script after its -c.
 SCRIPT_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})

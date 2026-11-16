@@ -39,8 +39,8 @@ UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 FIXTURES = "tests/fixtures/"
-# The fixtures that state what the hub guard admits rather than sample input, which the snapshot keeps.
-HUB_GUARD_FIXTURES = "tests/fixtures/hub-guard/"
+# The fixtures that state what each wrapper program takes rather than sample input, which the snapshot keeps.
+CATALOGUE_FIXTURES = "tests/fixtures/option-catalogues/"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
 INSIGHTS_SCRIPTS = "skills/review-insights/scripts"
@@ -112,23 +112,26 @@ TRUST_BOUNDARY_SCRIPTS = (
     "tests/tools/test_plugin_canary.py",
     "tests/tools/test_runtime_canary.py",
     "tests/tools/test_skill_evals.py",
-    # The hub guard, the readers it reads a command and a checkout through, the shell variables it takes from the
-    # platform seam, and its suites.
+    # The hub guard, the readers it reads a command and a checkout through, the platform seam it reads paths and
+    # programs through, and its suites.
     "tools/hub_guard.py",
     "tools/bash_syntax.py",
     "tools/worktrees.py",
     "deployer/platform_support.py",
     "tests/tools/test_bash_syntax.py",
     "tests/tools/test_hub_guard.py",
-    "tests/tools/test_hub_guard_bash.py",
     "tests/tools/test_hub_guard_git_options.py",
     "tests/tools/test_hub_guard_pwsh.py",
-    "tests/tools/test_prefix_programs.py",
+    "tests/tools/test_command_wrapper_catalogues.py",
+    # The check that reports a hub the guard let a write reach, which the shepherd and repo-cleanup run.
+    f"{SKILL_CORE}/hub_state.py",
+    f"{SKILL_CORE}/test_hub_state.py",
     # The merge shepherd's admission of a pull request whose head branch is in this repository.
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",
     f"{SKILL_CORE}/analyzer_config.py",
     f"{SKILL_CORE}/bounded_process.py",
+    f"{SKILL_CORE}/command_wrappers.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
     f"{SKILL_CORE}/dotnet_solution.py",
@@ -156,6 +159,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/path_containment.py",
     f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",
+    f"{SKILL_CORE}/powershell_startup.py",
     f"{SKILL_CORE}/private_folder.py",
     f"{SKILL_CORE}/test_private_folder.py",
     f"{SKILL_CORE}/process_identity.py",
@@ -650,23 +654,15 @@ class ManifestTests(unittest.TestCase):
         on_a_fix = route(MANIFEST, [path], lambda name: True, title="fix(hub-guard): refuse an option")
         self.assertEqual([path], on_a_fix.get("sibling-spellings"))
 
-    def test_the_hub_guard_s_option_catalogues_reach_the_trust_boundary_reviewers(self) -> None:
-        # Each catalogue lists a program's options, and the guard's suites hold its allowlists to every spelling of
-        # them, so a change that drops an option from one loosens what the suites prove the guard refuses. Each is read
-        # from the tree, by its folder and by its name anywhere, so a catalogue added later must be routed too, and
-        # each stays in the snapshot the recommended entry takes, past the exclusion of the other fixtures.
-        files = tracked_files()
-        catalogues = sorted(
-            path
-            for path in files
-            if path.startswith(HUB_GUARD_FIXTURES) or path.rsplit("/", 1)[-1].startswith("option-catalogues")
-        )
-        self.assertIn(f"{HUB_GUARD_FIXTURES}option-catalogues.json", catalogues)
-        self.assertIn(f"{HUB_GUARD_FIXTURES}option-catalogues-uutils.json", catalogues)
-        reviewed = set(reviewed_files())
-        self.assertEqual([], [path for path in catalogues if path not in reviewed])
+    def test_the_wrapper_option_catalogues_reach_the_trust_boundary_reviewers(self) -> None:
+        # Each catalogue lists a wrapper program's options, and the catalogue suite holds command_wrappers.py's rows,
+        # which the hub guard reads git through, to them, so a change that drops an option loosens what the suite
+        # proves. Each is read from the tree, so a catalogue added later must be routed too.
+        catalogues = sorted(path for path in tracked_files() if path.startswith(CATALOGUE_FIXTURES))
+        self.assertIn(f"{CATALOGUE_FIXTURES}option-catalogues.json", catalogues)
+        self.assertIn(f"{CATALOGUE_FIXTURES}option-catalogues-bsd.json", catalogues)
         self.assertEqual([], [path for path in catalogues if "trust-boundary" not in reached([path])[path]])
-        on_a_fix = route(MANIFEST, catalogues, lambda name: True, title="fix(hub-guard): refuse an option")
+        on_a_fix = route(MANIFEST, catalogues, lambda name: True, title="fix(hub-guard): read a wrapper option")
         self.assertEqual(catalogues, on_a_fix.get("sibling-spellings"))
 
     def test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
@@ -1585,9 +1581,12 @@ class RecommendedConfigurationTests(unittest.TestCase):
         self.assertEqual(MANIFEST["id"], reviewer["id"])
         self.assertEqual("repository", reviewer["scope"])
 
-    def test_the_exclusion_leaves_out_every_fixture_but_the_hub_guard_s_and_no_file_the_reviewer_declares(self) -> None:
-        # The fixtures are sample input, planted defects among them, except the hub guard's, which state what the guard
-        # admits and reach its reviewers. A fixture folder added later is left out only once the list names it.
+    def test_the_exclusion_leaves_out_every_fixture_but_the_option_catalogues_and_no_file_the_reviewer_declares(
+        self,
+    ) -> None:
+        # The fixtures are sample input, planted defects among them, except the option catalogues, which state what
+        # each wrapper program takes and reach the reviewers command_wrappers.py reaches. A fixture folder added later
+        # is left out only once the list names it.
         patterns = self.entry()["snapshot_exclude"]
         self.assertEqual(
             [
@@ -1601,9 +1600,9 @@ class RecommendedConfigurationTests(unittest.TestCase):
         )
         matches = configured_exclusion(patterns)
         files = tracked_files()
-        fixtures = [path for path in files if path.startswith(FIXTURES) and not path.startswith(HUB_GUARD_FIXTURES)]
+        fixtures = [path for path in files if path.startswith(FIXTURES) and not path.startswith(CATALOGUE_FIXTURES)]
         self.assertTrue(fixtures)
-        self.assertTrue([path for path in files if path.startswith(HUB_GUARD_FIXTURES)])
+        self.assertTrue([path for path in files if path.startswith(CATALOGUE_FIXTURES)])
         self.assertEqual(fixtures, [path for path in files if matches(path)])
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if matches(path)])
 
