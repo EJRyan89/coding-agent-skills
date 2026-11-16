@@ -368,6 +368,8 @@ The configuration's limits:
 - The hooks a `core.hooksPath` setting points at, elsewhere than `hooks/`, are not read; the setting itself is named
   as a configuration change. Nor is anything a hook runs beyond its own file, or what a folder in `hooks/` holds.
 - No other file in the git directory is read.
+- Two names that differ only in whitespace are named alike in a line, though the record tells them apart.
+- A hook is read whole at each tick, so a very large file in `hooks/` costs its size in memory.
 
 #### What it understands
 

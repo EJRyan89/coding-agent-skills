@@ -64,6 +64,8 @@ only reads it. Its limits:
   as a configuration change. Nor is anything a hook runs beyond its own file, or what a folder in `hooks/` holds.
 - No other file in the git directory is read, and a hook or an info file that stays unreadable is named at each tick
   as a hub that could not be read, its other changes unrecorded until it can be read.
+- Two names that differ only in whitespace are named alike in a line, though the record tells them apart.
+- A hook is read whole at each tick, so a very large file in `hooks/` costs its size in memory.
 """
 
 from __future__ import annotations
