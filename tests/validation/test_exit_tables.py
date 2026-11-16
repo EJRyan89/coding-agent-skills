@@ -79,6 +79,25 @@ def test_a_called_local_that_rebinds_itself_from_itself_is_read_once(rebinding: 
     assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == []
 
 
+def test_a_called_parameter_given_the_same_argument_from_another_scope_is_read_again() -> None:
+    # k reaches itself through f and g, each passing its own h on: g's call k(one) gives k a scope in which h is one,
+    # while main's k(two) gives one in which h is two. A reader that knew a scope only by its arguments' expressions
+    # read h once and lost one(), and with it exit 3.
+    body = (
+        "def c():\n    return bool(argparse)\ndef one():\n    return 3\ndef two():\n    return 4\n"
+        "def f(h):\n    if c(): return k(h), 1\n    if c(): return h()\n"
+        "def g(h):\n    pair = k(one)\n    code, _ = pair\n    if c(): return code\n"
+        "def k(h):\n    pair = f(h)\n    pair = k(h)\n    if c(): return pair\n    return g(h)\n"
+        "def main():\n    argparse.ArgumentParser().parse_args()\n    return k(two)\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    found = problems({"tools/tool.py": script("A tool.\n\nExit status:\n  1  a\n", body)})
+    assert (
+        'tools/tool.py can exit 3, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
+        in found
+    )
+
+
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:
     found = problems({"tools/tool.py": script("A tool.\n"), "tools/library.py": '"""A library."""\nVALUE = 1\n'})
     assert len(found) == 1

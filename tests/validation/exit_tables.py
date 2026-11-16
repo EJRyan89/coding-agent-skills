@@ -351,6 +351,20 @@ class Scope:
         return dict(self.given).get(name)
 
 
+# A scope as a key: its module, its function, and each argument it is given with the key of the scope it was given in.
+ScopeKey = tuple[int, int, tuple[tuple[str, int, "ScopeKey"], ...]]
+
+
+def _scope_key(scope: Scope) -> ScopeKey:
+    """A key for a scope that tells apart two scopes whose arguments are the same expressions given in different
+    scopes. Each argument's scope was made before the scope it is given to, so the key is finite."""
+    return (
+        id(scope.module),
+        id(scope.function),
+        tuple((name, id(value), _scope_key(given)) for name, (value, given) in scope.given),
+    )
+
+
 def _own_nodes(function: Function) -> Iterator[ast.AST]:
     """Every node of a function's body outside the functions, lambdas, and classes it defines."""
     stack: list[ast.AST] = list(function.body)
@@ -514,16 +528,17 @@ class CodeReader:
         return None
 
     def callables(
-        self, node: ast.expr, scope: Scope, seen: set[tuple[int, tuple[tuple[str, int], ...]]] | None = None
+        self, node: ast.expr, scope: Scope, seen: set[tuple[int, ScopeKey]] | None = None
     ) -> list[tuple[Module, Function]] | None:
         """The functions a called expression can be, or None when the reader cannot tell.
 
-        Each expression is read once for the question, in `seen`, by the arguments its scope is given: a local
-        rebound from itself, as `handler = handler.get("a")`, leads back to its own value, which adds no function its
-        first read has not, since the functions are their union, and a value the reader cannot tell already answers
-        None for the whole question."""
+        Each expression is read once for the question, in `seen`, by its whole scope: the arguments the scope is
+        given, and in turn the scopes each was given in, so a deeper call that passes the same argument from another
+        scope is read again. A local rebound from itself, as `handler = handler.get("a")`, leads back to its own value
+        in its own scope, which adds no function its first read has not, since the functions are their union, and a
+        value the reader cannot tell already answers None for the whole question."""
         seen = set() if seen is None else seen
-        key = (id(node), tuple(sorted((name, id(value)) for name, (value, _) in scope.given)))
+        key = (id(node), _scope_key(scope))
         if key in seen:
             return []
         seen.add(key)
@@ -549,7 +564,7 @@ class CodeReader:
         return None
 
     def _all(
-        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, tuple[tuple[str, int], ...]]]
+        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, ScopeKey]]
     ) -> list[tuple[Module, Function]] | None:
         found: list[tuple[Module, Function]] = []
         for value in values:

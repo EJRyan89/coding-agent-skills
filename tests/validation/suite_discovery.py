@@ -586,9 +586,11 @@ class _ReaderWalk:
     with them; a function already read, or being read, adds no reader, since the walk reads its whole body once and
     stops at the first reader it finds.
 
-    The walk follows a command NESTING_LIMIT functions and scripts deep, as a walk per path did. A function or script
-    is read again only when a path reaches it shallower than every read before, since a read at the limit leaves its
-    deeper calls unread, so each is read at most once for each depth."""
+    The walk follows a command NESTING_LIMIT functions and scripts deep. A function or script is read again only when
+    a path reaches it shallower than every read before, since a read at the limit leaves its deeper calls unread, so
+    each is read at most once for each depth. A stated limit: each shell script on the path counts as a level, so a
+    path through two -c scripts of the same shell ends one level sooner than the walk per path, which counted a
+    shell's name once."""
 
     def __init__(self, functions: FunctionTable) -> None:
         # The shallowest depth each function, and each script, has been read at, by its table.

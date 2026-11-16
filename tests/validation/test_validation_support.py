@@ -1161,6 +1161,32 @@ def test_a_held_folder_rebound_from_itself_stays_held_outside_a_loop(loop: bool)
     assert [problem.split(": ", 2)[1] for problem in found] == ([refused] if loop else [])
 
 
+@pytest.mark.parametrize("branches", [2, 5, 9])
+def test_the_temporary_folder_policy_reads_a_folder_rebound_in_many_branches_in_bounded_reads(branches: int) -> None:
+    # holds keeps the values it is in per path, but answers not held at the first one it meets again, and all() stops
+    # there, so a loop that rebinds a folder from itself in many branches is read in reads that do not grow with them.
+    arms = "".join(
+        f'        elif text[index] == "{chr(97 + arm)}":\n            folder = folder / "{chr(97 + arm)}"\n'
+        for arm in range(branches)
+    )
+    source = (
+        "import tempfile\nimport private_folder\n\n\ndef make(text):\n"
+        "    folder = private_folder.temporary_directory()\n    index = 0\n    while index < len(text):\n"
+        f"        if not text:\n            pass\n{arms}        index = index + 1\n    tempfile.mkdtemp(dir=folder)\n"
+    )
+    reads = 0
+    bound_values = skill_scripts.bound_values
+
+    def counted(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+        nonlocal reads
+        reads += 1
+        return bound_values(node, resolver)
+
+    with mock.patch.object(skill_scripts, "bound_values", counted):
+        found = skill_scripts._python_temporary_problems("a.py", ast.parse(source))
+    assert (len(found), reads) == (1, 2)
+
+
 def rebinding_walk(branches: int) -> str:
     """A loop that rebinds `node` to an attribute of itself in each of `branches` branches and one more, then reads
     it."""
