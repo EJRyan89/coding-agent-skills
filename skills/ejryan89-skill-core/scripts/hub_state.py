@@ -15,21 +15,65 @@ Each difference is a kind and a sentence:
     behind    it is <n> commit(s) behind <remote>/<default>
 
 A checkout git cannot read raises GitError with git's reason.
+
+The hub's git configuration is shared by every worktree, so a program that writes it, which no guard reads, can turn
+the hub guard off by setting `coding-agent-skills.hubGuard` to anything but true, or add a hook path or an alias. The
+check reads that file's own settings with `git config --local`, not following an include, and keeps, between the
+shepherd's ticks, a record of them in the hub's git directory, RECORD_NAME beside its configuration file: whether the
+guard was on, whether any tick saw it on (the clone's opting in), and a SHA-256 digest of each setting's values, never
+the values themselves. `changes` compares the hub with the record, and with `keep` writes the record anew; a first
+tick, with no record, reports nothing for it. `lapse` names a hub whose guard is off while the record says the clone
+opted in, and reads nothing else, so a clone no tick recorded is never named. A `branch.<name>.<key>` setting is left
+out of the digests, since git writes one in the shared file for a worktree's branch at its first `push -u` and drops
+it with the branch, and so is the guard's own, which its own line covers. Their kinds:
+
+    unguarded  its coding-agent-skills.hubGuard was true at the previous tick and is no longer
+    configured its git configuration changed since the previous tick: <key> added|changed|removed, ...
+    lapsed     its coding-agent-skills.hubGuard is not true, though a tick recorded that this clone opted in
+    record     its record of the previous tick, <path>, could not be read|written: <reason>
+
+Only `changes` with `keep`, which the shepherd's tick calls, writes the record; `lapse`, which repo-cleanup calls,
+only reads it. The record is a detector's memory, not a control: whatever can write the configuration can delete or
+rewrite the record beside it. A setting in a file the configuration includes, the worktree-specific `config.worktree`, or the global or system file
+is not read. Deleting the record forgets the clone's opting in, which is how a clone that turned the guard off on
+purpose stops `lapsed`.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import json_reader
+import json_writer
 import whole_number
+from file_presence import is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError, output_line, output_lines
+from typed_fields import FieldError, FieldReader
 
 # How many changed paths a difference names before it counts the rest.
 NAMED_PATHS = 3
 # The status letters of an entry that names the path it came from in a field of its own after its own.
 FROM_FIELD = frozenset("RC")
+# The setting by which a clone opts in to the hub guard, tools/hub_guard.py, which reads it from here.
+GUARD_SETTING = "coding-agent-skills.hubGuard"
+# The record of the previous tick's configuration, in the hub's git directory beside its configuration file.
+RECORD_NAME = "hub-state.json"
+RECORD_VERSION = 1
+# How many changed settings a difference names before it counts the rest.
+NAMED_SETTINGS = 3
+# The section of the settings git writes in the shared configuration for each branch, `branch.<name>.<key>`.
+BRANCH_SECTION = "branch"
+
+GIT_STATUS_ALLOWED = {
+    "guarded": (
+        "reads the opt-in as tools/hub_guard.py's guard_enabled does: on only when git reads the value as true, so "
+        "an unset one (exit 1) and one git cannot read as a boolean are off, as the guard runs then"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -95,3 +139,169 @@ def differences(git: GitClient, checkout: Path, branch: str, remote: str = "orig
     if behind:
         found.append(Difference("behind", f"it is {plural(behind, 'commit')} behind {remote}/{branch}"))
     return found
+
+
+class RecordError(ValueError):
+    """A record of the previous tick that is not one `write_record` writes."""
+
+
+class RecordField(FieldError, RecordError):
+    """A field of the record of another kind than the record's."""
+
+
+@dataclass(frozen=True)
+class Configuration:
+    """What the check reads of a hub's configuration: whether the guard is on, and a digest of each other setting's
+    values, keyed by the setting's name as git lists it."""
+
+    guarded: bool
+    settings: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Record:
+    """The configuration the previous tick read, and whether any tick saw the guard on."""
+
+    configuration: Configuration
+    opted_in: bool
+
+
+def guarded(git: GitClient, checkout: Path) -> bool:
+    """Whether the hub guard is on: the opt-in read from the repository's own configuration file, as the guard reads
+    it."""
+    result = git.run(["config", "--local", "--type=bool", "--get", GUARD_SETTING], directory=checkout)
+    return result.returncode == 0 and output_line(result.stdout) == "true"
+
+
+def is_watched(key: str) -> bool:
+    """Whether a setting, named as git lists it, is one whose change the check reports: any but the guard's own and a
+    branch's."""
+    section, _, rest = key.partition(".")
+    if section.lower() == BRANCH_SECTION and "." in rest:
+        return False
+    return key.lower() != GUARD_SETTING.lower()
+
+
+def configuration(git: GitClient, checkout: Path) -> Configuration:
+    """The guard's state and a digest of each watched setting the configuration file of `checkout`'s repository
+    holds; a configuration git cannot read raises GitError with git's reason."""
+    values: dict[str, list[str]] = {}
+    for entry in git.names(["config", "--local", "--list"], directory=checkout):
+        # With -z git ends a setting's name with a newline, which no name holds, and prints no newline for a name
+        # given without a value.
+        key, _, value = entry.partition("\n")
+        if is_watched(key):
+            values.setdefault(key, []).append(value)
+    settings = {key: hashlib.sha256("\0".join(listed).encode("utf-8")).hexdigest() for key, listed in values.items()}
+    return Configuration(guarded(git, checkout), settings)
+
+
+def record_path(git: GitClient, checkout: Path) -> Path:
+    """Where the record of `checkout`'s repository lies: in the git directory every worktree of it shares."""
+    common = git.rev_parse_path("--git-common-dir", directory=checkout)
+    if common is None:
+        raise GitError(f"{checkout.as_posix()} is not in a git repository")
+    return common / RECORD_NAME
+
+
+def read_record(path: Path) -> Record | None:
+    """The record at `path`, or None where there is none; RecordError for one that cannot be read or is not one
+    `write_record` writes."""
+    try:
+        if not is_present(path):
+            return None
+        value = json_reader.read_file(path)
+    except OSError as exc:
+        raise RecordError(flat_text(str(exc))) from exc
+    except json_reader.CONTENT_ERRORS as exc:
+        raise RecordError(f"it is not JSON: {flat_text(str(exc))}") from exc
+    return record_of(value)
+
+
+def record_of(value: Any) -> Record:
+    reader = FieldReader(RecordField)
+    fields = reader.json_object(value, "record", required=("version", "guarded", "opted_in", "settings"))
+    version = reader.integer(fields["version"], "record.version")
+    if version != RECORD_VERSION:
+        raise RecordField("record.version", f"{RECORD_VERSION}", str(version))
+    settings = reader.json_object(fields["settings"], "record.settings")
+    digests = {
+        key: reader.hex_digest(digest, f"record.settings[{flat_text(key)}]", 64) for key, digest in settings.items()
+    }
+    configured = Configuration(reader.boolean(fields["guarded"], "record.guarded"), digests)
+    return Record(configured, reader.boolean(fields["opted_in"], "record.opted_in"))
+
+
+def write_record(path: Path, record: Record) -> None:
+    """Replace the record at `path`; an OSError where it cannot be written."""
+    value = {
+        "version": RECORD_VERSION,
+        "guarded": record.configuration.guarded,
+        "opted_in": record.opted_in,
+        "settings": record.configuration.settings,
+    }
+    json_writer.write(path, value, indent=2, sort_keys=True)
+
+
+def setting_change(key: str, previous: Configuration, current: Configuration) -> str:
+    if key not in previous.settings:
+        return "added"
+    return "removed" if key not in current.settings else "changed"
+
+
+def record_problem(path: Path, what: str, reason: str) -> Difference:
+    said = flat_text(reason)
+    return Difference("record", f"its record of the previous tick, {path.as_posix()}, could not be {what}: {said}")
+
+
+def configuration_differences(previous: Configuration, current: Configuration) -> list[Difference]:
+    """How the configuration changed since `previous`: the guard turned off, and each watched setting added,
+    changed, or removed, the first few named."""
+    found: list[Difference] = []
+    if previous.guarded and not current.guarded:
+        found.append(Difference("unguarded", f"its {GUARD_SETTING} was true at the previous tick and is no longer"))
+    changed = [
+        f"{flat_text(key)} {setting_change(key, previous, current)}"
+        for key in sorted(previous.settings.keys() | current.settings.keys())
+        if previous.settings.get(key) != current.settings.get(key)
+    ]
+    if changed:
+        rest = f", and {len(changed) - NAMED_SETTINGS} more" if len(changed) > NAMED_SETTINGS else ""
+        named = ", ".join(changed[:NAMED_SETTINGS])
+        found.append(Difference("configured", f"its git configuration changed since the previous tick: {named}{rest}"))
+    return found
+
+
+def changes(git: GitClient, checkout: Path, *, keep: bool) -> list[Difference]:
+    """How the hub's configuration changed since the record of the previous tick, nothing where there is none; with
+    `keep`, the record is then replaced by what this tick read. A configuration git cannot read raises GitError."""
+    path = record_path(git, checkout)
+    current = configuration(git, checkout)
+    found: list[Difference] = []
+    try:
+        previous = read_record(path)
+    except RecordError as exc:
+        found.append(record_problem(path, "read", str(exc)))
+        previous = None
+    if previous is not None:
+        found.extend(configuration_differences(previous.configuration, current))
+    if keep:
+        opted_in = current.guarded or (previous is not None and previous.opted_in)
+        try:
+            write_record(path, Record(current, opted_in))
+        except (OSError, ValueError) as exc:
+            found.append(record_problem(path, "written", str(exc)))
+    return found
+
+
+def lapse(git: GitClient, checkout: Path) -> Difference | None:
+    """The hub guard off in a clone whose record says it opted in; None where it is on, where no record says so, and
+    where there is no record. A configuration git cannot read raises GitError."""
+    path = record_path(git, checkout)
+    try:
+        record = read_record(path)
+    except RecordError as exc:
+        return record_problem(path, "read", str(exc))
+    if record is None or not record.opted_in or guarded(git, checkout):
+        return None
+    return Difference("lapsed", f"its {GUARD_SETTING} is not true, though a tick recorded that this clone opted in")

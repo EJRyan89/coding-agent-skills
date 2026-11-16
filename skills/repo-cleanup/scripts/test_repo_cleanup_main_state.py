@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import git_client
+import hub_state
 import repo_cleanup as rc
 from git_client import GitClient, GitResult
 from test_repo_cleanup import GIT_CONFIG, SweepFixture, build_template, facts, git
@@ -93,3 +94,28 @@ class MainStateTests(SweepFixture):
         self.assertEqual(1, len(differing), differing)
         self.assertTrue(differing[0][0].startswith("it could not be read: "), differing)
         self.assertIn("fatal: index file corrupt", differing[0][0])
+
+    def test_a_hub_guard_turned_off_in_a_clone_a_tick_recorded_opting_in_is_named(self) -> None:
+        guarded = self.make_clone("guarded repo")
+        self.make_clone("never recorded repo")
+        root = self.repos.as_posix()
+        git(guarded, "config", "coding-agent-skills.hubGuard", "true")
+        hub_state.changes(GitClient(), guarded, keep=True)
+        self.sweep()
+
+        code, lines = self.report()
+        self.assertEqual(0, code, lines)
+        self.assertIn(f"{root}/guarded repo", facts(lines, "QUIET")[0], "a guard that is on is no difference")
+
+        for repository in (guarded, self.repos / "never recorded repo"):
+            git(repository, "config", "coding-agent-skills.hubGuard", "false")
+        code, lines = self.report()
+        self.assertEqual(0, code, lines)
+        blocks = self.blocks(lines)
+        self.assertEqual(
+            [["its coding-agent-skills.hubGuard is not true, though a tick recorded that this clone opted in"]],
+            facts(blocks["guarded repo"], "MAIN_DIFFERS"),
+        )
+        self.assertIn(
+            f"{root}/never recorded repo", facts(lines, "QUIET")[0], "a clone no tick recorded opting in is not named"
+        )

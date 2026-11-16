@@ -788,6 +788,85 @@ class HubTest(FixtureTestCase):
             self.line(lines, "HUB_DIFFERS"),
         )
 
+    def differing(self, lines: Sequence[str]) -> list[str]:
+        return [line for line in lines if line.startswith("HUB_DIFFERS")]
+
+    def test_the_hub_guard_turned_off_since_the_previous_tick_is_named_once(self) -> None:
+        git("config", "coding-agent-skills.hubGuard", "true", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)), "a first tick has no previous one to compare with")
+        git("config", "coding-agent-skills.hubGuard", "false", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                f'HUB_DIFFERS "{self.hub.as_posix()}" its coding-agent-skills.hubGuard was true at the previous tick '
+                "and is no longer"
+            ],
+            self.differing(lines),
+        )
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)))
+
+    def test_a_change_to_the_hub_s_configuration_since_the_previous_tick_is_named_once(self) -> None:
+        self.tick(StubGh())
+        git("config", "core.hooksPath", "elsewhere", directory=self.hub)
+        git("config", "alias.st", "status", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                f'HUB_DIFFERS "{self.hub.as_posix()}" its git configuration changed since the previous tick: alias.st '
+                "added, core.hookspath added"
+            ],
+            self.differing(lines),
+        )
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)))
+
+    def test_a_dry_run_from_a_worktree_names_a_change_and_leaves_the_record_for_the_hub_s_tick(self) -> None:
+        worktree = self.root / "hub-worktree"
+        git("worktree", "add", "-q", "-b", "fix/elsewhere", str(worktree), directory=self.hub)
+        self.tick(StubGh())
+        git("config", "alias.st", "status", directory=worktree)
+        expected = [
+            f'HUB_DIFFERS "{self.hub.as_posix()}" its git configuration changed since the previous tick: alias.st added'
+        ]
+        for _ in range(2):
+            status, lines = self.tick(StubGh(), directory=worktree, dry_run=True)
+            self.assertEqual((1, expected), (status, self.differing(lines)))
+        status, lines = self.tick(StubGh())
+        self.assertEqual((1, expected), (status, self.differing(lines)))
+
+    def test_a_worktree_branch_s_upstream_written_in_the_shared_configuration_is_not_named(self) -> None:
+        worktree = self.root / "hub-worktree"
+        git("worktree", "add", "-q", "-b", "fix/elsewhere", str(worktree), directory=self.hub)
+        self.tick(StubGh())
+        git("push", "-q", "-u", "origin", "HEAD", directory=worktree)
+        self.assertEqual("origin", git("config", "--local", "--get", "branch.fix/elsewhere.remote", directory=self.hub))
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)))
+
+    def test_a_configuration_git_cannot_read_is_named_beside_the_work_tree_s_differences(self) -> None:
+        names = GitClient.names
+        (self.hub / "stray.md").write_text("stray\n", encoding="utf-8")
+
+        def refuse_config(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
+            if arguments[0] == "config":
+                raise GitError("fatal: bad config line 1", returncode=128)
+            return names(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "names", refuse_config):
+            status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                f'HUB_DIFFERS "{self.hub.as_posix()}" it has 1 uncommitted or untracked path: stray.md',
+                f'HUB_DIFFERS "{self.hub.as_posix()}" could not be read: fatal: bad config line 1',
+            ],
+            self.differing(lines),
+        )
+
     def test_a_checkout_whose_origin_is_not_on_github_fails(self) -> None:
         git("remote", "set-url", "origin", self.origin.as_posix(), directory=self.hub)
         status, lines = self.tick(StubGh())
