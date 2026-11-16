@@ -1682,6 +1682,11 @@ def read_only_form(subcommand: str, arguments: Sequence[Word]) -> tuple[str, Rea
     return subcommand, READ_ONLY_FORMS.get(subcommand), arguments
 
 
+# Why a command substitution holding a case pattern whose `)` no `(` opened is refused while a hub is guarded.
+BARE_CASE = (
+    "a command substitution holds a case pattern whose `)` no `(` opens, which Bash 3.2, macOS's /bin/bash, reads as "
+    "the substitution's end, running the rest of the line outside it, where Bash 4 and later run it inside"
+)
 # Why a word the text does not settle, before any `--`, is refused in a hub: it may be any option.
 UNSETTLED_WORD = "is given a word the text does not settle, which may be any of its options."
 
@@ -3101,9 +3106,15 @@ class BashReader:
         if self.depth > NESTING_LIMIT:
             self.reading.notes.append(f"substitutions nest more than {NESTING_LIMIT} deep, and the rest is not read")
             return UNKNOWN
+        if isinstance(text, bash_syntax.Source) and text.bare_case:
+            # Bash 3.2 ends the substitution at the pattern's `)` and runs the rest of the line in the shell around it,
+            # where Bash 4 and later run it inside, so where a git call in it acts depends on the Bash.
+            self.reading.cannot_read(BARE_CASE)
         try:
             tree = bash_syntax.parse(text)
         except bash_syntax.BashSyntaxError as exc:
+            if exc.bare_case:
+                self.reading.cannot_read(BARE_CASE)
             self.reading.notes.append(f"Bash would not read it as written, or the guard cannot ({exc})")
             return UNKNOWN
         return self.read_list(tree, directory)

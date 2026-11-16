@@ -389,7 +389,19 @@ class ShellTargetsFixtures(unittest.TestCase):
         # A token in a comment is not read; where the grammar keeps no text of the token's own, validation cannot say
         # whether Bash quotes it, so it names the token rather than passing it.
         self.assertEqual([], shell_targets._bash_tokens("echo x  # {{X}}\n# {{Y}}"))
-        for form in ("a=({{X}})", "echo $(( {{X}} ))", "echo $'\\n{{X}}'", 'echo ${Y:-"{{X}}"}', "echo $Y{{X}}"):
+        for form in (
+            "a=({{X}})",
+            "echo $(( {{X}} ))",
+            "echo $'\\n{{X}}'",
+            'echo ${Y:-"{{X}}"}',
+            "echo $Y{{X}}",
+            # Joined to a `$NAME` inside quotes, the rendered value is part of the name Bash expands.
+            'echo "$Y{{X}}"',
+            'cd "$HOME{{X}}"',
+            # A function named by the token alone.
+            "{{X}}() { :; }",
+            "function {{X}} { :; }",
+        ):
             with self.subTest(form=form):
                 self.assertEqual([(0, "X", None)], shell_targets._bash_tokens(form))
         with tempfile.TemporaryDirectory() as temporary:

@@ -688,10 +688,6 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - where a here-document's delimiter line, or its delimiter word, ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere
   reads as the body, are read as commands, and where they do not parse, the whole command goes unread, the git call
   after the real delimiter line included;
-- a `case` inside a command substitution whose pattern's `)` is not opened by `(`: the guard reads Bash 4 and later's
-  grammar, where that `)` closes the pattern, and Bash 3.2, macOS's `/bin/bash`, ends the substitution at it and runs
-  the rest of the line in the shell around it, so a `cd` before the `case` in the substitution moves the git call
-  after the pattern for the guard and not for Bash 3.2;
 
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,
@@ -721,6 +717,13 @@ Within what it reads, it judges only what the text shows, so these too are left 
   a worktree: refs live in the store every worktree shares, and the guard judges a call by the checkout whose `HEAD`,
   index, and tree it writes; a worktree call given another store or view of objects is refused, as the bullet on what
   the environment has git write says.
+
+The guard reads Bash 4 and later's grammar, with one exception it refuses rather than reads. A command substitution
+holding a `case` whose pattern's `)` no `(` opens is read two ways: Bash 4 and later read that `)` as the pattern's
+close, while Bash 3.2, macOS's `/bin/bash`, reads it as the substitution's end. Bash 3.2 then runs the rest of the line
+in the shell around the substitution, as when a `#` after it comments out the close. Where a git call in the command
+acts therefore depends on the Bash, so the guard refuses the command while a hub is guarded, whether it can read the
+rest or not, as it refuses a part of a git call it does not settle.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session

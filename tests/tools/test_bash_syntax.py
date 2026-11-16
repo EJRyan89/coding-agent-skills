@@ -64,6 +64,36 @@ class WordTests(unittest.TestCase):
         self.assertEqual(["git", "switch", "main"], [word.raw for word in command.words])
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
 
+    def test_a_substitution_says_when_a_case_pattern_no_paren_opened_closes_in_it(self) -> None:
+        # Bash 3.2 ends the substitution at such a pattern's `)`, so a reader can tell the Bashes apart there; a
+        # pattern opened with `(`, a backquote, which Bash 3.2 reads as Bash 4 does, and a case outside any
+        # substitution are no such text.
+        texts = {
+            "x=$(case a in a) b;; esac)": True,
+            "x=$( (case a in b|a) c;; esac) )": True,
+            "x=$(echo $(case a in a) b;; esac))": False,
+            "x=$(case a in (a) b;; (c) d;; esac)": False,
+            "x=`case a in a) b;; esac`": False,
+            "case a in a) x=$(b);; esac": False,
+        }
+        for text, bare in texts.items():
+            with self.subTest(text=text):
+                word = first_simple(text).words[0] if not text.startswith("case") else None
+                sources = list(word.substitutions) if word is not None else []
+                self.assertEqual(bare, any(getattr(source, "bare_case", False) for source in sources))
+        inner = first_simple("x=$(echo $(case a in a) b;; esac))").words[0].substitutions[0]
+        self.assertTrue(getattr(first_simple(inner).words[1].substitutions[0], "bare_case", False))
+
+    def test_a_refusal_says_when_a_case_pattern_no_paren_opened_ended_the_substitution_for_bash_3_2(self) -> None:
+        # Bash 4 and later refuse this, the `#` taking the substitution's close; Bash 3.2 ends the substitution at `a)`
+        # and runs the git call.
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("x=$(case x in a) ; git commit -m y #;; esac)")
+        self.assertTrue(raised.exception.bare_case)
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("x=$(echo ')")
+        self.assertFalse(raised.exception.bare_case)
+
     def test_each_substitution_keeps_the_form_that_opened_it(self) -> None:
         command = first_simple('echo $(a) `b` <(c) >(d) "$(e)"')
         forms = [getattr(text, "form", None) for word in command.words for text in word.substitutions]
@@ -553,6 +583,10 @@ def test_time_after_a_pipe_and_more_than_one_newline_is_the_keyword_bash_refuses
         "function",
         # `case` is a reserved word only where a command starts, so this `)` closes the substitution.
         "x=$(echo case a in a) :;; esac)",
+        # A compound command that the text, or a substitution, ends before its word.
+        "echo; case",
+        "for",
+        "select",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
@@ -713,8 +747,8 @@ def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definiti
         # /bin/bash, ends the substitution at the pattern's `)`, so its syntax check refuses the first six. It does not
         # refuse them before running them: where the rest of the line parses, as when a newline ends the pattern's
         # commands, it runs `x= b` in the shell around the substitution and refuses only the next line. It reads the
-        # empty case and the backquoted one as these do. The grammar keeps the one reading of Bash 4 and later, a
-        # difference the hub guard's contract states.
+        # empty case and the backquoted one as these do. The grammar keeps the one reading of Bash 4 and later and
+        # marks such a substitution, bare_case, which the hub guard refuses while a hub is guarded.
         (
             'os=$(case "$(uname)" in Darwin) echo mac;; *) echo linux;; esac)',
             [[], ["uname"], ["echo", "mac"], ["echo", "linux"]],
@@ -755,7 +789,8 @@ def test_command_words_mark_only_a_word_whose_part_names_its_form_alone_as_unset
     assert found == ["git", "$@", "${x:-y}", "$t", "x?", "?", "?", "?", "?", "q", "(", "(("]
 
 
-@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`"])
+# A substitution that ends where its compound command's word should stand, as `$(case)`, is refused, not an IndexError.
+@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`", "x=$(case)", "x=$(for)"])
 def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) -> None:
     with pytest.raises(BashSyntaxError):
         bash_syntax.simple_commands(text)

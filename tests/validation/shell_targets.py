@@ -16,7 +16,7 @@ from pathlib import Path
 import file_presence
 import frontmatter
 import whole_number
-from bash_syntax import BashSyntaxError, Word, every_command, expanded_words, here_documents, parse
+from bash_syntax import BashSyntaxError, CommandList, Word, every_command, expanded_words, here_documents, parse
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
 from text_lines import LINE_BREAK, program_lines
@@ -156,12 +156,21 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
     for index, token in enumerate(TEMPLATE_TOKEN.finditer(text)):
         if index in placed:
             quoted: bool | None = placed[index][1]
-        elif parse(marked.replace(f"TEMPLATE_TOKEN_{index}_", "", 1)) == tree:
-            continue  # the grammar reads nothing where the token stands: it is in a comment
+        elif _in_comment(marked, f"TEMPLATE_TOKEN_{index}_", tree):
+            continue
         else:
             quoted = None
         found.append((text.count("\n", 0, token.start()), token.group(1), quoted))
     return found
+
+
+def _in_comment(marked: str, marker: str, tree: CommandList) -> bool:
+    """Whether the grammar reads nothing where a marker stands, so it is in a comment: the text without it reads as the
+    same tree. Text that no longer reads without it, as a function named by the token alone, holds it as code."""
+    try:
+        return parse(marked.replace(marker, "", 1)) == tree
+    except BashSyntaxError:
+        return False
 
 
 def _marker_place(marker: re.Match[str]) -> int:
@@ -180,7 +189,8 @@ def _word_markers(word: Word) -> Iterator[tuple[int, int, bool | None]]:
             runs[-1] += [(character, part.quoted) for character in part.text]
             continue
         runs.append([])
-        quoted = True if part.quoted else None
+        # A marker in a parameter's name, as `"$Y{{X}}"` gives, is no value of its own once rendered, quoted or not.
+        quoted = True if part.quoted and part.kind != "parameter" else None
         yield from ((_marker_place(marker), 1, quoted) for marker in TOKEN_MARKER.finditer(part.text))
     for run in runs:
         for marker in TOKEN_MARKER.finditer("".join(character for character, _ in run)):

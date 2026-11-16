@@ -20,8 +20,10 @@ can tell literal text from a `$NAME` it must look up and from what only running 
 process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text of every command and
 process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
 subshell Bash runs it in. A `$( )` body is read as a command list, as Bash 4 and later read it, so a case pattern's
-`)` inside it closes the pattern, not the substitution, where Bash 3.2 ends the substitution and refuses the rest; each
-substitution's text keeps the form that opened it.
+`)` inside it closes the pattern, not the substitution. Bash 3.2, macOS's /bin/bash, ends the substitution at a
+pattern's `)` that no `(` opened and runs the rest of the line in the shell around it, as when a `#` after it comments
+out the rest, so such a substitution's text says so, `bare_case`, for a reader to refuse what the two Bashes run
+differently. Each substitution's text keeps the form that opened it.
 
 Every word, operator, and simple command keeps the line it starts on, counted from 1 at each LF alone, as Bash counts
 its lines, so a reader can place what it finds on the script's own line. The text of a substitution or of a
@@ -56,6 +58,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
 - An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
 - A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
+- A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
   arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
   BashSyntaxError.
@@ -130,22 +133,28 @@ DOUBLE_QUOTED_ESCAPES = frozenset('$`"\\\n')
 
 
 class BashSyntaxError(ValueError):
-    """Text Bash would refuse, or that this grammar does not read."""
+    """Text Bash would refuse, or that this grammar does not read; `bare_case` when a `$( )` it refuses holds a case
+    pattern whose `)` no `(` opened, which Bash 3.2 takes for the substitution's end and so may run as written."""
+
+    bare_case = False
 
 
 class Source(str):
     """Text the reader takes from a script, a substitution's or a here-document's body, which keeps the script line
     each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
     `lines[len(self)]` the line its end stands on, and, for a substitution's text, the `form` that opened it: `$(`,
-    `` ` ``, `<(`, or `>(`. It compares and hashes as the plain text it holds."""
+    `` ` ``, `<(`, or `>(`, and whether it is a `$( )` or process substitution's body holding a case pattern whose `)`
+    no `(` opened, `bare_case`, which Bash 3.2 reads otherwise. It compares and hashes as the plain text it holds."""
 
     lines: tuple[int, ...]
     form: str
+    bare_case: bool
 
     def __new__(cls, text: str, lines: Sequence[int], form: str = "") -> Source:
         source = super().__new__(cls, text)
         source.lines = tuple(lines)
         source.form = form
+        source.bare_case = False
         return source
 
 
@@ -352,11 +361,12 @@ class CommandList:
 class OpenCase:
     """A `case` the lexer is inside, so a pattern's `)` closes the pattern, not a `$( )` around it, as Bash 4 and
     later read it: the parenthesis depth it opened at, what it reads next, its "subject" word, then "in", its
-    "pattern" list, or a branch's "commands", and whether the pattern being read has begun."""
+    "pattern" list, or a branch's "commands", whether the pattern being read has begun, and whether a `(` opened it."""
 
     depth: int
     state: str = "subject"
     begun: bool = False
+    opened: bool = False
 
 
 class Lexer:
@@ -395,6 +405,8 @@ class Lexer:
         # here, innermost last.
         self.depth = 0
         self.cases: list[OpenCase] = []
+        # Whether a `$( )` body holds a case pattern whose `)` no `(` opened, which Bash 3.2 takes for the body's end.
+        self.bare_case = False
 
     def peek(self, offset: int = 0) -> str:
         position = self.index + offset
@@ -468,6 +480,9 @@ class Lexer:
         if case is None:
             return False
         if case.state == "pattern" and (operator == ")" or (operator == "(" and not case.begun)):
+            # Bash 3.2 ends a `$( )` at a pattern's `)` that no `(` opened, so the two Bashes read the body apart.
+            self.bare_case = self.bare_case or (operator == ")" and self.nested and not case.opened)
+            case.opened = operator == "("
             case.state, case.begun = ("commands", False) if operator == ")" else ("pattern", True)
             return True
         if case.state == "commands" and operator in CASE_ENDS:
@@ -798,9 +813,15 @@ class Lexer:
         """The body of a `$( )`, `<( )`, or `>( )`, the form that opens before start, read as commands up to its
         close."""
         inner = Lexer(self.text, start, nested=True, lines=self.lines)
-        inner.run()
+        try:
+            inner.run()
+        except BashSyntaxError as error:
+            error.bare_case = error.bare_case or inner.bare_case
+            raise
         self.index = inner.index + 1
-        return Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
+        source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
+        source.bare_case = inner.bare_case
+        return source
 
     def arithmetic(self, start: int, quotes: bool = False) -> list[str]:
         """The substitutions in arithmetic from start to the `))` that closes it, read past; with quotes set, as Bash
@@ -979,6 +1000,8 @@ class Parser:
         return self.tokens[self.index] if self.index < len(self.tokens) else None
 
     def advance(self) -> Token:
+        if self.index >= len(self.tokens):
+            raise BashSyntaxError("the text ends where a word should stand")
         token = self.tokens[self.index]
         self.index += 1
         return token
