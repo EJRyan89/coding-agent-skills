@@ -36,7 +36,7 @@ import ast
 import functools
 import re
 import unittest
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -410,15 +410,10 @@ def _falls_through(body: list[ast.stmt], aliases: dict[str, str]) -> bool:
 @dataclass
 class Reading:
     """What the reader found from one entry point: the codes it can exit with, and the returns it could not follow,
-    each by its file, line, and expression."""
+    each by its file, line, and expression, in the order of their place in the source (see read_codes)."""
 
     codes: set[int] = field(default_factory=set)
     unread: list[tuple[Path, int, str]] = field(default_factory=list)
-
-
-def _distinct(lists: Iterable[list[tuple[Module, Function]]]) -> list[tuple[Module, Function]]:
-    """The functions the lists name, each once, in the order first named."""
-    return list({id(function): (module, function) for found in lists for module, function in found}.values())
 
 
 @dataclass(frozen=True)
@@ -433,6 +428,120 @@ class Parts:
     known: bool = True
 
 
+# A called expression as callables keys it: the expression's id and the id of the scope it is read in; and as its
+# walk enters it: the expression, its parts, and its scope.
+Key = tuple[int, int]
+Made = tuple[ast.expr, Parts, Scope]
+
+
+@dataclass(eq=False)
+class Asking:
+    """One read that asked the callers of a scope, kept with what it has done, so the pass after a late caller runs it
+    again on what is new: a parameter's read, with how many of its scope's callers it has read, and a call's or a
+    run_main target's, with the functions it has followed. See CodeReader.read."""
+
+    run: Callable[[Asking], None]
+    scope: Scope
+    element: int | None = None
+    node: ast.expr | None = None
+    name: str = ""
+    seen: int = 0
+    followed: set[int] = field(default_factory=set)
+
+
+@dataclass(eq=False, repr=False)
+class Group:
+    """A strongly connected group of called expressions that CodeReader.callables answered together: its members, by
+    their keys; the groups whose answers read one of its members' answers; and the reads that asked for one of them.
+    A late caller of a scope whose callers a member asked drops the group, every group that read it, and their answers,
+    and the pass that follows runs their reads again: see CodeReader.again. It has no field-by-field repr, since its
+    readers and reads lead to each other's groups, which such a repr writes out once on each path to them."""
+
+    members: list[Key]
+    readers: list[Group] = field(default_factory=list)
+    askings: dict[int, Asking] = field(default_factory=dict)
+    dropped: bool = False
+    # Whether a group it reads was dropped with it; the groups outside it whose answers its members read; and, for a
+    # group of one parameter, that parameter as read in its scope and how many of the scope's callers it read: see
+    # CodeReader._grow.
+    read_dropped: bool = False
+    reads: dict[int, Group] = field(default_factory=dict)
+    parameter: tuple[ast.expr, Scope, int] | None = None
+
+
+@dataclass(frozen=True)
+class Answer:
+    """What callables answers for one called expression in one scope: the functions it can be, whether the reader can
+    tell it, and whether it can tell every value the expression leads to; and the group it was answered in."""
+
+    group: Group
+    functions: dict[int, tuple[Module, Function]]
+    told: bool
+    complete: bool
+
+
+def _told(
+    parts: dict[Key, Parts], values: dict[Key, list[Key]], readers: dict[Key, list[Key]], outside: dict[Key, Answer]
+) -> dict[Key, bool]:
+    """Which members of a group the reader can tell, the greatest such set: a parameter is told when one of its
+    values is, and any other expression the reader can read when all its values are, each member inside the group
+    taken as told until a value it cannot tell makes it not."""
+    told = dict.fromkeys(parts, True)
+    # For a parameter, how many of its values are told; any other expression is untold once one value is not.
+    counts: dict[Key, int] = {}
+    untold: list[Key] = []
+    for member, made in parts.items():
+        results = [child not in outside or outside[child].told for child in values[member]]
+        if made.callers:
+            counts[member] = sum(results)
+            if results and not counts[member]:
+                untold.append(member)
+        elif made.named is None and (not made.known or not all(results)):
+            untold.append(member)
+    for member in untold:
+        told[member] = False
+    while untold:
+        member = untold.pop()
+        for reader in readers[member]:
+            if not told[reader]:
+                continue
+            if parts[reader].callers:
+                counts[reader] -= 1
+                if counts[reader]:
+                    continue
+            told[reader] = False
+            untold.append(reader)
+    return told
+
+
+def _functions(
+    parts: dict[Key, Parts],
+    values: dict[Key, list[Key]],
+    readers: dict[Key, list[Key]],
+    outside: dict[Key, Answer],
+    told: dict[Key, bool],
+) -> dict[Key, dict[int, tuple[Module, Function]]]:
+    """The functions of each told member of a group, the least such sets: the function it names, and those of each
+    told value it leads to; an untold member has none."""
+    functions: dict[Key, dict[int, tuple[Module, Function]]] = {member: {} for member in parts}
+    for member, made in parts.items():
+        if not told[member]:
+            continue
+        if made.named is not None:
+            functions[member][id(made.named[1])] = made.named
+        for child in values[member]:
+            if child in outside:
+                functions[member].update(outside[child].functions)
+    changed = [member for member in parts if told[member]]
+    while changed:
+        member = changed.pop()
+        for reader in readers[member]:
+            if told[reader] and not functions[member].keys() <= functions[reader].keys():
+                functions[reader].update(functions[member])
+                changed.append(reader)
+    return functions
+
+
 class CodeReader:
     """Reads the codes one entry point can exit with, following into the modules its imports name."""
 
@@ -445,18 +554,25 @@ class CodeReader:
         # scopes that called each, by the scope's id: see scope.
         self.scopes: dict[tuple[int, int, tuple[tuple[str, int], ...], int | None], Scope] = {}
         self.callers: dict[int, dict[int, Scope]] = {}
-        # What one pass has read, each once: a function's returns for each element in a scope, a local's value for
-        # each element in a scope, and a parameter for each element in a scope; and the scopes a read asked the
-        # callers of. A caller that reaches a scope after a read asked its callers makes the pass late: see read.
+        # What the reader has read, each once whatever pass reached it: a function's returns for each element in a
+        # scope, a local's value for each element in a scope, and a parameter for each element in a scope, with the
+        # parameter reads of each scope; and each read of a call for an element in a scope. The scopes a read asked the
+        # callers of, and those a caller reached after that, which the next pass reads again for: see read.
         self.returned: set[tuple[int | None, int]] = set()
         self.assigned_read: set[tuple[int, int | None, int]] = set()
-        self.parameters_read: set[tuple[int, str, int | None]] = set()
+        self.parameters_read: dict[tuple[int, str, int | None], Asking] = {}
+        self.parameter_askings: dict[int, list[Asking]] = {}
+        self.call_askings: dict[tuple[int, int, int | None], Asking] = {}
         self.asked: set[int] = set()
-        self.late: bool
+        self.late: set[int] = set()
         self.passes = 0
+        # callables' answer for each called expression in each scope, and the groups that asked each scope's callers.
+        self.answers: dict[Key, Answer] = {}
+        self.groups_asking: dict[int, list[Group]] = {}
         # The reads waiting their turn, so no read nests inside another on Python's stack: see later.
         self.pending: list[Callable[[], None]] = []
-        self.unread_seen: set[tuple[Path, int, str]] = set()
+        # Each unread return recorded, with the first column it was found at on its line: see read_codes.
+        self.unread_seen: dict[tuple[Path, int, str], int] = {}
         # Each function's bindings, by the function's id: see bound.
         self.bindings: dict[int, dict[str, list[tuple[ast.expr, int | None]]]] = {}
         self.reached: set[int] = set()
@@ -579,7 +695,7 @@ class CodeReader:
         if caller is not None and id(caller) not in callers:
             callers[id(caller)] = caller
             if id(made) in self.asked:
-                self.late = True
+                self.late.add(id(made))
         return made
 
     def module_scope(self, module: Module) -> Scope:
@@ -616,47 +732,160 @@ class CodeReader:
             return Parts(values=[(node.func.value, scope)])
         return Parts(known=False)
 
-    def callables(self, node: ast.expr, scope: Scope) -> tuple[list[tuple[Module, Function]], bool]:
-        """The functions a called expression can be, and whether the reader can tell them all.
+    def callables(self, node: ast.expr, scope: Scope, asking: Asking) -> tuple[list[tuple[Module, Function]], bool]:
+        """The functions a called expression can be, and whether the reader can tell them all, recording that the read
+        asked so it runs again when the answer can change.
 
-        Each expression is answered once for the question in each scope, from a stack rather than Python's, and one
-        read again while its own answer is open leads back to itself and adds nothing, so a local rebound from itself,
-        as `handler = handler.get("a")`, a table of functions that names itself, or a parameter a recursion passes on,
-        ends, since the functions are their union. Within one scope, a value the reader cannot tell among a local's or
-        a table's values leaves the whole answer untold, as a call through it can be any of them. A parameter is
-        answered in each scope that called its own: where the reader can tell it in some of them, it is the functions
-        those name, and one it cannot tell leaves the question incomplete, so the call is unread and those functions
-        are still read; where it can tell it in none, the parameter is untold, as a local's value is."""
-        root = (id(node), id(scope))
-        answers: dict[tuple[int, int], tuple[list[tuple[Module, Function]], bool]] = {}
-        parts: dict[tuple[int, int], Parts] = {}
-        incomplete = False
-        stack: list[tuple[ast.expr, Scope, bool]] = [(node, scope, False)]
-        while stack:
-            node, scope, ready = stack.pop()
+        An expression leads to the values it is read as (see _parts). It names a function, is one the reader cannot
+        tell, or is told as its values are: a parameter, answered in each scope that called its own, when any of them
+        is told, and any other expression, a local's values or a table's, when all of them are, so within one scope a
+        value the reader cannot tell leaves the whole answer untold, as a call through it can be any of them. Its
+        functions are those of its told values. A call is complete when no value it leads to, however far, is one the
+        reader cannot tell; otherwise it is unread and the functions found are still read. Values that lead to each
+        other, as a local rebound from itself (`handler = handler.get("a")`), a table that names itself, or a
+        parameter a recursion passes on, are answered together, a strongly connected group at a time: the greatest
+        set of them told, and the least sets of functions. An answer is kept for every call in every pass, and dropped
+        only when a late caller reaches a scope whose callers a member of its group asked, or a group it read is
+        dropped: see read. So a call through a parameter of functions that call each other walks their callers once,
+        not once for each call.
+
+        As callers are added, an answer only grows: a parameter is told once any value is, which more callers cannot
+        undo, since a scope given arguments is made by a call that records its caller, so no parameter is asked with
+        none; its functions only gain; and a call only goes from complete to not. read relies on this.
+
+        These are the answers a walk gives that answers each call afresh, taking a value it meets again while that
+        value's answer is open as told with no functions: under either, a call is complete exactly when no value the
+        reader cannot tell is reachable from it, since such a value leaves each expression above it on the walk untold
+        or the call incomplete; and a complete call's functions are exactly the functions reachable from it, since
+        every value it meets is told, so each function reaches the call through the expressions the walk read it from.
+        A stated limit: for a call that is not complete, such a walk's functions depended on the order it met the
+        values of a group in, where a value it met again while open was one that leads to a value the reader cannot
+        tell, taken as told; it could then read a function these answers do not, or miss one, and these answers depend
+        on no order. The call is unread either way, so its entry point's table is held only to name the codes the
+        reader reads. No repository code reaches such a group."""
+        key = (id(node), id(scope))
+        if key not in self.answers:
+            self._answer(node, scope)
+        answer = self.answers[key]
+        answer.group.askings[id(asking)] = asking
+        return list(answer.functions.values()), answer.complete
+
+    def _answer(self, node: ast.expr, scope: Scope) -> None:
+        """Answer a called expression in its scope, and each expression it leads to that has no answer, a strongly
+        connected group at a time, by Tarjan's walk from a stack of its own."""
+        order: dict[Key, int] = {}
+        low: dict[Key, int] = {}
+        made: dict[Key, Made] = {}
+        # The expressions entered whose group is not answered yet, with where each was entered among them, and the
+        # walk's frames: an expression's key, its parts, and the next of its values to visit.
+        entered: list[Key] = []
+        places: dict[Key, int] = {}
+        frames: list[tuple[Key, Parts, list[int]]] = []
+
+        def enter(node: ast.expr, scope: Scope) -> None:
             key = (id(node), id(scope))
-            if not ready:
-                if key in answers:
+            order[key] = low[key] = len(order)
+            parts = self._parts(node, scope)
+            made[key] = (node, parts, scope)
+            places[key] = len(entered)
+            entered.append(key)
+            frames.append((key, parts, [0]))
+
+        enter(node, scope)
+        while frames:
+            key, parts, at = frames[-1]
+            if at[0] < len(parts.values):
+                value, given = parts.values[at[0]]
+                at[0] += 1
+                child = (id(value), id(given))
+                if child in self.answers:
                     continue
-                answers[key] = ([], True)
-                made = parts[key] = self._parts(node, scope)
-                stack.append((node, scope, True))
-                stack += [(value, given, False) for value, given in made.values]
+                if child not in order:
+                    enter(value, given)
+                else:
+                    # Entered and not answered: it is in the group of an expression the walk is still in.
+                    low[key] = min(low[key], order[child])
                 continue
-            made = parts[key]
-            results = [answers[(id(value), id(given))] for value, given in made.values]
-            if made.named is not None:
-                answers[key] = ([made.named], True)
-            elif not made.known:
-                answers[key] = ([], False)
-            elif made.callers and any(known for _, known in results):
-                incomplete = incomplete or not all(known for _, known in results)
-                answers[key] = (_distinct(found for found, _ in results), True)
-            else:
-                known = all(each for _, each in results)
-                answers[key] = (_distinct(found for found, _ in results) if known else [], known)
-        found, known = answers[root]
-        return found, known and not incomplete
+            frames.pop()
+            if frames:
+                parent = frames[-1][0]
+                low[parent] = min(low[parent], low[key])
+            if low[key] == order[key]:
+                self._settle(entered[places[key] :], made)
+                del entered[places[key] :]
+
+    def _settle(self, members: list[Key], made: dict[Key, Made]) -> None:
+        """Answer one strongly connected group of called expressions, every value outside it already answered."""
+        group = Group(members)
+        inside = set(members)
+        parts = {member: made[member][1] for member in members}
+        values = {member: [(id(value), id(given)) for value, given in parts[member].values] for member in members}
+        # Each member's values inside the group, read backwards: the members whose answer reads each member's.
+        readers: dict[Key, list[Key]] = {member: [] for member in members}
+        outside: dict[Key, Answer] = {}
+        for member in members:
+            node, member_parts, scope = made[member]
+            if member_parts.callers:
+                self.groups_asking.setdefault(id(scope), []).append(group)
+                if len(members) == 1:
+                    group.parameter = (node, scope, len(member_parts.values))
+            for child in values[member]:
+                if child in inside:
+                    readers[child].append(member)
+                elif child not in outside:
+                    outside[child] = self.answers[child]
+                    self._reads(group, outside[child].group)
+        # Whether every value the group leads to can be told: the members reach each other, so it is one answer.
+        complete = all(
+            parts[member].known and all(child in inside or outside[child].complete for child in values[member])
+            for member in members
+        )
+        told = _told(parts, values, readers, outside)
+        functions = _functions(parts, values, readers, outside, told)
+        for member in members:
+            self.answers[member] = Answer(group, functions[member], told[member], complete)
+
+    @staticmethod
+    def _reads(group: Group, read: Group) -> None:
+        """Record that a group's answers read another group's."""
+        if id(read) not in group.reads:
+            group.reads[id(read)] = read
+            read.readers.append(group)
+
+    def _grow(self, group: Group, answer: Answer, late: set[int]) -> None:
+        """Answer again a dropped group of one parameter whose scope gained callers and whose other values kept their
+        answers: its answer grows by the values the new callers give, as a parameter is told when any of its values
+        is, and its functions are theirs, so it is the answer a walk from it gives anew. A new value that leads back to
+        it answers it anew in the group they make together."""
+        assert group.parameter is not None
+        node, scope, seen = group.parameter
+        key = (id(node), id(scope))
+        if key in self.answers or id(scope) not in late or group.read_dropped:
+            return
+        callers = self.callers_of(scope)
+        argument = scope.argument(node.id) if isinstance(node, ast.Name) else None
+        assert argument is not None
+        added = [(id(argument), id(caller)) for caller in callers[seen:]]
+        for caller in callers[seen:]:
+            if (id(argument), id(caller)) not in self.answers:
+                self._answer(argument, caller)
+            if key in self.answers:
+                return
+        # The group is answered again as it was, its readers and the reads that asked it dropped and run again.
+        group.dropped = False
+        group.readers = []
+        group.askings = {}
+        group.parameter = (node, scope, len(callers))
+        self.groups_asking.setdefault(id(scope), []).append(group)
+        for child in added:
+            self._reads(group, self.answers[child].group)
+            answer.functions.update(self.answers[child].functions)
+        self.answers[key] = Answer(
+            group,
+            answer.functions,
+            answer.told or any(self.answers[child].told for child in added),
+            answer.complete and all(self.answers[child].complete for child in added),
+        )
 
     def call_scope(
         self, call: ast.Call, module: Module, function: Function, scope: Scope, element: int | None
@@ -687,10 +916,17 @@ class CodeReader:
         key = (id(scope), name, element)
         if key in self.parameters_read:
             return
-        self.parameters_read.add(key)
-        argument = scope.argument(name)
-        for caller in self.callers_of(scope):
-            self.value(argument, caller, element)
+        asking = self.parameters_read[key] = Asking(self._read_parameter, scope, element, name=name)
+        self.parameter_askings.setdefault(id(scope), []).append(asking)
+        self._read_parameter(asking)
+
+    def _read_parameter(self, asking: Asking) -> None:
+        """Read a parameter's expression in each scope that called its scope since this read last ran."""
+        callers = self.callers_of(asking.scope)
+        argument = asking.scope.argument(asking.name)
+        for caller in callers[asking.seen :]:
+            self.value(argument, caller, asking.element)
+        asking.seen = len(callers)
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
@@ -719,13 +955,11 @@ class CodeReader:
         elif isinstance(node, ast.Name) and scope.function is not None and self.bound(scope.function, node.id):
             self.later(self.assigned, node, scope, element)
         elif isinstance(node, ast.Call):
-            functions, complete = self.callables(node.func, scope)
-            for module, function in functions:
-                self.later(
-                    self.returns, module, function, self.call_scope(node, module, function, scope, element), element
-                )
-            if not complete:
-                self._unread(node, scope)
+            key = (id(node), id(scope), element)
+            asking = self.call_askings.get(key)
+            if asking is None:
+                asking = self.call_askings[key] = Asking(self._read_call, scope, element, node)
+            self._read_call(asking)
         elif isinstance(node, ast.Attribute) and node.attr in scope.module.properties:
             for method in scope.module.properties[node.attr]:
                 self.later(self.returns, scope.module, method, self.scope(scope.module, method, (), scope), element)
@@ -743,7 +977,7 @@ class CodeReader:
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
         """Add the codes each value the function binds to a local name can be.
 
-        Each value is read once a pass for each element and each scope, as returns reads a function: a value that
+        Each value is read once for each element and each scope, as returns reads a function: a value that
         reads its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first
         read has not, since the codes are their union."""
         assert scope.function is not None
@@ -760,9 +994,12 @@ class CodeReader:
     def _unread(self, node: ast.expr | None, scope: Scope) -> None:
         expression = ast.unparse(node) if node is not None else "None"
         found = (scope.module.path, getattr(node, "lineno", 0), expression)
+        column = getattr(node, "col_offset", 0)
         if found not in self.unread_seen:
-            self.unread_seen.add(found)
+            self.unread_seen[found] = column
             self.reading.unread.append(found)
+        else:
+            self.unread_seen[found] = min(self.unread_seen[found], column)
 
     def exits(self, argument: ast.expr | None, scope: Scope) -> None:
         """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
@@ -813,34 +1050,101 @@ class CodeReader:
     def read(self, entry: Module) -> None:
         """Read what the entry point's run_main runs, a pass at a time, until a pass ends with no late caller.
 
-        Each read of a pass waits its turn in `pending` and runs from there, so however deep the calls run, no read
-        nests inside another on Python's stack, only an expression's parts, which the parser bounds. A pass reads each
-        function, local, and parameter once for each element and scope. A caller that reaches a scope after a read of
-        that pass asked the scope's callers may give it a value that read missed, so the pass is late and another
-        follows, with every caller recorded so far; each late pass records a caller no pass had, and the callers are
-        bounded by the scopes, so the passes end. A stated limit: the passes number the callers found late, each
-        re-reading the whole entry point, so a chain of k relays, each a function handed on to the next through one
-        call, takes k passes."""
-        while True:
+        Each read waits its turn in `pending` and runs from there, so however deep the calls run, no read nests inside
+        another on Python's stack, only an expression's parts, which the parser bounds. The reader reads each function,
+        local, and parameter once for each element and scope, whatever pass reaches it. A caller that reaches a scope
+        after a read asked the scope's callers may give that read a value it missed, so the pass is late, and the next
+        runs again each read that asked a late scope's callers, directly or through an answer callables gave, each on
+        what it has not read: a parameter in the callers recorded since, a call through the functions it has not
+        followed. Each late pass records a caller no pass had, and the callers are bounded by the scopes, so the passes
+        end; and a pass reads only what its late callers reach, so a chain of k relays, each a function handed on to
+        the next through one call, takes k passes, each reading one relay's calls. A stated limit: where a function
+        handed on also recurses, its call's parameter reads that parameter's grown answer and is answered again over
+        every caller each pass, so k relays take time quadratic in k (1,500: about 2.5 s).
+
+        The codes, the unread returns, and the scopes are those of a reader that read every scope in every caller the
+        reading records, which is what a reader that read the whole entry point again each pass found, except as
+        callables' stated limit says: where a call is not complete, its group's answer may name a function that
+        reader's walk did not, or miss one, and so a code. Every read is monotone in the callers, as callables states,
+        a read is run again whenever a scope it asked the callers of gains one, and so the last run of each read has
+        the callers every pass reached, and its earlier runs found nothing it does not."""
+        scope = self.module_scope(entry)
+        self.passes = 1
+        for block in main_blocks(entry.tree):
+            for target in runner_targets(block, entry.aliases):
+                if isinstance(target, ast.Call):
+                    self.value(target, scope)
+                else:
+                    self._read_target(Asking(self._read_target, scope, node=target))
+        self._drain()
+        while self.late:
             self.passes += 1
-            self.returned.clear()
-            self.assigned_read.clear()
-            self.parameters_read.clear()
-            self.asked.clear()
-            self.reached.clear()
-            self.late = False
-            scope = self.module_scope(entry)
-            for block in main_blocks(entry.tree):
-                for target in runner_targets(block, entry.aliases):
-                    functions, complete = ([], False) if isinstance(target, ast.Call) else self.callables(target, scope)
-                    if not complete:
-                        self.value(target, scope)
-                    for each, function in functions:
-                        self.later(self.returns, each, function, self.scope(each, function, (), scope))
-            while self.pending:
-                self.pending.pop()()
-            if not self.late:
-                return
+            late, self.late = self.late, set()
+            for asking in self.again(late):
+                asking.run(asking)
+            self._drain()
+
+    def _drain(self) -> None:
+        while self.pending:
+            self.pending.pop()()
+
+    def again(self, late: set[int]) -> list[Asking]:
+        """The reads to run again for callers that reached the late scopes after a read asked their callers: each
+        parameter read of a late scope, and each read that took an answer callables gave from a group that asked a late
+        scope's callers or read such a group's answer, each such group dropped with its answers, and answered again
+        when a read asks, or at once when it is a parameter that only gained callers: see _grow."""
+        askings: dict[int, Asking] = {}
+        dropped: dict[int, tuple[Group, Answer]] = {}
+        groups = [group for each in late for group in self.groups_asking.pop(each, [])]
+        while groups:
+            group = groups.pop()
+            if group.dropped:
+                continue
+            group.dropped = True
+            for member in group.members:
+                dropped[id(group)] = (group, self.answers.pop(member))
+            askings.update(group.askings)
+            for reader in group.readers:
+                reader.read_dropped = True
+            groups += group.readers
+        for group, answer in dropped.values():
+            if group.parameter is not None:
+                self._grow(group, answer, late)
+        for each in late:
+            askings.update((id(asking), asking) for asking in self.parameter_askings.get(each, []))
+        return list(askings.values())
+
+    def _read_call(self, asking: Asking) -> None:
+        """Follow each function a call can run that this read has not followed, and record the call as unread when the
+        reader cannot tell them all."""
+        call = asking.node
+        assert isinstance(call, ast.Call)
+        functions, complete = self.callables(call.func, asking.scope, asking)
+        for module, function in functions:
+            if id(function) not in asking.followed:
+                asking.followed.add(id(function))
+                self.later(
+                    self.returns,
+                    module,
+                    function,
+                    self.call_scope(call, module, function, asking.scope, asking.element),
+                    asking.element,
+                )
+        if not complete:
+            self._unread(call, asking.scope)
+
+    def _read_target(self, asking: Asking) -> None:
+        """Follow each function a run_main target that is no call can be that this read has not followed, given
+        nothing, and read the target as a returned expression when the reader cannot tell them all."""
+        target = asking.node
+        assert target is not None
+        functions, complete = self.callables(target, asking.scope, asking)
+        if not complete:
+            self.value(target, asking.scope)
+        for each, function in functions:
+            if id(function) not in asking.followed:
+                asking.followed.add(id(function))
+                self.later(self.returns, each, function, self.scope(each, function, (), asking.scope))
 
 
 def runner_targets(block: ast.If, aliases: dict[str, str]) -> list[ast.expr]:
@@ -854,7 +1158,9 @@ def runner_targets(block: ast.If, aliases: dict[str, str]) -> list[ast.expr]:
 
 
 def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
-    """The reader of an entry point, having read the codes it can exit with and the returns it could not follow."""
+    """The reader of an entry point, having read the codes it can exit with and the returns it could not follow, these
+    sorted by their place in the source: file, line, column, and expression. The order the reader meets them in
+    depends on which pass a late caller makes read them, so a report in that order would change with the passes."""
     reader = CodeReader(root, entry.path)
     module = reader.module_at(entry.path, entry.tree)
     assert module is not None
@@ -862,6 +1168,7 @@ def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
     reader.read(module)
     if reader.reads_error_code:
         reader.reading.codes |= reader.error_codes | reader.error_defaults()
+    reader.reading.unread.sort(key=lambda found: (found[0].as_posix(), found[1], reader.unread_seen[found], found[2]))
     return reader
 
 

@@ -31,27 +31,59 @@ MAIN = (
 TABLE = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  2  a usage error\n"
 
 
-# The reads a test's reader may queue, the functions it may look up, and the passes it may start, together: past
-# eight times what the deepest fixture here takes, so a reader that loops fails within a second instead of running to
-# the suite's time limit.
-STEP_LIMIT = 50_000
+# The steps a test's reader may take, together: each read it queues, function it looks up, module scope it asks for,
+# and pass it starts after a late caller; each time callables' walk asks whether a value is answered; and each time
+# _functions reads whether a group's member is told. Each loop the reader runs takes one of these on every turn, so a
+# reader that loops fails within a second instead of running to the suite's time limit. The limit is past eight times
+# what the deepest fixture here takes, the ten functions calling each other at 46,641, most of them the walk's and
+# _functions' steps for each value they read.
+STEP_LIMIT = 400_000
 
 
 @pytest.fixture(autouse=True)
 def bounded_reader(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail a test whose exit-table reader queues reads, looks up functions, and starts passes past STEP_LIMIT."""
+    """Fail a test whose exit-table reader takes more than STEP_LIMIT steps: reads queued, functions looked up, module
+    scopes asked for, passes started after a late caller, answers looked up, and members' told read."""
     steps = 0
-    for name in ("later", "function_named", "module_scope"):
+
+    def step() -> None:
+        nonlocal steps
+        steps += 1
+        if steps > STEP_LIMIT:
+            raise AssertionError(f"the exit-table reader took more than {STEP_LIMIT} steps")
+
+    for name in ("later", "function_named", "module_scope", "again"):
         original = getattr(exit_tables.CodeReader, name)
 
-        def step(self: exit_tables.CodeReader, *arguments: Any, original: Any = original) -> Any:
-            nonlocal steps
-            steps += 1
-            if steps > STEP_LIMIT:
-                raise AssertionError(f"the exit-table reader took more than {STEP_LIMIT} steps")
+        def counted(self: exit_tables.CodeReader, *arguments: Any, original: Any = original) -> Any:
+            step()
             return original(self, *arguments)
 
-        monkeypatch.setattr(exit_tables.CodeReader, name, step)
+        monkeypatch.setattr(exit_tables.CodeReader, name, counted)
+
+    class Answers(dict[Any, Any]):
+        def __contains__(self, key: object) -> bool:
+            step()
+            return super().__contains__(key)
+
+    class Told(dict[Any, bool]):
+        def __getitem__(self, key: Any) -> bool:
+            step()
+            return super().__getitem__(key)
+
+    made = exit_tables.CodeReader.__init__
+
+    def answering(self: exit_tables.CodeReader, *arguments: Any) -> None:
+        made(self, *arguments)
+        self.answers = Answers()
+
+    functions = exit_tables._functions
+
+    def bounded(parts: Any, values: Any, readers: Any, outside: Any, told: Any) -> Any:
+        return functions(parts, values, readers, outside, Told(told))
+
+    monkeypatch.setattr(exit_tables.CodeReader, "__init__", answering)
+    monkeypatch.setattr(exit_tables, "_functions", bounded)
 
 
 def problems(files: dict[str, str]) -> list[str]:
@@ -241,13 +273,42 @@ TABLE_CALLS = (
     + "".join(f"    if c():\n        return T[k]({index + 3})\n" for index in range(10))
     + "    return 0\n"
 )
-# Five relays: R hands each Li on through F, which calls it with v, and Li hands on L(i+1), so each relay's caller is
-# found one pass after the last.
-RELAYS = (
-    "def c():\n    return bool(argparse)\ndef F(h, v):\n    return h(v)\ndef R(h, v):\n    return F(h, v)\n"
-    + "".join(f"def L{index}(v):\n    return R(L{index + 1}, v) if c() else {index + 3}\n" for index in range(1, 5))
-    + "def L5(v):\n    return v\ndef main():\n    return R(L1, 3)\n"
-)
+
+
+def relays(count: int, returning: bool = False) -> str:
+    """A ladder of relays: R hands each Li on through F, which calls it with v, and Li hands on L(i+1) or returns i + 3,
+    and, when returning, v too, so each relay's caller is found one pass after the last. Its codes are 3, which main
+    gives v, and each i + 3."""
+    value = "v if c() else " if returning else ""
+    return (
+        "def c():\n    return bool(argparse)\ndef F(h, v):\n    return h(v)\ndef R(h, v):\n    return F(h, v)\n"
+        + "".join(
+            f"def L{index}(v):\n    return R(L{index + 1}, v) if c() else {value}{index + 3}\n"
+            for index in range(1, count)
+        )
+        + f"def L{count}(v):\n    return v\ndef main():\n    return R(L1, 3)\n"
+    )
+
+
+def mutual_recursion(count: int) -> str:
+    """Functions of four parameters that call each other at six sites each, passing their parameters on in turn,
+    rotated and reversed, and return one of them called; main gives them four functions returning 3 to 6."""
+    names = ["a", "b", "d", "e"]
+    body = "def c():\n    return bool(argparse)\n" + "".join(
+        f"def leaf{index}():\n    return {index + 3}\n" for index in range(4)
+    )
+    for index in range(count):
+        body += f"def r{index}(a, b, d, e):\n"
+        for site in range(6):
+            turned = names[site % 4 :] + names[: site % 4]
+            passed = turned[::-1] if site % 2 else turned
+            body += f"    if c():\n        return r{(index * 7 + site * 3 + 1) % count}({', '.join(passed)})\n"
+        body += f"    return {names[index % 4]}()\n"
+    return body + "def main():\n    return r0(leaf0, leaf1, leaf2, leaf3)\n"
+
+
+# Five relays.
+RELAYS = relays(5)
 
 
 def reader_of(body: str) -> exit_tables.CodeReader:
@@ -336,7 +397,7 @@ def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_
     # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
     # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder. A pass
     # follows only one in which a caller reached a scope after a read asked its callers, so a shape with no such caller
-    # reads in one, and each relay found late takes one more. The reader takes at most 645 steps on these, so a reader
+    # reads in one, and each relay found late takes one more. The reader takes at most 555 steps on these, so a reader
     # that loops fails at 1,000.
     tree = ast.parse(f"{HEADER}{body}")
     functions = sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
@@ -359,6 +420,397 @@ def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_
     assert reader.reading.codes == codes
     assert len(reader.scopes) == scopes
     assert reader.passes == passes
+
+
+@pytest.mark.parametrize(
+    ("body", "per_node", "passes", "codes"),
+    [
+        pytest.param(relays(100, returning=True), 2, 100, {1, *range(3, 103)}, id="a hundred relays"),
+        pytest.param(mutual_recursion(10), 25, 2, {1, 3, 4, 5, 6}, id="ten functions calling each other"),
+    ],
+)
+def test_a_late_pass_reads_only_what_its_late_callers_reach_and_each_called_expression_is_answered_once(
+    body: str, per_node: int, passes: int, codes: set[int]
+) -> None:
+    # A step is a read queued or run, a function looked up, or a called expression's parts read, with each value they
+    # hold. A pass that read the whole entry point again read each relay once for every relay found before it, so a
+    # ladder of k relays took steps quadratic in k; and a walk that answered each call through a parameter anew went
+    # out to every scope that called it, and on to theirs, for each call, so functions calling each other took steps
+    # quadratic in their call sites. For each node of the syntax tree, the reader takes 1.4 steps on the relays and 21
+    # on the functions calling each other, at any size, so it fails past 2 and 25; the quadratic readers took 73 and
+    # 409 here, and 219 and 1,240 at three times the size. A reader that read a parameter's callers, followed a call's
+    # functions, or answered a parameter's callers again from the first, rather than only those new since, took 2.5 to
+    # 5.8 on the relays.
+    tree = ast.parse(f"{HEADER}{body}{ENTRY}")
+    bound = per_node * sum(1 for _ in ast.walk(tree))
+    steps = 0
+    counted: dict[str, Any] = {}
+    for name in ("returns", "value", "later", "_parts", "function_named"):
+        original = getattr(exit_tables.CodeReader, name)
+
+        def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
+            nonlocal steps
+            result = original(self, *arguments)
+            steps += 1 + (len(result.values) if isinstance(result, exit_tables.Parts) else 0)
+            if steps > bound:
+                raise AssertionError(f"the exit-table reader took more than {bound} steps")
+            return result
+
+        counted[name] = step
+    with mock.patch.multiple(exit_tables.CodeReader, **counted):
+        reader = reader_of(body)
+    assert reader.reading.codes == codes
+    assert reader.passes == passes
+
+
+# Shapes in which a caller is found late, or a group of called expressions reaches its own answer: the reader reads
+# each as a reader that read the whole entry point again each pass and answered each call afresh did. Each was found
+# where reading again a parameter's new callers, a group dropped for a late caller and the groups that read it, a
+# parameter's answer grown by its new callers, or the group answered with it, read a code, an unread return, or a
+# scope that reader did not, or none it did, and cut to the lines that show it.
+@pytest.mark.parametrize(
+    ("body", "codes", "unread"),
+    [
+        pytest.param(
+            (
+                "def five(x):\n"
+                "    return 6\n"
+                "def f(h, v):\n"
+                "    if c(): return m(v=3, h=h)\n"
+                "def g(h, v):\n"
+                "    if c(): return h(v)\n"
+                "    return k(h, v)\n"
+                "def k(h, v):\n"
+                "    if c(): return f(h, v)\n"
+                "def m(h, v):\n"
+                "    q1 = h\n"
+                "    return g(v=v, h=q1)\n"
+                "def main():\n"
+                "    return k(five, 8) if c() else g(ident, 3)\n"
+            ),
+            {0, 1, 6},
+            ["h(v)"],
+            id="a function handed on through a parameter and called with a value",
+        ),
+        pytest.param(
+            (
+                "def f(p, q):\n"
+                "    b = p\n"
+                "    b = a\n"
+                "    if c(): return g(p, b)\n"
+                "    return p()\n"
+                "def g(p, q):\n"
+                "    if c(): return f(q, p)\n"
+                "def main():\n"
+                "    return g(obj.attr, leaf2) if c() else f(leaf1, leaf1)\n"
+            ),
+            {0, 1},
+            ["p()"],
+            id="a table value read through a parameter",
+        ),
+        pytest.param(
+            (
+                "def f(h, n):\n"
+                "    v = h\n"
+                "    v = {'a': v}.get('a')\n"
+                "    if c(): return v()\n"
+                "def main():\n"
+                "    return f(three, four) if c() else g(four, 7)\n"
+            ),
+            {0, 1},
+            ["g(four, 7)", "v()"],
+            id="a local bound to a parameter a recursion passes on",
+        ),
+        pytest.param(
+            (
+                "def R(h, v):\n"
+                "    if c(): return R(v, h)\n"
+                "    return v(v)\n"
+                "def P(h, v):\n"
+                "    return v(v)\n"
+                "def L0(v):\n"
+                "    return R(h=L2, v=8) if c() else L3(v)\n"
+                "def L2(v):\n"
+                "    return R(L3, 3) if c() else v\n"
+                "def L3(v):\n"
+                "    return P(L4, v) if c() else L3(v)\n"
+                "def main():\n"
+                "    return R(L0, 7)\n"
+            ),
+            {1, 3, 7, 8},
+            ["L0", "L2", "L3", "v(v)", "v(v)"],
+            id="relays found late through two functions",
+        ),
+        pytest.param(
+            (
+                "def R(h, v):\n"
+                "    w0 = h\n"
+                "    t1 = {'a': h, 'b': v}\n"
+                "    if c(): return t1['a'](h)\n"
+                "    p2, q2 = P(w0, h), 1\n"
+                "    if c(): return p2\n"
+                "def S(h, v):\n"
+                "    t0 = {'a': h, 'b': L3}\n"
+                "    if c(): return t0['a'](h)\n"
+                "def P(h, v):\n"
+                "    if c(): return S(h, 9)\n"
+                "    return h(h)\n"
+                "def L0(v):\n"
+                "    return S(h=L2, v=v) if c() else L0(v)\n"
+                "def L2(v):\n"
+                "    return P(h=L3, v=v) if c() else L2(v)\n"
+                "def L3(v):\n"
+                "    return R(L4, v) if c() else L4(v)\n"
+                "def L4(v):\n"
+                "    return v if c() else 9\n"
+                "def main():\n"
+                "    return S(L0, 4)\n"
+            ),
+            {0, 1, 9},
+            ["L0", "L2", "L3", "L4"],
+            id="relays found late through tables and pairs",
+        ),
+        pytest.param(
+            (
+                "def F(h, v):\n"
+                "    if c(): return h(L2)\n"
+                "    if c(): return v(h)\n"
+                "    return v(h)\n"
+                "def R(h, v):\n"
+                "    if c(): return F(v, h)\n"
+                "    return h(h)\n"
+                "def L0(v):\n"
+                "    return R(L1, v) if c() else L1(v)\n"
+                "def main():\n"
+                "    return R(L0, 9)\n"
+            ),
+            {1},
+            ["L1(v)", "h(L2)", "h(h)", "v(h)", "v(h)"],
+            id="a parameter passed back as the function to call",
+        ),
+        pytest.param(
+            (
+                "def F(h, v):\n"
+                "    return v(h)\n"
+                "def R(h, v):\n"
+                "    if c(): return F(v, h)\n"
+                "    return h(h)\n"
+                "def L0(v):\n"
+                "    return R(L1, v) if c() else L1(v)\n"
+                "def L1(v):\n"
+                "    return F(h=L2, v=v) if c() else v\n"
+                "def main():\n"
+                "    return R(L0, 9)\n"
+            ),
+            {1, 9},
+            ["L0", "L1", "L2", "v(h)"],
+            id="a relay given its function by keyword",
+        ),
+        pytest.param(
+            (
+                "def f(h, n):\n"
+                "    return k(h, h)\n"
+                "def k(h, n):\n"
+                "    v = h\n"
+                "    w = v\n"
+                "    if c(): return w()\n"
+                "    return f(h, n)\n"
+                "def main():\n"
+                "    return f(four, 7)\n"
+            ),
+            {1},
+            ["w()"],
+            id="a local chain through a recursion's parameter",
+        ),
+        pytest.param(
+            (
+                "def one():\n"
+                "    return 6\n"
+                "def f(h, n):\n"
+                "    return g(h, two)\n"
+                "def g(h, n):\n"
+                "    if c(): return k(h, n)\n"
+                "def k(h, n):\n"
+                "    pair = k(n, h)\n"
+                "    if c(): return pair\n"
+                "    if c(): return n()\n"
+                "def main():\n"
+                "    return g(one, 7) if c() else f(three, 7)\n"
+            ),
+            {0, 1, 6},
+            ["n()"],
+            id="a pair returned by a recursion that swaps its parameters",
+        ),
+        pytest.param(
+            (
+                "def three():\n"
+                "    return 6\n"
+                "def f(h, n):\n"
+                "    if c(): return k(h, n) if c() else g(n, three)\n"
+                "def g(h, n):\n"
+                "    v = h\n"
+                "    w = v\n"
+                "    if c(): return w()\n"
+                "    if c(): return f(four, three)\n"
+                "def main():\n"
+                "    return f(one, one)\n"
+            ),
+            {0, 1, 6},
+            ["k(h, n)", "w()"],
+            id="two locals through a parameter given late",
+        ),
+        pytest.param(
+            (
+                "def five(x):\n"
+                "    return 5\n"
+                "def f(h, v):\n"
+                "    if c(): return m(v=3, h=h)\n"
+                "    return h(v)\n"
+                "def g(h, v):\n"
+                "    if c(): return h(v)\n"
+                "    return k(h, v)\n"
+                "def k(h, v):\n"
+                "    if c(): return f(h, v)\n"
+                "def m(h, v):\n"
+                "    if c(): return f(h, 7)\n"
+                "    q1 = h\n"
+                "    return g(v=v, h=q1)\n"
+                "def main():\n"
+                "    return k(five, 8) if c() else g(ident, 3)\n"
+            ),
+            {0, 1, 5},
+            ["h(v)", "h(v)"],
+            id="a function bound to a local and called with a new value",
+        ),
+        pytest.param(
+            (
+                "def four():\n"
+                "    return 6\n"
+                "def f(h, n):\n"
+                "    return g(h, n)\n"
+                "def g(h, n):\n"
+                "    x = f\n"
+                "    if c(): return x(n, n)\n"
+                "    return h()\n"
+                "def main():\n"
+                "    return f(one, four) if c() else g(one, 7)\n"
+            ),
+            {1, 6},
+            ["h()"],
+            id="a function bound to a local in a recursion",
+        ),
+        pytest.param(
+            (
+                "def six(x):\n"
+                "    return 6\n"
+                "def f(h, v):\n"
+                "    if c(): return h(v)\n"
+                "    return g(h, 3)\n"
+                "def g(h, v):\n"
+                "    if c(): return g(h, v)\n"
+                "    return m(v=v, h=h)\n"
+                "def k(h, v):\n"
+                "    if c(): return f(h, v)\n"
+                "def m(h, v):\n"
+                "    q0 = h\n"
+                "    return q0(v)\n"
+                "def main():\n"
+                "    return k(ident, 4) if c() else k(six, 4)\n"
+            ),
+            {0, 1, 6},
+            ["h(v)", "q0(v)"],
+            id="a function handed on by keyword through a recursion",
+        ),
+        pytest.param(
+            (
+                "def f(h, n):\n"
+                "    if c(): return n\n"
+                "    return k(h, n)\n"
+                "def g(h, n):\n"
+                "    if c(): return k(one, n)\n"
+                "def k(h, n):\n"
+                "    if c(): return f(n, h)\n"
+                "    return g(n, n)\n"
+                "def main():\n"
+                "    return g(one, two)\n"
+            ),
+            {0, 1},
+            ["one", "two"],
+            id="parameters swapped back and forth",
+        ),
+        pytest.param(
+            (
+                "def f(h, n):\n"
+                "    if c(): return k(n, h)\n"
+                "    return h()\n"
+                "def k(h, n):\n"
+                "    return f(h, h)\n"
+                "def main():\n"
+                "    return g(three, three) if c() else f(one, one)\n"
+            ),
+            {1},
+            ["g(three, three)", "h()"],
+            id="a call of an unknown function beside a recursion",
+        ),
+    ],
+)
+def test_late_callers_and_groups_of_called_expressions_read_what_a_whole_reading_each_pass_reads(
+    body: str, codes: set[int], unread: list[str]
+) -> None:
+    reader = reader_of(body)
+    assert reader.reading.codes == codes
+    assert sorted(expression for _, _, expression in reader.reading.unread) == unread
+
+
+def group_answers(
+    members: dict[str, exit_tables.Parts], values: dict[str, list[str]], outside: dict[str, exit_tables.Answer]
+) -> tuple[dict[str, bool], dict[str, list[str]]]:
+    """Which members of a group, by name, are told, and each one's functions by name, given each member's parts, the
+    members and outside expressions it leads to, and the outside expressions' answers."""
+    keys = {name: (index, 0) for index, name in enumerate([*members, *outside])}
+    readers: dict[exit_tables.Key, list[exit_tables.Key]] = {keys[name]: [] for name in members}
+    for name in members:
+        for child in values[name]:
+            if child in members:
+                readers[keys[child]].append(keys[name])
+    parts = {keys[name]: made for name, made in members.items()}
+    children = {keys[name]: [keys[child] for child in values[name]] for name in members}
+    answers = {keys[name]: answer for name, answer in outside.items()}
+    told = exit_tables._told(parts, children, readers, answers)
+    functions = exit_tables._functions(parts, children, readers, answers, told)
+    names = {key: name for name, key in keys.items()}
+    return (
+        {names[key]: each for key, each in told.items()},
+        {names[key]: [function.name for _, function in found.values()] for key, found in functions.items()},
+    )
+
+
+def test_a_group_is_told_and_names_its_functions_as_its_values_do_however_they_lead_to_each_other() -> None:
+    # A value the reader cannot tell makes a member that needs all its values untold, and a parameter untold once none
+    # of its values is told; the untold spread through the group, a member reached again once untold read no further,
+    # and a parameter still told by one value read past. The functions spread from member to told member until none
+    # gains one, an untold member keeping none.
+    module = exit_tables.Module(Path("tool.py"), ast.parse("def f():\n    return 3\n"))
+    function = module.tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    group = exit_tables.Group([])
+    untold = exit_tables.Answer(group, {}, told=False, complete=False)
+    named = exit_tables.Answer(group, {id(function): (module, function)}, told=True, complete=True)
+    plain, parameter = exit_tables.Parts(), exit_tables.Parts(callers=True)
+    told, functions = group_answers(
+        {"a": plain, "b": parameter, "h": parameter, "d": plain, "e": parameter, "g": plain},
+        {"a": ["u"], "b": ["a"], "h": ["a", "f"], "d": ["a", "b"], "e": ["a", "b", "d"], "g": ["e", "f"]},
+        {"u": untold, "f": named},
+    )
+    assert told == {"a": False, "b": False, "h": True, "d": False, "e": False, "g": False}
+    assert functions == {"a": [], "b": [], "h": ["f"], "d": [], "e": [], "g": []}
+    told, functions = group_answers(
+        {"x": plain, "y": parameter, "z": parameter, "w": plain},
+        {"x": ["u", "y"], "y": ["x", "z"], "z": ["y", "w"], "w": ["f", "z"]},
+        {"u": untold, "f": named},
+    )
+    assert told == {"x": False, "y": True, "z": True, "w": True}
+    assert functions == {"x": [], "y": ["f"], "z": ["f"], "w": ["f"]}
 
 
 def test_a_call_through_a_table_keeps_a_scope_for_each_function_it_can_name() -> None:
@@ -902,6 +1354,38 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
     ]
 
 
+def test_unread_returns_are_reported_in_their_order_in_the_source() -> None:
+    # The reader meets b's returns before a's, since it reads the last call it queues first, and which pass meets a
+    # return depends on when its caller is found. The returns are reported by file, line, and column, an expression
+    # met at two columns of one line by the first, so the report is the same however the passes run: on b's line,
+    # other.second comes before another.first, which sorts before it by name.
+    body = (
+        "def c():\n    return bool(argparse)\n"
+        "def a():\n    return thing.first\n"
+        "def b():\n    return other.second if c() else (another.first if c() else other.second)\n"
+        "def main():\n    return a() if c() else b()\n"
+        f"{ENTRY}"
+    )
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert [problem.split(" an exit code")[0] for problem in found] == [
+        "tools/tool.py:13 returns or exits with thing.first,",
+        "tools/tool.py:15 returns or exits with other.second,",
+        "tools/tool.py:15 returns or exits with another.first,",
+    ]
+    # The reader meets k.z, then h.y at its second column, and h.y again at its first, through g's parameter; h.y
+    # is reported at its first column, so before k.z.
+    body = (
+        "def c():\n    return bool(argparse)\ndef g(x):\n    return x\n"
+        "def main():\n    return g(h.y) if c() else (k.z if c() else h.y)\n"
+        f"{ENTRY}"
+    )
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert [problem.split(" an exit code")[0] for problem in found] == [
+        "tools/tool.py:15 returns or exits with h.y,",
+        "tools/tool.py:15 returns or exits with k.z,",
+    ]
+
+
 def test_an_exit_call_with_a_code_the_reader_cannot_follow_fails_until_an_allowance_names_it() -> None:
     body = (
         "import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(thing.code)\n"
@@ -965,6 +1449,18 @@ def test_an_allowed_return_lets_the_table_name_a_code_the_reader_cannot_see() ->
     )
     table = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  3  what the thing says\n"
     assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body, "from console import run_main\n")}) == []
+
+
+def test_a_run_main_target_the_reader_cannot_tell_is_read_as_a_returned_expression() -> None:
+    # A table one of whose values the reader cannot tell names no function it can follow, so the target is unread.
+    body = (
+        "def one():\n    return 3\nHANDLERS = {'a': one, 'b': thing.attr}\n"
+        "if __name__ == '__main__':\n    run_main(HANDLERS['a'])\n"
+    )
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert [problem.split(", an exit code")[0] for problem in found] == [
+        "tools/tool.py:14 returns or exits with HANDLERS['a']"
+    ]
 
 
 def test_a_run_main_lambda_target_is_read_as_the_call_it_makes() -> None:
