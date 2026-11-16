@@ -1204,17 +1204,21 @@ class GitClient:
         listed = self.output(command, directory=directory, timeout=timeout)
         return listed.removesuffix("\0").split("\0") if listed else []
 
-    def rev_parse_paths(self, options: Sequence[str], *, directory: str | Path) -> list[Path] | None:
+    def rev_parse_paths(
+        self, options: Sequence[str], *, directory: str | Path, timeout: float | None = None
+    ) -> list[Path] | None:
         """The absolute path `git rev-parse` names for `directory` for each of `options`, in order, such as
         `--show-toplevel` (the root of its checkout or worktree) or `--git-common-dir` (the Git directory every
-        worktree of it shares).
+        worktree of it shares), within `timeout`, the client's own limit unless the caller names one.
 
         None only when git answers that `directory` lies in no repository. Every other failure, such as a checkout
         whose ownership git doubts or whose configuration it cannot parse, raises GitError with git's reason, and so
         does an answer that is not one path for each option.
         """
         try:
-            output = self.output(["rev-parse", "--path-format=absolute", *options], directory=directory)
+            output = self.output(
+                ["rev-parse", "--path-format=absolute", *options], directory=directory, timeout=timeout
+            )
         except GitError as exc:
             if exc.kind == "not_repository":
                 return None
@@ -1227,17 +1231,19 @@ class GitClient:
             )
         return [Path(path) for path in paths]
 
-    def rev_parse_path(self, option: str, *, directory: str | Path) -> Path | None:
+    def rev_parse_path(self, option: str, *, directory: str | Path, timeout: float | None = None) -> Path | None:
         """The absolute path `git rev-parse <option>` names for `directory`; see `rev_parse_paths`."""
-        paths = self.rev_parse_paths([option], directory=directory)
+        paths = self.rev_parse_paths([option], directory=directory, timeout=timeout)
         return None if paths is None else paths[0]
 
-    def common_git_directory(self, *, directory: str | Path) -> Path | None:
+    def common_git_directory(self, *, directory: str | Path, timeout: float | None = None) -> Path | None:
         """The git directory every worktree of `directory`'s repository shares, which holds each worktree's own, as
         git names it in its own lines, every link resolved: what GitError.origin_failed reads a local fault by. None
-        when git names none or fails, so a second failure, read while a first is classified, never hides the first."""
+        when git names none or fails, so a second failure, read while a first is classified, never hides the first.
+        `timeout` is the caller's limit for the lookup, the client's own unless it names one, so a lookup made while
+        a failure is classified keeps the limit the failed command had."""
         try:
-            return self.rev_parse_path("--git-common-dir", directory=directory)
+            return self.rev_parse_path("--git-common-dir", directory=directory, timeout=timeout)
         except GitError:
             return None
 

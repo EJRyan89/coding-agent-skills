@@ -342,3 +342,29 @@ def test_a_fetch_that_fails_in_a_separate_git_directory_is_a_failed_line(
     assert code == 1
     assert output.startswith("FAILED error: "), output
     assert "FETCH_HEAD" in output, output
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("kind", ["timeout", "prerequisite", "execution", "not_repository"])
+def test_a_failure_git_did_not_answer_makes_no_further_git_call(
+    capsys: pytest.CaptureFixture[str], clone: Path, command: str, kind: GitErrorKind
+) -> None:
+    # Only an answered failure has lines a local fault could be named in, so the git-directory lookup that reads them
+    # runs for nothing else: a git that hung, is missing, could not start, or found no repository is never asked again.
+    with mock.patch.object(GitClient, "output", side_effect=GitError("git did not answer", kind=kind)) as output:
+        assert run(capsys, command, clone, "--seconds", "7")[0] == 1
+    assert output.call_count == 1, output.call_args_list
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_the_git_directory_lookup_after_an_answered_failure_keeps_the_callers_time_limit(
+    capsys: pytest.CaptureFixture[str], clone: Path, command: str
+) -> None:
+    failure = GitError("fatal: the remote end hung up unexpectedly")
+    with mock.patch.object(GitClient, "output", side_effect=failure) as output:
+        assert run(capsys, command, clone, "--seconds", "7") == (
+            1,
+            "ORIGIN_FAILED fatal: the remote end hung up unexpectedly\n",
+        )
+    assert [call.kwargs.get("timeout") for call in output.call_args_list] == [7.0, 7.0]
+    assert "--git-common-dir" in output.call_args_list[1].args[0]
