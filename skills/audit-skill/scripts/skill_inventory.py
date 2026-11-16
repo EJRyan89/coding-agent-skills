@@ -129,8 +129,10 @@ line as CommonMark gives it to the fence's content, and places the shell-file-co
 that runs a file command starts on, so a here-document's body, a comment, and a quoted string run nothing, and a
 command after a continuation is placed on its own line; an untagged fence is read so when the grammar reads it, and
 holds no Bash otherwise. A fence of any other shell, console, fish, cmd, or PowerShell, places the cue on each line
-whose first word, after any `$ ` or `> ` prompt, names a file command in any case, and a fence of any other language
-holds none. A Bash script given to scan is read whole the
+whose first word, after any `$ ` or `> ` prompt, names a file command, in any case in a cmd or PowerShell fence and as
+written in a console or fish fence, as it reads a Bash fence; a console fence that holds a `$ ` prompt line reads only
+those lines and the lines that continue them, after a backslash or with a `> ` prompt, the rest being output, and one
+with none is read whole. A fence of any other language holds none. A Bash script given to scan is read whole the
 same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
 first, that the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose
 commands are read.
@@ -210,6 +212,7 @@ from markdown_sections import (
     LIST_MARKER,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    Fence,
     find_fences,
     prose_code_spans,
 )
@@ -355,11 +358,23 @@ SHELL_FILE_COMMANDS = ("cat", "head", "tail", "find", "grep", "rg", "sed", "awk"
 BASH_FENCES = FENCE_LANGUAGES["shell"] - {"console"}
 # The labels of every other shell's fence, whose lines a model runs through its Bash or PowerShell tool, where cat,
 # grep, find, and ls, or their aliases, still read files: console's, fish's, cmd's, and PowerShell's. scan reads the
-# first word of each such line, after the blanks and any `$ ` or `> ` prompt that start it, in any case.
+# first word of each such line, after the blanks and any `$ ` or `> ` prompt that start it.
 FIRST_WORD_FENCES = (
     FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"] | FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
 ) - BASH_FENCES
+# The FIRST_WORD_FENCES labels whose shell finds a command in any case: cmd's and PowerShell's. Bash, which runs a
+# console fence's commands, and fish match a function, an alias, or a builtin as written, and find a program in any
+# case only where the file system ignores case; scan reads their first word as written, as it reads a Bash fence.
+ANY_CASE_FENCES = FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
+# The FIRST_WORD_FENCES labels of a shell session, a command after each prompt and its output on the lines between:
+# console's. The other labels name a script, every line of which is a command.
+SESSION_FENCES = frozenset({"console"})
 PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
+# A session's prompt, which starts a command line, and the prompt Bash shows on each line that continues it.
+SESSION_PROMPT = re.compile(r"\A[ \t]*\$ ")
+CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
+# A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
+CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
 # The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
 BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
@@ -1920,9 +1935,9 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
     or a here-document in it is still open where the fence ends. A Markdown file's Bash is each fence below its
     frontmatter that BASH_FENCES labels, read whole, as a model running it reads it, each line as CommonMark gives it
     to the fence's content; an untagged fence is read the same way when it is Bash the grammar reads, and holds no
-    Bash otherwise, as it may hold none. A fence FIRST_WORD_FENCES labels runs the program each line's first word
-    names. A Bash script is its whole text, on the lines `lines` splits it into. Any other file, and a fence of any
-    other language, holds no shell command."""
+    Bash otherwise, as it may hold none. A fence FIRST_WORD_FENCES labels runs the program the first word of each line
+    first_word_file_command_lines reads names. A Bash script is its whole text, on the lines `lines` splits it into.
+    Any other file, and a fence of any other language, holds no shell command."""
     if path.suffix.casefold() != ".md":
         if path.suffix.casefold() not in BASH_SUFFIXES:
             return set(), {}
@@ -1938,7 +1953,7 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
     for fence in find_fences(lines):
         untagged = fence.language == ""
         if fence.opener >= start and fence.language.casefold() in FIRST_WORD_FENCES:
-            found.update(index for index in fence.body() if first_word_runs_file_command(fence.content(lines[index])))
+            found.update(first_word_file_command_lines(fence, lines))
         if fence.opener < start or not (untagged or fence.language.casefold() in BASH_FENCES):
             continue
         body = list(fence.body())
@@ -1955,11 +1970,44 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
     return found, unread
 
 
-def first_word_runs_file_command(line: str) -> bool:
+def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
+    r"""The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
+    each line as CommonMark gives it to the fence's content. A SESSION_FENCES fence that holds a line starting with a
+    `$ ` prompt, after its blanks, runs only those lines and their continuations: a line after one that ends in a
+    backslash, with or without the `> ` prompt Bash shows there, as Pygments' console lexer reads it, and a `> ` line
+    after one, which Bash prompts for a command that is not yet complete. Any other line is output, whatever its first
+    word. One with no such line is read whole: no prompt tells a command from output there, and a fence labelled so
+    may hold commands alone, which a model runs, so a line of output is a candidate the audit vets. A `> ` line of
+    output right after a command line, as diff prints one, reads as a continuation, and so does a line after a
+    backslash that ends a quoted string's line, which only running the session would settle. A here-document's body,
+    which Bash also prompts for with `> `, reads as a command too. A backslash that ends a comment, as in
+    `$ echo a # note \`, continues nothing in Bash, yet the line after it reads as a continuation. A continuation
+    line's first word is read as a command name though it may be an argument of the command it continues, as `  head`
+    after `$ git log --author \`. The other labels name a script, each line of which runs. A first word is matched in
+    any case in an ANY_CASE_FENCES fence, and as written otherwise."""
+    contents = [(index, fence.content(lines[index])) for index in fence.body()]
+    label = fence.language.casefold()
+    if label in SESSION_FENCES and any(SESSION_PROMPT.match(text) for _, text in contents):
+        commands, prompted, continued = [], False, False
+        for index, text in contents:
+            prompted = bool(continued or SESSION_PROMPT.match(text) or (prompted and CONTINUATION_PROMPT.match(text)))
+            continued = prompted and CONTINUED_LINE.search(text) is not None
+            if prompted:
+                commands.append((index, text))
+        contents = commands
+    any_case = label in ANY_CASE_FENCES
+    return {index for index, text in contents if first_word_runs_file_command(text, any_case=any_case)}
+
+
+def first_word_runs_file_command(line: str, *, any_case: bool) -> bool:
     """Whether a line of a FIRST_WORD_FENCES fence starts with one of SHELL_FILE_COMMANDS, after its blanks and any
-    `$ ` or `> ` prompt, in any case, as PowerShell and cmd find a program, and by its file name without `.exe`."""
+    `$ ` or `> ` prompt, by its file name without `.exe`: in any case when `any_case` is set, as PowerShell and cmd
+    find a program, and as written otherwise, as Bash and fish match a command."""
     words = PROMPT.sub("", line, count=1).split()
-    return bool(words) and program_name(PureWindowsPath(words[0]).name).casefold() in SHELL_FILE_COMMANDS
+    if not words:
+        return False
+    name = program_name(PureWindowsPath(words[0]).name)
+    return (name.casefold() if any_case else name) in SHELL_FILE_COMMANDS
 
 
 def open_here_document(text: str) -> bool:
