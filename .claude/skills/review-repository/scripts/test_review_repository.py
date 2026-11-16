@@ -115,7 +115,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     # The hub guard, the readers it reads a command and a checkout through, the platform seam it reads paths and
     # programs through, and its suites.
     "tools/hub_guard.py",
-    "tools/bash_syntax.py",
+    f"{SKILL_CORE}/bash_syntax.py",
     "tools/worktrees.py",
     "deployer/platform_support.py",
     "tests/tools/test_bash_syntax.py",

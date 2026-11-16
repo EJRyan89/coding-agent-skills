@@ -1,5 +1,6 @@
-"""Holds tools/bash_syntax.py to Bash's own syntax check: each text a suite hands the reader also goes through
-`bash -n`, Git Bash on Windows and the system Bash elsewhere, and the two must agree on whether Bash reads it.
+"""Holds ejryan89-skill-core's bash_syntax.py to Bash's own syntax check: each text a suite hands the reader also
+goes through `bash -n`, Git Bash on Windows and the system Bash elsewhere, and the two must agree on whether Bash
+reads it.
 
 tests/tools/test_bash_syntax.py and tests/tools/test_hub_guard.py import it from beside them, and
 tests/deployer/test_rendering_locking.py from here; it holds no test.
@@ -17,10 +18,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bash_syntax
 from markdown_sections import find_fences
 
 from deployer import platform_support, render
-from tools import bash_syntax
 
 # Bash's verdict on each text this process has checked, whether it reads it and what it said, since suites hand the
 # same command more than once.

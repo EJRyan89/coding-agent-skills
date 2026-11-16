@@ -516,7 +516,9 @@ removed fails validation until its pattern follows it.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand; being a guard against accidents rather than a trust boundary, it was later
   narrowed to read git's own words alone and allow the rest, with a check of the hub's state behind it.
-- **Use:** `tools.hub_guard:read_powershell`, `option_reader:option_refusal`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+- **Use:** `tools.hub_guard:read_powershell`, `option_reader:option_refusal`, `bash_syntax:simple_commands`, every
+  command Bash may run for a script, read through the one Bash grammar, `git_subcommands:CommandStarts`, which says
+  where Bash starts a command on a line read alone, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads, and
@@ -526,6 +528,8 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_here_document_s_body_is_read_as_data`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_bash_line_ends_at_lf_alone`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_script_the_grammar_refuses_raises_its_error`,
+  `tests/tools/test_bash_syntax.py::test_simple_commands_read_every_command_bash_may_run_from_its_program`,
   `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
   which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
