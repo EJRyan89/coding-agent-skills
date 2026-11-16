@@ -40,6 +40,12 @@ def test_a_fence_is_found_where_commonmark_ends_a_line() -> None:
     assert skill_scripts._fences("intro\r```bash\recho yes\r```\r", "shell") == ["echo yes"]
 
 
+def test_a_fence_s_lines_are_its_content_as_commonmark_gives_it() -> None:
+    # A list item's fence loses the item's indentation, so its here-document closes at its delimiter.
+    markdown = "1. Run:\n\n   ```bash\n   cat <<EOF\n     body\n   EOF\n   git push\n   ```\n"
+    assert skill_scripts._fences(markdown, "shell") == ["cat <<EOF\n  body\nEOF\ngit push"]
+
+
 def test_a_sanction_s_lines_are_numbered_as_python_numbers_them() -> None:
     # Python ends no line at a form feed, so the sanction is line 2 and its reason names no script that runs.
     source = 'X = "\x0c"\nDUPLICATION_ALLOWED = {"a": "see /beta/scripts/other.py"}\nUSED = "/beta/scripts/used.py"\n'

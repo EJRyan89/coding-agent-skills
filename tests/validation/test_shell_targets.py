@@ -91,6 +91,8 @@ class ShellTargetsFixtures(unittest.TestCase):
                 ".claude/skills/a/SKILL.md": "```shell\necho three\n```\n",
                 "docs/empty.md": "```bash\n\n```\n",
                 "docs/unclosed.md": "```bash\necho never\n",
+                # A list item's fence is read as CommonMark gives its content, so its here-document closes.
+                "docs/list.md": "1. Run:\n\n   ```bash\n   cat <<EOF\n     body\n   EOF\n   echo after\n   ```\n",
                 "skills/a/SKILL.md": "```bash\necho {{TOKEN}}\n```\n",
                 "tests/fixture.md": "```bash\ncd x\n```\n",
                 "tools/run.sh": "echo script\n",
@@ -105,6 +107,7 @@ class ShellTargetsFixtures(unittest.TestCase):
                 (".claude/skills/a/SKILL.md", 2, "echo three"),
                 ("docs/guide.md", 4, "echo one"),
                 ("docs/guide.md", 12, "echo two"),
+                ("docs/list.md", 4, "cat <<EOF\n  body\nEOF\necho after"),
                 ("docs/unclosed.md", 2, "echo never\n"),
             ],
             [(target.name, target.first_line, target.text) for target in targets],

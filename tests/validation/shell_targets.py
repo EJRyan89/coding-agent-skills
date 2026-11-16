@@ -69,7 +69,9 @@ COMMANDS_ALLOWED = {
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
     """A shipped file's Bash and PowerShell as (context, first line, text), classified as the deployer renders it. A
     fence left open runs to the end of what holds it, so its commands reach every check; unclosed_fence_problems
-    reports it."""
+    reports it. Each line of a fence is read as CommonMark gives it to the fence's content, without the indentation
+    of the fence and of the list items that hold it, so an indented fence's here-document closes at its delimiter,
+    and a column a check reports counts from the content's start."""
     context = render.SUFFIX_CONTEXT.get(path.suffix.casefold())
     text = path.read_text(encoding="utf-8", errors="replace")
     if context in SHELL_LABELS:
@@ -78,7 +80,7 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
         return []
     lines = LINE_BREAK.split(text)
     return [
-        (render.fence_context(fence), fence.opener + 2, "\n".join(fence.text(lines[index]) for index in fence.body()))
+        (render.fence_context(fence), fence.opener + 2, "\n".join(fence.content(lines[index]) for index in fence.body()))
         for fence in find_fences(lines)
         if render.fence_context(fence) in SHELL_LABELS
     ]

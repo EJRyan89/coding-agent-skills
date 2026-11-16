@@ -541,10 +541,12 @@ COMMAND_SHELL_CONTEXTS = frozenset(render.FENCE_CONTEXT[label] for label in SHEL
 def _fences(markdown: str, *contexts: str) -> list[str]:
     """The body of each fence that deployer/render.py renders in one of these contexts: shell for a Bash, sh, zsh, or
     console fence, and powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds
-    it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
+    it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it. Each
+    line is read as CommonMark gives it to the fence's content, without the indentation of the fence and of the list
+    items that hold it, so an indented fence's here-document closes at its delimiter."""
     lines = text_lines(markdown)
     return [
-        "\n".join(fence.text(lines[index]) for index in fence.body())
+        "\n".join(fence.content(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
         if render.fence_context(fence) in contexts
     ]
