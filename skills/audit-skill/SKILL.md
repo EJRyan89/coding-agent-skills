@@ -56,7 +56,7 @@ It scans the main file and every `doc` file, then compares the status lines they
 
 Each `CUE <file> <line> <cue> <text>` is a candidate, not a finding. Read it in context and keep only real findings, anchored as `file:line`. Frontmatter is skipped, and only `wide-glob`, `generated-code`, and `shell-file-command` apply inside fenced blocks.
 
-`shell-file-command` reads a `bash`, `sh`, `shell`, `zsh`, `ksh`, or `dash` fence whole, as Bash reads it, on the line each command starts, and an untagged fence the same way when it is Bash; in a `console`, `fish`, `cmd`, or PowerShell fence it reads each line's first word, after any `$ ` or `> ` prompt; a fence of another language gets none. `BASH_UNREADABLE <file> <line> <reason>` is such a labelled fence, opened at that line, that Bash would refuse as written, or that ends inside a here-document, so none of its commands were read → SUGGESTION: recommend Bash that runs as written, such as a placeholder quoted as `'<file>'`.
+`shell-file-command` reads a `bash`, `sh`, `shell`, `zsh`, `ksh`, or `dash` fence whole, as Bash reads it, on the line each command starts, and an untagged fence the same way when it is Bash; in a `console`, `fish`, `cmd`, or PowerShell fence it reads the first word of each line it runs, after any `$ ` or `> ` prompt; a fence of another language gets none. `BASH_UNREADABLE <file> <line> <reason>` is such a labelled fence, opened at that line, that Bash would refuse as written, or that ends inside a here-document, so none of its commands were read → SUGGESTION: recommend Bash that runs as written, such as a placeholder quoted as `'<file>'`.
 
 | Pattern | Cue | Severity | Recommendation |
 |---|---|---|---|
