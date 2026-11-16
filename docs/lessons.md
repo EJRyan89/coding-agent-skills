@@ -684,12 +684,20 @@ removed fails validation until its pattern follows it.
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
   which reads each Bash function once per question for each table of functions a shell's -c script extends, the
   table kept once for each content, and again only from a shallower depth, since its depth cut leaves a function
-  read at the limit with its calls unread; and `tests.validation.python_checks:_PresenceReader.polarities`, which
+  read at the limit with its calls unread; `tests.validation.python_checks:_PresenceReader.polarities`, which
   reads each name once per question for each truth and each reading of what it holds,
   `tests.validation.python_checks:_PresenceReader._there`, once for each truth, and
   `tests.validation.python_checks:_Handlers.suppress`, once for each depth of scopes, since what a name gives depends
   only on that state; a name bound to its own negation is read at both truths, since that binding gives the name the
-  truth opposite to the one it read
+  truth opposite to the one it read; `tests.validation.exit_tables:CodeReader.returns`,
+  `tests.validation.exit_tables:CodeReader.assigned`, and `tests.validation.exit_tables:CodeReader.parameter`, which
+  read a function, a local's value, or a parameter once a pass in each scope
+  `tests.validation.exit_tables:CodeReader.scope` keeps, one for each function and the argument expressions one call
+  site gives it, so the scopes are bounded by the call sites the source holds times the functions each can name,
+  never a product over parameters, with each parameter read in every scope that called its own, and each read
+  waiting its turn on the reader's list rather than nesting on Python's stack; and
+  `tests.validation.exit_tables:CodeReader.callables`, which reads each called expression once per question in each
+  scope, from a stack of its own
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
@@ -698,7 +706,13 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_exit_tables.py::test_a_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_exit_tables.py::test_a_called_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`,
-  `tests/validation/test_python_checks.py::test_presence_policy_reads_each_name_of_a_chain_once_per_question`
+  `tests/validation/test_python_checks.py::test_presence_policy_reads_each_name_of_a_chain_once_per_question`,
+  `tests/validation/test_exit_tables.py::test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each`,
+  `tests/validation/test_exit_tables.py::test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn`,
+  `tests/validation/test_exit_tables.py::test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_a_pass_per_late_caller`,
+  `tests/validation/test_exit_tables.py::test_a_call_through_a_table_keeps_a_scope_for_each_function_it_can_name`,
+  `tests/validation/test_exit_tables.py::test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit`,
+  `tests/validation/test_exit_tables.py::test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
   with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or
