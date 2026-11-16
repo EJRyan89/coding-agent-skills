@@ -8,7 +8,8 @@ YAML 1.1 broke at; CommonMark ends a line of Markdown, such as a CLAUDE.md, an A
 three; and .NET's `TextReader.ReadLine`, through which MSBuild reads a solution file, breaks at the same three.
 `str.splitlines` also breaks at the vertical tab, the form feed, the file, group, and record separators, and those
 three, so a reader splitting with it would read a key, an import, or a project line the program never reads. A reader
-of a file an author writes splits it with `text_lines`, never `str.splitlines`. The exceptions are the files whose
+of a file an author writes splits it with `text_lines`, never `str.splitlines`, or with `lines_and_breaks` where it
+rejoins the lines it keeps or finds where one starts in the text. The exceptions are the files whose
 program breaks a line elsewhere: an analyzer config, which the C# compiler breaks at more (`analyzer_config.py`), and a
 Bash script and a `.shellcheckrc`, which Bash and ShellCheck break at LF alone, reading a CR as part of the line
 (audit-skill's `skill_inventory.shell_lines`, ejryan89-code-review-core's `review_analyzers._shellcheckrc`). A
@@ -39,6 +40,16 @@ def text_lines(text: str, *, keepends: bool = False) -> list[str]:
     if lines[-1] == "":
         lines.pop()
     return lines
+
+
+def lines_and_breaks(text: str) -> tuple[list[str], list[str]]:
+    """The lines of `text` as `text_lines` gives them, and beside them the break that ends each, a CRLF, a CR, an LF,
+    or nothing for a last line no break ends, so a reader that finds a line by its index can rejoin the lines it keeps,
+    or find where a line starts, character for character."""
+    kept = text_lines(text, keepends=True)
+    # Each kept line holds one break, at its end, and no CR or LF before it.
+    lines = [line.rstrip("\r\n") for line in kept]
+    return lines, [line[len(body) :] for line, body in zip(kept, lines, strict=True)]
 
 
 def program_lines(output: str) -> list[str]:

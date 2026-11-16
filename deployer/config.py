@@ -103,6 +103,9 @@ class UnknownKey(DeployError):
 
 def parse(text: str, source_id: str, dropped: list[str] | None = None) -> dict[str, str]:
     """The configuration's values. Given a dropped list, a key no longer declared is added to it and skipped."""
+    # Split at LF alone, since configure writes LF alone and every CR is refused: a lone CR or the CR of a CRLF stays
+    # in the line it ends, so the first one is refused on the line an editor shows it ending, before any line after it
+    # is read.
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()

@@ -105,7 +105,7 @@ from conditions import (
 from console import failed_line, run_main
 from diff_paths import HUNK_HEADER
 from suite_names import SUITE_NAME_PATTERNS
-from text_lines import program_lines
+from text_lines import LINE_BREAK, program_lines
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -430,7 +430,9 @@ def _code_text(path: str, text: str) -> str:
         tokens = tokenize.generate_tokens(io.StringIO(text, newline=None).readline)
         return " ".join(token.string for token in tokens if token.type != tokenize.COMMENT)
     if path.endswith(".ps1"):
-        text = POWERSHELL_BLOCK_COMMENT.sub(" ", text)
+        # PowerShell ends a line at CR, LF, and CRLF, so a call after a lone CR that ends a comment is code.
+        text = "\n".join(LINE_BREAK.split(POWERSHELL_BLOCK_COMMENT.sub(" ", text)))
+    # Bash ends a line at LF alone, so a comment runs on through a lone CR.
     return "\n".join(line for line in text.split("\n") if not COMMENT_LINE.match(line))
 
 

@@ -133,6 +133,19 @@ class BodyCheckTests(unittest.TestCase):
         body = FILLED.replace("- `tool.py`", "\t2)\t\r\n- `tool.py`")
         self.assertEqual(["PLACEHOLDER 8 an empty list item"], pull_request.body_problems(body, TEMPLATE))
 
+    def test_a_placeholder_is_numbered_where_markdown_ends_a_line(self) -> None:
+        # A body saved with lone CRs: each line is read on its own, and numbered as an editor numbers it.
+        body = FILLED.replace("Closes #34\n", "Closes #\n").replace("\n", "\r")
+        self.assertEqual(["PLACEHOLDER 2 a Closes line with no issue"], pull_request.body_problems(body, TEMPLATE))
+        comment = "<!-- One entry per change.\n\n### What changed\n\n- Level: patch\n-->"
+        body = FILLED.replace("\n", "\r").replace("None\r", f"{comment}\rNone\r")
+        self.assertEqual(["PLACEHOLDER 12 a template comment"], pull_request.body_problems(body, TEMPLATE))
+
+    def test_a_template_comment_holding_a_lone_cr_keeps_the_body_s_lines(self) -> None:
+        template = "<!-- one\rtwo -->\nCloses #\n## Changes\n"
+        body = "<!-- one\rtwo -->\nCloses #5\n## Changes\n"
+        self.assertEqual(["PLACEHOLDER 1 a template comment"], pull_request.body_problems(body, template))
+
     def test_a_template_comment_left_in_the_body_is_named(self) -> None:
         body = FILLED.replace("None\n", "<!-- One entry per change.\n\n### What changed\n\n- Level: patch\n-->\nNone\n")
         self.assertEqual(["PLACEHOLDER 12 a template comment"], pull_request.body_problems(body, TEMPLATE))

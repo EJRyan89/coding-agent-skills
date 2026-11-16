@@ -18,7 +18,7 @@ from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
-from text_lines import program_lines
+from text_lines import lines_and_breaks, program_lines, text_lines
 
 from . import fsops, hashing, platform_support
 from .arguments import CONFIGURE_COMMAND_LINE
@@ -213,7 +213,9 @@ def fence_context(fence: Fence) -> str:
 
 
 def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str:
-    lines = text.split("\n")
+    # Lines end where CommonMark and YAML end one, at CR, LF, and CRLF, so a fence or a frontmatter delimiter after a
+    # lone CR is read on its own line; each line keeps the break it was written with.
+    lines, breaks = lines_and_breaks(text)
     rendered: list[str] = []
     try:
         found = frontmatter.split(lines)
@@ -229,7 +231,7 @@ def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str
         for index in fence.body():
             contexts[index] = fence_context(fence)
     rendered += [_substitute(line, values, context, logical) for line, context in zip(lines, contexts, strict=True)]
-    return "\n".join(rendered)
+    return "".join(line + end for line, end in zip(rendered, breaks, strict=True))
 
 
 def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
@@ -396,7 +398,8 @@ def reject_unexpanded_tokens(staged: Staged) -> None:
     matches: list[str] = []
     for logical, content in sorted(staged.logical_files().items()):
         text = content.decode("utf-8", "replace")
-        for number, line in enumerate(text.split("\n"), start=1):
+        # Numbered as an editor and CommonMark number a line, so a token after a lone CR is reported on its own line.
+        for number, line in enumerate(text_lines(text), start=1):
             if TOKEN.search(line):
                 matches.append(f"{logical}:{number}:{line}")
     if matches:
@@ -421,7 +424,7 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     for logical in sorted(files):
         if Path(logical).suffix.casefold() != ".md":
             continue
-        lines = files[logical].decode("utf-8", "replace").split("\n")
+        lines = text_lines(files[logical].decode("utf-8", "replace"))
         # Validate every fence substituted as shell, whichever name its info string uses.
         shell = [fence for fence in find_fences(lines) if fence_context(fence) == "shell"]
         for block_number, fence in enumerate(shell, start=1):

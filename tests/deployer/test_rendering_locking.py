@@ -640,6 +640,15 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="Unexpanded tokens found")
 
+    def test_an_unexpanded_token_after_lone_cr_line_ends_is_reported_on_its_true_line(self) -> None:
+        # make_skill writes six lines of frontmatter and a blank line before the content, so the token is on line 9
+        # wherever CommonMark and an editor end a line; split at LF alone, it was reported on line 7.
+        self.make_source_json()
+        self.make_skill("alpha", "Intro\rMore\rUse {{UNDECLARED}} here.", ["HOME"])
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="Unexpanded tokens found")
+        self.assertIn("alpha/SKILL.md:9:Use {{UNDECLARED}} here.\n", result.output)
+
 
 class LockTests(DeployerTestCase):
     def write_lock(self, info: dict[str, Any]) -> Path:

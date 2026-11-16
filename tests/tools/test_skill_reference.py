@@ -192,6 +192,20 @@ class SkillReferenceTestCase(unittest.TestCase):
         skill_reference.write(self.root)
         self.assertEqual(before, self.reference.read_bytes())
 
+    def test_a_skill_heading_after_a_lone_cr_starts_its_section(self) -> None:
+        # CommonMark ends a line at a lone CR, so each skill's heading starts its section; read at LF alone, the
+        # sections run together and the reference lacks one.
+        skill_reference.write(self.root)
+        self.add_prose("alpha", "Alpha explained.")
+        self.add_prose("beta", "Beta explained.")
+        lone = self.reference.read_bytes().replace(b"\n", b"\r")
+        self.reference.write_bytes(lone)
+
+        stale = "docs/skills.md: generated content is stale; run python tools/skill_reference.py --write"
+        self.assertEqual([stale], skill_reference.problems(self.root))
+        skill_reference.write(self.root)
+        self.assertEqual(lone.replace(b"\r", b"\n"), self.reference.read_bytes())
+
     def test_a_frontmatter_change_makes_the_reference_stale_until_written(self) -> None:
         self.written_and_explained()
         skill_md = self.root / "skills" / "alpha" / "SKILL.md"
