@@ -337,8 +337,9 @@ values, never a value, keyed by the setting's name in a form that holds a name i
 guard turned off since then, and each setting added, changed, or removed by its name, leaving out the opt-in's own,
 which the guard's line covers, and the `branch.<name>.<key>` settings of every branch but `main`, which git writes in
 the shared file at a worktree branch's first `push -u` and drops with the branch; a first tick, with no record, names
-neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on. The record is the
-clone's only record of opting in, since a lapse removes the setting itself, so a clone no tick recorded is never named.
+neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on. The record keeps
+whether any tick saw the guard on, since an unset setting cannot tell a lapse from never opting in, so a clone no
+tick recorded is never named.
 A record that cannot be read is named, and the tick writes its new record with the clone opted in, since whether the
 clone was is unknown, so `repo-cleanup` names `lapsed` for a clone that never opted in until `.git/hub-state.json`
 is deleted. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
