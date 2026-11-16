@@ -811,21 +811,26 @@ class CallableResolver:
         return (
             owner is not None
             and root.id in owner.aliases
-            and (isinstance(call.func, ast.Name) or self._imported(root.id, owner, frozenset()))
+            and (isinstance(call.func, ast.Name) or self._imported(root.id, owner, set()))
         )
 
-    def _imported(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> bool:
+    def _imported(self, name: str, scope: _NameScope, read: set[tuple[int, str]]) -> bool:
+        """Whether a name reaches an import through the names its bindings take an attribute of, or are.
+
+        `read` holds each (scope, name) the question has read, so each is read once a question: what a name reaches
+        depends only on the scope that owns it and the name, and the answer is an any, so a name read before either
+        reached no import or is still being read on the path to it, where a cycle reaches nothing it has not already
+        tried; a name that had reached one would have ended the question."""
         owner = scope.owner(name)
-        if owner is None or (id(owner), name) in seen:
+        if owner is None or (key := (id(owner), name)) in read:
             return False
+        read.add(key)
         if name in owner.imports:
             return True
         for value in owner.bindings[name]:
             while isinstance(value, ast.Attribute):
                 value = value.value
-            if isinstance(value, ast.Name) and self._imported(
-                value.id, self.scopes[id(value)], seen | {(id(owner), name)}
-            ):
+            if isinstance(value, ast.Name) and self._imported(value.id, self.scopes[id(value)], read):
                 return True
         return False
 
