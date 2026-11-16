@@ -39,7 +39,8 @@ from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 
 # A part of a Bash word only running settles, such as a substitution, as it stands in the word: one Bash word, free of
 # quotes and metacharacters, so the script eval or a shell's -c runs keeps it one word wherever it stands, and no
-# subcommand's name, so a git subcommand holding it is read as UNREAD_WORD, one that may be any.
+# subcommand's name, so a git subcommand holding it is read as UNREAD_WORD, one that may be any. A PowerShell command's
+# word no literal holds, the parser's UNREAD_WORD, is read in this form too, as bash_word renders it.
 UNREAD_PART = "%unread%"
 # The words of each external command a PowerShell script runs, its program's name first, as
 # powershell_commands.command_words gives them.
@@ -119,7 +120,8 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     neither runs a command, and a line ends at LF alone.
 
     A script the grammar cannot read raises its BashSyntaxError, and so does the script eval or a shell's -c runs:
-    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs. A part
+    Bash runs the lines before a syntax error, so a reader that guessed at such a script could miss a git command it
+    runs. A part
     of a word only running settles, such as a substitution, is UNREAD_PART where it stands: one word in the script
     eval or a shell's -c runs, so `eval "git push $(x)"` reads push and `eval "$(ssh-agent -s)"` reads nothing, and a
     git subcommand holding it is UNREAD_WORD, one that may be any. An ANSI-C `$'...'` string holding an escape is such
@@ -145,9 +147,16 @@ def powershell_git_subcommands(commands: Iterable[Sequence[str]], read_powershel
         for words in commands
         if words
         for subcommand in command_git_subcommands(
-            [powershell_program(words[0]), *words[1:]], read_powershell, reserved=False
+            [bash_word(word) for word in [powershell_program(words[0]), *words[1:]]], read_powershell, reserved=False
         )
     }
+
+
+def bash_word(word: str) -> str:
+    """A PowerShell command's word in the form a Bash command's word takes, so program_git_subcommands reads the two
+    alike: the parser's UNREAD_WORD, a word no literal holds, as UNREAD_PART, one word only running settles, which
+    the script eval or a shell's -c runs keeps one word; any other word unchanged."""
+    return UNREAD_PART if word == UNREAD_WORD else word
 
 
 def powershell_program(word: str) -> str:
@@ -185,9 +194,10 @@ def command_git_subcommands(
 
 
 def program_git_subcommands(words: list[str], read_powershell: PowerShellReader) -> set[str]:
-    """The git subcommand a simple command runs, given its words from its program's name: git's own, or one each
-    wrapper of command_wrappers' catalogue, find's actions, eval, a shell's -c script, or a PowerShell start-up's
-    script runs."""
+    """The git subcommand a simple command runs, given its words from its program's name, each part only running
+    settles as UNREAD_PART, a PowerShell command's as bash_word renders it: git's own, or one each wrapper of
+    command_wrappers' catalogue, find's actions, eval, a shell's -c script, or a PowerShell start-up's script runs.
+    A -c script that is UNREAD_PART alone runs nothing this can read."""
     while words:
         head, rest = words[0], words[1:]
         name = bash_program(head)
@@ -195,18 +205,16 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
             subcommand = git_client.subcommand(rest)
             return {UNREAD_WORD if subcommand and UNREAD_PART in subcommand else subcommand} if subcommand else set()
         if head == "eval":
-            # A word no literal holds stands in eval's script as one word, never as script text of its own.
-            script = " ".join(shlex.quote(word) if word == UNREAD_WORD else word for word in rest)
-            return bash_git_subcommands(script, read_powershell)
+            # Each UNREAD_PART stands in eval's script as one word, never as script text of its own.
+            return bash_git_subcommands(" ".join(rest), read_powershell)
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
-            if index is None or rest[index] == UNREAD_WORD:
+            if index is None or rest[index] == UNREAD_PART:
                 return set()
             return bash_git_subcommands(rest[index], read_powershell)
         program = program_name(PureWindowsPath(head).name).casefold()
         if program in POWERSHELL_PROGRAMS:
-            known = [UNREAD_WORD if UNREAD_PART in word else word for word in rest]
-            return startup_git_subcommands(program, known, read_powershell)
+            return startup_git_subcommands(program, rest, read_powershell)
         if name == "find":
             return {
                 found
@@ -222,9 +230,9 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
 def startup_git_subcommands(program: str, words: list[str], read_powershell: PowerShellReader) -> set[str]:
     """The git subcommands the script a pwsh or Windows PowerShell start-up runs, given its words after the program,
     as powershell_startup reads its parameters: none for a start-up that runs no script, an -EncodedCommand, a
-    script read from standard input, or one a word that is no literal, UNREAD_WORD, holds or may name, whose commands
-    no reader sees."""
-    known = [None if word == UNREAD_WORD else word for word in words]
+    script read from standard input, or one a word holding a part only running settles, UNREAD_PART, holds or may
+    name, whose commands no reader sees."""
+    known = [None if UNREAD_PART in word else word for word in words]
     command = startup_command(known, positional_command=program == "powershell", positional_file=program == "pwsh")
     if command is None or isinstance(command, UnknownWord) or command.encoded:
         return set()

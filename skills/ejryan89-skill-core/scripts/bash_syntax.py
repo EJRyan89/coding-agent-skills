@@ -22,7 +22,8 @@ subshell Bash runs it in.
 
 `simple_commands` lists every simple command Bash may run for a text, each substitution's included, read as the
 subshell Bash runs it in, and `command_words` gives one's words from its program's name, for a reader that judges
-what a script runs.
+what a script runs; `every_command` lists every command, compound ones and function definitions too, and
+`command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
@@ -44,6 +45,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   unread, the git call after the real delimiter line included. A delimiter word written before a CR, as in a script with
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
 - An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
+- A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
 - Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
   arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
   BashSyntaxError.
@@ -264,7 +266,12 @@ class Arithmetic:
 
 @dataclass
 class FunctionDefinition:
-    name: str
+    """A function's definition: the name Bash defines it by, and its body. Bash reads any word as the name, but when
+    it runs the definition it refuses one quoted, escaped, or holding an expansion as not a valid identifier, as in
+    `'f' () { :; }` or `function $x { :; }`, and defines nothing; such a name is None, and so is one holding a tilde,
+    which Bash defines, a limit the module states."""
+
+    name: str | None
     body: Command
 
 
@@ -977,7 +984,8 @@ class Parser:
                     assigning = assigning and not words
                     redirects.append(self.redirect())
                     continue
-                if token.text == "(" and len(words) == 1 and not redirects and words[0].literal:
+                if token.text == "(" and len(words) == 1 and not redirects and words[0].assignment is None:
+                    # Bash reads a function's name wherever a command's first word stands, but never an assignment.
                     return self.function_definition(words[0].literal)
                 break
             if isinstance(token, HereDocument):
@@ -1016,7 +1024,7 @@ class Parser:
             found.append(self.redirect())
         return found
 
-    def function_definition(self, name: str) -> FunctionDefinition:
+    def function_definition(self, name: str | None) -> FunctionDefinition:
         self.index += 1
         if not self.at_operator(")"):
             raise BashSyntaxError("a function definition is not closed")
@@ -1033,9 +1041,10 @@ class Parser:
         return self.command()
 
     def function_keyword(self) -> Command:
-        token = self.advance()
-        if not isinstance(token, Word) or not token.literal:
+        token = self.peek()
+        if not isinstance(token, Word):
             raise BashSyntaxError("function names nothing")
+        self.index += 1
         if self.at_operator("("):
             return self.function_definition(token.literal)
         return FunctionDefinition(token.literal, self.function_body())
@@ -1162,7 +1171,14 @@ def simple_commands(text: str) -> list[Simple]:
     read from wherever it stands: a word, an assignment's value, a redirection's target, an unquoted here-document's
     body, a case word or pattern, or a loop's words. A case word, a pattern, a function's name, and a quoted
     here-document's body run nothing of their own. Raises BashSyntaxError where text, or a substitution in it, cannot
-    be read, since Bash runs none of a command it refuses."""
+    be read: Bash runs the lines before a syntax error, so a reader cannot say which of its commands run."""
+    return [command for command in every_command(text) if isinstance(command, Simple)]
+
+
+def every_command(text: str) -> list[Command]:
+    """Each command Bash may run for text, compound or simple, in the order the text holds them, read wherever
+    simple_commands reads a simple one: a compound command before the commands it runs, and a function's definition
+    before its body. Raises BashSyntaxError where text, or a substitution in it, cannot be read."""
     tree = parse(text)
     try:
         return list(_tree_commands(tree))
@@ -1172,18 +1188,18 @@ def simple_commands(text: str) -> list[Simple]:
         raise BashSyntaxError("it nests deeper than the reader follows") from None
 
 
-def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
+def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
     if isinstance(node, CommandList):
         for and_or, _ in node.items:
             for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
                 for command in pipeline.commands:
                     yield from _tree_commands(command)
         return
+    yield node
     if isinstance(node, FunctionDefinition):
         yield from _tree_commands(node.body)
         return
     if isinstance(node, Simple):
-        yield node
         words: list[Word] = list(node.words)
     elif isinstance(node, Case):
         words = [node.word, *node.patterns]
@@ -1202,11 +1218,11 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
         yield from _tree_commands(parse(text))
     for document in bodies:
         yield from _body_commands(document)
-    for body in _command_bodies(node):
+    for body in command_bodies(node):
         yield from _tree_commands(body)
 
 
-def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Simple]:
+def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
     """The commands an unquoted here-document's substitutions run: one the grammar cannot parse runs nothing, and those
     after it are read, rather than refusing the text. Bash 3.2, and Bash 5.3 at a backquoted one, go on past it as
     this does; Bash 5.3 stops expanding the body at a `$( )` one, so for it this reads more than it runs, on purpose,
@@ -1219,8 +1235,9 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Simple]:
         yield from _tree_commands(tree)
 
 
-def _command_bodies(node: Command) -> list[CommandList]:
-    """The command lists a compound command runs, in the order the text holds them."""
+def command_bodies(node: Command) -> list[CommandList]:
+    """The command lists a compound command runs, its conditions included, in the order the text holds them; none for
+    a simple command, an arithmetic one, or a function's definition, whose body is one command."""
     if isinstance(node, (Subshell, Group)):
         return [node.body]
     if isinstance(node, If):
@@ -1228,7 +1245,7 @@ def _command_bodies(node: Command) -> list[CommandList]:
     if isinstance(node, Loop):
         return [node.condition, node.body] if node.condition is not None else [node.body]
     if isinstance(node, Case):
-        return node.branches
+        return list(node.branches)
     return []
 
 

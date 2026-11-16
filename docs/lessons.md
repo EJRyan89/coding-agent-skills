@@ -530,6 +530,10 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_bash_line_ends_at_lf_alone`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_script_the_grammar_refuses_raises_its_error`,
   `tests/tools/test_bash_syntax.py::test_simple_commands_read_every_command_bash_may_run_from_its_program`,
+  `tests/tools/test_bash_syntax.py::test_a_function_is_named_only_by_a_word_bash_defines_it_by`,
+  `tests/validation/test_shell_readers.py::test_shell_command_extraction_reads_bash_as_the_grammar_reads_it`, which
+  holds validation's shell command reader to the grammar's reading of a here-document's body, a comment, arithmetic,
+  and a function's arguments,
   `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
   which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
@@ -681,7 +685,12 @@ removed fails validation until its pattern follows it.
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
   which reads each Bash function once per question for each table of functions a shell's -c script extends, the
   table kept once for each content, and again only from a shallower depth, since its depth cut leaves a function
-  read at the limit with its calls unread; `tests.validation.exit_tables:CodeReader.returns`,
+  read at the limit with its calls unread; `tests.validation.python_checks:_PresenceReader.polarities`, which
+  reads each name once per question for each truth and each reading of what it holds,
+  `tests.validation.python_checks:_PresenceReader._there`, once for each truth, and
+  `tests.validation.python_checks:_Handlers.suppress`, once for each depth of scopes, since what a name gives depends
+  only on that state; a name bound to its own negation is read at both truths, since that binding gives the name the
+  truth opposite to the one it read; `tests.validation.exit_tables:CodeReader.returns`,
   `tests.validation.exit_tables:CodeReader.assigned`, and `tests.validation.exit_tables:CodeReader.parameter`, which
   read a function, a local's value, or a parameter once a pass in each scope
   `tests.validation.exit_tables:CodeReader.scope` keeps, one for each function and the argument expressions one call
@@ -697,6 +706,7 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_exit_tables.py::test_a_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_exit_tables.py::test_a_called_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`,
+  `tests/validation/test_python_checks.py::test_presence_policy_reads_each_name_of_a_chain_once_per_question`,
   `tests/validation/test_exit_tables.py::test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each`,
   `tests/validation/test_exit_tables.py::test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn`,
   `tests/validation/test_exit_tables.py::test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes`,
@@ -711,7 +721,7 @@ removed fails validation until its pattern follows it.
   per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
-- **Examples:** #2859, #2871, #2877
+- **Examples:** #2859, #2871, #2877, #2882
 
 ### A path taken from input is judged inside its tree before anything opens it
 

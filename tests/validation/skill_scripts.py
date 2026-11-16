@@ -20,12 +20,20 @@ from typing import Literal, TextIO, overload
 import file_presence
 import json_reader
 import whole_number
+from bash_syntax import (
+    BashSyntaxError,
+    FunctionDefinition,
+    Part,
+    Simple,
+    Word,
+    command_words,
+    every_command,
+    unsettled_part,
+    word_text,
+)
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from command_wrappers import (
-    ASSIGNMENT,
-    PIPES,
     SCRIPT_SHELLS,
-    TIME_KEYWORD_OPTIONS,
     UNREAD_PROGRAM,
     bash_program,
     find_actions,
@@ -38,12 +46,13 @@ from duplication import SKILL_CORE_SCRIPTS
 from exit_calls import EXIT_CALLS, code_keyword
 from fsops_platform import CHECKED_TEMPORARY_DIRECTORY, TEMPORARY_DIRECTORY_CALL, write_destinations, write_nodes
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
-from git_subcommands import powershell_program
+from git_subcommands import UNREAD_PART, powershell_program
 from kinds_table import LOOKUP_METHODS
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
-from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD, command_words
+from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD
+from powershell_commands import command_words as powershell_command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from python_checks import (
     PRINTS,
@@ -63,6 +72,7 @@ from validation_support import (
     POWERSHELL_CONTINUATION,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
+    VALIDATION_DOC,
     AttributeLookup,
     CallableResolver,
     UnreadablePython,
@@ -112,11 +122,6 @@ PLATFORM_ALLOWED = {
     "refuses on every platform; it opens nothing",
 }
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
-COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
-# The reserved words that may stand before a command's program. Bash's time keyword is read by _TimeKeyword.
-LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "}", ")", "fi", "done"}
-# Keywords whose following words, up to the next separator, are not commands: "for name in list", "case word in".
-HEADER_KEYWORDS = {"case", "for", "function", "select"}
 SHELL_BUILTINS = {
     "alias",
     "break",
@@ -160,6 +165,17 @@ SHELL_BUILTINS = {
 }
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+# What shell_commands gives, before the grammar's reason, for Bash the grammar refuses: no program's name, so the
+# declared-tool policy fails it even where skill_command_problems did not name the file it stands in.
+UNREAD_BASH = "<not bash> "
+
+
+def refused_bash_problem(where: str, marker: str, doc: str) -> str:
+    """The problem a policy reports for Bash the grammar refuses, given where it stands and shell_commands' marker."""
+    return (
+        f"{where} runs Bash the grammar does not read ({marker.removeprefix(UNREAD_BASH)}); Bash runs the lines "
+        f"before a syntax error, so none of its programs can be trusted as read; see {doc}"
+    )
 
 
 def split_operators(token: str) -> list[str]:
@@ -305,17 +321,13 @@ def substitution_spans(script: str) -> list[tuple[int, str]]:
     return found
 
 
-def _substitutions(script: str) -> list[str]:
-    """The script of each command substitution a Bash script holds, as substitution_spans reads them."""
-    return [text for _, text in substitution_spans(script)]
-
-
 def _program_word(word: str) -> set[str]:
     """What a word a wrapper runs as a program names: a literal command, nothing for a template token or a path, which
-    a command word is read as too, and UNREAD_PROGRAM for one built from a variable or a substitution."""
+    a command word is read as too, and UNREAD_PROGRAM for one built from a variable or a substitution, which a Bash
+    command's word holds as UNREAD_PART."""
     if COMMAND_NAME.fullmatch(word):
         return {word}
-    if "$" in word or "`" in word:
+    if "$" in word or "`" in word or UNREAD_PART in word:
         return {f"{UNREAD_PROGRAM}{word}"}
     return set()
 
@@ -450,84 +462,70 @@ def prime[Primed](read: Callable[[], Primed]) -> Primed:
         _SCRIPT_READINGS.update(zip(texts, prime(functools.partial(powershell_readings, texts)), strict=True))
 
 
-class _TimeKeyword:
-    """Where a Bash script's `time` in a command's place is Bash's keyword, and the options it has yet to take. It is
-    the keyword unless a pipe, a newline right after one, or an assignment stands before it, where Bash runs the time
-    program instead; the keyword takes -p and then --, each optional, before the pipeline it times."""
-
-    def __init__(self) -> None:
-        self.reserved = True
-        self.options: tuple[str, ...] = ()
-
-    def skips(self, word: str, keyword: str | None) -> bool:
-        """Whether a word in a command's place is the time keyword or an option it takes, noting what follows."""
-        if keyword is not None and keyword in self.options:
-            self.options = self.options[self.options.index(keyword) + 1 :]
-            return True
-        timed = keyword == "time" and self.reserved
-        self.options = TIME_KEYWORD_OPTIONS if timed else ()
-        self.follow(word, keyword)
-        return timed
-
-    def follow(self, word: str, keyword: str | None) -> None:
-        """Note whether `time` after this word would be the keyword: not after a pipe, the newline right after one,
-        or an assignment."""
-        if keyword != "\n":
-            self.reserved = keyword not in PIPES and not ASSIGNMENT.match(word)
-
-
 def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
-    """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
-    word, each program a wrapper, find's -exec, eval, a shell's -c script, or a PowerShell start-up's script runs, and
-    every command of a command
-    substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
-    `commands`, it also appends the words of each simple command it reads there, a substitution's included. Beyond
-    what it reads: a here-document's body, which git_subcommands reads as data, is read here as commands, so a word
-    of a body may stand as a command Bash never runs, and a quote a body leaves open runs on past it; and a backslash
-    that ends a comment, or that another backslash escapes, is read as continuing the line, so a command on the next
-    line goes unread. No skill's Bash script writes any of these, and reading Bash through one grammar would end
-    them."""
-    tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
-    # A function's name is read from its syntax, None for a quoted or escaped word, which Bash refuses as a name and
-    # defines no function for, as _function_header in suite_discovery.py reads it.
-    names = [tokens[i][1] for i in range(len(tokens) - 1) if tokens[i + 1][1] == "()"]
-    names += [tokens[i + 1][1] for i in range(len(tokens) - 1) if tokens[i][1] == "function"]
-    functions = {name for name in names if name is not None}
-    found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
-    state = "command"
-    words: list[str] = []
-    time_keyword = _TimeKeyword()
-    previous: str | None = None
-    for word, keyword in [*tokens, ("\n", "\n")]:
-        # ShellLexer splits ;& into ; and &, and ;;& into ;; and &; each ends a case item as ;; does.
-        ends_item = keyword == ";;" or (keyword == "&" and previous == ";")
-        previous = keyword
-        if state == "case-word":
-            state = "patterns" if keyword == "in" else state
-        elif state == "patterns":
-            state = "command" if keyword == ")" else "arguments" if keyword == "esac" else state
-        elif ends_item:
-            state = "patterns"
-        elif keyword == "esac":
-            state = "arguments"
-        elif state == "command":
-            if time_keyword.skips(word, keyword):
+    """Literal command names a Bash script runs, read through ejryan89-skill-core's bash_syntax, the repository's one
+    Bash grammar, which Bash's own syntax check holds: the program of each simple command Bash may run, wherever it
+    starts one, in a substitution, a case item, a function's body, and an unquoted here-document's substitutions
+    too, and never in a comment or a here-document's body, ignoring keywords, case words and patterns, and the
+    script's own functions, wherever it defines one; and each program a wrapper, find's -exec, eval, a shell's -c
+    script, or a PowerShell start-up's script runs. A part of a word only running settles, such as a substitution,
+    is UNREAD_PART where it stands, followed by its word's place, as reading_words gives it, so a wrapper's program
+    holding one is UNREAD_PROGRAM, and eval, a shell's -c, or env -S reads it as one word. The program is named by
+    its word as the script writes it, or, inside a script eval, a shell's -c, or env -S runs, with UNREAD_WORD for
+    each such part, since that script's text is the words its command reads, not as written. Given `commands`, it
+    also appends the words of each simple command it reads, from its program on, a substitution's included. A script
+    the grammar refuses, or whose eval or -c script it refuses, gives UNREAD_BASH and the grammar's reason: Bash runs
+    the lines before a syntax error, so none of the script's programs can be trusted as read."""
+    try:
+        read = every_command(script)
+        functions = {command.name for command in read if isinstance(command, FunctionDefinition) and command.name}
+        found: set[str] = set()
+        for command in (command for command in read if isinstance(command, Simple)):
+            words, written = reading_words(command)
+            if not words or words[0] in functions:
                 continue
-            if keyword in COMMAND_SEPARATORS or keyword in LEADING_KEYWORDS or ASSIGNMENT.match(word):
-                continue
-            state = "case-word" if keyword == "case" else "arguments"
-            words = [word] if keyword not in HEADER_KEYWORDS and word not in functions else []
-            if words and COMMAND_NAME.fullmatch(word):
-                found.add(word)
-        elif keyword in COMMAND_SEPARATORS:
-            time_keyword.follow(word, keyword)
-            found |= _wrapped_programs(words, commands)
-            if commands is not None and words:
+            if COMMAND_NAME.fullmatch(words[0]):
+                found.add(words[0])
+            found |= {_as_written(name, written) for name in _wrapped_programs(words, commands)}
+            if commands is not None:
                 commands.append(words)
-            words, state = [], "command"
-        else:
-            words.append(word)
+    except BashSyntaxError as exc:
+        return {f"{UNREAD_BASH}{exc}"}
     return found - functions
+
+
+# A part only running settles as reading_words places it: UNREAD_PART, then its word's place and a %, which no other
+# word of the command holds, or UNREAD_PART alone.
+PLACED_PART = re.compile(re.escape(UNREAD_PART) + r"(?:[0-9]+%)?")
+
+
+def reading_words(command: Simple) -> tuple[list[str], dict[str, str]]:
+    """A simple command's words from its program, as command_words gives them, with each part only running settles
+    UNREAD_PART, then the word's place among them and a %, so each word holding one is told apart from another; and
+    each such word beside the word as the script writes it."""
+    words = command.words[len(command.words) - len(command_words(command)) :]
+    reading: list[str] = []
+    written: dict[str, str] = {}
+    for place, word in enumerate(words):
+        placed = f"{UNREAD_PART}{place}%"
+        parts = tuple(Part("text", placed) if unsettled_part(part) else part for part in word.parts)
+        text = word_text(Word(word.raw, parts))
+        reading.append(text)
+        if placed in text:
+            written[text] = word.raw
+    return reading, written
+
+
+def _as_written(name: str, written: dict[str, str]) -> str:
+    """An UNREAD_PROGRAM name with each word reading_words placed given back as the script writes it, and any part
+    only running settles left, from a script eval, a shell's -c, or env -S runs, as UNREAD_WORD; any other name
+    unchanged."""
+    if not name.startswith(UNREAD_PROGRAM) or UNREAD_PART not in name:
+        return name
+    text = name.removeprefix(UNREAD_PROGRAM)
+    for read, raw in written.items():
+        text = text.replace(read, raw)
+    return f"{UNREAD_PROGRAM}{PLACED_PART.sub(UNREAD_WORD, text)}"
 
 
 def powershell_script_commands(script: str) -> tuple[tuple[str, ...], ...]:
@@ -1388,7 +1386,7 @@ def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
     commands: list[list[list[str]]] = [[] for _ in sources]
     for item in found:
         source = item["source"]
-        if (words := command_words(item)) is None:
+        if (words := powershell_command_words(item)) is None:
             programs[source].add(f"{UNREAD_PROGRAM}{item['unread']}")
         elif name := _program_name(item["name"]):
             texts = [name, *words[1:]]
@@ -1542,7 +1540,9 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
 
     A skill runs what its own scripts and Bash examples run, and what the scripts of its skill_deps that it reaches
     run: a dependency's tools are not the skill's unless it imports or names the script that runs them, and then the
-    skill declares them too, so a skill that reaches ejryan89-skill-core's GitHub client declares gh.
+    skill declares them too, so a skill that reaches ejryan89-skill-core's GitHub client declares gh. A file holding
+    Bash the grammar refuses, a script, a fence, or the script a command it runs hands a shell, is reported by its
+    path: Bash runs the lines before a syntax error, so none of the file's programs can be trusted as read.
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     directories = skills_by_name(root)
@@ -1566,10 +1566,21 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
                     problems += command_reader(path, clients).problems(name)
                 except UnreadablePython as error:
                     problems.append(f"{name} {error}")
-        used = {command for path in own for command in _file_commands(path, known, powershell, clients)}
+        read = {path: _file_commands(path, known, powershell, clients) for path in own + dependency_scripts}
+        # Ordered by each file's path as written, so every platform reports them alike, whatever order it lists them.
+        problems += [
+            refused_bash_problem(f"skill {skill}: {shown}", name, COMMANDS_DOC)
+            for shown, commands in sorted((path.relative_to(root).as_posix(), names) for path, names in read.items())
+            for name in sorted(commands)
+            if name.startswith(UNREAD_BASH)
+        ]
+        read = {
+            path: {name for name in commands if not name.startswith(UNREAD_BASH)} for path, commands in read.items()
+        }
+        used = {command for path in own for command in read[path]}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
-            for command in _file_commands(path, known, powershell, clients):
+            for command in read[path]:
                 reached.setdefault(command, path)
         unread = sorted(name for name in [*used, *reached] if name.startswith(UNREAD_PROGRAM))
         problems += [
@@ -2809,11 +2820,10 @@ def _code_lines(text: str, escape: str = "\\") -> list[tuple[int, str]]:
 
 
 def _shell_words(fragment: str) -> list[list[str]] | None:
-    """The words of each command a Bash fragment holds, or None when the shell reader cannot read it."""
+    """The words of each command a Bash fragment holds, as shell_commands reads them, or None when the grammar refuses
+    it."""
     words: list[list[str]] = []
-    try:
-        shell_commands(fragment, words)
-    except ValueError:
+    if any(name.startswith(UNREAD_BASH) for name in shell_commands(fragment, words)):
         return None
     return words
 
@@ -3170,7 +3180,8 @@ CLIENTS_DOC = '"Script results" in docs/adding-a-skill.md'
 
 def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, str]]:
     """The line and the git or gh command a node starts: a list or tuple that begins with it, or a call that runs a
-    command given it, such as `subprocess.run("git fetch", shell=True)`, directly or through a name bound to it."""
+    command given it, such as `subprocess.run("git fetch", shell=True)`, directly or through a name bound to it; and
+    UNREAD_BASH for Bash such a call hands a shell that the grammar refuses, which may run either."""
     found: list[tuple[int, str]] = []
     if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
         first = node.elts[0]
@@ -3178,7 +3189,7 @@ def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, st
             found = [(first.lineno, str(_text_constant(first).value).split(" ", 1)[0])]
     elif isinstance(node, ast.Call):
         found = reader.started(node)
-    return [(line, command) for line, command in found if command in CLIENT_COMMANDS]
+    return [(line, command) for line, command in found if command in CLIENT_COMMANDS or command.startswith(UNREAD_BASH)]
 
 
 def client_command_problems(root: Path) -> list[str]:
@@ -3204,6 +3215,9 @@ def client_command_problems(root: Path) -> list[str]:
         problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
+            if command.startswith(UNREAD_BASH):
+                problems.append(refused_bash_problem(f"{name}:{line}", command, COMMANDS_DOC))
+                continue
             problems.append(
                 f"{name}:{line} runs {command} itself; run it through {SKILL_CORE}'s {CLIENT_COMMANDS[command]}, "
                 f"which bounds it and turns prompts off; see {CLIENTS_DOC}"
@@ -3273,9 +3287,10 @@ def _shell_text(node: ast.expr) -> str | None:
 
 def started_checkers(reader: CommandReader, call: ast.Call) -> set[str]:
     """Each checker of CHECKER_RUNNERS a runner call may start: by the program it names, as `python -m ruff` or `-m
-    mypy` names one, as `bash -n` or `sh -n`, or in a script a shell is handed with -c, an f-string's included."""
+    mypy` names one, as `bash -n` or `sh -n`, or in a script a shell is handed with -c, an f-string's included; and
+    UNREAD_BASH for Bash it hands a shell that the grammar refuses, which may start any."""
     programs = {name for _, name in reader.started(call)}
-    found = programs & CHECKER_PROGRAMS
+    found = {name for name in programs if name in CHECKER_PROGRAMS or name.startswith(UNREAD_BASH)}
     for argument in reader._command_arguments(call):
         if isinstance(argument, Unreadable):
             continue
@@ -3285,7 +3300,8 @@ def started_checkers(reader: CommandReader, call: ast.Call) -> set[str]:
         found |= {module for word, module in itertools.pairwise(words) if word == "-m" and module in CHECKER_PROGRAMS}
         if isinstance(argument, (ast.List, ast.Tuple)) and len(argument.elts) > 2 and words[1] == "-c":
             script = _shell_text(argument.elts[2])
-            found |= shell_commands(script) & CHECKER_PROGRAMS if script is not None else set()
+            started = shell_commands(script) if script is not None else set()
+            found |= {name for name in started if name in CHECKER_PROGRAMS or name.startswith(UNREAD_BASH)}
     return found
 
 
@@ -3340,11 +3356,13 @@ def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
     for call in reader.calls:
         scope = reader.scope_names.get(id(call), MODULE_SCOPE)
         for checker in sorted(started_checkers(reader, call)):
-            if (name, scope) not in CHECKER_RUNNERS[checker]:
+            if checker.startswith(UNREAD_BASH):
+                problems.append(refused_bash_problem(f"{name}:{call.lineno}", checker, VALIDATION_DOC))
+            elif (name, scope) not in CHECKER_RUNNERS[checker]:
                 runners = " or ".join(f"{file}:{function}" for file, function in sorted(CHECKER_RUNNERS[checker]))
                 problems.append(
                     f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
-                    'outside the repository from turning its findings off; see "Validation" in docs/adding-a-skill.md'
+                    f"outside the repository from turning its findings off; see {VALIDATION_DOC}"
                 )
     return problems
 

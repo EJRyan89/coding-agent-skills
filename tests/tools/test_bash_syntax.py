@@ -537,6 +537,9 @@ def test_time_after_a_pipe_and_more_than_one_newline_is_the_keyword_bash_refuses
         "x=1 2>&1 declare a=(1)",
         "2>",
         ">out <",
+        # A function's name is never an assignment, and the function keyword names one.
+        "a=b () { :; }",
+        "function",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
@@ -608,6 +611,70 @@ class ArithmeticCommandTests(unittest.TestCase):
         for text in ("echo ((1))", "x=1 ((1))"):
             with self.subTest(text=text):
                 bash_agreement.assert_reader_agrees([text])
+
+
+# Bash reads any word but an assignment as a function's name, yet defines the function only by one with no quote,
+# escape, or expansion, refusing any other as not a valid identifier when it runs the definition; the name is None
+# for such a word, and its body is read, as every function's body is.
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("f () { git push; }", "f"),
+        ("f-x () { git push; }", "f-x"),
+        ("function a=b { git push; }", "a=b"),
+        ("'f' () { git push; }", None),
+        ('"f" () { git push; }', None),
+        ("\\f () { git push; }", None),
+        ("f''g () { git push; }", None),
+        ("$x () { git push; }", None),
+        ("f$(echo) () { git push; }", None),
+        ("function 'g' () { git push; }", None),
+        ('function f"g" { git push; }', None),
+        ("function $x { git push; }", None),
+    ],
+)
+def test_a_function_is_named_only_by_a_word_bash_defines_it_by(text: str, name: str | None) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    definitions = [
+        command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    assert [definition.name for definition in definitions] == [name]
+    assert ["git", "push"] in [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
+
+
+def test_a_documented_limit_a_function_name_holding_a_tilde_which_bash_defines_is_read_as_refused() -> None:
+    text = "~f () { echo defined; }; ~f"
+    bash_agreement.assert_reader_agrees([text])
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", text], separate_errors=True)
+    assert result.output.splitlines() == ["defined"]
+    definitions = [
+        command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    assert [definition.name for definition in definitions] == [None]
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "'f' () { echo body; }",
+        '"f" () { echo body; }',
+        "\\f () { echo body; }",
+        "f''g () { echo body; }",
+        "$x () { echo body; }",
+        "f$(echo) () { echo body; }",
+        "function 'g' () { echo body; }",
+        'function f"g" { echo body; }',
+        "function $x { echo body; }",
+    ],
+)
+def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definition: str) -> None:
+    # The name Bash refuses as it runs the definition defines no function, so a later command of that name runs a
+    # program, and the body never runs.
+    result = platform_support.run_tool(
+        [bash_agreement.find_bash(), "-c", f"{definition}; echo ran"], separate_errors=True
+    )
+    assert result.output.splitlines() == ["ran"]
+    assert "not a valid identifier" in result.errors
 
 
 @pytest.mark.parametrize(
