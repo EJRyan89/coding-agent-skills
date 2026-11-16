@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+import bash_syntax
 import executable_locator
 import git_client
 import git_worktrees
@@ -36,7 +37,7 @@ from resident_pwsh import resident_reads
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment, run_git
 
 from deployer import platform_support
-from tools import bash_syntax, hub_guard, worktrees
+from tools import hub_guard, worktrees
 
 
 def guard_in_process(stdin: str, cwd: Path, environment: Mapping[str, str]) -> tuple[int, str, str]:
@@ -3284,6 +3285,45 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.bash(command, cwd))
+
+    def test_git_in_arithmetic_a_for_header_or_after_an_arithmetic_function_is_read(self) -> None:
+        switch = f'git -C "{self.hub}" switch feat/demo'
+        for script in (
+            f"echo $(( $({switch}) ))",
+            f"(( $({switch}) ))",
+            f"for (( i = $({switch}); i < 1; i++ )); do :; done",
+            f"f() ((1)); {switch}",
+            f'((x="$({switch})"))',
+            f'(( "$({switch})" ))',
+            f'(( x = "`{switch}`" ))',
+            f'if (( "$({switch})" )); then :; fi',
+            f'while (( "$({switch})" )); do break; done',
+            f'(( x = "$(echo "))"; {switch})" ))',
+            f'for (( i="$({switch})"; i < 1; i++ )); do :; done',
+        ):
+            with self.subTest(script=script):
+                self.assertEqual("deny", self.bash(script, self.tree))
+                self.assertEqual("deny", self.powershell(f"bash -c '{script}'", self.tree))
+        # A single-quoted string there runs its substitution too, in Bash 5.
+        for script in (f"(( x = '$({switch})' ))", f"! (( '$({switch})' ))"):
+            with self.subTest(script=script):
+                self.assertEqual("deny", self.bash(script, self.tree))
+
+    def test_a_delimiter_line_ending_in_a_cr_closes_the_body_and_the_git_call_after_it_is_read(self) -> None:
+        # Git Bash closes each of these bodies at `EOF<CR>` and runs the git call after it; so does Bash elsewhere
+        # where the delimiter word holds the CR too. PowerShell's `bash -c '...'` runs each script that holds no single
+        # quote, which its string would end.
+        switch = f'git -C "{self.hub}" switch feat/demo'
+        for script in (
+            f"cat <<EOF\nhi\nEOF\r\n{switch}",
+            f"cat <<EOF\r\nhi\r\nEOF\r\n{switch}",
+            f"cat <<'EOF'\r\nhi\r\nEOF\r\n{switch}",
+            f'cat <<"EOF\r"\nhi\nEOF\r\n{switch}',
+        ):
+            with self.subTest(script=script):
+                self.assertEqual("deny", self.bash(script, self.tree))
+                if "'" not in script:
+                    self.assertEqual("deny", self.powershell(f"bash -c '{script}'", self.tree))
 
     def test_a_redirection_into_a_guarded_hub_is_refused_as_a_file_tool_s_edit_is(self) -> None:
         for command, cwd, expected in (
