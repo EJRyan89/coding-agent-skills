@@ -1306,6 +1306,16 @@ class ScanTests(TemporaryTestCase):
                 self.assertEqual(0, code, error)
                 self.assertNotIn("shell-file-command", " ".join(lines))
 
+    def test_a_shell_whose_script_is_missing_or_unsettled_runs_no_file_command(self) -> None:
+        # The script `bash -c` runs is a substitution's output, or none at all, so no command in it can be read; the
+        # substitution itself runs `prepare`, no file command (`$(cat x)` would run cat).
+        for command in ('bash -c "$(prepare)"', "bash -c"):
+            with self.subTest(command=command):
+                skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertNotIn("shell-file-command", " ".join(lines))
+
     def test_inline_python_is_generated_code_in_every_interpreter_spelling(self) -> None:
         # The token is split so that a deployment, which renders this file, leaves it for the scan to read.
         token = "{{" + "PYTHON}}"
@@ -4170,3 +4180,21 @@ def test_a_bash_script_bash_refuses_stops_the_status_comparison(tmp_path: Path) 
     with pytest.raises(skill_inventory.InputError, match=r"not Bash the grammar reads \(expected `fi`\)$") as raised:
         skill_inventory.status_lines(folder)
     assert str(raised.value) == f"cannot read {script.as_posix()}: not Bash the grammar reads (expected `fi`)"
+
+
+def test_a_bash_script_s_prints_exits_and_function_names_are_read_by_their_commands() -> None:
+    script = (
+        "printf '%s' SKIPPED\n"  # 1: the format is the first word, so no status word starts it
+        "printf DONE\n"  # 2
+        "echo -n -e READY\n"  # 3: past echo's options
+        "echo\n"
+        "exit\n"
+        "exit 1" + "0" * 5000 + "\n"  # past the digit limit
+        "exit " + chr(0x0663) + "\n"  # in digits other than ASCII
+        "REPORT_IT() { :; }\n"
+        "exit 7\n"
+    )
+    facts = skill_inventory.shell_facts(script, ".sh")
+    assert facts.lines == {"DONE": 2, "READY": 3}
+    assert facts.codes == {0, 7}
+    assert "REPORT_IT" in facts.words

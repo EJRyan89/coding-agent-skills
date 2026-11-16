@@ -787,6 +787,12 @@ TRACED_SCRIPT = (
     "( : in-subshell )\n"  # 25
     "\\\n"
     ": after-continuation\n"  # 27
+    ">/dev/null : redirect-first\n"  # 28
+    "</dev/null : input-first\n"  # 29
+    "\\\n"
+    "2>/dev/null : descriptor-after-continuation\n"  # 31
+    ": continued \\\n"  # 32, its redirection on 33
+    ">/dev/null\n"
 )
 TRACED_LINES = {
     "one": 2,
@@ -806,6 +812,10 @@ TRACED_LINES = {
     "in-group": 24,
     "in-subshell": 25,
     "after-continuation": 27,
+    "redirect-first": 28,
+    "input-first": 29,
+    "descriptor-after-continuation": 31,
+    "continued": 32,
 }
 # The commands whose line Bash's $LINENO gives otherwise: one in a substitution or in an unquoted here-document's
 # body, which Bash 3.2 and 5.3 trace on the line the command holding it starts or ends on. The reader gives the line
@@ -845,6 +855,10 @@ def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(
         # Bash ends a line at LF alone, so a CR is part of the line, CRLF or alone.
         (": a\r\n: b\r\n", {"a": 1, "b": 2}),
         (": a\r: b\n: c\n", {"a": 1, "c": 2}),
+        # A command led by a redirection, on a later line or after a continuation, starts at the redirection.
+        (": a\n>/dev/null : b\n", {"a": 1, "b": 2}),
+        (": a\n</dev/null : b\n", {"a": 1, "b": 2}),
+        (": a\n\\\n2>/dev/null : b\n", {"a": 1, "b": 3}),
         # A substitution in an unquoted body after a line its backslash continues, and in a body whose tabs `<<-`
         # strips, keeps its own line.
         ("cat <<EOF\na \\\nb $(: x)\nEOF\n: after\n", {"x": 3, "after": 5}),
