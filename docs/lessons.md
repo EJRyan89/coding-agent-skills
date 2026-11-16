@@ -672,8 +672,8 @@ removed fails validation until its pattern follows it.
   answer it gave; `tests.validation.validation_support:_spread_keywords` and
   `tests.validation.python_checks:_number_types`, which read each dict() call or partial once per question, since a
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
-  which reads each Bash function once per question for each table of functions a `-c` script extends, the table kept
-  once for each content
+  which reads each Bash function once per question for each table of functions a shell's -c script extends, the
+  table kept once for each content
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
