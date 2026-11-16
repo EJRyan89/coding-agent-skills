@@ -710,7 +710,7 @@ class _BashReading:
 
     def read_list(self, node: CommandList, fed: bool) -> None:
         """Read a list: a command after the first of its pipeline reads the pipe, and the first reads what the list
-        reads, in the background too, where Bash 5 keeps the standard input a pipe gives it, as Bash 3.2 does not."""
+        reads, in the background too, where Bash 5 keeps the pipe as its standard input and Bash 3.2 does not."""
         for and_or, _ in node.items:
             for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
                 for place, command in enumerate(pipeline.commands):

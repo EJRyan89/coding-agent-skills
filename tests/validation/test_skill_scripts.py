@@ -1642,6 +1642,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             ),
             "appends.sh": (f'JUDGED=$({judge})\nJUDGED+=/..\nX=$(mktemp "$JUDGED/x.XXXXXX")', ["4: mktemp"]),
             "escaped.sh": ('echo "a\\" # " ; X=$(mktemp)', ["2: mktemp"]),
+            # An expansion left open is Bash the grammar refuses, so the script is named as unread at its first line.
+            "unclosed.sh": ("V=${A /tmp", ["1: validation"]),
             # A `#` after an escaped blank continues the word, so Bash runs what follows it.
             "escaped_blank.sh": ("echo foo\\ #; X=$(mktemp)", ["2: mktemp"]),
             # A backtick substitution in a value is read as a command, never as the value's own text.
@@ -1688,9 +1690,9 @@ class SkillScriptsFixtures(unittest.TestCase):
             "environment.py": "import subprocess\nsubprocess.run(['echo'], env={'TMPDIR': '/tmp'})",
             "looped.py": "async def run(loop):\n    await loop.subprocess_exec(object, 'echo', 'hi')",
             "environment_last.py": "import os\nos.execle('/bin/echo', 'echo', 'hi', {'TMPDIR': '/tmp'})",
-            # A value runs to its word's end, through a quoted blank and an expansion left open, so the path in it only
-            # gives the variable what it holds; a backtick substitution running the judge is judged.
-            "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'\nV=${A /tmp",
+            # A value runs to its word's end, through a quoted blank, so the path in it only gives the variable what it
+            # holds; a backtick substitution running the judge is judged.
+            "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'",
             "backticked_judge.sh": f'J=`{judge}`\nX=$(mktemp "$J/x.XXXXXX")',
             # An escaped blank goes on with the value's word, so the path after it only gives the variable its value.
             "escaped_value.sh": "T=a\\ /tmp/b",

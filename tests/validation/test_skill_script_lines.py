@@ -28,10 +28,11 @@ def test_a_bash_script_s_exit_is_numbered_where_bash_ends_its_line(tmp_path: Pat
     ]
 
 
-def test_a_script_s_code_lines_end_where_its_shell_ends_one() -> None:
-    # Bash ends a line at LF alone, reading a CR as part of it; PowerShell at CR, LF, or CRLF; neither at U+2028.
-    assert skill_scripts._code_lines("a\u2028b\nc\r\nd\n") == [(1, "a\u2028b"), (2, "c\r"), (3, "d")]
-    assert skill_scripts._code_lines("a\u2028b\rc\r\nd\n", "`") == [(1, "a\u2028b"), (2, "c"), (3, "d")]
+def test_a_script_s_lines_end_where_its_shell_ends_one() -> None:
+    # Bash ends a line at LF alone, as the grammar counts it; PowerShell at CR, LF, or CRLF; neither at U+2028.
+    problems = skill_scripts._bash_temporary_problems("make.sh", "echo 'a\u2028b\rc'\r\nD=$(mktemp)\n")
+    assert [problem.partition(" ")[0] for problem in problems] == ["make.sh:2:"]
+    assert skill_scripts._code_lines("a\u2028b\rc\r\nd\n") == [(1, "a\u2028b"), (2, "c"), (3, "d")]
 
 
 def test_a_fence_is_found_where_commonmark_ends_a_line() -> None:
