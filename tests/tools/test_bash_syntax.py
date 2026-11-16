@@ -374,9 +374,17 @@ class HereDocumentTests(unittest.TestCase):
         self.assertEqual(('echo ")"; git am',), here.substitutions if here is not None else None)
         self.assertEqual(["$(", '${x:-"a}"}'], [part.text for part in here.expansions] if here is not None else None)
 
+    def test_a_script_with_crlf_line_ends_closes_each_body_at_its_delimiter_line(self) -> None:
+        # Bash reads the word as `EOF<CR>` and the line as `EOF<CR>`, and Git Bash drops both CRs, so either way the
+        # body closes there and the command after it runs; quoted or not.
+        for text in ("cat <<EOF\r\nhi\r\nEOF\r\ngit status\r\n", "cat <<'EOF'\r\nhi\r\nEOF\r\ngit status\r\n"):
+            with self.subTest(text=text):
+                self.assertEqual([["cat"], ["git", "status"]], simple_commands(parse(text)))
+
     def test_a_documented_limit_a_delimiter_line_ending_in_a_cr_closes_the_body_as_git_bash_reads_it(self) -> None:
-        # Bash itself counts the body's lines, which run nothing: Git Bash drops the CR and closes the body at `:<CR>`,
-        # running the `:` after it; Bash elsewhere keeps the CR, so the body runs to the next `:`.
+        # Bash itself counts the body's lines, the text running only cat, wc, and `:` wherever it runs: Git Bash drops
+        # the CR and closes the body at `:<CR>`, running the `:` after it; Bash elsewhere keeps the CR, so the body runs
+        # to the next `:`.
         text = "cat <<: | wc -l\nbody\n:\r\n:\n"
         here = first_simple(text).redirects[0].here
         self.assertEqual("body", here.body if here is not None else None)
@@ -556,6 +564,16 @@ class ArithmeticCommandTests(unittest.TestCase):
 
     def test_double_parentheses_that_close_apart_are_two_subshells(self) -> None:
         self.assertEqual([["cd", "x"]], simple_commands(parse("((cd x) )")))
+        # A quoted string's parentheses are text, so its `))` closes nothing.
+        self.assertEqual([["echo", '"))"'], ["git", "status"]], simple_commands(parse('((echo "))"; git status) )')))
+        self.assertEqual([["echo", "'))'"], ["git", "status"]], simple_commands(parse("((echo '))'; git status) )")))
+
+    def test_an_arithmetic_command_is_a_function_s_body(self) -> None:
+        tree = parse("f() ((1)); function g ((2)); git status")
+        commands = [item[0].first.commands[0] for item in tree.items[:2]]
+        bodies = [command.body for command in commands if isinstance(command, bash_syntax.FunctionDefinition)]
+        self.assertEqual(2, len([body for body in bodies if isinstance(body, bash_syntax.Arithmetic)]))
+        self.assertEqual([["git", "status"]], simple_commands(tree))
 
     def test_an_arithmetic_for_s_header_is_one_word_whose_shift_opens_no_here_document(self) -> None:
         loop = parse("for ((i = 1 << 2; i < 9; i++)); do echo; done\ngit status").items[0][0].first.commands[0]
@@ -596,7 +614,16 @@ def test_simple_commands_read_every_command_bash_may_run_from_its_program(text: 
     assert found == expected
 
 
-@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`", "cat <<EOF\n$(git am\nEOF"])
+def test_a_body_s_substitution_bash_cannot_read_runs_nothing_and_stops_the_body() -> None:
+    text = 'cat <<EOF\n$(git log) $(echo "a) $(git am)\nEOF\ngit status'
+    bash_agreement.assert_reader_agrees([text])
+    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
+    assert found == [["cat"], ["git", "log"], ["git", "status"]]
+    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands("cat <<EOF\n$(if)\nEOF")]
+    assert found == [["cat"]]
+
+
+@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`"])
 def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) -> None:
     with pytest.raises(BashSyntaxError):
         bash_syntax.simple_commands(text)
@@ -611,3 +638,10 @@ def test_simple_commands_raise_where_nesting_runs_past_the_recursion_limit() -> 
         pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"),
     ):
         bash_syntax.simple_commands("git am")
+
+
+def test_a_documented_limit_an_arithmetic_for_with_a_group_body_which_bash_reads_is_an_error() -> None:
+    text = "for ((i = 0; i < 1; i++)) { echo; }"
+    assert bash_agreement.bash_verdicts([text])[text][0]
+    with pytest.raises(BashSyntaxError, match=r"^expected `do`$"):
+        bash_syntax.parse(text)

@@ -3146,7 +3146,8 @@ class BashReader:
         moves = changes_directory(node)
         inside = UNKNOWN if moves else directory
         if isinstance(node, bash_syntax.Loop):
-            self.read_words(node.words or [], directory)
+            # An arithmetic for's header is expanded before the first pass, so its substitutions run.
+            self.read_words([*(node.words or []), *node.header], directory)
         if isinstance(node, bash_syntax.Case):
             self.read_words([node.word, *node.patterns], directory)
         if isinstance(node, bash_syntax.Arithmetic):

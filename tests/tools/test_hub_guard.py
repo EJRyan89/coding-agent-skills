@@ -3286,6 +3286,30 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.bash(command, cwd))
 
+    def test_git_in_arithmetic_a_for_header_or_after_an_arithmetic_function_is_read(self) -> None:
+        switch = f'git -C "{self.hub}" switch feat/demo'
+        for script in (
+            f"echo $(( $({switch}) ))",
+            f"(( $({switch}) ))",
+            f"for (( i = $({switch}); i < 1; i++ )); do :; done",
+            f"f() ((1)); {switch}",
+        ):
+            with self.subTest(script=script):
+                self.assertEqual("deny", self.bash(script, self.tree))
+                self.assertEqual("deny", self.powershell(f"bash -c '{script}'", self.tree))
+
+    def test_a_delimiter_line_ending_in_a_cr_closes_the_body_and_the_git_call_after_it_is_read(self) -> None:
+        # Git Bash closes each of these bodies at `EOF<CR>` and runs the git call after it; so does Bash elsewhere
+        # where the delimiter word holds the CR too.
+        switch = f"git -C '{self.hub}' switch feat/demo"
+        for command in (
+            f"cat <<EOF\nhi\nEOF\r\n{switch}",
+            f"cat <<EOF\r\nhi\r\nEOF\r\n{switch}",
+            f"cat <<'EOF'\r\nhi\r\nEOF\r\n{switch}",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+
     def test_a_redirection_into_a_guarded_hub_is_refused_as_a_file_tool_s_edit_is(self) -> None:
         for command, cwd, expected in (
             (f'echo x > "{self.hub / "README.md"}"', self.tree, "deny"),

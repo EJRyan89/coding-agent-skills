@@ -274,18 +274,14 @@ def test_each_step_of_the_grammar_ends_where_bash_ends_it(script: str, expected:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
-# Bash runs none of a script it refuses, nor a command whose here-document holds a substitution it cannot read when it
-# expands the body, so a reader that guessed at either could miss a git command; the grammar refuses each, and so
-# does the reader, for its caller to fail.
+# Bash runs none of a script it refuses, so a reader that guessed at one could miss a git command; the grammar refuses
+# each, and so does the reader, for its caller to fail.
 @pytest.mark.parametrize(
     "script",
     [
         "if git rev-parse --git-dir; then",
         "x=1 git push 'unclosed",
         "cat << \ngit push",
-        "cat <<EOF\n$(git push\nEOF",
-        "cat <<EOF\n`echo \\` ; git push`\nEOF",
-        "cat <<EOF\n`git push\nEOF",
         "eval 'git push \"'",
         "bash -c 'if git push; then'",
     ],
@@ -293,6 +289,23 @@ def test_each_step_of_the_grammar_ends_where_bash_ends_it(script: str, expected:
 def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
     with pytest.raises(bash_syntax.BashSyntaxError):
         git_subcommands.bash_git_subcommands(script, no_powershell)
+
+
+# Bash expands a here-document's body in order and stops at a substitution it cannot read, running none after it and
+# not the command the body is for, while the script goes on, so such a substitution runs nothing and the git commands
+# before it, in the body and around the command, are read.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("git fetch\ncat <<EOF\n$(git push\nEOF\ngit pull", {"fetch", "pull"}),
+        ("cat <<EOF\n`git push\nEOF\ngit pull", {"pull"}),
+        ("cat <<EOF\n`echo \\` ; git push`\nEOF", set()),
+        ('cat <<EOF\n$(git log) $(echo "a) $(git push)\nEOF\ngit pull', {"log", "pull"}),
+        ("cat <<EOF\n$(git log) $(if) $(git push)\nEOF", {"log"}),
+    ],
+)
+def test_a_body_s_substitution_bash_cannot_read_runs_nothing(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
 def test_a_body_s_substitution_reads_a_powershell_start_up_through_the_caller_s_reader() -> None:

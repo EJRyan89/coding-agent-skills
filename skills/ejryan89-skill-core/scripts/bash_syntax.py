@@ -38,9 +38,11 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   raises BashSyntaxError.
 - A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
   `git push<CR>` is read as git's push and `a<CR>b` as two words.
-- A here-document's delimiter line is compared without a CR that ends it, as Git Bash on Windows compares it, so
+- A here-document's delimiter line is compared without the CRs that end it, as Git Bash on Windows compares it, so
   `EOF<CR>` closes the body there, and the lines after it are read as the commands Git Bash runs; Bash elsewhere keeps
-  the CR and reads them as body text, running none of them.
+  the CR and reads them as body text, running none of them. A delimiter word written before a CR, as in a script with
+  CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
+- An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
 """
 
 from __future__ import annotations
@@ -106,6 +108,8 @@ FUNCTION_BODIES = frozenset({"{", "if", "while", "until", "for", "select", "case
 SPECIAL_PARAMETERS = frozenset("@*#?$!-0123456789")
 # What a double quote's backslash escapes; before any other character the backslash is kept.
 DOUBLE_QUOTED_ESCAPES = frozenset('$`"\\\n')
+# A quoted string from its opening quote: a single-quoted one to the next quote, a double-quoted one past escapes.
+QUOTED_STRING = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.DOTALL)
 
 
 class BashSyntaxError(ValueError):
@@ -388,7 +392,7 @@ class Lexer:
         reads as two subshells' parentheses."""
         start = self.index
         try:
-            found = self.arithmetic(start + 2)
+            found = self.arithmetic(start + 2, quotes=True)
         except BashSyntaxError:
             self.index = start
             return False
@@ -424,7 +428,7 @@ class Lexer:
                 while not document.quoted and escapes_its_end(line) and self.index < len(self.text):
                     line = line[:-1] + self.next_line()
                 compared = line.lstrip("\t") if document.strip_tabs else line
-                if compared.removesuffix("\r") == document.delimiter:
+                if compared.rstrip("\r") == document.delimiter:
                     break
                 lines.append(compared)
             document.body = "\n".join(lines)
@@ -662,7 +666,9 @@ class Lexer:
         self.index = inner.index + 1
         return self.text[start : inner.index]
 
-    def arithmetic(self, start: int) -> list[str]:
+    def arithmetic(self, start: int, quotes: bool = False) -> list[str]:
+        """The substitutions in arithmetic from start to the `))` that closes it, read past; with quotes set, as Bash
+        reads `(( ))`, a quoted string's parentheses are text, so `((echo "))"; x) )` closes nothing."""
         found: list[str] = []
         depth = 0
         self.index = start
@@ -670,7 +676,12 @@ class Lexer:
             character = self.peek()
             if not character:
                 raise BashSyntaxError("an arithmetic expansion is not closed")
-            if character == "$" and self.peek(1) == "(" and self.peek(2) != "(":
+            if quotes and character in "'\"":
+                closing = QUOTED_STRING.match(self.text, self.index)
+                if closing is None:
+                    raise BashSyntaxError("a quote in an arithmetic command is not closed")
+                self.index = closing.end()
+            elif character == "$" and self.peek(1) == "(" and self.peek(2) != "(":
                 found.append(self.balanced(self.index + 2))
             elif character == "`":
                 found.append(self.backquoted())
@@ -776,15 +787,20 @@ def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
     parts: list[Part] = []
     while lexer.index < len(lexer.text):
         character = lexer.peek()
-        if character == "\\":
-            lexer.index += 2
-        elif character == "$":
-            lexer.dollar(parts, found, quoted=True)
-        elif character == "`":
-            found.append(lexer.backquoted())
-            parts.append(Part("dynamic", "`", quoted=True))
-        else:
-            lexer.index += 1
+        try:
+            if character == "\\":
+                lexer.index += 2
+            elif character == "$":
+                lexer.dollar(parts, found, quoted=True)
+            elif character == "`":
+                found.append(lexer.backquoted())
+                parts.append(Part("dynamic", "`", quoted=True))
+            else:
+                lexer.index += 1
+        except BashSyntaxError:
+            # Bash expands the body in order and stops at an expansion it cannot read, failing the command the body
+            # is for, so the expansions after it run nothing.
+            break
     return found, lexer.assigned, parts
 
 
@@ -983,7 +999,8 @@ class Parser:
         self.skip_newlines()
         token = self.peek()
         opens = isinstance(token, Operator) and token.text == "("
-        if not opens and not (isinstance(token, Word) and token.literal in FUNCTION_BODIES):
+        compound = isinstance(token, Word) and (token.literal in FUNCTION_BODIES or token.arithmetic)
+        if not opens and not compound:
             raise BashSyntaxError("a function's body is not a compound command")
         return self.command()
 
@@ -1149,13 +1166,28 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
     else:
         words = []
     substitutions = [text for word in words for text in word.substitutions]
+    bodies: list[tuple[str, ...]] = []
     for redirect in node.redirects:
         substitutions += redirect.target.substitutions if redirect.target is not None else ()
-        substitutions += redirect.here.substitutions if redirect.here is not None else ()
+        bodies += [redirect.here.substitutions] if redirect.here is not None else []
     for text in substitutions:
         yield from _tree_commands(parse(text))
+    for document in bodies:
+        yield from _body_commands(document)
     for body in _command_bodies(node):
         yield from _tree_commands(body)
+
+
+def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Simple]:
+    """The commands an unquoted here-document's substitutions run, in order: Bash expands the body only when the
+    command it is for runs, and stops at a substitution it cannot read, running none after it, the command
+    included, while the rest of the script goes on, so that substitution runs nothing rather than refusing the text."""
+    for text in substitutions:
+        try:
+            tree = parse(text)
+        except BashSyntaxError:
+            return
+        yield from _tree_commands(tree)
 
 
 def _command_bodies(node: Command) -> list[CommandList]:

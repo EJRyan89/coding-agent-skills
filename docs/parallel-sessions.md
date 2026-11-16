@@ -518,10 +518,10 @@ The configuration's limits:
   outside the work tree, unless `GIT_MODES_READ` does; and each row of `GIT_OPERAND_WRITERS` to every option with a
   value that `-h` lists. Each read table says why its entry writes nothing outside the checkout a call runs in, so
   an option or operand a later git adds fails there until a row decides it.
-- **Bash, by its grammar.** `skills/ejryan89-skill-core/scripts/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
-  escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
-  pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
-  its `-p` and `--`. The guard reads each simple command whose name is literal once quotes are removed, wherever the
+- **Bash, by its grammar.** ejryan89-skill-core's `bash_syntax.py` reads Bash as Bash parses it: single and double
+  quotes, `$'...'`, escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&`
+  and `||`, pipelines, `( )` subshells, `{ }` groups, `(( ))` arithmetic commands, `if`, `case`, `while`, `until`,
+  `for`, an arithmetic `for`'s header among them, `select`, `!`, and `time` with its `-p` and `--`. The guard reads each simple command whose name is literal once quotes are removed, wherever the
   tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. A
   wrapper ejryan89-skill-core's `command_wrappers.COMMAND_WRAPPERS` names, as `env`, `timeout`, `command`, `exec`,
   `nohup`, `sudo`, or `xargs`, is read as the command it runs, past its options by `command_wrappers.unwrapped`, its
@@ -672,8 +672,9 @@ Within what it reads, it judges only what the text shows, so these too are left 
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
   `cd`, and the git call after it, where the guard does not follow;
-- a git call before a part of the command Bash refuses, or that `skills/ejryan89-skill-core/scripts/bash_syntax.py` does not cover, such as
-  `coproc`: the whole command is not read, though Bash runs the lines before a syntax error;
+- a git call before a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does not
+  cover, such as `coproc` or an arithmetic `for` whose body is a `{ }` group: the whole command is not read, though
+  Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
   its `-I`, `-i`, or `--replace` replaces, which it reads as the literal it is;
