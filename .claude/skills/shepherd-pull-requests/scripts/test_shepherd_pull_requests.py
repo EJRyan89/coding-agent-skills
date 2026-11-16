@@ -847,6 +847,56 @@ class HubTest(FixtureTestCase):
         status, lines = self.tick(StubGh())
         self.assertEqual((0, []), (status, self.differing(lines)))
 
+    def test_a_hook_added_changed_or_removed_in_the_hub_since_the_previous_tick_is_named_once(self) -> None:
+        hooks = self.hub / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        (hooks / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)), "a first tick has no previous one to compare with")
+        (hooks / "pre-commit").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (hooks / "pre-push").unlink()
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                f'HUB_DIFFERS "{self.hub.as_posix()}" its git hooks or info files changed since the previous tick: '
+                "hooks/pre-commit added, hooks/pre-push removed"
+            ],
+            self.differing(lines),
+        )
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)))
+        if sys.platform != "win32":  # Windows keeps no executable bit
+            (hooks / "pre-commit").chmod(0o755)
+            status, lines = self.tick(StubGh())
+            self.assertEqual(
+                [
+                    f'HUB_DIFFERS "{self.hub.as_posix()}" its git hooks or info files changed since the previous '
+                    "tick: hooks/pre-commit changed"
+                ],
+                self.differing(lines),
+                "git runs a hook only when it is executable",
+            )
+
+    def test_an_info_file_changed_in_the_hub_since_the_previous_tick_is_named_once_from_a_worktree_too(self) -> None:
+        worktree = self.root / "hub-worktree"
+        git("worktree", "add", "-q", "-b", "fix/elsewhere", str(worktree), directory=self.hub)
+        self.tick(StubGh())
+        info = self.hub / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (self.hub / "stray.md").write_text("stray\n", encoding="utf-8")
+        with (info / "exclude").open("a", encoding="utf-8") as exclude:
+            exclude.write("stray.md\n")
+        (info / "attributes").write_text("* -diff\n", encoding="utf-8")
+        expected = [
+            f'HUB_DIFFERS "{self.hub.as_posix()}" its git hooks or info files changed since the previous tick: '
+            "info/attributes added, info/exclude changed"
+        ]
+        status, lines = self.tick(StubGh(), directory=worktree)
+        self.assertEqual((1, expected), (status, self.differing(lines)), "the excluded file itself is not named")
+        status, lines = self.tick(StubGh())
+        self.assertEqual((0, []), (status, self.differing(lines)))
+
     def test_a_configuration_git_cannot_read_is_named_beside_the_work_tree_s_differences(self) -> None:
         names = GitClient.names
         (self.hub / "stray.md").write_text("stray\n", encoding="utf-8")

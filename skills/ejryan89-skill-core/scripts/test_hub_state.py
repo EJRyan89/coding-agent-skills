@@ -3,6 +3,8 @@ commit its remote's default branch holds."""
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,7 @@ from hub_state import (
     changed_paths,
     changes,
     differences,
+    escaped_name,
     lapse,
     read_record,
 )
@@ -377,12 +380,180 @@ class ConfigurationTests(ConfigurationCase):
             "a digest of another length": {"version": 1, "guarded": True, "opted_in": True, "settings": {"a": "0"}},
             "a guard that is no boolean": {"version": 1, "guarded": "yes", "opted_in": True, "settings": {}},
             "no opting in": {"version": 1, "guarded": True, "settings": {"a": digest}},
+            "files that are no object": {"version": 1, "guarded": True, "opted_in": True, "settings": {}, "files": []},
+            "a file's digest of another length": {
+                "version": 1,
+                "guarded": True,
+                "opted_in": True,
+                "settings": {},
+                "files": {"hooks/pre-commit": "0"},
+            },
         }
         for name, value in cases.items():
             with self.subTest(name=name):
                 json_writer.write(self.record, value)
                 with self.assertRaises(RecordError):
                     read_record(self.record)
+
+
+class FileTests(ConfigurationCase):
+    """The record of the hub's hooks and info files that the shepherd's tick keeps, and what it reports against it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.hooks = self.hub / ".git" / "hooks"
+        self.hooks.mkdir(exist_ok=True)
+        self.info = self.hub / ".git" / "info"
+        self.info.mkdir(exist_ok=True)
+
+    def hook(self, name: str, text: str, *, executable: bool = True) -> Path:
+        path = self.hooks / name
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o755 if executable else 0o644)
+        return path
+
+    def files_changed(self, named: str) -> list[Difference]:
+        return [Difference("hooks", f"its git hooks or info files changed since the previous tick: {named}")]
+
+    def test_a_hook_added_changed_or_removed_is_named_once_by_its_name_alone(self) -> None:
+        self.hook("pre-push", "#!/bin/sh\nexit 0\n")
+        self.hook("post-merge", "#!/bin/sh\nexit 0\n")
+        self.assertEqual([], self.tick())
+        self.hook("pre-commit", "#!/bin/sh\necho secret hook\n")
+        self.hook("pre-push", "#!/bin/sh\nexit 1\n")
+        (self.hooks / "post-merge").unlink()
+        self.assertEqual(
+            self.files_changed("hooks/post-merge removed, hooks/pre-commit added, hooks/pre-push changed"), self.tick()
+        )
+        self.assertEqual([], self.tick(), "the record was written, so the change is named once")
+        self.assertNotIn("secret hook", self.record.read_text(encoding="utf-8"), "the record keeps digests only")
+
+    def test_git_s_samples_are_not_watched(self) -> None:
+        self.tick()
+        self.hook("pre-commit.sample", "#!/bin/sh\nexit 1\n")
+        self.assertEqual([], self.tick(), "git never runs a hook by a .sample name")
+
+    def test_each_info_file_git_reads_added_changed_or_removed_is_named(self) -> None:
+        exclude, attributes = self.info / "exclude", self.info / "attributes"
+        exclude.write_text("# git ls-files --others --exclude-from=.git/info/exclude\n", encoding="utf-8")
+        attributes.unlink(missing_ok=True)
+        self.tick()
+        exclude.write_text("stray.txt\n", encoding="utf-8")
+        attributes.write_text("* -diff\n", encoding="utf-8")
+        self.assertEqual(self.files_changed("info/attributes added, info/exclude changed"), self.tick())
+        exclude.unlink()
+        self.assertEqual(self.files_changed("info/exclude removed"), self.tick())
+        (self.info / "sparse-checkout").write_text("/*\n", encoding="utf-8")
+        self.assertEqual([], self.tick(), "only the two info files every worktree's status reads are watched")
+
+    def test_an_exclude_that_hides_an_untracked_hub_file_is_named_though_the_file_is_not(self) -> None:
+        self.tick()
+        (self.hub / "stray.txt").write_text("stray\n", encoding="utf-8")
+        (self.info / "exclude").write_text("stray.txt\n", encoding="utf-8")
+        self.assertEqual([], self.found())
+        self.assertEqual(self.files_changed("info/exclude changed"), self.tick())
+
+    def test_past_the_named_files_the_rest_are_counted(self) -> None:
+        self.tick()
+        for name in ("a", "b", "c", "d"):
+            self.hook(name, name)
+        self.assertEqual(self.files_changed("hooks/a added, hooks/b added, hooks/c added, and 1 more"), self.tick())
+
+    def test_a_first_tick_or_one_after_a_record_that_holds_no_files_names_none_and_records_them(self) -> None:
+        self.hook("pre-commit", "#!/bin/sh\n")
+        self.assertEqual([], self.tick())
+        recorded = json.loads(self.record.read_text(encoding="utf-8"))
+        self.assertIn("hooks/pre-commit", recorded["files"])
+        del recorded["files"]
+        self.record.write_text(json.dumps(recorded), encoding="utf-8")
+        self.hook("pre-commit", "#!/bin/sh\nexit 1\n")
+        self.assertEqual([], self.tick(), "a record written before files were read has none to compare with")
+        self.assertIn("files", json.loads(self.record.read_text(encoding="utf-8")))
+        self.hook("pre-commit", "#!/bin/sh\nexit 2\n")
+        self.assertEqual(self.files_changed("hooks/pre-commit changed"), self.tick())
+
+    def test_without_keep_a_changed_file_is_named_and_the_record_left(self) -> None:
+        self.tick()
+        recorded = self.record.read_bytes()
+        self.hook("pre-commit", "#!/bin/sh\n")
+        for _ in range(2):
+            self.assertEqual(self.files_changed("hooks/pre-commit added"), self.tick(keep=False))
+        self.assertEqual(recorded, self.record.read_bytes())
+
+    def test_a_folder_in_the_hooks_folder_is_watched_by_its_kind(self) -> None:
+        self.tick()
+        (self.hooks / "pre-commit").mkdir()
+        self.assertEqual(self.files_changed("hooks/pre-commit added"), self.tick())
+        (self.hooks / "pre-commit").rmdir()
+        self.hook("pre-commit", "")
+        self.assertEqual(self.files_changed("hooks/pre-commit changed"), self.tick())
+
+    def test_a_hook_that_cannot_be_read_raises_with_the_reason_and_writes_no_record(self) -> None:
+        self.hook("pre-commit", "#!/bin/sh\n")
+        with (
+            mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")),
+            self.assertRaises(GitError) as raised,
+        ):
+            self.tick()
+        self.assertEqual("[Errno 13] Permission denied", str(raised.exception))
+        self.assertFalse(self.record.exists())
+
+    def test_a_hooks_folder_that_cannot_be_listed_raises_with_the_reason(self) -> None:
+        with (
+            mock.patch.object(os, "scandir", side_effect=PermissionError(13, "Permission denied")),
+            self.assertRaises(GitError) as raised,
+        ):
+            self.tick()
+        self.assertEqual("[Errno 13] Permission denied", str(raised.exception))
+
+    def test_a_hooks_folder_that_is_not_there_holds_no_hooks(self) -> None:
+        self.hook("pre-commit", "#!/bin/sh\n")
+        self.tick()
+        (self.hooks / "pre-commit").unlink()
+        for sample in self.hooks.iterdir():
+            sample.unlink()
+        self.hooks.rmdir()
+        self.assertEqual(self.files_changed("hooks/pre-commit removed"), self.tick())
+
+    if sys.platform != "win32":  # Windows keeps no executable bit, and a link needs a privilege there
+
+        def test_a_hook_made_executable_is_changed_and_an_info_file_s_mode_is_not(self) -> None:
+            self.hook("pre-commit", "#!/bin/sh\n", executable=False)
+            (self.info / "exclude").write_text("", encoding="utf-8")
+            self.tick()
+            (self.hooks / "pre-commit").chmod(0o755)
+            (self.info / "exclude").chmod(0o755)
+            self.assertEqual(
+                self.files_changed("hooks/pre-commit changed"),
+                self.tick(),
+                "git runs a hook only when it is executable, and reads an info file whatever its mode",
+            )
+            (self.hooks / "pre-commit").chmod(0o744)
+            self.assertEqual([], self.tick(), "only whether its owner may run it counts")
+
+        def test_a_linked_hook_is_read_through_and_a_link_to_nothing_is_no_hook(self) -> None:
+            target = self.root / "hook target"
+            (self.hooks / "pre-commit").symlink_to(target)
+            self.assertEqual([], self.tick())
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            target.chmod(0o755)
+            self.assertEqual(self.files_changed("hooks/pre-commit added"), self.tick())
+            target.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            self.assertEqual(self.files_changed("hooks/pre-commit changed"), self.tick())
+
+        def test_a_hook_name_that_is_not_utf_8_is_escaped_as_a_setting_s_is(self) -> None:
+            self.assertEqual("pre\\xe9", escaped_name(os.fsencode(os.fsdecode(b"pre\xe9"))))
+            self.assertEqual("a\\\\xe9", escaped_name(os.fsencode("a\\xe9")))
+
+    if sys.platform.startswith("linux"):  # macOS and Windows refuse a file name that is not UTF-8
+
+        def test_a_hook_whose_name_is_not_utf_8_is_recorded_and_named_by_its_bytes(self) -> None:
+            self.tick()
+            for name in (b"caf\xe9", b"caf\\xe9"):
+                path = Path(os.fsdecode(bytes(self.hooks) + b"/" + name))
+                path.write_bytes(b"#!/bin/sh\n")
+            self.assertEqual(self.files_changed("hooks/caf\\\\xe9 added, hooks/caf\\xe9 added"), self.tick())
+            self.assertEqual([], self.tick(), "the record was written, so the change is named once")
 
 
 class LapseTests(ConfigurationCase):

@@ -12,8 +12,10 @@ Run it from the hub on main. One tick:
   untracked file, another branch or a detached HEAD, a commit origin's main lacks, or no origin/main to compare it
   with, so a write to the hub the hub guard did not see is named at the next tick; and its git configuration, which
   every worktree shares, against the record the previous tick left in the hub's git directory (hub_state.py's
-  RECORD_NAME), naming the hub guard turned off since then and each setting added, changed, or removed, but a
-  branch's other than main's; the tick then replaces the record, and a first tick, with none, names neither;
+  RECORD_NAME), naming the hub guard turned off since then, each setting added, changed, or removed, but a
+  branch's other than main's, and each hook in its git directory's hooks/, but git's samples, and each of its
+  info/exclude and info/attributes added, changed, or removed; the tick then replaces the record, and a first tick,
+  with none, names none of them, as the first after a record that holds no files names no file;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
   required check Validation on that head, and the files each admitted one changes: when gh's listing, which holds
   a pull request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
@@ -72,8 +74,9 @@ Every line is one fact:
                                        read: <reason>`; each is for the shepherd's judgment. Its configuration's:
                                        `its coding-agent-skills.hubGuard was true at the previous tick and is no
                                        longer`, `its git configuration changed since the previous tick: <setting>
-                                       added|changed|removed, ...`, and `its record of the previous tick, <path>,
-                                       could not be read|written: <reason>`
+                                       added|changed|removed, ...`, `its git hooks or info files changed since
+                                       the previous tick: <path> added|changed|removed, ...`, and `its record of
+                                       the previous tick, <path>, could not be read|written: <reason>`
     HOLD #<number> changes <path>      an admitted pull request that holds every other one's update while it is open
     HELD #<number> <branch> "<reason>" an admitted pull request whose body holds it from arming and merging
     PR #<number> <branch> <merge state> auto-merge <on|off> head <commit> Validation <state> <actions>

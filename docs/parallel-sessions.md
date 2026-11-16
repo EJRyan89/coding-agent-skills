@@ -300,8 +300,8 @@ With the guard enabled:
   names each way the hub differs from a clean checkout of `main` at `origin/main`, and the `shepherd-pull-requests`
   tick prints each as a `HUB_DIFFERS` line, but behind, which its `HUB` line covers, and `repo-cleanup`'s report each
   as a `MAIN_DIFFERS` line, from the hub or from a worktree alike. The tick also compares the hub's configuration with
-  the record the previous tick left, as the contract below says, and prints the guard turned off and each setting
-  changed since then as `HUB_DIFFERS` lines too.
+  the record the previous tick left, as the contract below says, and prints the guard turned off, each setting
+  changed, and each hook and info file changed since then as `HUB_DIFFERS` lines too.
 
 ### Other runtimes
 
@@ -344,6 +344,19 @@ A record that cannot be read is named, and the tick writes its new record with t
 clone was is unknown, so `repo-cleanup` names `lapsed` for a clone that never opted in until `.git/hub-state.json`
 is deleted. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
 
+The hub's git directory holds other files every worktree shares, which a program may write as well: a hook in
+`hooks/` runs at a commit or a push in any worktree, as one `pre-commit install` run in the hub writes, and
+`info/exclude` and `info/attributes` apply in each, an exclude entry hiding an untracked hub file from the status the
+check reads. The record keeps a SHA-256 digest of each too, never its contents: of each entry of `hooks/` by its name,
+escaped as a setting's name is, but the `.sample` files git writes there and never runs, and of each info file by its
+path. A hook's digest covers its bytes and whether its owner may run it, since git runs a hook only when it is
+executable, so making a hook executable is a change; an info file's covers its bytes alone. Each is read through a
+link, as git reads it, so a link to nothing is no file. The next tick names each one added, changed, or removed by its
+path, as `hooks/<name>` or `info/<name>`; a first tick, and the first after a record written before these files were
+read, which holds none, names none of them and records them. A hook or info file that cannot be read, or a `hooks/`
+that cannot be listed, is named as a hub the check could not read, with the reason, and the record is left until it
+can be read.
+
 The configuration's limits:
 
 - The record is a detector's memory, not a control: a session that can write the configuration can rewrite the record
@@ -352,6 +365,9 @@ The configuration's limits:
   read.
 - A branch's own settings, other than `main`'s, its `remote`, `pushRemote`, and `merge` among them, are not read, so a
   worktree branch whose pushes were sent elsewhere is not named.
+- The hooks a `core.hooksPath` setting points at, elsewhere than `hooks/`, are not read; the setting itself is named
+  as a configuration change. Nor is anything a hook runs beyond its own file, or what a folder in `hooks/` holds.
+- No other file in the git directory is read.
 
 #### What it understands
 
