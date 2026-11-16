@@ -217,7 +217,8 @@ no program. A here-document a shell reads as its script, as in `bash <<EOF`, `ba
 `source /dev/stdin <<EOF`, is read as data too, so a program in its body goes unread; no script here writes one. A
 file holding Bash the grammar refuses fails the policy, which names it, and so does a Python script handing a shell
 such Bash fail the shared-client and checker policies: Bash runs the lines before a syntax error, so none of the
-file's programs can be trusted as read. A function the script defines runs no program of its name,
+file's programs can be trusted as read. A script a shell is handed with `-c` as an f-string in a list, as in
+`["bash", "-c", f"git push {x}"]`, is not read by the shared-client policy; no script here writes one. A function the script defines runs no program of its name,
 unless Bash refuses its name as it runs the definition, as it refuses a quoted, escaped, or expanded one; a name
 holding a tilde, which Bash defines, is read as one it refuses, a stated limit. In Bash, validation reads the program each command substitution, quoted
 or not, runs, and the program a wrapper of `COMMAND_WRAPPERS` in ejryan89-skill-core's `command_wrappers.py` runs,

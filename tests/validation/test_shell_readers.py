@@ -348,22 +348,35 @@ def test_the_client_policy_fails_bash_the_grammar_refuses_where_a_script_hands_i
     assert problems == ([expected] if problem else [])
 
 
-@pytest.mark.parametrize(("script", "problem"), [("shellcheck a.sh\nif true; then", True), ("echo a", False)])
+# The checker policy reads Bash two ways: the program a runner call starts, a shell=True string's or a literal -c
+# script's, and a -c script given as an f-string, which only the second reads; each case below reaches one or both.
+@pytest.mark.parametrize(
+    ("call", "problem"),
+    [
+        ('["bash", "-c", "shellcheck a.sh\\nif true; then"]', True),
+        ('["bash", "-c", "echo a"]', False),
+        ('"shellcheck a.sh\\nif true; then", shell=True', True),
+        ('"echo a", shell=True', False),
+        ('["bash", "-c", f"shellcheck {x}\\nif true; then"]', True),
+        ('["bash", "-c", f"echo {x}"]', False),
+    ],
+)
 def test_the_checker_policy_fails_bash_the_grammar_refuses_where_a_script_hands_it_a_shell(
-    script: str, problem: bool
+    call: str, problem: bool
 ) -> None:
-    source = f'import subprocess\n\nsubprocess.run(["bash", "-c", {script!r}])\n'
+    source = f'import subprocess\n\nx = "a.sh"\nsubprocess.run({call})\n'
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {"tools/x.py": source})
         problems = skill_scripts.checker_command_problems(root, [root / "tools" / "x.py"])
     expected = skill_scripts.refused_bash_problem(
-        "tools/x.py:3", f"{skill_scripts.UNREAD_BASH}expected `fi`", VALIDATION_DOC
+        "tools/x.py:4", f"{skill_scripts.UNREAD_BASH}expected `fi`", VALIDATION_DOC
     )
     assert problems == ([expected] if problem else [])
 
 
-# A program a wrapper runs that only running settles is named as the script writes it, never by the reader's own
+# A program a wrapper runs that only running settles is named by its own word as the script writes it, wherever the
+# wrapper's options put it and whatever other word running settles stands before it, never by the reader's own
 # placeholder for the part running settles.
 @pytest.mark.parametrize(
     ("script", "unread"),
@@ -371,12 +384,33 @@ def test_the_checker_policy_fails_bash_the_grammar_refuses_where_a_script_hands_
         ('xargs "$(command -v rg)" foo', '"$(command -v rg)"'),
         ("xargs `which rg`", "`which rg`"),
         ('env "a$(b)" x', '"a$(b)"'),
+        ('timeout "$(cat limit)" "$(command -v rg)" foo', '"$(command -v rg)"'),
+        ('sudo -u "$(whoami)" "$(command -v rg)"', '"$(command -v rg)"'),
+        ('nice -n "$((n + 1))" "$(command -v rg)"', '"$(command -v rg)"'),
+        ('xargs -I "$(i)" "$(p)"', '"$(p)"'),
+        ('timeout "$(t)" xargs "$(p)"', '"$(p)"'),
     ],
 )
 def test_a_wrapped_program_only_running_settles_is_named_as_written(script: str, unread: str) -> None:
-    programs = shell_commands(script)
-    assert f"{UNREAD_PROGRAM}{unread}" in programs
-    assert not any(git_subcommands.UNREAD_PART in program for program in programs)
+    programs = {program for program in shell_commands(script) if program.startswith(UNREAD_PROGRAM)}
+    assert programs == {f"{UNREAD_PROGRAM}{unread}"}
+
+
+# Inside a script eval, a shell's -c, or env -S runs, a word is the text its command reads, not as written, so a part
+# running settles there is named as the word the reader cannot read, never by the reader's own placeholder.
+@pytest.mark.parametrize(
+    "script",
+    [
+        'sh -c "xargs $(p)"',
+        'eval "xargs $(p) y"',
+        'env -S "xargs $(p)"',
+        'env -S "$(p) x"',
+        'bash -c "xargs \\"$(p)\\""',
+    ],
+)
+def test_a_wrapped_program_only_running_settles_inside_a_started_script_is_an_unread_word(script: str) -> None:
+    programs = {program for program in shell_commands(script) if program.startswith(UNREAD_PROGRAM)}
+    assert programs == {f"{UNREAD_PROGRAM}{powershell_commands.UNREAD_WORD}"}
 
 
 # A fragment the temporary-folder policy reads is unreadable as a whole when the grammar refuses any of it, an eval's or

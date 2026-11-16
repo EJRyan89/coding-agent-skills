@@ -20,7 +20,17 @@ from typing import Literal, TextIO, overload
 import file_presence
 import json_reader
 import whole_number
-from bash_syntax import BashSyntaxError, FunctionDefinition, Simple, command_words, every_command
+from bash_syntax import (
+    BashSyntaxError,
+    FunctionDefinition,
+    Part,
+    Simple,
+    Word,
+    command_words,
+    every_command,
+    unsettled_part,
+    word_text,
+)
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from command_wrappers import (
     SCRIPT_SHELLS,
@@ -459,22 +469,24 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     too, and never in a comment or a here-document's body, ignoring keywords, case words and patterns, and the
     script's own functions, wherever it defines one; and each program a wrapper, find's -exec, eval, a shell's -c
     script, or a PowerShell start-up's script runs. A part of a word only running settles, such as a substitution,
-    is UNREAD_PART where it stands, as git_subcommands reads it, so a wrapper's program holding one is UNREAD_PROGRAM,
-    named by the word as written, and eval or a shell's -c reads it as one word. Given `commands`, it also appends
-    the words of each simple command it reads, from its program on, a substitution's included. A script the grammar
-    refuses, or whose eval or -c script it refuses, gives UNREAD_BASH and the grammar's reason: Bash runs the lines
-    before a syntax error, so none of the script's programs can be trusted as read."""
+    is UNREAD_PART where it stands, followed by its word's place, as reading_words gives it, so a wrapper's program
+    holding one is UNREAD_PROGRAM, and eval, a shell's -c, or env -S reads it as one word. The program is named by
+    its word as the script writes it, or, inside a script eval, a shell's -c, or env -S runs, with UNREAD_WORD for
+    each such part, since that script's text is the words its command reads, not as written. Given `commands`, it
+    also appends the words of each simple command it reads, from its program on, a substitution's included. A script
+    the grammar refuses, or whose eval or -c script it refuses, gives UNREAD_BASH and the grammar's reason: Bash runs
+    the lines before a syntax error, so none of the script's programs can be trusted as read."""
     try:
         read = every_command(script)
         functions = {command.name for command in read if isinstance(command, FunctionDefinition) and command.name}
         found: set[str] = set()
         for command in (command for command in read if isinstance(command, Simple)):
-            words = command_words(command, UNREAD_PART)
+            words, written = reading_words(command)
             if not words or words[0] in functions:
                 continue
             if COMMAND_NAME.fullmatch(words[0]):
                 found.add(words[0])
-            found |= {_as_written(name, command, words) for name in _wrapped_programs(words, commands)}
+            found |= {_as_written(name, written) for name in _wrapped_programs(words, commands)}
             if commands is not None:
                 commands.append(words)
     except BashSyntaxError as exc:
@@ -482,17 +494,38 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     return found - functions
 
 
-def _as_written(name: str, command: Simple, words: list[str]) -> str:
-    """An UNREAD_PROGRAM name with each of the command's words that holds UNREAD_PART, `words` as command_words gave
-    them, given back as the script writes it; any other name unchanged."""
+# A part only running settles as reading_words places it: UNREAD_PART, then its word's place and a %, which no other
+# word of the command holds, or UNREAD_PART alone.
+PLACED_PART = re.compile(re.escape(UNREAD_PART) + r"(?:[0-9]+%)?")
+
+
+def reading_words(command: Simple) -> tuple[list[str], dict[str, str]]:
+    """A simple command's words from its program, as command_words gives them, with each part only running settles
+    UNREAD_PART, then the word's place among them and a %, so each word holding one is told apart from another; and
+    each such word beside the word as the script writes it."""
+    words = command.words[len(command.words) - len(command_words(command)) :]
+    reading: list[str] = []
+    written: dict[str, str] = {}
+    for place, word in enumerate(words):
+        placed = f"{UNREAD_PART}{place}%"
+        parts = tuple(Part("text", placed) if unsettled_part(part) else part for part in word.parts)
+        text = word_text(Word(word.raw, parts))
+        reading.append(text)
+        if placed in text:
+            written[text] = word.raw
+    return reading, written
+
+
+def _as_written(name: str, written: dict[str, str]) -> str:
+    """An UNREAD_PROGRAM name with each word reading_words placed given back as the script writes it, and any part
+    only running settles left, from a script eval, a shell's -c, or env -S runs, as UNREAD_WORD; any other name
+    unchanged."""
     if not name.startswith(UNREAD_PROGRAM) or UNREAD_PART not in name:
         return name
-    written = [word.raw for word in command.words][len(command.words) - len(words) :]
     text = name.removeprefix(UNREAD_PROGRAM)
-    for read, raw in sorted(zip(words, written, strict=True), key=lambda pair: -len(pair[0])):
-        if UNREAD_PART in read:
-            text = text.replace(read, raw, 1)
-    return f"{UNREAD_PROGRAM}{text}"
+    for read, raw in written.items():
+        text = text.replace(read, raw)
+    return f"{UNREAD_PROGRAM}{PLACED_PART.sub(UNREAD_WORD, text)}"
 
 
 def powershell_script_commands(script: str) -> tuple[tuple[str, ...], ...]:
