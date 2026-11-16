@@ -3014,20 +3014,24 @@ class _JsonModel:
                 return True
         return False
 
-    def text(self, node: ast.AST, scope: str, seen: frozenset[int] = frozenset()) -> bool:
+    def text(self, node: ast.AST, scope: str) -> bool:
         """Whether an expression may hold JSON text: a call that returns it, or a place its scope binds to an
-        expression that holds it, followed through each binding that may reach it, once each."""
-        for inner in ast.walk(node):
-            if self.call(inner, scope) or self.held(inner, scope, "text"):
-                return True
-            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
-                for value in bound_values(inner, self.resolver):
-                    if (
-                        value is not inner
-                        and id(value) not in seen
-                        and self.text(value, self.scopes.get(id(value), scope), seen | {id(value)})
-                    ):
-                        return True
+        expression that holds it, followed through each binding that may reach it. Each binding is read once per
+        question, whatever path reaches it, since a path walk revisits a binding once per path, and a loop that
+        rebinds a name in many branches has exponentially many."""
+        pending: list[tuple[ast.AST, str]] = [(node, scope)]
+        reached: set[tuple[int, str]] = set()
+        while pending:
+            current, where = pending.pop()
+            for inner in ast.walk(current):
+                if self.call(inner, where) or self.held(inner, where, "text"):
+                    return True
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                    for value in bound_values(inner, self.resolver):
+                        key = (id(value), self.scopes.get(id(value), where))
+                        if value is not inner and key not in reached:
+                            reached.add(key)
+                            pending.append((value, key[1]))
         return False
 
 
