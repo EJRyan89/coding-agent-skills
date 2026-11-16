@@ -374,14 +374,16 @@ class HereDocumentTests(unittest.TestCase):
         self.assertEqual(('echo ")"; git am',), here.substitutions if here is not None else None)
         self.assertEqual(["$(", '${x:-"a}"}'], [part.text for part in here.expansions] if here is not None else None)
 
-    def test_a_body_ends_only_at_a_line_that_is_its_delimiter_exactly_as_bash_compares_it(self) -> None:
-        # A CR after the delimiter is part of that line, so the line is body text and the body runs to the next one;
-        # Bash itself counts the body's lines.
-        text = "cat <<EOF | wc -l\nbody\nEOF\r\ngit commit\nEOF\n"
+    def test_a_documented_limit_a_delimiter_line_ending_in_a_cr_closes_the_body_as_git_bash_reads_it(self) -> None:
+        # Bash itself counts the body's lines, which run nothing: Git Bash drops the CR and closes the body at `:<CR>`,
+        # running the `:` after it; Bash elsewhere keeps the CR, so the body runs to the next `:`.
+        text = "cat <<: | wc -l\nbody\n:\r\n:\n"
         here = first_simple(text).redirects[0].here
-        self.assertEqual("body\nEOF\r\ngit commit", here.body if here is not None else None)
+        self.assertEqual("body", here.body if here is not None else None)
+        self.assertEqual([["cat"], ["wc", "-l"], [":"]], simple_commands(parse(text)))
         result = platform_support.run_tool([bash_agreement.find_bash(), "-c", text])
-        self.assertEqual((0, "3"), (result.returncode, result.output.strip()))
+        lines = "1" if platform_support.WINDOWS else "2"
+        self.assertEqual((0, lines), (result.returncode, result.output.strip()))
 
 
 class AssigningExpansionTests(unittest.TestCase):

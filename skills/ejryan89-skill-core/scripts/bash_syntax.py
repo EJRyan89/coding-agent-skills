@@ -37,8 +37,10 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
   raises BashSyntaxError.
 - A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
-  `git push<CR>` is read as git's push and `a<CR>b` as two words; a here-document's delimiter line is compared whole,
-  a CR included, as Bash compares it.
+  `git push<CR>` is read as git's push and `a<CR>b` as two words.
+- A here-document's delimiter line is compared without a CR that ends it, as Git Bash on Windows compares it, so
+  `EOF<CR>` closes the body there, and the lines after it are read as the commands Git Bash runs; Bash elsewhere keeps
+  the CR and reads them as body text, running none of them.
 """
 
 from __future__ import annotations
@@ -422,7 +424,7 @@ class Lexer:
                 while not document.quoted and escapes_its_end(line) and self.index < len(self.text):
                     line = line[:-1] + self.next_line()
                 compared = line.lstrip("\t") if document.strip_tabs else line
-                if compared == document.delimiter:
+                if compared.removesuffix("\r") == document.delimiter:
                     break
                 lines.append(compared)
             document.body = "\n".join(lines)

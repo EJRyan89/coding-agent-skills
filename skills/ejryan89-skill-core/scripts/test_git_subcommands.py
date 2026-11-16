@@ -175,10 +175,10 @@ def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expec
         ("echo hi # <<EOF\ngit push", {"push"}),
         ("echo $((1 << 2))\ngit push", {"push"}),
         ("(( x = 1 << 2 ))\ngit push", {"push"}),
-        # A body the text never closes runs to the text's end, as Bash reads it, and a line holding the delimiter and a
-        # CR is body text, as Bash compares the whole line.
+        # A body the text never closes runs to the text's end, as Bash reads it. A delimiter line ending in a CR closes
+        # the body, as Git Bash reads it, so the git command after it, which Git Bash runs, is read.
         ("cat <<EOF\ngit push", set()),
-        ("cat <<EOF\ngit push\nEOF\r\ngit fetch", set()),
+        ("cat <<EOF\ngit push\nEOF\r\ngit fetch", {"fetch"}),
     ],
 )
 def test_a_here_document_s_body_is_read_as_data(script: str, expected: set[str]) -> None:
