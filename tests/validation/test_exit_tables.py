@@ -9,6 +9,8 @@ import ast
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -98,23 +100,62 @@ def test_a_called_parameter_given_the_same_argument_from_another_scope_is_read_a
     )
 
 
+WALK = (
+    "from pathlib import Path\n"
+    "def check(path: Path, depth: int) -> int:\n    if depth > 4:\n        return 3\n"
+    "    if path.is_symlink():\n        return check(path.resolve(), depth + 1)\n"
+    "    if path.is_dir():\n        return check(path / '__main__.py', depth + 1)\n"
+    "    if not path.exists():\n        return check(path.parent, depth + 1)\n"
+    "    if path.suffix != '.py':\n        return check(path.with_suffix('.py'), depth + 1)\n    return 0\n"
+    "def main() -> int:\n    arguments = argparse.ArgumentParser()\n    arguments.add_argument('path')\n"
+    "    return check(Path(arguments.parse_args().path), 0)\n"
+)
+CALLED = "def c():\n    return bool(argparse)\ndef one():\n    return 3\ndef two():\n    return 4\n"
+SITES = "".join("    if c(): return k(h)\n" for _ in range(6))
+CHAIN = "".join(
+    f"def f{index}(a0, a1):\n    if c(): return a0()\n    return f{index + 1}(a0, a1)\n" for index in range(20)
+)
+
+
 @pytest.mark.parametrize(
-    "leaf",
+    ("body", "table"),
     [
-        pytest.param("    return p\n", id="a returned parameter"),
-        pytest.param("    q = p\n    return q\n", id="a local bound to a parameter"),
+        pytest.param(WALK, "  0  done\n  1  failed\n  2  a usage error\n  3  no file\n", id="four recursive returns"),
+        pytest.param(
+            f"{CALLED}def k(h):\n{SITES}    return h()\n"
+            "def main():\n    argparse.ArgumentParser().parse_args()\n    return k(two)\n",
+            "  1  failed\n  2  a usage error\n  4  four\n",
+            id="six recursive call sites passing a parameter",
+        ),
+        pytest.param(
+            f"{CALLED}{CHAIN}def f20(a0, a1):\n    return a0()\n"
+            "def main():\n    argparse.ArgumentParser().parse_args()\n    return f0(two, two)\n",
+            "  1  failed\n  2  a usage error\n  4  four\n",
+            id="twenty functions passing two parameters on",
+        ),
     ],
 )
-def test_a_function_called_twice_with_the_same_argument_from_different_scopes_is_read_twice(leaf: str) -> None:
-    # Both calls of mid give leaf the same `x`, read in a scope given 3 and in one given 4. A reader that knew a
-    # scope only by its arguments' expressions read leaf, and q, once, and never added exit 4.
-    body = (
-        f"def leaf(p):\n{leaf}def mid(x):\n    return leaf(x)\n"
-        "def main(c):\n    argparse.ArgumentParser().parse_args()\n    return mid(3) if c else mid(4)\n"
-        'if __name__ == "__main__":\n    run_main(main)\n'
-    )
-    table = "Exit status:\n  1  a\n  2  a usage error\n  3  three\n  4  four\n"
-    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == []
+def test_the_reader_reads_recursion_and_long_argument_chains_in_bounded_steps(body: str, table: str) -> None:
+    # A key that told scopes apart by the whole chain of scopes their arguments came from met a new key at each
+    # recursive call site, so the first two raised RecursionError after hundreds of steps, and building that key anew
+    # for each scope walked the third's chain of arguments, about 21 million times without a key kept per scope.
+    steps = 0
+    counted: dict[str, Any] = {}
+    for name in ("returns", "value", "scope_key"):
+        original = getattr(exit_tables.CodeReader, name)
+
+        def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
+            nonlocal steps
+            steps += 1
+            if steps > 500:
+                raise AssertionError("the exit-table reader took more than 500 steps")
+            return original(self, *arguments)
+
+        counted[name] = step
+    entry = 'if __name__ == "__main__":\n    run_main(main)\n'
+    with mock.patch.multiple(exit_tables.CodeReader, **counted):
+        found = problems({"tools/tool.py": script(f"A tool.\n\nExit status:\n{table}", body + entry)})
+    assert found == []
 
 
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:

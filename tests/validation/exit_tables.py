@@ -351,23 +351,10 @@ class Scope:
         return dict(self.given).get(name)
 
 
-# A scope as a key: its module, its function, and each argument it is given with the key of the scope it was given in,
-# or RECURSION for an argument the chain has already passed, as a recursive call passes its own parameter on.
-ScopeKey = tuple[int, int, tuple[tuple[str, int, "ScopeKey | str"], ...]]
-RECURSION = "recursion"
-
-
-def _scope_key(scope: Scope, passed: frozenset[tuple[int, str, int]] = frozenset()) -> ScopeKey:
-    """A key for a scope that tells apart two scopes whose arguments are the same expressions given in different
-    scopes, as `mid(3)` and `mid(4)` give `leaf(x)` the same `x`. Down the chain of scopes the arguments were given
-    in, an argument already passed to the same parameter of the same function stands for the rest of its chain, so
-    a recursive call, which gives each call a deeper scope, meets a key it has had before and ends: a stated limit,
-    two recursions that differ only below such a repeat share a key, and the second is not read again."""
-    found: list[tuple[str, int, ScopeKey | str]] = []
-    for name, (value, given) in scope.given:
-        step = (id(scope.function), name, id(value))
-        found.append((name, id(value), RECURSION if step in passed else _scope_key(given, passed | {step})))
-    return (id(scope.module), id(scope.function), tuple(found))
+def _given_key(scope: Scope) -> tuple[tuple[str, int], ...]:
+    """The arguments a scope is given, by their expressions: the key returns and assigned read a function or a value
+    once by."""
+    return tuple(sorted((name, id(value)) for name, (value, _) in scope.given))
 
 
 def _own_nodes(function: Function) -> Iterator[ast.AST]:
@@ -447,9 +434,13 @@ class CodeReader:
         self.folders = [entry.parent, root / SKILL_CORE_SCRIPTS, root]
         self.modules: dict[Path, Module] = {}
         self.reading = Reading()
-        self.returned: set[tuple[int, int | None, ScopeKey]] = set()
+        self.returned: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
         # Each value a local name is bound to that the reader has read, by the same key: see assigned.
-        self.assigned_read: set[tuple[int, int | None, ScopeKey]] = set()
+        self.assigned_read: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
+        # Each scope callables has keyed, kept alive beside its key, and each key by the content it stands for: see
+        # scope_key.
+        self.scope_ids: dict[int, tuple[Scope, int]] = {}
+        self.scope_contents: dict[tuple[int, int, tuple[tuple[str, int, int], ...]], int] = {}
         self.reached: set[int] = set()
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
@@ -532,8 +523,26 @@ class CodeReader:
             return other, other.functions[name]
         return None
 
+    def scope_key(self, scope: Scope) -> int:
+        """A number for a scope's content: its module, its function, and each argument it is given with the number of
+        the scope it was given in, so two scopes whose arguments are the same expressions given in different scopes
+        differ. callables reads only outward, into the scopes arguments were given in, which were made before the
+        scope they are given to, so every key is finite; each scope is keyed once and its key is a small number,
+        so neither keying nor hashing reads an argument's chain again."""
+        known = self.scope_ids.get(id(scope))
+        if known is not None:
+            return known[1]
+        content = (
+            id(scope.module),
+            id(scope.function),
+            tuple((name, id(value), self.scope_key(given)) for name, (value, given) in scope.given),
+        )
+        key = self.scope_contents.setdefault(content, len(self.scope_contents))
+        self.scope_ids[id(scope)] = (scope, key)
+        return key
+
     def callables(
-        self, node: ast.expr, scope: Scope, seen: set[tuple[int, ScopeKey]] | None = None
+        self, node: ast.expr, scope: Scope, seen: set[tuple[int, int]] | None = None
     ) -> list[tuple[Module, Function]] | None:
         """The functions a called expression can be, or None when the reader cannot tell.
 
@@ -543,7 +552,7 @@ class CodeReader:
         in its own scope, which adds no function its first read has not, since the functions are their union, and a
         value the reader cannot tell already answers None for the whole question."""
         seen = set() if seen is None else seen
-        key = (id(node), _scope_key(scope))
+        key = (id(node), self.scope_key(scope))
         if key in seen:
             return []
         seen.add(key)
@@ -569,7 +578,7 @@ class CodeReader:
         return None
 
     def _all(
-        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, ScopeKey]]
+        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, int]]
     ) -> list[tuple[Module, Function]] | None:
         found: list[tuple[Module, Function]] = []
         for value in values:
@@ -592,7 +601,7 @@ class CodeReader:
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
-        key = (id(function), element, _scope_key(scope))
+        key = (id(function), element, _given_key(scope))
         if key in self.returned:
             return
         self.returned.add(key)
@@ -636,11 +645,11 @@ class CodeReader:
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
         """Add the codes each value the function binds to a local name can be.
 
-        Each value is read once for each element and each scope, as _scope_key tells scopes apart: a value that reads
-        its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not,
-        since the codes are their union."""
+        Each value is read once for each element and each set of arguments the scope is given, as returns reads a
+        function: a value that reads its own name, as `code = code if flag else 2`, leads back to itself, and adds no
+        code its first read has not, since the codes are their union."""
         assert scope.function is not None
-        given = _scope_key(scope)
+        given = _given_key(scope)
         for value, position in _assigned(scope.function, node.id):
             if position is not None and element is not None:
                 self._unread(node, scope)
