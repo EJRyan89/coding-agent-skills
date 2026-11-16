@@ -1121,6 +1121,26 @@ def test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once(loop: bool)
     ]
 
 
+@pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])
+def test_a_held_folder_rebound_from_itself_stays_held_outside_a_loop(loop: bool) -> None:
+    # Outside a loop, `folder = folder / "part"` reads the binding before it, a held folder, so the folder it makes
+    # stays held. In a loop the rebinding leads back to itself, which the temporary-folder policy's stated limit reads
+    # as not held.
+    indent = "        " if loop else "    "
+    source = (
+        "import tempfile\nimport private_folder\n\n\ndef make(parts):\n"
+        "    folder = private_folder.temporary_directory()\n"
+        + ("    for _ in parts:\n" if loop else "")
+        + f"{indent}folder = folder / 'part'\n    tempfile.mkdtemp(dir=folder)\n"
+    )
+    found = skill_scripts._python_temporary_problems("a.py", ast.parse(source))
+    refused = (
+        "tempfile.mkdtemp is given a dir validation cannot trace to private_folder.temporary_directory() or a folder "
+        f"the script already holds; pass one of those; see {skill_scripts.WORKING_FILES_DOC}"
+    )
+    assert [problem.split(": ", 2)[1] for problem in found] == ([refused] if loop else [])
+
+
 def rebinding_walk(branches: int) -> str:
     """A loop that rebinds `node` to an attribute of itself in each of `branches` branches and one more, then reads
     it."""
