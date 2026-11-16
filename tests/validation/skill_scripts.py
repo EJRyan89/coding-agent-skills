@@ -159,6 +159,14 @@ COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
 UNREAD_BASH = "<not bash> "
 
 
+def refused_bash_problem(where: str, marker: str, doc: str) -> str:
+    """The problem a policy reports for Bash the grammar refuses, given where it stands and shell_commands' marker."""
+    return (
+        f"{where} runs Bash the grammar does not read ({marker.removeprefix(UNREAD_BASH)}); Bash runs the lines "
+        f"before a syntax error, so none of its programs can be trusted as read; see {doc}"
+    )
+
+
 def split_operators(token: str) -> list[str]:
     """Split a run of shell punctuation, which shlex returns as one token, into its operators."""
     if not token or any(char not in ";&|()<>\n" for char in token):
@@ -451,25 +459,39 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     script's own functions, wherever it defines one; and each program a wrapper, find's -exec, eval, a shell's -c
     script, or a PowerShell start-up's script runs. A part of a word only running settles, such as a substitution,
     is UNREAD_PART where it stands, as git_subcommands reads it, so a wrapper's program holding one is UNREAD_PROGRAM,
-    and eval or a shell's -c reads it as one word. Given `commands`, it also appends the words of each simple command
-    it reads, from its program on, a substitution's included. A script the grammar refuses, or whose eval or -c
-    script it refuses, gives UNREAD_BASH and the grammar's reason, since Bash runs none of a script it refuses."""
+    named by the word as written, and eval or a shell's -c reads it as one word. Given `commands`, it also appends
+    the words of each simple command it reads, from its program on, a substitution's included. A script the grammar
+    refuses, or whose eval or -c script it refuses, gives UNREAD_BASH and the grammar's reason: Bash runs the lines
+    before a syntax error, so none of the script's programs can be trusted as read."""
     try:
         read = every_command(script)
         functions = {command.name for command in read if isinstance(command, FunctionDefinition) and command.name}
         found: set[str] = set()
-        for command in read:
-            words = command_words(command, UNREAD_PART) if isinstance(command, Simple) else []
+        for command in (command for command in read if isinstance(command, Simple)):
+            words = command_words(command, UNREAD_PART)
             if not words or words[0] in functions:
                 continue
             if COMMAND_NAME.fullmatch(words[0]):
                 found.add(words[0])
-            found |= _wrapped_programs(words, commands)
+            found |= {_as_written(name, command, words) for name in _wrapped_programs(words, commands)}
             if commands is not None:
                 commands.append(words)
     except BashSyntaxError as exc:
         return {f"{UNREAD_BASH}{exc}"}
     return found - functions
+
+
+def _as_written(name: str, command: Simple, words: list[str]) -> str:
+    """An UNREAD_PROGRAM name with each of the command's words that holds UNREAD_PART, `words` as command_words gave
+    them, given back as the script writes it; any other name unchanged."""
+    if not name.startswith(UNREAD_PROGRAM) or UNREAD_PART not in name:
+        return name
+    written = [word.raw for word in command.words][len(command.words) - len(words) :]
+    text = name.removeprefix(UNREAD_PROGRAM)
+    for read, raw in sorted(zip(words, written, strict=True), key=lambda pair: -len(pair[0])):
+        if UNREAD_PART in read:
+            text = text.replace(read, raw, 1)
+    return f"{UNREAD_PROGRAM}{text}"
 
 
 def powershell_script_commands(script: str) -> tuple[tuple[str, ...], ...]:
@@ -1486,7 +1508,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     run: a dependency's tools are not the skill's unless it imports or names the script that runs them, and then the
     skill declares them too, so a skill that reaches ejryan89-skill-core's GitHub client declares gh. A file holding
     Bash the grammar refuses, a script, a fence, or the script a command it runs hands a shell, is reported by its
-    path, since Bash runs none of a script it refuses and the programs it would run cannot be read.
+    path: Bash runs the lines before a syntax error, so none of the file's programs can be trusted as read.
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     directories = skills_by_name(root)
@@ -1512,8 +1534,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
                     problems.append(f"{name} {error}")
         read = {path: _file_commands(path, known, powershell, clients) for path in own + dependency_scripts}
         problems += [
-            f"skill {skill}: {path.relative_to(root).as_posix()} runs Bash the grammar does not read "
-            f"({name.removeprefix(UNREAD_BASH)}), so the programs it runs cannot be read; see {COMMANDS_DOC}"
+            refused_bash_problem(f"skill {skill}: {path.relative_to(root).as_posix()}", name, COMMANDS_DOC)
             for path, commands in read.items()
             for name in sorted(commands)
             if name.startswith(UNREAD_BASH)
@@ -3124,7 +3145,8 @@ CLIENTS_DOC = '"Script results" in docs/adding-a-skill.md'
 
 def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, str]]:
     """The line and the git or gh command a node starts: a list or tuple that begins with it, or a call that runs a
-    command given it, such as `subprocess.run("git fetch", shell=True)`, directly or through a name bound to it."""
+    command given it, such as `subprocess.run("git fetch", shell=True)`, directly or through a name bound to it; and
+    UNREAD_BASH for Bash such a call hands a shell that the grammar refuses, which may run either."""
     found: list[tuple[int, str]] = []
     if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
         first = node.elts[0]
@@ -3132,7 +3154,7 @@ def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, st
             found = [(first.lineno, str(_text_constant(first).value).split(" ", 1)[0])]
     elif isinstance(node, ast.Call):
         found = reader.started(node)
-    return [(line, command) for line, command in found if command in CLIENT_COMMANDS]
+    return [(line, command) for line, command in found if command in CLIENT_COMMANDS or command.startswith(UNREAD_BASH)]
 
 
 def client_command_problems(root: Path) -> list[str]:
@@ -3158,6 +3180,9 @@ def client_command_problems(root: Path) -> list[str]:
         problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
+            if command.startswith(UNREAD_BASH):
+                problems.append(refused_bash_problem(f"{name}:{line}", command, COMMANDS_DOC))
+                continue
             problems.append(
                 f"{name}:{line} runs {command} itself; run it through {SKILL_CORE}'s {CLIENT_COMMANDS[command]}, "
                 f"which bounds it and turns prompts off; see {CLIENTS_DOC}"
@@ -3227,9 +3252,10 @@ def _shell_text(node: ast.expr) -> str | None:
 
 def started_checkers(reader: CommandReader, call: ast.Call) -> set[str]:
     """Each checker of CHECKER_RUNNERS a runner call may start: by the program it names, as `python -m ruff` or `-m
-    mypy` names one, as `bash -n` or `sh -n`, or in a script a shell is handed with -c, an f-string's included."""
+    mypy` names one, as `bash -n` or `sh -n`, or in a script a shell is handed with -c, an f-string's included; and
+    UNREAD_BASH for Bash it hands a shell that the grammar refuses, which may start any."""
     programs = {name for _, name in reader.started(call)}
-    found = programs & CHECKER_PROGRAMS
+    found = {name for name in programs if name in CHECKER_PROGRAMS or name.startswith(UNREAD_BASH)}
     for argument in reader._command_arguments(call):
         if isinstance(argument, Unreadable):
             continue
@@ -3239,7 +3265,8 @@ def started_checkers(reader: CommandReader, call: ast.Call) -> set[str]:
         found |= {module for word, module in itertools.pairwise(words) if word == "-m" and module in CHECKER_PROGRAMS}
         if isinstance(argument, (ast.List, ast.Tuple)) and len(argument.elts) > 2 and words[1] == "-c":
             script = _shell_text(argument.elts[2])
-            found |= shell_commands(script) & CHECKER_PROGRAMS if script is not None else set()
+            started = shell_commands(script) if script is not None else set()
+            found |= {name for name in started if name in CHECKER_PROGRAMS or name.startswith(UNREAD_BASH)}
     return found
 
 
@@ -3289,16 +3316,21 @@ def _readable_command_problems(reader: CommandReader, name: str) -> list[str]:
     ]
 
 
+CHECKER_DOC = '"Validation" in docs/adding-a-skill.md'
+
+
 def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
     problems: list[str] = []
     for call in reader.calls:
         scope = reader.scope_names.get(id(call), MODULE_SCOPE)
         for checker in sorted(started_checkers(reader, call)):
-            if (name, scope) not in CHECKER_RUNNERS[checker]:
+            if checker.startswith(UNREAD_BASH):
+                problems.append(refused_bash_problem(f"{name}:{call.lineno}", checker, CHECKER_DOC))
+            elif (name, scope) not in CHECKER_RUNNERS[checker]:
                 runners = " or ".join(f"{file}:{function}" for file, function in sorted(CHECKER_RUNNERS[checker]))
                 problems.append(
                     f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
-                    'outside the repository from turning its findings off; see "Validation" in docs/adding-a-skill.md'
+                    f"outside the repository from turning its findings off; see {CHECKER_DOC}"
                 )
     return problems
 

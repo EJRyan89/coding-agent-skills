@@ -2881,8 +2881,8 @@ class RuntimeSupportTests(SourceTreeTestCase):
             skill_inventory.own_needs(skill.parent)
 
     def test_a_bash_script_the_grammar_refuses_fails_the_runtime_derivation(self) -> None:
-        # Bash runs none of a script it refuses, so its git commands cannot be read, and reading none would pass a
-        # skill whose script reaches a remote.
+        # Bash runs the lines before a syntax error, so its git commands cannot be trusted as read, and reading none
+        # would pass a skill whose script reaches a remote.
         for text in ("git fetch\nif true; then\n", "eval 'git push \"'\n"):
             with self.subTest(text=text):
                 skill = self.skill("Body.\n", self.full())

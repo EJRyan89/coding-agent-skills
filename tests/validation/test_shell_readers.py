@@ -247,8 +247,9 @@ def test_shell_command_extraction_reads_bash_as_the_grammar_reads_it(script: str
     assert shell_commands(script) == programs
 
 
-# Bash runs none of a script it refuses, so the reader gives UNREAD_BASH with the grammar's reason, for the script and
-# for one eval or a shell's -c runs, and the policy fails it naming the file it stands in.
+# Bash runs the lines before a syntax error, so none of a refused script's programs can be trusted as read: the reader
+# gives UNREAD_BASH with the grammar's reason, for the script and for one eval or a shell's -c runs, and the policy
+# fails it naming the file it stands in.
 @pytest.mark.parametrize(
     ("script", "reason"),
     [
@@ -278,9 +279,10 @@ def test_the_command_policy_fails_a_file_holding_bash_the_grammar_refuses_naming
         root = Path(temporary)
         write_fixture_tree(root, files)
         problems = skill_scripts.skill_command_problems(root, set(), {"bash", "echo"})
+    # The one pin of the problem's wording; the other tests take it from refused_bash_problem.
     assert problems == [
-        f"skill alpha: {path} runs Bash the grammar does not read ({reason}), so the programs it runs cannot be read; "
-        f"see {skill_scripts.COMMANDS_DOC}"
+        f"skill alpha: {path} runs Bash the grammar does not read ({reason}); Bash runs the lines before a syntax "
+        f"error, so none of its programs can be trusted as read; see {skill_scripts.COMMANDS_DOC}"
         for path, reason in sorted(reasons.items())
     ]
 
@@ -306,9 +308,63 @@ def test_the_command_policy_fails_a_dependency_script_holding_bash_the_grammar_r
         write_fixture_tree(root, files)
         problems = skill_scripts.skill_command_problems(root, set(), {"bash", "echo"})
     assert problems == [
-        "skill alpha: skills/core/scripts/refused.py runs Bash the grammar does not read (a case pattern is not "
-        f"closed), so the programs it runs cannot be read; see {skill_scripts.COMMANDS_DOC}"
+        skill_scripts.refused_bash_problem(
+            "skill alpha: skills/core/scripts/refused.py",
+            f"{skill_scripts.UNREAD_BASH}a case pattern is not closed",
+            skill_scripts.COMMANDS_DOC,
+        )
     ]
+
+
+# Bash runs a refused script's lines before its syntax error, a git call or a checker among them, so the shared-client
+# and checker policies fail Bash the grammar refuses where a script hands it a shell, naming the line, and pass the
+# same call handed Bash the grammar reads.
+@pytest.mark.parametrize(
+    ("script", "problem"), [("git push\nif true; then", True), ("echo a\nif true; then :; fi", False)]
+)
+def test_the_client_policy_fails_bash_the_grammar_refuses_where_a_script_hands_it_a_shell(
+    script: str, problem: bool
+) -> None:
+    source = f"import subprocess\n\nsubprocess.run({script!r}, shell=True)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/beta/SKILL.md": "# beta\n", "skills/beta/scripts/run.py": source})
+        problems = skill_scripts.client_command_problems(root)
+    expected = skill_scripts.refused_bash_problem(
+        "skills/beta/scripts/run.py:3", f"{skill_scripts.UNREAD_BASH}expected `fi`", skill_scripts.COMMANDS_DOC
+    )
+    assert problems == ([expected] if problem else [])
+
+
+@pytest.mark.parametrize(("script", "problem"), [("shellcheck a.sh\nif true; then", True), ("echo a", False)])
+def test_the_checker_policy_fails_bash_the_grammar_refuses_where_a_script_hands_it_a_shell(
+    script: str, problem: bool
+) -> None:
+    source = f'import subprocess\n\nsubprocess.run(["bash", "-c", {script!r}])\n'
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"tools/x.py": source})
+        problems = skill_scripts.checker_command_problems(root, [root / "tools" / "x.py"])
+    expected = skill_scripts.refused_bash_problem(
+        "tools/x.py:3", f"{skill_scripts.UNREAD_BASH}expected `fi`", skill_scripts.CHECKER_DOC
+    )
+    assert problems == ([expected] if problem else [])
+
+
+# A program a wrapper runs that only running settles is named as the script writes it, never by the reader's own
+# placeholder for the part running settles.
+@pytest.mark.parametrize(
+    ("script", "unread"),
+    [
+        ('xargs "$(command -v rg)" foo', '"$(command -v rg)"'),
+        ("xargs `which rg`", "`which rg`"),
+        ('env "a$(b)" x', '"a$(b)"'),
+    ],
+)
+def test_a_wrapped_program_only_running_settles_is_named_as_written(script: str, unread: str) -> None:
+    programs = shell_commands(script)
+    assert f"{UNREAD_PROGRAM}{unread}" in programs
+    assert not any(git_subcommands.UNREAD_PART in program for program in programs)
 
 
 # A fragment the temporary-folder policy reads is unreadable as a whole when the grammar refuses any of it, an eval's or

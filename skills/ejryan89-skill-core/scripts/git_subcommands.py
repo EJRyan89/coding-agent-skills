@@ -120,7 +120,8 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     neither runs a command, and a line ends at LF alone.
 
     A script the grammar cannot read raises its BashSyntaxError, and so does the script eval or a shell's -c runs:
-    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs. A part
+    Bash runs the lines before a syntax error, so a reader that guessed at such a script could miss a git command it
+    runs. A part
     of a word only running settles, such as a substitution, is UNREAD_PART where it stands: one word in the script
     eval or a shell's -c runs, so `eval "git push $(x)"` reads push and `eval "$(ssh-agent -s)"` reads nothing, and a
     git subcommand holding it is UNREAD_WORD, one that may be any. An ANSI-C `$'...'` string holding an escape is such

@@ -642,10 +642,37 @@ def test_a_function_is_named_only_by_a_word_bash_defines_it_by(text: str, name: 
     assert ["git", "push"] in [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
 
 
-def test_a_quoted_function_name_defines_nothing_when_bash_runs_it() -> None:
-    # The name Bash refuses as it runs the definition leaves the name unbound, so the later command runs a program.
-    text = "'f' () { echo body; }; type -t f; echo ran"
+def test_a_documented_limit_a_function_name_holding_a_tilde_which_bash_defines_is_read_as_refused() -> None:
+    text = "~f () { echo defined; }; ~f"
+    bash_agreement.assert_reader_agrees([text])
     result = platform_support.run_tool([bash_agreement.find_bash(), "-c", text], separate_errors=True)
+    assert result.output.splitlines() == ["defined"]
+    definitions = [
+        command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    assert [definition.name for definition in definitions] == [None]
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "'f' () { echo body; }",
+        '"f" () { echo body; }',
+        "\\f () { echo body; }",
+        "f''g () { echo body; }",
+        "$x () { echo body; }",
+        "f$(echo) () { echo body; }",
+        "function 'g' () { echo body; }",
+        'function f"g" { echo body; }',
+        "function $x { echo body; }",
+    ],
+)
+def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definition: str) -> None:
+    # The name Bash refuses as it runs the definition defines no function, so a later command of that name runs a
+    # program, and the body never runs.
+    result = platform_support.run_tool(
+        [bash_agreement.find_bash(), "-c", f"{definition}; echo ran"], separate_errors=True
+    )
     assert result.output.splitlines() == ["ran"]
     assert "not a valid identifier" in result.errors
 

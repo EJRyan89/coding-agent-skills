@@ -278,8 +278,8 @@ def test_each_step_of_the_grammar_ends_where_bash_ends_it(script: str, expected:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
-# Bash runs none of a script it refuses, so a reader that guessed at one could miss a git command; the grammar refuses
-# each, and so does the reader, for its caller to fail.
+# Bash runs the lines before a syntax error, so a reader that guessed at such a script could miss a git command; the
+# grammar refuses each, and so does the reader, for its caller to fail.
 @pytest.mark.parametrize(
     "script",
     [

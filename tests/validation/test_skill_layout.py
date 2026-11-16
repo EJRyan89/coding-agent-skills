@@ -844,9 +844,9 @@ class SkillLayoutFixtures(unittest.TestCase):
                 self.assertEqual([unmeasured], capability_guide_problems(root))
 
     def test_runtime_support_policy_fails_on_a_bash_script_the_grammar_refuses_naming_the_script(self) -> None:
-        # Bash runs none of a script it refuses, so the git commands it would run cannot be read, and reading none
-        # would pass a skill whose script reaches a remote: in a Bash script, and in the Bash a PowerShell script's
-        # shell runs.
+        # Bash runs the lines before a syntax error, so the git commands it runs cannot be trusted as read, and
+        # reading none would pass a skill whose script reaches a remote: in a Bash script, and in the Bash a
+        # PowerShell script's shell runs.
         full = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
         for script, text, reason in (
             ("update.sh", "git fetch origin\nif true; then\n", "not Bash the grammar reads (expected `fi`)"),

@@ -45,6 +45,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   unread, the git call after the real delimiter line included. A delimiter word written before a CR, as in a script with
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
 - An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
+- A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
 - Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
   arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
   BashSyntaxError.
@@ -267,7 +268,8 @@ class Arithmetic:
 class FunctionDefinition:
     """A function's definition: the name Bash defines it by, and its body. Bash reads any word as the name, but when
     it runs the definition it refuses one quoted, escaped, or holding an expansion as not a valid identifier, as in
-    `'f' () { :; }` or `function $x { :; }`, and defines nothing; such a name is None."""
+    `'f' () { :; }` or `function $x { :; }`, and defines nothing; such a name is None, and so is one holding a tilde,
+    which Bash defines, a limit the module states."""
 
     name: str | None
     body: Command
@@ -1169,7 +1171,7 @@ def simple_commands(text: str) -> list[Simple]:
     read from wherever it stands: a word, an assignment's value, a redirection's target, an unquoted here-document's
     body, a case word or pattern, or a loop's words. A case word, a pattern, a function's name, and a quoted
     here-document's body run nothing of their own. Raises BashSyntaxError where text, or a substitution in it, cannot
-    be read, since Bash runs none of a command it refuses."""
+    be read: Bash runs the lines before a syntax error, so a reader cannot say which of its commands run."""
     return [command for command in every_command(text) if isinstance(command, Simple)]
 
 
