@@ -362,7 +362,7 @@ def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_
     # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
     # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder. A pass
     # follows only one in which a caller reached a scope after a read asked its callers, so a shape with no such caller
-    # reads in one, and each relay found late takes one more. The reader takes at most 645 steps on these, so a reader
+    # reads in one, and each relay found late takes one more. The reader takes at most 555 steps on these, so a reader
     # that loops fails at 1,000.
     tree = ast.parse(f"{HEADER}{body}")
     functions = sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
@@ -400,8 +400,9 @@ def test_a_late_pass_reads_only_what_its_late_callers_reach_and_each_called_expr
     # A pass that read the whole entry point again read each relay once for every relay found before it, so a ladder of
     # k relays took steps quadratic in k; and a walk that answered each call through a parameter anew went out to
     # every scope that called it, and on to theirs, for each call, so functions calling each other took steps
-    # quadratic in their call sites. The reader takes about 1.6 steps for each node of the relays' syntax tree and 7.5
-    # for the functions calling each other, at any size, so it fails at ten; the quadratic reader took 63 and 110 here.
+    # quadratic in their call sites. The reader takes 1.6 steps for each node of the relays' syntax tree and at most 7.5
+    # for the functions calling each other, at any size, so it fails at ten; the quadratic readers took 63 and 110 here,
+    # and 250 and 450 at four times the size.
     tree = ast.parse(f"{HEADER}{body}{ENTRY}")
     bound = 10 * sum(1 for _ in ast.walk(tree))
     steps = 0
@@ -961,6 +962,25 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
     assert found == [
         "tools/tool.py names 'other.code' in EXIT_CODES_ALLOWED, which is no return the exit-table reader cannot "
         "follow from an entry point; remove it"
+    ]
+
+
+def test_unread_returns_are_reported_in_their_order_in_the_source() -> None:
+    # The reader meets b's return before a's, and each of b's two before the one before it on its line, since it reads
+    # the last call it queues first; and which pass meets a return depends on when its caller is found. The returns are
+    # reported by file, line, and column, so the report is the same however the passes run.
+    body = (
+        "def c():\n    return bool(argparse)\n"
+        "def a():\n    return thing.first\n"
+        "def b():\n    return other.second if c() else other.third\n"
+        "def main():\n    return a() if c() else b()\n"
+        f"{ENTRY}"
+    )
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert [problem.split(" an exit code")[0] for problem in found] == [
+        "tools/tool.py:13 returns or exits with thing.first,",
+        "tools/tool.py:15 returns or exits with other.second,",
+        "tools/tool.py:15 returns or exits with other.third,",
     ]
 
 

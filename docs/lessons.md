@@ -691,13 +691,15 @@ removed fails validation until its pattern follows it.
   only on that state; a name bound to its own negation is read at both truths, since that binding gives the name the
   truth opposite to the one it read; `tests.validation.exit_tables:CodeReader.returns`,
   `tests.validation.exit_tables:CodeReader.assigned`, and `tests.validation.exit_tables:CodeReader.parameter`, which
-  read a function, a local's value, or a parameter once a pass in each scope
-  `tests.validation.exit_tables:CodeReader.scope` keeps, one for each function and the argument expressions one call
-  site gives it, so the scopes are bounded by the call sites the source holds times the functions each can name,
-  never a product over parameters, with each parameter read in every scope that called its own, and each read
-  waiting its turn on the reader's list rather than nesting on Python's stack; and
-  `tests.validation.exit_tables:CodeReader.callables`, which reads each called expression once per question in each
-  scope, from a stack of its own; and `tests.validation.validation_support:CallableResolver._imported`, which reads
+  read a function, a local's value, or a parameter once in each scope
+  `tests.validation.exit_tables:CodeReader.scope` keeps, whatever pass reaches it, one for each function and the
+  argument expressions one call site gives it, so the scopes are bounded by the call sites the source holds times the
+  functions each can name, never a product over parameters, with each parameter read in every scope that called its
+  own, a late caller running again only the reads that asked its scope's callers, on what they have not read, and
+  each read waiting its turn on the reader's list rather than nesting on Python's stack; and
+  `tests.validation.exit_tables:CodeReader.callables`, which answers each called expression in each scope once for
+  every call, a strongly connected group at a time from a stack of its own, the answer kept until a late caller of a
+  scope the group asked can change it, since what a group answers depends only on its values and their callers; and `tests.validation.validation_support:CallableResolver._imported`, which reads
   each name once per question, since whether a name reaches an import depends only on the name and the scope that
   owns it, and the answer is an any, so a name read again either reached none or is still on the path
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
@@ -715,6 +717,7 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_exit_tables.py::test_a_call_through_a_table_keeps_a_scope_for_each_function_it_can_name`,
   `tests/validation/test_exit_tables.py::test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit`,
   `tests/validation/test_exit_tables.py::test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once`,
+  `tests/validation/test_exit_tables.py::test_a_late_pass_reads_only_what_its_late_callers_reach_and_each_called_expression_is_answered_once`,
   `tests/validation/test_validation_support.py::test_callable_resolver_reads_each_name_of_a_two_branch_attribute_chain_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows

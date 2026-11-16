@@ -410,7 +410,7 @@ def _falls_through(body: list[ast.stmt], aliases: dict[str, str]) -> bool:
 @dataclass
 class Reading:
     """What the reader found from one entry point: the codes it can exit with, and the returns it could not follow,
-    each by its file, line, and expression."""
+    each by its file, line, and expression, in the order of their place in the source (see read_codes)."""
 
     codes: set[int] = field(default_factory=set)
     unread: list[tuple[Path, int, str]] = field(default_factory=list)
@@ -570,7 +570,8 @@ class CodeReader:
         self.groups_asking: dict[int, list[Group]] = {}
         # The reads waiting their turn, so no read nests inside another on Python's stack: see later.
         self.pending: list[Callable[[], None]] = []
-        self.unread_seen: set[tuple[Path, int, str]] = set()
+        # Each unread return recorded, with the first column it was found at on its line: see read_codes.
+        self.unread_seen: dict[tuple[Path, int, str], int] = {}
         # Each function's bindings, by the function's id: see bound.
         self.bindings: dict[int, dict[str, list[tuple[ast.expr, int | None]]]] = {}
         self.reached: set[int] = set()
@@ -992,9 +993,12 @@ class CodeReader:
     def _unread(self, node: ast.expr | None, scope: Scope) -> None:
         expression = ast.unparse(node) if node is not None else "None"
         found = (scope.module.path, getattr(node, "lineno", 0), expression)
+        column = getattr(node, "col_offset", 0)
         if found not in self.unread_seen:
-            self.unread_seen.add(found)
+            self.unread_seen[found] = column
             self.reading.unread.append(found)
+        else:
+            self.unread_seen[found] = min(self.unread_seen[found], column)
 
     def exits(self, argument: ast.expr | None, scope: Scope) -> None:
         """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
@@ -1150,7 +1154,9 @@ def runner_targets(block: ast.If, aliases: dict[str, str]) -> list[ast.expr]:
 
 
 def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
-    """The reader of an entry point, having read the codes it can exit with and the returns it could not follow."""
+    """The reader of an entry point, having read the codes it can exit with and the returns it could not follow, these
+    sorted by their place in the source: file, line, column, and expression. The order the reader meets them in
+    depends on which pass a late caller makes read them, so a report in that order would change with the passes."""
     reader = CodeReader(root, entry.path)
     module = reader.module_at(entry.path, entry.tree)
     assert module is not None
@@ -1158,6 +1164,7 @@ def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
     reader.read(module)
     if reader.reads_error_code:
         reader.reading.codes |= reader.error_codes | reader.error_defaults()
+    reader.reading.unread.sort(key=lambda found: (found[0].as_posix(), found[1], reader.unread_seen[found], found[2]))
     return reader
 
 
