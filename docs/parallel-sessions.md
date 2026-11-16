@@ -718,12 +718,15 @@ Within what it reads, it judges only what the text shows, so these too are left 
   index, and tree it writes; a worktree call given another store or view of objects is refused, as the bullet on what
   the environment has git write says.
 
-The guard reads Bash 4 and later's grammar, with one exception it refuses rather than reads. A command substitution
-holding a `case` whose pattern's `)` no `(` opens is read two ways: Bash 4 and later read that `)` as the pattern's
-close, while Bash 3.2, macOS's `/bin/bash`, reads it as the substitution's end. Bash 3.2 then runs the rest of the line
-in the shell around the substitution, as when a `#` after it comments out the close. Where a git call in the command
-acts therefore depends on the Bash, so the guard refuses the command while a hub is guarded, whether it can read the
-rest or not, as it refuses a part of a git call it does not settle.
+The guard reads Bash 4 and later's grammar, with one exception it reads both ways and refuses. A command substitution,
+or one in an unquoted here-document's body, holding a `case` whose pattern's `)` no `(` opens is read two ways: Bash 4
+and later read that `)` as the pattern's close, while Bash 3.2, macOS's `/bin/bash`, reads it as the substitution's
+end. Bash 3.2 then runs the rest of the line in the shell around the substitution, as when a `#` after it comments out
+the close. The guard reads such a command a second time as Bash 3.2 does and judges the git calls and places of both
+readings, so a `cd` into the hub before it is followed either way, and it refuses the command while a hub is guarded,
+whether it can read the rest or not, as it refuses a part of a git call it does not settle. A here-document whose
+unquoted body holds an expansion it never closes is refused while a hub is guarded the same way, since what the body
+runs after it is not read.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session

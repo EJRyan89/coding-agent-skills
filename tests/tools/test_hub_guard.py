@@ -3304,6 +3304,45 @@ class UnderstoodSetTests(GuardTestCase):
         # A pattern a `(` opens is read alike by both, so the switch in the tree is allowed.
         self.assertIsNone(self.bash(f"x=$(cd '{self.tree}'; case a in (a) git switch feat/demo;; esac)", self.hub))
 
+    def test_a_bare_case_pattern_in_a_here_document_s_body_is_refused_while_a_hub_is_guarded(self) -> None:
+        # Bash 3.2 runs the git call after the pattern in each, where Bash 4 and later refuse the body's expansion; the
+        # body's expansion is left unclosed, so what it runs is not read, and the command is refused in the hub.
+        for command in (
+            "cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF",
+            "cat <<EOF\n$(case x in a)\n$(git push)\nEOF",
+            "cat <<EOF\n$(case x in a) `git push` #;; esac)\nEOF",
+            "cat <<-EOF\n\t$(case x in a) $(git push) #;; esac)\n\tEOF",
+            "cat <<EOF\n${x:-$(case x in a) $(git push) #;; esac)}\nEOF",
+            "x=$(cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF\n)",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+
+    def test_a_bare_case_pattern_is_also_read_as_bash_3_2_reads_it_from_outside_the_hub(self) -> None:
+        # From outside every checkout of the hub, nothing the Bash 4 reading reads reaches the hub, but Bash 3.2 ends
+        # the substitution at the pattern's `)` and runs the git call in the hub, so the guard reads that way too.
+        outside = self.root / "outside"
+        outside.mkdir(exist_ok=True)
+        hub = self.hub.as_posix()
+        for command in (
+            f"cd '{hub}' && echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}'; echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}'\necho $(case x in a) $(git push) #;; esac)",
+            f"echo $(case x in a) $(git -C '{hub}' push) #;; esac)",
+            f"cd '{hub}' && x=$(case x in a) ; git commit -m y #;; esac)",
+            f"cd '{hub}' && echo $(case x in a) && git push # ;; esac)",
+            f"cd '{hub}' && cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, outside))
+        # Neither reading reaches a hub here, and a pattern a `(` opens is read alike, so these stay allowed.
+        for command in (
+            "cd /tmp && echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}' && echo $(case x in (a) git status;; esac)",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, outside))
+
     def test_git_in_arithmetic_a_for_header_or_after_an_arithmetic_function_is_read(self) -> None:
         switch = f'git -C "{self.hub}" switch feat/demo'
         for script in (

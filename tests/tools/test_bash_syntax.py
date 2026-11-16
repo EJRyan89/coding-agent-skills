@@ -94,6 +94,23 @@ class WordTests(unittest.TestCase):
             parse("x=$(echo ')")
         self.assertFalse(raised.exception.bare_case)
 
+    def test_a_here_document_s_unclosed_expansion_says_when_its_pattern_no_paren_opened(self) -> None:
+        bare = bash_syntax.here_documents(first_simple("cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF"))[0]
+        self.assertEqual((True, True), (bare.unclosed, bare.bare_case))
+        other = bash_syntax.here_documents(first_simple('cat <<EOF\n$(echo "a)\nEOF'))[0]
+        self.assertEqual((True, False), (other.unclosed, other.bare_case))
+
+    def test_parse_reads_a_case_pattern_s_paren_in_a_substitution_as_bash_3_2_does_when_asked(self) -> None:
+        # Bash 3.2 ends the substitution at `a)`, so the git call after it stands in the command around it.
+        text = "echo $(case x in a) $(git push) #;; esac)"
+        with self.assertRaises(BashSyntaxError):
+            bash_syntax.parse(text)
+        command = bash_syntax.parse(text, bash_3_2=True).items[0][0].first.commands[0]
+        assert isinstance(command, bash_syntax.Simple)
+        self.assertEqual(
+            ("case x in a", "git push"), tuple(text for word in command.words for text in word.substitutions)
+        )
+
     def test_each_substitution_keeps_the_form_that_opened_it(self) -> None:
         command = first_simple('echo $(a) `b` <(c) >(d) "$(e)"')
         forms = [getattr(text, "form", None) for word in command.words for text in word.substitutions]

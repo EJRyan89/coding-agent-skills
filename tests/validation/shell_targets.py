@@ -136,8 +136,10 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
     string that holds an escape, an array assignment's value, arithmetic, or a function's name, or in an unquoted
     `${ }` expansion, whose own quotes the grammar does not keep, is None, which validation cannot judge. Each token
     is read where a value that needs no quoting would stand, TOKEN_MARKER, so a token joined to a `$NAME` before it
-    is read as part of the name, as Bash reads the rendered value, and is None too. Raises BashSyntaxError for Bash
-    the grammar refuses, and for text that already holds a TOKEN_MARKER."""
+    is read as part of the name, as Bash reads the rendered value, and is None too. A stated limit: a token in a `${ }`
+    expansion's parameter name, index, or `!` or `#` prefix, as `"${{{X}}:-a}"`, `"${!{{X}}}"`, `"${#{{X}}}"`, or
+    `"${Y[{{X}}]}"`, is read as quoted, though a value with a space breaks it; no skill writes one. Raises
+    BashSyntaxError for Bash the grammar refuses, and for text that already holds a TOKEN_MARKER."""
     if TOKEN_MARKER.search(text):
         raise BashSyntaxError("it holds text of the form validation marks each token with")
     places = itertools.count()
