@@ -7108,6 +7108,108 @@ def test_presence_policy_refuses_each_empty_answer_form(text: str, refused: bool
     assert bool(found) == refused, found
 
 
+# A chain of names, each reading the one before, under a test the presence policy reads: each name bound two ways, as
+# `a1 = a0` and `a1 = not a0`; each bound once and reading the one before twice, as `a1 = a0 and a0`; and each a
+# conditional expression whose arms both read the one before, around a with the handler reader asks whether it
+# suppresses. A walk that followed each path through the names read the first name once per path, 2 to the power of
+# the chain's length; read once per question for each truth, or for each scope, the reads grow with the chain.
+PRESENCE_CHAIN_LINKS = 16
+PRESENCE_CHAINS = {
+    "each name bound two ways": (
+        "    if c:\n        a{name} = a{before}\n    else:\n        a{name} = not a{before}\n",
+        "    if a{last} and not file_presence.is_present(p, other_is_absent=True):\n        raise OSError(p)\n",
+        1,
+    ),
+    "each name reading the one before twice": (
+        "    a{name} = a{before} and a{before}\n",
+        "    if a{last} and not file_presence.is_present(p, other_is_absent=True):\n        raise OSError(p)\n",
+        1,
+    ),
+    "each name a conditional expression of the one before": (
+        "    a{name} = a{before} if c else a{before}\n",
+        "    with a{last}:\n        return p.stat()\n",
+        0,
+    ),
+}
+
+
+@pytest.mark.parametrize(("link", "last", "refused"), PRESENCE_CHAINS.values(), ids=PRESENCE_CHAINS)
+def test_presence_policy_reads_each_name_of_a_chain_once_per_question(link: str, last: str, refused: int) -> None:
+    source = "import file_presence\n\n\ndef f(p, c, a0):\n"
+    source += "".join(link.format(name=index, before=index - 1) for index in range(1, PRESENCE_CHAIN_LINKS + 1))
+    source += last.format(last=PRESENCE_CHAIN_LINKS)
+    reads = 0
+    limit = 5 * PRESENCE_CHAIN_LINKS
+
+    def counted(original: Callable[..., Any]) -> Callable[..., Any]:
+        def read(*arguments: Any) -> Any:
+            nonlocal reads
+            reads += 1
+            if reads > limit:
+                raise AssertionError(f"the presence policy read the chain's names more than {limit} times")
+            return original(*arguments)
+
+        return read
+
+    reader, handlers = python_checks._PresenceReader, python_checks._Handlers
+    with (
+        tempfile.TemporaryDirectory() as temporary,
+        mock.patch.object(reader, "_name_polarities", counted(reader._name_polarities)),
+        mock.patch.object(reader, "_there", counted(reader._there)),
+        mock.patch.object(handlers, "suppress", counted(handlers.suppress)),
+    ):
+        root = Path(temporary)
+        path = root / "skills" / "alpha" / "scripts" / "alpha.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(source, encoding="utf-8")
+        found = python_checks.presence_problems(root, [path])
+    assert len(found) == refused, found
+
+
+# A name that leads back to itself, around a loop, keeps the answer it had when each path stopped at a name it had
+# read: what the name's own truth turns on, read again, adds nothing, whether it leads back through itself or another
+# name. One that leads back to itself negated, as `found = not found`, turns on the test's other answer too, which a
+# path that stopped at the name it had read under the other truth never read.
+PRESENCE_CYCLES = {
+    "a name read again in its own binding, refusing on its False": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = found and c\n"
+        "    if not found:\n        raise OSError(p)\n",
+        True,
+    ),
+    "a name read again in its own binding, refusing on its truth": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = found and c\n"
+        "    if found:\n        raise OSError(p)\n",
+        False,
+    ),
+    "two names bound to each other, refusing on their False": (
+        "    a = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        b = a\n        a = b\n"
+        "    if not a:\n        raise OSError(p)\n",
+        True,
+    ),
+    "two names bound to each other, refusing on their truth": (
+        "    a = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        b = a\n        a = b\n"
+        "    if a:\n        raise OSError(p)\n",
+        False,
+    ),
+    "a name bound to its own negation, refusing on its truth": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = not found\n"
+        "    if found:\n        raise OSError(p)\n",
+        True,
+    ),
+}
+
+
+@pytest.mark.parametrize(("body", "refused"), PRESENCE_CYCLES.values(), ids=PRESENCE_CYCLES)
+def test_presence_policy_answers_a_name_that_leads_back_to_itself(body: str, refused: bool) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "skills" / "alpha" / "scripts" / "alpha.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"import file_presence\n\n\ndef f(p, c):\n{body}", encoding="utf-8")
+        found = python_checks.presence_problems(root, [path])
+    assert bool(found) == refused, found
+
+
 PRESENCE_SOURCE = """\
 import os
 

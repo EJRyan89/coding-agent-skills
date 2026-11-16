@@ -1137,6 +1137,15 @@ def _comparison(test: ast.Compare) -> tuple[ast.expr, bool] | None:
     return (left, truth[type(op)]) if type(op) in truth else None
 
 
+class _NameReading(NamedTuple):
+    """One reading of a name the presence reader follows: the name, the truth asked of it, and what is asked, "value"
+    for the name's own truth, or the `_items` mode for what it holds."""
+
+    name: str
+    truth: bool
+    mode: str
+
+
 @dataclass(frozen=True)
 class _PresenceReader:
     """How one scope of a module reaches a refusal from a file_presence test given other_is_absent=True: through the
@@ -1162,34 +1171,38 @@ class _PresenceReader:
         return None
 
     def polarities(
-        self, node: ast.expr, truth: bool = True, seen: frozenset[str] = frozenset()
+        self, node: ast.expr, truth: bool = True, read: set[_NameReading] | None = None
     ) -> Iterator[tuple[ast.Call, bool]]:
         """Each call of such a test whose answer an expression's truth may turn on, with the answer the test gives when
-        the expression's truth is `truth`."""
+        the expression's truth is `truth`. A name's bindings are read once per question for each truth, and for each
+        reading of what it holds, in `read`: what they give depends only on the name and that truth, so a name reached
+        again by another path, or one that leads back to itself, adds nothing the first reading did not give."""
+        read = set() if read is None else read
         if isinstance(node, ast.Call) and self.other_is_absent(node):
             yield node, truth
         elif isinstance(node, ast.NamedExpr):
-            yield from self.polarities(node.value, truth, seen)
-        elif isinstance(node, ast.Name) and node.id not in seen:
-            yield from self._name_polarities(node.id, truth, seen | {node.id})
+            yield from self.polarities(node.value, truth, read)
+        elif isinstance(node, ast.Name) and (reading := _NameReading(node.id, truth, "value")) not in read:
+            read.add(reading)
+            yield from self._name_polarities(node.id, truth, read)
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-            yield from self.polarities(node.operand, not truth, seen)
+            yield from self.polarities(node.operand, not truth, read)
         elif isinstance(node, ast.BoolOp):
             for value in node.values:
-                yield from self.polarities(value, truth, seen)
+                yield from self.polarities(value, truth, read)
         elif isinstance(node, ast.IfExp):
             for branch in (node.body, node.orelse):
-                yield from self.polarities(branch, truth, seen)
+                yield from self.polarities(branch, truth, read)
             for answer in (True, False):
-                yield from self.polarities(node.test, answer, seen)
+                yield from self.polarities(node.test, answer, read)
         elif isinstance(node, ast.Compare):
-            yield from self._compared(node, truth, seen)
+            yield from self._compared(node, truth, read)
         elif isinstance(node, ast.Call):
-            yield from self._called(node, truth, seen)
+            yield from self._called(node, truth, read)
         elif isinstance(node, COMPREHENSIONS):
-            yield from self._items(node, truth, "nonempty", seen)
+            yield from self._items(node, truth, "nonempty", read)
 
-    def _name_polarities(self, name: str, truth: bool, seen: frozenset[str]) -> Iterator[tuple[ast.Call, bool]]:
+    def _name_polarities(self, name: str, truth: bool, read: set[_NameReading]) -> Iterator[tuple[ast.Call, bool]]:
         """A name's: each value its scope binds it to, and, when the scope also binds it to an empty value and the name
         is true, the tests that guard its other bindings, one of which then ran. A false name tells nothing of them: it
         may be one no guard let through, as a search that found nothing is."""
@@ -1198,10 +1211,10 @@ class _PresenceReader:
         for binding in bindings:
             if binding.value is None or _empty(binding.value):
                 continue
-            yield from self.polarities(binding.value, truth, seen)
+            yield from self.polarities(binding.value, truth, read)
             if guarded:
                 for test, answer in binding.guards:
-                    yield from self.polarities(test, answer, seen)
+                    yield from self.polarities(test, answer, read)
 
     def _answer(self, node: ast.expr) -> ast.Call | None:
         """The call of such a test an expression is the answer of: called there, bound by an assignment expression, or
@@ -1214,34 +1227,36 @@ class _PresenceReader:
             return answers[0] if answers and len(answers) == len(values) else None
         return node if isinstance(node, ast.Call) and self.other_is_absent(node) else None
 
-    def _compared(self, node: ast.Compare, truth: bool, seen: frozenset[str]) -> Iterator[tuple[ast.Call, bool]]:
+    def _compared(self, node: ast.Compare, truth: bool, read: set[_NameReading]) -> Iterator[tuple[ast.Call, bool]]:
         """A comparison's: its operand's when it compares one with a constant, or either answer of each operand that is
         a test's answer, as `is_present(a, ...) != is_present(b, ...)` compares two; a comparison of anything else, as
         `len(found) > 1` or `name in found` is, turns on what a collection holds, not on whether it is empty."""
-        if read := _comparison(node):
-            operand, same = read
-            yield from self.polarities(operand, truth == same, seen)
+        if compared := _comparison(node):
+            operand, same = compared
+            yield from self.polarities(operand, truth == same, read)
             return
         for operand in (node.left, *node.comparators):
             if (found := self._answer(operand)) is not None:
                 yield found, True
                 yield found, False
 
-    def _called(self, node: ast.Call, truth: bool, seen: frozenset[str]) -> Iterator[tuple[ast.Call, bool]]:
+    def _called(self, node: ast.Call, truth: bool, read: set[_NameReading]) -> Iterator[tuple[ast.Call, bool]]:
         """A call's: its argument's, for a call that keeps it; the items `any`, `all`, or `next` reads; a filter's."""
         named = qualified_name(node.func, self.aliases)
         if not node.args:
             return
         if named in ("len", "bool", *KEEPING_CALLS):
-            yield from self.polarities(node.args[0], truth, seen)
+            yield from self.polarities(node.args[0], truth, read)
         elif named in ("any", "next"):
-            yield from self._items(node.args[0], truth, "any", seen)
+            yield from self._items(node.args[0], truth, "any", read)
         elif named == "all":
-            yield from self._items(node.args[0], truth, "every", seen)
+            yield from self._items(node.args[0], truth, "every", read)
         elif named in FILTERS:
-            yield from self._items(node, truth, "nonempty", seen)
+            yield from self._items(node, truth, "nonempty", read)
 
-    def _items(self, node: ast.expr, truth: bool, mode: str, seen: frozenset[str]) -> Iterator[tuple[ast.Call, bool]]:
+    def _items(
+        self, node: ast.expr, truth: bool, mode: str, read: set[_NameReading]
+    ) -> Iterator[tuple[ast.Call, bool]]:
         """The tests what an iterable holds turns on when a reading of it finds one item: a collection that is not
         empty (`nonempty`), an `any` or `next` that is true (`any`), or an `all` that is false (`every`), each item a
         comprehension keeps or yields, a filter keeps, or a literal holds, through a call that keeps its items or a name
@@ -1249,42 +1264,46 @@ class _PresenceReader:
         search that found nothing does, so it turns on no test."""
         if truth == (mode == "every"):
             return
-        if isinstance(node, ast.Name) and node.id not in seen:
+        if isinstance(node, ast.Name) and (reading := _NameReading(node.id, truth, mode)) not in read:
+            read.add(reading)
             for binding in self.bindings.get(node.id, []):
                 if binding.value is not None:
-                    yield from self._items(binding.value, truth, mode, seen | {node.id})
+                    yield from self._items(binding.value, truth, mode, read)
         elif isinstance(node, ast.Call) and qualified_name(node.func, self.aliases) in KEEPING_CALLS and node.args:
-            yield from self._items(node.args[0], truth, mode, seen)
+            yield from self._items(node.args[0], truth, mode, read)
         elif isinstance(node, ast.Call) and (named := qualified_name(node.func, self.aliases)) in FILTERS:
             if node.args and isinstance(predicate := node.args[0], ast.Lambda):
-                yield from self.polarities(predicate.body, named == "filter", seen)
+                yield from self.polarities(predicate.body, named == "filter", read)
             if len(node.args) > 1:
-                yield from self._items(node.args[1], truth, mode, seen)
+                yield from self._items(node.args[1], truth, mode, read)
         elif isinstance(node, COMPREHENSIONS):
             for generator in node.generators:
                 for test in generator.ifs:
-                    yield from self.polarities(test, True, seen)
+                    yield from self.polarities(test, True, read)
             if mode != "nonempty":
                 yield from self.polarities(
-                    node.key if isinstance(node, ast.DictComp) else node.elt, mode == "any", seen
+                    node.key if isinstance(node, ast.DictComp) else node.elt, mode == "any", read
                 )
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)) and mode != "nonempty":
             for element in node.elts:
-                yield from self.polarities(element, mode == "any", seen)
+                yield from self.polarities(element, mode == "any", read)
 
-    def _there(self, test: ast.expr, truth: bool, seen: frozenset[str] = frozenset()) -> set[str]:
+    def _there(self, test: ast.expr, truth: bool, read: set[tuple[str, bool]] | None = None) -> set[str]:
         """The paths, by their syntax, a file_presence is_occupied or is_there must find something at for a test's truth
-        to be `truth`, as `is_occupied(p) and not is_directory(p, other_is_absent=True)` does when true."""
+        to be `truth`, as `is_occupied(p) and not is_directory(p, other_is_absent=True)` does when true. A name is read
+        once per question for each truth, in `read`, since the paths it gives depend only on the name and that truth."""
+        read = set() if read is None else read
         if isinstance(test, ast.NamedExpr):
-            return self._there(test.value, truth, seen)
+            return self._there(test.value, truth, read)
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            return self._there(test.operand, not truth, seen)
+            return self._there(test.operand, not truth, read)
         if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And if truth else ast.Or):
-            return {path for value in test.values for path in self._there(value, truth, seen)}
-        if isinstance(test, ast.Name) and test.id not in seen:
+            return {path for value in test.values for path in self._there(value, truth, read)}
+        if isinstance(test, ast.Name) and (test.id, truth) not in read:
+            read.add((test.id, truth))
             values = [binding.value for binding in self.bindings.get(test.id, [])]
             if len(values) == 1 and values[0] is not None:
-                return self._there(values[0], truth, seen | {test.id})
+                return self._there(values[0], truth, read)
         if (
             truth
             and isinstance(test, ast.Call)
@@ -2060,16 +2079,23 @@ class _Handlers:
     module_values: Mapping[str, list[ast.expr | None]] = field(default_factory=dict)
 
     def suppress(
-        self, node: ast.expr, scopes: Sequence[Mapping[str, list[_Binding]]], seen: frozenset[str] = frozenset()
+        self,
+        node: ast.expr,
+        scopes: Sequence[Mapping[str, list[_Binding]]],
+        read: set[tuple[str, int]] | None = None,
     ) -> bool:
         """Whether an expression may be a contextlib.suppress of an error that takes a failed stat: one called there,
         either arm of a conditional expression, or a name any binding of which may give one, a parameter's default
         included, in the innermost of `scopes`, its own scope then each function around it, that binds it, or at the
         module's level where none does, as `quiet = suppress(OSError)` before `with quiet:`, in the function itself or
-        in one around it, or in a function that declares it global."""
+        in one around it, or in a function that declares it global. A name is read once per question for the scopes it
+        is looked up in, in `read`, since what it may give depends only on them: a name read again gave no suppress, or
+        the question would have ended."""
+        read = set() if read is None else read
         if isinstance(node, ast.IfExp):
-            return self.suppress(node.body, scopes, seen) or self.suppress(node.orelse, scopes, seen)
-        if isinstance(node, ast.Name) and node.id not in seen:
+            return self.suppress(node.body, scopes, read) or self.suppress(node.orelse, scopes, read)
+        if isinstance(node, ast.Name) and (node.id, len(scopes)) not in read:
+            read.add((node.id, len(scopes)))
             place = next((index for index, bindings in enumerate(scopes) if node.id in bindings), None)
             values = (
                 self.module_values.get(node.id, [])
@@ -2077,7 +2103,7 @@ class _Handlers:
                 else [binding.value or binding.default for binding in scopes[place][node.id]]
             )
             outer = () if place is None else scopes[place:]
-            return any(value is not None and self.suppress(value, outer, seen | {node.id}) for value in values)
+            return any(value is not None and self.suppress(value, outer, read) for value in values)
         return (
             isinstance(node, ast.Call)
             and qualified_name(node.func, self.aliases) == "contextlib.suppress"
