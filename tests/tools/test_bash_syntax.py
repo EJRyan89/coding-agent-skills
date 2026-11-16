@@ -793,6 +793,10 @@ TRACED_SCRIPT = (
     "2>/dev/null : descriptor-after-continuation\n"  # 31
     ": continued \\\n"  # 32, its redirection on 33
     ">/dev/null\n"
+    "A=1\\\n"  # 34: a first token that runs into the continuation
+    " : crossing-assignment\n"
+    ">/dev/null\\\n"  # 36
+    " : crossing-redirection\n"
 )
 TRACED_LINES = {
     "one": 2,
@@ -816,11 +820,16 @@ TRACED_LINES = {
     "input-first": 29,
     "descriptor-after-continuation": 31,
     "continued": 32,
+    "crossing-assignment": 34,
+    "crossing-redirection": 36,
 }
 # The commands whose line Bash's $LINENO gives otherwise: one in a substitution or in an unquoted here-document's
 # body, which Bash 3.2 and 5.3 trace on the line the command holding it starts or ends on. The reader gives the line
 # the command's own text stands on, where an author finds it.
 SUBSTITUTED = frozenset({"in-body", "in-backquote", "in-substitution"})
+# The commands whose first token itself runs into a continuation, with no blank before its backslash, which Bash 3.2
+# and 5.3 trace on the line after it. The reader gives the line the token starts on.
+CROSSING = frozenset({"crossing-assignment", "crossing-redirection"})
 
 
 def tagged_lines(text: str) -> dict[str, int]:
@@ -842,11 +851,12 @@ def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(
     }
     assert result.returncode == 0, result.output
     assert tagged_lines(TRACED_SCRIPT) == TRACED_LINES
-    assert {tag: line for tag, line in traced.items() if tag not in SUBSTITUTED} == {
-        tag: line for tag, line in TRACED_LINES.items() if tag not in SUBSTITUTED
+    assert {tag: line for tag, line in traced.items() if tag not in SUBSTITUTED | CROSSING} == {
+        tag: line for tag, line in TRACED_LINES.items() if tag not in SUBSTITUTED | CROSSING
     }
     # Bash traces these on another line, which the reader does not take.
     assert all(traced[tag] != TRACED_LINES[tag] for tag in SUBSTITUTED)
+    assert {tag: traced[tag] for tag in CROSSING} == {tag: TRACED_LINES[tag] + 1 for tag in CROSSING}
 
 
 @pytest.mark.parametrize(
@@ -859,10 +869,12 @@ def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(
         (": a\n>/dev/null : b\n", {"a": 1, "b": 2}),
         (": a\n</dev/null : b\n", {"a": 1, "b": 2}),
         (": a\n\\\n2>/dev/null : b\n", {"a": 1, "b": 3}),
-        # A command whose first token, an assignment or a redirection, stands before a continuation keeps that token's
-        # line, where Bash's $LINENO gives a later one that varies by version.
+        # A command whose first token, an assignment or a redirection, runs into a continuation keeps that token's
+        # line, where Bash 3.2 and 5.3 trace the line after it (the trace test holds this); with a blank before the
+        # backslash, both trace the token's line too.
+        ("A=1\\\n : x\n", {"x": 1}),
+        (">/dev/null\\\n : x\n", {"x": 1}),
         ("A=1 \\\n: x\n", {"x": 1}),
-        (">/dev/null \\\n: x\n", {"x": 1}),
         # A substitution in an unquoted body after a line its backslash continues, and in a body whose tabs `<<-`
         # strips, keeps its own line.
         ("cat <<EOF\na \\\nb $(: x)\nEOF\n: after\n", {"x": 3, "after": 5}),

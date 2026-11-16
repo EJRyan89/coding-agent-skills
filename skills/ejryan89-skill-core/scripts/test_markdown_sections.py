@@ -260,15 +260,18 @@ def test_an_atx_heading_is_read_as_commonmark_reads_one(line: str, expected: tup
 @pytest.mark.parametrize(
     ("lines", "content"),
     [
-        # A list item's fence: CommonMark takes the item's indentation off each line, and no more.
+        # A list item's fence: up to the item's indentation comes off each line. A line indented less, as "  y",
+        # ends the item under CommonMark, which find_fences does not track, so it is read as the fence's.
         (["1. Step:", "", "   ```bash", "   EOF", "     x", "  y", "   ```"], ["EOF", "  x", "y"]),
         # A fence indented on its own takes up to its indentation off each line.
         (["  ```", "    a", " b", "c", "  ```"], ["  a", "b", "c"]),
         # A blockquote's markers come off first, then the indentation inside it.
         (["> - ```sh", ">   EOF", "> ```"], ["EOF"]),
-        # A tab counts to the next multiple of four, and one that runs past the indentation stays.
+        # A tab counts to the next multiple of four, and one that runs past the indentation gives its columns past
+        # it as spaces, as CommonMark gives a partly consumed tab.
         (["\t```", "\tEOF", "  \tx", "\t```"], ["EOF", "x"]),
-        (["  ```", "\tx", "  ```"], ["\tx"]),
+        (["  ```", "\tx", "  ```"], ["  x"]),
+        (["- ```", "\t\tx", "```"], ["  \tx"]),
     ],
 )
 def test_a_fence_s_content_is_each_line_without_the_indentation_commonmark_takes(

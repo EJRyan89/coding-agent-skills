@@ -4291,3 +4291,26 @@ def test_a_trap_s_action_runs_its_programs_and_exits_with_its_codes(tmp_path: Pa
     )
     write(folder / "scripts" / "run.sh", "#!/usr/bin/env bash\ntrap 'exit 130' INT\necho READY\n")
     assert skill_inventory.status_lines(folder) == []
+
+
+def test_a_partly_consumed_tab_keeps_its_columns_so_an_unstripped_delimiter_leaves_the_body_open(
+    tmp_path: Path,
+) -> None:
+    # The list item takes two columns of the tab before EOF, and CommonMark gives the other two as spaces, which `<<-`
+    # does not strip, so no line closes the here-document.
+    skill = write(
+        tmp_path / "SKILL.md",
+        "- Step:\n"
+        "\n"
+        "  ```bash\n"  # 3
+        "  cat <<-EOF\n"
+        "\tx\n"
+        "\tEOF\n"
+        "  grep y f\n"
+        "  ```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert [line for line in lines if line.startswith("BASH_UNREADABLE ")] == [
+        f"BASH_UNREADABLE {skill.as_posix()} 3 a here-document is still open where the fence ends"
+    ]
+    assert cued_lines(lines, "shell-file-command") == []

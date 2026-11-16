@@ -109,15 +109,19 @@ class Fence:
     def content(self, line: str) -> str:
         """A body line as CommonMark gives it to the fence's content: without the blockquote markers that hold it, and
         without up to `indent` columns of the spaces and tabs that start it, which the fence's own indentation and the
-        list items that hold it take, so an indented fence's here-document delimiter closes its body."""
+        list items that hold it take, so an indented fence's here-document delimiter closes its body. A tab counts to
+        the next multiple of four, and one that runs past `indent` gives the columns past it as spaces, as CommonMark
+        gives a partly consumed tab."""
         line = self.text(line)
-        width = index = 0
-        while index < len(line) and line[index] in MARKDOWN_SPACE:
-            width = indentation(line[: index + 1])
-            if width > self.indent:
-                break
-            index += 1
-        return line[index:]
+        width = 0
+        for index, character in enumerate(line):
+            if width >= self.indent or character not in MARKDOWN_SPACE:
+                return line[index:]
+            following = width + 1 if character == " " else width + 4 - width % 4
+            if following > self.indent:
+                return " " * (following - self.indent) + line[index + 1 :]
+            width = following
+        return ""
 
 
 def is_blank(line: str) -> bool:

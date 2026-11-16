@@ -220,7 +220,9 @@ def trap_action(arguments: list[str]) -> str | None:
     """The script Bash's trap builtin sets to run when a condition fires, given its words after `trap`, as Bash reads
     them: the first operand, after an optional `--`, when a condition follows it; None for a trap given an option,
     -l, -p, or -P, alone or bundled, which lists, and for one whose first operand is the only one, `-`, or an unsigned
-    integer, which each reset the conditions named, as `trap 0 INT` resets the exit and interrupt traps."""
+    integer, which each reset the conditions named, as `trap 0 INT` resets the exit and interrupt traps. An unsigned
+    integer that names no signal, as in `trap 99 INT`, is the action Bash sets; the reader drops it, and it would run a
+    program named by that number, so no cue, print or exit code is lost."""
     if arguments[:1] and arguments[0].startswith("-") and arguments[0] not in {"-", "--"}:
         return None
     operands = arguments[1:] if arguments[:1] == ["--"] else arguments
