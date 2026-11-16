@@ -179,6 +179,10 @@ def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expec
         # the body, as Git Bash reads it, so the git command after it, which Git Bash runs, is read.
         ("cat <<EOF\ngit push", set()),
         ("cat <<EOF\ngit push\nEOF\r\ngit fetch", {"fetch"}),
+        # So does a script with CRLF line ends, whose delimiter word and line each end in a CR, quoted or not.
+        ("cat <<EOF\r\ngit push\r\nEOF\r\ngit fetch\r\n", {"fetch"}),
+        ("cat <<'EOF'\r\ngit push\r\nEOF\r\ngit fetch\r\n", {"fetch"}),
+        ('cat <<"EOF\r"\ngit push\nEOF\r\ngit fetch', {"fetch"}),
     ],
 )
 def test_a_here_document_s_body_is_read_as_data(script: str, expected: set[str]) -> None:
@@ -291,9 +295,9 @@ def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
         git_subcommands.bash_git_subcommands(script, no_powershell)
 
 
-# Bash expands a here-document's body in order and stops at a substitution it cannot read, running none after it and
-# not the command the body is for, while the script goes on, so such a substitution runs nothing and the git commands
-# before it, in the body and around the command, are read.
+# A substitution in a here-document's body that Bash cannot read fails alone when Bash expands the body, so it runs
+# nothing and the git commands around it, in the body and the script, are read; one whose end the body never reaches
+# runs to the body's end, so nothing in the body stands after it.
 @pytest.mark.parametrize(
     ("script", "expected"),
     [
@@ -301,10 +305,51 @@ def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
         ("cat <<EOF\n`git push\nEOF\ngit pull", {"pull"}),
         ("cat <<EOF\n`echo \\` ; git push`\nEOF", set()),
         ('cat <<EOF\n$(git log) $(echo "a) $(git push)\nEOF\ngit pull', {"log", "pull"}),
-        ("cat <<EOF\n$(git log) $(if) $(git push)\nEOF", {"log"}),
+        ("cat <<EOF\n$(git log) $(if) $(git push)\nEOF", {"log", "push"}),
+        ('cat <<EOF\n`if` `echo "a` $(git push)\nEOF', {"push"}),
+        ("cat <<EOF\n$(for ((i = 0; i < 1; i++)) { :; }) $(git push)\nEOF", {"push"}),
     ],
 )
 def test_a_body_s_substitution_bash_cannot_read_runs_nothing(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Bash 5 runs each substitution inside `(( ))`, a for's arithmetic header, and their quoted strings, single or double.
+@pytest.mark.parametrize(
+    "script",
+    [
+        '((x="$(git push)"))',
+        '(( "$(git push)" ))',
+        '(( x = "`git push`" ))',
+        "(( x = '$(git push)' ))",
+        "! (( '$(git push)' ))",
+        'if (( "$(git push)" )); then :; fi',
+        'while (( "$(git push)" )); do break; done',
+        '(( x = "$(echo "))"; git push)" ))',
+        'for (( i="$(git push)"; i < 1; i++ )); do :; done',
+    ],
+)
+def test_a_substitution_in_arithmetic_quoted_or_not_runs(script: str) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == {"push"}
+
+
+# A word only running settles names a subcommand that may be any, and eval or a shell's -c reads none of its text as a
+# script, as Bash would run whatever the substitution prints.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('eval "$(ssh-agent -s)"', set()),
+        ('bash -c "$(cat x)"', set()),
+        ("bash -c `cat x`", set()),
+        ('eval git push "$(date)"', {"push"}),
+        ('git "$(echo push)"', {UNREAD_WORD}),
+        ("git $((1 + 1))", {UNREAD_WORD}),
+        # A special parameter or a `${ }` expansion keeps its text, which no literal subcommand matches either.
+        ('git "$@"', {"$@"}),
+        ('git "${1:-status}"', {"${1:-status}"}),
+    ],
+)
+def test_a_word_only_running_settles_is_never_read_as_script_text(script: str, expected: set[str]) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 

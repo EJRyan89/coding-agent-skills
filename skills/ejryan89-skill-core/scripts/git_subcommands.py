@@ -115,14 +115,16 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     neither runs a command, and a line ends at LF alone.
 
     A script the grammar cannot read raises its BashSyntaxError, and so does the script eval or a shell's -c runs:
-    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs.
+    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs. A word
+    that holds a part only running settles, such as a substitution, is UNREAD_WORD, so a subcommand it names may be
+    any, and a -c script it holds is not read, nor its text in eval's script.
 
     Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
     `source /dev/stdin <<EOF`, is data, so a git command in its body goes unread. No script here writes one."""
     return {
         found
         for command in bash_syntax.simple_commands(text)
-        for found in program_git_subcommands(bash_syntax.command_words(command), read_powershell)
+        for found in program_git_subcommands(bash_syntax.command_words(command, UNREAD_WORD), read_powershell)
     }
 
 
@@ -187,10 +189,14 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
             subcommand = git_client.subcommand(rest)
             return {subcommand} if subcommand else set()
         if head == "eval":
-            return bash_git_subcommands(" ".join(rest), read_powershell)
+            # A word no literal holds stands in eval's script as one word, never as script text of its own.
+            script = " ".join(shlex.quote(word) if word == UNREAD_WORD else word for word in rest)
+            return bash_git_subcommands(script, read_powershell)
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
-            return bash_git_subcommands(rest[index], read_powershell) if index is not None else set()
+            if index is None or rest[index] == UNREAD_WORD:
+                return set()
+            return bash_git_subcommands(rest[index], read_powershell)
         program = program_name(PureWindowsPath(head).name).casefold()
         if program in POWERSHELL_PROGRAMS:
             return startup_git_subcommands(program, rest, read_powershell)

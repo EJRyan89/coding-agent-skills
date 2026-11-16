@@ -684,6 +684,9 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - in PowerShell, an assignment a wrapper hands git through another wrapper, as `env GIT_DIR=<dir> timeout 5 git ...`;
 - a script a shell reads from its standard input, from a here-document or a pipe, as `bash <<'EOF'` or
   `echo '...' | bash`;
+- where a here-document's delimiter line ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere
+  reads as the body, are read as commands, and where they do not parse, the whole command goes unread, the git call
+  after the real delimiter line included;
 
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,

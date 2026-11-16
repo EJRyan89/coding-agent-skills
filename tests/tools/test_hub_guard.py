@@ -3293,10 +3293,21 @@ class UnderstoodSetTests(GuardTestCase):
             f"(( $({switch}) ))",
             f"for (( i = $({switch}); i < 1; i++ )); do :; done",
             f"f() ((1)); {switch}",
+            f'((x="$({switch})"))',
+            f'(( "$({switch})" ))',
+            f'(( x = "`{switch}`" ))',
+            f'if (( "$({switch})" )); then :; fi',
+            f'while (( "$({switch})" )); do break; done',
+            f'(( x = "$(echo "))"; {switch})" ))',
+            f'for (( i="$({switch})"; i < 1; i++ )); do :; done',
         ):
             with self.subTest(script=script):
                 self.assertEqual("deny", self.bash(script, self.tree))
                 self.assertEqual("deny", self.powershell(f"bash -c '{script}'", self.tree))
+        # A single-quoted string there runs its substitution too, in Bash 5.
+        for script in (f"(( x = '$({switch})' ))", f"! (( '$({switch})' ))"):
+            with self.subTest(script=script):
+                self.assertEqual("deny", self.bash(script, self.tree))
 
     def test_a_delimiter_line_ending_in_a_cr_closes_the_body_and_the_git_call_after_it_is_read(self) -> None:
         # Git Bash closes each of these bodies at `EOF<CR>` and runs the git call after it; so does Bash elsewhere
@@ -3306,6 +3317,7 @@ class UnderstoodSetTests(GuardTestCase):
             f"cat <<EOF\nhi\nEOF\r\n{switch}",
             f"cat <<EOF\r\nhi\r\nEOF\r\n{switch}",
             f"cat <<'EOF'\r\nhi\r\nEOF\r\n{switch}",
+            f'cat <<"EOF\r"\nhi\nEOF\r\n{switch}',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))

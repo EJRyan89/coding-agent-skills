@@ -374,6 +374,10 @@ class HereDocumentTests(unittest.TestCase):
         self.assertEqual(('echo ")"; git am',), here.substitutions if here is not None else None)
         self.assertEqual(["$(", '${x:-"a}"}'], [part.text for part in here.expansions] if here is not None else None)
 
+    def test_a_quoted_delimiter_ending_in_a_cr_closes_at_its_line(self) -> None:
+        text = 'cat <<"EOF\r"\nhi\nEOF\r\ngit status'
+        self.assertEqual([["cat"], ["git", "status"]], simple_commands(parse(text)))
+
     def test_a_script_with_crlf_line_ends_closes_each_body_at_its_delimiter_line(self) -> None:
         # Bash reads the word as `EOF<CR>` and the line as `EOF<CR>`, and Git Bash drops both CRs, so either way the
         # body closes there and the command after it runs; quoted or not.
@@ -568,6 +572,26 @@ class ArithmeticCommandTests(unittest.TestCase):
         self.assertEqual([["echo", '"))"'], ["git", "status"]], simple_commands(parse('((echo "))"; git status) )')))
         self.assertEqual([["echo", "'))'"], ["git", "status"]], simple_commands(parse("((echo '))'; git status) )")))
 
+    def test_a_quoted_string_in_double_parentheses_keeps_its_substitutions(self) -> None:
+        # Bash 5 runs a substitution inside either quote there, a `))` inside a nested one's quotes included.
+        for text, found in (
+            ('((x="$(git am)"))', ("git am",)),
+            ("(( x = '$(git am)' + `git log` ))", ("git am", "git log")),
+            ('(( x = "$(echo "))"; git am)" ))', ('echo "))"; git am',)),
+            ('(( x = "\\"$(git am)" ))', ("git am",)),
+            ('(( x = "$(( $(git am) ))" ))', ("git am",)),
+        ):
+            with self.subTest(text=text):
+                command = parse(text).items[0][0].first.commands[0]
+                assert isinstance(command, bash_syntax.Arithmetic)
+                self.assertEqual(found, command.expression.substitutions)
+
+    def test_an_unclosed_quote_in_double_parentheses_falls_back_to_subshells_and_bash_refuses_both(self) -> None:
+        text = '(( echo "a ))'
+        bash_agreement.assert_reader_agrees([text])
+        with self.assertRaisesRegex(BashSyntaxError, "^a double quote is not closed$"):
+            bash_syntax.parse(text)
+
     def test_an_arithmetic_command_is_a_function_s_body(self) -> None:
         tree = parse("f() ((1)); function g ((2)); git status")
         commands = [item[0].first.commands[0] for item in tree.items[:2]]
@@ -614,13 +638,23 @@ def test_simple_commands_read_every_command_bash_may_run_from_its_program(text: 
     assert found == expected
 
 
-def test_a_body_s_substitution_bash_cannot_read_runs_nothing_and_stops_the_body() -> None:
+def test_a_body_s_substitution_bash_cannot_read_runs_nothing_alone() -> None:
+    # One whose end the body never reaches runs to the body's end, so nothing in the body stands after it.
     text = 'cat <<EOF\n$(git log) $(echo "a) $(git am)\nEOF\ngit status'
     bash_agreement.assert_reader_agrees([text])
     found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
     assert found == [["cat"], ["git", "log"], ["git", "status"]]
-    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands("cat <<EOF\n$(if)\nEOF")]
-    assert found == [["cat"]]
+    # One Bash cannot parse fails alone, and those after it run.
+    text = "cat <<EOF\n$(if) `fi` $(git am)\nEOF"
+    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
+    assert found == [["cat"], ["git", "am"]]
+
+
+def test_command_words_mark_only_a_word_whose_part_names_its_form_alone_as_unsettled() -> None:
+    text = "git \"$@\" ${x:-y} $t x$(a) `b` <(c) $((1)) $'\\n' 'q'"
+    bash_agreement.assert_reader_agrees([text])
+    found = bash_syntax.command_words(bash_syntax.simple_commands(text)[0], "?")
+    assert found == ["git", "$@", "${x:-y}", "$t", "?", "?", "?", "?", "?", "q"]
 
 
 @pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`"])

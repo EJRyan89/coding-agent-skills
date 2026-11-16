@@ -40,7 +40,8 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   `git push<CR>` is read as git's push and `a<CR>b` as two words.
 - A here-document's delimiter line is compared without the CRs that end it, as Git Bash on Windows compares it, so
   `EOF<CR>` closes the body there, and the lines after it are read as the commands Git Bash runs; Bash elsewhere keeps
-  the CR and reads them as body text, running none of them. A delimiter word written before a CR, as in a script with
+  the CR and reads them as body text, running none of them. Where those lines do not parse, the whole command goes
+  unread, the git call after the real delimiter line included. A delimiter word written before a CR, as in a script with
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
 - An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
 """
@@ -106,10 +107,11 @@ DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "
 # What may follow a function's name and `()`: a compound command, as Bash requires of a function's body.
 FUNCTION_BODIES = frozenset({"{", "if", "while", "until", "for", "select", "case", "[["})
 SPECIAL_PARAMETERS = frozenset("@*#?$!-0123456789")
+# The texts of the "dynamic" parts that name only their form, never the text they stand for: a command or process
+# substitution, arithmetic, an ANSI-C string holding an escape, and an array assignment's value.
+FORM_ONLY = frozenset({"$(", "`", "<(", ">(", "$((", "$'", "(", "(("})
 # What a double quote's backslash escapes; before any other character the backslash is kept.
 DOUBLE_QUOTED_ESCAPES = frozenset('$`"\\\n')
-# A quoted string from its opening quote: a single-quoted one to the next quote, a double-quoted one past escapes.
-QUOTED_STRING = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.DOTALL)
 
 
 class BashSyntaxError(ValueError):
@@ -428,7 +430,8 @@ class Lexer:
                 while not document.quoted and escapes_its_end(line) and self.index < len(self.text):
                     line = line[:-1] + self.next_line()
                 compared = line.lstrip("\t") if document.strip_tabs else line
-                if compared.rstrip("\r") == document.delimiter:
+                delimiter = document.delimiter
+                if compared == delimiter or compared.rstrip("\r") == delimiter.rstrip("\r"):
                     break
                 lines.append(compared)
             document.body = "\n".join(lines)
@@ -668,7 +671,8 @@ class Lexer:
 
     def arithmetic(self, start: int, quotes: bool = False) -> list[str]:
         """The substitutions in arithmetic from start to the `))` that closes it, read past; with quotes set, as Bash
-        reads `(( ))`, a quoted string's parentheses are text, so `((echo "))"; x) )` closes nothing."""
+        reads `(( ))`, a quoted string's parentheses are text, so `((echo "))"; x) )` closes nothing, while each
+        substitution in it, single-quoted or double-quoted, still runs, as Bash 5 expands it."""
         found: list[str] = []
         depth = 0
         self.index = start
@@ -677,10 +681,7 @@ class Lexer:
             if not character:
                 raise BashSyntaxError("an arithmetic expansion is not closed")
             if quotes and character in "'\"":
-                closing = QUOTED_STRING.match(self.text, self.index)
-                if closing is None:
-                    raise BashSyntaxError("a quote in an arithmetic command is not closed")
-                self.index = closing.end()
+                found.extend(self.arithmetic_quote(character))
             elif character == "$" and self.peek(1) == "(" and self.peek(2) != "(":
                 found.append(self.balanced(self.index + 2))
             elif character == "`":
@@ -695,6 +696,30 @@ class Lexer:
                 return found
             else:
                 depth -= character == ")"
+                self.index += 1
+
+    def arithmetic_quote(self, quote: str) -> list[str]:
+        """The substitutions in the quoted string at the index inside `(( ))`, read past its closing quote: Bash 5
+        takes the quotes there for text that keeps parentheses apart, and expands the `$( )`, `$(( ))`, and backquotes
+        inside either kind; a backslash escapes the next character only between double quotes."""
+        found: list[str] = []
+        self.index += 1
+        while True:
+            character = self.peek()
+            if not character:
+                raise BashSyntaxError("a quote in an arithmetic command is not closed")
+            if character == quote:
+                self.index += 1
+                return found
+            if character == "\\" and quote == '"':
+                self.index += 2
+            elif self.text.startswith("$((", self.index):
+                found.extend(self.arithmetic(self.index + 3))
+            elif self.text.startswith("$(", self.index):
+                found.append(self.balanced(self.index + 2))
+            elif character == "`":
+                found.append(self.backquoted())
+            else:
                 self.index += 1
 
     def braced(self, parts: list[Part], substitutions: list[str], quoted: bool) -> None:
@@ -798,8 +823,8 @@ def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
             else:
                 lexer.index += 1
         except BashSyntaxError:
-            # Bash expands the body in order and stops at an expansion it cannot read, failing the command the body
-            # is for, so the expansions after it run nothing.
+            # An expansion whose end the body never reaches, as `$(echo "a)` is, runs to the body's end, as Bash
+            # reads it, so no expansion stands after it.
             break
     return found, lexer.assigned, parts
 
@@ -1179,14 +1204,13 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
 
 
 def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Simple]:
-    """The commands an unquoted here-document's substitutions run, in order: Bash expands the body only when the
-    command it is for runs, and stops at a substitution it cannot read, running none after it, the command
-    included, while the rest of the script goes on, so that substitution runs nothing rather than refusing the text."""
+    """The commands an unquoted here-document's substitutions run: a substitution Bash cannot read fails alone, as it
+    does when Bash expands the body, so it runs nothing, and those after it are read, rather than refusing the text."""
     for text in substitutions:
         try:
             tree = parse(text)
         except BashSyntaxError:
-            return
+            continue
         yield from _tree_commands(tree)
 
 
@@ -1211,10 +1235,18 @@ def word_text(word: Word) -> str:
     return "".join(texts.get(part.kind, "") + part.text for part in word.parts)
 
 
-def command_words(command: Simple) -> list[str]:
+def command_words(command: Simple, unsettled: str | None = None) -> list[str]:
     """The words of a simple command from its program's name, each as word_text gives it: past the assignments Bash
-    reads before the name, which run nothing; empty for a command of assignments and redirections alone."""
+    reads before the name, which run nothing; empty for a command of assignments and redirections alone. Given
+    `unsettled`, a word holding a part whose text names only its form, FORM_ONLY, such as a substitution, is that
+    text instead, for a reader that must not read such a word's text as a script; a special parameter or a `${ }`
+    expansion keeps its text."""
     words = list(command.words)
     while words and words[0].assignment is not None:
         words.pop(0)
-    return [word_text(word) for word in words]
+    return [
+        unsettled
+        if unsettled is not None and any(part.kind == "dynamic" and part.text in FORM_ONLY for part in word.parts)
+        else word_text(word)
+        for word in words
+    ]
