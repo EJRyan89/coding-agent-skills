@@ -735,8 +735,8 @@ with or without a git call, since what the body runs after it is not read. What 
 - a backquote's body inside text the grammar refuses, which it never reads, so a case pattern in it is not marked;
 - a here-document inside `$( )` whose body holds a `)` no `(` opens, as `x=$(cat <<'EOF'` with `) ; git push` on its
   next line, which Bash 3.2 reads as the substitution's end;
-- a git call in a substitution that is a compound command's command word, as `cd <hub> && { $(git push); }`, which is
-  placed in a directory the text does not settle.
+- a git call in a substitution that is the whole command inside a group, subshell, `if`, or loop, as
+  `cd <hub> && { $(git push); }`, which is placed in a directory the text does not settle.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session
