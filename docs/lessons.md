@@ -530,6 +530,10 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_bash_line_ends_at_lf_alone`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_script_the_grammar_refuses_raises_its_error`,
   `tests/tools/test_bash_syntax.py::test_simple_commands_read_every_command_bash_may_run_from_its_program`,
+  `tests/tools/test_bash_syntax.py::test_a_function_is_named_only_by_a_word_bash_defines_it_by`,
+  `tests/validation/test_shell_readers.py::test_shell_command_extraction_reads_bash_as_the_grammar_reads_it`, which
+  holds validation's shell command reader to the grammar's reading of a here-document's body, a comment, arithmetic,
+  and a function's arguments,
   `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
   which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured

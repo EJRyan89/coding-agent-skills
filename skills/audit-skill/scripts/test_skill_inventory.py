@@ -2881,8 +2881,8 @@ class RuntimeSupportTests(SourceTreeTestCase):
             skill_inventory.own_needs(skill.parent)
 
     def test_a_bash_script_the_grammar_refuses_fails_the_runtime_derivation(self) -> None:
-        # Bash runs none of a script it refuses, so its git commands cannot be read, and reading none would pass a
-        # skill whose script reaches a remote.
+        # Bash runs the lines before a syntax error, so its git commands cannot be trusted as read, and reading none
+        # would pass a skill whose script reaches a remote.
         for text in ("git fetch\nif true; then\n", "eval 'git push \"'\n"):
             with self.subTest(text=text):
                 skill = self.skill("Body.\n", self.full())
@@ -2893,6 +2893,18 @@ class RuntimeSupportTests(SourceTreeTestCase):
                     str(raised.exception),
                     rf"^cannot read {re.escape(script.as_posix())}: not Bash the grammar reads \(",
                 )
+
+    def test_a_powershell_script_whose_bash_shell_runs_bash_the_grammar_refuses_fails_naming_it(self) -> None:
+        # The -c script a PowerShell script's Bash shell runs is read as Bash, so one the grammar refuses fails the
+        # derivation as a Bash script does, naming the PowerShell script it stands in.
+        skill = self.skill("Body.\n", self.full())
+        script = write(skill.parent / "scripts" / "update.ps1", "bash -c 'git fetch; if true; then'\n")
+        with self.assertRaises(skill_inventory.InputError) as raised:
+            skill_inventory.own_needs(skill.parent)
+        self.assertEqual(
+            f"cannot read {script.as_posix()}: a Bash script it runs is not Bash the grammar reads (expected `fi`)",
+            str(raised.exception),
+        )
 
     def test_a_partial_declaration_naming_the_lack_is_not_overclaimed(self) -> None:
         partial = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}

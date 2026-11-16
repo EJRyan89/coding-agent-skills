@@ -3152,7 +3152,7 @@ class BashReader:
             self.read_words([node.word, *node.patterns], directory)
         if isinstance(node, bash_syntax.Arithmetic):
             self.read_words([node.expression], directory)
-        for body in command_bodies(node):
+        for body in bash_syntax.command_bodies(node):
             self.read_list(body, inside)
         if moves and not isinstance(node, bash_syntax.Subshell):
             return certain(UNKNOWN)
@@ -3522,20 +3522,6 @@ def gh_flag_with_value(word: str) -> bool:
 DESCRIPTOR_TARGET = re.compile(r"[0-9]+-?|-")
 
 
-def command_bodies(node: bash_syntax.Command) -> list[bash_syntax.CommandList]:
-    """The lists a compound command runs, its conditions included."""
-    if isinstance(node, (bash_syntax.Subshell, bash_syntax.Group)):
-        return [node.body]
-    if isinstance(node, bash_syntax.If):
-        lists = [each for clause in node.clauses for each in clause]
-        return [*lists, node.otherwise] if node.otherwise is not None else lists
-    if isinstance(node, bash_syntax.Loop):
-        return [node.condition, node.body] if node.condition is not None else [node.body]
-    if isinstance(node, bash_syntax.Case):
-        return list(node.branches)
-    return []
-
-
 def changes_directory(node: object) -> bool:
     """Whether a compound command holds a command that may change the shell's directory: cd, pushd, or popd, a builtin
     BUILTINS_NOT_FOLLOWED names, a function definition, or a command whose name the text does not settle."""
@@ -3550,7 +3536,9 @@ def changes_directory(node: object) -> bool:
         return any(changes_directory(pipeline) for pipeline in (node.first, *(each for _, each in node.rest)))
     if isinstance(node, bash_syntax.Pipeline):
         return any(changes_directory(command) for command in node.commands)
-    return isinstance(node, bash_syntax.Command) and any(changes_directory(body) for body in command_bodies(node))
+    return isinstance(node, bash_syntax.Command) and any(
+        changes_directory(body) for body in bash_syntax.command_bodies(node)
+    )
 
 
 def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:

@@ -119,7 +119,7 @@ It reads the agent definition of each subagent type a skill names, from `agents/
 
 Ask why a finding holds, and it names the guidance the finding's check derives from: the published page and the passage of it the check rests on, or the decision of this source where no page governs the check. Every check has its source in the skill's `references/provenance.json`, which its suite holds to the checks its script can report, and which this repository's audit reads against the live pages after each release.
 
-It reads the commands a skill's PowerShell scripts run, and those a Bash script starts PowerShell on, with PowerShell 7's own parser, so auditing such a skill needs `pwsh`. Without it the audit stops with `FAILED cannot read a PowerShell script's commands: pwsh was not found`.
+It reads the commands a skill's PowerShell scripts run, and those a Bash script starts PowerShell on, with PowerShell 7's own parser, so auditing such a skill needs `pwsh`. Without it the audit stops with `FAILED cannot read a PowerShell script's commands: pwsh was not found`. It reads Bash through the grammar validation reads it by, so a Bash script that grammar refuses, as Bash would refuse it, stops the audit in a source tree with `FAILED cannot read <script>: not Bash the grammar reads (<reason>)`, and a PowerShell script whose Bash shell runs such a script with `FAILED cannot read <script>: a Bash script it runs is not Bash the grammar reads (<reason>)`.
 
 ```text
 /audit-skill repo-cleanup
