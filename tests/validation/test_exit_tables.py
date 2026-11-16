@@ -336,7 +336,7 @@ def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_
     # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
     # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder. A pass
     # follows only one in which a caller reached a scope after a read asked its callers, so a shape with no such caller
-    # reads in one, and each relay found late takes one more. The reader takes at most 619 steps on these, so a reader
+    # reads in one, and each relay found late takes one more. The reader takes at most 645 steps on these, so a reader
     # that loops fails at 1,000.
     tree = ast.parse(f"{HEADER}{body}")
     functions = sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
