@@ -5747,6 +5747,14 @@ PRESENCE_HANDLED = {
         "import contextlib\n\nERRORS = (OSError,)\n\n\ndef f(p):\n    with contextlib.suppress(ERRORS):\n"
         "        return p.read_bytes()\n    return b''\n"
     ),
+    "a suppress a nested function reaches through a name that shadows it": (
+        "import contextlib\n\n\ndef f(p):\n    quiet = contextlib.suppress(OSError)\n    handler = quiet\n\n"
+        "    def g():\n        quiet = handler\n        with quiet:\n            return p.stat()\n\n    return g\n"
+    ),
+    "a suppress a function reaches through a name that shadows one at the module's level": (
+        "import contextlib\n\nquiet = contextlib.suppress(OSError)\nhandler = quiet\n\n\ndef g(p):\n"
+        "    quiet = handler\n    with quiet:\n        return p.stat()\n"
+    ),
     "a read in the items a suppress of OSError precedes": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(OSError), open(p) as h:\n"
         "        return h.read()\n    return None\n"
@@ -7109,9 +7117,10 @@ def test_presence_policy_refuses_each_empty_answer_form(text: str, refused: bool
 
 
 # A chain of names, each reading the one before, under a test the presence policy reads: each name bound two ways, as
-# `a1 = a0` and `a1 = not a0`; each bound once and reading the one before twice, as `a1 = a0 and a0`; and each a
-# conditional expression whose arms both read the one before, around a with the handler reader asks whether it
-# suppresses. A walk that followed each path through the names read the first name once per path, 2 to the power of
+# `a1 = a0` and `a1 = not a0`; each bound once and reading the one before twice, as `a1 = a0 and a0`; each bound two
+# ways to a copy of the one before, as `a1 = list(a0)` and `a1 = sorted(a0)`, under an `any` that reads what it holds;
+# and each a conditional expression whose arms both read the one before, around a with the handler reader asks whether
+# it suppresses. A walk that followed each path through the names read the first name once per path, 2 to the power of
 # the chain's length; read once per question for each truth, or for each scope, the reads grow with the chain.
 PRESENCE_CHAIN_LINKS = 16
 PRESENCE_CHAINS = {
@@ -7124,6 +7133,11 @@ PRESENCE_CHAINS = {
         "    a{name} = a{before} and a{before}\n",
         "    if a{last} and not file_presence.is_present(p, other_is_absent=True):\n        raise OSError(p)\n",
         1,
+    ),
+    "each name a copy of the one before, bound two ways": (
+        "    if c:\n        a{name} = list(a{before})\n    else:\n        a{name} = sorted(a{before})\n",
+        "    if any(a{last}):\n        raise OSError(p)\n",
+        0,
     ),
     "each name a conditional expression of the one before": (
         "    a{name} = a{before} if c else a{before}\n",
@@ -7156,6 +7170,7 @@ def test_presence_policy_reads_each_name_of_a_chain_once_per_question(link: str,
         tempfile.TemporaryDirectory() as temporary,
         mock.patch.object(reader, "_name_polarities", counted(reader._name_polarities)),
         mock.patch.object(reader, "_there", counted(reader._there)),
+        mock.patch.object(reader, "_items", counted(reader._items)),
         mock.patch.object(handlers, "suppress", counted(handlers.suppress)),
     ):
         root = Path(temporary)
@@ -7166,10 +7181,12 @@ def test_presence_policy_reads_each_name_of_a_chain_once_per_question(link: str,
     assert len(found) == refused, found
 
 
-# A name that leads back to itself, around a loop, keeps the answer it had when each path stopped at a name it had
-# read: what the name's own truth turns on, read again, adds nothing, whether it leads back through itself or another
-# name. One that leads back to itself negated, as `found = not found`, turns on the test's other answer too, which a
-# path that stopped at the name it had read under the other truth never read.
+# A name that leads back to itself keeps the answer it had when each path stopped at a name it had read, where the
+# reading cannot change on the way: what the name's own truth turns on, read again, adds nothing, whether it leads back
+# through itself or another name. Three readings a path that stopped at a name it had read under another reading never
+# made now turn on a test: a name bound to its own negation, as `found = not found`, in a loop or not, and a name that
+# is the test of a conditional expression bound to it, as `found = c if found else c`, read at the other truth; and a
+# name read for what it holds under its own reading for its truth, as `found = all(found)`, whose items are read.
 PRESENCE_CYCLES = {
     "a name read again in its own binding, refusing on its False": (
         "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = found and c\n"
@@ -7200,6 +7217,28 @@ PRESENCE_CYCLES = {
         "    a = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        b = a\n        a = b\n"
         "    if a:\n        raise OSError(p)\n",
         False,
+    ),
+    "a name bound to its own negation in straight-line code, refusing on its truth": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    found = not found\n"
+        "    if found:\n        raise OSError(p)\n",
+        True,
+    ),
+    "a name the test of a conditional expression bound to it, refusing on its truth": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    found = c if found else c\n"
+        "    if found:\n        raise OSError(p)\n",
+        True,
+    ),
+    "a name bound to an all of its own items, refusing on its False": (
+        "    found = [\n        file_presence.is_present(p, other_is_absent=True),\n"
+        "        file_presence.is_present(p.parent, other_is_absent=True),\n    ]\n    found = all(found)\n"
+        "    if not found:\n        raise OSError(p)\n",
+        True,
+    ),
+    "a name bound through another to an all of its own items, refusing on its False": (
+        "    found = [\n        file_presence.is_present(p, other_is_absent=True),\n"
+        "        file_presence.is_present(p.parent, other_is_absent=True),\n    ]\n    ok = all(found)\n"
+        "    found = ok\n    if not found:\n        raise OSError(p)\n",
+        True,
     ),
     "a name bound to its own negation, refusing on its truth": (
         "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = not found\n"

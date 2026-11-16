@@ -945,7 +945,9 @@ def resolve_problems(root: Path, files: list[Path]) -> list[str]:
 # `assert (yield msg)`; a `case None:`, read as taking every false answer, as it takes a search that found nothing,
 # though it never matches a False; and a match on
 # a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
-# whose pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence
+# whose pattern is an `|` of sequence patterns, which reads no item's truth. A parameter's default is read in its own
+# function's scope, where Python evaluates it in the scope around, so a suppress given as `def g(quiet=quiet):` leads
+# back to its own name and is not read. The link tests are no presence
 # predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed
 # stat through.
 PRESENCE_PREDICATES = frozenset(
@@ -5007,7 +5009,8 @@ def time_option_problems(root: Path, files: list[Path]) -> list[str]:
 # raises PersistenceError. A handler around a call of one, directly or through a repository function that lets part
 # of the family escape, that catches part of the family or the call's OSError catches all of it, or the scope states
 # why in a module-level CONTENT_ERRORS_ALLOWED = {scope: reason}; a function the allowance names lets no family
-# escape, for one that cannot meet bad content.
+# escape, for one that cannot meet bad content. A stated limit: a module tuple that names another tuple more than once
+# is read once per mention, so tuples nested that way many levels deep cost exponentially.
 CONTENT_ERRORS = "CONTENT_ERRORS"
 CONTENT_READERS = "CONTENT_READERS"
 CONTENT_ERRORS_ALLOWANCE = "CONTENT_ERRORS_ALLOWED"

@@ -685,7 +685,8 @@ removed fails validation until its pattern follows it.
   reads each name once per question for each truth and each reading of what it holds,
   `tests.validation.python_checks:_PresenceReader._there`, once for each truth, and
   `tests.validation.python_checks:_Handlers.suppress`, once for each depth of scopes, since what a name gives depends
-  only on that state; a name bound to its own negation is read at both truths, which such a loop gives it
+  only on that state; a name bound to its own negation is read at both truths, since that binding gives the name the
+  truth opposite to the one it read
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
