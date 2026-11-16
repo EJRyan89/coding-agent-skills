@@ -1098,7 +1098,7 @@ def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Refe
     only on the module, never on the expression asked about, so the walk is kept on the resolver and a later call
     reads each value it has read again from what it kept."""
     # A walk an exception left part way through is dropped, not kept with values it never finished.
-    walk = resolver.walk or _ReferenceWalk(resolver)
+    walk = resolver.walk if resolver.walk is not None else _ReferenceWalk(resolver)
     resolver.walk = None
     found = walk.references(node)
     resolver.walk = walk
@@ -1148,16 +1148,15 @@ class _ReferenceWalk:
     def _enter(self, value: ast.expr) -> None:
         key = id(value)
         self.order[key] = self.low[key] = len(self.order)
+        # The value's group is the values entered from here on that are still unfinished when it is read.
+        place = len(self.stack)
         self.stack.append(key)
         self.reading.append(key)
         self.found[key] = self._read(value)
         self.reading.pop()
         if self.low[key] == self.order[key]:
-            while True:
-                member = self.stack.pop()
-                self.finished.add(member)
-                if member == key:
-                    break
+            self.finished.update(self.stack[place:])
+            del self.stack[place:]
 
     def _read(self, value: ast.expr) -> list[Reference]:
         if isinstance(value, ast.Call | ast.Subscript):

@@ -576,6 +576,19 @@ class SkillScriptsFixtures(unittest.TestCase):
         # A module that only hands a runner on starts a process all the same.
         self.assertTrue(CommandReader(ast.parse("import subprocess\nRUNNERS = [subprocess.run]\n")).starts_process())
 
+    def test_command_reader_finds_a_runner_behind_any_binding_of_a_name(self) -> None:
+        # The binding read first is a name that leads to no runner; the runner lies behind the other binding, which
+        # the walk still has to read.
+        script = (
+            "import subprocess\nimport threading\ndef rebound(flag):\n    other = len\n    start = subprocess.run\n"
+            "    if flag:\n        start = other\n    return threading.Thread(target=start)\n"
+        )
+        path = "skills/alpha/scripts/tool.py"
+        self.assertEqual(
+            [unreadable(path, 8, "the program `start` runs, which the module hands on as a value")],
+            CommandReader(ast.parse(script)).problems(path),
+        )
+
     def test_command_reader_follows_each_name_of_a_rebound_loop_variable_once(self) -> None:
         # A walk that kept a set of the names it had followed for each path followed `start` once per order the
         # branches that rebind it from itself can run in: eight branches made hundreds of thousands of reads. Followed

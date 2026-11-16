@@ -1128,6 +1128,9 @@ def test_resolved_references_keep_their_walk_on_the_resolver_unless_it_stops() -
     resolver = CallableResolver(tree)
     read = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "node"][-1]
     expected = resolved_references(read, resolver)
+    # A finished question leaves no value waiting for its group, so the next one starts from an empty stack.
+    assert resolver.walk is not None
+    assert resolver.walk.stack == []
     calls: list[ast.expr] = []
     bound_values = validation_support.bound_values
 
@@ -1169,6 +1172,11 @@ def test_resolved_references_keep_their_walk_on_the_resolver_unless_it_stops() -
             [("os", ""), ("os.path", "path"), ("", "path"), ("os.sep", "sep"), ("", "sep")],
             id="bindings that lead back to each other name one step each",
         ),
+        pytest.param("found = found\nfound.path", [("", "path")], id="a receiver bound to nothing it names"),
+        pytest.param(
+            "found = found\ngetattr(found, 'path')", [("", "path")], id="a lookup's receiver bound to nothing it names"
+        ),
+        pytest.param("from builtins import open as opener\nopener", [("open", "")], id="a name for a builtin"),
     ],
 )
 def test_resolved_references_name_each_binding_outside_a_loop_that_leads_back(
@@ -1177,6 +1185,13 @@ def test_resolved_references_name_each_binding_outside_a_loop_that_leads_back(
     tree = ast.parse("import os\n" + source)
     references = resolved_references(last_expression(tree), CallableResolver(tree))
     assert [(reference.name, reference.attribute) for reference in references] == expected
+
+
+def test_resolved_references_read_a_name_from_outside_the_module_as_naming_nothing() -> None:
+    tree = ast.parse("import os\nos\n")
+    outside = last_expression(ast.parse("os\n"))
+    references = resolved_references(outside, CallableResolver(tree))
+    assert [(reference.name, reference.attribute) for reference in references] == [("", "")]
 
 
 def test_resolved_references_drop_builtins_and_read_a_getattr_of_a_constant_name() -> None:

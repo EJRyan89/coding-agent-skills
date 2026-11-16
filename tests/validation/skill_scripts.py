@@ -1133,7 +1133,7 @@ class CommandReader:
                 continue
             seen.add(id(current))
             owner = scope.owner(current.id)
-            values = owner.bindings.get(current.id, []) if owner is not None else []
+            values = owner.bindings[current.id] if owner is not None else []
             pending += [value for value in values if isinstance(value, (ast.Name, ast.Attribute))]
         return False
 
