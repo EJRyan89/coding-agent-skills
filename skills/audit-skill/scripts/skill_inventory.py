@@ -130,12 +130,12 @@ that runs a file command starts on, so a here-document's body, a comment, and a 
 command after a continuation is placed on its own line; an untagged fence is read so when the grammar reads it, and
 holds no Bash otherwise. A fence of any other shell, console, fish, cmd, or PowerShell, places the cue on each line
 whose first word, after any `$ ` or `> ` prompt, names a file command, in any case in a cmd or PowerShell fence and as
-written in a console or fish fence, as each shell finds a command; a console fence that holds a `$ ` prompt line reads
-only those lines and the `> ` lines that continue them, the rest being output, and one with none is read whole. A
-fence of any other language holds none. A Bash script given to scan is read whole the same way.
-BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its first, that
-the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose commands are
-read.
+written in a console or fish fence, as it reads a Bash fence; a console fence that holds a `$ ` prompt line reads only
+those lines and the lines that continue them, after a backslash or with a `> ` prompt, the rest being output, and one
+with none is read whole. A fence of any other language holds none. A Bash script given to scan is read whole the
+same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
+first, that the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose
+commands are read.
 
 Deterministic prose: besides the cost cues, scan names prose a script should replace, each a CUE line:
 assembled-arguments (a flag chosen per printed line or value), parsed-output (output split, grouped, or renamed by a
@@ -373,6 +373,8 @@ PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
 # A session's prompt, which starts a command line, and the prompt Bash shows on each line that continues it.
 SESSION_PROMPT = re.compile(r"\A[ \t]*\$ ")
 CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
+# A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
+CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
 # The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
 BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
@@ -1971,18 +1973,22 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
 def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
     """The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
     each line as CommonMark gives it to the fence's content. A SESSION_FENCES fence that holds a line starting with a
-    `$ ` prompt, after its blanks, runs only those lines and the `> ` lines that follow one, which Bash prompts for a
-    command's continuation; any other line is output, whatever its first word. One with no such line is read whole: no
-    prompt tells a command from output there, and a fence labelled so may hold commands alone, which a model runs, so
-    a line of output is a candidate the audit vets. A `> ` line of output right after a command line, as diff prints
-    one, reads as a continuation, which only running the session would settle. The other labels name a script, each
-    line of which runs. A first word is matched in any case in an ANY_CASE_FENCES fence, and as written otherwise."""
+    `$ ` prompt, after its blanks, runs only those lines and their continuations: a line after one that ends in a
+    backslash, with or without the `> ` prompt Bash shows there, as Pygments' console lexer reads it, and a `> ` line
+    after one, which Bash prompts for a command that is not yet complete. Any other line is output, whatever its first
+    word. One with no such line is read whole: no prompt tells a command from output there, and a fence labelled so
+    may hold commands alone, which a model runs, so a line of output is a candidate the audit vets. A `> ` line of
+    output right after a command line, as diff prints one, reads as a continuation, and so does a line after a
+    backslash that ends a quoted string's line, which only running the session would settle. A here-document's body,
+    which Bash also prompts for with `> `, reads as a command too. The other labels name a script, each line of which
+    runs. A first word is matched in any case in an ANY_CASE_FENCES fence, and as written otherwise."""
     contents = [(index, fence.content(lines[index])) for index in fence.body()]
     label = fence.language.casefold()
     if label in SESSION_FENCES and any(SESSION_PROMPT.match(text) for _, text in contents):
-        commands, prompted = [], False
+        commands, prompted, continued = [], False, False
         for index, text in contents:
-            prompted = bool(SESSION_PROMPT.match(text) or (prompted and CONTINUATION_PROMPT.match(text)))
+            prompted = bool(continued or SESSION_PROMPT.match(text) or (prompted and CONTINUATION_PROMPT.match(text)))
+            continued = prompted and CONTINUED_LINE.search(text) is not None
             if prompted:
                 commands.append((index, text))
         contents = commands

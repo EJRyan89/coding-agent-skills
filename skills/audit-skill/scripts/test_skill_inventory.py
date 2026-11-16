@@ -4174,9 +4174,18 @@ def test_a_console_fence_with_a_prompt_reads_its_prompted_and_continuation_lines
         "$ Cat x\n"  # 8: Bash matches a command's name as written
         "done\n"
         "> cat z\n"  # 10: a `> ` line after output is output too
+        "$ cat a | \\\n"  # 11
+        "  grep b\n"  # 12: a line after a backslash continues the command, with no `> ` prompt
+        "grep c\n"  # 13: output once the command ends
+        "$ echo \\\\\n"  # 14: an escaped backslash continues nothing
+        "head d\n"
+        "$ echo b |\n"
+        "  > cat y\n"  # 17: a `> ` prompt after blanks
+        "output ends in C:\\\n"  # a backslash ending output continues no command
+        "cat w\n"
         "```\n",
     )
-    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [6, 7]
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [6, 7, 11, 12, 17]
 
 
 def test_a_console_fence_without_a_prompt_reads_every_line_and_each_shell_matches_as_it_finds_a_program(
@@ -4197,9 +4206,14 @@ def test_a_console_fence_without_a_prompt_reads_every_line_and_each_shell_matche
         "```\n"
         "```powershell\n"
         "Cat x\n"  # 13
+        "```\n"
+        "```console\n"
+        "$HOME/bin/tool x\n"  # a `$` with no space after it is no prompt
+        "$\n"
+        "cat x\n"  # 18: so this fence is read whole
         "```\n",
     )
-    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 7, 10, 13]
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 7, 10, 13, 18]
 
 
 @pytest.mark.parametrize(
