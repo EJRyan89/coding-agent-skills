@@ -9,6 +9,8 @@ import ast
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -43,6 +45,117 @@ def script(docstring: str, body: str = MAIN, header: str = HEADER) -> str:
 
 def test_an_entry_point_whose_table_names_exactly_its_codes_passes() -> None:
     assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}")}) == []
+
+
+def test_a_local_that_rebinds_itself_from_itself_is_read_once() -> None:
+    # The value reads its own name, so it leads back to itself: a reader with no set of the values it had read
+    # followed it until Python's recursion limit. Read once, it names 0 and 3.
+    body = (
+        "def main(flag) -> int:\n    argparse.ArgumentParser().parse_args()\n    code = 0\n"
+        "    code = code if flag else 3\n    return code\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}  3  a third\n", body)}) == []
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)}) == [
+        'tools/tool.py can exit 3, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
+    ]
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        pytest.param("handler = {'a': one}\n    handler = handler['a']", id="a subscript of itself"),
+        pytest.param("handler = {'a': one}\n    handler = handler.get('a')", id="a get on itself"),
+        pytest.param("handler = one\n    handler = handler", id="itself"),
+    ],
+)
+def test_a_called_local_that_rebinds_itself_from_itself_is_read_once(rebinding: str) -> None:
+    # The called name reads its own value back, so a reader with no set of the values it had read followed it until
+    # Python's recursion limit. Read once, it names one(), which exits 3.
+    body = (
+        f"def one() -> int:\n    return 3\ndef main() -> int:\n    argparse.ArgumentParser().parse_args()\n"
+        f"    {rebinding}\n    return handler()\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    table = "Exit status:\n  1  a last line FAILED <reason>\n  2  a usage error\n  3  a third\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == []
+
+
+def test_a_called_parameter_given_the_same_argument_from_another_scope_is_read_again() -> None:
+    # k reaches itself through f and g, each passing its own h on: g's call k(one) gives k a scope in which h is one,
+    # while main's k(two) gives one in which h is two. A reader that knew a scope only by its arguments' expressions
+    # read h once and lost one(), and with it exit 3.
+    body = (
+        "def c():\n    return bool(argparse)\ndef one():\n    return 3\ndef two():\n    return 4\n"
+        "def f(h):\n    if c(): return k(h), 1\n    if c(): return h()\n"
+        "def g(h):\n    pair = k(one)\n    code, _ = pair\n    if c(): return code\n"
+        "def k(h):\n    pair = f(h)\n    pair = k(h)\n    if c(): return pair\n    return g(h)\n"
+        "def main():\n    argparse.ArgumentParser().parse_args()\n    return k(two)\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    found = problems({"tools/tool.py": script("A tool.\n\nExit status:\n  1  a\n", body)})
+    assert (
+        'tools/tool.py can exit 3, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
+        in found
+    )
+
+
+WALK = (
+    "from pathlib import Path\n"
+    "def check(path: Path, depth: int) -> int:\n    if depth > 4:\n        return 3\n"
+    "    if path.is_symlink():\n        return check(path.resolve(), depth + 1)\n"
+    "    if path.is_dir():\n        return check(path / '__main__.py', depth + 1)\n"
+    "    if not path.exists():\n        return check(path.parent, depth + 1)\n"
+    "    if path.suffix != '.py':\n        return check(path.with_suffix('.py'), depth + 1)\n    return 0\n"
+    "def main() -> int:\n    arguments = argparse.ArgumentParser()\n    arguments.add_argument('path')\n"
+    "    return check(Path(arguments.parse_args().path), 0)\n"
+)
+CALLED = "def c():\n    return bool(argparse)\ndef one():\n    return 3\ndef two():\n    return 4\n"
+SITES = "".join("    if c(): return k(h)\n" for _ in range(6))
+CHAIN = "".join(
+    f"def f{index}(a0, a1):\n    if c(): return a0()\n    return f{index + 1}(a0, a1)\n" for index in range(20)
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "table"),
+    [
+        pytest.param(WALK, "  0  done\n  1  failed\n  2  a usage error\n  3  no file\n", id="four recursive returns"),
+        pytest.param(
+            f"{CALLED}def k(h):\n{SITES}    return h()\n"
+            "def main():\n    argparse.ArgumentParser().parse_args()\n    return k(two)\n",
+            "  1  failed\n  2  a usage error\n  4  four\n",
+            id="six recursive call sites passing a parameter",
+        ),
+        pytest.param(
+            f"{CALLED}{CHAIN}def f20(a0, a1):\n    return a0()\n"
+            "def main():\n    argparse.ArgumentParser().parse_args()\n    return f0(two, two)\n",
+            "  1  failed\n  2  a usage error\n  4  four\n",
+            id="twenty functions passing two parameters on",
+        ),
+    ],
+)
+def test_the_reader_reads_recursion_and_long_argument_chains_in_bounded_steps(body: str, table: str) -> None:
+    # A key that told scopes apart by the whole chain of scopes their arguments came from met a new key at each
+    # recursive call site, so the first two raised RecursionError after hundreds of steps, and building that key anew
+    # for each scope walked the third's chain of arguments, about 21 million times without a key kept per scope.
+    steps = 0
+    counted: dict[str, Any] = {}
+    for name in ("returns", "value", "scope_key"):
+        original = getattr(exit_tables.CodeReader, name)
+
+        def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
+            nonlocal steps
+            steps += 1
+            if steps > 500:
+                raise AssertionError("the exit-table reader took more than 500 steps")
+            return original(self, *arguments)
+
+        counted[name] = step
+    entry = 'if __name__ == "__main__":\n    run_main(main)\n'
+    with mock.patch.multiple(exit_tables.CodeReader, **counted):
+        found = problems({"tools/tool.py": script(f"A tool.\n\nExit status:\n{table}", body + entry)})
+    assert found == []
 
 
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:

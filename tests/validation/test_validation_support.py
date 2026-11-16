@@ -1064,7 +1064,8 @@ def test_bound_values_follow_a_with_target_and_an_assignment_expression() -> Non
             id="a nonlocal's binding reaches its owner",
         ),
         pytest.param("x, x = a, b\nx\n", ["a", "b"], id="one statement's bindings are not ordered"),
-        pytest.param("x = x\nx\n", [], id="a name bound to itself is followed once"),
+        pytest.param("x = x\nx\n", ["x"], id="a name bound to itself reads the name before it"),
+        pytest.param("while c:\n    x = x\nx\n", [], id="a name bound to itself in a loop is followed once"),
         pytest.param(
             "x = a\nwhile c:\n    x\n    x = b\n", ["a", "b"], id="a loop's later binding reaches its next pass"
         ),
@@ -1080,6 +1081,110 @@ def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, ex
     resolver = CallableResolver(tree)
     read = [node for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name)][-1]
     assert sorted(ast.unparse(value) for value in bound_values(read.value, resolver)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("x = a\nx = f(x)\n", ["a"], id="an assignment"),
+        pytest.param("x = a\nx: T = f(x)\n", ["a"], id="an annotated assignment"),
+        pytest.param("x = a\nx, y = f(x), b\n", ["a"], id="an item of an unpacked tuple"),
+        pytest.param("x = a\nif (x := f(x)):\n    pass\n", ["a"], id="an assignment expression"),
+        pytest.param("x = a\nfor y in z:\n    x = f(x)\n", ["a", "f(x)"], id="an assignment a loop runs again"),
+        pytest.param("x = a\nwhile (x := f(x)):\n    pass\n", ["a", "f(x)"], id="a while loop's test"),
+        # A stated limit: a for loop's iterable and a with item's expression keep the reach any statement's part has.
+        pytest.param("x = a\nfor x in [f(x)]:\n    pass\n", ["a", "f(x)"], id="a for loop's iterable"),
+        pytest.param("x = a\nwith f(x) as x:\n    pass\n", ["a", "f(x)"], id="a with item's expression"),
+    ],
+)
+def test_an_assignment_reaches_a_read_in_its_own_value_only_through_a_loop(source: str, expected: list[str]) -> None:
+    # The value is evaluated before the name is bound, so outside a loop the read takes the binding before it.
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    read = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "f"
+    ).args[0]
+    assert sorted(ast.unparse(value) for value in bound_values(read, resolver)) == expected
+
+
+def test_resolved_calls_read_a_change_beside_the_spread_in_one_tuple() -> None:
+    # The update is no binding of the name, so the rule that an assignment's value does not see its own binding leaves
+    # it alone: it runs before the call beside it, so the call is given shell=True.
+    tree = ast.parse(
+        "import subprocess\n\n\ndef f(cmd):\n    options = {}\n"
+        "    a, b = options.update(shell=True), subprocess.run(cmd, **options)\n"
+    )
+    resolver = CallableResolver(tree)
+    call = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.run"
+    )
+    assert [
+        {key: [ast.unparse(value) for value in values] for key, values in read.keywords.items()}
+        for read in resolved_calls(call, resolver)
+    ] == [{"shell": ["True"]}]
+
+
+@pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])
+def test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once(loop: bool) -> None:
+    # The dict() call reads its own name: in a loop that name leads back to the call itself, which a walk with no set
+    # of the calls it had spread followed until Python's recursion limit.
+    indent = "        " if loop else "    "
+    source = (
+        "import subprocess\n\n\ndef f(extra, steps):\n    options = dict(extra)\n"
+        + ("    for step in steps:\n" if loop else "    step = steps\n")
+        + f"{indent}options = dict(**options, check=True)\n{indent}subprocess.run(step, **options)\n"
+    )
+    assert [(view.name, view.keywords, set(view.unread)) for view in _resolved_calls(source)[8]] == [
+        ("subprocess.run", {"check": ["True"]}, {"options"})
+    ]
+
+
+@pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])
+def test_a_held_folder_rebound_from_itself_stays_held_outside_a_loop(loop: bool) -> None:
+    # Outside a loop, `folder = folder / "part"` reads the binding before it, a held folder, so the folder it makes
+    # stays held. In a loop the rebinding leads back to itself, which the temporary-folder policy's stated limit reads
+    # as not held.
+    indent = "        " if loop else "    "
+    source = (
+        "import tempfile\nimport private_folder\n\n\ndef make(parts):\n"
+        "    folder = private_folder.temporary_directory()\n"
+        + ("    for _ in parts:\n" if loop else "")
+        + f"{indent}folder = folder / 'part'\n    tempfile.mkdtemp(dir=folder)\n"
+    )
+    found = skill_scripts._python_temporary_problems("a.py", ast.parse(source))
+    refused = (
+        "tempfile.mkdtemp is given a dir validation cannot trace to private_folder.temporary_directory() or a folder "
+        f"the script already holds; pass one of those; see {skill_scripts.WORKING_FILES_DOC}"
+    )
+    assert [problem.split(": ", 2)[1] for problem in found] == ([refused] if loop else [])
+
+
+@pytest.mark.parametrize("branches", [2, 5, 9])
+def test_the_temporary_folder_policy_reads_a_folder_rebound_in_many_branches_in_bounded_reads(branches: int) -> None:
+    # holds keeps the values it is in per path, but answers not held at the first one it meets again, and all() stops
+    # there, so a loop that rebinds a folder from itself in many branches is read in reads that do not grow with them.
+    arms = "".join(
+        f'        elif text[index] == "{chr(97 + arm)}":\n            folder = folder / "{chr(97 + arm)}"\n'
+        for arm in range(branches)
+    )
+    source = (
+        "import tempfile\nimport private_folder\n\n\ndef make(text):\n"
+        "    folder = private_folder.temporary_directory()\n    index = 0\n    while index < len(text):\n"
+        f"        if not text:\n            pass\n{arms}        index = index + 1\n    tempfile.mkdtemp(dir=folder)\n"
+    )
+    reads = 0
+    bound_values = validation_support.bound_values
+
+    def counted(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+        nonlocal reads
+        reads += 1
+        return bound_values(node, resolver)
+
+    with mock.patch.object(skill_scripts, "bound_values", counted):
+        found = skill_scripts._python_temporary_problems("a.py", ast.parse(source))
+    assert (len(found), reads) == (1, 2)
 
 
 def rebinding_walk(branches: int) -> str:

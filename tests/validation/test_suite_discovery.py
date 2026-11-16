@@ -696,7 +696,7 @@ BASH_RACES = [
         " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1, 16))
         + " f16() { head -n 1; }; seq 1 200000 | f1",
         "head -n",
-        id="sixteen functions deep, the nesting limit",
+        id="sixteen functions deep",
     ),
     pytest.param("f() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function"),
     pytest.param("function g { head -n 1; }; seq 1 200000 | g", "head -n", id="a function keyword"),
@@ -883,6 +883,14 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         pytest.param("printf a | bash -c 'cat'", id="a shell reading to the end"),
         pytest.param("printf a | env -S 'cat -u'", id="env -S reading to the end"),
         pytest.param("f() { f; }; printf a | f", id="a function calling itself"),
+        pytest.param("f() { bash -c 'g() { f; }; g'; }; printf a | f", id="a function a shell's script calls back"),
+        # A stated limit: the reader follows a command NESTING_LIMIT functions deep, so a chain far longer than any
+        # suite writes ends there rather than at Python's recursion limit.
+        pytest.param(
+            " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1000))
+            + " f1000() { head -n 1; }; printf a | f0",
+            id="a reader past the nesting limit",
+        ),
         # A substitution reads the standard input of its own command, which no pipe feeds here.
         pytest.param("printf a | cat; echo $(head -n 1 file)", id="a substitution after the pipeline"),
         pytest.param("echo $(head -n 1 file) | cat", id="a substitution in the writer"),
@@ -902,6 +910,90 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
 )
 def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
     assert races_in(tmp_path, script) == []
+
+
+def test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once(tmp_path: Path) -> None:
+    # A walk that kept the functions it was in for each path read them once per order of calls: nine functions that
+    # each call the rest took 876,809 reads. Read once per question, and again only from a shallower depth, each
+    # function's calls are read at most once for each depth, so the reads stay below the cube of the functions.
+    count = 9
+    script = " ".join(
+        f"f{index}() {{ {'; '.join(f'f{other}' for other in range(count) if other != index)}; }};"
+        for index in range(count)
+    )
+    reads = 0
+    program = suite_discovery._early_exit_program
+
+    def counted(words: list[str]) -> str:
+        nonlocal reads
+        reads += 1
+        if reads > count**3:
+            raise AssertionError(f"the pipe-race policy read more than {count**3} commands")
+        return program(words)
+
+    with mock.patch.object(suite_discovery, "_early_exit_program", counted):
+        assert races_in(tmp_path, f"{script} printf a | f0") == []
+
+
+def test_the_pipe_race_policy_reads_a_function_again_from_a_shallower_call(tmp_path: Path) -> None:
+    # g is first read at the end of a chain as deep as the nesting limit, which leaves its call of h unread; a then
+    # calls g directly, and that shallower read finds the head in h, as a walk per path did.
+    chain = " ".join(f"c{index}() {{ c{index + 1}; }};" for index in range(1, 15))
+    script = f"{chain} c15() {{ g; }}; h() {{ head -n 1; }}; g() {{ h; }}; a() {{ c1; g; }}; seq 1 200000 | a"
+    assert races_in(tmp_path, script) == ["3 pipes into head -n"]
+
+
+# Each table of functions and each script is its own. The reader keeps every function a shell's script defines in
+# the table its commands are read under, so a call of `f` before the script redefines it reads the script's `f`: here
+# its grep -q, found before the head after it. A table lost, or a read kept across tables, reads the outer `f`, which
+# reads to the end, and finds the head instead.
+@pytest.mark.parametrize(
+    ("script", "race"),
+    [
+        pytest.param(
+            "f() { cat; }; printf a | bash -c 'f; head -n 1; f() { grep -q x; }'",
+            "3 pipes into grep -q",
+            id="a function a shell's script defines",
+        ),
+        pytest.param(
+            "f() { cat; }; h() { f; bash -c 'f; head -n 1; f() { grep -q x; }'; }; printf a | h",
+            "3 pipes into grep -q",
+            id="a name read in two tables",
+        ),
+        pytest.param(
+            "f() { cat; }; h() { bash -c f; bash -c 'bash -c f; head -n 1; f() { grep -q x; }'; }; printf a | h",
+            "3 pipes into grep -q",
+            id="one script under two tables",
+        ),
+        # A shell's script read at the depth limit is read, not taken as read before.
+        pytest.param(
+            " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1, 15))
+            + " f15() { bash -c 'head -n 1'; }; printf a | f1",
+            "3 pipes into head -n",
+            id="a shell's script at the nesting limit",
+        ),
+    ],
+)
+def test_the_pipe_race_policy_reads_each_table_of_functions_and_each_script_apart(
+    tmp_path: Path, script: str, race: str
+) -> None:
+    assert races_in(tmp_path, script) == [race]
+
+
+def test_the_pipe_race_policy_reads_a_script_once_at_a_depth_and_again_only_shallower(tmp_path: Path) -> None:
+    # g's two runs of the same script are at one depth, so the second is not read; f's run of it is shallower than
+    # the one g reached first, so it is read again. An unreadable script runs nothing the reader can see.
+    reads: list[str] = []
+    program = suite_discovery._early_exit_program
+
+    def counted(words: list[str]) -> str:
+        reads.append(" ".join(words))
+        return program(words)
+
+    script = 'g() { bash -c cat; bash -c cat; }; f() { g; bash -c cat; }; printf a | { f; bash -c "echo \'x"; }'
+    with mock.patch.object(suite_discovery, "_early_exit_program", counted):
+        assert races_in(tmp_path, script) == []
+    assert reads == ["f", "g", "bash -c cat", "cat", "bash -c cat", "bash -c cat", "cat", "bash -c echo 'x"]
 
 
 class SkillSuiteFixtures(unittest.TestCase):
