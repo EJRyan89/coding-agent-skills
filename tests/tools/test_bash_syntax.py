@@ -859,6 +859,10 @@ def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(
         (": a\n>/dev/null : b\n", {"a": 1, "b": 2}),
         (": a\n</dev/null : b\n", {"a": 1, "b": 2}),
         (": a\n\\\n2>/dev/null : b\n", {"a": 1, "b": 3}),
+        # A command whose first token, an assignment or a redirection, stands before a continuation keeps that token's
+        # line, where Bash's $LINENO gives a later one that varies by version.
+        ("A=1 \\\n: x\n", {"x": 1}),
+        (">/dev/null \\\n: x\n", {"x": 1}),
         # A substitution in an unquoted body after a line its backslash continues, and in a body whose tabs `<<-`
         # strips, keeps its own line.
         ("cat <<EOF\na \\\nb $(: x)\nEOF\n: after\n", {"x": 3, "after": 5}),

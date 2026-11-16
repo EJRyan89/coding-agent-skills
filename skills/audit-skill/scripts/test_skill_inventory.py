@@ -4116,18 +4116,26 @@ def test_a_bash_fence_bash_refuses_is_named_unread_and_other_fences_hold_no_bash
         "if grep -q x file; then\n"
         "```\n"
         "```\n"
-        "cat untagged\n"
+        "cat untagged\n"  # 6: an untagged fence the grammar reads is Bash
+        "```\n"
+        "```\n"
+        "if cat x; then\n"  # 9: one it refuses may be no Bash, so it is neither cued nor named
         "```\n"
         "```console\n"
         "$ cat x\n"
         "```\n"
         "```powershell\n"
-        "cat x\n"
+        "cat notes.txt | Select-String x\n"
+        "```\n"
+        "```text\n"
+        "ls -la\n"
         "```\n",
     )
     lines = skill_inventory.scan([skill])
-    assert f"BASH_UNREADABLE {skill.as_posix()} 2 expected `fi`" in lines
-    assert cued_lines(lines, "shell-file-command") == []
+    assert [line for line in lines if line.startswith("BASH_UNREADABLE ")] == [
+        f"BASH_UNREADABLE {skill.as_posix()} 2 expected `fi`"
+    ]
+    assert cued_lines(lines, "shell-file-command") == [6]
 
 
 @pytest.mark.parametrize(
@@ -4164,13 +4172,14 @@ def test_a_bash_script_s_facts_are_read_as_bash_runs_it() -> None:
         "EOF\n"
         "echo \\\n"
         "  STARTED\n"  # printed by the command on line 9
-        "trap 'exit 5' HUP\n"
+        "trap 'exit 5' HUP\n"  # Bash runs the action when the condition fires
+        "trap 6 INT\n"  # a first operand that is an unsigned integer is a condition, so this sets no action
         "exit 4\n"
     )
     facts = skill_inventory.shell_facts(script, ".sh")
     assert facts.lines == {"DONE": 2, "GONE": 4, "STARTED": 9}
-    assert facts.codes == {0, 4}
-    assert facts.words == {"READY", "DONE", "QUOTED", "GONE", "EOF", "BODY", "STARTED", "HUP"}
+    assert facts.codes == {0, 4, 5}
+    assert facts.words == {"READY", "DONE", "QUOTED", "GONE", "EOF", "BODY", "STARTED", "HUP", "INT"}
 
 
 def test_a_bash_script_bash_refuses_stops_the_status_comparison(tmp_path: Path) -> None:
@@ -4198,3 +4207,55 @@ def test_a_bash_script_s_prints_exits_and_function_names_are_read_by_their_comma
     assert facts.lines == {"DONE": 2, "READY": 3}
     assert facts.codes == {0, 7}
     assert "REPORT_IT" in facts.words
+
+
+def test_an_indented_or_quoted_fence_is_read_as_commonmark_gives_its_content(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "1. Step:\n"
+        "\n"
+        "   ```bash\n"
+        "   cat >out <<EOF\n"  # 4
+        "   x\n"
+        "   EOF\n"  # the list item's indentation is not the delimiter's, so this closes the body
+        "   grep y file\n"  # 7
+        "   ```\n"
+        "\n"
+        "> ```bash\n"
+        "> tail x\n"  # 11
+        "> ```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert cued_lines(lines, "shell-file-command") == [4, 7, 11]
+    assert not [line for line in lines if line.startswith("BASH_UNREADABLE ")]
+
+
+def test_a_fence_that_ends_inside_a_here_document_is_named_unread(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```bash\n"  # 1
+        "cat >out <<EOF\n"
+        "x\n"
+        "```\n"
+        "```\n"  # 5: untagged, so it is neither cued nor named
+        "cat >out <<EOF\n"
+        "```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert [line for line in lines if line.startswith("BASH_UNREADABLE ")] == [
+        f"BASH_UNREADABLE {skill.as_posix()} 1 a here-document is still open where the fence ends"
+    ]
+    assert cued_lines(lines, "shell-file-command") == []
+
+
+def test_a_trap_s_action_runs_its_programs_and_exits_with_its_codes(tmp_path: Path) -> None:
+    skill = write(tmp_path / "SKILL.md", "```bash\ntrap 'rm -f x; cat log' EXIT\ntrap - EXIT\n```\n")
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [2]
+    folder = tmp_path / "alpha"
+    write(
+        folder / "SKILL.md",
+        "---\nname: alpha\n---\n"
+        'Run `bash "${CLAUDE_SKILL_DIR}/scripts/run.sh"`. It prints `READY`, and exits 130 when interrupted.\n',
+    )
+    write(folder / "scripts" / "run.sh", "#!/usr/bin/env bash\ntrap 'exit 130' INT\necho READY\n")
+    assert skill_inventory.status_lines(folder) == []

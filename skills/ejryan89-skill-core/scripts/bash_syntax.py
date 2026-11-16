@@ -220,6 +220,8 @@ class HereDocument:
     assigns: tuple[str, ...] = ()
     # Each expansion in an unquoted body that is not a plain `$NAME`, as a word's dynamic parts hold it.
     expansions: tuple[Part, ...] = ()
+    # Whether a delimiter line closed the body, rather than the text's end, which Bash also takes for its end.
+    closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -489,6 +491,7 @@ class Lexer:
                 compared = line.lstrip("\t") if document.strip_tabs else line
                 delimiter = document.delimiter
                 if compared == delimiter or compared.rstrip("\r") == delimiter.rstrip("\r"):
+                    document.closed = True
                     break
                 body.append(compared)
                 # The line of each character the body keeps, and of the LF that ends it, which joins it to the next.

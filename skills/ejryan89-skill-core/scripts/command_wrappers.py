@@ -3,8 +3,9 @@ find's actions, and a shell's -c script.
 
 A reader of a shell script's commands goes past such a command to the one it runs: `unwrapped` past a wrapper of
 COMMAND_WRAPPERS, read by option_reader's getopt reading, `find_action` to the command one of find's FIND_COMMANDS
-runs, and `shell_script_index` to the script a shell's -c runs. Repository validation's command and git subcommand
-readers and audit-skill's git subcommand reader read through these, so they agree on every wrapper.
+runs, `shell_script_index` to the script a shell's -c runs, and `trap_action` to the script a trap sets to run.
+Repository validation's command and git subcommand readers and audit-skill's git subcommand reader read through these,
+so they agree on every wrapper; audit-skill's Bash reader reads a trap's action through `trap_action`.
 """
 
 from __future__ import annotations
@@ -213,6 +214,19 @@ def find_action(words: list[str]) -> list[str]:
         if word == ";" or (word == "+" and words[index - 1] == "{}"):
             return words[:index]
     return words
+
+
+def trap_action(arguments: list[str]) -> str | None:
+    """The script Bash's trap builtin sets to run when a condition fires, given its words after `trap`, as Bash reads
+    them: the first operand, after an optional `--`, when a condition follows it; None for a trap given an option,
+    -l, -p, or -P, alone or bundled, which lists, and for one whose first operand is the only one, `-`, or an unsigned
+    integer, which each reset the conditions named, as `trap 0 INT` resets the exit and interrupt traps."""
+    if arguments[:1] and arguments[0].startswith("-") and arguments[0] not in {"-", "--"}:
+        return None
+    operands = arguments[1:] if arguments[:1] == ["--"] else arguments
+    if len(operands) < 2 or operands[0] == "-" or (operands[0].isascii() and operands[0].isdigit()):
+        return None
+    return operands[0]
 
 
 def shell_script_index(arguments: list[str]) -> int | None:

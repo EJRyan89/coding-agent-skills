@@ -124,11 +124,14 @@ untrusted-after-contract at each line after the contract starts that marks data 
 holding an emphatic word in capitals, such as MUST or NOT, but not a status value such as MUST_FIX. A skill with no
 sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
 
-Bash: scan reads a fence BASH_FENCES labels whole through ejryan89-skill-core's Bash grammar, as Bash reads it, and
-places the shell-file-command cue on the line each command that runs a file command starts on, so a here-document's
-body, a comment, and a quoted string run nothing, and a command after a continuation is placed on its own line; a
-Bash script given to scan is read whole the same way. BASH_UNREADABLE <file> <line> <reason> is such a fence, opened
-at that line, or a script, at its first, that the grammar refuses, as Bash would, none of whose commands are read.
+Bash: scan reads a fence BASH_FENCES labels whole through ejryan89-skill-core's Bash grammar, as Bash reads it, each
+line as CommonMark gives it to the fence's content, and places the shell-file-command cue on the line each command
+that runs a file command starts on, so a here-document's body, a comment, and a quoted string run nothing, and a
+command after a continuation is placed on its own line; an untagged fence is read so when the grammar reads it, and
+holds no Bash otherwise, and a fence of any other language holds none. A Bash script given to scan is read whole the
+same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
+first, that the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose
+commands are read.
 
 Deterministic prose: besides the cost cues, scan names prose a script should replace, each a CUE line:
 assembled-arguments (a flag chosen per printed line or value), parsed-output (output split, grouped, or renamed by a
@@ -144,12 +147,12 @@ and the FAILED line ejryan89-skill-core's run_main adds; it prints a line starti
 f-string, a string a print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a
 word, a space, and more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with
 run_main, and 2 with argparse. A Bash script, read through the Bash grammar, holds the status words of its commands'
-words, its functions' names, and its here-documents' bodies, but none of a comment's; prints a line starting with
-the word an echo or printf command's first word after its options starts with; and exits with each code an exit
-command names. A PowerShell script is read line by line, outside comment lines. UNPRINTED <file> <line> <word> is a
-word that leads a code span on a prose line about output (one that says print, line, output, report, ends with, or
-exit) that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit
-code the prose states that no script uses.
+words, its functions' names, and its here-documents' bodies, but none of a comment's; prints a line starting with the
+word an echo or printf command's first word after its options starts with; and exits with each code an exit command
+names, one in a trap's action included. A PowerShell script is read line by line, outside comment lines. UNPRINTED
+<file> <line> <word> is a word that leads a code span on a prose line about output (one that says print, line, output,
+report, ends with, or exit) that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file>
+<line> <code> is an exit code the prose states that no script uses.
 UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts with a word the Markdown never names,
 for a script in the skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script
 is that skill's to explain. A skill with no script of its own that runs none prints none of these.
@@ -1904,9 +1907,12 @@ def scan(given: list[Path]) -> list[str]:
 
 def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> tuple[set[int], dict[int, str]]:
     """The indices of the lines on which a command of the file's Bash that runs one of SHELL_FILE_COMMANDS starts, and
-    the reason the grammar gives for each Bash fence it refuses, by the index of the fence's opening line. A Markdown
-    file's Bash is each fence below its frontmatter that BASH_FENCES labels, read whole, as a model running it reads
-    it; a Bash script is its whole text, on the lines `lines` splits it into. Any other file holds no Bash."""
+    the reason for each Bash fence it cannot read, by the index of the fence's opening line: the grammar refuses it,
+    or a here-document in it is still open where the fence ends. A Markdown file's Bash is each fence below its
+    frontmatter that BASH_FENCES labels, read whole, as a model running it reads it, each line as CommonMark gives it
+    to the fence's content; an untagged fence is read the same way when it is Bash the grammar reads, and holds no
+    Bash otherwise, as it may hold none. A Bash script is its whole text, on the lines `lines` splits it into. Any
+    other file holds no Bash."""
     if path.suffix.casefold() != ".md":
         if path.suffix.casefold() not in BASH_SUFFIXES:
             return set(), {}
@@ -1920,16 +1926,30 @@ def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> t
     found: set[int] = set()
     unread: dict[int, str] = {}
     for fence in find_fences(lines):
-        if fence.opener < start or fence.language.casefold() not in BASH_FENCES:
+        untagged = fence.language == ""
+        if fence.opener < start or not (untagged or fence.language.casefold() in BASH_FENCES):
             continue
         body = list(fence.body())
+        content = "\n".join(fence.content(lines[index]) for index in body)
         try:
-            numbers = file_command_lines("\n".join(fence.text(lines[index]) for index in body))
+            numbers = file_command_lines(content)
+            if open_here_document(content):
+                raise BashSyntaxError("a here-document is still open where the fence ends")
         except BashSyntaxError as exc:
-            unread[fence.opener] = str(exc)
+            if not untagged:
+                unread[fence.opener] = str(exc)
             continue
         found.update(body[number - 1] for number in numbers)
     return found, unread
+
+
+def open_here_document(text: str) -> bool:
+    """Whether a here-document in a Bash text runs to the text's end, with no delimiter line closing it."""
+    return any(
+        not document.closed
+        for command in bash_syntax.every_command(text)
+        for document in bash_syntax.here_documents(command)
+    )
 
 
 def file_command_lines(text: str) -> set[int]:
@@ -1944,8 +1964,8 @@ def bash_programs(text: str) -> list[tuple[int, list[str]]]:
     """Each program a Bash text runs, as the one Bash grammar reads it, with the line its command starts on, counted
     from 1, and its words from the program's name, each part only running settles as git_subcommands' UNREAD_PART:
     every simple command's, wherever Bash starts one, past its assignments, and the program each wrapper of
-    command_wrappers' catalogue runs, and each the script eval or a shell's -c runs, on the line of the command that
-    runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script."""
+    command_wrappers' catalogue runs, and each the script eval, a shell's -c, or a trap's action runs, on the line of
+    the command that runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script."""
     return [
         found
         for command in bash_syntax.simple_commands(text)
@@ -1954,8 +1974,9 @@ def bash_programs(text: str) -> list[tuple[int, list[str]]]:
 
 
 def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[str]]]:
-    """Each program a simple command runs, given its words from its program's name, as `bash_programs` reads it; a
-    wrapper whose program no literal names, and a -c script that is UNREAD_PART alone, run none this can see."""
+    """Each program a simple command runs, given its words from its program's name, as `bash_programs` reads it, and
+    each the action a trap sets runs, read as eval's script is; a wrapper whose program no literal names, a -c script
+    that is UNREAD_PART alone, and a trap's action holding UNREAD_PART run none this can see."""
     found: list[tuple[int, list[str]]] = []
     while words:
         found.append((command.line, words))
@@ -1963,6 +1984,11 @@ def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[
         name = command_wrappers.bash_program(head)
         if head == "eval":
             return found + [(command.line, inner) for _, inner in bash_programs(" ".join(rest))]
+        if head == "trap":
+            action = command_wrappers.trap_action(rest)
+            if action is None or git_subcommands.UNREAD_PART in action:
+                return found
+            return found + [(command.line, inner) for _, inner in bash_programs(action)]
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
             if index is None or rest[index] == git_subcommands.UNREAD_PART:
@@ -2239,8 +2265,8 @@ def bash_facts(text: str) -> ScriptFacts:
     line ends at LF alone: the status words of every word each command expands, a function's name, and each
     here-document's body; the status word each echo or printf starts its first word after its options with, on the
     line its command starts on; and the code each exit command names, each wherever a command runs, in a substitution,
-    past a wrapper, and in the script eval or a shell's -c runs. Raises BashSyntaxError where the grammar refuses the
-    script."""
+    past a wrapper, and in the script eval, a shell's -c, or a trap's action runs. Raises BashSyntaxError where the
+    grammar refuses the script."""
     facts = ScriptFacts()
     for command in bash_syntax.every_command(text):
         if isinstance(command, bash_syntax.FunctionDefinition):

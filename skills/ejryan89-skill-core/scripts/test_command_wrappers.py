@@ -16,6 +16,7 @@ from command_wrappers import (
     find_actions,
     shell_script_index,
     split_line,
+    trap_action,
     unwrapped,
     wrapper_name,
 )
@@ -235,3 +236,28 @@ def test_find_s_actions_each_run_to_the_word_that_ends_it(words: list[str], acti
 )
 def test_a_shell_s_c_script_is_found_as_the_shell_reads_its_options(arguments: list[str], index: int | None) -> None:
     assert shell_script_index(arguments) == index
+
+
+# Each of these is checked against Bash: `bash -c "trap 'echo A' EXIT"` prints A, as `trap -- 'echo A' EXIT` and
+# `trap 'echo A' 0` do; `trap -p 'echo A' EXIT` refuses the action as a signal; and after `trap 'echo A' EXIT`, each of
+# `trap EXIT`, `trap - EXIT`, and `trap 0 INT` resets the exit trap, so nothing prints.
+@pytest.mark.parametrize(
+    ("arguments", "action"),
+    [
+        (["exit 130", "INT"], "exit 130"),
+        (["--", "rm -f x", "EXIT", "INT"], "rm -f x"),
+        (["echo A", "0"], "echo A"),
+        (["", "INT"], ""),
+        (["EXIT"], None),
+        (["-", "EXIT"], None),
+        (["0", "INT"], None),
+        (["-p", "echo A", "EXIT"], None),
+        (["-lp"], None),
+        (["--", "EXIT"], None),
+        ([], None),
+    ],
+)
+def test_a_trap_s_action_is_its_first_operand_when_a_condition_follows(
+    arguments: list[str], action: str | None
+) -> None:
+    assert trap_action(arguments) == action
