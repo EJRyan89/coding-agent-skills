@@ -776,6 +776,26 @@ def test_the_powershell_reader_reads_the_git_command_a_wrapper_runs(
     assert _powershell_git_subcommands(powershell_reading[source]) == {"push"}
 
 
+# A PowerShell source's Bash -c script appends its commands to the reading, each part only running settles as the
+# command reader places it, UNREAD_PART and its word's place, and the runtime-support reader reads those words through
+# git_subcommands: as a subcommand that may be any, as one eval word, as a -c script and a start-up's script it cannot
+# read, just as it reads a Bash script's own UNREAD_PART.
+def test_a_placed_part_reaches_the_git_subcommand_reader_as_one_only_running_settles() -> None:
+    cases = {
+        "bash -c 'git $(x)'": {powershell_commands.UNREAD_WORD},
+        "bash -c 'git push $(x)'": {"push"},
+        "bash -c 'bash -c \"$(x)\"'": set(),
+        "bash -c 'eval \"git push $(x)\"'": {"push"},
+        "bash -c 'pwsh -c \"$(x)\"'": set(),
+    }
+    readings = skill_scripts.prime(lambda: skill_scripts.powershell_readings(list(cases)))
+    for (source, expected), reading in zip(cases.items(), readings, strict=True):
+        placed = [word for command in reading.commands for word in command if skill_scripts.PLACED_PART.fullmatch(word)]
+        assert placed, source
+        assert all(word != git_subcommands.UNREAD_PART for word in placed), source
+        assert _powershell_git_subcommands(reading) == expected, source
+
+
 # Git named by a path is no declared tool's name, so the command policy reads no program of it, but it runs git, so
 # the runtime-support reader reads its subcommand.
 POWERSHELL_GIT_PATH_SOURCES = (
