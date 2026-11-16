@@ -28,7 +28,7 @@ from harness import (
     tree_state,
 )
 
-from deployer import cli, pipeline, platform_support, render
+from deployer import cli, journal, pipeline, platform_support, render
 from deployer.errors import DeployError
 from deployer.names import transient_name
 from deployer.paths import Paths
@@ -632,29 +632,44 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
                 transient.unlink()
 
     def test_every_root_refuses_this_runs_backups_folder_already_there(self) -> None:
-        real = time.strftime
+        # A run draws an ID no folder under .backups names, so the folder this refuses is one made after the draw,
+        # before the run's first write.
+        real_draw, real_strftime = journal.new_run_id, time.strftime
         stamp, suffix = self.RUN_ID.rsplit("-", 1)
 
         def frozen(form: str, *rest: Any) -> str:
-            return stamp if form == "%Y%m%d-%H%M%S" else real(form, *rest)
+            return stamp if form == "%Y%m%d-%H%M%S" else real_strftime(form, *rest)
 
         for root in self.items:
             with self.subTest(root=self.name(root)):
                 planted = root / ".backups" / self.RUN_ID
-                planted.mkdir(parents=True)
+                before = tree_state(self.home)
+
+                def draw_then_plant(paths: Paths, planted: Path = planted) -> str:
+                    run_id = real_draw(paths)
+                    planted.mkdir(parents=True)
+                    return run_id
+
                 with (
                     mock.patch("secrets.token_hex", return_value=suffix),
                     mock.patch("time.strftime", side_effect=frozen),
+                    mock.patch.object(journal, "new_run_id", side_effect=draw_then_plant),
                 ):
-                    self.refused(
-                        lines=(
-                            f"ERROR: Permanent backup folder for this run already exists: {forward(planted)}",
-                            "Move it out of the deployment root after checking its contents, then retry.",
-                            self.SEE_BACKUPS,
-                        )
+                    result = self.deploy_fails(
+                        "--all",
+                        "--force",
+                        pattern=re.escape("ERROR: Permanent backup folder for this run already exists"),
+                        changes_home="the test makes this run's backups folder once the run has drawn its ID",
                     )
+                for line in (
+                    f"ERROR: Permanent backup folder for this run already exists: {forward(planted)}",
+                    "Move it out of the deployment root after checking its contents, then retry.",
+                    self.SEE_BACKUPS,
+                ):
+                    self.assertIn(line, result.output.splitlines())
                 planted.rmdir()
                 (root / ".backups").rmdir()
+                self.assertEqual(before, tree_state(self.home))
 
     def test_a_committed_run_whose_backups_folder_turns_unwritable_finishes_and_keeps_the_copy_beside_its_item(
         self,

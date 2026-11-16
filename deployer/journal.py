@@ -7,6 +7,7 @@ import functools
 import os
 import secrets
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -831,6 +832,31 @@ def _committed_run_id(paths: Paths) -> str | None:
         return manifest.load(paths.manifest_file).last_run_id()
     except DeployError:
         return None
+
+
+def new_run_id(paths: Paths) -> str:
+    """This run's ID: the time it starts, in UTC to the second, and a random token, drawn again while it is the ID of
+    the run the manifest records as committed, or names a staging folder or a root's .backups/<run-id> folder an
+    earlier run left.
+
+    Recovery reads a run as committed when its ID is the manifest's last_run_id, so a run that drew the last committed
+    run's ID, as two runs starting in the same second can, would be completed rather than rolled back when it failed
+    before its own commit. Drawn under the lock and after recovery, before the run writes anything, it names no record
+    an earlier run left, so the manifest names it only once it commits. UTC, like deployed_at, so run IDs sort in the
+    order the runs started, across time zones and daylight saving.
+    """
+    committed = _committed_run_id(paths)
+    while True:
+        run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
+        if run_id != committed and not _run_id_left(paths, run_id):
+            return run_id
+
+
+def _run_id_left(paths: Paths, run_id: str) -> bool:
+    """Whether a staging folder or a root's kept-backup folder an earlier run left is named run_id. A path whose stat
+    fails raises its OSError, which fails the run before it writes anything."""
+    folders = [paths.staging_root, *(root_directory(paths, root) / ".backups" for root in ROOT_PREFIXES)]
+    return any(file_presence.is_occupied(folder / run_id) for folder in folders)
 
 
 def check_manifest_beside_runs(paths: Paths) -> None:
