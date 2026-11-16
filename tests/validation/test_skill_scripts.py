@@ -1647,6 +1647,9 @@ class SkillScriptsFixtures(unittest.TestCase):
             # A here-document body's substitution the grammar cannot read is refused with the script, never read as
             # running nothing, so the mktemp in it, which the line reader reported, is not passed unjudged.
             "unreadable_body.sh": ("cat <<EOF\n$(mktemp /tmp/x\nEOF", ["1: validation"]),
+            # A declaration builtin's argument assigns as an assignment before a command does, so the variable holds
+            # the temporary directory and the value itself only gives it that.
+            "exported.sh": ("export T=$TMPDIR/tmp\nX=$(mktemp $T/x)", ["3: mktemp", "3: $T"]),
             # A `#` after an escaped blank continues the word, so Bash runs what follows it.
             "escaped_blank.sh": ("echo foo\\ #; X=$(mktemp)", ["2: mktemp"]),
             # A backtick substitution in a value is read as a command, never as the value's own text.
@@ -1697,6 +1700,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             # holds; a backtick substitution running the judge is judged.
             "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'",
             "backticked_judge.sh": f'J=`{judge}`\nX=$(mktemp "$J/x.XXXXXX")',
+            # A declaration builtin's argument assigns the judged folder as an assignment before a command does.
+            "declared_judge.sh": f'declare J=$({judge})\nX=$(mktemp "$J/x.XXXXXX")',
             # An escaped blank goes on with the value's word, so the path after it only gives the variable its value.
             "escaped_value.sh": "T=a\\ /tmp/b",
             # Limit rows, passing on purpose: the script is read in text order, so what a branch, a loop, or a function

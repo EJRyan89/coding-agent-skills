@@ -323,8 +323,8 @@ The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are 
 The hook is given the text of a command, not what runs under it. The guard catches the accidents a session makes in
 the hub, and is no sandbox: it reads a command for its git calls and where each acts, and for the files its
 redirections write, and a file tool's event for the file it edits. What it reads it judges; a part of a git call's own
-words it does not settle is refused while a guarded hub is in view; and every other part of a command is a program
-the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
+words it does not settle, and a command substitution Bash 3.2 and Bash 4 and later read apart, are refused while a
+guarded hub is in view; and every other part of a command is a program the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
 `hub_state.py`, which the `shepherd-pull-requests` tick and `repo-cleanup` run, names each way the hub differs from a
 clean checkout of `main` at `origin/main`, a change or an untracked file, another branch or a detached `HEAD`, or a
 commit `origin/main` lacks.
