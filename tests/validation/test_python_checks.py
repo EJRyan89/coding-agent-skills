@@ -2672,6 +2672,49 @@ def test_json_write_policy_names_a_module_it_cannot_parse_and_reads_the_rest() -
     assert [problem.split(" ", 1)[0] for problem in found[1:]] == ["skills/alpha/scripts/beta.py:5"]
 
 
+def rebinding_scanner(arms: int, last: str) -> str:
+    """A scanner in the common loop-with-branches style: a loop that rebinds `index` from `after`, which each of
+    `arms` branches binds from `index`, the last one to `last`, and a write of what the loop read."""
+    branches = "".join(
+        f"        elif line[index] == {chr(ord('a') + arm)!r}:\n            after = "
+        f"{last if arm == arms - 1 else f'index + {arm + 2}'}\n"
+        for arm in range(arms)
+    )
+    return (
+        "import json\n\n\ndef scan(line, stream):\n    index = 0\n    while index < len(line):\n"
+        f"        after = index + 1\n        if not line:\n            after = len(line)\n{branches}"
+        "        index = after\n    stream.write(line[:index])\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("last", "refused"),
+    [
+        pytest.param("index + 10", [], id="no branch holds JSON text"),
+        pytest.param("index + len(json.dumps(line))", ["skills/alpha/scripts/alpha.py:31"], id="the last branch does"),
+    ],
+)
+def test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once(last: str, refused: list[str]) -> None:
+    # A walk that followed each path through the bindings read the ten bindings of `after` once per order they can
+    # be reached in, so its reads grew exponentially with the branches; read once each, they no longer grow
+    # exponentially.
+    reads = 0
+    bound_values = validation_support.bound_values
+
+    def counted(node: ast.expr, resolver: Any) -> list[ast.expr]:
+        nonlocal reads
+        reads += 1
+        if reads > 2000:
+            raise AssertionError("the JSON-write policy read a name's bindings more than 2000 times")
+        return bound_values(node, resolver)
+
+    with tempfile.TemporaryDirectory() as temporary, mock.patch.object(python_checks, "bound_values", counted):
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": rebinding_scanner(10, last)})
+        found = python_checks.json_write_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == refused
+
+
 def test_json_write_policy_with_no_module_to_read_could_not_measure() -> None:
     # Only the writer itself, a suite, and a file outside the claim roots: nothing the policy reads.
     with tempfile.TemporaryDirectory() as temporary:
