@@ -794,6 +794,28 @@ def test_an_agents_hooks_with_two_events_and_a_plain_command_keep_their_order_an
     }
 
 
+def test_an_agents_hooks_are_read_where_yaml_ends_a_line_and_each_kept_line_keeps_its_break() -> None:
+    text = (
+        "---\rname: two\r\nhooks:\r  Stop:\r    - hooks:\r        - type: command\r          command: echo two\r"
+        "model: inherit\n---\r\rBody.\r"
+    )
+    definition, hooks = plugin_agents.plugin_agent(text)
+    assert definition == "---\rname: two\r\nmodel: inherit\n---\r\rBody.\r"
+    assert hooks == {"Stop": [{"hooks": [{"type": "command", "command": "echo two"}]}]}
+
+
+def test_frontmatter_closed_after_a_lone_cr_takes_the_frontmatter_words() -> None:
+    content = b'---\rname: x\rdescription: Sweeps {{REPOS_ROOT}}.\r---\r\rRun "{{REPOS_ROOT}}".\r'
+    assert plugin_build.render("skills/x/SKILL.md", content, ["REPOS_ROOT"]) == (
+        b'---\rname: x\rdescription: Sweeps your repositories root.\r---\r\rRun "${user_config.repos_root}".\r'
+    )
+
+
+def test_a_leftover_token_is_reported_on_the_line_an_editor_shows_it_on() -> None:
+    files = {"skills/x/SKILL.md": b"one\rtwo\r\nkeeps {{X}}\r"}
+    assert plugin_build.leftover_tokens(files) == ["skills/x/SKILL.md:3:keeps {{X}}"]
+
+
 def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_gives_none(source: Source) -> None:
     source.skill("alpha")
     source.skill("solo", opt_in=True)

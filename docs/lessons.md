@@ -557,6 +557,8 @@ removed fails validation until its pattern follows it.
   and `tests/validation/python_checks.py::PythonChecksPolicies::test_text_is_split_into_lines_where_its_program_ends_one`,
   which refuse a splitlines() of anything but plain bytes, and a split at LF alone of a file an author writes, outside
   a stated reason,
+  `tests/deployer/test_rendering_locking.py::RenderedExecutableTests::test_an_unexpanded_token_after_lone_cr_line_ends_is_reported_on_its_true_line`,
+  which holds the deployer's token refusal to the line an editor shows,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`,
@@ -565,7 +567,8 @@ removed fails validation until its pattern follows it.
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a
-  file; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
+  file; a `^` or `$` under `re.MULTILINE` over such a file, which anchors at LF alone; a split that rejoins the lines it
+  keeps with `"\n"`, which rewrites each CR, rather than `text_lines.lines_and_breaks`; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
   characters YAML reads as text or forbids; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`

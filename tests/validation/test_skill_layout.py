@@ -1233,6 +1233,17 @@ def test_plugin_policy_passes_an_agent_without_hooks_and_a_plugin_without_a_hook
     assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == []
 
 
+def test_plugin_policy_reads_an_agents_frontmatter_and_hooks_where_yaml_ends_a_line(tmp_path: Path) -> None:
+    # An agent written with lone CRs: its frontmatter takes the pinned words, and its hooks are compared with the
+    # plugin's hooks file, the agent kept with each break it was written with.
+    agent = f"---\nname: helper\ntools: Read\ndescription: Under {{{{REPOS_ROOT}}}}.\n{HELPER_HOOKS}---\n\nHelp.\n"
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "agents/helper.md": agent.replace("\n", "\r")})
+    files = plugin_files()
+    built = "---\nname: helper\ntools: Read\ndescription: Under your repositories root.\n---\n\nHelp.\n"
+    files["agents/helper.md"] = built.replace("\n", "\r").encode()
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == []
+
+
 def other_hooks(**changes: object) -> bytes:
     handler = {**HELPER_HANDLER, **changes}
     return json.dumps({"hooks": {"PreToolUse": [{"matcher": "Read|Bash", "hooks": [handler]}]}}).encode()

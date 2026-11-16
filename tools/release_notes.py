@@ -63,6 +63,7 @@ from git_client import GitClient, GitError, GitResult, output_lines
 from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, find_fences, list_item, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
+from text_lines import LINE_BREAK, lines_and_breaks
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 UPGRADE_NOTES = "docs/upgrade-notes.md"
@@ -136,7 +137,7 @@ def unwrapped(block: str) -> list[str]:
     starts its own line below another, and below any other text only where CommonMark lets a list interrupt a
     paragraph: at a bullet or an item numbered 1.
     """
-    raw = [line.rstrip(MARKDOWN_SPACE + "\r") for line in block.strip(MARKDOWN_SPACE + "\r\n").split("\n")]
+    raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
     fenced = {index for fence in find_fences(raw) for index in fence.lines()}
     lines: list[str] = []
     for index, line in enumerate(raw):
@@ -154,7 +155,7 @@ def unwrapped(block: str) -> list[str]:
 def notes_blocks(text: str) -> list[str]:
     """The text cut before each line outside every fence that opens a heading of the first three levels, as an entry
     or a heading above one starts; a heading-shaped line inside a fence is the fence's text, as GitHub renders it."""
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     blocks: list[list[str]] = [[]]
     for index, line in enumerate(lines):
@@ -334,14 +335,14 @@ def insert_section(notes: str, version: str, section: str) -> str:
     """The notes with the section above the newest version's section, or at the end when there is none. A heading-shaped
     line inside a fence is the fence's text, as GitHub renders it, so it is neither a version's section nor the place
     the new one goes."""
-    lines = notes.split("\n")
+    lines, breaks = lines_and_breaks(notes)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     headings = [index for index, line in enumerate(lines) if index not in fenced and VERSION_HEADING.fullmatch(line)]
     if any(re.fullmatch(rf"## {re.escape(version)}[ \t]*", lines[index]) for index in headings):
         raise ReleaseNotesError(f"{UPGRADE_NOTES} already has a ## {version} section")
     if not headings:
         return notes.rstrip("\n") + "\n\n" + section
-    start = sum(len(line) + 1 for line in lines[: headings[0]])
+    start = sum(map(len, lines[: headings[0]])) + sum(map(len, breaks[: headings[0]]))
     return notes[:start] + section + "\n" + notes[start:]
 
 

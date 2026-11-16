@@ -18,7 +18,7 @@ from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
-from text_lines import program_lines
+from text_lines import lines_and_breaks, program_lines, text_lines
 
 from . import fsops, hashing, platform_support
 from .arguments import CONFIGURE_COMMAND_LINE
@@ -28,6 +28,7 @@ from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
 
 # What a token in a fence of a language the deployer knows no escaping for asks of the skill's author.
 UNESCAPED_FENCE_REMEDY = "Write the example in a Bash, PowerShell, or Python fence."
+LONE_CR_REMEDY = "End each line of the source with LF or CRLF, not a lone CR, then retry."
 # What a rendered JSON or TOML file that no longer parses asks of the skill's author.
 RENDERED_PARSE_REMEDY = (
     'Correct that file in the source so it parses with its tokens substituted; see "Template values" in '
@@ -212,24 +213,48 @@ def fence_context(fence: Fence) -> str:
     return FENCE_CONTEXT.get(fence.language.casefold(), "text")
 
 
-def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str:
-    lines = text.split("\n")
-    rendered: list[str] = []
+def _line_contexts(lines: list[str]) -> list[str]:
+    """Each line's substitution context: yaml in the frontmatter, its fence's context in a fence's body, and text for an
+    opening or closing line and for prose."""
     try:
         found = frontmatter.split(lines)
     except frontmatter.FrontmatterError:
         found = None  # An opening rule that is never closed is Markdown, not frontmatter.
-    if found is not None:
-        # The frontmatter is YAML, and the deployer re-reads it to write the runtime adapters.
-        rendered = [_substitute(line, values, "yaml", logical) for line in lines[: found[1]]]
-        lines = lines[found[1] :]
-    # Each body line takes its fence's context; an opening or closing line, and prose, take the text context.
-    contexts = ["text"] * len(lines)
-    for fence in find_fences(lines):
+    # The frontmatter is YAML, and the deployer re-reads it to write the runtime adapters.
+    start = found[1] if found is not None else 0
+    contexts = ["yaml"] * start + ["text"] * (len(lines) - start)
+    for fence in find_fences(lines[start:]):
         for index in fence.body():
-            contexts[index] = fence_context(fence)
-    rendered += [_substitute(line, values, context, logical) for line, context in zip(lines, contexts, strict=True)]
-    return "\n".join(rendered)
+            contexts[start + index] = fence_context(fence)
+    return contexts
+
+
+def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str:
+    # Lines end where CommonMark and YAML end one, at CR, LF, and CRLF, so a fence or a frontmatter delimiter after a
+    # lone CR is read on its own line; each line keeps the break it was written with. A reader that ends a line at LF
+    # alone, such as a model reading the raw text or a runtime's frontmatter pattern, reads a lone CR as part of its
+    # line, so a fence or frontmatter may open or close elsewhere for it. Each line therefore takes its context under
+    # both readings, and a value either context refuses, or that the two render differently, is refused: a lone CR
+    # never moves a line into a context that checks less.
+    lines, breaks = lines_and_breaks(text)
+    commonmark = _line_contexts(lines)
+    # The LF reading splits at LF alone on purpose, keeping each CR in its line, as such a reader does.
+    at_lf = _line_contexts(text.split("\n"))
+    rendered: list[str] = []
+    lf_index = 0
+    for line, end, context in zip(lines, breaks, commonmark, strict=True):
+        other = at_lf[lf_index]
+        lf_index += "\n" in end
+        renderings = {_substitute(line, values, reading, logical) for reading in dict.fromkeys((context, other))}
+        if len(renderings) > 1:
+            raise DeployError(
+                f"ERROR: A value cannot be substituted into {logical}: a lone carriage return puts its line in the "
+                f"{context} context where a line feed ends a line, and in the {other} context where only a line feed "
+                "does, and the two render it differently",
+                LONE_CR_REMEDY,
+            )
+        rendered.append(renderings.pop() + end)
+    return "".join(rendered)
 
 
 def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
@@ -396,7 +421,8 @@ def reject_unexpanded_tokens(staged: Staged) -> None:
     matches: list[str] = []
     for logical, content in sorted(staged.logical_files().items()):
         text = content.decode("utf-8", "replace")
-        for number, line in enumerate(text.split("\n"), start=1):
+        # Numbered as an editor and CommonMark number a line, so a token after a lone CR is reported on its own line.
+        for number, line in enumerate(text_lines(text), start=1):
             if TOKEN.search(line):
                 matches.append(f"{logical}:{number}:{line}")
     if matches:
@@ -410,6 +436,21 @@ class ShellUnit:
     is_block: bool
 
 
+def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
+    """The body of each fence among `lines` substituted as shell, in order, each line ending at LF."""
+    blocks: list[str] = []
+    for fence in find_fences(lines):
+        if fence_context(fence) != "shell":
+            continue
+        if fence.closer is None:
+            raise DeployError(
+                f"ERROR: Unclosed Bash code fence in {logical}",
+                "Close the fence with the characters that open it, then retry.",
+            )
+        blocks.append("".join(f"{fence.text(lines[index])}\n" for index in fence.body()))
+    return blocks
+
+
 def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     files = staged.logical_files()
     units: list[ShellUnit] = []
@@ -421,17 +462,20 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     for logical in sorted(files):
         if Path(logical).suffix.casefold() != ".md":
             continue
-        lines = files[logical].decode("utf-8", "replace").split("\n")
-        # Validate every fence substituted as shell, whichever name its info string uses.
-        shell = [fence for fence in find_fences(lines) if fence_context(fence) == "shell"]
-        for block_number, fence in enumerate(shell, start=1):
-            if fence.closer is None:
-                raise DeployError(
-                    f"ERROR: Unclosed Bash code fence in {logical}",
-                    "Close the fence with the characters that open it, then retry.",
-                )
+        text = files[logical].decode("utf-8", "replace")
+        # Validate every fence substituted as shell, whichever name its info string uses, as each reading finds it:
+        # CommonMark's, and that of a reader that ends a line at LF alone, which may see a fence or a body CommonMark
+        # does not and still runs it as code. The LF reading drops a CRLF's CR, as such a reader's copy would, and
+        # keeps a lone CR inside its line, which ShellCheck refuses. A block it finds that CommonMark's reading also
+        # gives is checked once.
+        blocks = _shell_blocks(logical, text_lines(text))
+        blocks += [
+            block
+            for block in _shell_blocks(logical, [line.removesuffix("\r") for line in text.split("\n")])
+            if block not in blocks
+        ]
+        for block_number, body in enumerate(blocks, start=1):
             target = workspace / "blocks" / f"{len(units)}.sh"
-            body = "".join(f"{fence.text(lines[index])}\n" for index in fence.body())
             _write(target, (SHELLCHECK_HEADER + body).encode("utf-8"))
             units.append(ShellUnit(target, f"{logical} block {block_number}", True))
     return units

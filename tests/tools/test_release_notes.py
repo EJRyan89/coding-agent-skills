@@ -691,6 +691,28 @@ class InsertSectionTests(unittest.TestCase):
         with self.assertRaises(release_notes.ReleaseNotesError):
             release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n")
 
+    def test_a_version_heading_after_a_lone_cr_is_found_and_each_break_is_kept(self) -> None:
+        # CommonMark ends a line at a lone CR, so the heading is a section, and the new one goes above it, the text
+        # around it unchanged.
+        notes = "# Upgrade notes\r\rIntro.\r\n## v0.1.0\r\rOld.\r"
+        self.assertEqual(
+            "# Upgrade notes\r\rIntro.\r\n## v0.2.0\n## v0.1.0\r\rOld.\r",
+            release_notes.insert_section(notes, "v0.2.0", "## v0.2.0"),
+        )
+        with self.assertRaises(release_notes.ReleaseNotesError):
+            release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n")
+
+
+class LoneCrNotesTests(unittest.TestCase):
+    def test_entries_and_their_fields_are_read_where_commonmark_ends_a_line(self) -> None:
+        notes = "## Unreleased\r\r### First\r\r- Level: patch.\r- Contract: none\r### Second\r\r- Level: minor."
+        entries = release_notes.notes_entries(notes)
+        self.assertEqual(["First", "Second"], [entry.heading for entry in entries])
+        self.assertEqual(["patch.", "minor."], [entry.fields["Level"] for entry in entries])
+
+    def test_a_wrapped_line_is_joined_across_a_lone_cr(self) -> None:
+        self.assertEqual(["Some text more", "", "Next"], release_notes.unwrapped("Some text\rmore\r\rNext"))
+
 
 class ReleaseProcedureTests(unittest.TestCase):
     def test_the_release_procedure_writes_the_section_before_tagging(self) -> None:

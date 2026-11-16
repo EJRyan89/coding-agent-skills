@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import frontmatter
 import whole_number
 from skill_menu import PLUGIN_PYTHON, plugin_hook_command
+from text_lines import lines_and_breaks
 
 HOOKS_KEY = "hooks"
 KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(?P<value>.*))?$")
@@ -142,11 +143,12 @@ def _commands(hooks: Node) -> Node:
 def plugin_agent(text: str) -> tuple[str, dict[str, Node]]:
     """An agent definition without its hooks, and those hooks by event, with each command rewritten for the plugin;
     an agent without hooks comes back as it is, with none."""
-    lines = text.split("\n")
+    # Lines end where YAML ends one, at CR, LF, and CRLF, and each kept line keeps the break it was written with.
+    lines, breaks = lines_and_breaks(text)
     found = frontmatter.split(lines)
     if found is None or HOOKS_KEY not in frontmatter.Frontmatter(found[0]):
         return text, {}
-    head, body = found
+    head, _ = found
     start = next(index for index, line in enumerate(head) if line.startswith(f"{HOOKS_KEY}:"))
     end = next(
         (index for index in range(start + 1, len(head)) if head[index] and not head[index][0].isspace()), len(head)
@@ -156,5 +158,7 @@ def plugin_agent(text: str) -> tuple[str, dict[str, Node]]:
     hooks = _commands(_node(head, start + 1, end))
     if not isinstance(hooks, dict):
         raise AgentError("hooks: not a mapping of event names")
-    kept = [lines[0], *head[:start], *head[end:], *lines[body - 1 :]]
-    return "\n".join(kept), hooks
+    # The opening delimiter and the head before the hooks key, then the head after it, the closing delimiter, and the
+    # body: head[index] is lines[index + 1].
+    kept = [*range(start + 1), *range(end + 1, len(lines))]
+    return "".join(lines[index] + breaks[index] for index in kept), hooks

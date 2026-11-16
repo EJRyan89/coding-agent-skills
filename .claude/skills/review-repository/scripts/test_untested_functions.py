@@ -731,6 +731,11 @@ class PresenceReadTests(unittest.TestCase):
         # Python ends a line at a lone CR, so the call after `#` is a comment's text, never a call a test makes.
         self.assertNotIn("f", self.module._code_text("tests/test_x.py", "import x\r# f()\n").split())
 
+    def test_a_lone_cr_ends_a_powershell_comment_and_no_bash_one(self) -> None:
+        # PowerShell ends a line at a lone CR, so the call after it is code; Bash reads the CR as part of the comment.
+        self.assertIn("Invoke-Thing", self.module._code_text("tests/test_x.ps1", "# note\rInvoke-Thing\n").split())
+        self.assertNotIn("run_thing", self.module._code_text("tests/test_x.sh", "# note\rrun_thing\n").split())
+
     def test_suites_keeps_each_suite_file_and_passes_over_a_folder_named_like_one(self) -> None:
         (self.root / "tests" / "deep").mkdir(parents=True)
         (self.root / "tests" / "deep" / "test_real.py").write_text(

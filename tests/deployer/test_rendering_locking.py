@@ -459,6 +459,23 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertNotRegex(result.output, r"ShellCheck failed.*(blocks|deploy-render)")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def test_a_bash_fence_only_a_line_feed_reading_finds_is_checked(self) -> None:
+        # CommonMark closes the fence at the lone CR, but a reader ending lines at LF alone reads the next line as code,
+        # so that reading's blocks reach Bash and ShellCheck like any other; here Bash refuses the backticks the CR
+        # leaves open.
+        self.make_source_json()
+        self.make_skill("alpha", "Fixture\n\n```bash\necho hi\r```\necho done\n```")
+        self.make_config()
+        self.deploy_fails("--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 2")
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_crlf_bash_fence_deploys(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Fixture\r\n\r\n```bash\r\necho ok\r\n```\r")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assertIn(b"```bash\r\necho ok\r\n```", (self.skills_dir / "alpha" / "SKILL.md").read_bytes())
+
     def test_shell_fence_is_validated_like_a_bash_fence(self) -> None:
         self.make_source_json()
         self.make_skill(
@@ -639,6 +656,15 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_skill("alpha", "Home {{HOME}} but repos {{REPOS_ROOT}}", ["HOME"])
         self.make_config()
         self.deploy_fails("--all", pattern="Unexpanded tokens found")
+
+    def test_an_unexpanded_token_after_lone_cr_line_ends_is_reported_on_its_true_line(self) -> None:
+        # make_skill writes six lines of frontmatter and a blank line before the content, so the token is on line 9
+        # wherever CommonMark and an editor end a line; split at LF alone, it was reported on line 7.
+        self.make_source_json()
+        self.make_skill("alpha", "Intro\rMore\rUse {{UNDECLARED}} here.", ["HOME"])
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="Unexpanded tokens found")
+        self.assertIn("alpha/SKILL.md:9:Use {{UNDECLARED}} here.\n", result.output)
 
 
 class LockTests(DeployerTestCase):
