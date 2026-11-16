@@ -1064,7 +1064,8 @@ def test_bound_values_follow_a_with_target_and_an_assignment_expression() -> Non
             id="a nonlocal's binding reaches its owner",
         ),
         pytest.param("x, x = a, b\nx\n", ["a", "b"], id="one statement's bindings are not ordered"),
-        pytest.param("x = x\nx\n", [], id="a name bound to itself is followed once"),
+        pytest.param("x = x\nx\n", ["x"], id="a name bound to itself reads the name before it"),
+        pytest.param("while c:\n    x = x\nx\n", [], id="a name bound to itself in a loop is followed once"),
         pytest.param(
             "x = a\nwhile c:\n    x\n    x = b\n", ["a", "b"], id="a loop's later binding reaches its next pass"
         ),
@@ -1080,6 +1081,44 @@ def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, ex
     resolver = CallableResolver(tree)
     read = [node for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name)][-1]
     assert sorted(ast.unparse(value) for value in bound_values(read.value, resolver)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("x = a\nx = f(x)\n", ["a"], id="an assignment"),
+        pytest.param("x = a\nx: T = f(x)\n", ["a"], id="an annotated assignment"),
+        pytest.param("x = a\nx, y = f(x), b\n", ["a"], id="an item of an unpacked tuple"),
+        pytest.param("x = a\nif (x := f(x)):\n    pass\n", ["a"], id="an assignment expression"),
+        pytest.param("x = a\nfor y in z:\n    x = f(x)\n", ["a", "f(x)"], id="an assignment a loop runs again"),
+        pytest.param("x = a\nwhile (x := f(x)):\n    pass\n", ["a", "f(x)"], id="a while loop's test"),
+    ],
+)
+def test_an_assignment_reaches_a_read_in_its_own_value_only_through_a_loop(source: str, expected: list[str]) -> None:
+    # The value is evaluated before the name is bound, so outside a loop the read takes the binding before it.
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    read = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "f"
+    ).args[0]
+    assert sorted(ast.unparse(value) for value in bound_values(read, resolver)) == expected
+
+
+@pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])
+def test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once(loop: bool) -> None:
+    # The dict() call reads its own name: in a loop that name leads back to the call itself, which a walk with no set
+    # of the calls it had spread followed until Python's recursion limit.
+    indent = "        " if loop else "    "
+    source = (
+        "import subprocess\n\n\ndef f(extra, steps):\n    options = dict(extra)\n"
+        + ("    for step in steps:\n" if loop else "    step = steps\n")
+        + f"{indent}options = dict(**options, check=True)\n{indent}subprocess.run(step, **options)\n"
+    )
+    assert [(view.name, view.keywords, set(view.unread)) for view in _resolved_calls(source)[8]] == [
+        ("subprocess.run", {"check": ["True"]}, {"options"})
+    ]
 
 
 def rebinding_walk(branches: int) -> str:

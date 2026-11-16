@@ -500,7 +500,7 @@ WRAPPERS: dict[str, OptionTable] = {**COMMAND_WRAPPERS, **READER_WRAPPERS}
 PIPEFAIL = "pipefail"
 OPTION_SETTERS = frozenset({"set", "shopt"})
 SHELL_OPTIONS_VARIABLE = re.compile(r"\bSHELLOPTS=[^\s;&|]*pipefail")
-# How deep the reader follows a command into the functions and shell scripts it runs.
+# How deep the reader follows a shell's -c script or eval into the scripts it runs in turn.
 NESTING_LIMIT = 16
 
 
@@ -564,35 +564,65 @@ def _early_exit_program(words: list[str]) -> str:
     return ""
 
 
-def _early_exit_reader(
-    words: list[str], functions: Mapping[str, list[list[str]]] | None = None, expanding: frozenset[str] = frozenset()
-) -> str:
+def _early_exit_reader(words: list[str], functions: Mapping[str, list[list[str]]] | None = None) -> str:
     """The reader a command a pipe feeds runs that may exit before what writes into it has written everything, as its
     program and the option that makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads
     to the end. It reads past each wrapper `_command_words` reads, into the body of a function the script defines,
     and into the script a shell's -c or eval runs, the commands of their substitutions included, since each command
-    there reads the same pipe."""
-    if not words or len(expanding) > NESTING_LIMIT:
-        return ""
-    words = _command_words(words)
-    if not words:
-        return ""
-    if reader := _early_exit_program(words):
-        return reader
-    body = (functions or {}).get(words[0]) if words[0] not in expanding else None
-    script = _shell_script(words)
-    if body is None and script is not None:
-        try:
-            commands, inner = _read_bash(script)
-        except ValueError:
+    there reads the same pipe. See _ReaderWalk for how often it reads each."""
+    table = functions or {}
+    return _ReaderWalk(table).reader(words, table)
+
+
+# The functions a script defines, by name, as a table _ReaderWalk keeps once for each content it reads.
+FunctionTable = Mapping[str, list[list[str]]]
+
+
+class _ReaderWalk:
+    """One question's walk for _early_exit_reader: each function's body is read once for each table of functions it
+    is called under, and each shell's -c or eval script once for each table it runs under, the table its definitions
+    extend kept once for each content, so a script that defines nothing new runs under the table it was given.
+    Functions that call each other are read once each, never once for each order of calls, which grows factorially
+    with them; a function already read, or being read, adds no reader, since the walk reads its whole body once and
+    stops at the first reader it finds."""
+
+    def __init__(self, functions: FunctionTable) -> None:
+        self.read: set[tuple[int, str]] = set()
+        self.scripts: set[tuple[int, str]] = set()
+        self.tables: dict[tuple[tuple[str, tuple[tuple[str, ...], ...]], ...], FunctionTable] = {}
+        self._table(functions)
+
+    def _table(self, functions: FunctionTable) -> FunctionTable:
+        """The one table kept for these definitions' content."""
+        content = tuple(
+            sorted((name, tuple(tuple(command) for command in body)) for name, body in functions.items())
+        )
+        return self.tables.setdefault(content, functions)
+
+    def reader(self, words: list[str], functions: FunctionTable) -> str:
+        words = _command_words(words) if words else []
+        if not words:
             return ""
-        body = [command for _, _, command in commands + _substituted_commands(script)]
-        functions = {**(functions or {}), **inner}
-    inside = expanding | {words[0]}
-    for command in body or []:
-        if reader := _early_exit_reader(command, functions, inside):
+        if reader := _early_exit_program(words):
             return reader
-    return ""
+        body = functions.get(words[0]) if (id(functions), words[0]) not in self.read else None
+        if body is not None:
+            self.read.add((id(functions), words[0]))
+        script = _shell_script(words)
+        if body is None and script is not None:
+            if (id(functions), script) in self.scripts:
+                return ""
+            self.scripts.add((id(functions), script))
+            try:
+                commands, inner = _read_bash(script)
+            except ValueError:
+                return ""
+            body = [command for _, _, command in commands + _substituted_commands(script)]
+            functions = self._table({**functions, **inner})
+        for command in body or []:
+            if reader := self.reader(command, functions):
+                return reader
+        return ""
 
 
 def _early_exit_head(words: list[str]) -> str:

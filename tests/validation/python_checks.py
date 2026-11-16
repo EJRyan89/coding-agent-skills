@@ -2667,17 +2667,24 @@ class _ModuleNumbers:
         return (f"a value {test} admitted", builtin) if test else None
 
 
-def _number_types(given: ast.expr, resolver: CallableResolver) -> set[str]:
+def _number_types(given: ast.expr, resolver: CallableResolver, seen: set[int] | None = None) -> set[str]:
     """The number types of ARGUMENT_NUMBER_TYPES an add_argument's type may be: one it names, through the module's
-    imports and bindings, a getattr of builtins included, or the function a functools.partial of one binds."""
+    imports and bindings, a getattr of builtins included, or the function a functools.partial of one binds.
+
+    Each partial is read once for the type asked about, in `seen`: one that leads back to itself, as
+    `kind = functools.partial(kind, base=0)` in a loop, adds no type its first read has not, since the types are their
+    union."""
+    seen = set() if seen is None else seen
     kinds = {reference.name.removeprefix("builtins.") for reference in resolved_references(given, resolver)}
     for value in bound_values(given, resolver):
         if (
             isinstance(value, ast.Call)
+            and id(value) not in seen
             and value.args
             and any(reference.name in PARTIAL_CALLS for reference in resolved_references(value.func, resolver))
         ):
-            kinds |= _number_types(value.args[0], resolver)
+            seen.add(id(value))
+            kinds |= _number_types(value.args[0], resolver, seen)
     return kinds & set(ARGUMENT_NUMBER_TYPES)
 
 

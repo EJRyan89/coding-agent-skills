@@ -1023,11 +1023,43 @@ def _shape(resolver: CallableResolver) -> _ModuleShape:
 LOOPS = (ast.For, ast.AsyncFor, ast.While)
 
 
+def _assigned_value(binding: ast.AST, shape: _ModuleShape) -> ast.expr | None:
+    """The value an assignment, an annotated one, or an assignment expression evaluates before it binds the name a
+    binding's value is for, the whole of a literal tuple or list unpacked; None for any other binding or change."""
+    node = binding
+    parent = shape.parents.get(id(node))
+    while isinstance(parent, ast.Tuple | ast.List):
+        node, parent = parent, shape.parents.get(id(parent))
+    if isinstance(parent, ast.Assign | ast.AnnAssign | ast.NamedExpr) and parent.value is node:
+        return node
+    return None
+
+
+def _within(node: ast.AST, expression: ast.expr, shape: _ModuleShape) -> bool:
+    """Whether a node is an expression or lies in it, within the statement that holds them."""
+    current: ast.AST | None = node
+    while current is not None and not isinstance(current, ast.stmt):
+        if current is expression:
+            return True
+        current = shape.parents.get(id(current))
+    return False
+
+
 def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _ModuleShape) -> bool:
     """Whether a binding's value may reach a use in the same scope: unless it comes after the use in the statement list
     that holds both, outside any loop, or another binding of the name in the same list comes after it and before the
     use, as a second assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler
-    is not replaced by one outside it, and one after the use inside a loop reaches the use's next pass."""
+    is not replaced by one outside it, and one after the use inside a loop reaches the use's next pass.
+
+    An assignment's value is evaluated before it binds the name, so its own binding does not reach a read in that
+    value, as in `options = dict(**options)`, unless a loop holds it and runs it again, as `node = node.parent` in a
+    loop reads the binding the last pass made; a while loop's test counts, as it runs again each pass. A stated limit:
+    a for loop's iterable and a with item's expression are read as any other statement's part, so the binding they
+    make reaches a read in them."""
+    value = _assigned_value(binding, shape)
+    if value is not None and _within(use, value, shape):
+        if not any(isinstance(statement, LOOPS) for statement in shape.statements(value)):
+            return False
     # Every binding's value and every read lie in a statement, and every statement in a list of its parent's.
     place = shape.places[id(shape.statements(binding)[0])]
     holder = next(
@@ -1265,10 +1297,19 @@ def _literal_keywords(node: ast.expr) -> dict[str, ast.expr] | None:
 
 
 def _spread_keywords(
-    keywords: list[ast.keyword], resolver: CallableResolver, found: dict[str, list[ast.expr]], unread: list[ast.expr]
+    keywords: list[ast.keyword],
+    resolver: CallableResolver,
+    found: dict[str, list[ast.expr]],
+    unread: list[ast.expr],
+    seen: set[int] | None = None,
 ) -> None:
     """Add each keyword a call gives to found, a `**` of a literal dict or a dict() call of keywords spread, with what
-    the scope adds to a name bound to one, and keep any other `**` in unread."""
+    the scope adds to a name bound to one, and keep any other `**` in unread.
+
+    Each dict() call a `**` may stand for is spread once for the keywords asked about, in `seen`: one that leads back to
+    itself, as `options = dict(**options, check=True)` in a loop, adds no keyword its first read has not, since the
+    keywords are their union."""
+    seen = set() if seen is None else seen
     for keyword in keywords:
         if keyword.arg is not None:
             found.setdefault(keyword.arg, []).append(keyword.value)
@@ -1283,7 +1324,9 @@ def _spread_keywords(
                 and not value.args
                 and any(reference.name == "dict" for reference in resolved_references(value.func, resolver))
             ):
-                _spread_keywords(value.keywords, resolver, found, unread)
+                if id(value) not in seen:
+                    seen.add(id(value))
+                    _spread_keywords(value.keywords, resolver, found, unread, seen)
             else:
                 unread.append(keyword.value)
         if isinstance(keyword.value, ast.Name):

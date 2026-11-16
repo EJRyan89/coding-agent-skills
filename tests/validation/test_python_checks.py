@@ -69,7 +69,14 @@ from python_checks import (
     type_ignore_without_reason,
 )
 from toolchain import PREREQUISITES, find_mypy, missing_prerequisites
-from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, scope_problems, write_fixture_tree
+from validation_support import (
+    REPOSITORY_ROOT,
+    SKILLS_ROOT,
+    CallableResolver,
+    relative,
+    scope_problems,
+    write_fixture_tree,
+)
 
 from deployer import journal, platform_support, report
 
@@ -4104,6 +4111,22 @@ def test_int_parse_policy_refuses_an_option_read_with_int_or_float() -> None:
         f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+@pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])
+def test_int_parse_policy_reads_a_partial_that_rebuilds_itself_once(loop: bool) -> None:
+    # The partial binds its own name: in a loop that name leads back to the partial itself, which a walk with no set of
+    # the partials it had read followed until Python's recursion limit.
+    indent = "        " if loop else "    "
+    source = (
+        "import argparse\nimport functools\n\n\ndef build(kinds):\n    parser = argparse.ArgumentParser()\n"
+        "    kind = int\n"
+        + ("    for _ in kinds:\n" if loop else "")
+        + f"{indent}kind = functools.partial(kind, base=0)\n    parser.add_argument('--n', type=kind)\n"
+    )
+    tree = ast.parse(source)
+    typed, converted = python_checks._argument_conversions(tree, CallableResolver(tree))
+    assert (list(typed.values()), converted) == (["int"], {})
 
 
 CLOSE_HANDLE_ARGUMENTS = "    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]\n"
