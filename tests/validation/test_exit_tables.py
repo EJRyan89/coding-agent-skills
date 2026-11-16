@@ -241,13 +241,39 @@ TABLE_CALLS = (
     + "".join(f"    if c():\n        return T[k]({index + 3})\n" for index in range(10))
     + "    return 0\n"
 )
-# Five relays: R hands each Li on through F, which calls it with v, and Li hands on L(i+1), so each relay's caller is
-# found one pass after the last.
-RELAYS = (
-    "def c():\n    return bool(argparse)\ndef F(h, v):\n    return h(v)\ndef R(h, v):\n    return F(h, v)\n"
-    + "".join(f"def L{index}(v):\n    return R(L{index + 1}, v) if c() else {index + 3}\n" for index in range(1, 5))
-    + "def L5(v):\n    return v\ndef main():\n    return R(L1, 3)\n"
-)
+
+
+def relays(count: int) -> str:
+    """A ladder of relays: R hands each Li on through F, which calls it with v, and Li hands on L(i+1) or returns i + 3,
+    so each relay's caller is found one pass after the last. Its codes are 3, which main gives v, and each i + 3."""
+    return (
+        "def c():\n    return bool(argparse)\ndef F(h, v):\n    return h(v)\ndef R(h, v):\n    return F(h, v)\n"
+        + "".join(
+            f"def L{index}(v):\n    return R(L{index + 1}, v) if c() else {index + 3}\n" for index in range(1, count)
+        )
+        + f"def L{count}(v):\n    return v\ndef main():\n    return R(L1, 3)\n"
+    )
+
+
+def mutual_recursion(count: int) -> str:
+    """Functions of four parameters that call each other at six sites each, passing their parameters on in turn,
+    rotated and reversed, and return one of them called; main gives them four functions returning 3 to 6."""
+    names = ["a", "b", "d", "e"]
+    body = "def c():\n    return bool(argparse)\n" + "".join(
+        f"def leaf{index}():\n    return {index + 3}\n" for index in range(4)
+    )
+    for index in range(count):
+        body += f"def r{index}(a, b, d, e):\n"
+        for site in range(6):
+            turned = names[site % 4 :] + names[: site % 4]
+            passed = turned[::-1] if site % 2 else turned
+            body += f"    if c():\n        return r{(index * 7 + site * 3 + 1) % count}({', '.join(passed)})\n"
+        body += f"    return {names[index % 4]}()\n"
+    return body + "def main():\n    return r0(leaf0, leaf1, leaf2, leaf3)\n"
+
+
+# Five relays.
+RELAYS = relays(5)
 
 
 def reader_of(body: str) -> exit_tables.CodeReader:
@@ -358,6 +384,42 @@ def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_
         reader = reader_of(body)
     assert reader.reading.codes == codes
     assert len(reader.scopes) == scopes
+    assert reader.passes == passes
+
+
+@pytest.mark.parametrize(
+    ("body", "passes", "codes"),
+    [
+        pytest.param(relays(100), 100, {1, *range(3, 103)}, id="a hundred relays"),
+        pytest.param(mutual_recursion(10), 2, {1, 3, 4, 5, 6}, id="ten functions calling each other"),
+    ],
+)
+def test_a_late_pass_reads_only_what_its_late_callers_reach_and_each_called_expression_is_answered_once(
+    body: str, passes: int, codes: set[int]
+) -> None:
+    # A pass that read the whole entry point again read each relay once for every relay found before it, so a ladder of
+    # k relays took steps quadratic in k; and a walk that answered each call through a parameter anew went out to
+    # every scope that called it, and on to theirs, for each call, so functions calling each other took steps
+    # quadratic in their call sites. The reader takes about 1.6 steps for each node of the relays' syntax tree and 7.5
+    # for the functions calling each other, at any size, so it fails at ten; the quadratic reader took 63 and 110 here.
+    tree = ast.parse(f"{HEADER}{body}{ENTRY}")
+    bound = 10 * sum(1 for _ in ast.walk(tree))
+    steps = 0
+    counted: dict[str, Any] = {}
+    for name in ("returns", "value", "later", "_parts", "function_named"):
+        original = getattr(exit_tables.CodeReader, name)
+
+        def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
+            nonlocal steps
+            steps += 1
+            if steps > bound:
+                raise AssertionError(f"the exit-table reader took more than {bound} steps")
+            return original(self, *arguments)
+
+        counted[name] = step
+    with mock.patch.multiple(exit_tables.CodeReader, **counted):
+        reader = reader_of(body)
+    assert reader.reading.codes == codes
     assert reader.passes == passes
 
 
