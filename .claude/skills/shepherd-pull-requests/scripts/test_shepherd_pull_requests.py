@@ -1304,6 +1304,15 @@ class HoldTest(FixtureTestCase):
         _, lines = self.tick(StubGh([self.held(20, cross=True)]))
         self.assertFalse(any(line.startswith("HELD") for line in lines), lines)
 
+    def test_a_hold_line_after_a_lone_cr_holds_the_pull_request_unarmed(self) -> None:
+        # Markdown ends a line at a lone CR, so the hold is a line of its own.
+        self.assertEqual("owes a citation", shepherd.hold_of("## Summary\rShepherd-hold: owes a citation\r"))
+        held = {**pull(20, armed=False), "body": "## Summary\r\rA change.\rShepherd-hold: owes a citation\r"}
+        gh = StubGh([held, pull(21, armed=False)])
+        _, lines = self.tick(gh)
+        self.assertEqual('HELD #20 fix/topic-20 "owes a citation"', self.line(lines, "HELD "))
+        self.assertEqual([["pr", "merge", "21", "--repo", REPOSITORY, "--auto", "--squash"]], gh.writes())
+
 
 class FlatTextTest(FixtureTestCase):
     def test_every_branch_path_and_step_from_github_is_flattened_onto_its_line(self) -> None:

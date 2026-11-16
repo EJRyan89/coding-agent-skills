@@ -77,7 +77,8 @@ NEWEST_SCRIPT_ANALYZER = (
     "Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | "
     "Select-Object -First 1 -ExpandProperty Path"
 )
-MODULE_VERSION = re.compile(r"^\s*ModuleVersion\s*=\s*['\"]([0-9.]+)['\"]", re.MULTILINE | re.IGNORECASE)
+# A manifest's ModuleVersion line, matched at the start of each line where PowerShell ends one.
+MODULE_VERSION = re.compile(r"\s*ModuleVersion\s*=\s*['\"]([0-9.]+)['\"]", re.IGNORECASE)
 
 
 def find_psscriptanalyzer() -> str | None:
@@ -100,7 +101,8 @@ def read_module_version(manifest: str) -> tuple[int, ...] | None:
     except OSError:
         return None
     text = data.decode("utf-16") if data[:2] in (b"\xff\xfe", b"\xfe\xff") else data.decode("utf-8-sig", "replace")
-    match = MODULE_VERSION.search(text)
+    # PowerShell ends a line at CR, LF, and CRLF, so each is read where it does.
+    match = next((found for line in text_lines(text) if (found := MODULE_VERSION.match(line))), None)
     return tools.parse_version(match.group(1)) if match else None
 
 

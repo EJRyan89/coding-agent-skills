@@ -120,6 +120,9 @@ class ToolchainFixtures(unittest.TestCase):
             self.assertEqual((1, 25, 0), read_tool_version(str(manifest)))
             manifest.write_text("@{ PowerShellVersion = '5.1' }\n", encoding="utf-8")
             self.assertIsNone(read_tool_version(str(manifest)))
+            # PowerShell ends a line at a lone CR, so ModuleVersion after one starts a line.
+            manifest.write_bytes(b"@{\r    RootModule = 'PSScriptAnalyzer.psm1'\r    ModuleVersion = '1.25.0'\r}\r")
+            self.assertEqual((1, 25, 0), read_tool_version(str(manifest)))
 
     def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
         self.assertEqual(
