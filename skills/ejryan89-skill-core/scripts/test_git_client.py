@@ -228,6 +228,16 @@ class ClientTests(unittest.TestCase):
             client.rev_parse_paths(options, directory="d")
         self.assertIn("for --show-toplevel --git-common-dir in d, not one path for each", str(context.exception))
 
+    def test_a_path_lookup_runs_within_the_time_limit_its_caller_names_or_the_clients(self) -> None:
+        answers = [GitResult(0, "C:/a/.git\n", "")] * 4
+        runner, calls = scripted(*answers)
+        client = GitClient(runner, timeout=300)
+        client.rev_parse_paths(["--git-common-dir"], directory="d", timeout=7)
+        client.rev_parse_path("--git-common-dir", directory="d", timeout=8)
+        self.assertEqual(Path("C:/a/.git"), client.common_git_directory(directory="d", timeout=9))
+        client.common_git_directory(directory="d")
+        self.assertEqual([7, 8, 9, 300], [timeout for _command, timeout in calls])
+
     def test_output_lines_splits_on_a_newline_alone(self) -> None:
         self.assertEqual([], git_client.output_lines(""))
         self.assertEqual([""], git_client.output_lines("\n"))
