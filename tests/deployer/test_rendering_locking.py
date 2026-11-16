@@ -459,6 +459,22 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertNotRegex(result.output, r"ShellCheck failed.*(blocks|deploy-render)")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def test_a_bash_fence_only_a_line_feed_reading_finds_is_checked(self) -> None:
+        # CommonMark closes the fence at the lone CR, but a reader ending lines at LF alone reads the next line as code,
+        # so that reading's block is checked too: Bash refuses the backticks the CR leaves open, before ShellCheck.
+        self.make_source_json()
+        self.make_skill("alpha", "Fixture\n\n```bash\necho hi\r```\necho done\n```")
+        self.make_config()
+        self.deploy_fails("--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 2")
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_crlf_bash_fence_deploys(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Fixture\r\n\r\n```bash\r\necho ok\r\n```\r")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assertIn(b"```bash\r\necho ok\r\n```", (self.skills_dir / "alpha" / "SKILL.md").read_bytes())
+
     def test_shell_fence_is_validated_like_a_bash_fence(self) -> None:
         self.make_source_json()
         self.make_skill(

@@ -112,7 +112,9 @@ def parse(text: str, source_id: str, dropped: list[str] | None = None) -> dict[s
     values: dict[str, str] = {}
     for number, line in enumerate(lines, start=1):
         if "\r" in line:
-            raise DeployError(f"ERROR: Config line {number} contains CRLF.", "Convert the file's line endings to LF.")
+            raise DeployError(
+                f"ERROR: Config line {number} contains a carriage return.", "Convert the file's line endings to LF."
+            )
         if not line or line.startswith("#"):
             continue
         match = KEY_VALUE.fullmatch(line)

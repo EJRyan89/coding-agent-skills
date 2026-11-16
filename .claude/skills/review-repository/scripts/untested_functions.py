@@ -709,7 +709,8 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
         # The diff's hunks number a line as git does, ending it at LF alone, so a CRLF is one line end and a lone CR
         # part of its line; each reader below splits the text at LF to number its lines the same way. Python's parser
         # ends a line at a lone CR too, so a Python file holding one is numbered past git's hunks after it; no file
-        # here holds one.
+        # here holds one. A stated limit: a PowerShell function whose header follows a lone CR is not found by
+        # shell_definitions, which splits at LF to keep git's numbering.
         text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
         try:
             definitions = _definitions(change.path, text)

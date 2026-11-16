@@ -198,7 +198,9 @@ class SkillReferenceTestCase(unittest.TestCase):
         skill_reference.write(self.root)
         self.add_prose("alpha", "Alpha explained.")
         self.add_prose("beta", "Beta explained.")
-        lone = self.reference.read_bytes().replace(b"\n", b"\r")
+        # add_prose writes with the platform's line end, so the reference is CRLF-ended on Windows: end each line at a
+        # lone CR from the text's own lines.
+        lone = self.text().replace("\n", "\r").encode()
         self.reference.write_bytes(lone)
 
         stale = "docs/skills.md: generated content is stale; run python tools/skill_reference.py --write"

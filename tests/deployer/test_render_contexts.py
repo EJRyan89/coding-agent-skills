@@ -295,6 +295,32 @@ class FenceTests(unittest.TestCase):
             bodies = [unit.path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER) for unit in units]
         self.assertEqual(["echo one\n"], bodies)
 
+    def test_a_line_a_lone_cr_moves_out_of_a_fence_or_frontmatter_keeps_its_line_feed_reading_s_checks(self) -> None:
+        # A reader that ends a line at LF alone still reads the line after the lone CR as code, so the value is checked
+        # in both contexts, and refused where either refuses it or the two render it differently.
+        for content, value, refusal in (
+            (b"```bash\necho hi\r```\ncd '{{X}}'\n```\n", "/home/o'brien/repos", r"\(shell context\)"),
+            (b"```powershell\nWrite-Output hi\r```\nWrite-Output '{{X}}'\n```\n", "a'b", r"\(powershell context\)"),
+            (b"---\nname: s\r---\rdescription: {{X}}\n---\nBody\n", "a #b", r"\(yaml context\)"),
+            (b'```json\n{}\r```\n{"a": "{{X}}"}\n```\n', 'q"', "the two render it differently"),
+        ):
+            with self.subTest(content=content), self.assertRaisesRegex(DeployError, refusal):
+                render.render_file("s/SKILL.md", content, {"X": value})
+
+    def test_a_value_both_readings_render_alike_is_substituted_once(self) -> None:
+        content = b'```json\n{}\r```\n{"a": "{{X}}"}\n```\n'
+        self.assertEqual(content.replace(b"{{X}}", b"plain"), render.render_file("s/SKILL.md", content, {"X": "plain"}))
+
+    def test_a_shell_fence_either_reading_finds_is_extracted_once(self) -> None:
+        # CommonMark closes the fence at the lone CR; a reader ending lines at LF alone reads on to the next fence line.
+        content = b"```bash\necho hi\r```\necho done\n```\n"
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": content, "T.md": b"```bash\r\necho one\r\n```\r\n"}})
+            units = render._extract_units(staged, Path(workspace))
+            bodies = [unit.path.read_bytes().decode().removeprefix(render.SHELLCHECK_HEADER) for unit in units]
+        self.assertEqual(["s/SKILL.md block 1", "s/SKILL.md block 2", "s/T.md block 1"], [u.origin for u in units])
+        self.assertEqual(["echo hi\n", "echo hi\r```\necho done\n", "echo one\n"], bodies)
+
     def test_frontmatter_closed_after_a_lone_cr_is_substituted_as_yaml(self) -> None:
         with self.assertRaisesRegex(DeployError, r"\(yaml context\)"):
             render.render_file("s/SKILL.md", b"---\rname: {{X}}\r---\rBody\r", {"X": "a#b"})
