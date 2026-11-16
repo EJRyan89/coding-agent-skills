@@ -6481,6 +6481,12 @@ PRESENCE_REFUSED = {
     **PRESENCE_HANDLED,
 }
 PRESENCE_PASSED = {
+    # A stated limit of the presence policy: a parameter's default is read in its own function's scope, where Python
+    # evaluates it in the scope around, so this suppress leads back to its own name and is not read as one.
+    "a suppress given as a parameter's default of its own name": (
+        "import contextlib\n\n\ndef f(p):\n    quiet = contextlib.suppress(OSError)\n\n"
+        "    def g(quiet=quiet):\n        with quiet:\n            return p.stat()\n\n    return g\n"
+    ),
     # The file_presence forms, which let a failed stat or listing through.
     "file_presence": (
         "import file_presence\n\n\ndef f(p):\n    return p.read_text() if file_presence.is_present(p) else None\n"
