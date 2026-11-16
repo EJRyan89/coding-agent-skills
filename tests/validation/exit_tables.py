@@ -351,10 +351,22 @@ class Scope:
         return dict(self.given).get(name)
 
 
-def _given_key(scope: Scope) -> tuple[tuple[str, int], ...]:
-    """The arguments a scope is given, by their expressions: the key returns and assigned read a function or a value
-    once by."""
-    return tuple(sorted((name, id(value)) for name, (value, _) in scope.given))
+# What a scope's key holds, in place of the key of the scope an argument's value was given in, when that scope's
+# functions include the keyed scope's own: see CodeReader.keyed.
+CUT = -1
+
+
+@dataclass(frozen=True)
+class Keyed:
+    """What the reader keeps for one scope it has keyed: the scope, kept alive so its id is not reused; the key
+    returns and assigned read a function or a value once by; its functions, by their ids: its own and those of each
+    scope a value of its arguments was given in, followed outward; and each argument's value, followed through the
+    parameters that pass it on, with the scope that value was given in."""
+
+    scope: Scope
+    key: int
+    functions: frozenset[int]
+    values: dict[str, tuple[ast.expr, Scope]]
 
 
 def _own_nodes(function: Function) -> Iterator[ast.AST]:
@@ -434,13 +446,14 @@ class CodeReader:
         self.folders = [entry.parent, root / SKILL_CORE_SCRIPTS, root]
         self.modules: dict[Path, Module] = {}
         self.reading = Reading()
-        self.returned: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
+        self.returned: set[tuple[int, int | None, int]] = set()
         # Each value a local name is bound to that the reader has read, by the same key: see assigned.
-        self.assigned_read: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
-        # Each scope callables has keyed, kept alive beside its key, and each key by the content it stands for: see
-        # scope_key.
-        self.scope_ids: dict[int, tuple[Scope, int]] = {}
-        self.scope_contents: dict[tuple[int, int, tuple[tuple[str, int, int], ...]], int] = {}
+        self.assigned_read: set[tuple[int, int | None, int]] = set()
+        # Each scope the reader has keyed, by its id, and each key by the content it stands for: see keyed.
+        self.scopes: dict[int, Keyed] = {}
+        self.contents: dict[tuple[int, tuple[tuple[str, int, int], ...]], int] = {}
+        # The one scope of each module's own body, by the module's file: see callables.
+        self.module_scopes: dict[Path, Scope] = {}
         self.reached: set[int] = set()
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
@@ -523,36 +536,64 @@ class CodeReader:
             return other, other.functions[name]
         return None
 
-    def scope_key(self, scope: Scope) -> int:
-        """A number for a scope's content: its module, its function, and each argument it is given with the number of
-        the scope it was given in, so two scopes whose arguments are the same expressions given in different scopes
-        differ. callables reads only outward, into the scopes arguments were given in, which were made before the
-        scope they are given to, so every key is finite; each scope is keyed once and its key is a small number,
-        so neither keying nor hashing reads an argument's chain again."""
-        known = self.scope_ids.get(id(scope))
+    def keyed(self, scope: Scope) -> Keyed:
+        """The key returns and assigned read a function or a value once by in a scope: the scope's function, and for
+        each argument, its value, followed through the parameters that pass it on, and the key of the scope that value
+        was given in. So two scopes whose arguments are the same expressions given in different scopes differ, as
+        leaf's scope does when `leaf(x)` is called in `mid(3)`'s scope and in `mid(4)`'s, since x is followed to 3 in
+        one and to 4 in the other.
+
+        It stays bounded however many call sites a recursion has and in whatever order the reader meets them. Where a
+        value was given in a scope whose functions, its own and those of the scopes its values were given in, followed
+        outward, include the keyed scope's function, the key holds CUT in place of that scope's key, as it does for
+        `depth + 1` given in a scope of check to another scope of check. So each key a key holds is of a scope whose
+        functions do not include the holding scope's function, and, being among the holding scope's functions, do
+        not include the function of any key that holds it in turn: a key nests no deeper than there are functions,
+        each part is chosen from the expressions the program holds, and a recursion's call sites add no key past one
+        each. Each scope is keyed once, from the keys and followed values of the scope its arguments were given in and
+        of the scopes their values were, keyed before it, so a chain of functions that pass their parameters on is
+        keyed once per scope and never walked again.
+
+        A stated limit: two scopes of one function whose arguments are followed to the same expressions, each given in
+        a scope of that function or of one that scope came from, are read once, so a code only the later scope's
+        values lead to is not read; no repository code passes a value round a recursion so that only a deeper scope
+        reaches a code."""
+        known = self.scopes.get(id(scope))
         if known is not None:
-            return known[1]
-        content = (
-            id(scope.module),
-            id(scope.function),
-            tuple((name, id(value), self.scope_key(given)) for name, (value, given) in scope.given),
-        )
-        key = self.scope_contents.setdefault(content, len(self.scope_contents))
-        self.scope_ids[id(scope)] = (scope, key)
-        return key
+            return known
+        functions = {id(scope.function)}
+        values: dict[str, tuple[ast.expr, Scope]] = {}
+        parts: list[tuple[str, int, int]] = []
+        for name, (argument, given) in scope.given:
+            passed = self.keyed(given).values.get(argument.id) if isinstance(argument, ast.Name) else None
+            value, origin = passed if passed is not None else (argument, given)
+            source = self.keyed(origin)
+            functions |= source.functions
+            values[name] = (value, origin)
+            cut = id(scope.function) in source.functions
+            parts.append((name, id(value), CUT if cut else source.key))
+        key = self.contents.setdefault((id(scope.function), tuple(parts)), len(self.contents))
+        keyed = self.scopes[id(scope)] = Keyed(scope, key, frozenset(functions), values)
+        return keyed
+
+    def module_scope(self, module: Module) -> Scope:
+        """The one scope of a module's own body, which callables reads a module's table of functions in."""
+        return self.module_scopes.setdefault(module.path, Scope(module, None))
 
     def callables(
         self, node: ast.expr, scope: Scope, seen: set[tuple[int, int]] | None = None
     ) -> list[tuple[Module, Function]] | None:
         """The functions a called expression can be, or None when the reader cannot tell.
 
-        Each expression is read once for the question, in `seen`, by its whole scope: the arguments the scope is
-        given, and in turn the scopes each was given in, so a deeper call that passes the same argument from another
-        scope is read again. A local rebound from itself, as `handler = handler.get("a")`, leads back to its own value
-        in its own scope, which adds no function its first read has not, since the functions are their union, and a
-        value the reader cannot tell already answers None for the whole question."""
+        Each expression is read once for the question, in `seen`, by the scope object it is read in. The reader goes
+        only outward, into the scope an argument was given in, made before the scope it was given to, or into its
+        module's one scope, so one question meets each scope of a chain of calls as one object, and the same
+        expression read again in the same object leads back to its own first read. So a local rebound from itself,
+        as `handler = handler.get("a")`, or a table of functions that names itself, adds no function its first read
+        has not, since the functions are their union, and a value the reader cannot tell already answers None for
+        the whole question; and an argument two values pass on from one scope is read there once."""
         seen = set() if seen is None else seen
-        key = (id(node), self.scope_key(scope))
+        key = (id(node), id(scope))
         if key in seen:
             return []
         seen.add(key)
@@ -567,7 +608,7 @@ class CodeReader:
             if values and all(position is None for _, position in values):
                 return self._all([value for value, _ in values], scope, seen)
             if node.id in scope.module.dictionaries:
-                return self._all(list(scope.module.dictionaries[node.id].values), Scope(scope.module, None), seen)
+                return self._all(list(scope.module.dictionaries[node.id].values), self.module_scope(scope.module), seen)
             return None
         if isinstance(node, ast.Subscript):
             return self.callables(node.value, scope, seen)
@@ -601,7 +642,7 @@ class CodeReader:
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
-        key = (id(function), element, _given_key(scope))
+        key = (id(function), element, self.keyed(scope).key)
         if key in self.returned:
             return
         self.returned.add(key)
@@ -645,11 +686,11 @@ class CodeReader:
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
         """Add the codes each value the function binds to a local name can be.
 
-        Each value is read once for each element and each set of arguments the scope is given, as returns reads a
-        function: a value that reads its own name, as `code = code if flag else 2`, leads back to itself, and adds no
-        code its first read has not, since the codes are their union."""
+        Each value is read once for each element and each scope's key, as returns reads a function: a value that
+        reads its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first
+        read has not, since the codes are their union."""
         assert scope.function is not None
-        given = _given_key(scope)
+        given = self.keyed(scope).key
         for value, position in _assigned(scope.function, node.id):
             if position is not None and element is not None:
                 self._unread(node, scope)
@@ -723,7 +764,7 @@ def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
     module = reader.module_at(entry.path, entry.tree)
     assert module is not None
     reader.reading.codes.add(RUNNER_FAILURE)
-    scope = Scope(module, None)
+    scope = reader.module_scope(module)
     for block in main_blocks(entry.tree):
         for target in runner_targets(block, module.aliases):
             functions = None if isinstance(target, ast.Call) else reader.callables(target, scope)
