@@ -2257,7 +2257,7 @@ class WorkflowsPolicies(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertEqual([], posix_verify_log_problems(workflow, job))
 
-    def test_deployable_workflow_checks_what_the_uninstall_left_through_the_report_in_both_jobs(self) -> None:
+    def test_deployable_workflow_checks_what_the_uninstall_left_through_the_report_in_every_job(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], uninstall_check_problems(workflow))
 
@@ -2295,11 +2295,11 @@ class WorkflowsPolicies(unittest.TestCase):
         guide = (REPOSITORY_ROOT / "docs/codex-support.md").read_text(encoding="utf-8")
         self.assertEqual([], codex_settings_problems(workflow, guide))
 
-    def test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs(self) -> None:
+    def test_deployable_workflow_answers_every_prompt_configure_declares_in_every_job(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], configure_answer_problems(workflow, config.PROMPTS, config.DEFAULTS))
 
-    def test_deployable_workflow_keeps_copilot_on_the_version_it_installed_in_both_jobs(self) -> None:
+    def test_deployable_workflow_keeps_copilot_on_the_version_it_installed_in_every_job(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], copilot_auto_update_problems(workflow))
 

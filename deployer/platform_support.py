@@ -107,7 +107,7 @@ LINUX_INSTALL_HELP = (
     "docs/installation.md.",
 )
 MACOS_INSTALL_HELP = (
-    'For MacPorts or direct downloads, see "Installing the tools" in docs/installation.md.',
+    'For official downloads, see "Installing the tools" in docs/installation.md.',
     "After installing, open a new terminal, so the shell finds the programs Homebrew linked.",
 )
 INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else MACOS_INSTALL_HELP if MACOS else LINUX_INSTALL_HELP

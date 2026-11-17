@@ -74,7 +74,12 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   the pull request's latest in the run's canary root, read and validated by ejryan89-code-review-core's archive, and must be
   the version the run writes: 2 for a re-review, whose canary root first holds the prior record as version 1, and 1
   otherwise, so a run whose own record is missing or unreadable fails rather than being judged by the prior. The
-  reviewers' self-check and source commands are granted at the exact quoted paths of the home's scripts. A narrowed run
+  reviewers' self-check and source commands are granted at the exact quoted paths of the home's scripts. Each session
+  runs in Claude Code's `acceptEdits` mode, standing in for the user who approves each reviewer's result file, and
+  that mode also approves the filesystem commands `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` on paths inside the working directory, the run's home,
+  most of them also behind a safe environment variable or a wrapper such as `timeout`, `nice`, or `nohup`
+  ([Permission modes](https://code.claude.com/docs/en/permission-modes)), so a skill that runs one of them without
+  granting it passes a run where a user in the default mode would be asked. A narrowed run
   can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order, both when
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
   in name order. `--records` holds each record to what a run's is held to: ejryan89-code-review-core's record contract, the

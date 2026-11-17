@@ -152,7 +152,11 @@ of pin.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed, each by the quoted path of the home's
 deployed script as the pipeline's prompts give it, in both shells, with no wildcard in the path; the skill's
-allowed-tools grant the rest. Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1
+allowed-tools grant the rest. The session's mode, acceptEdits, also approves mkdir, touch, rm, rmdir, mv, cp, and sed
+on paths inside the run's home, most of them also behind a safe environment variable or a wrapper such as timeout,
+nice, or nohup, so a skill that runs one of them without granting it passes where a user in the default mode would be
+asked, and no "had a command denied" judgment sees it.
+Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1
 <home>/.skill-evals/<run>/<scenario>, and its temporary directory is a folder there, through TMPDIR, which Python
 reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
 The record judged is the latest record of the pull request recorded there, read and validated by

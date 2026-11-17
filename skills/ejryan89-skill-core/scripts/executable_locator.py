@@ -11,8 +11,9 @@ Two lookups answer differently on Windows only when a shell script, a `.bat`, `.
 program: `find_program` passes over it, and `find_executable` does not. git, gh, dotnet, and dotnet-format, which a
 skill starts with arguments through `located_command`, are found by `find_program` in `check`, the skills, and the
 deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
-which npm installs as `.cmd` scripts and which are started with arguments the repository writes, are found by
-`find_executable`.
+which npm installs as `.cmd` scripts and which `check` and `verify` start with arguments the repository writes, are
+found there by `find_executable`, while the bounded Copilot code-review host finds Copilot CLI by `find_program` and
+refuses a host whose only `copilot` is a shell script.
 """
 
 from __future__ import annotations

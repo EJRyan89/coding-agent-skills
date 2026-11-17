@@ -26,7 +26,8 @@ from typing import Any, Concatenate, ParamSpec, TypeVar, overload
 T = TypeVar("T")
 P = ParamSpec("P")
 
-# The longest string or integer quoted in what an error found; a longer one is described by its length.
+# The longest string or integer quoted in what an error found; a longer string is described by its length, and a
+# longer integer as too long to quote.
 QUOTED_CHARACTERS = 40
 LINE_SPLIT_ALLOWED = {
     "FieldReader.string": (

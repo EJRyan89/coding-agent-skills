@@ -166,7 +166,7 @@ Worktrees isolate files. These are still shared:
 
 `.claude/settings.json` declares a Claude Code `PreToolUse` hook that runs `tools/hub_guard.py`. A hook in that
 file can only deny an action; it never grants one. `tools/worktrees.py guard`, the hook's command before the guard
-had a module of its own, runs the same guard, since a Claude Code session keeps the hook command it started with.
+had a module of its own, runs the same guard, so a hook command written before the move still runs it.
 
 The guard is **inert unless a clone opts in**:
 

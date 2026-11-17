@@ -5,15 +5,16 @@ Usage:
 
 tests/run_validation.py deals its jobs across the validate workflow's legs on each platform by that platform's table in
 tests/validation/job_seconds.json, so each leg gets about the same seconds of work; a job's cost differs between
-Windows and Linux by up to an order of magnitude, so each platform's legs are dealt by their own platform's seconds.
+platforms by up to an order of magnitude, so each platform's legs, Windows, Linux, and macOS, are dealt by their own
+platform's seconds.
 One run's job times differ a lot from the next run's, so this script rewrites that table from several runs and takes
 each job's median on each platform: it reads the logs of every leg of each run through `gh run view --log`, takes each
 `ok <seconds>s <job>` line the runner printed on a leg, with the pool's note on a job it retried left off the job's
 name, and sums a suite's shards under the suite's path. A Windows leg is read under its name or the one it had before
 the Linux job joined the required check, and a Linux leg under its name, the one it had before it was named as the
-Windows legs are, or as the one leg of the job that ran every job unsharded before Linux was dealt, so the median spans
-each rename. A job a run reports more than once on a platform, as a weekly run's second interpreter and second
-validation step do, counts at its mean within that run.
+Windows legs are, or as the one leg of the job that ran every job unsharded before Linux was dealt, and a macOS leg
+under its name, so the median spans each rename. A job a run reports more than once on a platform, as a weekly run's
+second interpreter and second validation step do, counts at its mean within that run.
 RUN_ID names the runs to read; without any, the latest successful push runs of validate.yml on main are read,
 DEFAULT_RUN_COUNT of them or --count. The newest run decides which jobs each platform's table names: a job it does not
 report, such as a suite since renamed or removed, is left out, and a job it reports that older runs lack takes the

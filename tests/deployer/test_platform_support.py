@@ -721,6 +721,33 @@ class InstallHintTests(unittest.TestCase):
         self.assertIs(help_, platform_support.INSTALL_HELP)
         self.assertIn('"Installing the tools"', " ".join(platform_support.INSTALL_HELP))
 
+    def test_each_platforms_help_names_only_routes_its_own_install_section_holds(self) -> None:
+        # Each route a help line may name, and the words its platform's section of docs/installation.md holds it by.
+        routes = {
+            "Chocolatey": "Chocolatey",
+            "Scoop": "Scoop",
+            "MacPorts": "MacPorts",
+            "Microsoft's package repository": "Microsoft's package repository",
+            "other distributions": "Fedora",
+            "direct downloads": "Official download",
+            "official downloads": "Official download",
+        }
+        document = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        helps = {
+            "On Windows": platform_support.WINDOWS_INSTALL_HELP,
+            "On Linux": platform_support.LINUX_INSTALL_HELP,
+            "On macOS": platform_support.MACOS_INSTALL_HELP,
+        }
+        for heading, help_ in helps.items():
+            section = document.split(f"### {heading}\n", 1)[1].split("\n### ", 1)[0]
+            text = " ".join(help_)
+            named = [route for route in routes if route in text]
+            with self.subTest(heading=heading):
+                # Every help names a route, so a help that named none would not pass unread.
+                self.assertTrue(named)
+                for route in named:
+                    self.assertIn(routes[route], section, route)
+
     def test_windows_help_names_git_bash_by_an_absolute_path(self) -> None:
         # find_bash passes over a relative GIT_BASH, so the help asks for an absolute one.
         self.assertIn(

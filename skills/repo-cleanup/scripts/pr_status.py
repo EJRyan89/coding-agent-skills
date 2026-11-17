@@ -196,7 +196,7 @@ def change_match(repository_root: str, base_ref: str, git: GitClient | None = No
         cannot = f"cannot find the merge base of {base_ref} and {tip}"
         found = _quiet(client, repository_root, ["merge-base", base_ref, tip], cannot)
         if found is None:
-            return None  # no merge base: the tip never left base_ref, so no change of it is a change since then
+            return None  # no merge base: the tip shares no history with base_ref, so it has no change to compare
         fork_point = output_line(found)
         if not SHA_PATTERN.fullmatch(fork_point):
             raise QueryError(f"{cannot}: git answered {fork_point!r}, not a commit")

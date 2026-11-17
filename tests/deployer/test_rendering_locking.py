@@ -572,7 +572,8 @@ class RenderedExecutableTests(DeployerTestCase):
         else:
             installer = "brew" if sys.platform == "darwin" else "sudo apt"
             self.assertIn(f"  - ShellCheck (lints rendered Bash): {installer} install shellcheck", result.output)
-            self.assertIn('or direct downloads, see "Installing the tools" in', result.output)
+            routes = "For official downloads" if sys.platform == "darwin" else "or direct downloads"
+            self.assertIn(f'{routes}, see "Installing the tools" in', result.output)
         self.assertNotIn("Bash (checks", result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
 

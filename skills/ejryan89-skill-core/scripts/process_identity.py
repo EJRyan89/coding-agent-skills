@@ -38,8 +38,8 @@ ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 # The error OpenProcess sets for a PID that names no process.
 ERROR_INVALID_PARAMETER = 87
 # The largest PID each platform can give a process: OpenProcess takes a DWORD, Linux's PID_MAX_LIMIT on a 64-bit
-# kernel, 4 * 1024 * 1024, bounds pid_max, every PID being below it, and macOS's kernel gives none at or past its
-# PID_MAX, 99999.
+# kernel, 4 * 1024 * 1024, bounds pid_max, every PID being below it, and macOS's kernel gives none past its PID_MAX,
+# 99999, which the bound admits.
 WINDOWS_PID_MAXIMUM = 2**32 - 1
 LINUX_PID_MAXIMUM = 4 * 1024 * 1024 - 1
 MACOS_PID_MAXIMUM = 99_999
