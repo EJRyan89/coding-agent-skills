@@ -4250,6 +4250,33 @@ def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_the
     ]
 
 
+@pytest.mark.parametrize(
+    ("fence", "expected"),
+    [
+        # A console session's command, continued after a backslash with Bash's `> ` prompt, is one command.
+        ("```console\n$ git status \\\n> --short\n```\n", [(5, "git status --short")]),
+        # And continued without the prompt, the next line's blanks kept as Bash keeps them.
+        ("```console\n$ git status \\\n  --short\n```\n", [(5, "git status   --short")]),
+        # A Bash fence's continued command is one command too.
+        ("```bash\ngit status \\\n  --short\n```\n", [(5, "git status   --short")]),
+        # An escaped backslash continues nothing, so the next line is a command of its own.
+        ("```bash\necho a \\\\\n--short\n```\n", [(6, "--short")]),
+        # A comment's backslash continues nothing either.
+        ("```bash\n# note \\\ngit status\n```\n", [(6, "git status")]),
+        # PowerShell continues a line with a backtick, so a backslash there joins nothing.
+        ("```powershell\necho a \\\ngit status\n```\n", [(6, "git status")]),
+    ],
+)
+def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
+    fence: str, expected: list[tuple[int, str]], tmp_path: Path
+) -> None:
+    allowed = ["Bash(echo *)", "PowerShell(echo *)"]
+    ungranted = [line for line in grant_lines(tmp_path, allowed, fence) if line.startswith("UNGRANTED ")]
+    assert ungranted == [
+        f"UNGRANTED {tool} {line} {command}" for line, command in expected for tool in ("Bash", "PowerShell")
+    ]
+
+
 def test_scan_reads_the_scripts_a_console_session_runs_and_not_those_its_output_names(tmp_path: Path) -> None:
     folder = tmp_path / "skill"
     write(

@@ -91,17 +91,19 @@ when unquoted, before any *. NO_SCRIPT_ALLOWED <entry> is any other pattern with
 script: after the program, and capital-letter switches that take no value such as -B, no path ending in a script's
 suffix, nor, for git or gh, a subcommand right after the program; so python *, bash -c *, or git * pre-approves any
 code or subcommand the * supplies. A command is a fence command, each line of a shell or PowerShell fence that is
-no comment, a console session's commands alone, as the Bash paragraph below reads them, or a code span outside a fence
-that runs a script: a program and a script's path as that rule reads them. UNGRANTED <tool> <line> <command> is a
-command that no pattern of a shell with patterns matches, so running it through that tool prompts. A pattern matches
-the command's text, quotes included, with * for any text, and one whose only * ends it after a space also matches
-the bare command before it. A line that joins commands with &&, ||, ;, or | outside quotes is judged one command at
-a time, as Claude Code checks it, and UNGRANTED names the command no pattern matches. EXPANDS <line> <command> is a
-command line that expands a shell variable or command substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS,
-which prompts in both shells whatever is granted, so it is reported whether or not the skill has allowed-tools.
-IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command and no code span outside a
-fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant: no turn
-starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
+no comment, a console session's commands alone, as the Bash paragraph below reads them, and in a POSIX shell's, fish's,
+or console fence a line a backslash continues joined with the next, as Bash joins them, on its first line; or a code
+span outside a fence that runs a script: a program and a script's path as that rule reads them.
+UNGRANTED <tool> <line> <command> is a command that no pattern of a shell with patterns matches, so running it through
+that tool prompts. A pattern matches the command's text, quotes included, with * for any text, and one whose only *
+ends it after a space also matches the bare command before it. A line that joins commands with &&, ||, ;, or | outside
+quotes is judged one command at a time, as Claude Code checks it, and UNGRANTED names the command no pattern matches.
+EXPANDS <line> <command> is a command line that expands a shell variable or command substitution other than
+${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted, so it is reported whether or not
+the skill has allowed-tools. IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command
+and no code span outside a fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden
+skill with any grant: no turn starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED
+lines.
 A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
 saying so, and its command must keep prompting. A command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
@@ -387,6 +389,9 @@ SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST}
 CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
 # A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
 CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
+# The labels of a fence whose shell joins a line a backslash continues to the next: the POSIX shells', console's, and
+# fish's. PowerShell continues a line with a backtick and cmd with a caret, which the grant checks do not join.
+BACKSLASH_FENCES = FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"]
 # The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
 BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
@@ -883,17 +888,41 @@ def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -
 
 def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
     """Each command line in a shell or PowerShell fence, wherever it sits, with its file line number: each line of
-    the fence, or, in a session, each line session_commands reads, without its prompt."""
+    the fence, or, in a session, each line session_commands reads, without its prompt, and in a BACKSLASH_FENCES fence
+    joined with the lines a backslash continues it into, as continued_commands joins them."""
     commands: list[tuple[int, str]] = []
     for fence in find_fences(body):
-        if fence.language.casefold() not in SHELL_FENCES | POWERSHELL_FENCES:
+        label = fence.language.casefold()
+        if label not in SHELL_FENCES | POWERSHELL_FENCES:
             continue
         lines = session_commands(fence, body)
-        for index, text in [(index, fence.content(body[index])) for index in fence.body()] if lines is None else lines:
+        if lines is None:
+            lines = [(index, fence.content(body[index])) for index in fence.body()]
+        for index, text in continued_commands(lines) if label in BACKSLASH_FENCES else lines:
             command = COMMAND_JOIN.sub("", text.strip())
             if command and not command.startswith("#"):
                 commands.append((start + index + 1, command))
     return commands
+
+
+def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    r"""Each command of a fence's lines, by its first line's index: a line CONTINUED_LINE ends, a backslash no other
+    escapes, runs on into the next, the backslash and the line break dropped as Bash drops them, the next line's blanks
+    kept, so `git status \` and `  --short` run `git status   --short`. A comment's line continues nothing, and a line
+    that ends the fence keeps its backslash. Only running the command would settle a backslash that ends a quoted
+    string's line, which Bash keeps inside single quotes, or a comment that follows a command, as in `echo a # note \`;
+    both join the next line here."""
+    commands: list[tuple[int, str]] = []
+    continued: tuple[int, str] | None = None
+    for index, text in lines:
+        if continued is not None:
+            index, text = continued[0], continued[1][:-1] + text
+        if CONTINUED_LINE.search(text) is not None and not text.lstrip().startswith("#"):
+            continued = (index, text)
+        else:
+            continued = None
+            commands.append((index, text))
+    return commands if continued is None else [*commands, continued]
 
 
 def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | None:
