@@ -1130,6 +1130,100 @@ def _two_branch_chain(first: str) -> str:
     )
 
 
+def test_command_reader_reads_each_name_of_a_chain_cut_in_one_branch_once_per_cut() -> None:
+    # Each link is the one before, cut at its `%` in one branch and whole in the other, so each name is read under
+    # two cuts. A record copied at each cut would double the reads with each link again; one record keyed by the cut
+    # reads each name once under each cut.
+    links = "".join(
+        f"    a{link} = a{link - 1} % given if flag else a{link - 1}\n" for link in range(1, CHAIN_LINKS + 1)
+    )
+    script = (
+        f'import subprocess\ndef _chained(flag, given):\n    a0 = "git"\n{links}'
+        f'    subprocess.run([a{CHAIN_LINKS}, "status"], check=True)\n'
+    )
+    sources = CommandReader._name_sources
+    reads = 0
+
+    def counted(reader: CommandReader, node: ast.Name, question: skill_scripts.Question) -> list[skill_scripts.Source]:
+        nonlocal reads
+        reads += 1
+        if reads > 8 * CHAIN_LINKS:
+            raise AssertionError(f"the command reader read a name more than {8 * CHAIN_LINKS} times")
+        return sources(reader, node, question)
+
+    reader = CommandReader(ast.parse(script))
+    with mock.patch.object(CommandReader, "_name_sources", counted):
+        problems = reader.problems("tool.py")
+    assert problems == []
+    assert sorted({found for call in reader.calls for found in reader.started(call)}) == [(3, "git")]
+
+
+@pytest.mark.parametrize(
+    ("script", "commands", "expected"),
+    [
+        pytest.param(
+            'import subprocess\ndef run(flag, x):\n    TEMPLATE = "git status {} && curl https://example.invalid"\n'
+            "    command = TEMPLATE.format(x) if flag else TEMPLATE\n"
+            "    subprocess.run(command, shell=True, check=True)\n",
+            ["curl", "git"],
+            [],
+            id="a name through .format() and plainly",
+        ),
+        pytest.param(
+            'import subprocess\ndef run(flag, x):\n    TEMPLATE = "echo {} && git push"\n'
+            "    subprocess.run(TEMPLATE.format(x) if flag else TEMPLATE, shell=True, check=True)\n",
+            ["echo", "git"],
+            [],
+            id="a name through .format() and plainly in one expression",
+        ),
+        pytest.param(
+            'import subprocess\ndef template():\n    return "git status %s && curl https://example.invalid"\n'
+            "def run(flag, x):\n    subprocess.run((template() % x) if flag else template(), shell=True, check=True)\n",
+            ["curl", "git"],
+            [],
+            id="a return through % and plainly",
+        ),
+        pytest.param(
+            "import subprocess\ndef _run(command, flag, x):\n"
+            "    subprocess.run(command % x if flag else command, shell=True, check=True)\n"
+            'def main(flag, x):\n    _run("git status %s && curl https://example.invalid", flag, x)\n',
+            ["curl", "git"],
+            [],
+            id="a parameter through % and plainly",
+        ),
+        pytest.param(
+            'import subprocess\nPROGRAM = "%s"\ndef run(flag, x):\n    program = PROGRAM if flag else PROGRAM % x\n'
+            '    subprocess.run([program, "status"], check=True)\n',
+            [],
+            [
+                "tool.py:2 cannot read %-format command without a literal program prefix",
+                "tool.py:2 cannot read the program in `'%s'`, which names none",
+            ],
+            id="a name plainly and through %",
+        ),
+        pytest.param(
+            'import subprocess\nPROGRAM = "{}"\ndef run(flag, x):\n'
+            "    program = PROGRAM if flag else PROGRAM.format(x)\n"
+            '    subprocess.run([program, "status"], check=True)\n',
+            [],
+            [
+                "tool.py:2 cannot read .format() command without a literal program prefix",
+                "tool.py:2 cannot read the program in `'{}'`, which names none",
+            ],
+            id="a name plainly and through .format()",
+        ),
+    ],
+)
+def test_command_reader_reads_a_key_again_under_each_cut_that_reaches_it(
+    script: str, commands: list[str], expected: list[str]
+) -> None:
+    # A `%` or `.format()` cuts each source's text at its first placeholder, so what a key gives depends on the cut
+    # above it: a key read once under one cut must be read again under another, or that route's programs are lost.
+    reader = CommandReader(ast.parse(script))
+    assert sorted(reader.commands({"curl", "echo", "git"})) == commands
+    assert [problem.partition(";")[0] for problem in reader.problems("tool.py")] == expected
+
+
 @pytest.mark.parametrize(
     ("first", "programs", "expected"),
     [
@@ -1194,6 +1288,37 @@ def test_command_reader_reads_each_name_of_a_two_branch_chain_once(
                 "tool.py:5 cannot read the program in `program()`, whose function returns none",
                 "tool.py:6 cannot read the program in `program()`, whose function returns none",
             ],
+        ),
+        (
+            # An attribute assigned to itself over a literal, read twice in one command.
+            'import subprocess\nclass Tool:\n    def __init__(self):\n        self.program = "git"\n'
+            "    def again(self):\n        self.program = self.program\n"
+            "    def run(self, flag):\n        subprocess.run([self.program if flag else self.program])\n",
+            [(4, "git")],
+            [],
+        ),
+        (
+            # An attribute assigned from another attribute, each read in one command.
+            'import subprocess\nclass Tool:\n    def __init__(self):\n        self.first = "git"\n'
+            "        self.second = self.first\n"
+            "    def run(self, flag):\n        subprocess.run([self.first if flag else self.second])\n",
+            [(4, "git")],
+            [],
+        ),
+        (
+            # A collection two loops walk, each loop's name read in one command.
+            'import subprocess\nPROGRAMS = ["git", "gh"]\ndef run(flag):\n    for first in PROGRAMS:\n'
+            "        for second in PROGRAMS:\n            subprocess.run([first if flag else second])\n",
+            [(2, "gh"), (2, "git")],
+            [],
+        ),
+        (
+            # A parameter two call sites pass, reached through two names in one command.
+            "import subprocess\ndef _run(program, flag):\n    chosen = program\n"
+            "    subprocess.run([program if flag else chosen])\n"
+            'def main(flag):\n    _run("git", flag)\n    _run("gh", flag)\n',
+            [(6, "git"), (7, "gh")],
+            [],
         ),
     ],
 )

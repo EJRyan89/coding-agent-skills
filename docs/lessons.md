@@ -708,9 +708,10 @@ removed fails validation until its pattern follows it.
   each name once per question, since whether a name reaches an import depends only on the name and the scope that
   owns it, and the answer is an any, so a name read again either reached none or is still on the path;
   `tests.validation.skill_scripts:CommandReader.program_literals`, which reads each name, function, collection,
-  attribute, and parameter once per question, a key False while its read is on the path and True once done, since
-  the answer is a union of sources, still giving at each expression that reaches a finished key the Unreadable it
-  places there; and `tests.validation.python_checks:_ClassBases.reached`,
+  attribute, and parameter once per question for each cut, the placeholders a % format or a .format() call above it cuts its
+  sources' text at, since what a key gives depends only on the key and that cut and the answer is a union of
+  sources, a key on the path under any cut being a cycle, and still gives at each expression that reaches a key
+  already read the Unreadable it places there; and `tests.validation.python_checks:_ClassBases.reached`,
   `tests.validation.python_checks:_InheritedLibraries.bound`, and `tests.validation.markdown_links:_suite_tests`,
   which read each re-exported name, class, or test class once per question, since each answer is a union
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
@@ -732,6 +733,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_validation_support.py::test_callable_resolver_reads_each_name_of_a_two_branch_attribute_chain_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_reads_each_name_of_a_two_branch_chain_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_answers_names_and_functions_that_lead_back_to_themselves`,
+  `tests/validation/test_shell_readers.py::test_command_reader_reads_each_name_of_a_chain_cut_in_one_branch_once_per_cut`,
+  `tests/validation/test_shell_readers.py::test_command_reader_reads_a_key_again_under_each_cut_that_reaches_it`,
   `tests/validation/test_python_checks.py::test_ctypes_policy_reads_each_class_of_a_diamond_of_bases_once`,
   `tests/validation/test_python_checks.py::test_ctypes_policy_reads_each_module_of_a_two_way_re_export_chain_once`,
   `tests/validation/test_markdown_links.py::CitedTestPolicy::test_a_diamond_of_test_classes_is_read_once_per_class`
@@ -742,7 +745,9 @@ removed fails validation until its pattern follows it.
   `options = dict(**options)` in a loop, with no set at all; and a walk over a table of functions that keeps the
   functions it is in per path, which grows factorially with functions that call each other; and a walk over a
   class's bases or over the modules a name may reach, which fans out at a diamond of bases or at two modules of one
-  name. A hit in `validation_support.py`'s `_calls_of` is the accepted
+  name. A walk whose answer is changed on its way up by what reached it, as a % format or a .format() call cuts a command's
+  text, keys what it has read by that change too, and keeps one record for the question rather than a copy at each
+  change, whose reads double again with each link. A hit in `validation_support.py`'s `_calls_of` is the accepted
   per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
