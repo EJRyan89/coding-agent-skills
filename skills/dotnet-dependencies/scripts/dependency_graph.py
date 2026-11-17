@@ -66,7 +66,8 @@ A path a solution or project names is read only inside the examined tree, the ch
 directory searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES
 (msbuild_reader's docstring).
 The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line
-FAILED <reason> when the root cannot be resolved.
+FAILED <reason> when it cannot finish, such as when the root cannot be resolved, --project names no project of the
+root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line

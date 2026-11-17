@@ -153,7 +153,8 @@ def _let_go(descriptor: int) -> None:
 
 
 def held_elsewhere(path: Path) -> bool:
-    """Whether another process holds the lock of the file at `path`, creating nothing: False when no file is there.
+    """Whether another open of the file at `path` holds its lock, one in this process included, creating nothing:
+    False when no file is there.
 
     The lock is taken and let go at once when it is free, so a process that tries it meanwhile is refused for that
     moment. The OSError of the open is raised as it came, and a `FileLockError` when the file system refuses the lock.

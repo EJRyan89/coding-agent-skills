@@ -23,7 +23,7 @@
     "claude-agent": [
       {
         "page": "https://code.claude.com/docs/en/sub-agents",
-        "passage": "A project subagent is a Markdown file in .claude/agents whose frontmatter requires a name, of at most 256 characters without a colon, and a description, and whose tools, given as a comma-separated string or a YAML list, inherit every tool when omitted, beside optional model and hooks."
+        "passage": "A project subagent is a Markdown file in .claude/agents whose frontmatter requires a name, of at most 256 characters without a colon, and a description, and whose tools, given as a comma-separated string or a YAML list, inherit every tool when omitted, beside optional model and hooks; Claude Code scans .claude/agents recursively, so a definition in a subfolder is one too."
       }
     ],
     "claude-hook": [

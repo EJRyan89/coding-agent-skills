@@ -767,6 +767,18 @@
       ]
     },
     {
+      "url": "https://code.claude.com/docs/en/setup",
+      "subject": "claude-code",
+      "governs": "installation: the native installer, Homebrew, WinGet, the apt and dnf repositories, and npm",
+      "read": []
+    },
+    {
+      "url": "https://github.com/openai/codex",
+      "subject": "codex",
+      "governs": "installation: the install scripts, npm, Homebrew, and GitHub releases",
+      "read": []
+    },
+    {
       "url": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
       "subject": "copilot-cli",
       "governs": "the changelog: each release's new and changed behavior",

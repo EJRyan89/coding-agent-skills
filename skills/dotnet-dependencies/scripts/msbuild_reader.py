@@ -1,10 +1,10 @@
 """Readers for the files a .NET solution's dependency graph is built from, each into a plain record.
 
 Every XML file goes through ejryan89-skill-core's `xml_reader`, which refuses a DOCTYPE or an entity before parsing, and
-the project.assets.json a restore writes through the json module. A file a reader cannot read raises `Unreadable`, which
-names the file and the reason, so the caller prints one UNREADABLE line and goes on: a bad file costs its own facts,
-never the whole answer. Element names are matched without their namespace (ejryan89-skill-core's `msbuild_xml`), because
-an old-style project carries the MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the
+the project.assets.json a restore writes through its `json_reader`. A file a reader cannot read raises `Unreadable`,
+which names the file and the reason, so the caller prints one UNREADABLE line and goes on: a bad file costs its own
+facts, never the whole answer. Element names are matched without their namespace (ejryan89-skill-core's `msbuild_xml`),
+because an old-style project carries the MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the
 assembly-binding one.
 
 A project file and the files it imports are evaluated as MSBuild evaluates them by `msbuild_evaluation`, which reads

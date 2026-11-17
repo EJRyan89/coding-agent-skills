@@ -4,8 +4,9 @@
 is `stop`, compared as the file system compares paths (`dotnet_solution.same_path`: normalized, and case-folded where
 the file system ignores case), or after the file system's root. A start that is not below `stop` therefore walks to the
 root, so a caller that must stay inside a tree starts inside it. Without a `stop` the walk ends at the root, as
-MSBuild's search for a `Directory.Build.props` does. The walk is lexical: it reads nothing, so a caller decides what
-each folder holds, and a link on the way is a folder like any other.
+MSBuild's search for a `Directory.Build.props` does. The walk is lexical: it resolves no link and reads no file, so a
+caller decides what each folder holds, and a link on the way is a folder like any other; only the comparison with
+`stop` reaches the file system, where `path_keys` lists each directory on the path to learn whether it folds case.
 """
 
 from __future__ import annotations

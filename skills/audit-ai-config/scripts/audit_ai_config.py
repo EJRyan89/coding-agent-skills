@@ -95,7 +95,7 @@ from typed_fields import FieldError, FieldReader
 # ---------------------------------------------------------------------------
 
 PRINT_ALLOWED = {
-    "print_report": "prints the Markdown or JSON report the user asked for, as it is, over many lines",
+    "print_report": "prints the relay, Markdown, or JSON report the user asked for, as it is, over many lines",
 }
 SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFO": 2}
 
@@ -4127,7 +4127,7 @@ def format_json(result: AuditResult, sources: dict[str, tuple[Source, ...]] | No
 
 
 def print_report(report: str) -> None:
-    """Print the report the user asked for, Markdown or JSON, as it is."""
+    """Print the report the user asked for, the relay, Markdown, or JSON, as it is."""
     print(report, end="")
 
 

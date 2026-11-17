@@ -1794,7 +1794,7 @@ UNINSTALL_CHECK += UNINSTALL_CHECK[UNINSTALL_CHECK.index("  deployable-linux:") 
 
 
 class UninstallCheckFixtures(unittest.TestCase):
-    def test_both_jobs_check_the_layout_before_the_uninstall_and_report_what_is_left_after(self) -> None:
+    def test_every_job_checks_the_layout_before_the_uninstall_and_reports_what_is_left_after(self) -> None:
         self.assertEqual([], uninstall_check_problems(UNINSTALL_CHECK))
 
     def test_a_check_in_the_steps_own_shell_or_out_of_place_fails(self) -> None:

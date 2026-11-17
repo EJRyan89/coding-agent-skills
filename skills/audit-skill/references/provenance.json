@@ -208,7 +208,11 @@
         "passage": "A PreToolUse hook runs before every tool call its matcher matches, and a command hook's timeout defaults to 600 seconds."
       },
       {
-        "decision": "A plugin agent's own hooks are ignored, so a plugin runs each agent's hooks from its hooks/hooks.json, on every matching call of every session while the plugin is enabled, holding only to its own agent: the plugin row of this source's docs/design.md."
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "A plugin subagent's hooks, mcpServers, and permissionMode frontmatter fields are ignored when Claude Code loads agents from a plugin."
+      },
+      {
+        "decision": "Since a plugin agent's own hooks are ignored, a plugin runs each agent's hooks from its hooks/hooks.json, on every matching call of every session while the plugin is enabled, holding only to its own agent: the plugin row of this source's docs/design.md."
       }
     ],
     "REPLY_BOUNDED": [
