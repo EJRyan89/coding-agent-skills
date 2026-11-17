@@ -433,7 +433,9 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 
 
 def skill_path_problems(root: Path) -> list[str]:
-    """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
+    """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}. Every body line of
+    a shell fence is a shell line here, a `console` session's prompts and output included, which audit-skill reads
+    apart; no fence here is labelled `console`, and an output line read so is held to more rules, not fewer."""
     skills = {path.parent.name for path in file_presence.matching(root / "skills", "*/SKILL.md")}
     problems: list[str] = []
     for path, dependencies, directory in _path_documents(root):

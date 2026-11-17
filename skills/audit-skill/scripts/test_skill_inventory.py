@@ -4250,6 +4250,23 @@ def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_the
     ]
 
 
+def test_scan_reads_the_scripts_a_console_session_runs_and_not_those_its_output_names(tmp_path: Path) -> None:
+    folder = tmp_path / "skill"
+    write(
+        folder / "SKILL.md",
+        "```console\n"
+        '$ python3 -B "${CLAUDE_SKILL_DIR}/scripts/gone.py" run\n'  # 2: a command running a script that is not there
+        'wrote "${CLAUDE_SKILL_DIR}/scripts/later.py"\n'  # output, which runs nothing
+        "```\n",
+    )
+    code, lines, error = run("scan", str(folder))
+    assert (code, error) == (0, "")
+    prefix = skill_inventory.SKILL_DIR_PREFIX
+    assert [line for line in lines if line.startswith("SCRIPT_MISSING ")] == [
+        f"SCRIPT_MISSING {(folder / 'SKILL.md').as_posix()} 2 {prefix}scripts/gone.py"
+    ]
+
+
 @pytest.mark.parametrize(
     "prompt",
     [
