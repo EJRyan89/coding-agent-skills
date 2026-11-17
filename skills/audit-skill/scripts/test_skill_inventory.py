@@ -4265,6 +4265,8 @@ def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_the
         ("```bash\n# note \\\ngit status\n```\n", [(6, "git status")]),
         # PowerShell continues a line with a backtick, so a backslash there joins nothing.
         ("```powershell\necho a \\\ngit status\n```\n", [(6, "git status")]),
+        # A fence that ends on a continued line keeps that line as its own command, its backslash stripped.
+        ("```bash\necho a\ngit status \\\n```\n", [(6, "git status")]),
     ],
 )
 def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
