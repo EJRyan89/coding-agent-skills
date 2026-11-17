@@ -1113,3 +1113,94 @@ def test_command_reader_follows_each_name_of_a_rebound_loop_variable_once(first:
     with mock.patch.object(CommandReader, "_runner", counted):
         problems = CommandReader(ast.parse(script)).problems("tool.py")
     assert [problem.partition(";")[0] for problem in problems] == expected
+
+
+# A chain of names, each bound in two branches to the one before, over a first binding the case gives.
+CHAIN_LINKS = 16
+
+
+def _two_branch_chain(first: str) -> str:
+    links = "".join(
+        f"    if flag:\n        a{link} = a{link - 1}\n    else:\n        a{link} = a{link - 1}\n"
+        for link in range(1, CHAIN_LINKS + 1)
+    )
+    return (
+        f"import subprocess\ndef chained(flag, given):\n    a0 = {first}\n{links}"
+        f'    subprocess.run([a{CHAIN_LINKS}, "status"], check=True)\n'
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "programs", "expected"),
+    [
+        ('"git"', [(3, "git")], []),
+        ("given", [], ["tool.py:2 cannot read the program in parameter given, which no call in this module passes"]),
+    ],
+)
+def test_command_reader_reads_each_name_of_a_two_branch_chain_once(
+    first: str, programs: list[tuple[int, str]], expected: list[str]
+) -> None:
+    # A walk that kept a set of the names on each path read a name once for every path to it, two to the power of
+    # the chain's length: 131,071 reads of a name at sixteen links. Read once per question, each name is reached once
+    # through each of its two bindings.
+    sources = CommandReader._name_sources
+    reads = 0
+
+    def counted(reader: CommandReader, node: ast.Name, question: skill_scripts.Question) -> list[skill_scripts.Source]:
+        nonlocal reads
+        reads += 1
+        if reads > 4 * CHAIN_LINKS:
+            raise AssertionError(f"the command reader read a name more than {4 * CHAIN_LINKS} times")
+        return sources(reader, node, question)
+
+    reader = CommandReader(ast.parse(_two_branch_chain(first)))
+    with mock.patch.object(CommandReader, "_name_sources", counted):
+        problems = reader.problems("tool.py")
+    assert sorted({found for call in reader.calls for found in reader.started(call)}) == programs
+    assert [problem.partition(";")[0] for problem in problems] == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "programs", "expected"),
+    [
+        (
+            # Two names bound to each other, over a literal.
+            'import subprocess\ndef looped(flag):\n    a = "git"\n    b = a\n    while flag:\n        a = b\n'
+            "    subprocess.run([a])\n",
+            [(3, "git")],
+            [],
+        ),
+        (
+            # A name read from itself, over a parameter other modules may pass.
+            "import subprocess\ndef looped(flag, given):\n    a = given\n    while flag:\n        a = a\n"
+            "    subprocess.run([a])\n",
+            [],
+            ["tool.py:2 cannot read the program in parameter given, which no call in this module passes"],
+        ),
+        (
+            # A function that returns its own call and a literal.
+            'import subprocess\ndef program(flag):\n    return program(flag) if flag else "git"\n'
+            "def run(flag):\n    subprocess.run([program(flag)])\n",
+            [(3, "git")],
+            [],
+        ),
+        (
+            # A function that returns nothing, reached from two names: each call is named, though the function is
+            # read once.
+            "import subprocess\ndef program():\n    pass\ndef run(flag):\n    first = program()\n"
+            "    second = program()\n    subprocess.run([first if flag else second])\n",
+            [],
+            [
+                "tool.py:5 cannot read the program in `program()`, whose function returns none",
+                "tool.py:6 cannot read the program in `program()`, whose function returns none",
+            ],
+        ),
+    ],
+)
+def test_command_reader_answers_names_and_functions_that_lead_back_to_themselves(
+    script: str, programs: list[tuple[int, str]], expected: list[str]
+) -> None:
+    reader = CommandReader(ast.parse(script))
+    started = [found for call in reader.calls for found in reader.started(call)]
+    assert sorted(set(started)) == programs
+    assert [problem.partition(";")[0] for problem in reader.problems("tool.py")] == expected

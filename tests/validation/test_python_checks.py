@@ -8523,6 +8523,89 @@ def test_ctypes_policy_refuses_a_library_a_base_class_binds_in_another_module(
     assert all("other than through the class that binds it" in problem for problem in found), found
 
 
+# The levels of a chain each test below reads, every level reached two ways.
+TWO_WAY_LEVELS = 16
+
+
+def _counting(owner: type, method: str, limit: int, what: str) -> Callable[..., Any]:
+    """A stand-in for a reader's method that counts its calls and fails once they pass `limit`."""
+    original = getattr(owner, method)
+    calls = [0]
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        if calls[0] > limit:
+            raise AssertionError(f"the ctypes policy read {what} more than {limit} times")
+        return original(*args, **kwargs)
+
+    return counted
+
+
+def test_ctypes_policy_reads_each_class_of_a_diamond_of_bases_once() -> None:
+    # Each level is two classes over the class before, joined again by the next. A walk that kept a set of the classes
+    # on each path read a class once for every path to it, two to the power of the levels; one set for each question
+    # reads each class once, so each class's question reads at most every class.
+    levels = "".join(
+        f"class L{level}(C{level - 1}):\n    pass\n\n\nclass R{level}(C{level - 1}):\n    pass\n\n\n"
+        f"class C{level}(L{level}, R{level}):\n    pass\n\n\n"
+        for level in range(1, TWO_WAY_LEVELS + 1)
+    )
+    source = (
+        f"from job_tree import Handles\n\n\nclass C0(Handles):\n    pass\n\n\n{levels}"
+        f"class Last(C{TWO_WAY_LEVELS}):\n    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n"
+    )
+    classes = 3 * TWO_WAY_LEVELS + 3
+    counted = _counting(python_checks._InheritedLibraries, "bound", classes * classes, "a class")
+    with (
+        tempfile.TemporaryDirectory() as temporary,
+        mock.patch.object(python_checks._InheritedLibraries, "bound", counted),
+    ):
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/job_tree.py": CTYPES_BASE_OWNER,
+                "skills/alpha/scripts/alpha.py": source,
+            },
+        )
+        found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [
+        f"skills/alpha/scripts/alpha.py:{source.splitlines().index('    def open(self, pid):') + 2}"
+    ]
+
+
+def test_ctypes_policy_reads_each_module_of_a_two_way_re_export_chain_once() -> None:
+    # Two modules of each name re-export the class from the name before, so a module's name reaches both. A walk
+    # that kept a set of the names on each path read a module once for every path to it, two to the power of the
+    # levels; one set for each question reads each module's name once.
+    modules = {
+        f"skills/{side}/scripts/m{level}.py": f"from m{level - 1} import Handles\n"
+        for level in range(1, TWO_WAY_LEVELS + 1)
+        for side in ("alpha", "beta")
+    }
+    user = (
+        f"from m{TWO_WAY_LEVELS} import Handles\n\n\nclass B(Handles):\n"
+        "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n"
+    )
+    counted = _counting(python_checks._ClassBases, "reached", 4 * TWO_WAY_LEVELS, "a re-exported name")
+    with (
+        tempfile.TemporaryDirectory() as temporary,
+        mock.patch.object(python_checks._ClassBases, "reached", counted),
+    ):
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/alpha/scripts/m0.py": CTYPES_BASE_OWNER,
+                "skills/beta/scripts/m0.py": CTYPES_BASE_OWNER,
+                **modules,
+                "skills/gamma/scripts/user.py": user,
+            },
+        )
+        found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/gamma/scripts/user.py:6"]
+
+
 def test_ctypes_policy_names_a_module_it_cannot_read() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

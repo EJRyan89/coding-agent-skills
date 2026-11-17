@@ -484,6 +484,9 @@ class Unreadable:
 # What the reader finds for a command: the string literal that names its program, or where it cannot read one.
 Source = ast.Constant | Unreadable
 Function = ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+# The keys one reading of a command expression has read, each True once its read is done and False while it is on the
+# current path, as CommandReader.program_literals keeps them.
+Question = dict[tuple[str, object], bool]
 
 
 @dataclass(frozen=True)
@@ -790,12 +793,20 @@ class CommandReader:
             self.parameters[(id(self.resolver.scopes[id(argument)]), argument.arg)] = (function, argument)
             self.parameter_functions[id(argument)] = function
 
-    def program_literals(self, node: ast.expr | None, seen: frozenset[object] = frozenset()) -> list[Source]:
+    def program_literals(self, node: ast.expr | None, question: Question | None = None) -> list[Source]:
         """What names the program a command expression runs: a string, the first item of a list or tuple, the left
         side of a +, the literal prefix of an f-string or of a % or .format() string, what a join, a split, a path
         conversion, or a lookup is given, what one of the module's own functions returns, every value a name is bound
         to, and, for a parameter, what every call of its function passes it. Anything else is Unreadable, and so is an
-        f-string or a format whose prefix names no program."""
+        f-string or a format whose prefix names no program.
+
+        One question, the reading of one expression, follows each binding, function, attribute, and parameter once:
+        `question` records each key it has read, False while its read is on the current path and True once it is done.
+        The answer is a union of sources, each found in what a key holds alone, so a key read again adds nothing new
+        and is not walked again, while what is placed at the expression that reached it, the Unreadable for a name
+        bound to nothing the module reads or a function that returns none, is still given at each such expression. A
+        key on the path is a cycle and gives nothing, as before."""
+        question = {} if question is None else question
         if node is None:
             return []
         if isinstance(node, ast.Constant):
@@ -807,25 +818,25 @@ class CommandReader:
             return [Unreadable(node, "f-string command without a literal program prefix")]
         if isinstance(node, (ast.List, ast.Tuple)):
             if node.elts:
-                return self.program_literals(node.elts[0], seen)
+                return self.program_literals(node.elts[0], question)
             return [Unreadable(node, f"the program in `{ast.unparse(node)}`, which the module fills in elsewhere")]
         if isinstance(node, (ast.Starred, ast.NamedExpr, ast.Await)):
-            return self.program_literals(node.value, seen)
+            return self.program_literals(node.value, question)
         if isinstance(node, ast.IfExp):
-            return self.program_literals(node.body, seen) + self.program_literals(node.orelse, seen)
+            return self.program_literals(node.body, question) + self.program_literals(node.orelse, question)
         if isinstance(node, ast.BoolOp):
-            return [found for value in node.values for found in self.program_literals(value, seen)]
+            return [found for value in node.values for found in self.program_literals(value, question)]
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             empty = isinstance(node.left, (ast.List, ast.Tuple)) and not node.left.elts
-            return self.program_literals(node.right if empty else node.left, seen)
+            return self.program_literals(node.right if empty else node.left, question)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-            return _prefixes(self.program_literals(node.left, seen), "%", "%-format")
+            return _prefixes(self.program_literals(node.left, question), "%", "%-format")
         if isinstance(node, ast.Call):
-            return self._call_sources(node, seen)
+            return self._call_sources(node, question)
         if isinstance(node, ast.Name):
-            return self._name_sources(node, seen)
+            return self._name_sources(node, question)
         if isinstance(node, ast.Attribute):
-            return self._attribute_sources(node, seen)
+            return self._attribute_sources(node, question)
         return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
 
     def _as_text(self, node: ast.Constant) -> ast.Constant:
@@ -837,23 +848,23 @@ class CommandReader:
             self.scope_names[id(self._texts[id(node)])] = self.scope_names.get(id(node), MODULE_SCOPE)
         return self._texts[id(node)]
 
-    def _call_sources(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
+    def _call_sources(self, call: ast.Call, question: Question) -> list[Source]:
         function = call.func
         if _is_lookup(call, self.resolver.aliases(function)):
-            return self.program_literals(_lookup_argument(call), seen)
+            return self.program_literals(_lookup_argument(call), question)
         if self.resolver.name(function) in PROGRAM_CONVERSIONS and call.args:
-            return self.program_literals(call.args[0], seen)
+            return self.program_literals(call.args[0], question)
         if isinstance(function, ast.Attribute):
             receiver = function.value
             if function.attr in PATH_METHODS:
-                return self.program_literals(receiver, seen)
+                return self.program_literals(receiver, question)
             if function.attr == "format":
-                return _prefixes(self.program_literals(receiver, seen), "{", ".format()")
+                return _prefixes(self.program_literals(receiver, question), "{", ".format()")
             if function.attr == "join" and isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
-                return self.program_literals(call.args[0] if call.args else None, seen)
-        return self._returned(call, seen)
+                return self.program_literals(call.args[0] if call.args else None, question)
+        return self._returned(call, question)
 
-    def _returned(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
+    def _returned(self, call: ast.Call, question: Question) -> list[Source]:
         """What a call of one of the module's own functions returns, or Unreadable for any other call."""
         function = call.func
         name = function.attr if isinstance(function, ast.Attribute) else getattr(function, "id", "")
@@ -863,63 +874,75 @@ class CommandReader:
             return [Unreadable(call, f"the program in `{ast.unparse(call)}`")]
         found: list[Source] = []
         for definition in definitions:
-            if ("returns", id(definition)) in seen:
+            key = ("returns", id(definition))
+            if question.get(key) is False:
                 continue
-            inner = seen | {("returns", id(definition))}
             values = [node.value for node in _own_nodes(definition) if isinstance(node, ast.Return) and node.value]
             if not values:
                 found.append(Unreadable(call, f"the program in `{ast.unparse(call)}`, whose function returns none"))
-            found += [source for value in values for source in self.program_literals(value, inner)]
+            if key in question:
+                continue
+            question[key] = False
+            found += [source for value in values for source in self.program_literals(value, question)]
+            question[key] = True
         return found
 
-    def _name_sources(self, node: ast.Name, seen: frozenset[object]) -> list[Source]:
+    def _name_sources(self, node: ast.Name, question: Question) -> list[Source]:
         key, values = self.bindings.of(node)
-        if ("name", key) in seen:
+        read = ("name", key)
+        if question.get(read) is False:
             return []
-        inner = seen | {("name", key)}
+        parameter = self.parameters.get(key)
         found: list[Source] = []
+        if parameter is None and (not values or None in values):
+            found.append(Unreadable(node, f"the program in `{node.id}`, which the module binds to nothing it reads"))
+        if read in question:
+            return found
+        question[read] = False
         for value in values:
             if isinstance(value, _Element):
-                found += self._element_sources(value.collection, inner)
+                found += self._element_sources(value.collection, question)
             elif value is not None:
-                found += self.program_literals(value, inner)
-        parameter = self.parameters.get(key)
+                found += self.program_literals(value, question)
         if parameter is not None:
-            found += self._argument_sources(*parameter, inner)
-        elif not values or None in values:
-            found.append(Unreadable(node, f"the program in `{node.id}`, which the module binds to nothing it reads"))
+            found += self._argument_sources(*parameter, question)
+        question[read] = True
         return found
 
-    def _element_sources(self, collection: ast.expr, seen: frozenset[object]) -> list[Source]:
+    def _element_sources(self, collection: ast.expr, question: Question) -> list[Source]:
         """What names the program of each element of a collection a loop or a comprehension walks."""
         if isinstance(collection, (ast.List, ast.Tuple, ast.Set)):
-            return [found for item in collection.elts for found in self.program_literals(item, seen)]
+            return [found for item in collection.elts for found in self.program_literals(item, question)]
         key, values = self.bindings.of(collection) if isinstance(collection, ast.Name) else ((0, ""), [])
         if values and all(isinstance(value, (ast.List, ast.Tuple, ast.Set)) for value in values):
-            if ("elements", key) in seen:
+            if ("elements", key) in question:
                 return []
-            inner = seen | {("elements", key)}
-            return [
+            question["elements", key] = False
+            sources = [
                 found
                 for value in values
                 if isinstance(value, (ast.List, ast.Tuple, ast.Set))
-                for found in self._element_sources(value, inner)
+                for found in self._element_sources(value, question)
             ]
+            question["elements", key] = True
+            return sources
         return [Unreadable(collection, f"the program in each item of `{ast.unparse(collection)}`")]
 
-    def _attribute_sources(self, node: ast.Attribute, seen: frozenset[object]) -> list[Source]:
+    def _attribute_sources(self, node: ast.Attribute, question: Question) -> list[Source]:
         """The interpreter for sys.executable, or every value the module assigns an attribute of that name."""
         if self.resolver.name(node) == INTERPRETER:
             return [ast.copy_location(ast.Constant(INTERPRETER_PROGRAM), node)]
         values = self.attributes.get(node.attr, [])
         if not values:
             return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
-        if ("attribute", node.attr) in seen:
+        if ("attribute", node.attr) in question:
             return []
-        inner = seen | {("attribute", node.attr)}
-        return [found for value in values for found in self.program_literals(value, inner)]
+        question["attribute", node.attr] = False
+        sources = [found for value in values for found in self.program_literals(value, question)]
+        question["attribute", node.attr] = True
+        return sources
 
-    def _argument_sources(self, function: Function, parameter: ast.arg, seen: frozenset[object]) -> list[Source]:
+    def _argument_sources(self, function: Function, parameter: ast.arg, question: Question) -> list[Source]:
         """What every call of a function in the module passes a parameter that names a program, and Unreadable when
         the module may not hold every call: none calls it, it hands the function on as a value, other modules may call
         it by its public name, or the parameter is variadic."""
@@ -939,12 +962,13 @@ class CommandReader:
             found.append(
                 Unreadable(parameter, f"the program in parameter {parameter.arg}, which other modules may pass")
             )
-        if ("parameter", id(parameter)) in seen:
+        if ("parameter", id(parameter)) in question:
             return found
-        inner = seen | {("parameter", id(parameter))}
+        question["parameter", id(parameter)] = False
         for call in calls:
             argument = _argument(function, parameter, call)
-            found += [argument] if isinstance(argument, Unreadable) else self.program_literals(argument, inner)
+            found += [argument] if isinstance(argument, Unreadable) else self.program_literals(argument, question)
+        question["parameter", id(parameter)] = True
         return found
 
     def _runner(self, function: ast.expr) -> str:
