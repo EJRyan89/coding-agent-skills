@@ -4333,6 +4333,14 @@ def test_a_session_command_loses_only_its_own_prompt(tmp_path: Path) -> None:
     assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3]
 
 
+def test_a_prompted_comment_s_backslash_continues_no_session_command(tmp_path: Path) -> None:
+    # Bash continues no comment's line, so the line after `$ # note \` is output: the grant for it approves nothing.
+    allowed = ["Bash(cat x)", "PowerShell(cat x)"]
+    body = "```console\n$ # note \\\ncat x\n```\n"
+    assert grant_lines(tmp_path, allowed, body) == ["IDLE_ALLOWED Bash(cat x)", "IDLE_ALLOWED PowerShell(cat x)"]
+    assert cued_lines(skill_inventory.scan([tmp_path / "SKILL.md"]), "shell-file-command") == []
+
+
 @pytest.mark.parametrize(
     "line",
     [

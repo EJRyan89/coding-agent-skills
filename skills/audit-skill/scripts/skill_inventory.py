@@ -907,9 +907,15 @@ def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
     return commands
 
 
+def continues(command: str) -> bool:
+    """Whether Bash runs a command's line on into the next: it ends in a backslash no other escapes, as
+    CONTINUED_LINE reads one, and is no comment's line, whose backslash continues nothing."""
+    return CONTINUED_LINE.search(command) is not None and not command.lstrip().startswith("#")
+
+
 def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
-    r"""Each command of a fence's lines, by its first line's index: a line CONTINUED_LINE ends, a backslash no other
-    escapes, runs on into the next, the backslash and the line break dropped as Bash drops them, the next line's blanks
+    r"""Each command of a fence's lines, by its first line's index: a line that continues, as continues reads it,
+    runs on into the next, the backslash and the line break dropped as Bash drops them, the next line's blanks
     kept, so `git status \` and `  --short` run `git status   --short`. A comment's line continues nothing, and a line
     that ends the fence keeps its backslash. Only running the command would settle a backslash that ends a quoted
     string's line, which Bash keeps inside single quotes, or a comment that follows a command, as in `echo a # note \`;
@@ -919,7 +925,7 @@ def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
     for index, text in lines:
         if continued is not None:
             index, text = continued[0], continued[1][:-1] + text
-        if CONTINUED_LINE.search(text) is not None and not text.lstrip().startswith("#"):
+        if continues(text):
             continued = (index, text)
         else:
             continued = None
@@ -931,9 +937,10 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
     r"""The body lines a SESSION_FENCES fence runs, by index, each as CommonMark gives it to the fence's content
     without its prompt, or None for a fence of another label or one with no line SESSION_PROMPT starts, which is no
     session: no prompt tells a command from output there, and a fence labelled so may hold commands alone, which a
-    model runs. A session runs the lines a prompt starts and the lines that continue them: a line after one that ends
-    in a backslash, with or without the `> ` prompt Bash shows there, as Pygments' console lexer reads it, and a `> `
-    line right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
+    model runs. A session runs the lines a prompt starts and the lines that continue them: a line after one that
+    continues, as continues reads it, with or without the `> ` prompt Bash shows there, as Pygments' console lexer
+    reads it, though Pygments also continues a comment's line, as `$ # note \`, which Bash does not; and a `> ` line
+    right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
     Any other line is output.
 
     SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
@@ -965,7 +972,7 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
         else:
             prompted = continued = False
             continue
-        prompted, continued = True, CONTINUED_LINE.search(command) is not None
+        prompted, continued = True, continues(command)
         commands.append((index, command))
     return commands
 
