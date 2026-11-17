@@ -825,12 +825,18 @@ class CommandReader:
 
         One question, the reading of one expression, follows each binding, function, collection, attribute, and
         parameter once under each cut, the placeholders a `%` or `.format()` above it cuts its sources' text at, as
-        `question` records them. What a key gives depends only on the key and that cut, and the answer is a union of
-        sources, so a key read again under the same cut adds nothing new and is not walked again, while one reached
-        under another cut is read again, since that route keeps different text. What is placed at the expression that
-        reached a key, the Unreadable for a name bound to nothing the module reads or a function that returns none, is
-        still given at each such expression. A key on the path, under any cut, is a cycle and gives nothing, as a
-        walk with a set of the keys on its path gives."""
+        `question` records them. Outside a cycle, what a key gives depends on the key and that cut, and the answer is
+        a union of sources, so a key read again under the same cut adds nothing new and is not walked again, while one
+        reached under another cut is read again, since that route keeps different text. What is placed at the
+        expression that reached a key, the Unreadable for a name bound to nothing the module reads or a function that
+        returns none, is still given at each such expression. A key on the path, under any cut, is a cycle and gives
+        nothing, as a walk with a set of the keys on its path gives.
+
+        A stated limit: inside a cycle through a `%` or `.format()`, a key on the path cuts off a route that reaches it
+        under another cut, so that route's cut source, a cut prefix or its "without a literal program prefix"
+        finding, can be missing, while the uncut literal is still given. `prefix = command` after
+        `command = prefix % part` in a loop, run as `prefix if flag else command`, gives `'git status %s; curl x'` but
+        not `'git status '`; no module here rebinds a command from its own cut."""
         question = Question() if question is None else question
         if node is None:
             return []

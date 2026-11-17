@@ -748,7 +748,9 @@ removed fails validation until its pattern follows it.
   name. A walk whose answer is changed on its way up by what reached it, as a % format or a .format() call cuts a command's
   text, keys what it has read by that change too, and keeps one record for the question rather than a copy at each
   change, whose reads double again with each link. A hit in `validation_support.py`'s `_calls_of` is the accepted
-  per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
+  per-path walk, which carries a partial's arguments along each path, and a hit in `upgrade_notes.py`'s `_Constants`
+  is accepted too: its answer is the expanded text, so a constant that uses the one before twice doubles the answer
+  itself, and its work is linear in the text it returns. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
 - **Examples:** #2859, #2871, #2877, #2882, #2897
