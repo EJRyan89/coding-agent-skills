@@ -60,7 +60,9 @@ QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 # each under every name Markdown gives it. The renderer substitutes a token by these languages, validation holds every
 # such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences as
 # commands: a Bash fence, and an untagged one that is Bash, through the Bash grammar, and each line's first word of any
-# other shell's, console's, fish's, cmd's, and PowerShell's, after a `$ ` or `> ` prompt.
+# other shell's, fish's, cmd's, and PowerShell's, after a `$ ` or `> ` prompt; a console fence that holds a prompt is
+# a session, read on the lines audit-skill's session_commands gives, without their prompt, and one with none is read
+# like the others.
 FENCE_LANGUAGES: dict[str, frozenset[str]] = {
     "shell": frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash"}),
     "fish": frozenset({"fish"}),

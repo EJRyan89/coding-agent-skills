@@ -406,7 +406,9 @@ def _fences(markdown: str, *contexts: str) -> list[str]:
     console fence, and powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds
     it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it. Each
     line is read as CommonMark gives it to the fence's content, without the indentation of the fence and of the list
-    items that hold it, so an indented fence's here-document closes at its delimiter."""
+    items that hold it, so an indented fence's here-document closes at its delimiter. A `console` fence is read whole,
+    a session's prompts and output included, which audit-skill reads apart; no fence here is labelled `console`, and a
+    line read so names more programs to declare, not fewer."""
     lines = text_lines(markdown)
     return [
         "\n".join(fence.content(lines[index]) for index in fence.body())
