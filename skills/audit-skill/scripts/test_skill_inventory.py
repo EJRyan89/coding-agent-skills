@@ -4218,6 +4218,78 @@ def test_a_console_fence_without_a_prompt_reads_every_line_and_each_shell_matche
     assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 7, 10, 13, 18]
 
 
+def grant_lines(tmp_path: Path, allowed: list[str], body: str) -> list[str]:
+    skill = write(tmp_path / "SKILL.md", f"---\nallowed-tools: {json.dumps(allowed)}\n---\n{body}")
+    code, lines, error = run("tools", str(skill))
+    assert code == 0, error
+    return [line for line in lines if line.startswith(("UNGRANTED", "EXPANDS", "IDLE_ALLOWED"))]
+
+
+def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_their_prompt_or_output(
+    tmp_path: Path,
+) -> None:
+    tool = 'python3 -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"'
+    allowed = [f"Bash({tool} *)", f"PowerShell({tool} *)", "Bash(cat notes.txt)", "PowerShell(cat notes.txt)"]
+    body = (
+        "```console\n"
+        f"$ {tool} run\n"  # 5: granted once its prompt is removed, so its grants are not idle
+        "DONE written to $HOME/out\n"  # output, which neither runs unasked nor expands
+        "user@host:~$ git status\n"  # 7
+        '(venv) $ echo "$HOME"\n'  # 8
+        "cat notes.txt\n"  # output, so the grant for it approves nothing the skill runs
+        "```\n"
+    )
+    assert grant_lines(tmp_path, allowed, body) == [
+        "UNGRANTED Bash 7 git status",
+        "UNGRANTED PowerShell 7 git status",
+        'UNGRANTED Bash 8 echo "$HOME"',
+        'UNGRANTED PowerShell 8 echo "$HOME"',
+        'EXPANDS 8 echo "$HOME"',
+        "IDLE_ALLOWED Bash(cat notes.txt)",
+        "IDLE_ALLOWED PowerShell(cat notes.txt)",
+    ]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "$ ",
+        "  $ ",
+        "user@host:~$ ",
+        "user@host ~$ ",
+        "MacBook:~ user$ ",
+        "(venv) $ ",
+        "(venv)$ ",
+        "[user@host dir]$ ",
+        "[root@host dir]# ",
+        "root@host:~# ",
+        "% ",
+        "\u276f ",  # the heavy right angle some prompts use
+        "sh-5.2$ ",
+    ],
+)
+def test_each_session_prompt_starts_a_command_for_the_cue_and_the_grant_checks(prompt: str, tmp_path: Path) -> None:
+    allowed = ["Bash(cat x)", "PowerShell(cat x)"]
+    body = f"```console\n{prompt}cat x\nhead of the output\n```\n"  # the command on line 5, its output on line 6
+    assert grant_lines(tmp_path, allowed, body) == []
+    assert cued_lines(skill_inventory.scan([tmp_path / "SKILL.md"]), "shell-file-command") == [5]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# install the deps",  # a bare `# ` starts a comment, though Pygments takes it as root's prompt
+        "shellcheck # lint",  # Pygments takes a word starting with sh before a prompt character as one
+        "$HOME/bin/tool x",  # Pygments takes a prompt with no space after it
+    ],
+)
+def test_a_console_fence_whose_lines_only_resemble_a_prompt_is_read_whole(line: str, tmp_path: Path) -> None:
+    allowed = ["Bash(cat x)", "PowerShell(cat x)"]
+    body = f"```console\n{line}\ncat x\n```\n"  # a bare command on line 6
+    assert not [entry for entry in grant_lines(tmp_path, allowed, body) if entry.startswith("IDLE_ALLOWED")]
+    assert cued_lines(skill_inventory.scan([tmp_path / "SKILL.md"]), "shell-file-command") == [6]
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
