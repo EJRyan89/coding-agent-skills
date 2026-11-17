@@ -96,7 +96,7 @@ Using the skills:
 | [Installation](docs/installation.md) | Requirements, install commands, deploying, updating, and uninstalling |
 | [Code-review operations](docs/code-review-operations.md) | Configuring and running the code-review bundle |
 | [.NET skills](docs/dotnet.md) | The `dotnet` bundle: its skills, selecting it, the projects they see, and what they need |
-| [Codex support](docs/codex-support.md) | Discovery on Windows and Linux, and the Windows settings Codex CLI needs |
+| [Codex support](docs/codex-support.md) | Discovery on Windows, Linux, and macOS, and the Windows settings Codex CLI needs |
 | [Copilot support](docs/copilot-support.md) | Discovery precedence, headless sessions, inline reviews, and the bounded review host |
 | [Recovery](docs/recovery.md) | Interrupted deployments, backups, locks, and ownership conflicts |
 
