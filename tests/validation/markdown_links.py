@@ -160,14 +160,17 @@ class SuiteTests:
 def _suite_tests(tree: ast.Module) -> SuiteTests:
     classes = {node.name: node for node in _definitions(tree.body) if isinstance(node, ast.ClassDef)}
 
-    def tests_of(name: str, seen: frozenset[str]) -> set[str]:
+    def tests_of(name: str, seen: set[str]) -> set[str]:
+        # Each class is read once per question: its tests depend only on the class, and the answer is a union, so a
+        # base two bases share, or one a cycle of bases reaches, adds nothing.
+        seen.add(name)
         node = classes[name]
         inherited = [base.id for base in node.bases if isinstance(base, ast.Name) and base.id in classes]
-        return _test_names(node.body).union(*(tests_of(base, seen | {name}) for base in inherited if base not in seen))
+        return _test_names(node.body).union(*(tests_of(base, seen) for base in inherited if base not in seen))
 
     suite = SuiteTests(functions=_test_names(tree.body))
     for name in classes:
-        methods = tests_of(name, frozenset())
+        methods = tests_of(name, set())
         if methods:
             suite.functions |= methods
             suite.classes[name] = methods

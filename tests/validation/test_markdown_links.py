@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import markdown_links
 from markdown_links import (
     SECURITY_DOC,
     THREAT_MODEL_DOC,
@@ -167,6 +169,35 @@ class CitedTestPolicy(unittest.TestCase):
                 }
             ),
         )
+
+    def test_a_diamond_of_test_classes_is_read_once_per_class(self) -> None:
+        # Each level is two classes over the class before, joined again by the next. A walk that kept a set of the
+        # classes on each path read a class once for every path to it, two to the power of the levels; one set for
+        # each question reads each class once, so each class's question reads at most every class.
+        levels = 16
+        suite = "import unittest\n\n\nclass C0(unittest.TestCase):\n    def test_first(self) -> None:\n        pass\n"
+        for level in range(1, levels + 1):
+            suite += (
+                f"\n\nclass L{level}(C{level - 1}):\n    pass\n\n\nclass R{level}(C{level - 1}):\n    pass\n\n\n"
+                f"class C{level}(L{level}, R{level}):\n    pass\n"
+            )
+        classes = 3 * levels + 1 + 4
+        limit = classes * (classes + 1)
+        names = markdown_links._test_names
+        reads = 0
+
+        def counted(body: list[ast.stmt]) -> set[str]:
+            nonlocal reads
+            reads += 1
+            if reads > limit:
+                raise AssertionError(f"the citation policy read a class more than {limit} times")
+            return names(body)
+
+        guide = f"`tests/test_diamond.py::C{levels}::test_first` and `tests/test_diamond.py::C{levels}::test_gone`.\n"
+        with mock.patch.object(markdown_links, "_test_names", counted):
+            found = self.problems({"docs/guide.md": guide, "tests/test_diamond.py": suite})
+        self.assertEqual(1, len(found), found)
+        self.assertIn(f"C{levels}::test_gone", found[0])
 
     def test_a_missing_test_or_test_class_fails(self) -> None:
         guide = (

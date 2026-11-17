@@ -3476,15 +3476,18 @@ class _ClassBases:
             self.classes[name] = {scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.ClassDef)}
             self.bindings[name] = dict(_module_bindings(tree, resolver))
 
-    def reached(self, module: str, dotted: str, seen: frozenset[tuple[str, str]] = frozenset()) -> list[_Reached]:
+    def reached(self, module: str, dotted: str, seen: set[tuple[str, str]] | None = None) -> list[_Reached]:
         """Each thing a dotted name `module` reads may be: the name itself, and each class of this module, named after
         `<local>`, or of a module read, named after the part that names that module, a nested class's qualified name
         included, or what a name that module binds without defining it, as a re-export, is, followed until a module
-        defines it; a name `seen` holds, one a cycle of re-exports reaches again, is nothing more."""
+        defines it. `seen` holds each name the question has read, once: what a name may be depends only on the name
+        and its module, and the answer is a union, so a name read again, by another route or a cycle of re-exports,
+        is nothing more."""
+        seen = set() if seen is None else seen
         key = (module, dotted)
         if key in seen:
             return []
-        seen = seen | {key}
+        seen.add(key)
         found = [_Reached(module, dotted, defined=False)]
         parts = dotted.split(".")
         for index in range(1, len(parts)):
@@ -3506,13 +3509,15 @@ class _InheritedLibraries:
         self.classes = _ClassBases([(name, tree, libraries.resolver) for name, tree, libraries in models])
         self.libraries = {name: libraries for name, _, libraries in models}
 
-    def bound(self, module: str, class_name: str, seen: frozenset[tuple[str, str]] = frozenset()) -> set[str]:
-        """The attributes a class of `module`, and each of its bases, binds to a library; a class `seen` names, one a
-        cycle of bases reaches again, adds none."""
+    def bound(self, module: str, class_name: str, seen: set[tuple[str, str]] | None = None) -> set[str]:
+        """The attributes a class of `module`, and each of its bases, binds to a library. `seen` holds each class the
+        question has read, once: what a class binds depends only on the class, and the answer is a union, so a class
+        read again, a base two of its bases share or one a cycle of bases reaches, adds none."""
+        seen = set() if seen is None else seen
         key = (module, class_name)
         if key in seen:
             return set()
-        seen = seen | {key}
+        seen.add(key)
         libraries = self.libraries[module]
         found = {
             attribute

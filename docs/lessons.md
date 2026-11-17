@@ -706,7 +706,14 @@ removed fails validation until its pattern follows it.
   every call, a strongly connected group at a time from a stack of its own, the answer kept until a late caller of a
   scope the group asked can change it, since what a group answers depends only on its values and their callers; and `tests.validation.validation_support:CallableResolver._imported`, which reads
   each name once per question, since whether a name reaches an import depends only on the name and the scope that
-  owns it, and the answer is an any, so a name read again either reached none or is still on the path
+  owns it, and the answer is an any, so a name read again either reached none or is still on the path;
+  `tests.validation.skill_scripts:CommandReader.program_literals`, which reads each name, function, collection,
+  attribute, and parameter once per question for each cut, the placeholders a % format or a .format() call above it cuts its
+  sources' text at, since what a key gives depends only on the key and that cut and the answer is a union of
+  sources, a key on the path under any cut being a cycle, and still gives at each expression that reaches a key
+  already read the Unreadable it places there; and `tests.validation.python_checks:_ClassBases.reached`,
+  `tests.validation.python_checks:_InheritedLibraries.bound`, and `tests.validation.markdown_links:_suite_tests`,
+  which read each re-exported name, class, or test class once per question, since each answer is a union
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
@@ -723,17 +730,30 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_exit_tables.py::test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit`,
   `tests/validation/test_exit_tables.py::test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once`,
   `tests/validation/test_exit_tables.py::test_a_late_pass_reads_only_what_its_late_callers_reach_and_each_called_expression_is_answered_once`,
-  `tests/validation/test_validation_support.py::test_callable_resolver_reads_each_name_of_a_two_branch_attribute_chain_once`
+  `tests/validation/test_validation_support.py::test_callable_resolver_reads_each_name_of_a_two_branch_attribute_chain_once`,
+  `tests/validation/test_shell_readers.py::test_command_reader_reads_each_name_of_a_two_branch_chain_once`,
+  `tests/validation/test_shell_readers.py::test_command_reader_answers_names_and_functions_that_lead_back_to_themselves`,
+  `tests/validation/test_shell_readers.py::test_command_reader_reads_each_name_of_a_chain_cut_in_one_branch_once_per_cut`,
+  `tests/validation/test_shell_readers.py::test_command_reader_reads_a_key_again_under_each_cut_that_reaches_it`,
+  `tests/validation/test_python_checks.py::test_ctypes_policy_reads_each_class_of_a_diamond_of_bases_once`,
+  `tests/validation/test_python_checks.py::test_ctypes_policy_reads_each_module_of_a_two_way_re_export_chain_once`,
+  `tests/validation/test_markdown_links.py::CitedTestPolicy::test_a_diamond_of_test_classes_is_read_once_per_class`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
   with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or
   `node = node.parent` in each branch of a tree walk; a walk that follows a value which reads its own name, as
   `options = dict(**options)` in a loop, with no set at all; and a walk over a table of functions that keeps the
-  functions it is in per path, which grows factorially with functions that call each other. A hit in `validation_support.py`'s `_calls_of` is the accepted
-  per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
+  functions it is in per path, which grows factorially with functions that call each other; and a walk over a
+  class's bases or over the modules a name may reach, which fans out at a diamond of bases or at two modules of one
+  name. A walk whose answer is changed on its way up by what reached it, as a % format or a .format() call cuts a command's
+  text, keys what it has read by that change too, and keeps one record for the question rather than a copy at each
+  change, whose reads double again with each link. A hit in `validation_support.py`'s `_calls_of` is the accepted
+  per-path walk, which carries a partial's arguments along each path, and a hit in `upgrade_notes.py`'s `_Constants`
+  is accepted too: its answer is the expanded text, so a constant that uses the one before twice doubles the answer
+  itself, and its work is linear in the text it returns. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
-- **Examples:** #2859, #2871, #2877, #2882
+- **Examples:** #2859, #2871, #2877, #2882, #2897
 
 ### A path taken from input is judged inside its tree before anything opens it
 
