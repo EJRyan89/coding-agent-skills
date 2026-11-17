@@ -135,9 +135,10 @@ holds no Bash otherwise. A fence of any other shell, console, fish, cmd, or Powe
 whose first word, after its prompt, names a file command, in any case in a cmd or PowerShell fence and as written in a
 console or fish fence, as it reads a Bash fence. A console fence that holds a prompt line is a session, which both the
 cue and the grant checks read on its prompted lines and the lines that continue them, after a backslash or with a `> `
-prompt, without the prompt, the rest being output. A prompt is one Pygments' console lexer reads, `$`, `%`, or U+276F,
-or one of those or `#` after a user and host, as `user@host:~$`, a bracketed one, as `[root@host dir]#`, or `sh-5.2`,
-any of them after a virtual environment, as `(venv) `, and then a space; a bare `# ` starts a comment. A console fence
+prompt, without the prompt, the rest being output. A prompt takes a form Pygments' console lexer reads, `$`, `%`, or
+U+276F, or one of those or `#` after a user and host, as `user@host:~$`, a bracketed one, as `[root@host dir]#`, or
+`sh-5.2`, any of them after a virtual environment, as `(venv) `, and then a space; a bare `# ` starts a comment, and
+session_commands names where the two readings differ. A console fence
 with no prompt line is read whole, and another shell's fence on every line, after any `$ ` or `> ` prompt. A fence of
 any other language holds none. A Bash script given to scan is read whole the
 same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
@@ -378,12 +379,13 @@ ANY_CASE_FENCES = FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
 # console's. The other labels name a script, every line of which is a command.
 SESSION_FENCES = frozenset({"console"})
 PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
-# A session's prompt, which starts a command line, as Pygments' console lexer reads one, then a space: after the
+# A session's prompt, which starts a command line, in the forms Pygments' console lexer reads, then a space: after the
 # blanks and any virtual environment, as `(venv) `, either `$`, `%`, or U+276F alone, or one of those or `#` after a
 # user and host, as `user@host:~$` or `MacBook:~ user$`, a bracketed one, as `[user@host dir]#`, or `sh-5.2`. A
 # bare `# ` starts a comment, as it does in a fence of bare commands, and output, such as a configuration file's,
 # often starts with one.
-PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:]\S+(?:[ \t]+\S+)?|sh-[\d.]+"
+# A user and host and the word after them hold no prompt character, so `user@host:~$ ls # list` runs `ls # list`.
+PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:][^\s$#%\u276f]+(?:[ \t]+[^\s$#%\u276f]+)?|sh-[\d.]+"
 SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST})[ \t]*[$#%\u276f]|[$%\u276f]) ")
 # The prompt Bash shows on each line that continues a command.
 CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
@@ -934,13 +936,20 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
     line right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
     Any other line is output.
 
-    SESSION_PROMPT reads the prompts Pygments reads but a bare `# `, which it takes as root's prompt: here it starts a
-    comment, so a root session's commands written after one read as comments and its output as commands. Pygments
-    also takes a prompt with no space after it, as in `$HOME/bin/tool`, and a word starting with `sh` before one, as in
-    `shellcheck # note`, which here are not prompts. A line of output that starts like a prompt, such as curl's
-    `  % Total` progress header, reads as a command. So does a `> ` line of output right after a command line, as diff
-    prints one, a line after a backslash that ends a quoted string's line or a comment, as in `$ echo a # note \`,
-    and a here-document's body, which Bash also prompts for with `> `; only running the session would settle them."""
+    SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
+    root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
+    output as commands. Pygments also takes a prompt with no space after it, as in `$HOME/bin/tool`, a word starting
+    with `sh` before one, as in `shellcheck # note`, and a prompt character inside a user and host or the word after
+    them, as in `user@host:~$ ls # list`, whose command it reads as `list`; here the first two are not prompts and the
+    third's command is `ls # list`. Pygments reads a prompt after two virtual environments, as `(venv) (base) $ `,
+    after a bracket and a further word, as `[user@host dir] (main)$ `, or followed by a tab, which here is not one; and
+    here a user and host may start with any word character, `.`, or `-`, so `-x:y$ ` is a prompt, where Pygments takes
+    a word character first. A command line that starts like a bracketed prompt, as `[ -d build ] # check`, makes a
+    fence of bare commands a session and its other lines output. A line of output that starts like a prompt, such as
+    curl's `  % Total` progress header, reads as a command. So does a `> ` line of output right after a command line,
+    as diff prints one, a line after a backslash that ends a quoted string's line or a comment, as in
+    `$ echo a # note \`, and a here-document's body, which Bash also prompts for with `> `; only running the session
+    would settle them."""
     if fence.language.casefold() not in SESSION_FENCES:
         return None
     contents = [(index, fence.content(lines[index])) for index in fence.body()]

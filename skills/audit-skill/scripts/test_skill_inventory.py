@@ -4319,6 +4319,20 @@ def test_each_session_prompt_starts_a_command_for_the_cue_and_the_grant_checks(p
     assert cued_lines(skill_inventory.scan([tmp_path / "SKILL.md"]), "shell-file-command") == [5]
 
 
+def test_a_user_and_host_prompt_ends_at_its_prompt_character(tmp_path: Path) -> None:
+    # Pygments reads `user@host:~$ ls # ` as the prompt, so its command would be `list`.
+    allowed = ["Bash(ls *)", "PowerShell(ls *)"]
+    body = "```console\nuser@host:~$ ls # list\nhead of the output\n```\n"  # the command on line 5
+    assert grant_lines(tmp_path, allowed, body) == []
+    assert cued_lines(skill_inventory.scan([tmp_path / "SKILL.md"]), "shell-file-command") == [5]
+
+
+def test_a_session_command_loses_only_its_own_prompt(tmp_path: Path) -> None:
+    # `> cat x` writes to a file named cat, so the `> ` after the prompt is the command's, not a second prompt.
+    skill = write(tmp_path / "SKILL.md", "```console\n$ > cat x\n$ cat y\n```\n")
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3]
+
+
 @pytest.mark.parametrize(
     "line",
     [
