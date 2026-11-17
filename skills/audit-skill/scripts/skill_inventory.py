@@ -90,17 +90,20 @@ that path starts and every .. path out of it; a pattern ends a script's path at 
 when unquoted, before any *. NO_SCRIPT_ALLOWED <entry> is any other pattern with a * whose text before it names no
 script: after the program, and capital-letter switches that take no value such as -B, no path ending in a script's
 suffix, nor, for git or gh, a subcommand right after the program; so python *, bash -c *, or git * pre-approves any
-code or subcommand the * supplies. A command is a fence command, or a code span outside a fence that runs a script:
-a program and a script's path as that rule reads them. UNGRANTED <tool> <line> <command> is a command that no
-pattern of a shell with patterns matches, so running it through that tool prompts. A pattern matches the command's
-text, quotes included, with * for any text, and one whose only * ends it after a space also matches the bare command
-before it. A line that joins commands with &&, ||, ;, or | outside quotes is judged one command at a time, as Claude
-Code checks it, and UNGRANTED names the command no pattern matches. EXPANDS <line> <command> is a command line that
-expands a shell variable or command substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both
-shells whatever is granted, so it is reported whether or not the skill has allowed-tools. IDLE_ALLOWED <entry> is a
-scoped Bash or PowerShell pattern that matches no fence command and no code span outside a fence, so it pre-approves
-a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant: no turn starts it, so its
-grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
+code or subcommand the * supplies. A command is a fence command, each line of a shell or PowerShell fence that is
+no comment, a console session's commands alone, as the Bash paragraph below reads them, and in a POSIX shell's, fish's,
+or console fence a line a backslash continues joined with the next, as Bash joins them, on its first line; or a code
+span outside a fence that runs a script: a program and a script's path as that rule reads them.
+UNGRANTED <tool> <line> <command> is a command that no pattern of a shell with patterns matches, so running it through
+that tool prompts. A pattern matches the command's text, quotes included, with * for any text, and one whose only *
+ends it after a space also matches the bare command before it. A line that joins commands with &&, ||, ;, or | outside
+quotes is judged one command at a time, as Claude Code checks it, and UNGRANTED names the command no pattern matches.
+EXPANDS <line> <command> is a command line that expands a shell variable or command substitution other than
+${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted, so it is reported whether or not
+the skill has allowed-tools. IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command
+and no code span outside a fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden
+skill with any grant: no turn starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED
+lines.
 A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
 saying so, and its command must keep prompting. A command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
@@ -129,10 +132,15 @@ line as CommonMark gives it to the fence's content, and places the shell-file-co
 that runs a file command starts on, so a here-document's body, a comment, and a quoted string run nothing, and a
 command after a continuation is placed on its own line; an untagged fence is read so when the grammar reads it, and
 holds no Bash otherwise. A fence of any other shell, console, fish, cmd, or PowerShell, places the cue on each line
-whose first word, after any `$ ` or `> ` prompt, names a file command, in any case in a cmd or PowerShell fence and as
-written in a console or fish fence, as it reads a Bash fence; a console fence that holds a `$ ` prompt line reads only
-those lines and the lines that continue them, after a backslash or with a `> ` prompt, the rest being output, and one
-with none is read whole. A fence of any other language holds none. A Bash script given to scan is read whole the
+whose first word, after its prompt, names a file command, in any case in a cmd or PowerShell fence and as written in a
+console or fish fence, as it reads a Bash fence. A console fence that holds a prompt line is a session, which both the
+cue and the grant checks read on its prompted lines and the lines that continue them, after a backslash or with a `> `
+prompt, without the prompt, the rest being output. A prompt takes a form Pygments' console lexer reads, `$`, `%`, or
+U+276F, or one of those or `#` after a user and host, as `user@host:~$`, a bracketed one, as `[root@host dir]#`, or
+`sh-5.2`, any of them after a virtual environment, as `(venv) `, and then a space; a bare `# ` starts a comment, and
+session_commands names where the two readings differ. A console fence
+with no prompt line is read whole, and another shell's fence on every line, after any `$ ` or `> ` prompt. A fence of
+any other language holds none. A Bash script given to scan is read whole the
 same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
 first, that the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose
 commands are read.
@@ -358,7 +366,8 @@ SHELL_FILE_COMMANDS = ("cat", "head", "tail", "find", "grep", "rg", "sed", "awk"
 BASH_FENCES = FENCE_LANGUAGES["shell"] - {"console"}
 # The labels of every other shell's fence, whose lines a model runs through its Bash or PowerShell tool, where cat,
 # grep, find, and ls, or their aliases, still read files: console's, fish's, cmd's, and PowerShell's. scan reads the
-# first word of each such line, after the blanks and any `$ ` or `> ` prompt that start it.
+# first word of each line such a fence runs, after its blanks and prompt: a session's, as session_commands reads
+# it, and otherwise any `$ ` or `> `.
 FIRST_WORD_FENCES = (
     FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"] | FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
 ) - BASH_FENCES
@@ -370,11 +379,21 @@ ANY_CASE_FENCES = FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
 # console's. The other labels name a script, every line of which is a command.
 SESSION_FENCES = frozenset({"console"})
 PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
-# A session's prompt, which starts a command line, and the prompt Bash shows on each line that continues it.
-SESSION_PROMPT = re.compile(r"\A[ \t]*\$ ")
+# A session's prompt, which starts a command line, in the forms Pygments' console lexer reads, then a space: after the
+# blanks and any virtual environment, as `(venv) `, either `$`, `%`, or U+276F alone, or one of those or `#` after a
+# user and host, as `user@host:~$` or `MacBook:~ user$`, a bracketed one, as `[user@host dir]#`, or `sh-5.2`. A
+# bare `# ` starts a comment, as it does in a fence of bare commands, and output, such as a configuration file's,
+# often starts with one.
+# A user and host and the word after them hold no prompt character, so `user@host:~$ ls # list` runs `ls # list`.
+PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:][^\s$#%\u276f]+(?:[ \t]+[^\s$#%\u276f]+)?|sh-[\d.]+"
+SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST})[ \t]*[$#%\u276f]|[$%\u276f]) ")
+# The prompt Bash shows on each line that continues a command.
 CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
 # A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
 CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
+# The labels of a fence whose shell joins a line a backslash continues to the next: the POSIX shells', console's, and
+# fish's. PowerShell continues a line with a backtick and cmd with a caret, which the grant checks do not join.
+BACKSLASH_FENCES = FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"]
 # The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
 BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
@@ -870,15 +889,91 @@ def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -
 
 
 def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
-    """Each command line in a shell or PowerShell fence, wherever it sits, with its file line number."""
+    """Each command line in a shell or PowerShell fence, wherever it sits, with its file line number: each line of
+    the fence, or, in a session, each line session_commands reads, without its prompt, and in a BACKSLASH_FENCES fence
+    joined with the lines a backslash continues it into, as continued_commands joins them."""
     commands: list[tuple[int, str]] = []
     for fence in find_fences(body):
-        if fence.language.casefold() not in SHELL_FENCES | POWERSHELL_FENCES:
+        label = fence.language.casefold()
+        if label not in SHELL_FENCES | POWERSHELL_FENCES:
             continue
-        for index in fence.body():
-            command = COMMAND_JOIN.sub("", fence.text(body[index]).strip())
+        lines = session_commands(fence, body)
+        if lines is None:
+            lines = [(index, fence.content(body[index])) for index in fence.body()]
+        for index, text in continued_commands(lines) if label in BACKSLASH_FENCES else lines:
+            command = COMMAND_JOIN.sub("", text.strip())
             if command and not command.startswith("#"):
                 commands.append((start + index + 1, command))
+    return commands
+
+
+def continues(command: str) -> bool:
+    """Whether Bash runs a command's line on into the next: it ends in a backslash no other escapes, as
+    CONTINUED_LINE reads one, and is no comment's line, whose backslash continues nothing."""
+    return CONTINUED_LINE.search(command) is not None and not command.lstrip().startswith("#")
+
+
+def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    r"""Each command of a fence's lines, by its first line's index: a line that continues, as continues reads it,
+    runs on into the next, the backslash and the line break dropped as Bash drops them, the next line's blanks
+    kept, so `git status \` and `  --short` run `git status   --short`. A comment's line continues nothing, and a line
+    that ends the fence keeps its backslash. Only running the command would settle a backslash that ends a quoted
+    string's line, which Bash keeps inside single quotes, or a comment that follows a command, as in `echo a # note \`;
+    both join the next line here."""
+    commands: list[tuple[int, str]] = []
+    continued: tuple[int, str] | None = None
+    for index, text in lines:
+        if continued is not None:
+            index, text = continued[0], continued[1][:-1] + text
+        if continues(text):
+            continued = (index, text)
+        else:
+            continued = None
+            commands.append((index, text))
+    return commands if continued is None else [*commands, continued]
+
+
+def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | None:
+    r"""The body lines a SESSION_FENCES fence runs, by index, each as CommonMark gives it to the fence's content
+    without its prompt, or None for a fence of another label or one with no line SESSION_PROMPT starts, which is no
+    session: no prompt tells a command from output there, and a fence labelled so may hold commands alone, which a
+    model runs. A session runs the lines a prompt starts and the lines that continue them: a line after one that
+    continues, as continues reads it, with or without the `> ` prompt Bash shows there, as Pygments' console lexer
+    reads it, though Pygments also continues a comment's line, as `$ # note \`, which Bash does not; and a `> ` line
+    right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
+    Any other line is output.
+
+    SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
+    root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
+    output as commands. Pygments also takes a prompt with no space after it, as in `$HOME/bin/tool`, a word starting
+    with `sh` before one, as in `shellcheck # note`, and a prompt character inside a user and host or the word after
+    them, as in `user@host:~$ ls # list`, whose command it reads as `list`; here the first two are not prompts and the
+    third's command is `ls # list`. Pygments reads a prompt after two virtual environments, as `(venv) (base) $ `,
+    after a bracket and a further word, as `[user@host dir] (main)$ `, or followed by a tab, which here is not one; and
+    here a user and host may start with any word character, `.`, or `-`, so `-x:y$ ` is a prompt, where Pygments takes
+    a word character first. A command line that starts like a bracketed prompt, as `[ -d build ] # check`, makes a
+    fence of bare commands a session and its other lines output. A line of output that starts like a prompt, such as
+    curl's `  % Total` progress header, reads as a command. So does a `> ` line of output right after a command line,
+    as diff prints one, a line after a backslash that ends a quoted string's line or a comment, as in
+    `$ echo a # note \`, and a here-document's body, which Bash also prompts for with `> `; only running the session
+    would settle them."""
+    if fence.language.casefold() not in SESSION_FENCES:
+        return None
+    contents = [(index, fence.content(lines[index])) for index in fence.body()]
+    if not any(SESSION_PROMPT.match(text) for _, text in contents):
+        return None
+    commands: list[tuple[int, str]] = []
+    prompted = continued = False
+    for index, text in contents:
+        if (prompt := SESSION_PROMPT.match(text)) is not None:
+            command = text[prompt.end() :]
+        elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
+            command = CONTINUATION_PROMPT.sub("", text, count=1)
+        else:
+            prompted = continued = False
+            continue
+        prompted, continued = True, continues(command)
+        commands.append((index, command))
     return commands
 
 
@@ -1971,39 +2066,24 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
 
 
 def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
-    r"""The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
-    each line as CommonMark gives it to the fence's content. A SESSION_FENCES fence that holds a line starting with a
-    `$ ` prompt, after its blanks, runs only those lines and their continuations: a line after one that ends in a
-    backslash, with or without the `> ` prompt Bash shows there, as Pygments' console lexer reads it, and a `> ` line
-    after one, which Bash prompts for a command that is not yet complete. Any other line is output, whatever its first
-    word. One with no such line is read whole: no prompt tells a command from output there, and a fence labelled so
-    may hold commands alone, which a model runs, so a line of output is a candidate the audit vets. A `> ` line of
-    output right after a command line, as diff prints one, reads as a continuation, and so does a line after a
-    backslash that ends a quoted string's line, which only running the session would settle. A here-document's body,
-    which Bash also prompts for with `> `, reads as a command too. A backslash that ends a comment, as in
-    `$ echo a # note \`, continues nothing in Bash, yet the line after it reads as a continuation. A continuation
-    line's first word is read as a command name though it may be an argument of the command it continues, as `  head`
-    after `$ git log --author \`. The other labels name a script, each line of which runs. A first word is matched in
-    any case in an ANY_CASE_FENCES fence, and as written otherwise."""
-    contents = [(index, fence.content(lines[index])) for index in fence.body()]
-    label = fence.language.casefold()
-    if label in SESSION_FENCES and any(SESSION_PROMPT.match(text) for _, text in contents):
-        commands, prompted, continued = [], False, False
-        for index, text in contents:
-            prompted = bool(continued or SESSION_PROMPT.match(text) or (prompted and CONTINUATION_PROMPT.match(text)))
-            continued = prompted and CONTINUED_LINE.search(text) is not None
-            if prompted:
-                commands.append((index, text))
-        contents = commands
-    any_case = label in ANY_CASE_FENCES
-    return {index for index, text in contents if first_word_runs_file_command(text, any_case=any_case)}
+    """The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
+    each line as CommonMark gives it to the fence's content. A session runs the lines session_commands reads, each
+    without its prompt; any other fence runs every line, after its blanks and any `$ ` or `> ` prompt, since the other
+    labels name a script. A continuation line's first word is read as a command name though it may be an argument of
+    the command it continues, as `  head` after `$ git log --author \\`. A first word is matched in any case in an
+    ANY_CASE_FENCES fence, and as written otherwise."""
+    commands = session_commands(fence, lines)
+    if commands is None:
+        commands = [(index, PROMPT.sub("", fence.content(lines[index]), count=1)) for index in fence.body()]
+    any_case = fence.language.casefold() in ANY_CASE_FENCES
+    return {index for index, text in commands if first_word_runs_file_command(text, any_case=any_case)}
 
 
-def first_word_runs_file_command(line: str, *, any_case: bool) -> bool:
-    """Whether a line of a FIRST_WORD_FENCES fence starts with one of SHELL_FILE_COMMANDS, after its blanks and any
-    `$ ` or `> ` prompt, by its file name without `.exe`: in any case when `any_case` is set, as PowerShell and cmd
-    find a program, and as written otherwise, as Bash and fish match a command."""
-    words = PROMPT.sub("", line, count=1).split()
+def first_word_runs_file_command(command: str, *, any_case: bool) -> bool:
+    """Whether a command of a FIRST_WORD_FENCES fence, without its prompt, starts with one of SHELL_FILE_COMMANDS
+    after its blanks, by its file name without `.exe`: in any case when `any_case` is set, as PowerShell and cmd find
+    a program, and as written otherwise, as Bash and fish match a command."""
+    words = command.split()
     if not words:
         return False
     name = program_name(PureWindowsPath(words[0]).name)
