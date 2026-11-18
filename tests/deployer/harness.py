@@ -87,6 +87,11 @@ def remove_directory_link(link: Path) -> None:
         link.unlink()
 
 
+# Path.read_bytes as the harness found it: the comparison of a source or a home reads each file through this, so a test
+# that makes the deployer's read of a file fail, as UnreadableFileTests do, never fails the harness's own read of it.
+_READ_BYTES = Path.read_bytes
+
+
 def tree_state(root: Path, unreadable: Mapping[Path, str] | None = None) -> dict[str, str]:
     """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
 
@@ -138,9 +143,9 @@ def _tree_state(root: Path, walked: set[Path], unreadable: Mapping[Path, str]) -
                             }
                         )
                     else:
-                        state[relative] += f" file {hashlib.sha256(target.read_bytes()).hexdigest()}"
+                        state[relative] += f" file {hashlib.sha256(_READ_BYTES(target)).hexdigest()}"
             elif name in files:
-                state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
+                state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(_READ_BYTES(path)).hexdigest()}"
             else:
                 state[path.relative_to(root).as_posix()] = "directory"
                 followed.append(name)
@@ -735,16 +740,24 @@ class Deployment:
 
         return mock.patch("deployer.fsops.append_line", side_effect=append_line)
 
-    def unreadable(self, path: Path) -> mock._patch[Callable[..., str]]:
-        """Make reading one file fail as a file another process holds does, leaving every other read alone."""
+    def unreadable(self, path: Path) -> contextlib.AbstractContextManager[object]:
+        """Make reading one file, as text or as bytes, fail as a file another process holds does, leaving every other
+        read alone."""
         read_text = Path.read_text
 
-        def read(candidate: Path, *arguments: Any, **keywords: Any) -> str:
+        def refuse(candidate: Path) -> None:
             if candidate == path:
                 raise PermissionError(13, "Permission denied", str(candidate))
+
+        def text(candidate: Path, *arguments: Any, **keywords: Any) -> str:
+            refuse(candidate)
             return read_text(candidate, *arguments, **keywords)
 
-        return mock.patch.object(Path, "read_text", read)
+        def data(candidate: Path) -> bytes:
+            refuse(candidate)
+            return _READ_BYTES(candidate)
+
+        return mock.patch.multiple(Path, read_text=text, read_bytes=data)
 
     def selection_number(self, name: str, bundle: bool = False) -> str:
         output = self.deploy("--dry-run", stdin="\n").output

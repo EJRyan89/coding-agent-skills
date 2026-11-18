@@ -1274,3 +1274,30 @@ def test_read_menu_and_the_deployers_loader_read_and_refuse_each_menu_field_alik
     deployer_reads = reads(lambda: source.discover(paths, source.load_source_id(paths)), DeployError)
     menu_reads = reads(lambda: skill_menu.read_menu(root), skill_menu.MenuError)
     assert (deployer_reads, menu_reads) == (accepted, accepted)
+
+
+def with_byte_order_mark(path: Path) -> None:
+    """Put a UTF-8 byte-order mark before the file's JSON, as Windows PowerShell 5.1's Out-File -Encoding utf8 saves."""
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+
+# Each change to a well-formed source that both readers must read alike, and the source still read, pinned as a
+# literal: a byte-order mark before source.json's or a metadata file's JSON, and a folder in deploy-meta named like a
+# skill's metadata, which names no skill.
+SOURCE_FILE_CASES: dict[str, Callable[[Path], None]] = {
+    "a byte-order mark in source.json": lambda root: with_byte_order_mark(root / "source.json"),
+    "a byte-order mark in a metadata file": lambda root: with_byte_order_mark(root / "deploy-meta" / "alpha.json"),
+    "a folder named like metadata": lambda root: (root / "deploy-meta" / "gamma.json").mkdir(),
+}
+
+
+@pytest.mark.parametrize("change", sorted(SOURCE_FILE_CASES))
+def test_read_menu_and_the_deployers_loader_read_each_source_file_alike(tmp_path: Path, change: str) -> None:
+    # read_menu reads source.json and deploy-meta/ through skill_menu's read_source_file and is_metadata_file, which
+    # the deployer's loader reads them through too, so audit-skill reads every source the deployer deploys.
+    root = menu_source(tmp_path / "Source With Spaces", "bundle", "opt_in", ABSENT)
+    SOURCE_FILE_CASES[change](root)
+    paths = Paths(root, tmp_path / "home")
+    deployer_reads = reads(lambda: source.discover(paths, source.load_source_id(paths)), DeployError)
+    menu_reads = reads(lambda: skill_menu.read_menu(root), skill_menu.MenuError)
+    assert (deployer_reads, menu_reads) == (True, True)

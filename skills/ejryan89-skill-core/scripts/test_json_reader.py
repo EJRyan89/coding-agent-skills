@@ -202,6 +202,21 @@ class ReadFileTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     read_file(self.path)
 
+    def test_with_byte_order_mark_one_leading_mark_is_passed_over_and_text_that_is_not_utf8_still_refused(
+        self,
+    ) -> None:
+        self.path.write_bytes(b'\xef\xbb\xbf{"title": "x"}')
+        self.assertEqual({"title": "x"}, read_file(self.path, byte_order_mark=True))
+        for content in ('{"title": "café"}'.encode("cp1252"), b'\xef\xbb\xbf\xef\xbb\xbf{"title": "x"}'):
+            with self.subTest(content=content):
+                self.path.write_bytes(content)
+                with self.assertRaises(ValueError):
+                    read_file(self.path, byte_order_mark=True)
+
+    def test_with_byte_order_mark_a_file_without_one_reads_as_without_the_option(self) -> None:
+        self.path.write_bytes('{"title": "café 設計"}'.encode())
+        self.assertEqual({"title": "café 設計"}, read_file(self.path, byte_order_mark=True))
+
     def test_a_refused_shape_is_refused_as_loads_refuses_it(self) -> None:
         self.path.write_bytes(b'{"k": 1, "k": 2}')
         with self.assertRaises(JsonRefused):
