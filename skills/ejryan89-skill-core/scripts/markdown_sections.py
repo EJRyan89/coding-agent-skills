@@ -252,8 +252,10 @@ def _read_blocks(lines: list[str]) -> tuple[set[int], list[tuple[int, re.Match[s
     a blockquote or list marker consumes is counted as a whole one; a fence's opener opens one list item at most; an
     HTML block or a setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a
     heading; a blockquote inside a list item closes the item for the lines after it, so a heading or indented line
-    that CommonMark keeps in the item is read at the document's level; and a list marker with nothing after it on its
-    line opens no item, so the line after it is read as the document's."""
+    that CommonMark keeps in the item is read at the document's level; a list marker with nothing after it on its
+    line opens no item, so the line after it is read as the document's; and an ordered marker not numbered 1, or a
+    bare marker, right after a quoted line is read as the quoted paragraph's lazy continuation, where CommonMark's
+    reference parsers end the quote and open a list."""
     fences = find_fences(lines)
     openers = {fence.opener for fence in fences}
     fenced = {index for fence in fences for index in fence.lines()}
