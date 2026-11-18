@@ -111,7 +111,7 @@ from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
-from markdown_sections import ATX_HEADING
+from markdown_sections import document_headings
 from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
@@ -456,9 +456,9 @@ def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:
     return Release(release, entries, f"no bullet in its text: {single_line(text[0])}" if text else "its text is empty")
 
 
-def release_heading(line: str) -> re.Match[str] | None:
-    """The release a Markdown line's heading names, or None for a line that is no heading at a release's level."""
-    heading = ATX_HEADING.fullmatch(line)
+def release_heading(heading: re.Match[str] | None) -> re.Match[str] | None:
+    """The release a document heading, as markdown_sections' document_headings reads one, names, or None for no
+    heading or one that is not at a release's level."""
     if heading is None or len(heading.group("marks")) > RELEASE_LEVELS:
         return None
     return RELEASE_HEADING.match(heading.group("text"))
@@ -474,8 +474,12 @@ def markdown_releases(text: str) -> list[Release]:
         if current is not None:
             releases.append(read_release(current, body))
 
-    for line in text_lines(text):
-        heading = release_heading(line)
+    lines = text_lines(text)
+    # A release-shaped heading inside a list item, a blockquote, or a code block is the entry's text, as GitHub renders
+    # it, never the next release.
+    headings = dict(document_headings(lines))
+    for index, line in enumerate(lines):
+        heading = release_heading(headings.get(index))
         if heading:
             close()
             body = []

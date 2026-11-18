@@ -8,7 +8,8 @@ manual gates a change to a skill owes, so the agent reads only what a step cites
                                             request
 
 A section runs from its heading to the next heading of any level, so "Files" stops at its first subsection as
-"Granting tools" stops at the next. A heading-shaped line inside a fenced block is not a heading. A title matches a
+"Granting tools" stops at the next. A heading-shaped line inside a code block is not a heading, and a heading inside a
+list item or a blockquote is part of it, as GitHub renders them, so neither ends a section. A title matches a
 heading's text as written, or with its backticks removed, as in `audit-skill`.
 
 A skill is touched by a file in its folder or its metadata, and a shipped skill also by a change to an agent it
@@ -67,7 +68,7 @@ from console import run_main
 from file_presence import NotAFile, is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
-from markdown_sections import find_fences
+from markdown_sections import document_headings
 from path_containment import resolved_path, within
 from skill_menu import closure, name_list
 from text_lines import text_lines
@@ -91,7 +92,6 @@ DUPLICATION_ALLOWED = {
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 CONTRACT = "docs/adding-a-skill.md"
-ATX_HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*")
 # Where a shipped skill names its own files, as Claude Code fills it in; a change to what it names moves a script.
 SKILL_DIR_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/[^\s\"'`)<>]*")
 
@@ -153,14 +153,9 @@ class Heading:
 
 
 def headings(lines: list[str]) -> list[Heading]:
-    """Every ATX heading outside a fenced block, in document order."""
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-    found = []
-    for index, line in enumerate(lines):
-        match = ATX_HEADING.fullmatch(line)
-        if match and index not in fenced:
-            found.append(Heading(index, len(match.group(1)), match.group(2)))
-    return found
+    """Every ATX heading at the document's top level, in document order: markdown_sections reads a heading-shaped line
+    inside a code block as the block's text, and a heading inside a list item or a blockquote as part of it."""
+    return [Heading(index, len(match.group("marks")), match.group("text")) for index, match in document_headings(lines)]
 
 
 def section(lines: list[str], title: str) -> tuple[Heading, list[str]]:
