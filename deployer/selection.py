@@ -128,6 +128,9 @@ def warn_missing_tools(src: source.Source, selection: Selection) -> None:
     if selection.deselect_all:
         return
     required = source.required_tools(src, selection.bundles, selection.skills)
+    # A stated limit: a lookup that raises ShellScriptsOnly is not handled here, since only Copilot CLI's does and its
+    # entry is optional, so `locate` is never reached for it; a required tool given such a lookup needs check's
+    # handling.
     missing = {
         name: roots
         for name, roots in source.tool_users(src, selection.bundles, selection.skills).items()

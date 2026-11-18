@@ -132,10 +132,10 @@ COPILOT = Tool(
     ),
     minimum=COPILOT_MINIMUM,
     optional=True,
-    other_uses=("Copilot verification",),
 )
 # Copilot CLI as `verify` starts it, to list its skills with arguments the repository writes, which a shell script
-# passes through unchanged, so an npm install serves; `check` reports it by this lookup only when no skill runs it.
+# passes through unchanged, so an npm install serves. `check` reports it on the skills' line when both lookups find
+# the same program, and on a line of its own when they part.
 COPILOT_RUNTIME = Tool(
     "copilot",
     "copilot",

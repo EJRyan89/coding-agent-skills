@@ -4,18 +4,20 @@ A tool `check` reports as installed is then the one a skill finds and runs under
 PATH names, else one in a folder the platform's package manager links the commands it installs into, which PATH may
 not include. A skill runs the path found here, never the bare name: process creation would look the name up on PATH
 alone elsewhere, and on Windows in the working directory before PATH, and neither searches the link folders. Nothing
-here depends on the working directory. The deployer reaches it through `platform_support.find_executable` and
-`find_program`; it holds the platform's link folders itself because a skill's script runs without the deployer.
+here depends on the working directory. The deployer reaches it through `platform_support`'s `find_executable`,
+`find_executables`, `find_program`, and `find_only_program`; it holds the platform's link folders itself because a
+skill's script runs without the deployer.
 
 Two lookups answer differently on Windows only when a shell script, a `.bat`, `.cmd`, or `.ps1` file, comes before the
 program: `find_program` passes over it, and `find_executable` does not. git, gh, dotnet, and dotnet-format, which a
 skill starts with arguments through `located_command`, are found by `find_program` in `check`, the skills, and the
 deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
-which npm installs as `.cmd` scripts and which `verify` and `check`'s version probes start with arguments the
-repository writes, are found by `find_executable`, but for Copilot CLI as the code-review skills run it: the bounded
-Copilot code-review host and `check`'s line for those skills both find it by `find_only_program`, which takes
-`find_program`'s answer and refuses a host whose only `copilot` is a shell script, so `check` reports such a host's
-Copilot as unusable rather than installed.
+which npm installs as `.cmd` scripts and which `verify` and the canaries start with arguments the repository writes,
+are found by `find_executable` there and in `check`'s line for each runtime `verify` runs. Copilot CLI as the
+code-review skills run it is found otherwise: the bounded Copilot code-review host and `check`'s line for those skills
+both find it by `find_only_program`, which takes `find_program`'s answer and refuses a host whose only `copilot` is a
+shell script, so `check` reports such a host's Copilot as unusable for the skills, and reports what `verify` starts on
+a line of its own whenever the two lookups find different programs.
 """
 
 from __future__ import annotations

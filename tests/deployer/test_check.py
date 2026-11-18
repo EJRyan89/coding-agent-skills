@@ -112,6 +112,7 @@ class Machine:
         describe_failure: str | None = None,
         rev_parse_failure: str | None = None,
         describe_warning: str = "",
+        located: dict[str, str] | None = None,
     ) -> None:
         # describe is what git describe prints for the deployed commit, which the checkout holds; None makes git answer
         # that it holds no such commit. describe_failure is what git describe prints when it fails instead, and
@@ -120,6 +121,9 @@ class Machine:
         # settings says whether this machine's platform has the machine settings check reports, as Windows does: then
         # python_command is what the skills' Python command runs, pwsh_command what pwsh runs, and codex_probe what
         # Codex's sandbox probe prints. statuses is the exit status of each named tool's version probe, 0 if unnamed.
+        # located maps each program a test installs to what its version probe prints; Copilot CLI is then looked up
+        # by ejryan89-skill-core's real locator on the test's PATH rather than at its INSTALLED path.
+        self.located = dict(located or {})
         self.settings = settings
         self.python_command = python_command
         self.pwsh_command = pwsh_command
@@ -133,7 +137,9 @@ class Machine:
         self.python = python
         self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
-        self.versions = dict(self.installed.values())
+        if self.located:
+            del self.installed["copilot"]
+        self.versions = {**dict(self.installed.values()), **self.located}
         self.statuses = {**STATUSES, **{self.installed[name][0]: code for name, code in (statuses or {}).items()}}
         for name, output in (versions or {}).items():
             self.versions[self.installed[name][0]] = output
@@ -146,9 +152,7 @@ class Machine:
         for lookup in ("find_executable", "find_program"):
             stack.enter_context(mock.patch(f"deployer.platform_support.{lookup}", side_effect=self.find_executable))
         stack.enter_context(
-            mock.patch(
-                "deployer.platform_support.find_only_program", side_effect=lambda name, *_: self.find_executable(name)
-            )
+            mock.patch("deployer.platform_support.find_only_program", side_effect=self.find_only_program)
         )
         for flag in ("HAS_APP_EXECUTION_ALIASES", "CODEX_NEEDS_SANDBOX_SETTING"):
             stack.enter_context(mock.patch.object(platform_support, flag, self.settings))
@@ -159,12 +163,7 @@ class Machine:
                 side_effect=lambda program: program in (STORE_ALIAS, PACKAGED_PWSH),
             )
         )
-        stack.enter_context(
-            mock.patch(
-                "deployer.platform_support.find_executables",
-                side_effect=lambda name: [self.installed[name][0]] if name in self.installed else [],
-            )
-        )
+        stack.enter_context(mock.patch("deployer.platform_support.find_executables", side_effect=self.find_executables))
         stack.enter_context(mock.patch("deployer.platform_support.find_bash", return_value=self.bash))
         stack.enter_context(mock.patch("deployer.platform_support.find_powershell", return_value=self.powershell))
         stack.enter_context(
@@ -177,7 +176,19 @@ class Machine:
         stack.enter_context(mock.patch("deployer.tools.probe_pdftotext", side_effect=self.probe_pdftotext))
         return stack
 
+    def find_executables(self, name: str) -> list[str]:
+        if self.located and name == "copilot":
+            return executable_locator.find_executables(name)
+        return [self.installed[name][0]] if name in self.installed else []
+
+    def find_only_program(self, name: str, label: str, install: str) -> str | None:
+        if self.located and name == "copilot":
+            return executable_locator.find_only_program(name, label, install)
+        return self.find_executable(name)
+
     def find_executable(self, name: str) -> str | None:
+        if self.located and name == "copilot":
+            return executable_locator.find_executable(name)
         if name == "git":
             return self.git
         if name == platform_support.PYTHON:
@@ -761,6 +772,84 @@ class CheckCommandTests(DeployerTestCase):
             groups["OPTIONAL"],
         )
         self.assertNotIn("MISSING", groups)
+
+    def copilot_path(self, *versions: str) -> list[str]:
+        """Copilot CLI installs on PATH, one folder each, printing these versions: the first as npm installs it, a
+        shell script, and each later one a program. On Windows the script is a `copilot.cmd`, which Windows starts
+        through cmd.exe; elsewhere, where no file is a shell script, the locator is made to read the first folder's
+        `copilot` as one, so every platform holds the two lookups apart. Returns each install's path."""
+        root = self.root / "copilot installs"
+        folders = [root / f"install {index}" for index in range(len(versions))]
+        variables = {"PATH": os.pathsep.join(str(folder) for folder in folders)}
+        if platform_support.WINDOWS:
+            variables |= {"PATHEXT": ".com;.exe;.cmd", "LOCALAPPDATA": str(root / "local app data")}
+        installed: list[str] = []
+        for index, folder in enumerate(folders):
+            folder.mkdir(parents=True)
+            script = index == 0
+            name = (
+                "copilot.cmd"
+                if script and platform_support.WINDOWS
+                else ("copilot.exe" if platform_support.WINDOWS else "copilot")
+            )
+            program = folder / name
+            program.write_bytes(b"")
+            program.chmod(0o755)
+            installed.append(str(program))
+        environment = mock.patch.dict(os.environ, variables)
+        environment.start()
+        self.addCleanup(environment.stop)
+        if not platform_support.WINDOWS:
+            windows_reading = mock.patch.object(
+                executable_locator, "shell_script", side_effect=lambda path: Path(path).parent == folders[0]
+            )
+            windows_reading.start()
+            self.addCleanup(windows_reading.stop)
+        return installed
+
+    def copilot_lines(self, located: dict[str, str]) -> dict[str, list[str]]:
+        """check's copilot lines by their group, each on one line, with the real locator finding Copilot."""
+        groups = self.report_groups(self.check(Machine(located=located)).output, "CHECK")
+        return {
+            action: [" ".join(line.split()) for line in lines if line.startswith("copilot")]
+            for action, lines in groups.items()
+            if any(line.startswith("copilot") for line in lines)
+        }
+
+    def test_npm_copilot_alone_is_unusable_for_a_skill_that_declares_it_and_installed_for_verify(self) -> None:
+        [script] = self.copilot_path("1.0.89")
+        refusal = (
+            f"GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: {script}; install "
+            "the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+        )
+        self.assertEqual(
+            {
+                "UNUSABLE": [f"copilot (used by operations; {refusal})"],
+                "OPTIONAL": ["copilot 1.0.89 (used by Copilot verification)"],
+            },
+            self.copilot_lines({script: "GitHub Copilot CLI 1.0.89.\n"}),
+        )
+
+    def test_npm_copilot_alone_is_installed_when_no_skill_declares_it_since_only_verify_runs_it(self) -> None:
+        set_tools(self, "core", ["gh"])
+        [script] = self.copilot_path("1.0.89")
+        self.assertEqual(
+            {"OPTIONAL": ["copilot 1.0.89 (used by Copilot verification)"]},
+            self.copilot_lines({script: "GitHub Copilot CLI 1.0.89.\n"}),
+        )
+
+    def test_an_old_npm_copilot_before_a_current_program_is_reported_for_verify_beside_the_skills_program(
+        self,
+    ) -> None:
+        # The state a refusal's advice leaves when the npm install stays: verify starts the old script first on PATH.
+        script, program = self.copilot_path("1.0.80", "1.0.110")
+        self.assertEqual(
+            {
+                "OPTIONAL": ["copilot 1.0.110 (used by operations)"],
+                "OUTDATED": ["copilot 1.0.80 (used by Copilot verification; needs 1.0.88 or newer)"],
+            },
+            self.copilot_lines({script: "GitHub Copilot CLI 1.0.80.\n", program: "GitHub Copilot CLI 1.0.110.\n"}),
+        )
 
     def test_codex_before_0_88_is_outdated_because_verify_reads_whether_a_skill_is_enabled(self) -> None:
         # Codex CLI 0.88.0 is the first whose app-server skills/list answer says whether each skill is enabled.
@@ -1486,10 +1575,10 @@ class SkillToolLocatorTests(LocatorFixture):
         for name in ("gh", "dotnet", "dotnet-format", "copilot"):
             with self.subTest(name=name):
                 program = self.install(self.links, name)
-                self.assertEqual(str(program), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
+                self.assertEqual(str(program), {**tools.VERIFY_TOOLS, **tools.SKILL_TOOLS}[name].locate())
                 self.assertEqual(str(program), self.skill_program(name))
                 on_path = self.install(self.path_folder, name)
-                self.assertEqual(str(on_path), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
+                self.assertEqual(str(on_path), {**tools.VERIFY_TOOLS, **tools.SKILL_TOOLS}[name].locate())
                 self.assertEqual(str(on_path), self.skill_program(name), "PATH comes first")
 
     @unittest.skipUnless(sys.platform == "win32", "only Windows starts a .bat, .cmd, or .ps1 file through a shell")
@@ -1539,7 +1628,7 @@ class SkillToolLocatorTests(LocatorFixture):
             with self.assertRaises(review_runtime.RuntimeContractError) as missing:
                 review_hosts.find_copilot()
             self.assertEqual(
-                ("copilot", "OPTIONAL", "not installed; used by review-document, Copilot verification"),
+                ("copilot", "OPTIONAL", "not installed; used by review-document"),
                 (line.name, line.action, line.detail),
             )
             self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
@@ -1562,7 +1651,7 @@ class SkillToolLocatorTests(LocatorFixture):
             program = self.install(self.links, "copilot")
             line = _tool_line(tools.SKILL_TOOLS["copilot"], True, ["review-document"])
             self.assertEqual(
-                ("copilot 1.0.89", "OPTIONAL", "used by review-document, Copilot verification"),
+                ("copilot 1.0.89", "OPTIONAL", "used by review-document"),
                 (line.name, line.action, line.detail),
             )
             self.assertEqual([[str(program), "--version"]], [call.args[0] for call in probed.call_args_list])
