@@ -58,6 +58,11 @@ REPOSITORY_PATTERN = re.compile(REPOSITORY)
 # A pull request's number: at most ten digits, as GitHub's 32-bit numbers have, so int() never meets the digit
 # limit, and every key a status override is accepted with names a pull request update-pr-dashboard can read.
 PULL_NUMBER = r"[1-9][0-9]{0,9}"
+# A key of dashboard.status_overrides, as the configuration loads it. Looser than REPOSITORY, so every key an earlier
+# release wrote still loads: a configuration every code-review skill reads is never refused for an override only
+# update-pr-dashboard reads. That skill lists and clears a key by this rule, so every key that loads can be removed,
+# matches a pull request only by a key whose repository is an identity, and sets only such a key.
+STATUS_OVERRIDE_KEY_PATTERN = re.compile(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#{PULL_NUMBER}")
 RUNTIME_HOSTS = {"auto", "claude-code", "codex", "copilot-cli"}
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -875,10 +880,7 @@ def _validate_status_overrides(value: Any) -> None:
     overrides = READ.json_object(value, "config.dashboard.status_overrides")
     for raw_key, raw_status in overrides.items():
         key = READ.string(raw_key, "a key of config.dashboard.status_overrides")
-        # Looser than REPOSITORY, so every key an earlier release wrote still loads: a configuration every code-review
-        # skill reads is never refused for an override only update-pr-dashboard reads, which refuses a key whose
-        # repository is not an identity when it reads the overrides.
-        if not re.fullmatch(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#{PULL_NUMBER}", key):
+        if not STATUS_OVERRIDE_KEY_PATTERN.fullmatch(key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
         status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:

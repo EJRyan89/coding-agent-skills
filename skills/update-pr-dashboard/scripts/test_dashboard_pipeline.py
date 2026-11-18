@@ -34,13 +34,31 @@ from review_flags import add_flag
 from review_github import GitHubClient
 from review_records import ReviewRecord, build_record, validate_adapter_result, validate_record_pair
 from test_review_archive import unstatable
-from update_pr_dashboard import update_dashboard_rows
+from update_pr_dashboard import TrackerError, normalize_pull_keys, update_dashboard_rows
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 HEAD = "b" * 40
 OLD_HEAD = "a" * 40
 USER_REVIEWED = "c" * 40
+# Each spelling of a status override key the configuration's rule takes and the pull-request identity rule refuses:
+# an owner no GitHub login spells (a leading, trailing, or doubled hyphen, a dot, an underscore that leads, ends, or
+# repeats or comes before a hyphen, more than 39 characters) and a name GitHub refuses (only dots, more than 100).
+LOOSE_ONLY_KEYS = (
+    "a--b/repo#1",
+    "-a/repo#1",
+    "a-/repo#1",
+    "a.b/repo#1",
+    "_a/repo#1",
+    "a_/repo#1",
+    "a_b_c/repo#1",
+    "a_b-c/repo#1",
+    f"{'a' * 40}/repo#1",
+    "owner/.#1",
+    "owner/..#1",
+    "owner/...#1",
+    f"owner/{'r' * 101}#1",
+)
 START = "<!-- code-review-pr-tracker:start -->"
 END = "<!-- code-review-pr-tracker:end -->"
 
@@ -1663,6 +1681,104 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual(1, code)
         self.assertTrue(out.startswith("FAILED "), out)
         self.assertEqual({"schema_version": 1}, self.written())
+
+
+class LooseOverrideKeyTests(TrackerPipelineFixture):
+    """A status override key the configuration loads by its looser rule, though its repository is no identity, can be
+    listed and cleared, and neither an update nor any other override change fails for it."""
+
+    def collect(self) -> None:
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+
+    def overrides(self) -> dict[str, str]:
+        value: dict[str, str] = json.loads(self.config_path.read_text(encoding="utf-8"))["dashboard"][
+            "status_overrides"
+        ]
+        return value
+
+    def test_each_key_loads_by_the_configuration_s_rule_and_is_no_pull_key(self) -> None:
+        for key in LOOSE_ONLY_KEYS:
+            with self.subTest(key=key):
+                self.configure(overrides={key: "on hold"})
+                self.assertEqual({key: "on hold"}, load_config(self.config_path)["dashboard"]["status_overrides"])
+                with self.assertRaisesRegex(TrackerError, "Invalid override pull-request identity"):
+                    normalize_pull_keys([key], "override")
+
+    def test_the_listing_names_each_such_key_as_one_the_tracker_does_not_hold(self) -> None:
+        for key in LOOSE_ONLY_KEYS:
+            with self.subTest(key=key):
+                self.configure(overrides={key: " on hold ", "example/one#2": "waiting"})
+                self.track("example/one#2")
+                code, out, err = self.run_main("override")
+                self.assertEqual((0, ""), (code, err))
+                self.assertEqual(
+                    sorted([f"OVERRIDE_UNTRACKED {key.lower()} on hold", "OVERRIDE example/one#2 waiting"]),
+                    sorted(out.splitlines()[:-1]),
+                )
+                self.assertEqual("OVERRIDES 2", out.splitlines()[-1])
+
+    def test_clear_removes_such_a_key_named_in_any_case(self) -> None:
+        for key in LOOSE_ONLY_KEYS:
+            for named in (key, key.upper()):
+                with self.subTest(key=key, named=named):
+                    self.configure(overrides={key: "on hold", "example/one#2": "waiting"})
+                    # The listing's key may start with a hyphen, which only the joined form passes as a value.
+                    code, out, err = self.run_main("override", f"--clear={named}")
+                    self.assertEqual((0, ""), (code, err))
+                    self.assertEqual([f"CLEARED {key.lower()}", f"WROTE {self.config_path}"], out.splitlines())
+                    self.assertEqual({"example/one#2": "waiting"}, self.overrides())
+
+    def test_set_and_clear_of_another_key_keep_such_a_key(self) -> None:
+        for key in LOOSE_ONLY_KEYS:
+            with self.subTest(key=key):
+                self.configure(overrides={key: "on hold", "example/one#2": "waiting"})
+                self.track("example/one#3")
+                code, out, err = self.run_main(
+                    "override", "--set", "example/one#3=delegated", "--clear", "example/one#2"
+                )
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertEqual({key: "on hold", "example/one#3": "delegated"}, self.overrides())
+
+    def test_update_names_each_such_key_and_still_pins_the_others(self) -> None:
+        self.collect()
+        self.configure(overrides={**dict.fromkeys(LOOSE_ONLY_KEYS, "on hold"), "example/two#5": "on hold"})
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [f"OVERRIDE_UNMATCHABLE {key}" for key in sorted(key.lower() for key in LOOSE_ONLY_KEYS)],
+            [line for line in lines if line.startswith("OVERRIDE_UNMATCHABLE ")],
+        )
+        self.assertEqual(f"UPDATED {self.dashboard} rows=4", lines[0])
+        self.assertNotIn("CANDIDATE missing example/two#5", lines, "the identity key still pins its row")
+        self.assertIn("### On Hold (1)", self.dashboard.read_text(encoding="utf-8"))
+        # The candidates review-arguments reads the overrides to pin are read past such a key too.
+        code, out, err = self.run_main("review-arguments", "--confirm", "example/one#1")
+        self.assertEqual((0, "", ["REVIEW_ARGUMENTS --pull example/one#1"]), (code, err, out.splitlines()))
+
+    def test_a_new_set_needs_an_identity_and_a_clear_a_present_key_the_configuration_loads(self) -> None:
+        self.configure(overrides={"a--b/repo#1": "on hold"})
+        self.track("example/one#3")
+        original = self.config_path.read_bytes()
+        for arguments, reason in (
+            (["--set=-a/repo#1=on hold"], "Invalid override pull-request identity: '-a/repo#1'"),
+            (["--set", "owner/..#1=on hold"], "Invalid override pull-request identity: 'owner/..#1'"),
+            (["--clear", "a--c/repo#1"], "No status override for a--c/repo#1"),
+            (["--clear", "a b/repo#1"], "Invalid override pull-request identity: 'a b/repo#1'"),
+            (["--clear", "a--b/repo#01"], "Invalid override pull-request identity: 'a--b/repo#01'"),
+            (["--clear", "a--b/repo"], "Invalid override pull-request identity: 'a--b/repo'"),
+            (
+                ["--clear", "a--b/repo#1", "--clear", "A--B/Repo#1"],
+                "Status override a--b/repo#1 is named more than once",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main("override", *arguments)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual([f"FAILED {reason}"], out.splitlines())
+                self.assertEqual(original, self.config_path.read_bytes())
 
 
 class RepositoryTests(TrackerPipelineFixture):

@@ -4,12 +4,13 @@
              (by default in a new temporary directory), and, for a repository set, name each repository outside it in
              which the configured user authors, is asked to review, or has reviewed an open pull request
     update   render the owned dashboard section from that file, with every other argument taken from the configuration,
-             name each review that went stale since the last update, and record the pull requests the tracker holds
-             and their reviews beside the configuration
+             name each review that went stale since the last update and each status override key whose repository is
+             no identity, so it matches no pull request, and record the pull requests the tracker holds and their
+             reviews beside the configuration
     override list, set, or clear the configuration's `dashboard.status_overrides`, validating the whole configuration
              before it is written; a set must name a pull request that record holds, and the listing marks each
              override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
-             any other
+             any other, as does any key the configuration loads
     repository
              add a repository to the configuration and to a repository set, by default the one `collect` reads, or
              mute or unmute a repository or pattern `collect` names as untracked, validating the whole configuration
@@ -86,8 +87,10 @@ from update_pr_dashboard import (
     ComparisonFailures,
     Row,
     TrackerError,
+    is_pull_key,
     normalize_overrides,
     normalize_pull_keys,
+    override_key,
     replacement,
     review_candidates,
     stale_since,
@@ -446,11 +449,12 @@ def update(
     removals: list[str] | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
-) -> tuple[Path, list[Row], list[str]]:
+) -> tuple[Path, list[Row], list[str], list[str]]:
     """Render the owned section with the configured dashboard, login, markers, overrides, and author names, and
-    return the dashboard, its rows, and the pull requests whose review went stale since the
-    update that wrote the tracker record (see `stale_since`). Without a configured login, GitHub is asked for it only
-    after the refusals `update_dashboard_rows` makes before asking anything."""
+    return the dashboard, its rows, the pull requests whose review went stale since the update that wrote the tracker
+    record (see `stale_since`), and each status override key, in key order, that can match no pull request, since only
+    the configuration's looser rule takes it (see `is_pull_key`). Without a configured login, GitHub is asked for it
+    only after the refusals `update_dashboard_rows` makes before asking anything."""
     services = services or Services()
     config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
@@ -470,7 +474,9 @@ def update(
         config_path=str(config_path),
         record=record,
     )
-    return dashboard, rows, stale_since(previous, rows)
+    overrides = normalize_overrides(config["dashboard"]["status_overrides"])
+    unmatchable = sorted(key for key in overrides if not is_pull_key(key))
+    return dashboard, rows, stale_since(previous, rows), unmatchable
 
 
 def tracker_record_path(config_path: Path) -> Path:
@@ -511,7 +517,9 @@ def _pull_key(value: str) -> str:
 
 
 def override_changes(sets: list[str], clears: list[str]) -> dict[str, str | None]:
-    """Each named pull request's new status, or None to clear its override, keyed as the tracker matches it."""
+    """Each named pull request's new status, or None to clear its override, keyed as the tracker matches it. A key to
+    set names a repository identity; a key to clear is read by the configuration's own rule, so any key it loads can be
+    cleared."""
     changes: dict[str, str | None] = {}
     for value in sets:
         key, separator, status = value.partition("=")
@@ -519,7 +527,7 @@ def override_changes(sets: list[str], clears: list[str]) -> dict[str, str | None
             raise TrackerError(f"Status override {value!r} must be owner/repo#number=status")
         _add_change(changes, _pull_key(key), status.strip())
     for value in clears:
-        _add_change(changes, _pull_key(value), None)
+        _add_change(changes, override_key(value), None)
     return changes
 
 
@@ -560,11 +568,11 @@ def change_overrides(
     def edit(raw: dict[str, Any], _: dict[str, Any]) -> None:
         dashboard = raw.setdefault("dashboard", {})
         current = dashboard.get("status_overrides", {})
-        present = {_pull_key(key) for key in current}
+        present = {override_key(key) for key in current}
         missing = [key for key, status in changes.items() if status is None and key not in present]
         if missing:
             raise TrackerError(f"No status override for {missing[0]}")
-        kept = {key: status for key, status in current.items() if _pull_key(key) not in changes}
+        kept = {key: status for key, status in current.items() if override_key(key) not in changes}
         dashboard["status_overrides"] = {
             **kept,
             **{key: status for key, status in changes.items() if status is not None},
@@ -751,9 +759,13 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "collect":
             return _collect(args, services)
         calls = services.github.call_count
-        dashboard, rows, stale = update(args.input, removals=args.remove, config_path=args.config, services=services)
+        dashboard, rows, stale, unmatchable = update(
+            args.input, removals=args.remove, config_path=args.config, services=services
+        )
         print(single_line(f"UPDATED {dashboard} rows={len(rows)}"))
         print(single_line(f"GITHUB_CALLS {services.github.call_count - calls}"))
+        for key in unmatchable:
+            print(single_line(f"OVERRIDE_UNMATCHABLE {key}"))
         for key in stale:
             print(single_line(f"STALE_SINCE_LAST_UPDATE {key}"))
         if args.candidates:
