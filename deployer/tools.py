@@ -127,7 +127,9 @@ COPILOT_MINIMUM = (1, 0, 88)
 COPILOT = Tool(
     "copilot",
     "copilot",
-    lambda: platform_support.find_copilot_program(),
+    lambda: platform_support.find_only_program(
+        "copilot", platform_support.COPILOT_LABEL, platform_support.COPILOT_PROGRAM_INSTALL
+    ),
     minimum=COPILOT_MINIMUM,
     optional=True,
     other_uses=("Copilot verification",),

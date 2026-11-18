@@ -147,7 +147,7 @@ class Machine:
             stack.enter_context(mock.patch(f"deployer.platform_support.{lookup}", side_effect=self.find_executable))
         stack.enter_context(
             mock.patch(
-                "deployer.platform_support.find_copilot_program", side_effect=lambda: self.find_executable("copilot")
+                "deployer.platform_support.find_only_program", side_effect=lambda name, *_: self.find_executable(name)
             )
         )
         for flag in ("HAS_APP_EXECUTION_ALIASES", "CODEX_NEEDS_SANDBOX_SETTING"):

@@ -13,7 +13,7 @@ skill starts with arguments through `located_command`, are found by `find_progra
 deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
 which npm installs as `.cmd` scripts and which `verify` and `check`'s version probes start with arguments the
 repository writes, are found by `find_executable`, but for Copilot CLI as the code-review skills run it: the bounded
-Copilot code-review host and `check`'s line for those skills both find it by `find_copilot_program`, which takes
+Copilot code-review host and `check`'s line for those skills both find it by `find_only_program`, which takes
 `find_program`'s answer and refuses a host whose only `copilot` is a shell script, so `check` reports such a host's
 Copilot as unusable rather than installed.
 """
@@ -202,25 +202,26 @@ class ShellScriptsOnly(LookupError):
         self.scripts = tuple(scripts)
 
 
-# What to install for Copilot CLI as a program, in place of the `copilot.cmd` npm installs on Windows.
+# Copilot CLI by the name its refusal gives it, and what to install for it as a program in place of the `copilot.cmd`
+# npm installs on Windows: the bounded Copilot code-review host and `deploy.py check` pass both to `find_only_program`.
+COPILOT_LABEL = "GitHub Copilot CLI"
 COPILOT_PROGRAM_INSTALL = "install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
 
 
-def find_copilot_program() -> str | None:
-    """Copilot CLI as the bounded Copilot code-review host starts it, and as `deploy.py check` reports it for the
-    skills that run that host: the first program `find_program` finds for `copilot`, or None when the locator finds
-    nothing. The host hands Copilot a command line it builds from reviewed content, so a shell script is passed over
-    wherever it stands, and a host with only shell scripts, such as npm's `copilot.cmd`, raises ShellScriptsOnly naming
-    each and what to install. Elsewhere than Windows no file is a shell script, so this is `find_program`."""
-    program = find_program("copilot")
+def find_only_program(name: str, label: str, install: str) -> str | None:
+    """`name` as a caller that starts it with arguments it does not control finds it, and as `deploy.py check` reports
+    it for that caller: the first program `find_program` finds, or None when the locator finds nothing. A host with
+    only shell scripts, such as npm's `copilot.cmd`, raises ShellScriptsOnly naming `label`, each script, and
+    `install`, so the caller and `check` refuse it alike. The bounded Copilot code-review host finds Copilot CLI here.
+    Elsewhere than Windows no file is a shell script, so this is `find_program`."""
+    program = find_program(name)
     if program is not None:
         return program
-    scripts = find_executables("copilot")
+    scripts = find_executables(name)
     if not scripts:
         return None
     raise ShellScriptsOnly(
-        "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
-        f"{', '.join(scripts)}; {COPILOT_PROGRAM_INSTALL}",
+        f"{label} on PATH is a shell script, which Windows starts through a shell: {', '.join(scripts)}; {install}",
         scripts,
     )
 
