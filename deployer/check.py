@@ -92,12 +92,12 @@ def _deploy_lines(checkout: bool) -> list[ReportLine]:
 def _skill_lines(src: source.Source, owned: manifest.Ownership, checkout: bool) -> list[ReportLine]:
     users = source.tool_users(src, sorted(src.bundles), source.root_names(src))
     required = source.required_tools(src, sorted(src.bundles), source.root_names(src))
-    # The runtimes verify runs are reported even when no skill declares them.
-    catalogue = {**tools.VERIFY_TOOLS, **tools.SKILL_TOOLS}
+    # The runtimes verify runs are reported even when no skill declares them, then found as verify finds them; a tool
+    # a skill declares is found as the skill finds it.
     users |= {name: [] for name in tools.VERIFY_TOOLS if name not in users}
     lines: list[ReportLine] = []
     for name, roots in users.items():
-        tool = catalogue[name]
+        tool = tools.SKILL_TOOLS[name] if roots else tools.VERIFY_TOOLS[name]
         # A tool every root using it is an unchosen opt-in item for is optional, like a tool marked optional or one
         # that every skill using it declares optional. An opt-in item is chosen when the requested roots stand for it,
         # not when it is installed, so a tool another root also uses stays needed.

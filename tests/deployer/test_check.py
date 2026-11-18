@@ -26,6 +26,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("dotnet-format")))
 
 import bounded_process
+import executable_locator
 import git_client
 import github_client
 import review_documents
@@ -144,6 +145,11 @@ class Machine:
         stack = contextlib.ExitStack()
         for lookup in ("find_executable", "find_program"):
             stack.enter_context(mock.patch(f"deployer.platform_support.{lookup}", side_effect=self.find_executable))
+        stack.enter_context(
+            mock.patch(
+                "deployer.platform_support.find_copilot_program", side_effect=lambda: self.find_executable("copilot")
+            )
+        )
         for flag in ("HAS_APP_EXECUTION_ALIASES", "CODEX_NEEDS_SANDBOX_SETTING"):
             stack.enter_context(mock.patch.object(platform_support, flag, self.settings))
         stack.enter_context(
@@ -1163,7 +1169,7 @@ class VersionTests(unittest.TestCase):
             {"codex": (0, 88, 0), "copilot": (1, 0, 88)},
             {name: tool.minimum for name, tool in tools.VERIFY_TOOLS.items()},
         )
-        self.assertIs(tools.SKILL_TOOLS["copilot"], tools.VERIFY_TOOLS["copilot"])
+        self.assertEqual((1, 0, 88), tools.SKILL_TOOLS["copilot"].minimum, "the skills' Copilot has verify's floor")
         self.assertNotIn("codex", tools.SKILL_TOOLS, "no skill runs Codex CLI")
 
     def test_the_runtime_tool_floors_table_lists_every_floor_the_catalogue_checks(self) -> None:
@@ -1508,6 +1514,59 @@ class SkillToolLocatorTests(LocatorFixture):
                     program = self.install(self.links, name)
                     self.assertEqual(str(program), catalogue[name].locate(), "the program after the shell script")
                     self.assertEqual(str(program), self.skill_program(name))
+
+    def copilot_shim(self) -> Path:
+        """Copilot CLI as npm installs it, a shell script first on PATH: on Windows a `copilot.cmd`, which Windows
+        starts through cmd.exe, and elsewhere, where no file is a shell script, an executable `copilot` the locator is
+        made to read as one, so every platform holds `check` and the Copilot host to one answer."""
+        if platform_support.WINDOWS:
+            os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.PS1"
+            shim = self.path_folder / "copilot.cmd"
+            shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\r\n', encoding="utf-8")
+            return shim
+        shim = self.install(self.path_folder, "copilot")
+        windows_reading = mock.patch.object(
+            executable_locator, "shell_script", side_effect=lambda path: Path(path).parent == self.path_folder
+        )
+        windows_reading.start()
+        self.addCleanup(windows_reading.stop)
+        return shim
+
+    def test_check_and_the_copilot_host_read_a_shell_script_and_the_program_after_it_alike(self) -> None:
+        version = platform_support.ToolResult(0, "GitHub Copilot CLI 1.0.89.\n")
+        with mock.patch.object(platform_support, "run_tool", return_value=version) as probed:
+            line = _tool_line(tools.SKILL_TOOLS["copilot"], True, ["review-document"])
+            with self.assertRaises(review_runtime.RuntimeContractError) as missing:
+                review_hosts.find_copilot()
+            self.assertEqual(
+                ("copilot", "OPTIONAL", "not installed; used by review-document, Copilot verification"),
+                (line.name, line.action, line.detail),
+            )
+            self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
+
+            shim = self.copilot_shim()
+            line = _tool_line(tools.SKILL_TOOLS["copilot"], True, ["review-document"])
+            with self.assertRaises(review_runtime.RuntimeContractError) as refused:
+                review_hosts.find_copilot()
+            self.assertEqual(("copilot", "UNUSABLE"), (line.name, line.action), "a shell script is not installed")
+            self.assertEqual(str(refused.exception), line.detail, "check prints the host's own refusal")
+            prefix = "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+            install = "; install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+            self.assertTrue(line.detail.startswith(prefix) and line.detail.endswith(install), line.detail)
+            named = line.detail.removeprefix(prefix).removesuffix(install)
+            self.assertEqual(str(shim).casefold(), named.casefold(), "the refusal names the shell script")
+            self.assertEqual([], probed.call_args_list, "check never starts the shell script")
+            located = tools.VERIFY_TOOLS["copilot"].locate() or ""
+            self.assertEqual(str(shim).casefold(), located.casefold(), "verify still lists through the shell script")
+
+            program = self.install(self.links, "copilot")
+            line = _tool_line(tools.SKILL_TOOLS["copilot"], True, ["review-document"])
+            self.assertEqual(
+                ("copilot 1.0.89", "OPTIONAL", "used by review-document, Copilot verification"),
+                (line.name, line.action, line.detail),
+            )
+            self.assertEqual([[str(program), "--version"]], [call.args[0] for call in probed.call_args_list])
+            self.assertEqual(str(program), review_hosts.find_copilot(), "the host runs the program check reports")
 
     def test_a_runtime_cli_check_reports_is_one_the_code_review_skills_detect(self) -> None:
         catalogue = {tool.name: tool for tool in (*tools.VERIFY_TOOLS.values(), *tools.REPORTED_TOOLS)}

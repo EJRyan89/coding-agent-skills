@@ -11,9 +11,11 @@ Two lookups answer differently on Windows only when a shell script, a `.bat`, `.
 program: `find_program` passes over it, and `find_executable` does not. git, gh, dotnet, and dotnet-format, which a
 skill starts with arguments through `located_command`, are found by `find_program` in `check`, the skills, and the
 deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
-which npm installs as `.cmd` scripts and which `check` and `verify` start with arguments the repository writes, are
-found there by `find_executable`, while the bounded Copilot code-review host finds Copilot CLI by `find_program` and
-refuses a host whose only `copilot` is a shell script.
+which npm installs as `.cmd` scripts and which `verify` and `check`'s version probes start with arguments the
+repository writes, are found by `find_executable`, but for Copilot CLI as the code-review skills run it: the bounded
+Copilot code-review host and `check`'s line for those skills both find it by `find_copilot_program`, which takes
+`find_program`'s answer and refuses a host whose only `copilot` is a shell script, so `check` reports such a host's
+Copilot as unusable rather than installed.
 """
 
 from __future__ import annotations
@@ -189,6 +191,38 @@ def find_program(name: str) -> str | None:
     its own syntax, so an argument such as a search pattern a reviewer wrote could run a second command; a program
     found here receives its arguments as they are."""
     return next((path for path in find_executables(name) if not shell_script(path)), None)
+
+
+class ShellScriptsOnly(LookupError):
+    """The locator found a program's name only as shell scripts, `scripts`, which a caller that starts it with
+    arguments it does not control refuses; the message names each and what to install instead."""
+
+    def __init__(self, message: str, scripts: Sequence[str]) -> None:
+        super().__init__(message)
+        self.scripts = tuple(scripts)
+
+
+# What to install for Copilot CLI as a program, in place of the `copilot.cmd` npm installs on Windows.
+COPILOT_PROGRAM_INSTALL = "install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+
+
+def find_copilot_program() -> str | None:
+    """Copilot CLI as the bounded Copilot code-review host starts it, and as `deploy.py check` reports it for the
+    skills that run that host: the first program `find_program` finds for `copilot`, or None when the locator finds
+    nothing. The host hands Copilot a command line it builds from reviewed content, so a shell script is passed over
+    wherever it stands, and a host with only shell scripts, such as npm's `copilot.cmd`, raises ShellScriptsOnly naming
+    each and what to install. Elsewhere than Windows no file is a shell script, so this is `find_program`."""
+    program = find_program("copilot")
+    if program is not None:
+        return program
+    scripts = find_executables("copilot")
+    if not scripts:
+        return None
+    raise ShellScriptsOnly(
+        "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+        f"{', '.join(scripts)}; {COPILOT_PROGRAM_INSTALL}",
+        scripts,
+    )
 
 
 def located_command(command: Sequence[str], *, kept: Found | None = None) -> list[str]:

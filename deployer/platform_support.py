@@ -419,6 +419,18 @@ def find_program(name: str) -> str | None:
     return executable_locator.find_program(name)
 
 
+# A lookup found a program's name only as shell scripts; ejryan89-skill-core's locator raises it, naming each.
+ShellScriptsOnly = executable_locator.ShellScriptsOnly
+
+
+def find_copilot_program() -> str | None:
+    """Copilot CLI as the code-review skills' bounded Copilot host starts it, by ejryan89-skill-core's
+    `find_copilot_program`, the host's own lookup, so `check` reports what the host finds: a program that is no shell
+    script, or None for none at all, and ShellScriptsOnly, raised, for a host whose only `copilot` is a shell
+    script."""
+    return executable_locator.find_copilot_program()
+
+
 def find_bash() -> str | None:
     """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
     as WSL's, and elsewhere the system's, the first bash on PATH. On Windows GIT_BASH, then Git under the Program Files

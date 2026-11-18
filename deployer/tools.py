@@ -120,11 +120,25 @@ STANDARD_COMMANDS = (
     | platform_support.STANDARD_COMMANDS
 )
 
+COPILOT_MINIMUM = (1, 0, 88)
+# Copilot CLI as the code-review skills run it, through their bounded Copilot host, which starts it with a command line
+# built from reviewed content and so finds it by the host's own lookup, refusing a host whose only `copilot` is a
+# shell script such as npm's `copilot.cmd`; `check` reports that refusal as the host words it.
 COPILOT = Tool(
     "copilot",
     "copilot",
+    lambda: platform_support.find_copilot_program(),
+    minimum=COPILOT_MINIMUM,
+    optional=True,
+    other_uses=("Copilot verification",),
+)
+# Copilot CLI as `verify` starts it, to list its skills with arguments the repository writes, which a shell script
+# passes through unchanged, so an npm install serves; `check` reports it by this lookup only when no skill runs it.
+COPILOT_RUNTIME = Tool(
+    "copilot",
+    "copilot",
     lambda: platform_support.find_executable("copilot"),
-    minimum=(1, 0, 88),
+    minimum=COPILOT_MINIMUM,
     optional=True,
     other_uses=("Copilot verification",),
 )
@@ -207,7 +221,7 @@ SKILL_TOOLS = {
 
 # The runtimes `deploy.py verify` asks for their skill listings, by their names in discovery.RUNTIMES. No skill runs
 # Codex CLI, so only this catalogue names it.
-VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
+VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT_RUNTIME)}
 
 # Git, which every skill runs and a deployment from a Git checkout needs to record its commit. It has no floor.
 GIT = Tool("git", "Git", lambda: platform_support.find_program("git"), other_uses=("every skill",))
@@ -260,7 +274,12 @@ def probe(tool: Tool) -> Probe:
     """Locate a tool and, when it reports one, read its version."""
     if tool.provider_minimum is not None:
         return _provider_probe(tool)
-    path = tool.locate()
+    try:
+        path = tool.locate()
+    except platform_support.ShellScriptsOnly as exc:
+        # Installed, but only as shell scripts the skill that runs the tool refuses, so it is reported unusable with
+        # the skill's own refusal, which names each script and what to install instead, and is never started.
+        return Probe(tool, exc.scripts[0], None, refusal=str(exc))
     if path is None or not tool.version_arguments:
         return Probe(tool, path, None)
     result = platform_support.run_tool([path, *tool.version_arguments])
