@@ -2101,7 +2101,8 @@ def open_here_document(text: str) -> bool:
 
 def file_command_lines(text: str) -> set[int]:
     """The line each command Bash runs for a text that runs one of SHELL_FILE_COMMANDS starts on, counted from 1. Raises
-    BashSyntaxError where the grammar refuses the text, or the script eval or a shell's -c runs in it."""
+    BashSyntaxError where the grammar refuses the text, or the script eval, a shell's -c, or a trap's action runs in
+    it."""
     return {
         line for line, words in bash_programs(text) if command_wrappers.bash_program(words[0]) in SHELL_FILE_COMMANDS
     }
@@ -3106,10 +3107,10 @@ def powershell_script_commands(script: str) -> list[list[str]]:
 def script_git_subcommands(script: Path) -> set[str]:
     """The subcommand of each git command a Bash or PowerShell script runs, by ejryan89-skill-core's git_subcommands,
     the reader repository validation shares, or of each git call a Python script makes, by the shared derivation; any
-    other script runs none this reads. A Python script that does not parse fails, as script_facts fails it, and so
-    does a Bash script the Bash grammar refuses, the script its eval or a shell's -c runs included, a PowerShell
-    script whose Bash shell runs such a script, and a PowerShell script, or a script a Bash script starts PowerShell
-    on, that pwsh cannot read; each failure names the script."""
+    other script runs none this reads. A Python script that does not parse fails, as script_facts fails it, and so does
+    a Bash script the Bash grammar refuses, the script its eval, a shell's -c, or a trap's action runs included, a
+    PowerShell script whose Bash shell runs such a script, and a PowerShell script, or a script a Bash script starts
+    PowerShell on, that pwsh cannot read; each failure names the script."""
     text = require_text(script)
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):

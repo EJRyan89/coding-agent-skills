@@ -55,6 +55,16 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
         ("eval git fetch", {"fetch"}),
         ("bash -lc 'cd x && git pull'", {"pull"}),
+        # A trap's action is a script Bash runs as eval runs its own when the condition fires, as `bash -c "trap 'echo
+        # A' EXIT"` prints A; `-`, an unsigned integer first operand, a lone operand, and -p, -l, or -P set none.
+        ("trap 'git push' EXIT", {"push"}),
+        ("trap -- 'git fetch' 0", {"fetch"}),
+        ("builtin trap 'git push; git pull' EXIT INT", {"push", "pull"}),
+        ("trap - EXIT", set()),
+        ("trap '' INT", set()),
+        ("trap 5 INT", set()),
+        ("trap 'git push'", set()),
+        ("trap -p 'git push' EXIT", set()),
         # A quoted operator is a word, a substitution in a string is a command, and so is a group's or a continuation's.
         ("echo 'a; git push'", set()),
         ('echo "now $(git rev-parse HEAD)"', {"rev-parse"}),
@@ -299,6 +309,16 @@ def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
         git_subcommands.bash_git_subcommands(script, no_powershell)
 
 
+# A trap's action the grammar refuses fails as the same text given to eval does, with the grammar's reason.
+@pytest.mark.parametrize("action", ["'if git push; then'", "'git push \"'", "'git push; ('", "'case x in'"])
+def test_a_trap_action_the_grammar_refuses_raises_as_eval_s_script_does(action: str) -> None:
+    with pytest.raises(bash_syntax.BashSyntaxError) as evaluated:
+        git_subcommands.bash_git_subcommands(f"eval {action}", no_powershell)
+    with pytest.raises(bash_syntax.BashSyntaxError) as trapped:
+        git_subcommands.bash_git_subcommands(f"trap {action} EXIT", no_powershell)
+    assert str(trapped.value) == str(evaluated.value)
+
+
 # A substitution in a here-document's body that Bash cannot read fails alone when Bash expands the body, so it runs
 # nothing and the git commands around it, in the body and the script, are read; one whose end the body never reaches
 # runs to the body's end, so nothing in the body stands after it.
@@ -357,6 +377,11 @@ def test_a_substitution_in_arithmetic_quoted_or_not_runs(script: str) -> None:
         ('bash -c "git push $(date)"', {"push"}),
         ('bash -c "git $(date)"', {UNREAD_WORD}),
         ('eval "git $(date)"', {UNREAD_WORD}),
+        # A trap's action no literal holds is read as eval's script is.
+        ('trap "$(cat x)" EXIT', set()),
+        ('trap "$cleanup" EXIT', set()),
+        ('trap "git push $(date)" EXIT', {"push"}),
+        ('trap "git $(date)" EXIT', {UNREAD_WORD}),
         ("bash -c $'git push\\n'", set()),
         ('git "$(echo push)"', {UNREAD_WORD}),
         ("git $((1 + 1))", {UNREAD_WORD}),

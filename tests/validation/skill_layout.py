@@ -232,7 +232,8 @@ def script_git_subcommands(script: Path) -> set[str]:
     audit-skill's runtime-support derivation shares: a Bash script's, a PowerShell script's as powershell_readings
     lists its commands, read once for each text in a validation run as powershell_script_commands holds it, and a
     Python script's git calls; any other file runs none this reads. Raises UnreadScript, naming the script, for a
-    Bash script the grammar refuses, or one the script eval, a shell's -c, or a PowerShell script's Bash shell runs,
+    Bash script the grammar refuses, or one the script eval, a shell's -c, a trap's action, or a PowerShell script's
+    Bash shell runs,
     as audit-skill's reader fails it."""
     import runtime_support
 
