@@ -14,8 +14,10 @@ named for the source's repository, the part of its ID after the slash; each opt-
 `<plugin>-<item>`, so it stays opt-in.
 
 The deployer reads a source through its own loader, which refuses a malformed menu. read_menu is the reader for code
-that cannot import the deployer: it reads source.json and deploy-meta/ as that loader does, takes what a well-formed
-source says, and fails on what names no skill or cannot be read at all, a list of names of another kind included.
+that cannot import the deployer: it reads source.json and deploy-meta/ as that loader does, through the same readers of
+a source ID, a list of names, and bundles, which the loader imports from here, takes what a well-formed source says,
+and fails on what names no skill or cannot be read at all, a list of names of another kind included. A null list of
+names or null bundles is none to both, as an absent one is.
 """
 
 from __future__ import annotations
@@ -108,6 +110,11 @@ PLUGIN_MANIFEST = ".claude-plugin/plugin.json"
 PLUGIN_HOOKS = "hooks/hooks.json"
 PLUGIN_MARKETPLACE = ".claude-plugin/marketplace.json"
 METADATA_FOLDER = "deploy-meta"
+# A source's ID as the deployer's loader and read_menu take it from source.json: <owner>/<repository>, each part
+# lowercase letters, digits, dots, underscores, and hyphens starting with a letter or digit, the whole at most
+# SOURCE_ID_MAX_LENGTH characters.
+SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+SOURCE_ID_MAX_LENGTH = 128
 
 
 class MenuError(ValueError):
@@ -265,13 +272,43 @@ def _json_object(path: Path) -> dict[str, object]:
     return document
 
 
-def _names(value: object, where: str) -> tuple[str, ...]:
-    """A list of names as the deployer's loader takes one; any other kind, or a list holding anything but names, is a
-    MenuError, since the names it was meant to hold cannot be known and reading it as none would plan a menu the
-    deployer refuses."""
-    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
-        raise MenuError(f"{where} is not a list of names")
-    return tuple(value)
+def name_list(value: object) -> list[str] | None:
+    """A list of names as source.json and deploy-meta/ hold one, which the deployer's loader and read_menu both read
+    through this: null, like an absent key, is none, and None stands for any other kind, or a list holding anything
+    but strings, which both refuse."""
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return None
+
+
+def declared_names(metadata: Mapping[str, object], key: str, where: str) -> list[str]:
+    """The names a metadata key lists, read by name_list: none for an absent or null key, and a MenuError naming
+    `where` for any other kind, since the names it was meant to hold cannot be known and reading it as none would plan
+    what the deployer refuses."""
+    names = name_list(metadata.get(key))
+    if names is None:
+        raise MenuError(f"{where} {key} is not a list of names")
+    return names
+
+
+def bundle_definitions(value: object) -> dict[str, object] | None:
+    """source.json's bundles as the deployer's loader and read_menu both read them: null, like an absent key, is none,
+    and None stands for any other kind than an object, which both refuse."""
+    if value is None:
+        return {}
+    return value if isinstance(value, dict) else None
+
+
+def bundle_members(definition: object) -> list[str] | None:
+    """A bundle's members as the deployer's loader and read_menu both read them: a non-empty list of names in the
+    bundle's object, or None for anything else, a definition that is no object, null members, and none included,
+    which both refuse."""
+    members = definition.get("members") if isinstance(definition, dict) else None
+    if not isinstance(members, list) or not members or not all(isinstance(member, str) for member in members):
+        return None
+    return list(members)
 
 
 def _flag(value: object, where: str) -> bool:
@@ -285,22 +322,25 @@ def _flag(value: object, where: str) -> bool:
 def _entry(path: Path, metadata: dict[str, object]) -> MenuEntry:
     where = path.as_posix()
     return MenuEntry(
-        skill_deps=_names(metadata.get("skill_deps", []), f"{where} skill_deps"),
-        required_vars=_names(metadata.get("required_vars", []), f"{where} required_vars"),
+        skill_deps=tuple(declared_names(metadata, "skill_deps", where)),
+        required_vars=tuple(declared_names(metadata, "required_vars", where)),
         selectable=_flag(metadata.get("selectable", True), f"{where} selectable"),
         opt_in=_flag(metadata.get("opt_in", False), f"{where} opt_in"),
     )
 
 
 def _read_bundles(menu: SourceMenu, path: Path, value: object) -> None:
-    if not isinstance(value, dict):
+    bundles = bundle_definitions(value)
+    if bundles is None:
         raise MenuError(f"{path.as_posix()} bundles is not a JSON object")
-    for bundle, definition in sorted(value.items()):
+    for bundle, definition in sorted(bundles.items()):
         if not isinstance(definition, dict):
             raise MenuError(f"{path.as_posix()} bundle {bundle} is not a JSON object")
-        found = _names(definition.get("members"), f"{path.as_posix()} bundle {bundle} members")
-        menu.bundles[str(bundle)] = list(found)
-        menu.skill_bundle.update({member: str(bundle) for member in found})
+        found = bundle_members(definition)
+        if found is None:
+            raise MenuError(f"{path.as_posix()} bundle {bundle} members is not a non-empty list of names")
+        menu.bundles[bundle] = found
+        menu.skill_bundle.update(dict.fromkeys(found, bundle))
         if _flag(definition.get("opt_in", False), f"{path.as_posix()} bundle {bundle} opt_in"):
             menu.opt_in_bundles.add(bundle)
 
@@ -309,12 +349,16 @@ def read_menu(root: Path) -> SourceMenu:
     """The menu of the source tree at root: its ID and bundles from source.json, and each skill's from its metadata."""
     document = _json_object(root / SOURCE_FILE)
     source_id = document.get("id")
-    if not isinstance(source_id, str) or "/" not in source_id:
+    if (
+        not isinstance(source_id, str)
+        or not SOURCE_ID_PATTERN.fullmatch(source_id)
+        or len(source_id) > SOURCE_ID_MAX_LENGTH
+    ):
         raise MenuError(f"{(root / SOURCE_FILE).as_posix()} names no source ID of the form <owner>/<repository>")
     menu = SourceMenu(source_id)
     for path in file_presence.matching(root / METADATA_FOLDER, "*.json"):
         menu.skills[path.stem] = _entry(path, _json_object(path))
-    _read_bundles(menu, root / SOURCE_FILE, document.get("bundles", {}))
+    _read_bundles(menu, root / SOURCE_FILE, document.get("bundles"))
     named = [*(name for entry in menu.skills.values() for name in entry.skill_deps), *menu.skill_bundle]
     unknown = sorted({name for name in named if name not in menu.skills})
     if unknown:

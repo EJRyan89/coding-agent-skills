@@ -3383,6 +3383,13 @@ class SourcePluginTests(SourceTreeTestCase):
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "skill_deps is not a list" in lines[0], lines)
 
+    def test_a_null_dependency_list_and_null_bundles_read_as_none_as_the_deployer_reads_them(self) -> None:
+        # The deployer's loader deploys this source, so the metadata is readable and the plugin carries the skill.
+        self.source({"id": "owner/fixture-skills", "bundles": None})
+        skill = self.skill("Alpha.\n", {"skill_deps": None, "shared_deps": None, "required_vars": None})
+        self.assertEqual([], self.lines("inventory", skill.parent, ("DECLARED_UNREADABLE",)))
+        self.assertEqual(["CARRIED_BY fixture-skills"], self.plugins(skill))
+
 
 class JsonFileDecodingTests(TemporaryTestCase):
     """Each JSON file the inventory reads decodes as UTF-8 on every platform, whatever the locale's codec."""

@@ -1,7 +1,8 @@
 """Discovery and validation of the deployable source tree.
 
 The menu's closures, expand, root_names, and is_opt_in, are ejryan89-skill-core's skill_menu, which audit-skill's script
-reads a source's plugins through too; they are imported here for the deployer's modules.
+reads a source's plugins through too; they are imported here for the deployer's modules. So are its readers of a source
+ID, a list of names, and bundles, which read_menu reads a source through too, so the two take and refuse alike.
 """
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ from __future__ import annotations
 import fnmatch
 import graphlib
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +18,9 @@ import frontmatter
 import json_writer
 import runtime_support
 from agent_skills import MAX_NAME, NAME_PATTERN, RESERVED_WORDS, XML_TAG_PATTERN
+from skill_menu import SOURCE_ID_MAX_LENGTH as SOURCE_ID_MAX_LENGTH
+from skill_menu import SOURCE_ID_PATTERN as SOURCE_ID_PATTERN
+from skill_menu import bundle_definitions, bundle_members, name_list
 from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
@@ -29,8 +32,6 @@ from .names import safe_name_problem
 from .paths import Paths
 from .tools import SKILL_TOOLS
 
-SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
-SOURCE_ID_MAX_LENGTH = 128
 # The Agent Skills rules, NAME_PATTERN, RESERVED_WORDS, and XML_TAG_PATTERN from ejryan89-skill-core: every skill,
 # bundle, agent, and renamed old name follows the specification's naming grammar, a skill name may not contain a
 # reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps angle brackets
@@ -294,14 +295,6 @@ def frontmatter_name(path: Path, owner: str) -> str:
         ) from exc
 
 
-def _string_list(value: object) -> list[str] | None:
-    if value is None:
-        return []
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return list(value)
-    return None
-
-
 def _is_file(path: Path) -> bool:
     """Whether an entry a listing found is a regular file: anything else there is passed over, and a stat that fails
     raises its OSError, which discover refuses. Passing over a SKILL.md and a metadata file whose stats fail would
@@ -397,12 +390,12 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     shape_error = DeployError(f"ERROR: deploy-meta/{name}.json has an invalid metadata shape", METADATA_SHAPE)
     if not isinstance(metadata, dict):
         raise shape_error
-    required = _string_list(metadata.get("required_vars"))
-    shared = _string_list(metadata.get("shared_deps"))
-    dependencies = _string_list(metadata.get("skill_deps"))
-    tools = _string_list(metadata.get("tools"))
-    optional_tools = _string_list(metadata.get("optional_tools"))
-    agents = _string_list(metadata.get("agent_deps"))
+    required = name_list(metadata.get("required_vars"))
+    shared = name_list(metadata.get("shared_deps"))
+    dependencies = name_list(metadata.get("skill_deps"))
+    tools = name_list(metadata.get("tools"))
+    optional_tools = name_list(metadata.get("optional_tools"))
+    agents = name_list(metadata.get("agent_deps"))
     selectable = metadata.get("selectable", True)
     opt_in = metadata.get("opt_in", False)
     if (
@@ -471,10 +464,8 @@ def _runtime_support(name: str, metadata: dict[str, object]) -> dict[str, runtim
 
 
 def _load_bundles(document: dict[str, object], source: Source) -> None:
-    bundles = document.get("bundles", {})
+    bundles = bundle_definitions(document.get("bundles"))
     if bundles is None:
-        bundles = {}
-    if not isinstance(bundles, dict):
         raise DeployError("ERROR: source.json bundles must be an object", BUNDLE_SHAPE)
     for bundle in sorted(bundles):
         if not is_valid_name(bundle):
@@ -482,8 +473,8 @@ def _load_bundles(document: dict[str, object], source: Source) -> None:
         if bundle in source.skills:
             raise DeployError(f"ERROR: Bundle '{bundle}' collides with a skill name", RENAME_BUNDLE)
         definition = bundles[bundle]
-        members = definition.get("members") if isinstance(definition, dict) else None
-        if not isinstance(members, list) or not members or not all(isinstance(member, str) for member in members):
+        members = bundle_members(definition)
+        if not isinstance(definition, dict) or members is None:
             raise DeployError(f"ERROR: Bundle '{bundle}' must contain a non-empty string members array", BUNDLE_SHAPE)
         duplicates = sorted({member for member in members if members.count(member) > 1})
         if duplicates:

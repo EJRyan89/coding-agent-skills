@@ -128,18 +128,20 @@ def test_read_menu_reads_the_source_document_and_each_skills_metadata(tmp_path: 
         (None, {}, "source.json cannot be read"),
         ([], {}, "source.json is not a JSON object"),
         ({"id": "no-slash"}, {}, "names no source ID"),
+        ({"id": "Owner/Repo"}, {}, "names no source ID"),
         ({"id": "owner/repo"}, {"alpha": []}, "alpha.json is not a JSON object"),
         ({"id": "owner/repo"}, {"alpha": {"skill_deps": ["ghost"]}}, "has no metadata for: ghost"),
         ({"id": "owner/repo", "bundles": {"pair": {"members": ["ghost"]}}}, {}, "has no metadata for: ghost"),
-        # A list of names of another kind is not none: the deployer refuses it, so the menu cannot be planned.
+        # A list of names of another kind is not none: the deployer refuses it, so the menu cannot be planned. A null
+        # one is none, as the deployer reads it, and read_menu takes it, which the test below shows.
         ({"id": "owner/repo"}, {"alpha": {"skill_deps": "beta"}}, "alpha.json skill_deps is not a list of names"),
         ({"id": "owner/repo"}, {"alpha": {"skill_deps": [1]}}, "alpha.json skill_deps is not a list of names"),
-        ({"id": "owner/repo"}, {"alpha": {"skill_deps": None}}, "alpha.json skill_deps is not a list of names"),
         ({"id": "owner/repo"}, {"alpha": {"required_vars": "X"}}, "alpha.json required_vars is not a list of names"),
         ({"id": "owner/repo", "bundles": []}, {}, "source.json bundles is not a JSON object"),
         ({"id": "owner/repo", "bundles": {"pair": []}}, {}, "source.json bundle pair is not a JSON object"),
-        ({"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}}, {"alpha": {}}, "pair members is not a list"),
-        ({"id": "owner/repo", "bundles": {"pair": {}}}, {}, "source.json bundle pair members is not a list of names"),
+        ({"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}}, {"alpha": {}}, "pair members is not a non-empty"),
+        ({"id": "owner/repo", "bundles": {"pair": {}}}, {}, "source.json bundle pair members is not a non-empty list"),
+        ({"id": "owner/repo", "bundles": {"pair": {"members": []}}}, {}, "bundle pair members is not a non-empty list"),
         # A setting that is not true or false is not its default: the deployer refuses it too.
         ({"id": "owner/repo"}, {"alpha": {"opt_in": "true"}}, "alpha.json opt_in is not true or false"),
         ({"id": "owner/repo"}, {"alpha": {"opt_in": 1}}, "alpha.json opt_in is not true or false"),
@@ -160,6 +162,15 @@ def test_read_menu_refuses_a_source_it_cannot_read(
         (root / "source.json").unlink()
     with pytest.raises(skill_menu.MenuError, match=problem):
         skill_menu.read_menu(root)
+
+
+def test_read_menu_reads_null_names_and_null_bundles_as_none(tmp_path: Path) -> None:
+    root = write_source(
+        tmp_path / "source",
+        {"id": "owner/repo", "bundles": None},
+        {"alpha": {"skill_deps": None, "required_vars": None}},
+    )
+    assert skill_menu.read_menu(root) == SourceMenu("owner/repo", skills={"alpha": MenuEntry()})
 
 
 def test_closure_walks_skill_deps_depth_first_once_each_past_a_cycle() -> None:

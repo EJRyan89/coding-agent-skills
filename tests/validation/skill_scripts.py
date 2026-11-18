@@ -70,6 +70,7 @@ from python_checks import (
     reaches,
     sanctioned_problems,
 )
+from skill_menu import declared_names
 from skill_roots import SKILL_CORE
 from text_lines import LINE_BREAK, text_lines
 from toolchain import powershell_json
@@ -1492,7 +1493,9 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     directories = skills_by_name(root)
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
-        declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
+        declared = set(declared_names(document, "tools", metadata.as_posix())) | set(
+            declared_names(document, "optional_tools", metadata.as_posix())
+        )
         own = _skill_files(directories[metadata.stem]) if metadata.stem in directories else []
         skills.append((metadata.stem, declared, own, _reached_dependency_scripts(root, metadata.stem, own)))
     # PowerShell reads every source in one start, which costs far more than reading one.
@@ -1558,7 +1561,7 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
         problems.extend(
             f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
             f"skill; declare it in optional_tools; see {COMMANDS_DOC}"
-            for name in sorted(set(document.get("tools", [])) & always_optional)
+            for name in sorted(set(declared_names(document, "tools", metadata.as_posix())) & always_optional)
         )
     return problems
 

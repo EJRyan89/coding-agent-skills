@@ -34,7 +34,7 @@ from python_names import ModuleImport as ModuleImport
 from python_names import import_aliases as import_aliases
 from python_names import module_imports as module_imports
 from python_names import qualified_name as qualified_name
-from skill_menu import MenuEntry, SourceMenu, expand
+from skill_menu import MenuEntry, SourceMenu, declared_names, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
@@ -1599,7 +1599,8 @@ def skill_dependency_closure(root: Path, skill: str) -> list[str]:
     with no metadata of its own is reached and depends on nothing; the metadata policies report both."""
     menu = SourceMenu("")
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
-        declared = json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", [])
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
+        declared = declared_names(document, "skill_deps", metadata.as_posix())
         menu.skills[metadata.stem] = MenuEntry(skill_deps=tuple(declared))
     for entry in list(menu.skills.values()):
         menu.skills.update({name: MenuEntry() for name in entry.skill_deps if name not in menu.skills})
