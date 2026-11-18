@@ -34,6 +34,7 @@ from skill_layout import (
     marketplace_problems,
     metadata_format_problems,
     output_placeholder_problems,
+    own_needs,
     plugin_tree_problems,
     repository_skill_name_problems,
     runtime_page_problems,
@@ -49,7 +50,7 @@ from skill_layout import (
     trigger_scenario_problems,
     unsupported_script_problems,
 )
-from skill_scripts import WORKING_FILES_DOC
+from skill_scripts import WORKING_FILES_DOC, skill_command_problems
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
 
 from deployer import platform_support
@@ -341,6 +342,24 @@ class SkillLayoutFixtures(unittest.TestCase):
                 ],
                 fixture_source_problems(root),
             )
+
+    def test_fixture_source_policy_names_bundles_of_another_kind_and_reads_null_bundles_as_none(self) -> None:
+        for bundles, problems in (
+            ([], ["source.json bundles is not a JSON object, which the deployer refuses"]),
+            ("suite", ["source.json bundles is not a JSON object, which the deployer refuses"]),
+            (None, []),
+        ):
+            with self.subTest(bundles=bundles), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "source.json": json.dumps({"id": "owner/shipped", "bundles": bundles}),
+                        "deploy-meta/alpha.json": "{}",
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                    },
+                )
+                self.assertEqual(problems, fixture_source_problems(root))
 
     def test_fixture_source_policy_refuses_a_source_it_cannot_read_by_name(self) -> None:
         for text, problem in (
@@ -964,6 +983,28 @@ class SkillLayoutFixtures(unittest.TestCase):
             self.assertEqual(
                 ["source.json declares shared asset gone.md, which skills/ does not hold"],
                 deploy_variable_problems(root, set(), set(), set()),
+            )
+
+    def test_metadata_policies_name_a_name_list_of_another_kind_and_read_a_null_one_as_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "source.json": "{}",
+                    "deploy-meta/alpha.json": json.dumps({"required_vars": "HOME", "skill_deps": [1]}),
+                    "deploy-meta/beta.json": json.dumps({"required_vars": None, "skill_deps": None}),
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/beta/SKILL.md": "# beta\n",
+                },
+            )
+            self.assertEqual(
+                ["deploy-meta/alpha.json required_vars is not a list of names, which the deployer refuses"],
+                deploy_variable_problems(root, set(), set(), set()),
+            )
+            self.assertEqual(
+                ["deploy-meta/alpha.json skill_deps is not a list of names, which the deployer refuses"],
+                script_dependency_problems(root),
             )
 
     def test_script_dependency_policy_detects_an_undeclared_sibling(self) -> None:
@@ -1647,3 +1688,46 @@ def test_the_script_language_statement_is_one_line_as_commonmark_breaks_it(separ
         },
     )
     assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == []
+
+
+def test_own_needs_reads_a_null_tools_list_as_none_and_leaves_one_of_another_kind_to_the_command_policy(
+    tmp_path: Path,
+) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"tools": None, "optional_tools": ["gh"]}),
+            "deploy-meta/beta.json": json.dumps({"tools": "gh", "optional_tools": None}),
+            "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Alpha.\n---\n\n# alpha\n",
+            "skills/beta/SKILL.md": "---\nname: beta\ndescription: Beta.\n---\n\n# beta\n",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    assert own_needs(tmp_path, "alpha") == {"sandbox-network"}
+    # The text "gh" is no list of names, so it declares no network tool, and skill_command_problems names it.
+    assert own_needs(tmp_path, "beta") == set()
+    assert skill_command_problems(tmp_path, {"gh"}, {"git", "python"}) == [
+        "deploy-meta/beta.json tools is not a list of names, which the deployer refuses",
+        "skill alpha declares tool gh but never runs it",
+    ]
+
+
+def test_the_skill_path_policy_reads_null_skill_deps_as_none_and_one_of_another_kind_as_none(tmp_path: Path) -> None:
+    reach = '```bash\npython -B "${CLAUDE_SKILL_DIR}/../core/scripts/lib.py"\n```\n'
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"skill_deps": None}),
+            "deploy-meta/beta.json": json.dumps({"skill_deps": "core"}),
+            "deploy-meta/core.json": "{}",
+            "skills/alpha/SKILL.md": reach,
+            "skills/beta/SKILL.md": reach,
+            "skills/core/SKILL.md": "# core\n",
+            "skills/core/scripts/lib.py": "",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    assert skill_path_problems(tmp_path) == [
+        "skills/alpha/SKILL.md:2 reaches ../core without declaring it in skill_deps",
+        "skills/beta/SKILL.md:2 reaches ../core without declaring it in skill_deps",
+    ]

@@ -72,6 +72,10 @@ class ContractValueReaders(unittest.TestCase):
         # A list of names compares in any order, a mixed one as it is.
         self.assertEqual([], changed(metadata, '{"required_vars": ["B", "A"]}', '{"required_vars": ["A", "B"]}'))
         self.assertEqual([], changed(metadata, '{"required_vars": ["A", 1]}', '{"required_vars": ["A", 1]}'))
+        # A null list is none, as the deployer's loader reads it, and as an absent or empty one is.
+        self.assertEqual([], changed(metadata, '{"required_vars": null}', "{}"))
+        self.assertEqual([], changed(metadata, '{"required_vars": null}', '{"required_vars": []}'))
+        self.assertEqual([metadata], changed(metadata, '{"required_vars": null}', '{"required_vars": ["A"]}'))
 
     def test_a_floor_written_another_way_with_the_same_value_is_no_change(self) -> None:
         self.assertEqual(

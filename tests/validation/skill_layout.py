@@ -44,6 +44,7 @@ from validation_support import (
     find_fences,
     is_executable_script,
     is_test_script,
+    listed_names,
     path_order,
     python_trees,
     scripts_entries,
@@ -125,7 +126,8 @@ def deploy_variable_problems(
     skills = skills_by_name(root)
     for metadata in sorted(file_presence.matching(root / "deploy-meta", "*.json"), key=path_order):
         skill = metadata.stem
-        required = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
+        required = set(listed_names(metadata, document, "required_vars", problems))
         required_anywhere |= required
         directory = skills.get(skill)
         used = _template_tokens(directory) if directory is not None else set()
@@ -206,7 +208,9 @@ def own_needs(root: Path, name: str) -> set[str]:
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
     metadata = root / "deploy-meta" / f"{name}.json"
     declared = json_reader.loads(metadata.read_text(encoding="utf-8")) if file_presence.is_present(metadata) else {}
-    tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
+    tools = frozenset(
+        [*listed_names(metadata, declared, "tools", None), *listed_names(metadata, declared, "optional_tools", None)]
+    )
     scripts = skills[name] / "scripts"
     git_subcommands = frozenset(
         subcommand
@@ -462,7 +466,8 @@ def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None
     ]
     skills = skills_by_name(root)
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
-        declared: set[str] = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
+        declared: set[str] = set(listed_names(metadata, document, "skill_deps", None))
         if (skill_directory := skills.get(metadata.stem)) is not None:
             documents += [
                 (path, declared, skill_directory)
@@ -561,7 +566,8 @@ def script_dependency_problems(root: Path) -> list[str]:
     skills = skills_by_name(root)
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         skill = metadata.stem
-        declared = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
+        declared = set(listed_names(metadata, document, "skill_deps", problems))
         scripts = file_presence.matching(skills[skill] / "scripts", "*.py") if skill in skills else []
         for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
             problems.extend(
@@ -628,10 +634,11 @@ def fixture_source_problems(root: Path) -> list[str]:
     source ID and skill names, the shipped source must never name it, and its skills follow the path contract.
     """
     shipped = json_reader.loads((root / "source.json").read_text(encoding="utf-8"))
-    names = {path.stem for path in file_presence.matching(root / "deploy-meta", "*.json")} | set(
-        shipped.get("bundles", {})
-    )
     found: list[str] = []
+    bundles = skill_menu.bundle_definitions(shipped.get("bundles"))
+    if bundles is None:
+        found.append("source.json bundles is not a JSON object, which the deployer refuses")
+    names = {path.stem for path in file_presence.matching(root / "deploy-meta", "*.json")} | set(bundles or {})
     for source_file in file_presence.matching(root / "tests" / "fixtures", "*/source.json"):
         fixture = source_file.parent
         label = fixture.relative_to(root).as_posix()

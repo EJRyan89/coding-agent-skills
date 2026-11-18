@@ -19,6 +19,7 @@ import json_reader
 import python_reader
 from git_client import GitError, output_line
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
+from skill_menu import name_list
 from text_lines import LINE_BREAK
 from validation_support import (
     OPERATIONS_CONTRACT,
@@ -222,10 +223,13 @@ def _required_variables(snapshot: Snapshot) -> dict[str, object]:
         # AttributeError, a document that is no object.
         except (ValueError, AttributeError):
             variables = "unreadable"
-        if variables:
-            # A list of names compares in any order; any other value, a mixed list included, compares as it is.
-            names = isinstance(variables, list) and all(isinstance(variable, str) for variable in variables)
-            values[name] = sorted(variables) if names else variables
+        # A list of names, read by skill_menu's name_list as the deployer's loader reads it, so null is none,
+        # compares in any order; any other value, a mixed list included, compares as it is.
+        names = name_list(variables)
+        if names:
+            values[name] = sorted(names)
+        elif names is None and variables:
+            values[name] = variables
     return values
 
 

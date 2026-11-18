@@ -5,13 +5,21 @@ import json
 import re
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import skill_menu
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, forward
+
+from deployer import source
+from deployer.errors import DeployError
+from deployer.paths import Paths
 
 BUNDLE = {"operations": {"members": ["alpha", "beta"]}}
 
@@ -1192,3 +1200,77 @@ class RepositoryBundleTests(DeployerTestCase):
         # A later --all keeps the bundle without naming it again.
         groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
         self.assertNotIn("REMOVE", groups, groups)
+
+
+# A menu field left out of its object, as against one given null.
+ABSENT = object()
+
+
+def menu_cases(where: str, key: str, accepted: bool, *values: object) -> list[tuple[str, str, object, bool]]:
+    """A case for each value of the key in where, which both readers read when accepted and refuse otherwise."""
+    return [(where, key, value, accepted) for value in values]
+
+
+# Each field skill_menu.read_menu and the deployer's loader both read, a value of it, and whether a source holding that
+# value is read or refused, pinned as a literal, which both readers must give: absent, null, empty, and another kind.
+MENU_FIELDS = [
+    *menu_cases("metadata", "skill_deps", True, ABSENT, None, [], ["beta"]),
+    *menu_cases("metadata", "skill_deps", False, "beta", [1], {}),
+    *menu_cases("metadata", "required_vars", True, ABSENT, None, [], ["PYTHON"]),
+    *menu_cases("metadata", "required_vars", False, "PYTHON", [1]),
+    *menu_cases("metadata", "selectable", True, ABSENT, True, False),
+    *menu_cases("metadata", "selectable", False, None, "true", 1),
+    *menu_cases("metadata", "opt_in", True, ABSENT, True, False),
+    *menu_cases("metadata", "opt_in", False, None, "false", 0),
+    *menu_cases("source", "id", True, "owner/skills"),
+    *menu_cases("source", "id", False, ABSENT, None, "", 5, "no-slash", "Owner/Skills", "o/" + "a" * 127),
+    *menu_cases("source", "bundles", True, ABSENT, None, {}),
+    *menu_cases("source", "bundles", False, [], "pair"),
+    *menu_cases("bundle", "members", True, ["beta"]),
+    *menu_cases("bundle", "members", False, ABSENT, None, [], "beta", [1]),
+    *menu_cases("bundle", "opt_in", True, ABSENT, True, False),
+    *menu_cases("bundle", "opt_in", False, None, "true"),
+]
+
+
+def menu_source(root: Path, where: str, key: str, value: object) -> Path:
+    """A source of two skills, alpha depending on beta, and a bundle of beta, with one field of the source document,
+    the bundle, or alpha's metadata set to value, or left out."""
+    bundle: dict[str, object] = {"members": ["beta"]}
+    document: dict[str, object] = {"id": "owner/skills", "bundles": {"pair": bundle}}
+    metadata: dict[str, dict[str, object]] = {"alpha": {"skill_deps": ["beta"]}, "beta": {}}
+    target = {"source": document, "bundle": bundle, "metadata": metadata["alpha"]}[where]
+    target.pop(key, None)
+    if value is not ABSENT:
+        target[key] = value
+    (root / "deploy-meta").mkdir(parents=True)
+    (root / "source.json").write_text(json.dumps(document), encoding="utf-8")
+    for name, fields in metadata.items():
+        (root / "deploy-meta" / f"{name}.json").write_text(json.dumps(fields), encoding="utf-8")
+        (root / "skills" / name).mkdir(parents=True)
+        (root / "skills" / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Skill {name}.\n---\n\n# {name}\n", encoding="utf-8"
+        )
+    return root
+
+
+def reads(read: Callable[[], object], refusal: type[Exception]) -> bool:
+    """Whether read returns, rather than raising its reader's refusal."""
+    try:
+        read()
+    except refusal:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(("where", "key", "value", "accepted"), MENU_FIELDS)
+def test_read_menu_and_the_deployers_loader_read_and_refuse_each_menu_field_alike(
+    tmp_path: Path, where: str, key: str, value: object, accepted: bool
+) -> None:
+    # audit-skill names the plugins that carry a skill through read_menu, so it must read every source the deployer
+    # deploys, and refuse every source the deployer refuses.
+    root = menu_source(tmp_path / "Source With Spaces", where, key, value)
+    paths = Paths(root, tmp_path / "home")
+    deployer_reads = reads(lambda: source.discover(paths, source.load_source_id(paths)), DeployError)
+    menu_reads = reads(lambda: skill_menu.read_menu(root), skill_menu.MenuError)
+    assert (deployer_reads, menu_reads) == (accepted, accepted)
