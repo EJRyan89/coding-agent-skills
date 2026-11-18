@@ -60,6 +60,11 @@ def shell_git_subcommands(script: str) -> set[str]:
         "timeout -s KILL 5 rg foo",
         'eval "rg foo"',
         'bash -c "rg foo"',
+        # A trap's action, which Bash runs as eval runs its script when the condition fires.
+        "trap 'rg foo' EXIT",
+        "trap -- 'cd x && rg foo' 0 INT",
+        'trap "rg $(x)" EXIT',
+        "builtin trap 'xargs rg' EXIT",
         # A shell's -c in a bundle, before or after its other options, as the shell reads it.
         "bash -lc 'rg foo'",
         "bash -e -c 'rg foo'",
@@ -372,13 +377,15 @@ def test_a_wrapped_program_only_running_settles_is_named_as_written(script: str,
     assert programs == {f"{UNREAD_PROGRAM}{unread}"}
 
 
-# Inside a script eval, a shell's -c, or env -S runs, a word is the text its command reads, not as written, so a part
-# running settles there is named as the word the reader cannot read, never by the reader's own placeholder.
+# Inside a script eval, a shell's -c, env -S, or a trap's action runs, a word is the text its command reads, not as
+# written, so a part running settles there is named as the word the reader cannot read, never by the reader's own
+# placeholder.
 @pytest.mark.parametrize(
     "script",
     [
         'sh -c "xargs $(p)"',
         'eval "xargs $(p) y"',
+        'trap "xargs $(p)" EXIT',
         'env -S "xargs $(p)"',
         'env -S "$(p) x"',
         'bash -c "xargs \\"$(p)\\""',
@@ -402,6 +409,15 @@ def test_a_mktemp_command_is_judged_whole_wherever_its_words_and_redirections_st
     assert skill_scripts._bash_temporary_problems("make.sh", text) == []
 
 
+# A mktemp a wrapper, eval, a shell's -c, or a trap's action runs is judged as one the script runs itself.
+@pytest.mark.parametrize(
+    "script", ["env mktemp", "eval mktemp", "bash -c mktemp", "trap mktemp EXIT", "trap 'rm -f \"$(mktemp)\"' EXIT"]
+)
+def test_a_mktemp_a_started_script_runs_is_judged(script: str) -> None:
+    problems = skill_scripts._bash_temporary_problems("make.sh", f"echo first\n{script}\n")
+    assert [problem.partition(" ")[0] for problem in problems] == ["make.sh:2:"]
+
+
 @pytest.mark.parametrize("script", ["if true; then mktemp", 'A=$(mktemp "$T" 2>$(if))', "V=${A /tmp"])
 def test_a_script_the_grammar_refuses_is_named_as_unread_by_the_temporary_folder_policy(script: str) -> None:
     problems = skill_scripts._bash_temporary_problems("make.sh", f"echo first\n{script}\n")
@@ -421,8 +437,19 @@ def test_shell_command_extraction_reads_the_program_after_an_unquoted_separator(
     assert shell_commands(f"echo a {separator} rg foo") == {"echo", "rg"}
 
 
-# A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
-@pytest.mark.parametrize("script", ["command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"])
+# A lookup, a substitution in single quotes or a comment, arithmetic, and a trap that lists or resets run nothing.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "command -v rg",
+        "echo '$(rg foo)'",
+        "# run `rg foo` here",
+        "echo $((1 + 2))",
+        "trap -p 'rg foo' EXIT",
+        "trap 'rg foo'",
+        "trap - 'rg foo' EXIT",
+    ],
+)
 def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: str) -> None:
     assert "rg" not in shell_commands(script)
 
@@ -598,6 +625,7 @@ STARTED_GIT_PUSH_SCRIPTS = (
     "sh -ec 'git -C dir push'",
     "eval 'git push'",
     "eval git push",
+    "trap 'git push' EXIT",
     "env bash -c 'git push'",
     "find . -exec bash -c 'git push' {} ';'",
     "x=$(bash -c 'git push')",

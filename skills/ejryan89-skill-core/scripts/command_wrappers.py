@@ -4,8 +4,8 @@ find's actions, and a shell's -c script.
 A reader of a shell script's commands goes past such a command to the one it runs: `unwrapped` past a wrapper of
 COMMAND_WRAPPERS, read by option_reader's getopt reading, `find_action` to the command one of find's FIND_COMMANDS
 runs, `shell_script_index` to the script a shell's -c runs, and `trap_action` to the script a trap sets to run.
-Repository validation's command and git subcommand readers and audit-skill's git subcommand reader read through these,
-so they agree on every wrapper; audit-skill's Bash reader reads a trap's action through `trap_action`.
+Repository validation's command, git subcommand, and pipe readers and audit-skill's Bash and git subcommand readers
+read through these, so they agree on every wrapper and every script a command starts.
 """
 
 from __future__ import annotations
@@ -217,7 +217,11 @@ def trap_action(arguments: list[str]) -> str | None:
     -l, -p, or -P, alone or bundled, which lists, and for one whose first operand is the only one, `-`, or an unsigned
     integer, which each reset the conditions named, as `trap 0 INT` resets the exit and interrupt traps. An unsigned
     integer that names no signal, as in `trap 99 INT`, is the action Bash sets; the reader drops it, and it would run a
-    program named by that number, so no cue, print or exit code is lost."""
+    program named by that number, so no cue, print, exit code, program, or git subcommand is lost. A first operand
+    only running settles, as in `trap "$cleanup" EXIT`, is the action, which each reader reads as it reads such a
+    script given to eval. A stated limit, since no script here writes one: an unquoted first operand only running
+    settles that expands to nothing or to an option, as in `trap $none 'git push' EXIT`, moves the action Bash reads to
+    the next word, which is read as a condition."""
     if arguments[:1] and arguments[0].startswith("-") and arguments[0] not in {"-", "--"}:
         return None
     operands = arguments[1:] if arguments[:1] == ["--"] else arguments

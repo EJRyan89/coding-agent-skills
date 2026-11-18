@@ -39,6 +39,7 @@ from command_wrappers import (
     UNREAD_PROGRAM,
     bash_program,
     shell_script_index,
+    trap_action,
     unwrapped,
     wrapper_name,
 )
@@ -531,10 +532,14 @@ def _command_words(words: list[str]) -> list[str]:
 
 def _shell_script(words: list[str]) -> str | None:
     """The script a command runs in a shell of its own or in this one: a shell's -c script, among its other options,
-    as shell_script_index reads it, and eval's arguments, joined as eval joins them; None for any other command."""
+    as shell_script_index reads it, eval's arguments, joined as eval joins them, and the action a trap sets, as
+    trap_action reads it, which this shell runs when the condition fires, reading this shell's standard input; None
+    for any other command."""
     program = bash_program(words[0]) if words else ""
     if program == "eval":
         return " ".join(words[1:])
+    if program == "trap":
+        return trap_action(words[1:])
     if program not in SCRIPT_SHELLS:
         return None
     index = shell_script_index(words[1:])

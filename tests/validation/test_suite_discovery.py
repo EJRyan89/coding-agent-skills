@@ -716,6 +716,8 @@ BASH_RACES = [
     pytest.param("seq 1 200000 | eval head -n 1", "head -n", id="eval's words"),
     pytest.param("seq 1 200000 | command eval 'head -n 1'", "head -n", id="eval behind command"),
     pytest.param("seq 1 200000 | bash -c 'eval \"head -n 1\"'", "head -n", id="eval in a shell"),
+    # The pipeline's subshell exits at once and runs its EXIT trap with the pipe still its standard input.
+    pytest.param("seq 1 200000 | trap 'head -n 1' EXIT", "head -n", id="a trap's action"),
     pytest.param("seq 1 200000 | env -S 'head -n 1'", "head -n", id="env -S"),
     pytest.param('seq 1 200000 | env -S"head -n 1"', "head -n", id="env -S glued"),
     pytest.param("seq 1 200000 | env -u HOME -S 'LC_ALL=C head -n 1'", "head -n", id="env -S after an option"),
@@ -819,6 +821,8 @@ def test_each_gnu_form_the_policy_refuses_fails_under_pipefail_in_bash(script: s
         # A race inside a script a shell runs is the suite's too.
         pytest.param("bash -c 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in bash -c"),
         pytest.param("eval 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in eval"),
+        # Under errexit, as the suite sets it, the trap's failed pipeline ends the shell with 141 when it fires.
+        pytest.param("trap 'seq 1 200000 | head -n 1' EXIT", "3 pipes into head -n", id="a pipe in a trap"),
         pytest.param(
             "bash -c 'seq 1 200000 | echo $(head -n 1)'", "3 pipes into head -n", id="a fed substitution in bash -c"
         ),

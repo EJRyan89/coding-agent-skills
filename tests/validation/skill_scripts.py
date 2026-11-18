@@ -45,6 +45,7 @@ from command_wrappers import (
     bash_program,
     find_actions,
     shell_script_index,
+    trap_action,
     unwrapped,
 )
 from device_names import is_reserved_device_name
@@ -203,8 +204,9 @@ def _wrapped_programs(
 ) -> set[str]:
     """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
     -exec runs, what eval or a shell's -c script runs, and what the script pwsh or Windows PowerShell is started to run
-    runs, followed through a wrapper of a wrapper. Given `commands`, it also appends the words of each command a
-    wrapper or find's action runs, from its program on, and of each command the script eval, a shell's -c, or a
+    runs, followed through a wrapper of a wrapper, and what the action a trap sets runs, as trap_action reads it,
+    which Bash runs as eval runs its script. Given `commands`, it also appends the words of each command a wrapper or
+    find's action runs, from its program on, and of each command the script eval, a shell's -c, a trap's action, or a
     PowerShell start-up runs holds, as shell_commands and powershell_startup_programs read them. `unread`, given, is
     the word the caller wrote for one it cannot read, as powershell_readings writes UNREAD_WORD: in a program's place
     it is UNREAD_PROGRAM, and a start-up or a shell reads it as a word it cannot read. A shell, find, or wrapper is
@@ -220,6 +222,10 @@ def _wrapped_programs(
         # eval is a builtin, which no path names.
         if head == "eval":
             return found | shell_commands(" ".join(rest), commands)
+        # trap is a builtin too, whose action Bash runs as eval runs its script when the condition fires.
+        if head == "trap":
+            trapped = trap_action(rest)
+            return found if trapped is None else found | shell_commands(trapped, commands)
         name = program(head) if head != unread else head
         if name in SCRIPT_SHELLS:
             return found | _started_shell_programs(name, known[1:], commands)
@@ -328,17 +334,18 @@ def prime[Primed](read: Callable[[], Primed]) -> Primed:
 def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
     """Literal command names a Bash script runs, read through ejryan89-skill-core's bash_syntax, the repository's one
     Bash grammar, which Bash's own syntax check holds: the program of each simple command Bash may run, wherever it
-    starts one, in a substitution, a case item, a function's body, and an unquoted here-document's substitutions
-    too, and never in a comment or a here-document's body, ignoring keywords, case words and patterns, and the
-    script's own functions, wherever it defines one; and each program a wrapper, find's -exec, eval, a shell's -c
-    script, or a PowerShell start-up's script runs. A part of a word only running settles, such as a substitution,
-    is UNREAD_PART where it stands, followed by its word's place, as reading_words gives it, so a wrapper's program
-    holding one is UNREAD_PROGRAM, and eval, a shell's -c, or env -S reads it as one word. The program is named by
-    its word as the script writes it, or, inside a script eval, a shell's -c, or env -S runs, with UNREAD_WORD for
-    each such part, since that script's text is the words its command reads, not as written. Given `commands`, it
-    also appends the words of each simple command it reads, from its program on, a substitution's included. A script
-    the grammar refuses, or whose eval or -c script it refuses, gives UNREAD_BASH and the grammar's reason: Bash runs
-    the lines before a syntax error, so none of the script's programs can be trusted as read."""
+    starts one, in a substitution, a case item, a function's body, and an unquoted here-document's substitutions too,
+    and never in a comment or a here-document's body, ignoring keywords, case words and patterns, and the script's own
+    functions, wherever it defines one; and each program a wrapper, find's -exec, eval, a shell's -c script, a trap's
+    action, or a PowerShell start-up's script runs. A part of a word only running settles, such as a substitution, is
+    UNREAD_PART where it stands, followed by its word's place, as reading_words gives it, so a wrapper's program holding
+    one is UNREAD_PROGRAM, and eval, a shell's -c, a trap, or env -S reads it as one word. The program is named by its
+    word as the script writes it, or, inside a script eval, a shell's -c, a trap's action, or env -S runs, with
+    UNREAD_WORD for each such part, since that script's text is the words its command reads, not as written. Given
+    `commands`, it also appends the words of each simple command it reads, from its program on, a substitution's
+    included. A script the grammar refuses, or whose eval or -c script or trap action it refuses, gives UNREAD_BASH and
+    the grammar's reason: Bash runs the lines before a syntax error, so none of the script's programs can be trusted as
+    read."""
     try:
         read = every_command(script)
         functions = {command.name for command in read if isinstance(command, FunctionDefinition) and command.name}
@@ -381,8 +388,8 @@ def reading_words(command: Simple) -> tuple[list[str], dict[str, str]]:
 
 def _as_written(name: str, written: dict[str, str]) -> str:
     """An UNREAD_PROGRAM name with each word reading_words placed given back as the script writes it, and any part
-    only running settles left, from a script eval, a shell's -c, or env -S runs, as UNREAD_WORD; any other name
-    unchanged."""
+    only running settles left, from a script eval, a shell's -c, a trap's action, or env -S runs, as UNREAD_WORD;
+    any other name unchanged."""
     if not name.startswith(UNREAD_PROGRAM) or UNREAD_PART not in name:
         return name
     text = name.removeprefix(UNREAD_PROGRAM)
@@ -2924,10 +2931,10 @@ class _TemporaryBash:
             self.named.setdefault(at, found.group(0))
 
     def judge_mktemp(self, command: Simple) -> None:
-        """Note a command that runs mktemp, bare, by a path, or with .exe, itself or through a wrapper, eval, or a
-        shell's -c script, as shell_commands reads them, unless the words after it give it only options that leave
-        where it makes the file to its one template, which starts by reading, in a JUDGED_REFERENCE form, a variable
-        holding the judged folder here and names no other temporary directory."""
+        """Note a command that runs mktemp, bare, by a path, or with .exe, itself or through a wrapper, eval, a shell's
+        -c script, or a trap's action, as shell_commands reads them, unless the words after it give it only options that
+        leave where it makes the file to its one template, which starts by reading, in a JUDGED_REFERENCE form, a
+        variable holding the judged folder here and names no other temporary directory."""
         words = command_words(command)
         runs: list[list[str]] = [words]
         _wrapped_programs(words, runs)

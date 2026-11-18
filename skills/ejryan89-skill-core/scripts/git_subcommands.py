@@ -8,14 +8,14 @@ powershell_commands's COMMANDS_RUN reads them. A Python script's git calls are r
 `python_git_subcommands`.
 
 A Bash script is read through bash_syntax, the repository's one Bash grammar, which Bash's own syntax check holds: a
-command is read wherever Bash starts one, in a substitution, a case item, and a function's body too, and a comment and
-a here-document's body run nothing, but the command substitutions of an unquoted body run. A script the grammar
-cannot read raises its BashSyntaxError, for its caller to fail. A command is read past its leading assignments, each
-wrapper of command_wrappers' catalogue, and find's actions, to a git command's own words, and into the script eval,
-a shell's -c, or a pwsh or Windows PowerShell start-up runs. A program is the one its word's file name names, so git
+command is read wherever Bash starts one, in a substitution, a case item, and a function's body too, and a comment and a
+here-document's body run nothing, but the command substitutions of an unquoted body run. A script the grammar cannot
+read raises its BashSyntaxError, for its caller to fail. A command is read past its leading assignments, each wrapper of
+command_wrappers' catalogue, and find's actions, to a git command's own words, and into the script eval, a shell's -c, a
+trap's action, or a pwsh or Windows PowerShell start-up runs. A program is the one its word's file name names, so git
 named by a path or with .exe is git, in Bash as written and in PowerShell in any case. The script a start-up runs is
-PowerShell, which the caller's PowerShellReader lists the commands of, so validation reads it through its toolchain
-and a skill's script through powershell_commands.read.
+PowerShell, which the caller's PowerShellReader lists the commands of, so validation reads it through its toolchain and
+a skill's script through powershell_commands.read.
 """
 
 from __future__ import annotations
@@ -44,17 +44,16 @@ PowerShellReader = Callable[[str], Sequence[Sequence[str]]]
 def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[str]:
     """The subcommand of each git command a Bash script runs, read through bash_syntax, the grammar Bash's own syntax
     check holds: one wherever Bash starts a command, a substitution's, a case item's, and a function body's included,
-    one a wrapper, find's actions, eval, a shell's -c script, or a PowerShell start-up runs, and one a substitution in
-    an unquoted here-document's body runs. A comment, and a here-document's body, are read as Bash reads them, so
-    neither runs a command, and a line ends at LF alone.
+    one a wrapper, find's actions, eval, a shell's -c script, a trap's action, as command_wrappers.trap_action reads it,
+    or a PowerShell start-up runs, and one a substitution in an unquoted here-document's body runs. A comment, and a
+    here-document's body, are read as Bash reads them, so neither runs a command, and a line ends at LF alone.
 
-    A script the grammar cannot read raises its BashSyntaxError, and so does the script eval or a shell's -c runs:
-    Bash runs the lines before a syntax error, so a reader that guessed at such a script could miss a git command it
-    runs. A part
-    of a word only running settles, such as a substitution, is UNREAD_PART where it stands: one word in the script
-    eval or a shell's -c runs, so `eval "git push $(x)"` reads push and `eval "$(ssh-agent -s)"` reads nothing, and a
-    git subcommand holding it is UNREAD_WORD, one that may be any. An ANSI-C `$'...'` string holding an escape is such
-    a part, so `bash -c $'git push\\n'` reads no subcommand.
+    A script the grammar cannot read raises its BashSyntaxError, and so does the script eval, a shell's -c, or a trap's
+    action runs: Bash runs the lines before a syntax error, so a reader that guessed at such a script could miss a git
+    command it runs. A part of a word only running settles, such as a substitution, is UNREAD_PART where it stands: one
+    word in the script eval, a shell's -c, or a trap's action runs, so `eval "git push $(x)"` reads push and `eval
+    "$(ssh-agent -s)"` reads nothing, and a git subcommand holding it is UNREAD_WORD, one that may be any. An ANSI-C
+    `$'...'` string holding an escape is such a part, so `bash -c $'git push\\n'` reads no subcommand.
 
     Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
     `source /dev/stdin <<EOF`, is data, so a git command in its body goes unread. No script here writes one."""
@@ -97,8 +96,9 @@ def powershell_program(word: str) -> str:
 def program_git_subcommands(words: list[str], read_powershell: PowerShellReader) -> set[str]:
     """The git subcommand a simple command runs, given its words from its program's name, each part only running
     settles as UNREAD_PART, a PowerShell command's as bash_word renders it: git's own, or one each wrapper of
-    command_wrappers' catalogue, find's actions, eval, a shell's -c script, or a PowerShell start-up's script runs.
-    A -c script that is UNREAD_PART alone runs nothing this can read."""
+    command_wrappers' catalogue, find's actions, eval, a shell's -c script, a trap's action, which Bash runs as eval
+    runs its script, or a PowerShell start-up's script runs. A -c script or a trap action that is UNREAD_PART alone
+    runs nothing this can read."""
     while words:
         head, rest = words[0], words[1:]
         name = bash_program(head)
@@ -108,6 +108,10 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
         if head == "eval":
             # Each UNREAD_PART stands in eval's script as one word, never as script text of its own.
             return bash_git_subcommands(" ".join(rest), read_powershell)
+        if head == "trap":
+            # Bash runs the action as eval runs its script when the condition fires.
+            action = command_wrappers.trap_action(rest)
+            return set() if action is None else bash_git_subcommands(action, read_powershell)
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
             if index is None or rest[index] == UNREAD_PART:
