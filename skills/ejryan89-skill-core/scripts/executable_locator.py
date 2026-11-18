@@ -4,16 +4,20 @@ A tool `check` reports as installed is then the one a skill finds and runs under
 PATH names, else one in a folder the platform's package manager links the commands it installs into, which PATH may
 not include. A skill runs the path found here, never the bare name: process creation would look the name up on PATH
 alone elsewhere, and on Windows in the working directory before PATH, and neither searches the link folders. Nothing
-here depends on the working directory. The deployer reaches it through `platform_support.find_executable` and
-`find_program`; it holds the platform's link folders itself because a skill's script runs without the deployer.
+here depends on the working directory. The deployer reaches it through `platform_support`'s `find_executable`,
+`find_executables`, `find_program`, and `find_only_program`; it holds the platform's link folders itself because a
+skill's script runs without the deployer.
 
 Two lookups answer differently on Windows only when a shell script, a `.bat`, `.cmd`, or `.ps1` file, comes before the
 program: `find_program` passes over it, and `find_executable` does not. git, gh, dotnet, and dotnet-format, which a
 skill starts with arguments through `located_command`, are found by `find_program` in `check`, the skills, and the
 deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
-which npm installs as `.cmd` scripts and which `check` and `verify` start with arguments the repository writes, are
-found there by `find_executable`, while the bounded Copilot code-review host finds Copilot CLI by `find_program` and
-refuses a host whose only `copilot` is a shell script.
+which npm installs as `.cmd` scripts and which `verify` and the canaries start with arguments the repository writes,
+are found by `find_executable` there and in `check`'s line for each runtime `verify` runs. Copilot CLI as the
+code-review skills run it is found otherwise: the bounded Copilot code-review host and `check`'s line for those skills
+both find it by `find_only_program`, which takes `find_program`'s answer and refuses a host whose only `copilot` is a
+shell script, so `check` reports such a host's Copilot as unusable for the skills, and reports what `verify` starts on
+a line of its own whenever the two lookups find different programs.
 """
 
 from __future__ import annotations
@@ -189,6 +193,39 @@ def find_program(name: str) -> str | None:
     its own syntax, so an argument such as a search pattern a reviewer wrote could run a second command; a program
     found here receives its arguments as they are."""
     return next((path for path in find_executables(name) if not shell_script(path)), None)
+
+
+class ShellScriptsOnly(LookupError):
+    """The locator found a program's name only as shell scripts, `scripts`, which a caller that starts it with
+    arguments it does not control refuses; the message names each and what to install instead."""
+
+    def __init__(self, message: str, scripts: Sequence[str]) -> None:
+        super().__init__(message)
+        self.scripts = tuple(scripts)
+
+
+# Copilot CLI by the name its refusal gives it, and what to install for it as a program in place of the `copilot.cmd`
+# npm installs on Windows: the bounded Copilot code-review host and `deploy.py check` pass both to `find_only_program`.
+COPILOT_LABEL = "GitHub Copilot CLI"
+COPILOT_PROGRAM_INSTALL = "install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+
+
+def find_only_program(name: str, label: str, install: str) -> str | None:
+    """`name` as a caller that starts it with arguments it does not control finds it, and as `deploy.py check` reports
+    it for that caller: the first program `find_program` finds, or None when the locator finds nothing. A host with
+    only shell scripts, such as npm's `copilot.cmd`, raises ShellScriptsOnly naming `label`, each script, and
+    `install`, so the caller and `check` refuse it alike. The bounded Copilot code-review host finds Copilot CLI here.
+    Elsewhere than Windows no file is a shell script, so this is `find_program`."""
+    program = find_program(name)
+    if program is not None:
+        return program
+    scripts = find_executables(name)
+    if not scripts:
+        return None
+    raise ShellScriptsOnly(
+        f"{label} on PATH is a shell script, which Windows starts through a shell: {', '.join(scripts)}; {install}",
+        scripts,
+    )
 
 
 def located_command(command: Sequence[str], *, kept: Found | None = None) -> list[str]:

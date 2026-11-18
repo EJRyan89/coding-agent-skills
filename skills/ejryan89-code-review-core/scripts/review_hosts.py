@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
-from executable_locator import find_executables, find_program
+from executable_locator import COPILOT_LABEL, COPILOT_PROGRAM_INSTALL, ShellScriptsOnly, find_only_program
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
@@ -284,18 +284,16 @@ def _run_bounded(
 
 def find_copilot() -> str:
     """Copilot CLI's own program: the first ejryan89-skill-core's locator finds, on PATH and then in WinGet's Links
-    folder, that is no shell script. An npm install puts a `copilot.cmd` shim on PATH, which Windows would start through
-    cmd.exe, so the lookup passes over every shell script, wherever it stands on PATH, and never returns one."""
-    program = find_program("copilot")
-    if program is not None:
-        return program
-    found = find_executables("copilot")
-    if found:
-        raise RuntimeContractError(
-            "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
-            f"{', '.join(found)}; install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
-        )
-    raise RuntimeContractError("GitHub Copilot CLI is not available")
+    folder, that is no shell script, by `find_only_program`, the lookup `deploy.py check` reports it by. An npm
+    install puts a `copilot.cmd` shim on PATH, which Windows would start through cmd.exe, so the lookup passes over
+    every shell script, wherever it stands on PATH, and never returns one."""
+    try:
+        program = find_only_program("copilot", COPILOT_LABEL, COPILOT_PROGRAM_INSTALL)
+    except ShellScriptsOnly as exc:
+        raise RuntimeContractError(str(exc)) from exc
+    if program is None:
+        raise RuntimeContractError("GitHub Copilot CLI is not available")
+    return program
 
 
 def parse_copilot_version(output: str) -> versions.Version:

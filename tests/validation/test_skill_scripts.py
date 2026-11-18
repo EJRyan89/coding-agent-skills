@@ -2211,6 +2211,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                 # Its lookup that passes over a shell script finds the program the script runs too.
                 "skills/alpha/scripts/program.py": "from executable_locator import find_program\n\n"
                 'PROGRAM = find_program("tcl")\n',
+                # And so does its lookup that refuses a host whose only match is a shell script.
+                "skills/alpha/scripts/only.py": "from executable_locator import find_only_program\n\n"
+                'PROGRAM = find_only_program("elixir", "Elixir", "install it")\n',
                 # A command whose program the locator names by its path runs the program the command names.
                 "skills/alpha/scripts/located.py": "from bounded_process import run_bounded\n"
                 "from executable_locator import located_command\n\n"
@@ -2233,7 +2236,20 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skill alpha runs gh without declaring it in tools",
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {doc}"
-                        for name in ("jq", "lua", "node", "ocaml", "perl", "rg", "ruby", "swift", "tcl", "yq", "zig")
+                        for name in (
+                            "elixir",
+                            "jq",
+                            "lua",
+                            "node",
+                            "ocaml",
+                            "perl",
+                            "rg",
+                            "ruby",
+                            "swift",
+                            "tcl",
+                            "yq",
+                            "zig",
+                        )
                     ),
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),

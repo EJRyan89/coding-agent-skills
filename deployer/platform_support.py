@@ -419,6 +419,23 @@ def find_program(name: str) -> str | None:
     return executable_locator.find_program(name)
 
 
+# A lookup found a program's name only as shell scripts; ejryan89-skill-core's locator raises it, naming each.
+ShellScriptsOnly = executable_locator.ShellScriptsOnly
+
+
+# Copilot CLI's name in a refusal, and what to install for it as a program, as the Copilot code-review host words them.
+COPILOT_LABEL = executable_locator.COPILOT_LABEL
+COPILOT_PROGRAM_INSTALL = executable_locator.COPILOT_PROGRAM_INSTALL
+
+
+def find_only_program(name: str, label: str, install: str) -> str | None:
+    """`name` as a skill that starts it with arguments it does not control finds it, by ejryan89-skill-core's
+    `find_only_program`, that skill's own lookup, so `check` reports what the skill finds: a program that is no shell
+    script, or None for none at all, and ShellScriptsOnly, raised, naming `label`, each script, and `install`, for a
+    host whose only `name` is a shell script."""
+    return executable_locator.find_only_program(name, label, install)
+
+
 def find_bash() -> str | None:
     """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
     as WSL's, and elsewhere the system's, the first bash on PATH. On Windows GIT_BASH, then Git under the Program Files

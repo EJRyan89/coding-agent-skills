@@ -92,12 +92,13 @@ def _deploy_lines(checkout: bool) -> list[ReportLine]:
 def _skill_lines(src: source.Source, owned: manifest.Ownership, checkout: bool) -> list[ReportLine]:
     users = source.tool_users(src, sorted(src.bundles), source.root_names(src))
     required = source.required_tools(src, sorted(src.bundles), source.root_names(src))
-    # The runtimes verify runs are reported even when no skill declares them.
-    catalogue = {**tools.VERIFY_TOOLS, **tools.SKILL_TOOLS}
-    users |= {name: [] for name in tools.VERIFY_TOOLS if name not in users}
+    # A tool a skill declares is found as the skill finds it, and each runtime verify runs as verify finds it, even
+    # when no skill declares it. Copilot CLI is both, and the two lookups part on a shell script, npm's copilot.cmd,
+    # which the review skills pass over and verify starts.
+    runtimes = {name: tools.probe(tool) for name, tool in tools.VERIFY_TOOLS.items()}
     lines: list[ReportLine] = []
     for name, roots in users.items():
-        tool = catalogue[name]
+        tool = tools.SKILL_TOOLS[name]
         # A tool every root using it is an unchosen opt-in item for is optional, like a tool marked optional or one
         # that every skill using it declares optional. An opt-in item is chosen when the requested roots stand for it,
         # not when it is installed, so a tool another root also uses stays needed.
@@ -109,7 +110,17 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership, checkout: bool) 
         }
         optional = tool.optional or dormant == set(roots) or name not in required
         named = [f"opt-in {root}" if root in dormant else root for root in roots]
-        lines.append(_tool_line(tool, optional, named))
+        probe = tools.probe(tool)
+        runtime = runtimes.pop(name, None)
+        if runtime is None or _same_program(probe, runtime):
+            # verify starts the program the skills run, or runs none, so one line names every use.
+            uses = [] if runtime is None else list(runtime.tool.other_uses)
+            lines.append(_tool_line(tool, optional, [*named, *uses], probe))
+        else:
+            # The two lookups found different programs, so each gets a line that leads with who uses it.
+            lines.append(_tool_line(tool, optional, named, probe, lead_with_use=True))
+            lines.append(_tool_line(runtime.tool, runtime.tool.optional, [], runtime, lead_with_use=True))
+    lines.extend(_tool_line(runtime.tool, runtime.tool.optional, [], runtime) for runtime in runtimes.values())
     # From a Git checkout, Git is a deployment's tool and reported with them.
     reported = [tool for tool in tools.REPORTED_TOOLS if not (checkout and tool is tools.GIT)]
     lines.extend(_tool_line(tool, tool.optional, []) for tool in reported)
@@ -181,20 +192,37 @@ def _codex_sandbox_line(codex: str) -> ReportLine:
     )
 
 
-def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine:
+def _same_program(first: tools.Probe, second: tools.Probe) -> bool:
+    """Whether two lookups of one tool found the same program, at the same version and with the same refusal."""
+    return (first.path, first.version, first.refusal) == (second.path, second.version, second.refusal)
+
+
+def _tool_line(
+    tool: tools.Tool,
+    optional: bool,
+    roots: list[str],
+    probe: tools.Probe | None = None,
+    *,
+    lead_with_use: bool = False,
+) -> ReportLine:
+    """The tool's line, from `probe` when the caller has probed it. With `lead_with_use`, an outdated or unusable
+    line names who uses the tool too, as a tool reported on two lines must."""
     used_by = f"used by {', '.join([*roots, *tool.other_uses])}"
-    probe = tools.probe(tool)
+    probe = tools.probe(tool) if probe is None else probe
+    lead = f"{used_by}; " if lead_with_use else ""
     if probe.path is None:
         hint = "" if tool.install_hint is None else f"; {tool.install_hint}"
         missing = ("OPTIONAL", f"not installed; {used_by}{hint}") if optional else ("MISSING", f"{used_by}{hint}")
         return ReportLine(tool.label, *missing)
     if probe.refusal is not None:
         return ReportLine(
-            f"{tool.label}{_version_text(probe)}", "OUTDATED" if probe.outdated else "UNUSABLE", probe.refusal
+            f"{tool.label}{_version_text(probe)}",
+            "OUTDATED" if probe.outdated else "UNUSABLE",
+            f"{lead}{probe.refusal}",
         )
     if probe.outdated:
         minimum = tools.format_version(tool.minimum)
-        return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer")
+        return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"{lead}needs {minimum} or newer")
     found = "OPTIONAL" if optional else "FOUND"
     detail = f"{used_by}; {skipped_text(probe.skipped)}" if probe.skipped else used_by
     return ReportLine(f"{tool.label}{_version_text(probe)}", found, detail)
