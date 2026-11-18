@@ -2,7 +2,8 @@
 
 The menu's closures, expand, root_names, and is_opt_in, are ejryan89-skill-core's skill_menu, which audit-skill's script
 reads a source's plugins through too; they are imported here for the deployer's modules. So are its readers of a source
-ID, a list of names, and bundles, which read_menu reads a source through too, so the two take and refuse alike.
+file, deploy-meta's entries, a source ID, a list of names, and bundles, which read_menu reads a source through too, so
+the two take and refuse alike.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import runtime_support
 from agent_skills import MAX_NAME, NAME_PATTERN, RESERVED_WORDS, XML_TAG_PATTERN
 from skill_menu import SOURCE_ID_MAX_LENGTH as SOURCE_ID_MAX_LENGTH
 from skill_menu import SOURCE_ID_PATTERN as SOURCE_ID_PATTERN
-from skill_menu import bundle_definitions, bundle_members, name_list
+from skill_menu import bundle_definitions, bundle_members, is_metadata_file, name_list, read_source_file
 from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
@@ -93,12 +94,13 @@ class Source:
 
 
 def _load_json(path: Path) -> object:
-    """A JSON file's content, or None when it is not JSON; an OSError while reading is raised, never read as None."""
+    """A metadata file's content, read by skill_menu's read_source_file, or None when it is not JSON the deployer
+    reads; an OSError while reading is raised, never read as None."""
     try:
-        text = path.read_text(encoding="utf-8-sig")
-    except UnicodeError:
+        return read_source_file(path)
+    # ValueError covers text that is not UTF-8 and the JSON json_reader refuses
+    except ValueError:
         return None
-    return state_files.parse_json(text)
 
 
 def any_case(name: str) -> str:
@@ -125,13 +127,16 @@ def _load_source_document(paths: Paths) -> dict[str, object]:
     """source.json's object, refused by its fault: a read that fails as unreadable, and content that is not UTF-8 or
     not a JSON object the deployer reads, such as one that repeats a key or holds NaN, as malformed."""
     shown = platform_support.normalize(paths.source_file)
+    document: object
     try:
-        text = paths.source_file.read_text(encoding="utf-8-sig")
+        document = read_source_file(paths.source_file)
     except OSError as exc:
         raise os_error(exc, "read source.json") from exc
     except UnicodeError:
         raise DeployError(f"ERROR: source.json is malformed: {shown} is not UTF-8 text.", SOURCE_JSON_REMEDY) from None
-    document = state_files.parse_json(text)
+    # The JSON json_reader refuses, which is the case below
+    except ValueError:
+        document = None
     if not isinstance(document, dict):
         raise DeployError(
             f"ERROR: source.json is malformed: {shown} is not a JSON object the deployer reads.", SOURCE_JSON_REMEDY
@@ -296,9 +301,10 @@ def frontmatter_name(path: Path, owner: str) -> str:
 
 
 def _is_file(path: Path) -> bool:
-    """Whether an entry a listing found is a regular file: anything else there is passed over, and a stat that fails
-    raises its OSError, which discover refuses. Passing over a SKILL.md and a metadata file whose stats fail would
-    drop their skill from the source, and the deployment would remove it as one the source no longer offers."""
+    """Whether a SKILL.md a listing found is a regular file: anything else there is passed over, and a stat that fails
+    raises its OSError, which discover refuses. Passing over a SKILL.md whose stat fails would drop its skill from the
+    source, and the deployment would remove it as one the source no longer offers. skill_menu's is_metadata_file
+    chooses deploy-meta's files by the same rule."""
     try:
         return file_presence.is_present(path)
     except file_presence.NotAFile:
@@ -664,7 +670,7 @@ def _metadata_files(meta_dir: Path) -> list[Path]:
                 f"ERROR: Metadata file {platform_support.normalize(entry)} is spelled in another case than {spelled}.",
                 f"Rename it {spelled}, then retry.",
             )
-    return [entry for entry in found if _is_file(entry)]
+    return [entry for entry in found if is_metadata_file(entry)]
 
 
 def _discover(paths: Paths, source_id: str) -> Source:

@@ -144,11 +144,13 @@ def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
     return _bounded(value), end
 
 
-def read_file(path: Path) -> Any:
+def read_file(path: Path, *, byte_order_mark: bool = False) -> Any:
     """The value the UTF-8 file at `path` holds, as `loads` reads it, whatever the platform's own codec: an `OSError`
-    when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a
-    byte-order mark that the caller does not expect."""
-    return loads(path.read_bytes().decode("utf-8"))
+    when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, and a refusal of a
+    leading byte-order mark, which a program's own record never holds. With `byte_order_mark`, one leading UTF-8
+    byte-order mark is passed over, as the `utf-8-sig` codec reads it, for a file a person edits and an editor may
+    save with one, such as Windows PowerShell 5.1's `Out-File -Encoding utf8`."""
+    return loads(path.read_bytes().decode("utf-8-sig" if byte_order_mark else "utf-8"))
 
 
 # The characters JSON allows between tokens.

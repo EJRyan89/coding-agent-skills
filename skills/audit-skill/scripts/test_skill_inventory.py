@@ -3390,6 +3390,17 @@ class SourcePluginTests(SourceTreeTestCase):
         self.assertEqual([], self.lines("inventory", skill.parent, ("DECLARED_UNREADABLE",)))
         self.assertEqual(["CARRIED_BY fixture-skills"], self.plugins(skill))
 
+    def test_a_byte_order_mark_and_a_folder_named_like_metadata_read_as_the_deployer_reads_them(self) -> None:
+        # The deployer's loader deploys this source: it reads source.json and the metadata past their byte-order marks,
+        # as Windows PowerShell 5.1 saves them, and passes over a folder named like a skill's metadata.
+        self.source()
+        skill = self.skill("Alpha.\n", {"skill_deps": []})
+        for path in (self.root / "source.json", self.root / "deploy-meta" / "alpha.json"):
+            path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+        (self.root / "deploy-meta" / "gamma.json").mkdir()
+        self.assertEqual([], self.lines("inventory", skill.parent, ("DECLARED_UNREADABLE",)))
+        self.assertEqual(["CARRIED_BY fixture-skills"], self.plugins(skill))
+
 
 class JsonFileDecodingTests(TemporaryTestCase):
     """Each JSON file the inventory reads decodes as UTF-8 on every platform, whatever the locale's codec."""

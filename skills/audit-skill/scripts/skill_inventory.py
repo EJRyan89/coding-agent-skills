@@ -1529,10 +1529,11 @@ NAME_LISTS = ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tool
 
 def read_metadata(root: Path, name: str) -> dict[str, object] | None:
     """A skill's deploy metadata in its source tree, or None when the file is missing, is not a JSON object, or holds
-    a name list of another kind than a list of names, whose names cannot then be known. A name list is read by
-    skill_menu's name_list, as the deployer's loader reads it, so a null one is none, as an absent one is."""
+    a name list of another kind than a list of names, whose names cannot then be known. The file is read by
+    skill_menu's read_source_file and a name list by its name_list, as the deployer's loader reads them, so a
+    byte-order mark is passed over, and a null name list is none, as an absent one is."""
     try:
-        metadata = json_reader.read_file(root / "deploy-meta" / f"{name}.json")
+        metadata = skill_menu.read_source_file(metadata_path(root, name))
     # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
     except (OSError, ValueError):
         return None

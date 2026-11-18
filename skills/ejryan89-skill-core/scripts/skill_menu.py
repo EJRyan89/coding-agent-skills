@@ -15,9 +15,11 @@ named for the source's repository, the part of its ID after the slash; each opt-
 
 The deployer reads a source through its own loader, which refuses a malformed menu. read_menu is the reader for code
 that cannot import the deployer: it reads source.json and deploy-meta/ as that loader does, through the same readers of
-a source ID, a list of names, and bundles, which the loader imports from here, takes what a well-formed source says,
-and fails on what names no skill or cannot be read at all, a list of names of another kind included. A null list of
-names or null bundles is none to both, as an absent one is.
+a file, the folder's entries, a source ID, a list of names, and bundles, which the loader imports from here, takes what
+a well-formed source says, and fails on what names no skill or cannot be read at all, a list of names of another kind
+included. A null list of names or null bundles is none to both, as an absent one is, a byte-order mark before a file's
+JSON is passed over, and an entry of deploy-meta/ that is no file, such as a folder named like a skill's metadata, is
+passed over.
 """
 
 from __future__ import annotations
@@ -262,9 +264,23 @@ def carriers(menu: Menu, skill: str) -> tuple[list[str], dict[str, str]]:
     return [], reasons or {skill: NO_ITEM}
 
 
+def read_source_file(path: Path) -> object:
+    """The JSON value source.json or a deploy-meta/ file holds, as the deployer's loader, read_menu, and audit-skill's
+    read_metadata all read one: UTF-8 with or without a leading byte-order mark, since a person edits these files and
+    an editor may save one with it. It raises as json_reader.read_file does."""
+    return json_reader.read_file(path, byte_order_mark=True)
+
+
+def is_metadata_file(entry: Path) -> bool:
+    """Whether an entry of deploy-meta/ that a listing found is a metadata file, as the deployer's loader and read_menu
+    both choose them: a regular file, followed through a link. Anything else, such as a folder named like a skill's
+    metadata, is passed over, and a stat that fails raises its OSError, so a metadata file is never dropped unread."""
+    return file_presence.is_present(entry, other_is_absent=True)
+
+
 def _json_object(path: Path) -> dict[str, object]:
     try:
-        document = json_reader.read_file(path)
+        document = read_source_file(path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise MenuError(f"{path.as_posix()} cannot be read: {exc}") from exc
     if not isinstance(document, dict):
@@ -357,7 +373,8 @@ def read_menu(root: Path) -> SourceMenu:
         raise MenuError(f"{(root / SOURCE_FILE).as_posix()} names no source ID of the form <owner>/<repository>")
     menu = SourceMenu(source_id)
     for path in file_presence.matching(root / METADATA_FOLDER, "*.json"):
-        menu.skills[path.stem] = _entry(path, _json_object(path))
+        if is_metadata_file(path):
+            menu.skills[path.stem] = _entry(path, _json_object(path))
     _read_bundles(menu, root / SOURCE_FILE, document.get("bundles"))
     named = [*(name for entry in menu.skills.values() for name in entry.skill_deps), *menu.skill_bundle]
     unknown = sorted({name for name in named if name not in menu.skills})

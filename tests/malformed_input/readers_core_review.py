@@ -676,6 +676,10 @@ READERS = [
         _menu,
         (skill_menu.MenuError,),
         filename=skill_menu.SOURCE_FILE,
+        accepts={
+            "bom": "source.json is read by read_source_file, as the deployer's loader reads it, with an optional "
+            "byte-order mark"
+        },
     ),
     Reader(
         "skill_roots.plugin_name",

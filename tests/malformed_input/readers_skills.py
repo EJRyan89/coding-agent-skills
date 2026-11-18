@@ -696,6 +696,10 @@ READERS = [
         _metadata,
         (Refused,),
         filename="deploy-meta/example.json",
+        accepts={
+            "bom": "the metadata is read by skill_menu.read_source_file, as the deployer's loader reads it, with "
+            "an optional byte-order mark"
+        },
     ),
     Reader(
         "skill_inventory.require_text",
