@@ -608,6 +608,75 @@ def test_every_section_the_skill_quotes_from_the_contract_is_one_heading_there(t
     assert any(line.strip() for line in body)
 
 
+# Each document's "Step" section as GitHub renders it: a heading inside a list item, a code block, or a blockquote is
+# part of what holds it, so the section runs past it to the next heading at the document's top level.
+STEP_SECTIONS = {
+    "a heading indented under a bullet item": (
+        "## Step\n\n- An item:\n\n  ## Inside the item\n\n  More of the item.\n\n## Next\n",
+        ["", "- An item:", "", "  ## Inside the item", "", "  More of the item."],
+    ),
+    "a heading right below a bullet item's text": (
+        "## Step\n\n- An item\n  ## Inside the item\n\n## Next\n",
+        ["", "- An item", "  ## Inside the item"],
+    ),
+    "a heading indented under an ordered item": (
+        "## Step\n\n1. An item\n\n   ## Inside the item\n\n   More.\n\n## Next\n",
+        ["", "1. An item", "", "   ## Inside the item", "", "   More."],
+    ),
+    "a heading indented less than an ordered item's content": (
+        "## Step\n\n1. An item\n\n  ## Next\n",
+        ["", "1. An item"],
+    ),
+    "a heading after a blank line that ends the list": (
+        "## Step\n\n- An item\n\n## Next\n",
+        ["", "- An item"],
+    ),
+    "a heading that interrupts an item's paragraph": (
+        "## Step\n\n- An item\n## Next\n",
+        ["", "- An item"],
+    ),
+    "a heading in the item after a lazy continuation": (
+        "## Step\n\n- An item\nlazy line\n  ## Inside the item\n\n## Next\n",
+        ["", "- An item", "lazy line", "  ## Inside the item"],
+    ),
+    "headings in nested items": (
+        "## Step\n\n- outer\n  - inner\n    - deeper\n\n      ## In deeper\n\n  ## In outer\n\n## Next\n",
+        ["", "- outer", "  - inner", "    - deeper", "", "      ## In deeper", "", "  ## In outer"],
+    ),
+    "a heading in a fence inside an item": (
+        "## Step\n\n- An item\n\n  ```markdown\n  ## Fenced\n  ```\n\n## Next\n",
+        ["", "- An item", "", "  ```markdown", "  ## Fenced", "  ```"],
+    ),
+    "a heading after the fence that opens an item": (
+        "## Step\n\n- ```text\n  x\n  ```\n  ## Inside the item\n\n## Next\n",
+        ["", "- ```text", "  x", "  ```", "  ## Inside the item"],
+    ),
+    "a heading indented four columns outside any list": (
+        "## Step\n\n    ## Indented code\n\n## Next\n",
+        ["", "    ## Indented code"],
+    ),
+    "a heading in a blockquote": (
+        "## Step\n\n> ## Quoted\n\n## Next\n",
+        ["", "> ## Quoted"],
+    ),
+    "a heading right after a quoted paragraph": (
+        "## Step\n\n> A quoted note\n## Next\n",
+        ["", "> A quoted note"],
+    ),
+    "a heading-shaped line indented past a paragraph": (
+        "## Step\n\nText\n    # Not a heading\n   # Next\n",
+        ["", "Text", "    # Not a heading"],
+    ),
+}
+
+
+@pytest.mark.parametrize(("document", "body"), STEP_SECTIONS.values(), ids=STEP_SECTIONS.keys())
+def test_a_section_runs_to_the_next_heading_github_renders_at_the_top_level(document: str, body: list[str]) -> None:
+    heading, found = change_skill.section(document.split("\n"), "Step")
+    assert (heading.index, found) == (0, body)
+    assert "Inside the item" not in [each.text for each in change_skill.headings(document.split("\n"))]
+
+
 @contextlib.contextmanager
 def unlistable(folder: Path) -> Iterator[None]:
     """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it, so

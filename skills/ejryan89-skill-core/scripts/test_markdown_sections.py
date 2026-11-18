@@ -21,6 +21,8 @@ from markdown_sections import (
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    code_block_lines,
+    document_headings,
     find_fences,
     is_blank,
     list_item,
@@ -279,3 +281,49 @@ def test_a_fence_s_content_is_each_line_without_the_indentation_commonmark_takes
 ) -> None:
     fence = find_fences(lines)[0]
     assert [fence.content(lines[index]) for index in fence.body()] == content
+
+
+@pytest.mark.parametrize(
+    ("document", "headings"),
+    [
+        pytest.param("# A\n\n- item\n\n  ## In the item\n\n## B\n", ["A", "B"], id="indented-under-a-bullet"),
+        pytest.param("1. item\n\n   ## In the item\n\n  ## Out\n", ["Out"], id="under-an-ordered-item"),
+        pytest.param("- item\nlazy\n  ## In the item\n## Out\n", ["Out"], id="after-a-lazy-continuation"),
+        pytest.param("- a\n  - b\n    - c\n\n      ## In c\n\n  ## In a\n", [], id="nested-items"),
+        pytest.param("- ```\n  ## Fenced\n  ```\n  ## In the item\n", [], id="fence-opening-an-item"),
+        pytest.param("- item\n\n```\nx\n```\n  ## Out\n", ["Out"], id="fence-ending-the-list"),
+        pytest.param("    ## Code\n\n> ## Quoted\n\n   ## Out ##\n", ["Out"], id="code-quote-and-closing-run"),
+        # A line that starts a block ends a quoted paragraph and the quote, rather than lazily continuing it.
+        pytest.param("## A\n\n> note\n## B\n", ["A", "B"], id="heading-after-a-quote"),
+        pytest.param("> note\n   # Out\n", ["Out"], id="indented-heading-after-a-quote"),
+        pytest.param("## A\n\n> a\n---\n## B\n", ["A", "B"], id="thematic-break-after-a-quote"),
+        pytest.param("> a\n```\n## Fenced\n```\n## Out\n", ["Out"], id="fence-after-a-quote"),
+        pytest.param("> a\n- item\n## Out\n", ["Out"], id="list-item-after-a-quote"),
+        pytest.param("> a\nlazy\n## Out\n", ["Out"], id="heading-after-a-lazy-quote-line"),
+        # Past MAX_BLOCK_INDENT columns a heading-shaped line continues the paragraph above it.
+        pytest.param("Text\n    # Not a heading\n   # Out\n", ["Out"], id="deep-line-after-a-paragraph"),
+    ],
+)
+def test_a_document_heading_is_one_no_list_item_quote_or_code_block_holds(document: str, headings: list[str]) -> None:
+    assert [heading.group("text") for _, heading in document_headings(document.split("\n"))] == headings
+
+
+@pytest.mark.parametrize(
+    ("document", "code"),
+    [
+        # A fence, a heading, or a list item that interrupts the item's paragraph ends the items indented past it, so
+        # the line after it is indented code at the document's level.
+        pytest.param("- item\n\n```\nx\n```\n    code\n", [2, 3, 4, 5], id="after-a-fence-ending-the-list"),
+        pytest.param("- item\n## Heading\n    code\n", [2], id="after-a-heading-ending-the-list"),
+        # A nested item is read past the content of the item that holds it, so its text holds the indented line.
+        pytest.param("- a\n  - b\n    - c\n\n        text\n", [], id="inside-a-nested-item"),
+        pytest.param("> a\n## Heading\n    code\n", [2], id="after-a-heading-ending-a-quote"),
+        # A heading up to MAX_BLOCK_INDENT columns past an item's content ends its paragraph; one further in is the
+        # paragraph's text, inside an item or lazily continuing a quote, so the line after it is no code.
+        pytest.param("- item\n     # Heading\n      code\n", [2], id="after-a-heading-in-an-item"),
+        pytest.param("- item\n      # Not a heading\n      more\n", [], id="deep-line-in-an-item-s-paragraph"),
+        pytest.param("> a\n    # lazy\n    more\n", [], id="deep-line-lazily-continuing-a-quote"),
+    ],
+)
+def test_a_block_that_ends_a_list_item_ends_its_indentation(document: str, code: list[int]) -> None:
+    assert sorted(code_block_lines(document.split("\n"))) == code

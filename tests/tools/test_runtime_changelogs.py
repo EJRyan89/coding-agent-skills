@@ -127,11 +127,25 @@ class ChangelogTests(unittest.TestCase):
     def test_a_release_heading_is_read_as_commonmark_reads_a_heading(self) -> None:
         # A no-break space after the marks makes no heading, and a fourth level is no release; up to three spaces of
         # indentation and closing marks are a heading's, and a tab is Markdown's whitespace.
-        text = "## 2.0.0\n- one\n##\u00a01.9.0\n- hidden\n#### 1.8.0\n- deep\n  ## 1.7.0 ##\n-\ttwo\n"
+        text = "## 2.0.0\n- one\n##\u00a01.9.0\n- hidden\n#### 1.8.0\n- deep\n\nText.\n   ## 1.7.0 ##\n-\ttwo\n"
         self.assertEqual(
             [("2.0.0", ("one", "hidden", "deep")), ("1.7.0", ("two",))],
             [(found.name, found.entries) for found in watch.markdown_releases(text)],
         )
+
+    def test_a_release_heading_inside_a_list_item_or_a_fence_is_the_entry_s_text(self) -> None:
+        # GitHub renders a heading indented under a list item inside the item, and a fenced one as code.
+        text = "## 2.0.0\n- one\n  ## 1.9.0\n```\n## 1.8.0\n```\n- two\n## 1.7.0\n- three\n"
+        self.assertEqual(
+            [("2.0.0", ("one", "two")), ("1.7.0", ("three",))],
+            [(found.name, found.entries) for found in watch.markdown_releases(text)],
+        )
+
+    def test_a_release_heading_right_after_a_quote_starts_the_release(self) -> None:
+        # A heading ends a quoted paragraph rather than lazily continuing it, as GitHub renders it.
+        releases = watch.markdown_releases("## 2.0.0\n- one\n> note\n## 1.9.0\n- two\n")
+        self.assertEqual(["2.0.0", "1.9.0"], [found.name for found in releases])
+        self.assertEqual(("two",), releases[1].entries)
 
     def test_github_releases_are_read_page_by_page_until_the_recorded_release(self) -> None:
         fetcher = StubFetcher(answers())
