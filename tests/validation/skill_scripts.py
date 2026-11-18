@@ -70,7 +70,6 @@ from python_checks import (
     reaches,
     sanctioned_problems,
 )
-from skill_menu import declared_names
 from skill_roots import SKILL_CORE
 from text_lines import LINE_BREAK, text_lines
 from toolchain import powershell_json
@@ -94,6 +93,7 @@ from validation_support import (
     import_aliases,
     is_main_guard,
     is_test_script,
+    listed_names,
     literal_lookups,
     module_allowance,
     module_imports,
@@ -1490,11 +1490,12 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     path: Bash runs the lines before a syntax error, so none of the file's programs can be trusted as read.
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
+    listed: list[str] = []
     directories = skills_by_name(root)
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
-        declared = set(declared_names(document, "tools", metadata.as_posix())) | set(
-            declared_names(document, "optional_tools", metadata.as_posix())
+        declared = set(listed_names(metadata, document, "tools", listed)) | set(
+            listed_names(metadata, document, "optional_tools", listed)
         )
         own = _skill_files(directories[metadata.stem]) if metadata.stem in directories else []
         skills.append((metadata.stem, declared, own, _reached_dependency_scripts(root, metadata.stem, own)))
@@ -1504,7 +1505,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     )
     powershell = dict(zip(sources, powershell_commands(sources), strict=True))
     clients = skill_client_classes(root)
-    problems: list[str] = []
+    problems: list[str] = listed
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
@@ -1561,7 +1562,7 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
         problems.extend(
             f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
             f"skill; declare it in optional_tools; see {COMMANDS_DOC}"
-            for name in sorted(set(declared_names(document, "tools", metadata.as_posix())) & always_optional)
+            for name in sorted(set(listed_names(metadata, document, "tools", problems)) & always_optional)
         )
     return problems
 

@@ -69,7 +69,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from markdown_sections import find_fences
 from path_containment import resolved_path, within
-from skill_menu import closure
+from skill_menu import closure, name_list
 from text_lines import text_lines
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
@@ -278,7 +278,8 @@ NAME_LISTS = ("skill_deps", "agent_deps")
 
 def metadata(text: str | None) -> dict[str, object] | None:
     """A metadata file's object, empty when the file is absent, None when it is not a JSON object or a name list the
-    gates read is not a list of names."""
+    gates read is not a list of names. A name list is read by skill_menu's name_list, as the deployer's loader reads it,
+    so a null one is none, as an absent one is."""
     if text is None:
         return {}
     try:
@@ -287,8 +288,7 @@ def metadata(text: str | None) -> dict[str, object] | None:
         return None
     if not isinstance(value, dict):
         return None
-    listed = [value.get(key, []) for key in NAME_LISTS]
-    if not all(isinstance(names, list) and all(isinstance(name, str) for name in names) for names in listed):
+    if any(name_list(value.get(key)) is None for key in NAME_LISTS):
         return None
     return value
 

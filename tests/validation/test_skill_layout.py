@@ -342,6 +342,24 @@ class SkillLayoutFixtures(unittest.TestCase):
                 fixture_source_problems(root),
             )
 
+    def test_fixture_source_policy_names_bundles_of_another_kind_and_reads_null_bundles_as_none(self) -> None:
+        for bundles, problems in (
+            ([], ["source.json bundles is not a JSON object, which the deployer refuses"]),
+            ("suite", ["source.json bundles is not a JSON object, which the deployer refuses"]),
+            (None, []),
+        ):
+            with self.subTest(bundles=bundles), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "source.json": json.dumps({"id": "owner/shipped", "bundles": bundles}),
+                        "deploy-meta/alpha.json": "{}",
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                    },
+                )
+                self.assertEqual(problems, fixture_source_problems(root))
+
     def test_fixture_source_policy_refuses_a_source_it_cannot_read_by_name(self) -> None:
         for text, problem in (
             ("[]", "is not a JSON object"),
@@ -964,6 +982,28 @@ class SkillLayoutFixtures(unittest.TestCase):
             self.assertEqual(
                 ["source.json declares shared asset gone.md, which skills/ does not hold"],
                 deploy_variable_problems(root, set(), set(), set()),
+            )
+
+    def test_metadata_policies_name_a_name_list_of_another_kind_and_read_a_null_one_as_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "source.json": "{}",
+                    "deploy-meta/alpha.json": json.dumps({"required_vars": "HOME", "skill_deps": [1]}),
+                    "deploy-meta/beta.json": json.dumps({"required_vars": None, "skill_deps": None}),
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/beta/SKILL.md": "# beta\n",
+                },
+            )
+            self.assertEqual(
+                ["deploy-meta/alpha.json required_vars is not a list of names, which the deployer refuses"],
+                deploy_variable_problems(root, set(), set(), set()),
+            )
+            self.assertEqual(
+                ["deploy-meta/alpha.json skill_deps is not a list of names, which the deployer refuses"],
+                script_dependency_problems(root),
             )
 
     def test_script_dependency_policy_detects_an_undeclared_sibling(self) -> None:

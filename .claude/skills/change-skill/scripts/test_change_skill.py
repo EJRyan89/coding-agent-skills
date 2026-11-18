@@ -422,6 +422,11 @@ class GateTests(unittest.TestCase):
             self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}),
         )
 
+    def test_a_null_name_list_reads_as_none_as_the_deployer_reads_it(self) -> None:
+        text = '{"skill_deps": null, "agent_deps": null}'
+        self.assertEqual({"skill_deps": None, "agent_deps": None}, change_skill.metadata(text))
+        self.assertEqual({"alpha"}, change_skill.reach("alpha", {"alpha": change_skill.metadata(text)}))
+
     def test_a_folder_in_place_of_metadata_reads_as_empty(self) -> None:
         (self.root / "deploy-meta" / "gamma.json").unlink()
         (self.root / "deploy-meta" / "gamma.json").mkdir()

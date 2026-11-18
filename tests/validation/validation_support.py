@@ -34,7 +34,7 @@ from python_names import ModuleImport as ModuleImport
 from python_names import import_aliases as import_aliases
 from python_names import module_imports as module_imports
 from python_names import qualified_name as qualified_name
-from skill_menu import MenuEntry, SourceMenu, declared_names, expand
+from skill_menu import MenuEntry, MenuError, SourceMenu, declared_names, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
@@ -1591,6 +1591,20 @@ def is_shell_script(path: Path) -> bool:
     return path.suffix.casefold() in {".sh", ".bash"}
 
 
+def listed_names(metadata: Path, document: Mapping[str, object], key: str, problems: list[str] | None) -> list[str]:
+    """The names a deploy-meta file's key lists, read by skill_menu's declared_names: none for an absent or null key,
+    as the deployer's loader reads it. A key holding another kind reads as none too, and is reported into problems by
+    the file's name, so one malformed file never ends a policy; a reader with no problems to report into leaves it to
+    the policy that reads the key for its own check: deploy_variable_problems for required_vars,
+    script_dependency_problems for skill_deps, and skill_command_problems for tools and optional_tools."""
+    try:
+        return declared_names(document, key, f"deploy-meta/{metadata.name}")
+    except MenuError as exc:
+        if problems is not None:
+            problems.append(f"{exc}, which the deployer refuses")
+        return []
+
+
 def skill_dependency_closure(root: Path, skill: str) -> list[str]:
     """The skills a skill's skill_deps reach, directly or through each other, as ejryan89-skill-core's skill_menu
     expands them for the deployer's selection; none for a skill with no metadata.
@@ -1600,7 +1614,7 @@ def skill_dependency_closure(root: Path, skill: str) -> list[str]:
     menu = SourceMenu("")
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
-        declared = declared_names(document, "skill_deps", metadata.as_posix())
+        declared = listed_names(metadata, document, "skill_deps", None)
         menu.skills[metadata.stem] = MenuEntry(skill_deps=tuple(declared))
     for entry in list(menu.skills.values()):
         menu.skills.update({name: MenuEntry() for name in entry.skill_deps if name not in menu.skills})

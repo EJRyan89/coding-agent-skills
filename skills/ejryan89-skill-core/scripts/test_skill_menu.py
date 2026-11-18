@@ -139,7 +139,11 @@ def test_read_menu_reads_the_source_document_and_each_skills_metadata(tmp_path: 
         ({"id": "owner/repo"}, {"alpha": {"required_vars": "X"}}, "alpha.json required_vars is not a list of names"),
         ({"id": "owner/repo", "bundles": []}, {}, "source.json bundles is not a JSON object"),
         ({"id": "owner/repo", "bundles": {"pair": []}}, {}, "source.json bundle pair is not a JSON object"),
-        ({"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}}, {"alpha": {}}, "pair members is not a non-empty"),
+        (
+            {"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}},
+            {"alpha": {}},
+            "pair members is not a non-empty",
+        ),
         ({"id": "owner/repo", "bundles": {"pair": {}}}, {}, "source.json bundle pair members is not a non-empty list"),
         ({"id": "owner/repo", "bundles": {"pair": {"members": []}}}, {}, "bundle pair members is not a non-empty list"),
         # A setting that is not true or false is not its default: the deployer refuses it too.

@@ -3136,3 +3136,22 @@ def test_the_command_policy_holds_the_program_the_time_keyword_times_to_its_decl
         assert skill_command_problems(root, {"gh"}, {"git"}) == [
             f"skill alpha runs jq, which a standard install lacks; see {doc}"
         ]
+
+
+def test_command_policies_name_a_tools_list_of_another_kind_and_read_a_null_one_as_none(tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"tools": "gh", "optional_tools": [1]}),
+            "deploy-meta/beta.json": json.dumps({"tools": None, "optional_tools": None}),
+            "skills/alpha/SKILL.md": "# alpha\n",
+            "skills/beta/SKILL.md": "# beta\n",
+        },
+    )
+    assert skill_command_problems(tmp_path, {"gh"}, {"git", "python"}) == [
+        "deploy-meta/alpha.json tools is not a list of names, which the deployer refuses",
+        "deploy-meta/alpha.json optional_tools is not a list of names, which the deployer refuses",
+    ]
+    assert optional_tool_placement_problems(tmp_path, {"gh"}) == [
+        "deploy-meta/alpha.json tools is not a list of names, which the deployer refuses"
+    ]

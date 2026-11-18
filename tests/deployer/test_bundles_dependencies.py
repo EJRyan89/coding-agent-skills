@@ -1267,7 +1267,8 @@ def reads(read: Callable[[], object], refusal: type[Exception]) -> bool:
 def test_read_menu_and_the_deployers_loader_read_and_refuse_each_menu_field_alike(
     tmp_path: Path, where: str, key: str, value: object, accepted: bool
 ) -> None:
-    # plugin_build and audit-skill read a source through read_menu: a source the deployer deploys must make plugins.
+    # audit-skill names the plugins that carry a skill through read_menu, so it must read every source the deployer
+    # deploys, and refuse every source the deployer refuses.
     root = menu_source(tmp_path / "Source With Spaces", where, key, value)
     paths = Paths(root, tmp_path / "home")
     deployer_reads = reads(lambda: source.discover(paths, source.load_source_id(paths)), DeployError)

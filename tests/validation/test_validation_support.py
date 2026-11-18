@@ -547,6 +547,9 @@ class SharedReaderFixtures(unittest.TestCase):
                     "deploy-meta/delta.json": "{}",
                     # A dependency with no metadata of its own is reached and depends on nothing.
                     "deploy-meta/epsilon.json": '{"skill_deps": ["unlisted"]}',
+                    # A null list is none, and one of another kind, which script_dependency_problems names, too.
+                    "deploy-meta/zeta.json": '{"skill_deps": null}',
+                    "deploy-meta/eta.json": '{"skill_deps": "alpha"}',
                 },
             )
             self.assertEqual(["beta", "delta", "gamma"], skill_dependency_closure(root, "alpha"))
@@ -554,6 +557,8 @@ class SharedReaderFixtures(unittest.TestCase):
             self.assertEqual([], skill_dependency_closure(root, "delta"))
             self.assertEqual(["unlisted"], skill_dependency_closure(root, "epsilon"))
             self.assertEqual([], skill_dependency_closure(root, "missing"))
+            self.assertEqual([], skill_dependency_closure(root, "zeta"))
+            self.assertEqual([], skill_dependency_closure(root, "eta"))
 
     def test_an_allowance_maps_each_name_to_a_reason(self) -> None:
         def allowance(source: str) -> dict[str, str] | None:
