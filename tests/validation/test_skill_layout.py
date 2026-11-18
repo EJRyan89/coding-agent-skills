@@ -34,6 +34,7 @@ from skill_layout import (
     marketplace_problems,
     metadata_format_problems,
     output_placeholder_problems,
+    own_needs,
     plugin_tree_problems,
     repository_skill_name_problems,
     runtime_page_problems,
@@ -49,7 +50,7 @@ from skill_layout import (
     trigger_scenario_problems,
     unsupported_script_problems,
 )
-from skill_scripts import WORKING_FILES_DOC
+from skill_scripts import WORKING_FILES_DOC, skill_command_problems
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
 
 from deployer import platform_support
@@ -1687,3 +1688,46 @@ def test_the_script_language_statement_is_one_line_as_commonmark_breaks_it(separ
         },
     )
     assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == []
+
+
+def test_own_needs_reads_a_null_tools_list_as_none_and_leaves_one_of_another_kind_to_the_command_policy(
+    tmp_path: Path,
+) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"tools": None, "optional_tools": ["gh"]}),
+            "deploy-meta/beta.json": json.dumps({"tools": "gh", "optional_tools": None}),
+            "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Alpha.\n---\n\n# alpha\n",
+            "skills/beta/SKILL.md": "---\nname: beta\ndescription: Beta.\n---\n\n# beta\n",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    assert own_needs(tmp_path, "alpha") == {"sandbox-network"}
+    # The text "gh" is no list of names, so it declares no network tool, and skill_command_problems names it.
+    assert own_needs(tmp_path, "beta") == set()
+    assert skill_command_problems(tmp_path, {"gh"}, {"git", "python"}) == [
+        "deploy-meta/beta.json tools is not a list of names, which the deployer refuses",
+        "skill alpha declares tool gh but never runs it",
+    ]
+
+
+def test_the_skill_path_policy_reads_null_skill_deps_as_none_and_one_of_another_kind_as_none(tmp_path: Path) -> None:
+    reach = '```bash\npython -B "${CLAUDE_SKILL_DIR}/../core/scripts/lib.py"\n```\n'
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"skill_deps": None}),
+            "deploy-meta/beta.json": json.dumps({"skill_deps": "core"}),
+            "deploy-meta/core.json": "{}",
+            "skills/alpha/SKILL.md": reach,
+            "skills/beta/SKILL.md": reach,
+            "skills/core/SKILL.md": "# core\n",
+            "skills/core/scripts/lib.py": "",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    assert skill_path_problems(tmp_path) == [
+        "skills/alpha/SKILL.md:2 reaches ../core without declaring it in skill_deps",
+        "skills/beta/SKILL.md:2 reaches ../core without declaring it in skill_deps",
+    ]
