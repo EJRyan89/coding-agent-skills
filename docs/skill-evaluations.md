@@ -154,6 +154,9 @@ session model and the judged one. A skill with no row has not been run since its
 | review-repository | haiku | claude-haiku-5-5 | high | none | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 1/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
 | review-repository | sonnet | claude-sonnet-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
 | review-repository | opus | claude-opus-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
+| update-pr-dashboard | haiku | claude-haiku-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-18 |
+| update-pr-dashboard | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-18 |
+| update-pr-dashboard | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-18 |
 <!-- skill-evals:end -->
 
 ### Notes
@@ -188,4 +191,5 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | clean-change | sonnet | 1 | 2026-11-10 | agrees |
 | review-repository | misstated-exit-status | sonnet | 1 | 2026-11-15 | agrees |
+| update-pr-dashboard | description | haiku | 1 | 2026-11-18 | agrees |
 <!-- skill-evals-samples:end -->

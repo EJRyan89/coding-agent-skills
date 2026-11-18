@@ -38,6 +38,7 @@ from review_config import (
     DASHBOARD_START_MARKER,
     PULL_NUMBER,
     REPOSITORY,
+    STATUS_OVERRIDE_KEY_PATTERN,
     ConfigurationError,
     dashboard_status_heading,
     dashboard_status_key,
@@ -320,21 +321,48 @@ def normalize_pull_keys(values: set[str] | list[str], field: str) -> set[str]:
     return normalized
 
 
-def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
+def override_key(value: str) -> str:
+    """A status override key read by the configuration's own rule, lowercase as the tracker matches it, so every key
+    the configuration loads can be listed and cleared. One whose repository is an identity is the pull request
+    `normalize_pull_keys` reads; one only the configuration's looser rule takes matches no pull request (see
+    `is_pull_key`)."""
+    key = READ.string(value, "an override pull-request identity")
+    if PULL_KEY_PATTERN.fullmatch(key):
+        return next(iter(normalize_pull_keys([key], "override")))
+    if not STATUS_OVERRIDE_KEY_PATTERN.fullmatch(key):
+        raise TrackerError(f"Invalid override pull-request identity: {value!r}")
+    return key.lower()
+
+
+def is_pull_key(key: str) -> bool:
+    """Whether a status override key names a pull request the tracker can match: its repository is an identity."""
+    return PULL_KEY_PATTERN.fullmatch(key) is not None
+
+
+def read_overrides(value: dict[str, str] | None) -> tuple[dict[str, str], dict[str, list[tuple[str, str]]]]:
+    """The configured status overrides, each key read by `override_key`, and apart from them each key two or more
+    configured keys share, since they differ only in letter case, with those keys as configured and their statuses, in
+    key order. Such a key pins nothing: which status is meant cannot be told, and the configuration loads them all."""
     if value is None:
-        return {}
-    normalized: dict[str, str] = {}
+        return {}, {}
+    read: dict[str, list[tuple[str, str]]] = {}
     for raw_key, raw_status in READ.json_object(value, "status overrides").items():
-        key = next(iter(normalize_pull_keys([READ.string(raw_key, "a key of status overrides")], "override")))
+        key = override_key(READ.string(raw_key, "a key of status overrides"))
         status = READ.string(raw_status, f"status overrides.{raw_key}", empty=True).strip()
         if not status:
             raise TrackerError(f"Status override {key} must be non-empty")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:
             raise TrackerError(f"Status override {key} duplicates a computed tracker state")
-        if key in normalized:
-            raise TrackerError(f"Duplicate status override after normalization: {key}")
-        normalized[key] = status
-    return normalized
+        read.setdefault(key, []).append((raw_key, status))
+    pins = {key: entries[0][1] for key, entries in read.items() if len(entries) == 1}
+    duplicates = {key: sorted(entries) for key, entries in sorted(read.items()) if len(entries) > 1}
+    return pins, duplicates
+
+
+def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
+    """The status overrides that pin a row: each configured key read by `override_key`, but one two configured keys
+    share (see `read_overrides`)."""
+    return read_overrides(value)[0]
 
 
 def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:
