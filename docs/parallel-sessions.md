@@ -664,10 +664,10 @@ Claude Code so the hook runs with the new `PATH`.
 #### What it does not see
 
 The hook sees the command text, and the guard reads git's words in it: it does not see any program other than git,
-run by its own words, which it allows whatever those words are, so what a script file, `eval`, a function, a program
-that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a variable a command
-sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check names what they
-changed there.
+run by its own words, which it allows whatever those words are, so what a script file, `eval`, a `trap`'s action, a
+function, a program that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
+variable a command sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check
+names what they changed there.
 
 Within what it reads, it judges only what the text shows, so these too are left to the check:
 

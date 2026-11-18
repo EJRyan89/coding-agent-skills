@@ -244,6 +244,34 @@ def test_shell_command_extraction_marks_bash_the_grammar_refuses(script: str, re
     assert {f"{skill_scripts.UNREAD_BASH}{reason}"} <= shell_commands(script)
 
 
+# A trap's action the grammar refuses is read as the same text given to eval is: UNREAD_BASH with the grammar's reason,
+# in the command reader and in the walk the temporary-folder policy judges mktemp through, whose stated limit is that
+# such a script's mktemp goes unjudged.
+@pytest.mark.parametrize(
+    ("word", "text"),
+    [
+        ("'if true; then rg foo'", "if true; then rg foo"),
+        ("'rg \"'", 'rg "'),
+        ("'mktemp; if true; then'", "mktemp; if true; then"),
+        ("'case x in'", "case x in"),
+    ],
+)
+def test_a_trap_action_the_grammar_refuses_is_read_as_eval_s_script_is(word: str, text: str) -> None:
+    evaluated, trapped = shell_commands(f"eval {word}") - {"eval"}, shell_commands(f"trap {word} EXIT") - {"trap"}
+    assert trapped == evaluated
+    assert [program for program in trapped if program.startswith(skill_scripts.UNREAD_BASH)]
+    evaluated_runs: list[list[str]] = []
+    trapped_runs: list[list[str]] = []
+    walked = skill_scripts._wrapped_programs(["trap", text, "EXIT"], trapped_runs)
+    assert walked == skill_scripts._wrapped_programs(["eval", text], evaluated_runs)
+    assert walked == trapped
+    assert trapped_runs == evaluated_runs
+    temporary = [
+        skill_scripts._bash_temporary_problems("make.sh", f"{form}\n") for form in (f"eval {word}", f"trap {word} EXIT")
+    ]
+    assert temporary == [[], []]
+
+
 # Windows lists a skill's files by a case-folded key, so run.py comes before SKILL.md there; the policy reports in the
 # order of the paths as written on every platform.
 @pytest.mark.parametrize("listing", ["as listed", "case-folded"])

@@ -834,6 +834,23 @@ def test_the_pipe_race_policy_finds_a_reader_by_its_documented_options_and_wrapp
     assert races_in(tmp_path, script) == [race]
 
 
+# A trap's action the grammar refuses runs nothing the pipe-race policy can see, as the same text given to eval does:
+# the walk hands it on as eval's script, and the reader of a script the grammar refuses reads no pipe in it.
+@pytest.mark.parametrize(
+    ("word", "text"),
+    [
+        ("'seq 1 200000 | head -n 1; if true; then'", "seq 1 200000 | head -n 1; if true; then"),
+        ("'seq 1 200000 | head -n 1; case x in'", "seq 1 200000 | head -n 1; case x in"),
+    ],
+)
+def test_a_trap_action_the_grammar_refuses_is_read_as_eval_s_script_is(tmp_path: Path, word: str, text: str) -> None:
+    assert (
+        suite_discovery._shell_script(["trap", text, "EXIT"]) == suite_discovery._shell_script(["eval", text]) == text
+    )
+    assert races_in(tmp_path, f"trap {word} EXIT") == races_in(tmp_path, f"eval {word}") == []
+    assert races_in(tmp_path, f"seq 1 200000 | trap {word} EXIT") == races_in(tmp_path, f"seq 1 200000 | eval {word}")
+
+
 def test_a_race_in_unquoted_backticks_is_named_once(tmp_path: Path) -> None:
     assert races_in(tmp_path, "x=`printf a | head -1`") == ["3 pipes into head -1"]
     assert races_in(tmp_path, "x=`printf a | head -1`; printf a | grep -q a") == [

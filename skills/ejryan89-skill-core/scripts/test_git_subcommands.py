@@ -309,6 +309,16 @@ def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
         git_subcommands.bash_git_subcommands(script, no_powershell)
 
 
+# A trap's action the grammar refuses fails as the same text given to eval does, with the grammar's reason.
+@pytest.mark.parametrize("action", ["'if git push; then'", "'git push \"'", "'git push; ('", "'case x in'"])
+def test_a_trap_action_the_grammar_refuses_raises_as_eval_s_script_does(action: str) -> None:
+    with pytest.raises(bash_syntax.BashSyntaxError) as evaluated:
+        git_subcommands.bash_git_subcommands(f"eval {action}", no_powershell)
+    with pytest.raises(bash_syntax.BashSyntaxError) as trapped:
+        git_subcommands.bash_git_subcommands(f"trap {action} EXIT", no_powershell)
+    assert str(trapped.value) == str(evaluated.value)
+
+
 # A substitution in a here-document's body that Bash cannot read fails alone when Bash expands the body, so it runs
 # nothing and the git commands around it, in the body and the script, are read; one whose end the body never reaches
 # runs to the body's end, so nothing in the body stands after it.
