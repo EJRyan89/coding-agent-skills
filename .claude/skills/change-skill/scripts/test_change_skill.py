@@ -659,6 +659,14 @@ STEP_SECTIONS = {
         "## Step\n\n> ## Quoted\n\n## Next\n",
         ["", "> ## Quoted"],
     ),
+    "a heading right after a quoted paragraph": (
+        "## Step\n\n> A quoted note\n## Next\n",
+        ["", "> A quoted note"],
+    ),
+    "a heading-shaped line indented past a paragraph": (
+        "## Step\n\nText\n    # Not a heading\n   # Next\n",
+        ["", "Text", "    # Not a heading"],
+    ),
 }
 
 

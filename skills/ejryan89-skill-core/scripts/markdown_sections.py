@@ -248,9 +248,12 @@ def _read_blocks(lines: list[str]) -> tuple[set[int], list[tuple[int, re.Match[s
     continues it. A block marker is read at most MAX_BLOCK_INDENT columns past the content of the items that hold it,
     and a fence's opener that opens a list item, as `- ```` does, holds the lines after it in that item.
     Blockquote markers are taken off a line first, and a change in how many hold it starts a new container, but for a
-    line that lazily continues a quoted paragraph. The limits: the partial tab a blockquote or list marker consumes is
-    counted as a whole one, a fence's opener opens one list item at most, and an HTML block or a setext heading is read
-    as a paragraph, so a heading-shaped line inside an HTML comment is read as a heading."""
+    line that lazily continues a quoted paragraph: one that holds text and starts no block. The limits: the partial tab
+    a blockquote or list marker consumes is counted as a whole one; a fence's opener opens one list item at most; an
+    HTML block or a setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a
+    heading; a blockquote inside a list item closes the item for the lines after it, so a heading or indented line
+    that CommonMark keeps in the item is read at the document's level; and a list marker with nothing after it on its
+    line opens no item, so the line after it is read as the document's."""
     fences = find_fences(lines)
     openers = {fence.opener for fence in fences}
     fenced = {index for fence in fences for index in fence.lines()}
@@ -258,7 +261,7 @@ def _read_blocks(lines: list[str]) -> tuple[set[int], list[tuple[int, re.Match[s
     for index, quoted in enumerate(lines):
         line, quotes = _unquoted(quoted)
         if quotes != blocks.depth:
-            if blocks.paragraph and quotes < blocks.depth and not is_blank(line):
+            if blocks.paragraph and quotes < blocks.depth and _continues(line, opener=index in openers):
                 continue  # a lazy continuation of the quoted paragraph
             blocks.items, blocks.depth, blocks.paragraph, blocks.run = [], quotes, False, []
         if index in fenced:
@@ -334,6 +337,15 @@ class _Blocks:
                 self.run = [index]
         elif heading is not None and not self.items and not self.depth:
             self.headings.append((index, heading))
+
+
+def _continues(line: str, *, opener: bool) -> bool:
+    """Whether a line, its blockquote markers taken off, may lazily continue a paragraph: it holds text and starts no
+    block, neither a fence, nor an ATX heading or a thematic break indented at most MAX_BLOCK_INDENT columns, nor a
+    list item that may interrupt a paragraph, each of which ends the paragraph and what holds it."""
+    block = line.strip(LINE_END) if indentation(line) <= MAX_BLOCK_INDENT else ""
+    starts = THEMATIC_BREAK.fullmatch(block) or ATX_HEADING.fullmatch(block) or list_item(line, interrupting=True)
+    return not (is_blank(line) or opener or starts)
 
 
 def _holding(items: list[int], width: int) -> int:

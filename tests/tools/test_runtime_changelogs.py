@@ -141,6 +141,12 @@ class ChangelogTests(unittest.TestCase):
             [(found.name, found.entries) for found in watch.markdown_releases(text)],
         )
 
+    def test_a_release_heading_right_after_a_quote_starts_the_release(self) -> None:
+        # A heading ends a quoted paragraph rather than lazily continuing it, as GitHub renders it.
+        releases = watch.markdown_releases("## 2.0.0\n- one\n> note\n## 1.9.0\n- two\n")
+        self.assertEqual(["2.0.0", "1.9.0"], [found.name for found in releases])
+        self.assertEqual(("two",), releases[1].entries)
+
     def test_github_releases_are_read_page_by_page_until_the_recorded_release(self) -> None:
         fetcher = StubFetcher(answers())
         releases = watch.changelog_releases(CODEX, fetcher, 1.0)
