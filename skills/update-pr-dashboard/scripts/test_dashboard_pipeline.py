@@ -59,6 +59,13 @@ LOOSE_ONLY_KEYS = (
     "owner/...#1",
     f"owner/{'r' * 101}#1",
 )
+# Status overrides whose keys pair up, differing only in letter case, each pair's two statuses different.
+CASE_DUPLICATE_OVERRIDES = {
+    "a--b/repo#1": "on hold",
+    "A--B/repo#1": "delegated",
+    "example/two#5": "on hold",
+    "Example/Two#5": "x",
+}
 START = "<!-- code-review-pr-tracker:start -->"
 END = "<!-- code-review-pr-tracker:end -->"
 
@@ -1781,6 +1788,83 @@ class LooseOverrideKeyTests(TrackerPipelineFixture):
                 self.assertEqual(original, self.config_path.read_bytes())
 
 
+class DuplicateOverrideKeyTests(TrackerPipelineFixture):
+    """Status override keys that differ only in letter case all load, so none of them pins a row, since which status
+    is meant cannot be told; each is named, listed, and cleared rather than failing every command."""
+
+    def test_the_listing_names_each_key_as_configured_with_its_status(self) -> None:
+        self.configure(overrides={**CASE_DUPLICATE_OVERRIDES, "example/one#2": "waiting"})
+        self.track("example/one#2", "example/two#5")
+        code, out, err = self.run_main("override")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "OVERRIDE_DUPLICATE A--B/repo#1 delegated",
+                "OVERRIDE_DUPLICATE a--b/repo#1 on hold",
+                "OVERRIDE example/one#2 waiting",
+                "OVERRIDE_DUPLICATE Example/Two#5 x",
+                "OVERRIDE_DUPLICATE example/two#5 on hold",
+                "OVERRIDES 5",
+            ],
+            out.splitlines(),
+        )
+
+    def test_clear_removes_every_key_of_a_case_and_names_each(self) -> None:
+        for named, removed in (
+            ("A--b/Repo#1", ["A--B/repo#1", "a--b/repo#1"]),
+            ("example/two#5", ["Example/Two#5", "example/two#5"]),
+        ):
+            with self.subTest(named=named):
+                self.configure(overrides={**CASE_DUPLICATE_OVERRIDES, "example/one#2": "waiting"})
+                code, out, err = self.run_main("override", f"--clear={named}")
+                self.assertEqual((0, ""), (code, err))
+                self.assertEqual(
+                    [*(f"CLEARED {key}" for key in removed), f"WROTE {self.config_path}"], out.splitlines()
+                )
+                kept = {key: status for key, status in CASE_DUPLICATE_OVERRIDES.items() if key not in removed}
+                self.assertEqual(
+                    {**kept, "example/one#2": "waiting"},
+                    json.loads(self.config_path.read_text(encoding="utf-8"))["dashboard"]["status_overrides"],
+                )
+
+    def test_update_prints_stale_unmatchable_duplicate_and_candidate_lines_in_order_and_pins_neither_duplicate(
+        self,
+    ) -> None:
+        reviewed = pull_node(
+            2,
+            reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
+            participants={"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "reviewer"}]},
+        )
+        other = pull_node(5, url="https://github.com/example/two/pull/5")
+        commit_record(self.archive, "example/one", 2, archived_record(HEAD, 2), expected_latest_version=None)
+        self.github.pages = {"example/one": [page([reviewed])], "example/two": [page([other])]}
+        self.configure(overrides={**CASE_DUPLICATE_OVERRIDES, "-a/repo#1": "on hold"})
+        out = ""
+        for _ in range(2):
+            code, _, err = self.run_main("collect", "--output", str(self.input))
+            self.assertEqual(0, code, err)
+            code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+            self.assertEqual(0, code, err)
+            # The second update finds example/one#2's head moved past the review the first found current.
+            self.github.pages["example/one"] = [page([{**reviewed, "headRefOid": "e" * 40}])]
+        self.assertEqual(
+            [
+                "STALE_SINCE_LAST_UPDATE example/one#2",
+                "OVERRIDE_UNMATCHABLE -a/repo#1",
+                "OVERRIDE_DUPLICATE A--B/repo#1",
+                "OVERRIDE_DUPLICATE a--b/repo#1",
+                "OVERRIDE_DUPLICATE Example/Two#5",
+                "OVERRIDE_DUPLICATE example/two#5",
+                "CANDIDATE stale example/one#2",
+                "CANDIDATE missing example/two#5",
+            ],
+            out.splitlines()[2:],
+        )
+        self.assertNotIn("### On Hold", self.dashboard.read_text(encoding="utf-8"))
+        code, out, err = self.run_main("review-arguments", "--confirm", "example/two#5")
+        self.assertEqual((0, "", ["REVIEW_ARGUMENTS --pull example/two#5"]), (code, err, out.splitlines()))
+
+
 class RepositoryTests(TrackerPipelineFixture):
     """`repository --add` adds a repository to the configuration and a repository set without GitHub, validating the
     whole file."""
@@ -2253,7 +2337,11 @@ class ReviewArgumentsTests(TrackerPipelineFixture):
 def test_an_override_line_holding_a_line_break_prints_on_one_line() -> None:
     # An override's key and the configured path are values a user typed or configured.
     folder = "config" + chr(10) + "WROTE elsewhere"
-    changes = (Path("/", folder), {"o/r#1\u2028SET x": "merged"})
+    changes: tuple[Path, dict[str, str | None], dict[str, list[str]]] = (
+        Path("/", folder),
+        {"o/r#1\u2028SET x": "merged"},
+        {},
+    )
     output = io.StringIO()
     with mock.patch.object(tp, "change_overrides", return_value=changes), contextlib.redirect_stdout(output):
         assert tp._override(["o/r#1=merged"], [], None) == 0

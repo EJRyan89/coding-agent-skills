@@ -339,11 +339,13 @@ def is_pull_key(key: str) -> bool:
     return PULL_KEY_PATTERN.fullmatch(key) is not None
 
 
-def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
-    """The configured status overrides, each key read by `override_key`."""
+def read_overrides(value: dict[str, str] | None) -> tuple[dict[str, str], dict[str, list[tuple[str, str]]]]:
+    """The configured status overrides, each key read by `override_key`, and apart from them each key two or more
+    configured keys share, since they differ only in letter case, with those keys as configured and their statuses, in
+    key order. Such a key pins nothing: which status is meant cannot be told, and the configuration loads them all."""
     if value is None:
-        return {}
-    normalized: dict[str, str] = {}
+        return {}, {}
+    read: dict[str, list[tuple[str, str]]] = {}
     for raw_key, raw_status in READ.json_object(value, "status overrides").items():
         key = override_key(READ.string(raw_key, "a key of status overrides"))
         status = READ.string(raw_status, f"status overrides.{raw_key}", empty=True).strip()
@@ -351,10 +353,16 @@ def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
             raise TrackerError(f"Status override {key} must be non-empty")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:
             raise TrackerError(f"Status override {key} duplicates a computed tracker state")
-        if key in normalized:
-            raise TrackerError(f"Duplicate status override after normalization: {key}")
-        normalized[key] = status
-    return normalized
+        read.setdefault(key, []).append((raw_key, status))
+    pins = {key: entries[0][1] for key, entries in read.items() if len(entries) == 1}
+    duplicates = {key: sorted(entries) for key, entries in sorted(read.items()) if len(entries) > 1}
+    return pins, duplicates
+
+
+def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
+    """The status overrides that pin a row: each configured key read by `override_key`, but one two configured keys
+    share (see `read_overrides`)."""
+    return read_overrides(value)[0]
 
 
 def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:

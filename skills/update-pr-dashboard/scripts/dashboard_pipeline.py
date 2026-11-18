@@ -91,6 +91,7 @@ from update_pr_dashboard import (
     normalize_overrides,
     normalize_pull_keys,
     override_key,
+    read_overrides,
     replacement,
     review_candidates,
     stale_since,
@@ -443,18 +444,31 @@ def collect(
     return collection
 
 
+@dataclass(frozen=True)
+class Update:
+    """What `update` did: the dashboard it wrote and its rows; the pull requests whose review went stale since the
+    update that wrote the tracker record (see `stale_since`); each status override key, in key order, that can match
+    no pull request, since only the configuration's looser rule takes it (see `is_pull_key`); and each configured key
+    that pins nothing because another differs from it only in letter case (see `read_overrides`), as configured, in
+    key order."""
+
+    dashboard: Path
+    rows: list[Row]
+    stale: list[str]
+    unmatchable: list[str]
+    duplicates: list[str]
+
+
 def update(
     input_path: Path,
     *,
     removals: list[str] | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
-) -> tuple[Path, list[Row], list[str], list[str]]:
+) -> Update:
     """Render the owned section with the configured dashboard, login, markers, overrides, and author names, and
-    return the dashboard, its rows, the pull requests whose review went stale since the update that wrote the tracker
-    record (see `stale_since`), and each status override key, in key order, that can match no pull request, since only
-    the configuration's looser rule takes it (see `is_pull_key`). Without a configured login, GitHub is asked for it
-    only after the refusals `update_dashboard_rows` makes before asking anything."""
+    return what `Update` holds. Without a configured login, GitHub is asked for it only after the refusals
+    `update_dashboard_rows` makes before asking anything."""
     services = services or Services()
     config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
@@ -474,9 +488,14 @@ def update(
         config_path=str(config_path),
         record=record,
     )
-    overrides = normalize_overrides(config["dashboard"]["status_overrides"])
-    unmatchable = sorted(key for key in overrides if not is_pull_key(key))
-    return dashboard, rows, stale_since(previous, rows), unmatchable
+    pins, duplicates = read_overrides(config["dashboard"]["status_overrides"])
+    return Update(
+        dashboard,
+        rows,
+        stale_since(previous, rows),
+        sorted(key for key in pins if not is_pull_key(key)),
+        [raw_key for entries in duplicates.values() for raw_key, _ in entries],
+    )
 
 
 def tracker_record_path(config_path: Path) -> Path:
@@ -503,13 +522,19 @@ def held_pulls(config_path: Path) -> set[str] | None:
     return None if record is None else set(record["pulls"])
 
 
-def list_overrides(config_path: Path | None = None) -> list[tuple[str, str, bool]]:
-    """Each configured status override, keyed and trimmed as the tracker matches it, in key order, with whether the
-    tracker still holds its pull request."""
+def list_overrides(config_path: Path | None = None) -> list[tuple[str, str, str]]:
+    """Each configured status override, in key order, as its line, its key, and its trimmed status: `OVERRIDE` keyed
+    as the tracker matches it when the tracker holds its pull request, else `OVERRIDE_UNTRACKED`, and
+    `OVERRIDE_DUPLICATE` keyed as configured when another key differs from it only in letter case, so it pins
+    nothing."""
     path = config_path or default_config_path()
-    overrides = normalize_overrides(load_config(path)["dashboard"]["status_overrides"])
+    pins, duplicates = read_overrides(load_config(path)["dashboard"]["status_overrides"])
     held = held_pulls(path) or set()
-    return [(key, status, key in held) for key, status in sorted(overrides.items())]
+    listed = [("OVERRIDE" if key in held else "OVERRIDE_UNTRACKED", key, status) for key, status in pins.items()]
+    listed += [
+        ("OVERRIDE_DUPLICATE", raw_key, status) for entries in duplicates.values() for raw_key, status in entries
+    ]
+    return sorted(listed, key=lambda entry: (entry[1].lower(), entry[1]))
 
 
 def _pull_key(value: str) -> str:
@@ -558,12 +583,15 @@ def rewrite_config(edit: Callable[[dict[str, Any], dict[str, Any]], None], confi
 
 def change_overrides(
     sets: list[str], clears: list[str], *, config_path: Path | None = None
-) -> tuple[Path, dict[str, str | None]]:
+) -> tuple[Path, dict[str, str | None], dict[str, list[str]]]:
     """Set and clear status overrides in one `rewrite_config` write, changing no other value in the configuration
     file. A change that fails, such as a computed state, a malformed key, clearing an override that is not set, or
-    setting one for a pull request the tracker does not hold, writes nothing."""
+    setting one for a pull request the tracker does not hold, writes nothing. Return the configuration, the changes,
+    and, for each cleared key, every configured key it removed, as configured, in key order: more than one when keys
+    differ only in letter case."""
     path = config_path or default_config_path()
     changes = override_changes(sets, clears)
+    removed: dict[str, list[str]] = {}
 
     def edit(raw: dict[str, Any], _: dict[str, Any]) -> None:
         dashboard = raw.setdefault("dashboard", {})
@@ -573,6 +601,11 @@ def change_overrides(
         if missing:
             raise TrackerError(f"No status override for {missing[0]}")
         kept = {key: status for key, status in current.items() if override_key(key) not in changes}
+        removed.clear()
+        for raw_key in sorted(current):
+            key = override_key(raw_key)
+            if key in changes and changes[key] is None:
+                removed.setdefault(key, []).append(raw_key)
         dashboard["status_overrides"] = {
             **kept,
             **{key: status for key, status in changes.items() if status is not None},
@@ -580,7 +613,7 @@ def change_overrides(
         validate_config(raw)
         _refuse_untracked([key for key, status in changes.items() if status is not None], path)
 
-    return rewrite_config(edit, path), changes
+    return rewrite_config(edit, path), changes, removed
 
 
 def add_repositories(
@@ -720,7 +753,12 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         "--set", action="append", default=[], dest="sets", metavar="OWNER/REPO#N=STATUS", help="repeatable"
     )
     override_parser.add_argument(
-        "--clear", action="append", default=[], dest="clears", metavar="OWNER/REPO#N", help="repeatable"
+        "--clear",
+        action="append",
+        default=[],
+        dest="clears",
+        metavar="OWNER/REPO#N",
+        help="repeatable; join a key that starts with - as --clear=KEY",
     )
     repository_parser = commands.add_parser("repository")
     change = repository_parser.add_mutually_exclusive_group(required=True)
@@ -759,17 +797,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "collect":
             return _collect(args, services)
         calls = services.github.call_count
-        dashboard, rows, stale, unmatchable = update(
-            args.input, removals=args.remove, config_path=args.config, services=services
-        )
-        print(single_line(f"UPDATED {dashboard} rows={len(rows)}"))
+        result = update(args.input, removals=args.remove, config_path=args.config, services=services)
+        print(single_line(f"UPDATED {result.dashboard} rows={len(result.rows)}"))
         print(single_line(f"GITHUB_CALLS {services.github.call_count - calls}"))
-        for key in unmatchable:
-            print(single_line(f"OVERRIDE_UNMATCHABLE {key}"))
-        for key in stale:
+        for key in result.stale:
             print(single_line(f"STALE_SINCE_LAST_UPDATE {key}"))
+        for key in result.unmatchable:
+            print(single_line(f"OVERRIDE_UNMATCHABLE {key}"))
+        for key in result.duplicates:
+            print(single_line(f"OVERRIDE_DUPLICATE {key}"))
         if args.candidates:
-            for candidate in review_candidates(rows):
+            for candidate in review_candidates(result.rows):
                 print(single_line(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}"))
         return 0
     except ComparisonFailures as exc:
@@ -831,13 +869,14 @@ def _review_arguments(confirmed: list[str], scope: str | None, config_path: Path
 def _override(sets: list[str], clears: list[str], config_path: Path | None) -> int:
     if not sets and not clears:
         overrides = list_overrides(config_path)
-        for key, status, held in overrides:
-            print(single_line(f"{'OVERRIDE' if held else 'OVERRIDE_UNTRACKED'} {key} {status}"))
+        for line, key, status in overrides:
+            print(single_line(f"{line} {key} {status}"))
         print(single_line(f"OVERRIDES {len(overrides)}"))
         return 0
-    path, changes = change_overrides(sets, clears, config_path=config_path)
+    path, changes, removed = change_overrides(sets, clears, config_path=config_path)
     for key, change in changes.items():
-        print(single_line(f"CLEARED {key}" if change is None else f"SET {key} {change}"))
+        for line in [f"CLEARED {raw_key}" for raw_key in removed[key]] if change is None else [f"SET {key} {change}"]:
+            print(single_line(line))
     print(single_line(f"WROTE {path}"))
     return 0
 
