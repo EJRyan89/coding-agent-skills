@@ -528,7 +528,10 @@ class ReviewedHeadTests(unittest.TestCase):
             },
             review_operation.reviewed_head(self.root, "owner/repo", 5),
         )
-        self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5, 6]))
+        self.assertEqual(
+            {5: review_operation.ReviewedCommits("a" * 40, None)},
+            review_operation.latest_reviewed_commits(self.root, "owner/repo", [5, 6]),
+        )
 
     def test_legacy_counts_and_report_come_from_the_migrated_report(self) -> None:
         self.write_legacy()
@@ -593,7 +596,7 @@ class ReviewedHeadTests(unittest.TestCase):
         readers: dict[str, Callable[[], object]] = {
             "legacy_index": lambda: review_operation.legacy_index(self.root, "owner/repo", 5),
             "reviewed_head": lambda: review_operation.reviewed_head(self.root, "owner/repo", 5),
-            "latest_reviewed_heads": lambda: review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]),
+            "latest_reviewed_commits": lambda: review_operation.latest_reviewed_commits(self.root, "owner/repo", [5]),
         }
         for name, failure in failures:
             for reader, read in readers.items():
@@ -675,7 +678,7 @@ class ReviewedHeadTests(unittest.TestCase):
                 before = path.read_bytes()
                 self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5))
                 self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
-                self.assertEqual({}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]))
+                self.assertEqual({}, review_operation.latest_reviewed_commits(self.root, "owner/repo", [5]))
                 self.assertEqual(before, path.read_bytes(), "an invalid legacy index is never rewritten")
 
     def test_legacy_string_verdicts_keep_their_values_and_normalization(self) -> None:
@@ -688,7 +691,10 @@ class ReviewedHeadTests(unittest.TestCase):
                     self.fail("string legacy verdicts remain readable without checking their values")
                 self.assertEqual(verdict, index["verdict"])
                 self.assertEqual(verdict.replace(" ", "_"), reviewed["verdict"])
-                self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]))
+                self.assertEqual(
+                    {5: review_operation.ReviewedCommits("a" * 40, None)},
+                    review_operation.latest_reviewed_commits(self.root, "owner/repo", [5]),
+                )
 
     def test_legacy_json_that_is_not_json_is_invalid_but_programming_errors_propagate(self) -> None:
         self.write_legacy()
@@ -864,7 +870,12 @@ class EnumerateBatchTests(unittest.TestCase):
         endpoint = arguments[-1]
         self.endpoints.append(endpoint)
         if "/compare/" in endpoint or "/git/trees/" in endpoint:
-            key = endpoint.split("/compare/", 1)[-1].split("/git/trees/", 1)[-1].removesuffix("?recursive=1")
+            key = (
+                endpoint.split("/compare/", 1)[-1]
+                .split("/git/trees/", 1)[-1]
+                .removesuffix("?recursive=1")
+                .removesuffix("?per_page=1")
+            )
             value = self.objects[key]
             if isinstance(value, str):
                 return CommandResult(1, "", value)
@@ -998,6 +1009,68 @@ class EnumerateBatchTests(unittest.TestCase):
         # The reviewed head against the base its review recorded, never against the base branch as it is now.
         self.assertIn(f"repos/owner/repo/compare/{self.REVIEWED_BASE}...{self.REVIEWED}", self.endpoints)
         self.assertNotIn(f"repos/owner/repo/compare/main...{self.REVIEWED}", self.endpoints)
+
+    # The reviewed head's merge base with the base its review recorded, which a retarget keeps unless the new base
+    # no longer holds it, as a squash merge of the lower branch leaves it.
+    MERGE_BASE = "2" * 40
+
+    def retargeted(
+        self, number: int, merge_base: str | dict[str, Any], **pull: Any
+    ) -> review_operation.ReviewedCommits:
+        """Pull request `number`, last reviewed at its current head on `REVIEWED_BASE`, now listed on another base
+        commit with no new head, as GitHub retargets one once the lower pull request of its stack is squash-merged,
+        whose head has `merge_base` with that base: a commit, or an answer naming none. Every comparison lists the
+        head's own change, as both do when the lower and upper branches change one file; returns its latest review's
+        commits."""
+        self.pull(number, **pull)
+        head = f"{number:040d}"
+        answer: dict[str, Any] = (
+            {"merge_base_commit": {"sha": merge_base}} if isinstance(merge_base, str) else merge_base
+        )
+        self.objects[f"{self.REVIEWED_BASE}...{head}"] = {
+            "status": "ahead",
+            "files": self.OWN,
+            "merge_base_commit": {"sha": self.MERGE_BASE},
+        }
+        self.objects[f"{'a' * 40}...{head}"] = {"status": "ahead", "files": self.OWN, **answer}
+        return review_operation.ReviewedCommits(head, self.REVIEWED_BASE)
+
+    def reviewed_as(self, reviews: dict[int, review_operation.ReviewedCommits]) -> Any:
+        return mock.patch.object(
+            review_batches,
+            "latest_reviewed_commits",
+            side_effect=lambda root, repository, numbers: {n: reviews[n] for n in numbers if n in reviews},
+        )
+
+    def test_a_retarget_is_selected_only_when_it_moved_the_head_s_merge_base(self) -> None:
+        self.watermark("2026-03-01")
+        reviews = {
+            1: self.retargeted(1, self.MERGE_BASE, is_open=True),  # a merge of the lower branch left it
+            2: self.retargeted(2, "1" * 40, is_open=True),  # a squash merge moved it, though the files match
+            3: self.retargeted(3, {}, is_open=True),  # a comparison that names none decides nothing
+        }
+        with self.reviewed_as(reviews):
+            entry = self.enumerate()
+        self.assertEqual((True, None), (entry["complete"], entry["error"]))
+        self.assertEqual([2, 3], [pull["number"] for pull in entry["eligible"]])
+        self.assertIn(f"repos/owner/repo/compare/{self.REVIEWED_BASE}...{1:040d}?per_page=1", self.endpoints)
+        self.assertEqual([], [endpoint for endpoint in self.endpoints if "/git/trees/" in endpoint])
+        self.assertEqual([], [endpoint for endpoint in self.endpoints if endpoint.endswith(f"...{1:040d}")])
+
+    def test_a_merged_pull_listed_for_its_new_base_holds_the_watermark_until_reviewed_there(self) -> None:
+        self.watermark("2026-03-01")
+        reviewed = self.retargeted(4, "1" * 40, merged="2026-03-05T09:00:00Z")
+        with self.reviewed_as({4: reviewed}):
+            self.assertEqual([4], [pull["number"] for pull in self.enumerate()["eligible"]])
+            self.assertEqual(
+                {self.REPOSITORY: review_batches.WatermarkChange("moved", "2026-03-01", "2026-03-04")},
+                review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
+            )
+        with self.reviewed_as({4: review_operation.ReviewedCommits(reviewed.head_sha, "a" * 40)}):
+            self.assertEqual(
+                {self.REPOSITORY: review_batches.WatermarkChange("moved", "2026-03-04", "2026-03-10")},
+                review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
+            )
 
     def test_a_comparison_that_fails_or_cannot_be_made_keeps_the_pull_eligible(self) -> None:
         self.watermark("2026-03-01")

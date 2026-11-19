@@ -64,7 +64,7 @@ class FakeClient(GitHubClient):
         if "/git/trees/" in endpoint:
             value = self.trees[endpoint.split("/git/trees/")[1].split("?")[0]]
         else:
-            commits = endpoint.split("/compare/", 1)[1]
+            commits = endpoint.split("/compare/", 1)[1].removesuffix("?per_page=1")
             value = self.comparisons[commits if commits in self.comparisons else commits.rsplit("...", 1)[1]]
         if isinstance(value, GitHubError):
             if allow_absent and value.kind == "not_found":
@@ -354,6 +354,73 @@ class ReviewedBaseTests(unittest.TestCase):
         failed = self.client(self.OWN, GitHubError("HTTP 403", kind="forbidden"))
         with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
             ChangeDetector(failed).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE)
+
+    def merge_bases(self, recorded: object, now: object, files: list[dict[str, Any]] | None = None) -> FakeClient:
+        """A client whose comparisons of the reviewed head name `recorded` as its merge base with the base it was
+        reviewed on and `now` with the base branch, each a merge base, a failure, or a malformed answer, each
+        comparison listing `files` when given."""
+
+        def named(value: object) -> object:
+            if not isinstance(value, str):
+                return value
+            return {"merge_base_commit": {"sha": value}, **({} if files is None else {"files": files})}
+
+        return FakeClient({f"{REVIEWED_BASE}...{REVIEWED}": named(recorded), f"main...{REVIEWED}": named(now)}, {})
+
+    def detect_retargeted(self, client: FakeClient) -> str:
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", "main", REVIEWED, REVIEWED, REVIEWED_BASE)])
+        read = list(client.calls)
+        outcome = detector.detect("owner/repo", 7, "main", REVIEWED, REVIEWED, REVIEWED_BASE)
+        self.assertEqual(read, client.calls, "detect reads nothing the read-ahead did not")
+        return outcome
+
+    def test_a_retargeted_head_is_decided_by_its_merge_bases_alone(self) -> None:
+        # A lower pull request was squash-merged and GitHub retargeted this one to main with no new head. Its diff on
+        # main runs from main's merge base with the head, which no longer holds the lower branch's commits.
+        for name, now, expected in (("another merge base", "1" * 40, CHANGED), ("the same", "2" * 40, UNCHANGED)):
+            with self.subTest(name):
+                client = self.merge_bases("2" * 40, now)
+                self.assertEqual(expected, self.detect_retargeted(client))
+                self.assertEqual(
+                    [
+                        f"repos/owner/repo/compare/{REVIEWED_BASE}...{REVIEWED}?per_page=1",
+                        f"repos/owner/repo/compare/main...{REVIEWED}?per_page=1",
+                    ],
+                    client.calls,
+                    "no file list and no tree is read",
+                )
+
+    def test_a_retarget_whose_file_lists_match_is_changed_when_the_merge_bases_differ(self) -> None:
+        # The lower and upper branches both change foo.py, so both comparisons list it at the head's blob, while the
+        # diff on main also holds the lower branch's hunk.
+        client = self.merge_bases("2" * 40, "1" * 40, [changed("foo.py", "head-blob")])
+        self.assertEqual(CHANGED, self.detect_retargeted(client))
+
+    def test_a_retargeted_head_over_github_s_file_limit_is_still_decided(self) -> None:
+        listed = [changed(f"f{index}.py", "x") for index in range(COMPARE_FILE_LIMIT)]
+        self.assertEqual(UNCHANGED, self.detect_retargeted(self.merge_bases("2" * 40, "2" * 40, listed)))
+
+    def test_a_head_on_the_base_it_was_reviewed_on_is_unchanged_without_api_calls(self) -> None:
+        client = FakeClient({})
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", REVIEWED_BASE, HEAD, HEAD, REVIEWED_BASE)])
+        self.assertEqual(UNCHANGED, detector.detect("owner/repo", 7, REVIEWED_BASE, HEAD, HEAD, REVIEWED_BASE))
+        self.assertEqual([], client.calls)
+
+    def test_a_merge_base_github_cannot_name_is_unknown_and_any_other_failure_fails_the_comparison(self) -> None:
+        unknown: tuple[object, ...] = (
+            GitHubError("gone", kind="not_found"),
+            {"status": "ahead"},
+            {"merge_base_commit": {"sha": "not a commit"}},
+        )
+        for answer in unknown:
+            with self.subTest(answer=answer):
+                self.assertEqual(UNKNOWN, self.detect_retargeted(self.merge_bases(answer, "2" * 40)))
+        with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
+            self.detect_retargeted(self.merge_bases(GitHubError("HTTP 403", kind="forbidden"), "2" * 40))
+        with self.assertRaises(GitHubError):
+            self.detect_retargeted(self.merge_bases(GitHubError("HTTP 401", kind="authentication"), "2" * 40))
 
     def test_prefetch_reads_the_comparison_with_the_reviewed_base_and_detect_needs_no_further_call(self) -> None:
         client = self.client(self.OWN)

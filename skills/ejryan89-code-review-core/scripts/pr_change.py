@@ -48,6 +48,17 @@ class Query(NamedTuple):
     def earlier_base(self) -> str:
         return self.base_ref if self.since_base is None else self.since_base
 
+    @property
+    def one_comparison(self) -> bool:
+        """Whether both comparisons are one: the same commit with the same base, which nothing can tell apart."""
+        return self.since_sha == self.head_sha and self.earlier_base == self.base_ref
+
+    @property
+    def same_head(self) -> bool:
+        """Whether the earlier head is the later one on another base, as after a retarget: its diff on each base is a
+        function of that base's merge base with the head alone, so the merge bases decide."""
+        return self.since_sha == self.head_sha and not self.one_comparison
+
 
 class ComparisonError(RuntimeError):
     """A GitHub call that comparing one pull request's commits needed failed for a reason other than a missing
@@ -131,6 +142,17 @@ def needs_modes(before: ChangedFiles, after: ChangedFiles) -> bool:
     return before == after and any(status != "removed" for _, status, _, _ in before)
 
 
+def merge_base(comparison: object) -> str | None:
+    """The merge base a comparison names, or None when it is malformed or names none."""
+    try:
+        commit = READ.json_object(
+            READ.json_object(comparison, "comparison").get("merge_base_commit"), "comparison.merge_base_commit"
+        )
+        return READ.hex_digest(commit.get("sha"), "comparison.merge_base_commit.sha", 40, 64)
+    except FieldError:
+        return None
+
+
 def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str) -> bool | None:
     """Whether commit `earlier` is `later` or one of its ancestors; None when GitHub cannot say, such as for a commit
     a force-push removed. Any other failure is raised."""
@@ -155,6 +177,15 @@ class ChangeDetector:
     already matches the earlier one; patches are never compared to relax this, since equal patches can leave different
     files.
 
+    The same commit is unchanged without a call when both are compared with one base. On another base, as once a
+    lower pull request of a stack is squash-merged and GitHub retargets the upper one with no new head, the files are
+    not compared: every blob either comparison lists is the head's own, so a hunk the new base no longer holds, in a
+    file the pull request changes too, would leave them equal. A commit's diff on a base is a function of their merge
+    base alone, so the two merge bases decide instead (`same_head`): equal is unchanged, different is changed, and one
+    GitHub cannot name is unknown. Each is one `?per_page=1` comparison, which no file limit can truncate. Limit: a
+    criss-cross history has more than one merge base, and the rule relies on GitHub diffing from the one it reports;
+    a different pick on either side reads as changed, which costs only a review.
+
     `prefetch` reads what a batch of queries needs, `workers` calls at a time, all through the one client, so its
     rate-limit backoff governs every call. `detect` reads anything still missing one call at a time. A failure in
     `FATAL_ERROR_KINDS` is raised at once; any other failed call is kept, never made again, and fails `detect` with
@@ -166,9 +197,16 @@ class ChangeDetector:
         self.workers = workers
         self._files: dict[tuple[str, str, str], ChangedFiles | GitHubError | None] = {}
         self._modes: dict[tuple[str, str], dict[str, str] | GitHubError | None] = {}
+        self._merge_bases: dict[tuple[str, str, str], str | GitHubError | None] = {}
 
     def prefetch(self, queries: Iterable[Query]) -> None:
         """Read every comparison, and then every tree, that detecting `queries` needs."""
+        queries = list(queries)
+        self._gather(
+            self._merge_bases,
+            [key for query in queries if query.same_head for key in _comparisons(query)],
+            self._read_merge_base,
+        )
         pending = [query for query in queries if query.since_sha != query.head_sha]
         self._gather(
             self._files,
@@ -195,10 +233,17 @@ class ChangeDetector:
         head_sha: str,
         since_base: str | None = None,
     ) -> str:
-        if since_sha == head_sha:
+        query = Query(repository, base_ref, since_sha, head_sha, since_base)
+        if query.one_comparison:
             return UNCHANGED
         pull = f"{repository}#{number}"
-        earlier, later = _comparisons(Query(repository, base_ref, since_sha, head_sha, since_base))
+        earlier, later = _comparisons(query)
+        if query.same_head:
+            first = _known(pull, self._cached(self._merge_bases, earlier, self._read_merge_base))
+            second = _known(pull, self._cached(self._merge_bases, later, self._read_merge_base))
+            if first is None or second is None:
+                return UNKNOWN
+            return UNCHANGED if first == second else CHANGED
         before = _known(pull, self._cached(self._files, earlier, self._read_files))
         after = _known(pull, self._cached(self._files, later, self._read_files))
         # Two empty contributions mean the commits already reached the base branch,
@@ -240,6 +285,10 @@ class ChangeDetector:
     def _read_files(self, key: tuple[str, str, str]) -> ChangedFiles | None:
         repository, base_ref, sha = key
         return changed_files(self._evidence(f"repos/{repository}/compare/{quote(base_ref, safe='/')}...{sha}"))
+
+    def _read_merge_base(self, key: tuple[str, str, str]) -> str | None:
+        repository, base_ref, sha = key
+        return merge_base(self._evidence(f"repos/{repository}/compare/{quote(base_ref, safe='/')}...{sha}?per_page=1"))
 
     def _read_modes(self, key: tuple[str, str]) -> dict[str, str] | None:
         repository, sha = key

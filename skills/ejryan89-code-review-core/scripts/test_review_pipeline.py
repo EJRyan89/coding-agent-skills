@@ -279,6 +279,20 @@ def checked_run_list(case: unittest.TestCase, arguments: Sequence[str], out: str
     return "".join(lines[:-1])
 
 
+def compared(checkout: Path, base: str, head: str) -> list[dict[str, str]]:
+    """The files GitHub's comparison of `base...head` lists, each with the blob it leaves, read from the checkout."""
+    files = []
+    for line in git(checkout, "diff", "--raw", "--no-abbrev", "-M", f"{base}...{head}").splitlines():
+        meta, *paths = line.split("\t")
+        _, _, old, new, status = meta.split(" ")
+        kind = {"A": "added", "D": "removed", "R": "renamed"}.get(status[0], "modified")
+        entry = {"filename": paths[-1], "status": kind, "sha": old if kind == "removed" else new}
+        if kind == "renamed":
+            entry["previous_filename"] = paths[0]
+        files.append(entry)
+    return files
+
+
 class FakeGitHub:
     """Serves the gh api calls the pipeline makes, from the fixture checkout's real commits."""
 
@@ -309,7 +323,11 @@ class FakeGitHub:
         if endpoint.startswith(f"repos/{REPOSITORY}/compare/"):
             base, head = endpoint.rsplit("/", 1)[1].removesuffix("?per_page=1").split("...")
             merge_base = subprocess_runner(["git", "-C", str(self.checkout), "merge-base", base, head])
-            return CommandResult(0, json.dumps({"merge_base_commit": {"sha": merge_base.stdout.strip()}}), "")
+            comparison = {
+                "merge_base_commit": {"sha": merge_base.stdout.strip()},
+                "files": compared(self.checkout, base, head),
+            }
+            return CommandResult(0, json.dumps(comparison), "")
         number = int(endpoint.rsplit("/", 1)[1])
         pull = self.pulls[number]
         if "-H" in arguments:
@@ -908,6 +926,57 @@ class GenericReviewTests(PipelineFixture):
         self.assertIn("already reviewed", skipped["reason"])
         forced = self.prepare(force=True)
         self.assertEqual("ready", forced["status"])
+
+    def commit_on(self, branch: str, start: str, files: dict[str, str]) -> str:
+        """Commit `files` on `branch`, created at `start` when it is new; returns the commit."""
+        git(self.checkout, "switch", "-C", branch, start)
+        for relative, content in files.items():
+            (self.checkout / relative).write_text(content, encoding="utf-8")
+        git(self.checkout, "add", "--", *files)
+        git(self.checkout, "commit", "-m", f"{branch} {', '.join(files)}")
+        return git(self.checkout, "rev-parse", "HEAD")
+
+    def test_a_reviewed_head_on_another_base_is_skipped_only_when_its_changes_are_the_same(self) -> None:
+        # A stack: the pull request's head sits on a lower branch, and its review reads the lower branch as its base.
+        lower = self.commit_on("lower", self.base, {"lower.py": "lower = 1\n"})
+        head = self.commit_on("upper", lower, {"upper.py": "upper = 1\n"})
+        self.github.pulls[12] = rest_pull(12, head, lower)
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+
+        # The lower branch moves on beneath it, leaving the pull request's own changes as they were.
+        moved = self.commit_on("lower", lower, {"unrelated.py": "elsewhere = 1\n"})
+        self.github.pulls[12] = rest_pull(12, head, moved)
+        skipped = self.prepare()
+        self.assertEqual(
+            ("skip", f"head {head[:12]} is already reviewed, and its changes on base {moved[:12]} are unchanged"),
+            (skipped["status"], skipped["reason"]),
+        )
+
+        # The lower pull request is squash-merged and GitHub retargets this one with no new head: against the base
+        # branch its diff now holds the lower commit too, which the squash left out of that branch.
+        squashed = self.commit_on("main", self.base, {"lower.py": "lower = 1\n"})
+        self.github.pulls[12] = rest_pull(12, head, squashed)
+        self.assertEqual("ready", self.prepare()["status"])
+
+    def test_a_retarget_whose_files_match_is_re_reviewed_when_it_moved_the_merge_base(self) -> None:
+        # The lower and upper branches change one file, so on either base the comparison lists only that file, at the
+        # head's blob. The squash of the lower branch leaves its hunk out of main, and the diff there holds it.
+        start = self.commit_on("main", self.base, {"shared.py": "a\nb\nc\n"})
+        lower = self.commit_on("lower", start, {"shared.py": "A\nb\nc\n"})
+        head = self.commit_on("upper", lower, {"shared.py": "A\nb\nC\n"})
+        self.github.pulls[12] = rest_pull(12, head, lower)
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        self.assertEqual("skip", self.prepare(re_review=True, scope="full")["status"], "the head and base it read")
+
+        squashed = self.commit_on("main", start, {"shared.py": "A2\nb\nc\n"})
+        self.github.pulls[12] = rest_pull(12, head, squashed)
+        self.assertEqual(compared(self.checkout, lower, head), compared(self.checkout, squashed, head))
+        ready = self.prepare(re_review=True, scope="full")
+        self.assertEqual(("ready", "re-review"), (ready["status"], ready["mode"]))
 
     def test_snapshot_comes_from_github_without_a_checkout(self) -> None:
         self.configure(checkout=False)
@@ -6720,7 +6789,7 @@ class BatchTests(PipelineFixture):
             encoding="utf-8",
         )
         state_before = self.state_path.read_bytes()
-        with mock.patch.object(review_batches, "latest_reviewed_heads") as heads:
+        with mock.patch.object(review_batches, "latest_reviewed_commits") as heads:
             code, out, err = self.run_main("advance", "--batch", str(batch_path))
         heads.assert_not_called()
         self.assertEqual((0, ""), (code, err))
