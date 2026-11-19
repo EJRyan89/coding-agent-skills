@@ -109,6 +109,7 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number url title isDraft baseRefName headRefOid updatedAt reviewDecision
+        baseRef { target { oid } }
         author { login ... on User { name } }
         reviewRequests(first: 100) {
           pageInfo { hasNextPage }
@@ -266,6 +267,9 @@ def tracker_item(
         author = node["author"] or {"login": GHOST_LOGIN}
         name = author.get("name")
         latest = node["reviews"]["nodes"][-1] if node["reviews"]["nodes"] else None
+        # The tip of the base branch as GitHub holds it now, which the tracker record keeps as the base a user review
+        # first seen now is compared from; none when the branch is gone or GitHub names no commit for it.
+        base_sha = ((node["baseRef"] or {}).get("target") or {}).get("oid")
         deciding = node["decidingReviews"]["nodes"][-1] if node["decidingReviews"]["nodes"] else None
         item = {
             "repository": repository,
@@ -277,6 +281,7 @@ def tracker_item(
             "requested_reviewers": _complete_logins(node["reviewRequests"], "requestedReviewer", "review requests"),
             "draft": node["isDraft"],
             "base_ref": node["baseRefName"],
+            "base_sha": base_sha,
             "head_sha": node["headRefOid"],
             "updated_at": node["updatedAt"],
             "review_decision": node["reviewDecision"],
@@ -479,6 +484,7 @@ def update(
         dashboard,
         lambda: configured_login(config, services.github),
         detector=ChangeDetector(services.github),
+        previous=previous,
         start_marker=config["dashboard"]["start_marker"],
         end_marker=config["dashboard"]["end_marker"],
         overrides=config["dashboard"]["status_overrides"],

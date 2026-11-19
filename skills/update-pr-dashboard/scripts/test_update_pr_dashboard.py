@@ -41,7 +41,9 @@ from update_pr_dashboard import (
     review_candidates,
     tracked_pulls,
     update_dashboard_rows,
+    user_review_bases,
     validate_items,
+    validate_tracker_record,
 )
 
 # The default markers, as literals: users' dashboards hold them and docs/code-review-operations-contract.md states
@@ -51,6 +53,9 @@ END_MARKER = "<!-- code-review-pr-tracker:end -->"
 HEAD = "b" * 40
 AI_REVIEWED = "a" * 40
 USER_REVIEWED = "c" * 40
+# The base tip a tracker record holds for the user's review, and the base tip a later collection reads.
+RECORDED_BASE = "d" * 40
+BASE_TIP = "e" * 40
 
 
 class FakeDetector:
@@ -757,6 +762,43 @@ class TrackerTests(unittest.TestCase):
         self.assertIn(("prefetch", Query("owner/repo", "main", AI_REVIEWED, HEAD, "e" * 40)), detector.events)
         self.assertEqual([2], [candidate["number"] for candidate in review_candidates(rows)])
 
+    def test_the_user_s_review_is_compared_from_the_base_recorded_for_it(self) -> None:
+        # GitHub compares the review commit as unchanged from the base it was recorded on, and as changed from the base
+        # branch as it is now, which a rewrite of a lower branch moved.
+        results = {(USER_REVIEWED, RECORDED_BASE): UNCHANGED, (USER_REVIEWED, None): CHANGED}
+        for state, recorded, shown in (
+            ("CHANGES_REQUESTED", True, "Awaiting Response"),
+            ("COMMENTED", True, "Awaiting Response"),
+            ("APPROVED", True, None),
+            ("CHANGES_REQUESTED", False, SECTION_TO_REVIEW),
+            ("APPROVED", False, SECTION_TO_REVIEW),
+        ):
+            with self.subTest(state=state, recorded=recorded):
+                detector = BaseDetector(results)
+                bases = {"owner/repo#2": RECORDED_BASE} if recorded else None
+                rows = evaluate(validate_items([reviewed(2, state)]), "reviewer", detector, review_bases=bases)
+                self.assertEqual([shown] if shown else [], [row.section for row in rows])
+                expected = RECORDED_BASE if recorded else None
+                self.assertEqual([(USER_REVIEWED, expected)], detector.compared[:1], "the recorded base is asked first")
+                self.assertIn(Query("owner/repo", "main", USER_REVIEWED, HEAD, expected), detector.read_ahead)
+
+    def test_a_recorded_base_github_cannot_compare_reads_as_the_base_branch_does(self) -> None:
+        for now, shown in (
+            (CHANGED, SECTION_TO_REVIEW),
+            (UNCHANGED, "Awaiting Response"),
+            (UNKNOWN, "Awaiting Response"),
+        ):
+            with self.subTest(now=now):
+                detector = BaseDetector({(USER_REVIEWED, RECORDED_BASE): UNKNOWN, (USER_REVIEWED, None): now})
+                rows = evaluate(
+                    validate_items([reviewed(2, "CHANGES_REQUESTED")]),
+                    "reviewer",
+                    detector,
+                    review_bases={"owner/repo#2": RECORDED_BASE},
+                )
+                self.assertEqual([shown], [row.section for row in rows])
+                self.assertEqual([(USER_REVIEWED, RECORDED_BASE), (USER_REVIEWED, None)], detector.compared[:2])
+
     def test_a_failed_comparison_fails_the_update_and_leaves_the_dashboard_as_it_was(self) -> None:
         failing = {(1, USER_REVIEWED): "HTTP 502: Bad Gateway", (2, AI_REVIEWED): "HTTP 403: Forbidden"}
         before = f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode()
@@ -872,6 +914,34 @@ class ReadAheadDetector(FakeDetector):
     ) -> str:
         self.events.append(("detect", Query(repository, base_ref, since_sha, head_sha, since_base)))
         return super().detect(repository, number, base_ref, since_sha, head_sha, since_base)
+
+
+class BaseDetector(ReadAheadDetector):
+    """Answers each comparison by its earlier commit and the base that commit is compared from, None for the base
+    branch as it is now, CHANGED for one not given, and records each such pair it compares and each query it reads
+    ahead."""
+
+    def __init__(self, results: dict[tuple[str, str | None], str]) -> None:
+        super().__init__()
+        self.by_base = results
+        self.compared: list[tuple[str, str | None]] = []
+
+    @property
+    def read_ahead(self) -> list[Query]:
+        return [query for event, query in self.events if event == "prefetch"]
+
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
+        super().detect(repository, number, base_ref, since_sha, head_sha, since_base)
+        self.compared.append((since_sha, since_base))
+        return self.by_base.get((since_sha, since_base), CHANGED)
 
 
 def commit(number: int) -> str:
@@ -1362,9 +1432,110 @@ class PreviousVersionTests(unittest.TestCase):
                 "- | - | (stale) |",
             ):
                 self.assertIn(f"\n{line}\n", content)
-            self.assertEqual(record_value, json.loads(record.read_text(encoding="utf-8")))
+            # The record takes the new version, and an input collected before base tips were read gives no user review
+            # a base to record.
+            self.assertEqual(
+                {**record_value, "schema_version": 3, "user_reviews": {}},
+                json.loads(record.read_text(encoding="utf-8")),
+            )
             update_dashboard_rows(source, dashboard, "reviewer", detector=detector, record=record)
             self.assertEqual(updated, dashboard.read_bytes(), "a second update changes nothing")
+
+
+class UserReviewBaseTests(unittest.TestCase):
+    """The base each of the user's own reviews is compared from: the tip of the base branch the first update that saw
+    the review's commit collected, kept in the tracker record while that commit stays the user's latest review."""
+
+    @staticmethod
+    def record(user_reviews: dict[str, dict[str, str]]) -> dict[str, Any]:
+        return validate_tracker_record(
+            {"schema_version": 3, "pulls": sorted(user_reviews), "reviews": {}, "user_reviews": user_reviews}
+        )
+
+    def test_a_review_first_seen_takes_the_base_tip_collected_with_it(self) -> None:
+        items = validate_items([reviewed(2, "CHANGES_REQUESTED") | {"base_sha": BASE_TIP}])
+        expected = {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}}
+        self.assertEqual(expected, user_review_bases(items, "reviewer", None))
+        self.assertEqual(expected, user_review_bases(items, "reviewer", self.record({})))
+
+    def test_the_recorded_base_is_kept_while_the_review_commit_stays_the_same(self) -> None:
+        items = validate_items([reviewed(2, "APPROVED") | {"base_sha": BASE_TIP}])
+        kept = {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}}
+        self.assertEqual(kept, user_review_bases(items, "Reviewer", self.record(kept)))
+        # A later review's commit is seen for the first time, so it takes the tip collected with it.
+        earlier = {"owner/repo#2": {"user_review_sha": AI_REVIEWED, "base_sha": RECORDED_BASE}}
+        self.assertEqual(
+            {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}},
+            user_review_bases(items, "reviewer", self.record(earlier)),
+        )
+
+    def test_only_a_review_a_section_would_compare_has_a_base_a_draft_s_included(self) -> None:
+        compared = [
+            reviewed(1, "CHANGES_REQUESTED") | {"draft": True},
+            reviewed(2, "COMMENTED") | {"requested_reviewers": []},
+            reviewed(3, "APPROVED"),
+        ]
+        others = [
+            reviewed(4, "COMMENTED") | {"author": "Reviewer"},
+            item(number=5) | {"user_review_state": "DISMISSED", "user_review_sha": USER_REVIEWED},
+            item(number=6),
+        ]
+        items = validate_items([value | {"base_sha": BASE_TIP} for value in compared + others])
+        self.assertEqual(
+            {f"owner/repo#{number}": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP} for number in (1, 2, 3)},
+            user_review_bases(items, "reviewer", None),
+        )
+
+    def test_two_user_reviews_of_one_pull_request_in_another_case_are_refused(self) -> None:
+        base = {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}
+        self.assertEqual(
+            (
+                "TrackerError",
+                "Tracker user review owner/repo#2 names no pull request the record holds, or is named twice",
+            ),
+            raised(
+                lambda: validate_tracker_record(
+                    {
+                        "schema_version": 3,
+                        "pulls": ["owner/repo#2"],
+                        "reviews": {},
+                        "user_reviews": {"owner/repo#2": base, "Owner/Repo#2": base},
+                    }
+                )
+            ),
+        )
+
+    def test_a_review_with_no_base_recorded_or_collected_has_none(self) -> None:
+        items = validate_items([reviewed(2, "CHANGES_REQUESTED")])
+        self.assertEqual({}, user_review_bases(items, "reviewer", None))
+
+    def test_the_update_records_each_base_and_compares_the_review_from_it(self) -> None:
+        # The first update records the tip collected with the review; a later one, after a rewrite moved the tip,
+        # still compares the review from the recorded tip and keeps it.
+        detector = BaseDetector({(USER_REVIEWED, RECORDED_BASE): UNCHANGED})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = root / "tracker.json"
+            for tip in (RECORDED_BASE, BASE_TIP):
+                source, dashboard = dashboard_files(
+                    root,
+                    f"{START_MARKER}\n{END_MARKER}\n".encode(),
+                    [reviewed(2, "CHANGES_REQUESTED") | {"base_sha": tip}],
+                )
+                previous = (
+                    validate_tracker_record(json.loads(record.read_text(encoding="utf-8"))) if tip == BASE_TIP else None
+                )
+                rows = update_dashboard_rows(
+                    source, dashboard, "reviewer", detector=detector, record=record, previous=previous
+                )
+                self.assertEqual(["Awaiting Response"], [row.section for row in rows])
+                self.assertEqual(
+                    {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}},
+                    json.loads(record.read_text(encoding="utf-8"))["user_reviews"],
+                )
+        self.assertEqual(
+            [(USER_REVIEWED, RECORDED_BASE)] * 2, [pair for pair in detector.compared if pair[0] == USER_REVIEWED]
+        )
 
 
 def raised(call: Callable[[], object]) -> tuple[str, str]:
@@ -1438,6 +1609,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             [
                 "reviewed_incomplete",
                 "reviewed_base_sha",
+                "base_sha",
                 "author_name",
                 "review_decision",
                 "user_review_decision",
@@ -1462,6 +1634,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             {
                 "reviewed_incomplete": False,
                 "reviewed_base_sha": None,
+                "base_sha": None,
                 "author_name": None,
                 "review_decision": None,
                 "user_review_decision": None,
@@ -1479,6 +1652,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             "author_name": "Someone Else",
             "reviewed_incomplete": True,
             "reviewed_base_sha": "e" * 40,
+            "base_sha": "f" * 40,
             "review_decision": "APPROVED",
             "user_review_decision": "APPROVED",
             "user_review_state": "COMMENTED",
@@ -1490,6 +1664,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             [
                 "reviewed_incomplete",
                 "reviewed_base_sha",
+                "base_sha",
                 "author_name",
                 "review_decision",
                 "user_review_decision",
@@ -1556,6 +1731,8 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("reviewed_head_sha", 5, wrong(f"{SECOND}.reviewed_head_sha", TEXT_OR_NULL, "integer 5")),
             ("reviewed_base_sha", "", wrong(f"{SECOND}.reviewed_base_sha", TEXT_OR_NULL, "an empty string")),
             ("reviewed_base_sha", 5, wrong(f"{SECOND}.reviewed_base_sha", TEXT_OR_NULL, "integer 5")),
+            ("base_sha", "", wrong(f"{SECOND}.base_sha", TEXT_OR_NULL, "an empty string")),
+            ("base_sha", 5, wrong(f"{SECOND}.base_sha", TEXT_OR_NULL, "integer 5")),
             ("user_review_sha", "", wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "an empty string")),
             ("user_review_sha", 5, wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "integer 5")),
             (
