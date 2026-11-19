@@ -509,8 +509,9 @@ def _ai_review(item: dict[str, Any], detector: Detector) -> str:
     """The row's AI review state, always one of `DASHBOARD_AI_REVIEW_STATES`, which a status override may not take."""
     if item["reviewed_head_sha"] is None:
         return DASHBOARD_AI_REVIEW_MISSING
-    # The reviewed head is compared with the base its review was made on, when the record names it.
-    change = _changed_since(item, item["reviewed_head_sha"], detector, item["reviewed_base_sha"])
+    # The reviewed head is compared with the base its review was made on, when the record names it; an item that
+    # names none, as one built before the base was collected, is compared with the base branch as before.
+    change = _changed_since(item, item["reviewed_head_sha"], detector, item.get("reviewed_base_sha"))
     if change != UNCHANGED:
         return DASHBOARD_AI_REVIEW_STALE
     # Re-reviewing an unchanged head would hit the same coverage gap, so it is not re-offered.
