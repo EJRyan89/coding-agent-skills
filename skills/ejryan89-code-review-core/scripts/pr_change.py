@@ -146,12 +146,13 @@ class ChangeDetector:
     """Answers `detect` from GitHub's comparison of each commit with its base, reading a commit's tree only when
     `needs_modes` says the comparisons alone cannot decide, and each comparison and tree at most once.
 
-    The later head is compared with the base branch as it is now, and the earlier head with the base it was compared
-    with when it was reviewed, `since_base`, when the caller knows that commit. Comparing the earlier head with the
-    base branch as it is now would count, once a lower branch of a stack is rewritten, the commits the rewrite dropped
-    as the earlier head's own, so a rebase that left the pull request's diff as it was would read as changed. Limit:
-    a file both the pull request and the rewritten base change has a different blob after the rebase, so that pull
-    request still reads as changed; patches are never compared to relax this, since equal patches can leave different
+    The later head is compared with `base_ref`, the base branch as it is now or the base commit the caller listed,
+    and the earlier head with the base it was compared with when it was reviewed, `since_base`, when the caller knows
+    that commit. Comparing the earlier head with the base branch as it is now would count, once a lower branch of a
+    stack is rewritten, the commits the rewrite dropped as the earlier head's own, so a rebase that left the pull
+    request's diff as it was would read as changed. Limit: a file both the pull request and the rewritten base change
+    is compared by the blob it leaves, so that pull request still reads as changed unless its version of the file
+    already matches the earlier one; patches are never compared to relax this, since equal patches can leave different
     files.
 
     `prefetch` reads what a batch of queries needs, `workers` calls at a time, all through the one client, so its
