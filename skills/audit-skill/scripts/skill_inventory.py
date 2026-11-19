@@ -1365,7 +1365,7 @@ def folder_files(directory: Path) -> list[Path]:
     """Every file of a skill folder that inventory sizes, in the order it lists them, as `folder_walk` walks the folder:
     its one skip set, compared case-insensitively, and no nested checkout or link to a folder entered. A skipped folder
     is never listed, so a folder it cannot list inside one is never met; one elsewhere, or an entry the walk cannot
-    examine, raises its own error, so no file is left out of the measure."""
+    examine, raises its own error, so no file the walk reaches is left out of the measure unreported."""
     walk = folder_walk.walk_files(directory, lambda _name: True)
     for entry in walk.not_entered:
         if entry.error is not None:

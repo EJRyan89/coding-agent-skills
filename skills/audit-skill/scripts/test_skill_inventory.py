@@ -3937,6 +3937,22 @@ def test_folder_files_reads_a_git_entry_in_another_case_as_a_checkout_only_where
     assert listed == expected
 
 
+def test_folder_files_sizes_nothing_through_a_link_to_a_folder_or_a_link_whose_folder_is_gone(tmp_path: Path) -> None:
+    # A link to a folder may lead out of the skill or back into it, and one to nothing leads nowhere, so the walk enters
+    # neither, as the walk before it did; link_folder makes a junction on Windows, so this runs on every platform.
+    outside, gone = tmp_path / "outside", tmp_path / "gone"
+    write(outside / "elsewhere.md", "")
+    gone.mkdir()
+    skill = tmp_path / "skill"
+    for name in SKILL_OWN_FILES:
+        write(skill / name, "")
+    link_folder(outside, skill / "references" / "linked")
+    link_folder(gone, skill / "scripts" / "dangling")
+    gone.rmdir()
+    listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+    assert listed == SKILL_OWN_LISTED
+
+
 def test_folder_files_refuses_a_folder_below_the_skill_it_cannot_list(tmp_path: Path) -> None:
     # A glob matches nothing in a folder it cannot list, which would leave its files out of the measure.
     skill = tmp_path / "skill"
