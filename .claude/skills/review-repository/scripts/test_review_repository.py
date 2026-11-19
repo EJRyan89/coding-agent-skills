@@ -63,6 +63,9 @@ EXAMINING_SCRIPTS = (
 # The scripts the trust-boundary route holds, written out here rather than read from the manifest or the brief,
 # which describes them by kind, so a script the route gains or loses is a choice this list records too.
 TRUST_BOUNDARY_SCRIPTS = (
+    # The comparison that decides whether a batch reviews a pull request again, from the file paths GitHub lists
+    # for the author's commits.
+    f"{PIPELINE_SCRIPTS}/pr_change.py",
     f"{PIPELINE_SCRIPTS}/review_analyzers.py",
     f"{PIPELINE_SCRIPTS}/review_batches.py",
     f"{PIPELINE_SCRIPTS}/review_canary.py",
