@@ -107,9 +107,15 @@ class ReviewedCommits(NamedTuple):
     head_sha: str
     base_sha: str | None
 
+    def covers(self, pull: dict[str, Any]) -> bool:
+        """Whether the review read `pull` as a listing shows it: its head, on the base commit the listing names, or on
+        any base for a legacy review, which recorded none to compare."""
+        return self.head_sha == pull["headRefOid"] and self.base_sha in (None, pull["baseRefOid"])
 
-# A pull request whose head moved since its latest review, which recorded the base it compared its head with.
-MovedHead = tuple[dict[str, Any], ReviewedCommits]
+
+# A pull request whose head or base commit moved since its latest review, which recorded the base it compared its
+# head with.
+MovedPull = tuple[dict[str, Any], ReviewedCommits]
 
 
 def select_eligible_pulls(
@@ -117,7 +123,7 @@ def select_eligible_pulls(
     *,
     merged_since: date,
     reviewed_commits: Callable[[list[int]], dict[int, ReviewedCommits]],
-    unchanged: Callable[[list[MovedHead]], set[int]],
+    unchanged: Callable[[list[MovedPull]], set[int]],
     force: bool = False,
 ) -> list[dict[str, Any]]:
     """The non-draft open pull requests and those merged on or after `merged_since` that still need a review: never
@@ -125,10 +131,13 @@ def select_eligible_pulls(
 
     A merged pull request is judged by its merge date alone, so one merged earlier and updated since stays out.
     `reviewed_commits` reads the archive, so it is asked only about the pull requests the state, draft, and watermark
-    filters keep, after every pull is validated, and not at all under `force`. A pull request whose head moved since
-    its review is eligible unless `unchanged` names it, and `unchanged` is asked only about those whose review recorded
-    a base, so a migrated legacy review's moved head is eligible without a comparison. `unchanged` answers with the
-    numbers whose contribution it found the same, so anything it cannot decide stays eligible.
+    filters keep, after every pull is validated, and not at all under `force`. A pull request its review does not
+    cover (`ReviewedCommits.covers`), its head or its base commit moved since, is eligible unless `unchanged` names it.
+    The base counts because the same head on another base, as once GitHub retargets a pull request whose lower one in
+    a stack was squash-merged, may show another diff. `unchanged` is asked only about those whose review recorded a
+    base, so a migrated legacy review's moved head is eligible without a comparison, and its unmoved head is skipped.
+    `unchanged` answers with the numbers whose contribution it found the same, so anything it cannot decide stays
+    eligible.
     """
     window = []
     seen: set[int] = set()
@@ -151,7 +160,7 @@ def select_eligible_pulls(
         (pull, commits)
         for pull in window
         if (commits := reviewed.get(pull["number"])) is not None
-        and commits.head_sha != pull["headRefOid"]
+        and not commits.covers(pull)
         and commits.base_sha is not None
     ]
     same = unchanged(moved) if moved else set()
@@ -159,7 +168,7 @@ def select_eligible_pulls(
         pull
         for pull in window
         if (commits := reviewed.get(pull["number"])) is None
-        or (commits.head_sha != pull["headRefOid"] and pull["number"] not in same)
+        or (not commits.covers(pull) and pull["number"] not in same)
     ]
 
 
@@ -556,13 +565,6 @@ def latest_reviewed_commits(archive_root: Path, repository: str, numbers: Iterab
         if reviewed is not None:
             commits[number] = ReviewedCommits(reviewed["head_sha"], reviewed["base_sha"])
     return commits
-
-
-def latest_reviewed_heads(archive_root: Path, repository: str, numbers: Iterable[int]) -> dict[int, str]:
-    return {
-        number: commits.head_sha
-        for number, commits in latest_reviewed_commits(archive_root, repository, numbers).items()
-    }
 
 
 def recorded_watermark(state: dict[str, Any], repository: str) -> date | None:

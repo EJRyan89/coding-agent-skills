@@ -21,14 +21,13 @@ import review_state
 from review_archive import commit_record, latest_record, list_versions, pull_directory
 from review_io import PersistenceError
 from review_operation import (
-    MovedHead,
+    MovedPull,
     ReviewedCommits,
     ReviewOperationError,
     ReviewOperationFieldError,
     archive_base,
     commit_adapter_result,
     latest_reviewed_commits,
-    latest_reviewed_heads,
     merged_date,
     parse_pull_selector,
     safe_watermark,
@@ -47,7 +46,7 @@ def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
 
 class ReviewOperationTests(unittest.TestCase):
     @staticmethod
-    def _never_asked(moved: list[MovedHead]) -> set[int]:
+    def _never_asked(moved: list[MovedPull]) -> set[int]:
         raise AssertionError(f"no contribution is compared: {moved}")
 
     @staticmethod
@@ -187,9 +186,9 @@ class ReviewOperationTests(unittest.TestCase):
             3: ReviewedCommits("0" * 40, None),  # moved under a legacy review, which recorded no base
             4: ReviewedCommits(pulls[3]["headRefOid"], "a" * 40),  # not moved
         }
-        asked: list[list[MovedHead]] = []
+        asked: list[list[MovedPull]] = []
 
-        def unchanged(moved: list[MovedHead]) -> set[int]:
+        def unchanged(moved: list[MovedPull]) -> set[int]:
             asked.append(moved)
             return {1}
 
@@ -198,6 +197,36 @@ class ReviewOperationTests(unittest.TestCase):
         )
         self.assertEqual([2, 3, 5], [item["number"] for item in selected])
         self.assertEqual([[(pulls[0], reviewed[1]), (pulls[1], reviewed[2])]], asked)
+
+    def test_a_reviewed_head_on_another_base_is_eligible_unless_its_contribution_is_unchanged(self) -> None:
+        # GitHub retargets a pull request with no new head once the lower one of its stack is squash-merged.
+        pulls = [self._pull(number) for number in (1, 2, 3, 4)]
+        reviewed = {
+            1: ReviewedCommits(pulls[0]["headRefOid"], "f" * 40),  # retargeted, its contribution the same
+            2: ReviewedCommits(pulls[1]["headRefOid"], "f" * 40),  # retargeted, its contribution changed or undecided
+            3: ReviewedCommits(pulls[2]["headRefOid"], None),  # a legacy review, which recorded no base to compare
+            4: ReviewedCommits(pulls[3]["headRefOid"], "a" * 40),  # on the base it was reviewed on
+        }
+        asked: list[list[MovedPull]] = []
+
+        def unchanged(moved: list[MovedPull]) -> set[int]:
+            asked.append(moved)
+            return {1}
+
+        selected = select_eligible_pulls(
+            pulls, merged_since=date(2026, 1, 1), reviewed_commits=lambda numbers: reviewed, unchanged=unchanged
+        )
+        self.assertEqual([2], [item["number"] for item in selected])
+        self.assertEqual([[(pulls[0], reviewed[1]), (pulls[1], reviewed[2])]], asked)
+
+    def test_a_review_covers_a_pull_request_on_its_own_head_and_base(self) -> None:
+        pull = self._pull(1)
+        head, base = pull["headRefOid"], pull["baseRefOid"]
+        self.assertTrue(ReviewedCommits(head, base).covers(pull))
+        self.assertTrue(ReviewedCommits(head, None).covers(pull), "a legacy review recorded no base")
+        self.assertFalse(ReviewedCommits(head, "f" * 40).covers(pull))
+        self.assertFalse(ReviewedCommits("0" * 40, base).covers(pull))
+        self.assertFalse(ReviewedCommits("0" * 40, None).covers(pull))
 
     def test_an_answer_about_a_head_that_did_not_move_selects_nothing_it_would_not(self) -> None:
         pulls = [self._pull(1), self._pull(2)]
@@ -502,7 +531,7 @@ class ReviewOperationTests(unittest.TestCase):
                 arguments, "Local mirror and archive versions differ; reconcile before committing"
             )
 
-    def test_latest_reviewed_heads_ignores_missing_pull_records(self) -> None:
+    def test_latest_reviewed_commits_ignores_missing_pull_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = validate_adapter_result(
@@ -518,7 +547,6 @@ class ReviewOperationTests(unittest.TestCase):
                 policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
             )
             commit_record(root, "example/one", 12, record, expected_latest_version=None)
-            self.assertEqual({12: "b" * 40}, latest_reviewed_heads(root, "example/one", [12, 13]))
             self.assertEqual(
                 {12: ReviewedCommits("b" * 40, "a" * 40)},
                 latest_reviewed_commits(root, "example/one", [12, 13]),

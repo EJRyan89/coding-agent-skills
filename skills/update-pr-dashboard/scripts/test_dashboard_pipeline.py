@@ -41,7 +41,7 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 HEAD = "b" * 40
 OLD_HEAD = "a" * 40
 USER_REVIEWED = "c" * 40
-# The base commit `archived_record` names as the one its head was reviewed on.
+# The base commit a record names as the one its head was reviewed on when the test says the base moved since.
 REVIEWED_BASE = "d" * 40
 # The tip of the base branch every collection reads unless a test moves it, and the tip a force push moves it to.
 BASE_TIP = "9" * 40
@@ -198,14 +198,16 @@ class FakeGitHub:
         return CommandResult(1, "", "HTTP 404: Not Found")
 
 
-def archived_record(head: str, number: int = 2) -> ReviewRecord:
+def archived_record(head: str, number: int = 2, base: str = BASE_TIP) -> ReviewRecord:
+    """A record of a review of `head` on the base commit `base`, by default the tip every collection reads, so a
+    review of the listed head reads current without a comparison."""
     request = {
         "repository": "example/one",
         "pull_number": number,
         "pull_url": f"https://github.com/example/one/pull/{number}",
         "title": f"Change {number}",
         "base_ref": "main",
-        "base_sha": REVIEWED_BASE,
+        "base_sha": base,
         "head_sha": head,
         "mode": "initial",
         "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
@@ -343,7 +345,9 @@ class TrackerPipelineFixture(unittest.TestCase):
 
 class CollectTests(TrackerPipelineFixture):
     def test_collect_writes_the_validated_input_from_paginated_graphql_and_the_archive(self) -> None:
-        commit_record(self.archive, "example/one", 2, archived_record(OLD_HEAD), expected_latest_version=None)
+        commit_record(
+            self.archive, "example/one", 2, archived_record(OLD_HEAD, base=REVIEWED_BASE), expected_latest_version=None
+        )
         self.serve_default_pages()
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual(0, code, err)
@@ -738,10 +742,9 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=4",
-                # Pull 2's two commits for the user's review, from the base tip recorded for it, then its review
-                # commit again from the base branch, since GitHub serves no comparison here, and its reviewed head for
-                # the AI's.
-                "GITHUB_CALLS 4",
+                # Pull 2's two commits for the user's review and its reviewed head for the AI's, each from the base
+                # branch, which is still at the base tip recorded for the review.
+                "GITHUB_CALLS 3",
                 "CANDIDATE missing example/one#1",
                 "CANDIDATE stale example/one#2",
                 "CANDIDATE missing example/one#3",
@@ -1101,7 +1104,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.collect()
         code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "Example/One#1")
         self.assertEqual(0, code, err)
-        self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 4"], out.splitlines())
+        self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 3"], out.splitlines())
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
     def test_a_removal_naming_no_tracked_pull_request_is_refused_before_github_is_asked(self) -> None:
@@ -1242,8 +1245,9 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=3",
-                # Each reviewed head with the base its record names, and the moved and the stale heads with main.
-                "GITHUB_CALLS 4",
+                # Each reviewed head and each current head with main, which is still at the base each record names,
+                # each commit once: OLD_HEAD, HEAD, and the moved head.
+                "GITHUB_CALLS 3",
                 "STALE_SINCE_LAST_UPDATE example/one#1",
                 "STALE_SINCE_LAST_UPDATE example/one#2",
             ],
@@ -1270,7 +1274,7 @@ class UpdateTests(TrackerPipelineFixture):
         code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
         self.assertEqual((0, ""), (code, err))
         self.assertEqual(
-            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 3", "CANDIDATE missing example/one#2"], out.splitlines()
+            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", "CANDIDATE missing example/one#2"], out.splitlines()
         )
         self.assertEqual(["example/one#2"], json.loads(self.record.read_text(encoding="utf-8"))["pulls"])
 
@@ -1278,12 +1282,14 @@ class UpdateTests(TrackerPipelineFixture):
         """The update lines for example/one#2, reviewed at OLD_HEAD on REVIEWED_BASE: one update while its head is the
         reviewed one, then one after a force push to the lower branch beneath it rebased it to HEAD, `served` giving
         the comparisons and trees GitHub answers then."""
-        commit_record(self.archive, "example/one", 2, archived_record(OLD_HEAD), expected_latest_version=None)
-        self.github.pages = {"example/one": [page([pull_node(2, headRefOid=OLD_HEAD)])], "example/two": [page([])]}
+        record = archived_record(OLD_HEAD, base=REVIEWED_BASE)
+        commit_record(self.archive, "example/one", 2, record, expected_latest_version=None)
+        listed = pull_node(2, headRefOid=OLD_HEAD, baseRef={"target": {"oid": REVIEWED_BASE}})
+        self.github.pages = {"example/one": [page([listed])], "example/two": [page([])]}
         out = ""
         for head in (OLD_HEAD, HEAD):
             if head == HEAD:
-                self.assertEqual(2, len(out.splitlines()), "the review is current at its own head")
+                self.assertEqual(2, len(out.splitlines()), "the review is current at its own head and base")
                 self.github.pages["example/one"] = [page([pull_node(2, headRefOid=HEAD)])]
                 self.github.served = served
             code, _, err = self.run_main("collect", "--output", str(self.input))
@@ -1325,6 +1331,21 @@ class UpdateTests(TrackerPipelineFixture):
     def assert_went_stale(self, out: str) -> None:
         self.assertEqual(
             ["STALE_SINCE_LAST_UPDATE example/one#2", "CANDIDATE stale example/one#2"], out.splitlines()[2:]
+        )
+
+    def test_a_retarget_with_no_new_head_that_grew_the_diff_makes_the_review_stale(self) -> None:
+        # The lower pull request was squash-merged, and GitHub retargeted this one to main with its reviewed head: on
+        # main, its diff holds the lower branch's commits too, which the squash left out of main.
+        record = archived_record(OLD_HEAD, base=REVIEWED_BASE)
+        commit_record(self.archive, "example/one", 2, record, expected_latest_version=None)
+        self.github.pages = {"example/one": [page([pull_node(2, headRefOid=OLD_HEAD)])], "example/two": [page([])]}
+        self.github.served = self.evidence()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", "CANDIDATE stale example/one#2"], out.splitlines()
         )
 
     def test_a_rebase_that_changed_a_file_makes_the_review_stale(self) -> None:

@@ -191,5 +191,5 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | clean-change | sonnet | 1 | 2026-11-10 | agrees |
 | review-repository | misstated-exit-status | sonnet | 1 | 2026-11-15 | agrees |
-| update-pr-dashboard | description | sonnet | 1 | 2026-11-19 | agrees |
+| update-pr-dashboard | description | opus | 1 | 2026-11-19 | agrees |
 <!-- skill-evals-samples:end -->

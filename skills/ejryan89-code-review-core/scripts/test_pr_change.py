@@ -355,6 +355,55 @@ class ReviewedBaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
             ChangeDetector(failed).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE)
 
+    def test_a_head_retargeted_to_another_base_is_compared_and_changed_when_its_diff_grew(self) -> None:
+        # A lower pull request was squash-merged and GitHub retargeted this one to the base branch with no new head:
+        # its diff now holds the lower branch's original commits, which the squash left out of the base branch.
+        client = FakeClient(
+            {f"{REVIEWED_BASE}...{REVIEWED}": self.OWN, f"main...{REVIEWED}": self.DROPPED},
+            {REVIEWED: tree(self.DROPPED)},
+        )
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", "main", REVIEWED, REVIEWED, REVIEWED_BASE)])
+        self.assertEqual(CHANGED, detector.detect("owner/repo", 7, "main", REVIEWED, REVIEWED, REVIEWED_BASE))
+        self.assertEqual(
+            [f"repos/owner/repo/compare/{REVIEWED_BASE}...{REVIEWED}", f"repos/owner/repo/compare/main...{REVIEWED}"],
+            client.calls,
+        )
+
+    def test_a_head_retargeted_with_its_diff_as_it_was_is_unchanged_without_reading_a_tree(self) -> None:
+        # One commit leaves one tree, so matching files need no tree to tell their modes apart.
+        client = FakeClient({f"{REVIEWED_BASE}...{REVIEWED}": self.OWN, f"main...{REVIEWED}": self.OWN}, {})
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", "main", REVIEWED, REVIEWED, REVIEWED_BASE)])
+        self.assertEqual(UNCHANGED, detector.detect("owner/repo", 7, "main", REVIEWED, REVIEWED, REVIEWED_BASE))
+        self.assertEqual([], [call for call in client.calls if "/git/trees/" in call])
+
+    def test_a_head_on_the_base_it_was_reviewed_on_is_unchanged_without_api_calls(self) -> None:
+        client = FakeClient({})
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", REVIEWED_BASE, HEAD, HEAD, REVIEWED_BASE)])
+        self.assertEqual(UNCHANGED, detector.detect("owner/repo", 7, REVIEWED_BASE, HEAD, HEAD, REVIEWED_BASE))
+        self.assertEqual([], client.calls)
+
+    def test_a_retargeted_head_whose_reviewed_base_is_gone_is_unknown_and_any_other_failure_fails_it(self) -> None:
+        cases: tuple[tuple[GitHubErrorKind, str | None], ...] = (("not_found", UNKNOWN), ("forbidden", None))
+        for error, expected in cases:
+            with self.subTest(error=error):
+                client = FakeClient(
+                    {
+                        f"{REVIEWED_BASE}...{REVIEWED}": GitHubError("HTTP 4xx", kind=error),
+                        f"main...{REVIEWED}": self.OWN,
+                    }
+                )
+                detector = ChangeDetector(client)
+                if expected is None:
+                    with self.assertRaises(ComparisonError):
+                        detector.detect("owner/repo", 7, "main", REVIEWED, REVIEWED, REVIEWED_BASE)
+                else:
+                    self.assertEqual(
+                        expected, detector.detect("owner/repo", 7, "main", REVIEWED, REVIEWED, REVIEWED_BASE)
+                    )
+
     def test_prefetch_reads_the_comparison_with_the_reviewed_base_and_detect_needs_no_further_call(self) -> None:
         client = self.client(self.OWN)
         detector = ChangeDetector(client)

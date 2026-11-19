@@ -555,14 +555,26 @@ def _relationship(item: dict[str, Any], login_key: str) -> str | None:
     return "reviewing" if item["user_review_state"] is not None else None
 
 
+def _earlier_base(item: dict[str, Any], since_base: str | None) -> str | None:
+    """The base an earlier head is compared from: `since_base`, or None, the base branch as it is now, when that is the
+    tip the collection read. Both comparisons are then one when the head is the earlier one, which the detector
+    answers without a call; on any other base the same head is compared, since a retarget can change its diff."""
+    return None if since_base is not None and since_base == item["base_sha"] else since_base
+
+
 def _changed_since(item: dict[str, Any], since_sha: str, detector: Detector, since_base: str | None = None) -> str:
     return detector.detect(
-        item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"], since_base
+        item["repository"],
+        item["number"],
+        item["base_ref"],
+        since_sha,
+        item["head_sha"],
+        _earlier_base(item, since_base),
     )
 
 
 def _query(item: dict[str, Any], since_sha: str, since_base: str | None = None) -> Query:
-    return Query(item["repository"], item["base_ref"], since_sha, item["head_sha"], since_base)
+    return Query(item["repository"], item["base_ref"], since_sha, item["head_sha"], _earlier_base(item, since_base))
 
 
 def _ai_review(item: dict[str, Any], detector: Detector) -> str:

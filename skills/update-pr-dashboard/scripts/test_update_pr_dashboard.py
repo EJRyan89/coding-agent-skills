@@ -985,6 +985,55 @@ class GitHubRunner:
                 self.running -= 1
 
 
+class RetargetedHeadTests(unittest.TestCase):
+    """A pull request GitHub retargets with no new head once the lower one of its stack is squash-merged, through the
+    change detector itself: the reviewed head is the current head, on another base."""
+
+    RECORDED = "d" * 40  # the base commit the review was made on
+    TIP = "e" * 40  # the base branch's tip the collection read
+    OWN: ClassVar[list[dict[str, str]]] = [{"filename": "src/app.py", "status": "modified", "sha": "blob1"}]
+    # The lower branch's original commits, which the squash left out of the base branch, now in the diff too.
+    GROWN: ClassVar[list[dict[str, str]]] = [*OWN, {"filename": "lower.py", "status": "added", "sha": "old"}]
+
+    def evaluate(self, value: dict[str, Any], now: list[dict[str, str]], **options: Any) -> tuple[list[Any], list[str]]:
+        """The rows `evaluate` gives the one item, and every endpoint the change detector read, with the head compared
+        as its review read it on `RECORDED` and as `now` on the base branch."""
+        endpoints: list[str] = []
+        answers = {f"{self.RECORDED}...{HEAD}": self.OWN, f"main...{HEAD}": now}
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            endpoints.append(arguments[-1])
+            files = answers[arguments[-1].split("/compare/", 1)[1]]
+            return CommandResult(0, json.dumps({"status": "ahead", "files": files}), "")
+
+        detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
+        return evaluate(validate_items([value]), "reviewer", detector, **options), endpoints
+
+    def ai_reviewed(self, base: str) -> dict[str, Any]:
+        return item() | {"reviewed_head_sha": HEAD, "reviewed_base_sha": base, "base_sha": self.TIP}
+
+    def test_the_ai_review_of_a_retargeted_head_is_stale_only_when_its_diff_changed(self) -> None:
+        for now, expected in ((self.GROWN, ["stale"]), (self.OWN, [])):
+            with self.subTest(grown=now is self.GROWN):
+                rows, endpoints = self.evaluate(self.ai_reviewed(self.RECORDED), now)
+                self.assertEqual(expected, [candidate["status"] for candidate in review_candidates(rows)])
+                self.assertEqual(
+                    [f"repos/owner/repo/compare/{self.RECORDED}...{HEAD}", f"repos/owner/repo/compare/main...{HEAD}"],
+                    sorted(endpoints),
+                )
+
+    def test_an_ai_review_on_the_base_tip_the_collection_read_compares_nothing(self) -> None:
+        rows, endpoints = self.evaluate(self.ai_reviewed(self.TIP), self.GROWN)
+        self.assertEqual(([], []), (review_candidates(rows), endpoints))
+
+    def test_the_user_s_approval_of_a_retargeted_head_is_offered_again_only_when_its_diff_changed(self) -> None:
+        value = reviewed(1, "APPROVED") | {"user_review_sha": HEAD, "reviewed_head_sha": None, "base_sha": self.TIP}
+        for now, expected in ((self.GROWN, [SECTION_TO_REVIEW]), (self.OWN, [])):
+            with self.subTest(grown=now is self.GROWN):
+                rows, _ = self.evaluate(value, now, review_bases={"owner/repo#1": self.RECORDED})
+                self.assertEqual(expected, [row.section for row in rows])
+
+
 class ReadAheadTests(unittest.TestCase):
     def items(self, count: int) -> list[dict[str, Any]]:
         """Pull requests reviewed by the user and by the AI at earlier commits, each pair of commits its own."""
@@ -1510,9 +1559,10 @@ class UserReviewBaseTests(unittest.TestCase):
         self.assertEqual({}, user_review_bases(items, "reviewer", None))
 
     def test_the_update_records_each_base_and_compares_the_review_from_it(self) -> None:
-        # The first update records the tip collected with the review; a later one, after a rewrite moved the tip,
-        # still compares the review from the recorded tip and keeps it.
-        detector = BaseDetector({(USER_REVIEWED, RECORDED_BASE): UNCHANGED})
+        # The first update records the tip collected with the review and compares the review from the base branch,
+        # which is at that tip; a later one, after a rewrite moved the tip, compares it from the recorded tip and keeps
+        # it.
+        detector = BaseDetector({(USER_REVIEWED, RECORDED_BASE): UNCHANGED, (USER_REVIEWED, None): UNCHANGED})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             record = root / "tracker.json"
@@ -1534,7 +1584,8 @@ class UserReviewBaseTests(unittest.TestCase):
                     json.loads(record.read_text(encoding="utf-8"))["user_reviews"],
                 )
         self.assertEqual(
-            [(USER_REVIEWED, RECORDED_BASE)] * 2, [pair for pair in detector.compared if pair[0] == USER_REVIEWED]
+            [(USER_REVIEWED, None), (USER_REVIEWED, RECORDED_BASE)],
+            [pair for pair in detector.compared if pair[0] == USER_REVIEWED],
         )
 
 

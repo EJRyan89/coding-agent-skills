@@ -18,11 +18,10 @@ from review_config import load_config, resolve_repositories, validate_repository
 from review_github import GitHubClient
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json
 from review_operation import (
-    MovedHead,
+    MovedPull,
     ReviewedCommits,
     ReviewOperationError,
     latest_reviewed_commits,
-    latest_reviewed_heads,
     recorded_watermark,
     safe_watermark,
     select_eligible_pulls,
@@ -65,11 +64,12 @@ PENDING_KINDS = ("pull", "re-review", "fixture")
 MAX_PREPARE_PULLS = 4
 
 
-def unchanged_contributions(github: GitHubClient, repository: str, moved: list[MovedHead]) -> set[int]:
+def unchanged_contributions(github: GitHubClient, repository: str, moved: list[MovedPull]) -> set[int]:
     """The pull requests among `moved` whose own changes are what their latest review read, by `ChangeDetector`'s
     comparison: the reviewed head with the base commit the review recorded, and the current head with the base commit
     the listing names, so a rebase that left a pull request's diff as it was, such as a force push to a lower branch of
-    a stack, is no new head to review.
+    a stack, is no new head to review, and a retarget that left it as it was, such as GitHub's once the lower pull
+    request is merged, is no new base to review.
 
     A comparison that is changed or unknown, or that a GitHub call failed for this pull request alone, names nothing,
     so the pull request stays eligible. A failure in `pr_change.FATAL_ERROR_KINDS`, which every later call would meet
@@ -133,7 +133,7 @@ def enumerate_batch(
             read.extend(numbers)
             return latest_reviewed_commits(archive_root, repository, numbers)
 
-        def unchanged(moved: list[MovedHead]) -> set[int]:
+        def unchanged(moved: list[MovedPull]) -> set[int]:
             return unchanged_contributions(services.github, repository, moved)
 
         configured: dict[str, Any] | None = config["repositories"].get(repository)
@@ -209,7 +209,9 @@ class WatermarkChange(NamedTuple):
 def advance_watermarks(
     batch_path: Path, *, config_path: Path | None = None, services: Services | None = None
 ) -> dict[str, WatermarkChange]:
-    """Advance each fully enumerated repository past the merged pull requests whose heads are now reviewed.
+    """Advance each fully enumerated repository past the merged pull requests a review now covers: on the head and the
+    base commit the batch listed (`ReviewedCommits.covers`), so one listed for its new base holds the watermark until
+    it is reviewed there.
 
     A repository whose enumeration failed keeps its watermark, so no work is skipped. The batch file is input, so it
     is read whole and checked before anything else, and a batch dated after the pipeline's own today, or one that would
@@ -231,8 +233,12 @@ def advance_watermarks(
         previous = date.fromisoformat(entry["previous_watermark"])
         # A deferred merged pull request is pending like an unreviewed one, so a bounded batch skips nothing.
         merged = [pull for pull in (*entry["eligible"], *entry["deferred"]) if pull["state"] == "MERGED"]
-        heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in merged])
-        completed = {pull["number"] for pull in merged if heads.get(pull["number"]) == pull["headRefOid"]}
+        reviewed = latest_reviewed_commits(archive_root, repository, [pull["number"] for pull in merged])
+        completed = {
+            pull["number"]
+            for pull in merged
+            if (commits := reviewed.get(pull["number"])) is not None and commits.covers(pull)
+        }
         candidate = safe_watermark(previous=previous, today=today, eligible_merged=merged, completed_numbers=completed)
         if candidate > now:
             raise PipelineError(

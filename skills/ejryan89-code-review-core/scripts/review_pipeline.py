@@ -69,6 +69,7 @@ from review_batches import (
     listed_runs,
     load_run_list,
     new_run_list,
+    unchanged_contributions,
     worked_by_subagents,
 )
 from review_canary import fixture_change, read_fixture_pull, validate_prior_record
@@ -94,6 +95,7 @@ from review_dispatch import (
     workflow_script,
 )
 from review_flags import default_flags_path, load_store
+from review_github import GitHubClient
 from review_guard import RUN_PREFIX
 from review_io import (
     PersistenceError,
@@ -106,6 +108,7 @@ from review_io import (
 )
 from review_operation import (
     ReportInputs,
+    ReviewedCommits,
     archive_base,
     commit_adapter_result,
     parse_pull_selector,
@@ -263,17 +266,48 @@ def _skip(selector: str, reason: str) -> dict[str, Any]:
     return {"status": "skip", "selector": selector, "reason": reason}
 
 
+def _already_reviewed(
+    github: GitHubClient, repository: str, pull: dict[str, Any], reviewed: ReviewedCommits
+) -> str | None:
+    """Why `pull` needs no review, given the commits its latest review read; None when it needs one.
+
+    Its head and base commit as that review read them, or its head under a legacy review, which recorded no base, need
+    none. Its head on another base, as once GitHub retargets a pull request whose lower one in a stack was
+    squash-merged, needs none only when `unchanged_contributions` finds its changes the same there: a comparison that
+    finds them changed, cannot decide, or fails for this pull request alone has it reviewed, and a failure every
+    later GitHub call would meet too is raised. A moved head is always reviewed."""
+    head = pull["headRefOid"]
+    if reviewed.covers(pull):
+        return f"head {head[:12]} is already reviewed"
+    if reviewed.head_sha != head or reviewed.base_sha is None:
+        return None
+    if pull["number"] not in unchanged_contributions(github, repository, [(pull, reviewed)]):
+        return None
+    return f"head {head[:12]} is already reviewed, and its changes on base {pull['baseRefOid'][:12]} are unchanged"
+
+
 def _review_history(
-    archive_root: Path, repository: str, number: int, head: str, *, re_review: bool, force: bool, notes: list[str]
-) -> tuple[str, ReviewRecord | None, list[dict[str, Any]]] | None:
-    """What the archive says a review of `head` starts from: its mode, the previous record, and the prior findings.
-    None when that head is already reviewed and the review is not forced."""
+    archive_root: Path,
+    repository: str,
+    pull: dict[str, Any],
+    github: GitHubClient,
+    *,
+    re_review: bool,
+    force: bool,
+    notes: list[str],
+) -> tuple[str, ReviewRecord | None, list[dict[str, Any]]] | str:
+    """What the archive says a review of `pull` starts from: its mode, the previous record, and the prior findings.
+    The reason to skip it instead when `_already_reviewed` gives one and the review is not forced."""
+    number = pull["number"]
     selector = f"{repository}#{number}"
     reviewed = reviewed_head(archive_root, repository, number)
     if re_review and reviewed is None:
         raise PipelineError(f"{selector} has no review yet; run review-prs --pull {selector}")
-    if reviewed is not None and reviewed["head_sha"] == head and not force:
-        return None
+    if reviewed is not None and not force:
+        commits = ReviewedCommits(reviewed["head_sha"], reviewed["base_sha"])
+        reason = _already_reviewed(github, repository, pull, commits)
+        if reason is not None:
+            return reason
     if re_review and reviewed is not None and reviewed["source"] == "legacy":
         notes.append("This initial review supersedes the migrated legacy review.")
         return "initial", None, []
@@ -516,7 +550,6 @@ def prepare(
     selector = f"{repository}#{number}"
     entry = _configured_entry(config, repository, re_review=re_review, scope=scope, force=force, canary=canary)
     pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
-    head = pull["headRefOid"]
     mode = "re-review" if re_review else "initial"
     prior: list[dict[str, Any]] = []
     previous: ReviewRecord | None = None
@@ -528,10 +561,16 @@ def prepare(
         # than slipping under the review.
         base = archive_base(*archive_head(Path(config["archive_root"]), repository, number))
         history = _review_history(
-            Path(config["archive_root"]), repository, number, head, re_review=re_review, force=force, notes=notes
+            Path(config["archive_root"]),
+            repository,
+            pull,
+            services.github,
+            re_review=re_review,
+            force=force,
+            notes=notes,
         )
-        if history is None:
-            return _skip(selector, f"head {head[:12]} is already reviewed")
+        if isinstance(history, str):
+            return _skip(selector, history)
         mode, previous, prior = history
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
     review = _Review(
