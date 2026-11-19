@@ -41,7 +41,7 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from markdown_sections import MARKDOWN_SPACE, find_fences, list_item
+from markdown_sections import MARKDOWN_SPACE, THEMATIC_BREAK, find_fences, list_item, starts_block
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
 from review_records import is_suite_profile
@@ -356,21 +356,24 @@ def _statements(text: str) -> list[tuple[int, str]]:
     """Each list item and paragraph of Markdown, with the line it starts on; headings, tables, and code are left
     out. Lines are read as markdown_sections reads Markdown's blocks: only spaces and tabs are its whitespace, and a
     list item interrupts a paragraph only where CommonMark lets it, so a line Markdown shows as a paragraph's
-    continuation joins that paragraph. A paragraph inside a list item is continued by any further item. Fences are
-    read through markdown_sections.find_fences, the one fence reader, so a fence a blockquote or a list item holds is
-    code, and only a run that can close it does."""
+    continuation joins that paragraph. A paragraph inside a list item is continued by any further item. A blockquote
+    starts a statement of its own, which its further quoted lines and lazy lines continue, and a thematic break ends a
+    statement, since markdown_sections' `starts_block` reads either as a block rather than a paragraph's continuation.
+    Fences are read through markdown_sections.find_fences, the one fence reader, so a fence a blockquote or a list
+    item holds is code, and only a run that can close it does. The limits: a setext heading is read as a paragraph, so
+    the text above a `---` underline is a statement, and an `=` underline joins the text above it."""
     found: list[tuple[int, str]] = []
-    continued = in_item = False
+    continued = in_item = in_quote = False
     lines = text_lines(text)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     for index, raw in enumerate(lines):
         stripped = raw.strip(MARKDOWN_SPACE)
         item = list_item(raw, interrupting=continued and not in_item)
-        if index in fenced or not stripped or stripped.startswith(("#", "|")):
-            continued = in_item = False
-        elif item is not None or not continued:
+        if index in fenced or not stripped or stripped.startswith(("#", "|")) or THEMATIC_BREAK.fullmatch(raw):
+            continued = in_item = in_quote = False
+        elif item is not None or not continued or (starts_block(raw, opener=False) and not in_quote):
             found.append((index + 1, item if item is not None else stripped))
-            continued, in_item = True, item is not None
+            continued, in_item, in_quote = True, item is not None, item is None and stripped.startswith(">")
         else:
             found[-1] = (found[-1][0], f"{found[-1][1]} {stripped}")
     return found

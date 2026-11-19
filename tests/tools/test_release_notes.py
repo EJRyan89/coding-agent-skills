@@ -72,7 +72,7 @@ class BodyEntriesTests(unittest.TestCase):
             with self.subTest(continued=continued):
                 joined = f"Some text {continued.lstrip(' ')}"
                 self.assertEqual([joined], release_notes.unwrapped(f"Some text\n{continued}"))
-        for started in ("1. more", "- more", "  * more", "# more", "> more"):
+        for started in ("1. more", "- more", "  * more", "# more", "> more", "---", " * * *", "___"):
             with self.subTest(started=started):
                 self.assertEqual(["Some text", started], release_notes.unwrapped(f"Some text\n{started}"))
         # Below a list item, any item starts its own line, and a line of no-break spaces is text, not a blank line.

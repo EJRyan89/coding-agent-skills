@@ -60,7 +60,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
-from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, find_fences, list_item, markdown_section
+from markdown_sections import (
+    HTML_COMMENT,
+    MARKDOWN_SPACE,
+    THEMATIC_BREAK,
+    find_fences,
+    list_item,
+    markdown_section,
+)
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
 from text_lines import LINE_BREAK, lines_and_breaks
@@ -135,15 +142,18 @@ def unwrapped(block: str) -> list[str]:
     A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so a line that starts no block
     of its own continues the line above it, unless that line is blank or the two are inside a code fence. A list item
     starts its own line below another, and below any other text only where CommonMark lets a list interrupt a
-    paragraph: at a bullet or an item numbered 1.
+    paragraph: at a bullet or an item numbered 1. A thematic break, as markdown_sections reads one, starts its own line
+    too. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
     """
     raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
     fenced = {index for fence in find_fences(raw) for index in fence.lines()}
     lines: list[str] = []
     for index, line in enumerate(raw):
         previous = lines[-1] if lines else ""
-        starts_block = BLOCK_START.match(line) is not None or (
-            list_item(line, interrupting=list_item(previous) is None) is not None
+        starts_block = (
+            BLOCK_START.match(line) is not None
+            or THEMATIC_BREAK.fullmatch(line) is not None
+            or list_item(line, interrupting=list_item(previous) is None) is not None
         )
         if previous and line and not {index - 1, index} & fenced and not starts_block:
             lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"

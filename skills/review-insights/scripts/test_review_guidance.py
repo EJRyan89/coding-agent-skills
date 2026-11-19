@@ -119,6 +119,20 @@ class RuleTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual((line, item), [(rule.line, rule.text) for rule in rg.rules("guide.md", text)][-1])
 
+    def test_a_blockquote_or_a_thematic_break_after_a_list_item_ends_its_statement(self) -> None:
+        # GitHub renders a quote or a break that starts at the list's indentation after the item, never in its text.
+        item = "Return early from each nested helper function."
+        quote = "Prefer one queue for every retried request."
+        for text, expected in (
+            (f"- {item}\n> {quote}\n> And drain it.\n", [(1, item), (2, f"> {quote} > And drain it.")]),
+            (f"- {item}\n> {quote}\nlazy text\n", [(1, item), (2, f"> {quote} lazy text")]),
+            (f"- {item}\n---\n{quote}\n", [(1, item), (3, quote)]),
+            (f"- {item}\n***\n", [(1, item)]),
+            (f"- {item}\nlazy text\n", [(1, f"{item} lazy text")]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(expected, rg._statements(text))
+
     def test_only_spaces_and_tabs_are_markdown_whitespace_in_blank_lines_headings_and_fences(self) -> None:
         paragraph = "Keep every function short and focused."
         item = "Return early from each nested helper function."

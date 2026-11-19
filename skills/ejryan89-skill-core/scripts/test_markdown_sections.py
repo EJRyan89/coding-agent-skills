@@ -25,9 +25,12 @@ from markdown_sections import (
     document_headings,
     find_fences,
     is_blank,
+    items_holding,
     list_item,
+    list_item_content,
     markdown_section,
     prose_code_spans,
+    starts_block,
 )
 
 NBSP = chr(0xA0)
@@ -79,6 +82,60 @@ def test_a_list_item_is_read_as_commonmark_reads_one(line: str, text: str | None
 )
 def test_only_a_bullet_or_an_item_numbered_one_with_text_interrupts_a_paragraph(line: str, text: str | None) -> None:
     assert list_item(line, interrupting=True) == text
+
+
+@pytest.mark.parametrize(
+    ("line", "opener", "starts"),
+    [
+        ("> quote", False, True),
+        ("   >quote", False, True),
+        ("## heading", False, True),
+        ("---", False, True),
+        (" * * *", False, True),
+        ("- item", False, True),
+        ("1. item", False, True),
+        ("```", True, True),
+        ("#", False, True),
+        ("  ###\t", False, True),
+        # Text, a marker four columns in, an item that may not interrupt, and a no-break space after the marks continue
+        # the paragraph.
+        ("text", False, False),
+        ("    > quote", False, False),
+        ("    ## heading", False, False),
+        ("2. item", False, False),
+        (f"##{NBSP}heading", False, False),
+        ("#######", False, False),
+        ("    #", False, False),
+    ],
+)
+def test_a_block_start_ends_a_paragraph_and_any_other_line_continues_it(line: str, opener: bool, starts: bool) -> None:
+    assert starts_block(line, opener=opener) is starts
+
+
+@pytest.mark.parametrize(
+    ("document", "headings"),
+    [
+        # A heading ends a nested quote that interrupts a paragraph, and a lazy line continuing it.
+        ("para\n> > nested quote\n## after\n", [2]),
+        ("> > nested\nlazy line\n## after\n", [2]),
+        # One quote marker fewer before a heading leaves it in the outer quote, and an empty heading ends a quote.
+        ("> > nested\n> ## inside\n", []),
+        ("> quote\n#\n## after\n", [2]),
+    ],
+)
+def test_a_block_start_ends_a_quote_the_walk_reads(document: str, headings: list[int]) -> None:
+    assert [index for index, _ in document_headings(document.splitlines())] == headings
+
+
+def test_a_list_item_s_content_starts_past_its_marker_and_the_spaces_after_it() -> None:
+    assert [list_item_content(line) for line in ("- item", "  -   item", "1.\titem", "-      code", "text")] == [
+        2,
+        6,
+        4,
+        2,
+        None,
+    ]
+    assert [items_holding([2, 4], width) for width in (0, 2, 3, 4, 8)] == [0, 1, 1, 2, 2]
 
 
 def test_a_fence_inside_a_list_item_reads_the_marker_as_commonmark_does() -> None:
