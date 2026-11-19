@@ -43,6 +43,9 @@ OLD_HEAD = "a" * 40
 USER_REVIEWED = "c" * 40
 # The base commit `archived_record` names as the one its head was reviewed on.
 REVIEWED_BASE = "d" * 40
+# The tip of the base branch every collection reads unless a test moves it, and the tip a force push moves it to.
+BASE_TIP = "9" * 40
+MOVED_TIP = "8" * 40
 # Each spelling of a status override key the configuration's rule takes and the pull-request identity rule refuses:
 # an owner no GitHub login spells (a leading, trailing, or doubled hyphen, a dot, an underscore that leads, ends, or
 # repeats or comes before a hyphen, more than 39 characters) and a name GitHub refuses (only dots, more than 100).
@@ -79,6 +82,7 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
         "title": f"Change {number}",
         "isDraft": False,
         "baseRefName": "main",
+        "baseRef": {"target": {"oid": BASE_TIP}},
         "headRefOid": HEAD,
         "updatedAt": "2026-03-01T00:00:00Z",
         "reviewDecision": None,
@@ -367,6 +371,7 @@ class CollectTests(TrackerPipelineFixture):
                 "requested_reviewers": ["reviewer"],
                 "draft": False,
                 "base_ref": "main",
+                "base_sha": BASE_TIP,
                 "head_sha": HEAD,
                 "updated_at": "2026-03-01T00:00:00Z",
                 "review_decision": None,
@@ -719,7 +724,10 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=4",
-                "GITHUB_CALLS 3",  # pull 2's two commits for the user's review and its reviewed head for the AI's
+                # Pull 2's two commits for the user's review, from the base tip recorded for it, then its review
+                # commit again from the base branch, since GitHub serves no comparison here, and its reviewed head for
+                # the AI's.
+                "GITHUB_CALLS 4",
                 "CANDIDATE missing example/one#1",
                 "CANDIDATE stale example/one#2",
                 "CANDIDATE missing example/one#3",
@@ -745,7 +753,7 @@ class UpdateTests(TrackerPipelineFixture):
         missing = {"state": "missing", "reviewed_head_sha": None}
         self.assertEqual(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "pulls": ["example/one#1", "example/one#2", "example/one#3", "example/two#5"],
                 "reviews": {
                     "example/one#1": missing,
@@ -753,6 +761,7 @@ class UpdateTests(TrackerPipelineFixture):
                     "example/one#3": missing,
                     "example/two#5": missing,
                 },
+                "user_reviews": {"example/one#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}},
             },
             json.loads(self.record.read_text(encoding="utf-8")),
         )
@@ -770,7 +779,13 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(f"UPDATED {self.dashboard} rows=0", out.splitlines()[0], "removed and approved rows hide")
         # The record replaces the last one: a removed or approved pull request is still held, an unrelated one never.
         self.assertEqual(
-            {"schema_version": 2, "pulls": ["example/one#1", "example/one#8"], "reviews": {}},
+            {
+                "schema_version": 3,
+                "pulls": ["example/one#1", "example/one#8"],
+                "reviews": {},
+                # The approved pull request keeps the base its review is compared from, though its row is hidden.
+                "user_reviews": {"example/one#8": {"user_review_sha": HEAD, "base_sha": BASE_TIP}},
+            },
             json.loads(self.record.read_text(encoding="utf-8")),
         )
 
@@ -1072,7 +1087,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.collect()
         code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "Example/One#1")
         self.assertEqual(0, code, err)
-        self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 3"], out.splitlines())
+        self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 4"], out.splitlines())
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
     def test_a_removal_naming_no_tracked_pull_request_is_refused_before_github_is_asked(self) -> None:
@@ -1241,7 +1256,7 @@ class UpdateTests(TrackerPipelineFixture):
         code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
         self.assertEqual((0, ""), (code, err))
         self.assertEqual(
-            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", "CANDIDATE missing example/one#2"], out.splitlines()
+            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 3", "CANDIDATE missing example/one#2"], out.splitlines()
         )
         self.assertEqual(["example/one#2"], json.loads(self.record.read_text(encoding="utf-8"))["pulls"])
 
@@ -1306,6 +1321,66 @@ class UpdateTests(TrackerPipelineFixture):
 
     def test_a_rebase_whose_reviewed_base_cannot_be_compared_makes_the_review_stale(self) -> None:
         self.assert_went_stale(self.rebased(self.evidence(reviewed_base=False)))
+
+    def user_rebased(self, state: str, served: dict[str, object]) -> str:
+        """The dashboard after two updates of example/one#2, which the user reviewed with `state` at USER_REVIEWED while
+        the base branch's tip was BASE_TIP: one while its head is the reviewed commit, then one after a force push to
+        the lower branch beneath it moved that tip to MOVED_TIP and rebased the pull request to HEAD, `served` giving
+        the comparisons and trees GitHub answers then."""
+        review = {"nodes": [{"state": state, "commit": {"oid": USER_REVIEWED}}]}
+        self.record.unlink(missing_ok=True)
+        self.github.pages["example/two"] = [page([])]
+        for head, tip in ((USER_REVIEWED, BASE_TIP), (HEAD, MOVED_TIP)):
+            node = pull_node(2, headRefOid=head, baseRef={"target": {"oid": tip}}, reviews=review)
+            self.github.pages["example/one"] = [page([node])]
+            self.github.served = served if head == HEAD else {}
+            code, _, err = self.run_main("collect", "--output", str(self.input))
+            self.assertEqual((0, ""), (code, err))
+            code, _, err = self.run_main("update", "--input", str(self.input))
+            self.assertEqual((0, ""), (code, err))
+        return self.dashboard.read_text(encoding="utf-8")
+
+    @staticmethod
+    def user_evidence(after: str = "blob1", mode: str = "100644", recorded_base: bool = True) -> dict[str, object]:
+        """GitHub's answers once example/one#2 was rebased: its own change, `a.py`, as the user's review commit left it
+        on the base tip recorded for it and as `after` leaves it on main, the review commit on main counting the
+        commits the force push dropped as its own, and each commit's tree."""
+
+        def compared(*files: tuple[str, str]) -> dict[str, object]:
+            return {
+                "status": "ahead",
+                "files": [{"filename": name, "status": "modified", "sha": blob} for name, blob in files],
+            }
+
+        def tree(file_mode: str) -> dict[str, object]:
+            return {"truncated": False, "tree": [{"path": "a.py", "mode": file_mode, "type": "blob"}]}
+
+        served: dict[str, object] = {
+            f"repos/example/one/compare/main...{USER_REVIEWED}": compared(("a.py", "blob1"), ("lower.py", "dropped")),
+            f"repos/example/one/compare/main...{HEAD}": compared(("a.py", after)),
+            f"repos/example/one/git/trees/{USER_REVIEWED}?recursive=1": tree("100644"),
+            f"repos/example/one/git/trees/{HEAD}?recursive=1": tree(mode),
+        }
+        if recorded_base:
+            served[f"repos/example/one/compare/{BASE_TIP}...{USER_REVIEWED}"] = compared(("a.py", "blob1"))
+        return served
+
+    def test_a_rebase_that_left_the_diff_as_it_was_keeps_the_user_s_review_where_it_was(self) -> None:
+        self.assertIn("### Awaiting Response (1)", self.user_rebased("CHANGES_REQUESTED", self.user_evidence()))
+        self.assertIn("_No matching open pull requests_", self.user_rebased("APPROVED", self.user_evidence()))
+
+    def test_a_rebase_that_changed_a_file_or_mode_puts_the_user_s_review_back_to_review(self) -> None:
+        for state in ("CHANGES_REQUESTED", "COMMENTED", "APPROVED"):
+            for evidence in (self.user_evidence(after="blob2"), self.user_evidence(mode="100755")):
+                with self.subTest(state=state, evidence=evidence):
+                    self.assertIn("### To Review (1)", self.user_rebased(state, evidence))
+
+    def test_a_rebase_whose_recorded_base_cannot_be_compared_reads_from_the_base_branch(self) -> None:
+        # The base branch counts the commits the force push dropped as the review commit's own, so it reads changed.
+        for state in ("CHANGES_REQUESTED", "APPROVED"):
+            with self.subTest(state=state):
+                content = self.user_rebased(state, self.user_evidence(recorded_base=False))
+                self.assertIn("### To Review (1)", content)
 
     def test_update_writes_the_file_a_linked_dashboard_leads_to_and_keeps_its_mode(self) -> None:
         self.collect()
@@ -1690,8 +1765,10 @@ class OverrideTests(TrackerPipelineFixture):
         original = self.config_path.read_bytes()
         stale = {"state": "stale", "reviewed_head_sha": HEAD}
         for record, reason in (
-            ({"schema_version": 3, "pulls": []}, "tracker.schema_version must be one of 1, 2, found integer 3"),
+            ({"schema_version": 4, "pulls": []}, "tracker.schema_version must be one of 1, 2, 3, found integer 4"),
             ({"schema_version": 2, "pulls": []}, "tracker must be an object with field reviews"),
+            ({"schema_version": 3, "pulls": [], "reviews": {}}, "tracker must be an object with field user_reviews"),
+            ({"schema_version": 2, "pulls": [], "reviews": {}, "user_reviews": {}}, 'unknown field "user_reviews"'),
             ({"schema_version": 1, "pulls": [], "reviews": {}}, "tracker"),
             ({"schema_version": 1, "pulls": ["example/one"]}, "Invalid tracker pull-request identity"),
             ({"schema_version": 1, "pulls": ["example/one#2", "Example/One#2"]}, "Duplicate tracker pull-request"),
@@ -1711,6 +1788,33 @@ class OverrideTests(TrackerPipelineFixture):
                     "reviews": {"example/one#2": {**stale, "state": "missing"}},
                 },
                 "must name a reviewed head exactly when its review is not missing",
+            ),
+            (
+                {
+                    "schema_version": 3,
+                    "pulls": [],
+                    "reviews": {},
+                    "user_reviews": {"example/one#2": {"user_review_sha": HEAD, "base_sha": BASE_TIP}},
+                },
+                "Tracker user review example/one#2 names no pull request",
+            ),
+            (
+                {
+                    "schema_version": 3,
+                    "pulls": ["example/one#2"],
+                    "reviews": {},
+                    "user_reviews": {"example/one#2": {"user_review_sha": HEAD}},
+                },
+                "tracker.user_reviews.example/one#2 must be an object with field base_sha",
+            ),
+            (
+                {
+                    "schema_version": 3,
+                    "pulls": ["example/one#2"],
+                    "reviews": {},
+                    "user_reviews": {"example/one#2": {"user_review_sha": HEAD, "base_sha": ""}},
+                },
+                "tracker.user_reviews.example/one#2.base_sha must be a non-empty string",
             ),
         ):
             self.record.write_text(json.dumps(record), encoding="utf-8")
