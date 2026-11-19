@@ -2525,13 +2525,30 @@ class InstalledCopyTests(RuntimeCanaryTestCase):
 class KeptTests(unittest.TestCase):
     def test_kept_names_what_each_runtimes_pages_say_it_still_loads(self) -> None:
         # Codex's AGENTS.md page: every run reads the Codex home's AGENTS.override.md or AGENTS.md, and
-        # --ignore-user-config skips config.toml only. Copilot's hooks reference: user hooks load from ~/.copilot/hooks
-        # and the hooks key of ~/.copilot/settings.json without admission, and the canary keeps the real ~/.copilot.
+        # --ignore-user-config skips config.toml only. Codex's hooks page: managed hooks are trusted by policy.
+        # Copilot's hooks reference: policy, user, and installed plugins' hooks load and combine, user hooks from
+        # ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json without admission, and policy hooks
+        # machine-wide; its command reference lists plugin skills, agents, and MCP servers, and user agents, and
+        # --disable-builtin-mcps leaves computer-use on. The canary keeps the real ~/.copilot and turns no plugin off.
         for runtime, loaded in (
             ("codex", "global AGENTS.override.md or AGENTS.md in ~/.codex"),
             ("codex", "personal skills in ~/.agents/skills and ~/.codex/skills"),
+            ("codex", "managed hooks from the system hooks.json, requirements.toml, and MDM or cloud configuration"),
             ("copilot", "user hooks in ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json"),
             ("copilot", "personal skills in ~/.agents/skills and ~/.copilot/skills"),
+            ("copilot", "custom agents in ~/.copilot/agents"),
+            ("copilot", "MCP servers in ~/.copilot/mcp-config.json"),
+            (
+                "copilot",
+                "machine-wide policy hooks from /etc/github-copilot/policy.d or, on Windows, ProgramData and the "
+                "registry",
+            ),
+            (
+                "copilot",
+                "installed plugins' skills, agents, hooks, and MCP servers, the bundled computer-use plugin's "
+                "included once turned on",
+            ),
+            ("copilot", "session history"),
             ("claude", "sign-in only"),
         ):
             with self.subTest(runtime=runtime, loaded=loaded):

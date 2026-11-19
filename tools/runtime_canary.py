@@ -239,15 +239,25 @@ RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
 # they can. Claude Code: checked with a local stand-in for its API under --setting-sources project,local and
 # search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES, with which no CLAUDE.md, rules file, or auto-memory reaches the
-# request, the user's own included. Codex and Copilot: their skill listings, the flags each offers, Codex's AGENTS.md
-# page, under which every run reads the Codex home's AGENTS.override.md or AGENTS.md while --ignore-user-config skips
-# config.toml only, and Copilot's hooks reference, under which user hooks load without admission.
+# request, the user's own included. Codex and Copilot: their skill listings and the flags each offers. Codex's AGENTS.md
+# page: every run reads the Codex home's AGENTS.override.md or AGENTS.md, and its command-line reference says
+# --ignore-user-config skips config.toml only. Codex's hooks page: managed hooks, from the system hooks.json,
+# requirements.toml, and MDM or cloud configuration, are trusted by policy and run without review. Copilot's hooks
+# reference: policy, user, and installed plugins' hooks all load and combine, user hooks without admission, and policy
+# hooks machine-wide, which nothing the user sets turns off. Copilot's command reference: its "Skill locations" table
+# lists installed plugins' directories, "Custom agent locations" lists ~/.copilot/agents and installed plugins, and "MCP
+# server loading priority" lists plugin-provided servers, while --disable-builtin-mcps leaves the bundled computer-use
+# plugin's server alone. Codex's pages leave two sources open, so KEPT does not name them: whether a user hooks.json
+# the user trusted, or a plugin its marketplace or the account enables, still loads when config.toml is not read.
 KEPT = {
     "claude": "sign-in only",
     "codex": "global AGENTS.override.md or AGENTS.md in ~/.codex; personal skills in ~/.agents/skills and "
-    "~/.codex/skills",
-    "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; MCP servers in ~/.copilot/mcp-config.json; "
-    "user hooks in ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json; session history",
+    "~/.codex/skills; managed hooks from the system hooks.json, requirements.toml, and MDM or cloud configuration",
+    "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; custom agents in ~/.copilot/agents; "
+    "MCP servers in ~/.copilot/mcp-config.json; user hooks in ~/.copilot/hooks and the hooks key of "
+    "~/.copilot/settings.json; machine-wide policy hooks from /etc/github-copilot/policy.d or, on Windows, ProgramData "
+    "and the registry; installed plugins' skills, agents, hooks, and MCP servers, the bundled computer-use plugin's "
+    "included once turned on; session history",
 }
 # How many times a skill is run on a runtime while each run starts the real profile's installed copy, which no flag
 # keeps out of a model's reach, so that no such run counts.
