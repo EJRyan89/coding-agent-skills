@@ -309,7 +309,8 @@ WINDOWS_LEG = "Windows"
 LEGS = (LINUX_LEG, WINDOWS_LEG)
 # The modules a module's behavior differs on Windows through by design: the platform seam, and the ejryan89-skill-core
 # modules CLAUDE.md names as its exceptions, which find a program, hold a process tree, probe a process, name a reserved
-# device, probe a link or a junction, key a path by its text, hint how to install the PDF tool, and hold a file lock.
+# device, probe a link or a junction, key a path by asking each directory on it whether it folds case, hint how to
+# install the PDF tool, and hold a file lock.
 PLATFORM_MODULES = frozenset(
     {
         "platform_support",
@@ -628,9 +629,9 @@ def branches_on_platform(tree: ast.Module) -> bool:
 def runs_on_windows(module: str, source: str) -> bool:
     """Whether the Windows leg runs a module's mutants as well as the Linux leg: the module is one of PLATFORM_MODULES,
     holds a PLATFORM_ALLOWED table, imports one of PLATFORM_MODULES, or its own code reads the platform, as
-    branches_on_platform reads it. Its behavior then differs on Windows by design, as a path compared by its text, a
-    name NTFS folds, an 8.3 name, a junction, or a process tree, so a mutant whose effect shows only there survives
-    Linux however well it is tested."""
+    branches_on_platform reads it. Its behavior then differs on Windows by design, as a drive letter or a share a
+    path's key folds, a name NTFS folds, an 8.3 name, a junction, or a process tree, so a mutant whose effect shows
+    only there survives Linux however well it is tested."""
     tree = python_reader.parse(source)
     return (
         PurePosixPath(module).stem in PLATFORM_MODULES

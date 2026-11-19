@@ -6,6 +6,7 @@ import ast
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -481,6 +482,28 @@ class ToolsGitTests(unittest.TestCase):
             )
         ]
         self.assertEqual([], found)
+
+
+class GuardImportsTests(unittest.TestCase):
+    def test_the_docstring_names_every_name_the_hub_guard_reads_from_here(self) -> None:
+        # The list of shared names left out KINDS and SLUG, which the guard reads to recognize a task branch.
+        tree = ast.parse((REPOSITORY_ROOT / "tools" / "hub_guard.py").read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "tools.worktrees"
+            for alias in node.names
+        }
+        read = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "worktrees"
+        }
+        self.assertTrue({"KINDS", "SLUG"} <= read, read)
+        docstring = worktrees.__doc__ or ""
+        shared = docstring[docstring.index("It imports from here") : docstring.index("This module imports nothing")]
+        named = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", shared))
+        self.assertEqual(set(), (imported | read) - named)
 
 
 class GuardSubcommandTests(WorktreesTestCase):

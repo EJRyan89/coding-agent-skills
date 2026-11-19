@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import http.client
 import os
 import re
 import sys
@@ -211,17 +212,21 @@ def authorization(url: str, environment: Mapping[str, str]) -> str | None:
 
 def fetch(url: str, timeout: float) -> Fetched:
     """GET `url`, following redirects, with the token `authorization` gives it, if any, and unauthenticated
-    otherwise. The token is an unredirected header, so a redirect to any address is followed without it."""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})  # noqa: S310 - https only
-    header = authorization(url, os.environ)
-    if header is not None:
-        request.add_unredirected_header("Authorization", header)
+    otherwise. The token is an unredirected header, so a redirect to any address is followed without it. An address
+    urllib cannot read, such as one whose port is not a number, is a request that failed, never an error raised, as
+    the Fetcher contract says, and so is a response http.client cannot read whole."""
     try:
+        headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+        request = urllib.request.Request(url, headers=headers)  # noqa: S310 - the record holds https only
+        header = authorization(url, os.environ)
+        if header is not None:
+            request.add_unredirected_header("Authorization", header)
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - the record holds https only
             return Fetched(response.status, response.geturl(), response.read())
     except urllib.error.HTTPError as exc:
         return Fetched(exc.code, exc.geturl() or url, reason=f"HTTP {exc.code} {exc.reason}")
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    # http.client's InvalidURL and IncompleteRead are HTTPExceptions, neither an OSError nor a ValueError.
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         return Fetched(0, url, reason=str(getattr(exc, "reason", exc)))
 
 
