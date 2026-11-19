@@ -1366,10 +1366,16 @@ class RunTests(RuntimeCanaryTestCase):
                     [failed], runtime_canary.unread_rejections("codex", Completed(0, "", f"before\n{failed}\n"))
                 )
 
-    def test_a_stream_line_that_is_not_json_or_repeats_a_key_is_passed_over(self) -> None:
+    def test_a_stream_line_that_is_not_json_is_passed_over_and_one_that_repeats_a_key_refused(self) -> None:
         init = json.dumps({"type": "system", "subtype": "init", "skills": ["/alpha"]})
+        self.assertEqual(({"alpha"}, []), runtime_canary.claude_stream("\n".join(["warning: not json", init])))
+        # A repeated key was passed over too, judging the session from the events left.
         stream = "\n".join(["warning: not json", '{"type": "result", "type": "system"}', init])
-        self.assertEqual(({"alpha"}, []), runtime_canary.claude_stream(stream))
+        with self.assertRaises(claude_stream.StreamError):
+            runtime_canary.claude_stream(stream)
+        failure = runtime_canary.discovery_failure(stream)
+        self.assertIsNotNone(failure)
+        self.assertIn("line 2 of the session's stream is JSON the reader refuses", failure or "")
 
     def test_a_session_that_discovered_no_skill_fails_as_a_bare_session_would(self) -> None:
         # --bare skips skill discovery and may become the default for claude -p; a session in it lists no skill.

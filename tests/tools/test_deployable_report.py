@@ -746,8 +746,9 @@ class DeployableReportTests(unittest.TestCase):
 
     def command_arguments(self, command: str) -> list[str]:
         """A command that reads the results file, with what else it needs."""
-        arguments = [command, "--results", str(self.results_file), "--home", str(self.home)]
-        arguments += ["--source", str(self.paths.source_dir)]
+        arguments = [command, "--results", str(self.results_file)]
+        if command != "summary":
+            arguments += ["--home", str(self.home), "--source", str(self.paths.source_dir)]
         if command in ("verify", "layout"):
             arguments += ["--label", "first deploy"]
         if command == "verify":
@@ -927,6 +928,25 @@ class DeployableReportTests(unittest.TestCase):
             )
         self.assertNotIn(f"ERROR: {variable}", output)
 
+    def test_the_summary_reads_no_home_and_takes_none(self) -> None:
+        # It read only the results file, yet refused a relative home it resolved and then never read.
+        variable = "USERPROFILE" if platform_support.WINDOWS else "HOME"
+        self.results_file.write_text("[]", encoding="utf-8")
+        with mock.patch.dict("os.environ", {variable: "relative home"}):
+            code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")
+        self.assertEqual(0, code, output)
+        self.assertNotIn(f"ERROR: {variable}", output)
+        for option in ("--home", "--source"):
+            errors = io.StringIO()
+            with (
+                self.subTest(option=option),
+                contextlib.redirect_stderr(errors),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                report.main(["summary", "--results", str(self.results_file), option, str(self.home)])
+            self.assertEqual(2, raised.exception.code)
+            self.assertIn(f"unrecognized arguments: {option}", errors.getvalue())
+
     def test_pin_help_says_what_each_option_takes(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
@@ -1079,10 +1099,6 @@ class DeployableReportTests(unittest.TestCase):
             str(self.results_file),
             "--summary",
             str(self.summary_file),
-            "--home",
-            str(self.home),
-            "--source",
-            str(self.paths.source_dir),
             "--note",
             "Codex sandbox set to elevated",
             "--no-probe",

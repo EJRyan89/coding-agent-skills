@@ -1,23 +1,29 @@
 """Keep a rendered sample of each prompt a skill's script writes for a subagent at runtime, for audit-skill.
 
 Usage:
-  python tools/runtime_prompts.py           report every missing, stale, or extra sample
-  python tools/runtime_prompts.py --write   render every sample again and remove the extra ones
+  python tools/runtime_prompts.py           report every missing, stale, or extra sample, each on a STALE <sample>
+                                            line
+  python tools/runtime_prompts.py --write   render every sample again, remove the extra ones, then report each sample
+                                            still not current on a STALE <sample> line
 
 Either prints a FAILED line naming the skill or the path when a skill's prompts cannot be rendered, whatever its
 renderer raised, or a sample cannot be read or written; that is never reported as a stale sample.
 
 Exit status:
-  0  every sample is current, or --write rendered them
-  1  a missing, stale, or extra sample, or a last line FAILED <reason>
+  0  every sample is current, with or without --write
+  1  a STALE line for a missing, stale, or extra sample, --write's for one still not current after it wrote, or a last
+     line FAILED <reason>
   2  a usage error, or a FAILED line when a skill's prompts cannot be rendered or a sample cannot be read or written
 
 A skill whose subagent reads a prompt file a script writes at runtime shows the audit nothing of that prompt in its
-own files. This tool renders one such prompt per role from the repository's fixtures, the way a fixture canary
-does, with no model and no network, in a throwaway folder under the system temporary directory, and keeps it as
-docs/runtime-prompts/<skill>/<role>.txt, where `skill_inventory.py scan` measures it. The throwaway folder reads as
-<temp> and this checkout as <source>, so a sample names no machine's paths and renders the same everywhere; its
-paths are therefore shorter than a real run's, and its estimate slightly low.
+own files. This tool renders such prompts from the repository's fixtures, the way a fixture canary does, with no
+model and no network, in a throwaway folder under the system temporary directory, and keeps each as
+docs/runtime-prompts/<skill>/<role>.txt, where `skill_inventory.py scan` measures it. RENDERERS names the skills and
+each renderer the roles it samples: every role a review-prs or review-document fixture run writes a prompt for, with
+review-prs' prompt for the bounded Copilot CLI host, review-insights' synthesis, and of review-repository only the
+sibling-spellings specialist, the one prompt that skill adds to, as `review_repository` says. The throwaway folder
+reads as <temp> and this checkout as <source>, so a sample names no machine's paths and renders the same everywhere;
+its paths are therefore shorter than a real run's, and its estimate slightly low.
 The entrypoint sample replaces the fixture's generated commit IDs with <base-commit> and <head-commit>.
 """
 
@@ -60,6 +66,7 @@ from git_client import GitClient
 
 from tools import skill_evals_runs, skill_evals_scenarios
 from tools.checkout import checkout_root
+from tools.stale_lines import report
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = Path("docs") / "runtime-prompts"
@@ -391,9 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RenderError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
-    for problem in found:
-        print(problem)
-    return 1 if found else 0
+    return report(found)
 
 
 if __name__ == "__main__":

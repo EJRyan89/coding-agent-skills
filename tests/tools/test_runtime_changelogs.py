@@ -30,6 +30,7 @@ from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 from tools import runtime_changelogs as watch
 from tools import runtime_command_lines
+from tools.runtime_canary import quote
 from tools.runtime_changelogs import Fetched, Term
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -919,6 +920,46 @@ def test_a_fetch_sends_the_token_to_the_api_and_never_on_to_a_redirect(monkeypat
     )
     assert redirected is not None
     assert redirected.get_header("Authorization") is None
+
+
+@pytest.mark.parametrize("token", [pytest.param("job-token", id="token"), pytest.param("", id="no-token")])
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("https://api.github.com:abc/repos/openai/codex/releases", id="api-port-not-a-number"),
+        pytest.param("https://docs.example.com:abc/guide", id="port-not-a-number"),
+        pytest.param("https://[::1/guide", id="unclosed-address"),
+        pytest.param("docs.example.com/guide", id="no-scheme"),
+    ],
+)
+def test_a_fetch_of_an_address_urllib_cannot_read_fails_as_unreadable_never_raises(
+    url: str, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Fetcher contract says a fetch never raises: one that did ended the run in a FAILED line, not UNREADABLE.
+    def connected(*_: object, **__: object) -> None:
+        raise AssertionError("the fetch reached the network")
+
+    monkeypatch.setenv("GH_TOKEN", token)
+    monkeypatch.setattr("socket.create_connection", connected)
+    fetched = watch.fetch(url, 5.0)
+    assert (fetched.status, fetched.url, fetched.body) == (0, url, b"")
+    assert fetched.reason
+    assert watch.page_line(url, fetched) == f"UNREADABLE {url} {quote(fetched.reason)}"
+
+
+def test_a_response_cut_short_fails_as_unreadable_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response(io.BytesIO):
+        status = 200
+
+        def geturl(self) -> str:
+            return "https://docs.example.com/guide"
+
+        def read(self, *_: object) -> bytes:
+            raise http.client.IncompleteRead(b"par", 10)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: Response())
+    fetched = watch.fetch("https://docs.example.com/guide", 5.0)
+    assert (fetched.status, fetched.reason) == (0, str(http.client.IncompleteRead(b"par", 10)))
 
 
 def test_the_command_lines_are_built_in_a_folder_made_in_the_temporary_directory_private_folder_judged() -> None:
