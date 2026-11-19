@@ -41,6 +41,8 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 HEAD = "b" * 40
 OLD_HEAD = "a" * 40
 USER_REVIEWED = "c" * 40
+# The base commit `archived_record` names as the one its head was reviewed on.
+REVIEWED_BASE = "d" * 40
 # Each spelling of a status override key the configuration's rule takes and the pull-request identity rule refuses:
 # an owner no GitHub login spells (a leading, trailing, or doubled hyphen, a dot, an underscore that leads, ends, or
 # repeats or comes before a hyphen, more than 39 characters) and a name GitHub refuses (only dots, more than 100).
@@ -85,7 +87,6 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
             "pageInfo": {"hasNextPage": False},
             "nodes": [{"requestedReviewer": {"login": "reviewer"}}, {"requestedReviewer": {}}],
         },
-        "participants": {"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "ada"}]},
         "reviews": {"nodes": []},
     }
     node.update(changes)
@@ -97,7 +98,7 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
 
 
 def connection_page(connection: str, nodes: list[dict[str, Any]], cursor: str | None = None) -> str:
-    """One page of a pull request's review requests or participants, as the follow-up query reads it."""
+    """One page of a pull request's review requests, as the follow-up query reads it."""
     info = {"hasNextPage": cursor is not None, "endCursor": cursor}
     return json.dumps({"data": {"repository": {"pullRequest": {connection: {"pageInfo": info, "nodes": nodes}}}}})
 
@@ -142,6 +143,8 @@ class FakeGitHub:
         # The exit code and stderr of a failed authenticated-user lookup.
         self.user_failure: tuple[int, str] | None = None
         self.comparisons: dict[tuple[str, str], str] = {}
+        # The answer to each change comparison or tree, by its endpoint; one not served is not found.
+        self.served: dict[str, object] = {}
         # Raised, as a failed gh call would be, by every ancestry comparison, or by every other comparison and tree.
         self.ancestry_failure: GitHubError | None = None
         self.change_failure: GitHubError | None = None
@@ -163,8 +166,7 @@ class FakeGitHub:
                     return CommandResult(1, "", self.search_failure)
                 return CommandResult(0, self.searches.get(fields["q"], [search_page([])])[index], "")
             if "number" in fields:
-                connection = "participants" if "participants(" in fields["query"] else "reviewRequests"
-                key = (repository, int(fields["number"]), connection)
+                key = (repository, int(fields["number"]), "reviewRequests")
                 if key in self.connection_failures:
                     return CommandResult(1, "", self.connection_failures[key])
                 return CommandResult(0, self.connection_pages[key][index], "")
@@ -186,6 +188,8 @@ class FakeGitHub:
                 return CommandResult(0, json.dumps({"status": status}), "")
         elif self.change_failure is not None:
             raise self.change_failure
+        elif arguments[-1] in self.served:
+            return CommandResult(0, json.dumps(self.served[arguments[-1]]), "")
         # Comparisons and trees are unavailable, so any changed head is "unknown" to the change detector.
         return CommandResult(1, "", "HTTP 404: Not Found")
 
@@ -197,7 +201,7 @@ def archived_record(head: str, number: int = 2) -> ReviewRecord:
         "pull_url": f"https://github.com/example/one/pull/{number}",
         "title": f"Change {number}",
         "base_ref": "main",
-        "base_sha": "d" * 40,
+        "base_sha": REVIEWED_BASE,
         "head_sha": head,
         "mode": "initial",
         "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
@@ -361,7 +365,6 @@ class CollectTests(TrackerPipelineFixture):
                 "author": "ada",
                 "author_name": "Ada Lovelace",
                 "requested_reviewers": ["reviewer"],
-                "participants": ["ada"],
                 "draft": False,
                 "base_ref": "main",
                 "head_sha": HEAD,
@@ -371,6 +374,7 @@ class CollectTests(TrackerPipelineFixture):
                 "user_review_sha": None,
                 "user_review_decision": None,
                 "reviewed_head_sha": None,
+                "reviewed_base_sha": None,
                 "reviewed_incomplete": False,
                 "ai_review": None,
             },
@@ -383,6 +387,7 @@ class CollectTests(TrackerPipelineFixture):
             (second["user_review_state"], second["user_review_sha"], second["user_review_decision"]),
         )
         self.assertEqual(OLD_HEAD, second["reviewed_head_sha"])
+        self.assertEqual(REVIEWED_BASE, second["reviewed_base_sha"], "the base the record says it was reviewed on")
         self.assertEqual("CHANGES_REQUESTED", second["ai_review"]["verdict"])
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, second["ai_review"]["counts"])
         self.assertTrue(second["ai_review"]["report"].endswith("review.md"))
@@ -453,11 +458,10 @@ class CollectTests(TrackerPipelineFixture):
         self.assertEqual("[]", self.input.read_text(encoding="utf-8"), "the previous input is left untouched")
 
     def crowded(self) -> None:
-        """example/one#1 with a second page of both review requests and participants."""
+        """example/one#1 with a second page of review requests."""
         crowded = pull_node(
             1,
             reviewRequests={"pageInfo": {"hasNextPage": True}, "nodes": [{"requestedReviewer": {"login": "r0"}}]},
-            participants={"pageInfo": {"hasNextPage": True}, "nodes": [{"login": "p0"}]},
         )
         self.github.pages = {"example/one": [page([crowded, pull_node(2)])], "example/two": [page([])]}
         self.github.connection_pages[("example/one", 1, "reviewRequests")] = [
@@ -468,26 +472,21 @@ class CollectTests(TrackerPipelineFixture):
                 "reviewRequests", [{"requestedReviewer": {"login": "reviewer"}}, {"requestedReviewer": {}}]
             ),
         ]
-        self.github.connection_pages[("example/one", 1, "participants")] = [
-            connection_page("participants", [{"login": f"p{n}"} for n in range(100)], "cursor-1"),
-            connection_page("participants", [{"login": "ada"}]),
-        ]
 
-    def test_a_pull_request_with_more_than_100_review_requests_or_participants_is_collected_whole(self) -> None:
+    def test_a_pull_request_with_more_than_100_review_requests_is_collected_whole(self) -> None:
         self.crowded()
         code, out, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
         self.assertEqual(0, code, err)
         self.assertEqual(["REPOSITORY example/one pulls=2", f"INPUT {self.input}"], out.splitlines())
         item = json.loads(self.input.read_text(encoding="utf-8"))[0]
         self.assertEqual([f"r{n}" for n in range(100)] + ["reviewer"], item["requested_reviewers"])
-        self.assertEqual([f"p{n}" for n in range(100)] + ["ada"], item["participants"])
         follow_ups = [call for call in self.github.calls if "number=1" in call]
-        self.assertEqual(4, len(follow_ups), "two pages of each connection, for the crowded pull request alone")
+        self.assertEqual(2, len(follow_ups), "two pages, for the crowded pull request alone")
         self.assertTrue(all(call[call.index("number=1") - 1] == "-F" for call in follow_ups), "the number is typed")
 
     def test_a_failed_follow_up_page_fails_its_repository(self) -> None:
         self.crowded()
-        self.github.connection_failures[("example/one", 1, "participants")] = "HTTP 502: Bad Gateway"
+        self.github.connection_failures[("example/one", 1, "reviewRequests")] = "HTTP 502: Bad Gateway"
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual((1, ""), (code, err))
         lines = out.splitlines()
@@ -897,7 +896,7 @@ class UpdateTests(TrackerPipelineFixture):
                 "pull_url": "https://github.com/example/one/pull/12",
                 "title": "Change 12",
                 "base_ref": "main",
-                "base_sha": "d" * 40,
+                "base_sha": REVIEWED_BASE,
                 "head_sha": heads[version],
                 "mode": mode,
                 "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
@@ -1080,7 +1079,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.collect()
         before = self.dashboard.read_bytes()
         reason = (
-            "names no collected pull request the configured user authored, is asked to review, or takes part in; "
+            "names no collected pull request the configured user authored, is asked to review, or has reviewed; "
             "check the number, or leave it out if the pull request has closed"
         )
         # A mistyped number, a pull request in another repository, and one the user does not relate to.
@@ -1184,11 +1183,7 @@ class UpdateTests(TrackerPipelineFixture):
     def test_update_names_each_review_that_went_stale_since_the_last_update(self) -> None:
         # The last update showed example/one#1 with no review, example/one#2 reviewed at its head, and example/one#3
         # already stale.
-        reviewed = pull_node(
-            2,
-            reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
-            participants={"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "reviewer"}]},
-        )
+        reviewed = pull_node(2)
         stale = pull_node(3, headRefOid=HEAD)
         for number, head in ((2, HEAD), (3, OLD_HEAD)):
             commit_record(
@@ -1218,12 +1213,99 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=3",
-                "GITHUB_CALLS 3",
+                # Each reviewed head with the base its record names, and the moved and the stale heads with main.
+                "GITHUB_CALLS 4",
                 "STALE_SINCE_LAST_UPDATE example/one#1",
                 "STALE_SINCE_LAST_UPDATE example/one#2",
             ],
             out.splitlines(),
         )
+
+    def test_a_pull_request_the_user_neither_authored_nor_was_asked_to_review_is_tracked_only_once_reviewed(
+        self,
+    ) -> None:
+        unrequested = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+        # GitHub lists the user among the participants of a pull request they only pushed a commit to.
+        participant = {"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "ada"}, {"login": "reviewer"}]}
+        committed = pull_node(1, reviewRequests=unrequested, participants=participant)
+        # A review comment alone leaves a COMMENTED review.
+        commented = pull_node(
+            2,
+            reviewRequests=unrequested,
+            participants=participant,
+            reviews={"nodes": [{"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]},
+        )
+        self.github.pages = {"example/one": [page([committed, commented])], "example/two": [page([])]}
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", "CANDIDATE missing example/one#2"], out.splitlines()
+        )
+        self.assertEqual(["example/one#2"], json.loads(self.record.read_text(encoding="utf-8"))["pulls"])
+
+    def rebased(self, served: dict[str, object]) -> str:
+        """The update lines for example/one#2, reviewed at OLD_HEAD on REVIEWED_BASE: one update while its head is the
+        reviewed one, then one after a force push to the lower branch beneath it rebased it to HEAD, `served` giving
+        the comparisons and trees GitHub answers then."""
+        commit_record(self.archive, "example/one", 2, archived_record(OLD_HEAD), expected_latest_version=None)
+        self.github.pages = {"example/one": [page([pull_node(2, headRefOid=OLD_HEAD)])], "example/two": [page([])]}
+        out = ""
+        for head in (OLD_HEAD, HEAD):
+            if head == HEAD:
+                self.assertEqual(2, len(out.splitlines()), "the review is current at its own head")
+                self.github.pages["example/one"] = [page([pull_node(2, headRefOid=HEAD)])]
+                self.github.served = served
+            code, _, err = self.run_main("collect", "--output", str(self.input))
+            self.assertEqual((0, ""), (code, err))
+            code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+            self.assertEqual((0, ""), (code, err))
+        return out
+
+    @staticmethod
+    def evidence(after: str = "blob1", mode: str = "100644", reviewed_base: bool = True) -> dict[str, object]:
+        """GitHub's answers once example/one#2 was rebased: its own change, `a.py`, as the reviewed head left it on its
+        reviewed base and as `after` leaves it on main, the reviewed head on main counting the commits the force push
+        dropped as its own, and each head's tree."""
+
+        def compared(*files: tuple[str, str]) -> dict[str, object]:
+            return {
+                "status": "ahead",
+                "files": [{"filename": name, "status": "modified", "sha": blob} for name, blob in files],
+            }
+
+        def tree(file_mode: str) -> dict[str, object]:
+            return {"truncated": False, "tree": [{"path": "a.py", "mode": file_mode, "type": "blob"}]}
+
+        served: dict[str, object] = {
+            f"repos/example/one/compare/main...{OLD_HEAD}": compared(("a.py", "blob1"), ("lower.py", "dropped")),
+            f"repos/example/one/compare/main...{HEAD}": compared(("a.py", after)),
+            f"repos/example/one/git/trees/{OLD_HEAD}?recursive=1": tree("100644"),
+            f"repos/example/one/git/trees/{HEAD}?recursive=1": tree(mode),
+        }
+        if reviewed_base:
+            served[f"repos/example/one/compare/{REVIEWED_BASE}...{OLD_HEAD}"] = compared(("a.py", "blob1"))
+        return served
+
+    def test_a_rebase_that_left_the_diff_as_it_was_keeps_the_review_current(self) -> None:
+        out = self.rebased(self.evidence())
+        self.assertEqual([f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 4"], out.splitlines())
+        self.assertNotIn("(stale)", self.dashboard.read_text(encoding="utf-8"))
+
+    def assert_went_stale(self, out: str) -> None:
+        self.assertEqual(
+            ["STALE_SINCE_LAST_UPDATE example/one#2", "CANDIDATE stale example/one#2"], out.splitlines()[2:]
+        )
+
+    def test_a_rebase_that_changed_a_file_makes_the_review_stale(self) -> None:
+        self.assert_went_stale(self.rebased(self.evidence(after="blob2")))
+
+    def test_a_rebase_that_changed_only_a_mode_makes_the_review_stale(self) -> None:
+        self.assert_went_stale(self.rebased(self.evidence(mode="100755")))
+
+    def test_a_rebase_whose_reviewed_base_cannot_be_compared_makes_the_review_stale(self) -> None:
+        self.assert_went_stale(self.rebased(self.evidence(reviewed_base=False)))
 
     def test_update_writes_the_file_a_linked_dashboard_leads_to_and_keeps_its_mode(self) -> None:
         self.collect()
@@ -1363,8 +1445,6 @@ class ActorFieldTests(unittest.TestCase):
                 self.assertEqual(
                     ["ada", "grace"], tp._complete_logins(requests, "requestedReviewer", "review requests")
                 )
-                participants = {"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "ada"}, actor]}
-                self.assertEqual(["ada"], tp._complete_logins(participants, None, "participants"))
 
     def test_a_profile_name_of_the_wrong_kind_is_none(self) -> None:
         self.assertEqual("Ada Lovelace", tp._profile_name("  Ada Lovelace "))
@@ -1830,11 +1910,7 @@ class DuplicateOverrideKeyTests(TrackerPipelineFixture):
     def test_update_prints_stale_unmatchable_duplicate_and_candidate_lines_in_order_and_pins_neither_duplicate(
         self,
     ) -> None:
-        reviewed = pull_node(
-            2,
-            reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
-            participants={"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "reviewer"}]},
-        )
+        reviewed = pull_node(2)
         other = pull_node(5, url="https://github.com/example/two/pull/5")
         commit_record(self.archive, "example/one", 2, archived_record(HEAD, 2), expected_latest_version=None)
         self.github.pages = {"example/one": [page([reviewed])], "example/two": [page([other])]}

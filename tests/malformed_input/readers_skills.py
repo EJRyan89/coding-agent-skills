@@ -57,7 +57,7 @@ import run_dotnet_format
 import skill_inventory
 import update_pr_dashboard
 from github_client import CommandResult
-from pr_change import CHANGED, UNCHANGED
+from pr_change import CHANGED, UNCHANGED, Query
 from review_config import DASHBOARD_END_MARKER, DASHBOARD_START_MARKER
 from review_flags import FlagError
 from review_io import PersistenceError
@@ -196,10 +196,18 @@ def _synthesis_context(path: Path) -> object:
 class _Detector:
     """A change detector that asks GitHub nothing: a head unchanged since the review is unchanged."""
 
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
         return UNCHANGED if since_sha == head_sha else CHANGED
 
-    def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
+    def prefetch(self, queries: Iterable[Query]) -> None:
         pass
 
 
@@ -221,7 +229,6 @@ DASHBOARD_ITEM = {
     "title": "Example",
     "author": "someone",
     "requested_reviewers": ["reviewer"],
-    "participants": [],
     "draft": False,
     "base_ref": "main",
     "head_sha": "a" * 40,

@@ -19,6 +19,7 @@ from pr_change import (
     UNKNOWN,
     ChangeDetector,
     ComparisonError,
+    Query,
     at_or_before,
     changed_files,
     tree_modes,
@@ -28,6 +29,8 @@ from review_github import GitHubClient
 
 REVIEWED = "a" * 40
 HEAD = "d" * 40
+# The base commit the reviewed head was reviewed on, which the base branch no longer holds after a force push.
+REVIEWED_BASE = "f" * 40
 
 
 def changed(filename: str, content: str, status: str = "modified", **extra: str) -> dict[str, Any]:
@@ -48,7 +51,8 @@ def tree(comparison_value: object, modes: dict[str, str] | None = None, truncate
 
 
 class FakeClient(GitHubClient):
-    """Answers the detector's REST calls from canned comparisons and trees, without running gh."""
+    """Answers the detector's REST calls from canned comparisons and trees, without running gh. A comparison is
+    served by its `base...head` commits when those are given, and otherwise by its head alone."""
 
     def __init__(self, comparisons: Mapping[str, object], trees: Mapping[str, object] | None = None) -> None:
         self.comparisons = comparisons
@@ -60,7 +64,8 @@ class FakeClient(GitHubClient):
         if "/git/trees/" in endpoint:
             value = self.trees[endpoint.split("/git/trees/")[1].split("?")[0]]
         else:
-            value = self.comparisons[endpoint.rsplit("...", 1)[1]]
+            commits = endpoint.split("/compare/", 1)[1]
+            value = self.comparisons[commits if commits in self.comparisons else commits.rsplit("...", 1)[1]]
         if isinstance(value, GitHubError):
             if allow_absent and value.kind == "not_found":
                 return None
@@ -215,6 +220,8 @@ class ChangeDetectorTests(unittest.TestCase):
             ),
             {"truncated": False, "tree": [{"path": "a.py"}]},
             {"truncated": False, "tree": [{"mode": "100644"}]},
+            # A path that names nothing.
+            {"truncated": False, "tree": [good | {"path": ""}]},
             # Whether it is complete: only the boolean false says so.
             *({"truncated": value, "tree": [good]} for value in incomplete),
             {"tree": [good]},
@@ -222,6 +229,12 @@ class ChangeDetectorTests(unittest.TestCase):
         for value in cases:
             with self.subTest(value=value):
                 self.assertIsNone(tree_modes(value))
+
+    def test_a_blank_tree_path_is_read_as_a_path(self) -> None:
+        """Only an empty path names nothing: Git allows a name of whitespace, so one is a path like any other."""
+        blank = "\u00a0"
+        tree_value = {"truncated": False, "tree": [{"path": blank, "mode": "100644", "type": "blob"}]}
+        self.assertEqual({blank: "100644"}, tree_modes(tree_value))
 
     def test_empty_contributions_on_both_sides_are_unknown(self) -> None:
         self.assertEqual(UNKNOWN, detect(comparison(), comparison()))
@@ -261,7 +274,7 @@ class ChangeDetectorTests(unittest.TestCase):
         other = "e" * 40
         client = FakeClient({REVIEWED: GitHubError("HTTP 403", kind="forbidden"), HEAD: files, other: files})
         detector = ChangeDetector(client)
-        detector.prefetch([("owner/repo", "main", REVIEWED, HEAD), ("owner/repo", "main", other, HEAD)])
+        detector.prefetch([Query("owner/repo", "main", REVIEWED, HEAD), Query("owner/repo", "main", other, HEAD)])
         calls = list(client.calls)
         self.assertEqual(UNCHANGED, detector.detect("owner/repo", 8, "main", other, HEAD))
         with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
@@ -283,6 +296,74 @@ class ChangeDetectorTests(unittest.TestCase):
             ],
             client.calls,
         )
+
+
+class ReviewedBaseTests(unittest.TestCase):
+    """The reviewed head is compared with the base it was reviewed on, the current head with the base branch now."""
+
+    # The pull request's own change, and what the base branch as it now is shows for the reviewed head once a force
+    # push rewrote the lower branch of the stack beneath it: the dropped commits count as the reviewed head's own.
+    OWN = comparison(changed("src/app.py", "blob1"))
+    DROPPED = comparison(changed("lower.py", "old"), changed("src/app.py", "blob1"))
+
+    def client(self, after: object, before: object = OWN) -> FakeClient:
+        return FakeClient(
+            {f"{REVIEWED_BASE}...{REVIEWED}": before, f"main...{REVIEWED}": self.DROPPED, f"main...{HEAD}": after},
+            {REVIEWED: tree(self.OWN), HEAD: tree(after)},
+        )
+
+    def test_a_rebase_that_leaves_the_diff_as_it_was_is_unchanged(self) -> None:
+        client = self.client(self.OWN)
+        self.assertEqual(
+            UNCHANGED, ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE)
+        )
+        self.assertEqual(
+            [f"repos/owner/repo/compare/{REVIEWED_BASE}...{REVIEWED}", f"repos/owner/repo/compare/main...{HEAD}"],
+            [call for call in client.calls if "/compare/" in call],
+        )
+
+    def test_without_the_reviewed_base_the_base_branch_now_is_compared_as_before(self) -> None:
+        client = self.client(self.OWN)
+        self.assertEqual(CHANGED, ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD))
+        self.assertIn(f"repos/owner/repo/compare/main...{REVIEWED}", client.calls)
+
+    def test_a_rebase_that_changed_the_diff_is_changed(self) -> None:
+        cases = {
+            "content": comparison(changed("src/app.py", "blob2")),
+            # The stated limit: a file the rewritten base changes too has another blob once rebased.
+            "file both change": comparison(changed("src/app.py", "blob1 rebased")),
+            "added file": comparison(changed("src/app.py", "blob1"), changed("src/new.py", "x", "added")),
+            "status": comparison(changed("src/app.py", "blob1", "added")),
+            "rename": comparison(changed("src/app.py", "blob1", "renamed", previous_filename="src/old.py")),
+        }
+        for name, after in cases.items():
+            with self.subTest(case=name):
+                detector = ChangeDetector(self.client(after))
+                self.assertEqual(CHANGED, detector.detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE))
+
+    def test_a_rebase_that_changed_only_a_mode_is_changed(self) -> None:
+        client = self.client(self.OWN)
+        client.trees = {REVIEWED: tree(self.OWN), HEAD: tree(self.OWN, {"src/app.py": "100755"})}
+        self.assertEqual(CHANGED, ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE))
+
+    def test_a_reviewed_base_github_no_longer_has_is_unknown_and_any_other_failure_fails_the_comparison(self) -> None:
+        missing = self.client(self.OWN, GitHubError("gone", kind="not_found"))
+        self.assertEqual(
+            UNKNOWN, ChangeDetector(missing).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE)
+        )
+        failed = self.client(self.OWN, GitHubError("HTTP 403", kind="forbidden"))
+        with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
+            ChangeDetector(failed).detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE)
+
+    def test_prefetch_reads_the_comparison_with_the_reviewed_base_and_detect_needs_no_further_call(self) -> None:
+        client = self.client(self.OWN)
+        detector = ChangeDetector(client)
+        detector.prefetch([Query("owner/repo", "main", REVIEWED, HEAD, REVIEWED_BASE)])
+        read = list(client.calls)
+        self.assertIn(f"repos/owner/repo/compare/{REVIEWED_BASE}...{REVIEWED}", read)
+        self.assertNotIn(f"repos/owner/repo/compare/main...{REVIEWED}", read)
+        self.assertEqual(UNCHANGED, detector.detect("owner/repo", 7, "main", REVIEWED, HEAD, REVIEWED_BASE))
+        self.assertEqual(read, client.calls)
 
 
 def full_detect(before: object, after: object, before_tree: object, after_tree: object) -> str:
@@ -392,19 +473,19 @@ class ConcurrentRunner:
 
 
 # Four pairs whose files match, so each reads both comparisons and both trees.
-QUERIES = [("owner/repo", "main", sha(2 * n), sha(2 * n + 1)) for n in range(4)]
+QUERIES = [Query("owner/repo", "main", sha(2 * n), sha(2 * n + 1)) for n in range(4)]
 
 
 class PrefetchTests(unittest.TestCase):
     def test_prefetch_reads_four_at_a_time_and_detect_needs_no_further_call(self) -> None:
         runner = ConcurrentRunner(4)
         detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
-        detector.prefetch([*QUERIES, *QUERIES, ("owner/repo", "main", sha(9), sha(9))])
+        detector.prefetch([*QUERIES, *QUERIES, Query("owner/repo", "main", sha(9), sha(9))])
         self.assertEqual(4, runner.peak, "four calls ran together, and never more")
         self.assertEqual(8, sum("/compare/" in call for call in runner.calls), "each commit is compared once")
         self.assertEqual(8, sum("/git/trees/" in call for call in runner.calls), "matching pairs read their trees")
         read = len(runner.calls)
-        for repository, base, since, head in QUERIES:
+        for repository, base, since, head, _ in QUERIES:
             self.assertEqual(UNCHANGED, detector.detect(repository, 1, base, since, head))
         self.assertEqual(CHANGED, detector.detect("owner/repo", 1, "main", sha(0), sha(2)))
         self.assertEqual(read, len(runner.calls), "everything detect needed was prefetched")
@@ -412,7 +493,7 @@ class PrefetchTests(unittest.TestCase):
     def test_differing_pairs_prefetch_no_tree(self) -> None:
         runner = ConcurrentRunner(1)
         detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
-        detector.prefetch([("owner/repo", "main", sha(2 * n), sha(2 * n + 2)) for n in range(4)])
+        detector.prefetch([Query("owner/repo", "main", sha(2 * n), sha(2 * n + 2)) for n in range(4)])
         self.assertEqual(5, len(runner.calls))
         self.assertFalse(any("/git/trees/" in call for call in runner.calls))
 
@@ -426,7 +507,7 @@ class PrefetchTests(unittest.TestCase):
         self.assertEqual(18, len(runner.calls), "sixteen reads and two retries")
         self.assertEqual(
             [UNCHANGED] * 4,
-            [detector.detect(repository, 1, base, since, head) for repository, base, since, head in QUERIES],
+            [detector.detect(repository, 1, base, since, head) for repository, base, since, head, _ in QUERIES],
         )
 
     def test_a_run_level_failure_in_a_concurrent_call_stops_the_prefetch(self) -> None:
