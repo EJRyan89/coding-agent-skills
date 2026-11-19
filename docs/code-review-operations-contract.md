@@ -684,15 +684,16 @@ The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/
 
 ### Tracker record
 
-The pull requests `update-pr-dashboard` holds and the AI review of each row it showed, beside the file the code-review configuration path leads to, through any symbolic link: `tracker.json` for a configuration named `config.json`, and `<name>.tracker.json` for a configuration named `<name>.json`, so two configurations in one folder keep records of their own. `validate_tracker_record` in `update_pr_dashboard.py` validates it whenever it is read or written. Each `update` that writes the dashboard reads it, to name each review that went stale since, then replaces it. `override` reads it: a `--set` must name a pull request it lists, and the listing marks each override it does not. `review-arguments` reads it: a confirmed pull request must be a row it holds as `missing` or `stale`. A missing file holds no pull request.
+The pull requests `update-pr-dashboard` holds, the AI review of each row it showed, and the base each of the user's own reviews is compared from, beside the file the code-review configuration path leads to, through any symbolic link: `tracker.json` for a configuration named `config.json`, and `<name>.tracker.json` for a configuration named `<name>.json`, so two configurations in one folder keep records of their own. `validate_tracker_record` in `update_pr_dashboard.py` validates it whenever it is read or written. Each `update` that writes the dashboard reads it, to name each review that went stale since and to compare each of the user's own reviews from the base it recorded for it, then replaces it. `override` reads it: a `--set` must name a pull request it lists, and the listing marks each override it does not. `review-arguments` reads it: a confirmed pull request must be a row it holds as `missing` or `stale`. A missing file holds no pull request.
 
 #### Tracker record (`tracker`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `schema_version` | integer | yes | One of `1`, or `2`. An update writes `2`; a `1` record, written before records held reviews, is still read, as holding no reviews. |
+| `schema_version` | integer | yes | One of `1`, `2`, or `3`. An update writes `3`; a `1` record, written before records held reviews, is still read, as holding no reviews, and a `2` record, written before records held the user's own reviews, as holding none of those. |
 | `pulls` | array | yes | Every pull request the last update collected that the configured user authored, is asked to review, or has reviewed, whether or not its row was shown, as `owner/repo#number` keys matched ignoring case, each once. |
-| `reviews` | object | when `schema_version` is `2` | Keyed by the `owner/repo#number` key of each row the last update showed, a pull request `pulls` lists; each value is that row's [AI review](#tracker-review-trackerreviewspull). |
+| `reviews` | object | when `schema_version` is `2` or `3` | Keyed by the `owner/repo#number` key of each row the last update showed, a pull request `pulls` lists; each value is that row's [AI review](#tracker-review-trackerreviewspull). |
+| `user_reviews` | object | when `schema_version` is `3` | Keyed by the `owner/repo#number` key of each pull request `pulls` lists that the configured user did not author and whose latest review by them is `APPROVED`, `CHANGES_REQUESTED`, or `COMMENTED`, shown or not, when a base is known for it; each value is that review's [base](#tracker-user-review-trackeruser_reviewspull). |
 
 #### Tracker review (`tracker.reviews.<pull>`)
 
@@ -700,6 +701,15 @@ The pull requests `update-pr-dashboard` holds and the AI review of each row it s
 | --- | --- | --- | --- |
 | `state` | string | yes | One of `missing`, `current`, `stale`, or `incomplete`: the row's AI review state. |
 | `reviewed_head_sha` | string or null | yes | The head its latest AI review covered; null exactly when `state` is `missing`. |
+
+#### Tracker user review (`tracker.user_reviews.<pull>`)
+
+GitHub keeps no base commit for a user's review, so the update records one: the tip of the pull request's base branch it collected the first time it saw the review's commit, kept by each later update that collects the pull request while that commit stays the user's latest review. An update that does not collect the pull request, one scoped to other repositories or run while it is closed, forgets its base, as it forgets the record's other entries for it, and the next update that collects it records the tip then. The update compares the review's commit with that base, rather than with the base branch as it is now, to decide whether the pull request changed since the review, and with the base branch as it is now when GitHub can no longer compare the recorded base.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `user_review_sha` | string | yes | The commit the user's latest review was made on. |
+| `base_sha` | string | yes | The tip of the base branch the update collected when it first saw that commit as the user's latest review. |
 
 ### Legacy review index
 
