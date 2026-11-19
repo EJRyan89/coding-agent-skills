@@ -212,7 +212,8 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
   `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says;
 - a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
 - a provider-specific PDF tool floor in `skills/ejryan89-skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
-  `provider_minimum`.
+  `provider_minimum`, so a change to one changes the pdftotext floor in `deployer/tools.py` too, and the entry names
+  both.
 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above except the arguments, the
 status lines, and the exit codes, which no file holds, in the working tree with two commits: the commit where `HEAD`
@@ -221,8 +222,12 @@ pull request changes is named in backticks under `- Contract:` in the pull reque
 `--pr-body` and otherwise one in the branch's commit messages since that commit, even when an entry merged since the
 tag already names it: that entry covers the earlier change, and the release notes tell a user of each one, so an entry
 whose `Contract:` is `none` or names another item fails. An item that differs only from the tag is named by any
-upgrade note since the tag. The check also fails while this list or the Versioning section of
-[releasing.md](releasing.md) leaves out a file or directory it reads.
+upgrade note since the tag. With no release tag reachable from `origin/main`, nothing has been released, so only the
+comparison with the merge-base commit runs. A value in a Python file compares as the literal it holds, followed
+through each name, in whatever scope binds it, and each import to the module the checkout holds, so an indirection
+cannot hide a change; a value the check cannot follow to a literal, such as a name bound twice, a parameter, a call,
+or a relative import, fails it, naming the file and the expression. The check also fails while this list or the
+Versioning section of [releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Pull requests
 
