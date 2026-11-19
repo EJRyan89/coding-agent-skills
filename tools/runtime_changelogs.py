@@ -454,8 +454,11 @@ def bullet_entries(lines: Sequence[str]) -> list[str]:
     its lines join the bullet that holds it, if one does, and a bullet nested in it is an entry of its own. Block
     starts and list items are read through ejryan89-skill-core's markdown_sections, and a fenced line is never a
     bullet. The limits: a lazy line after an indented code block in an item is read as the item's, where CommonMark
-    ends the item; and an HTML block's start, such as `<details>`, `<div>`, or `<!--`, after a bullet's text joins the
-    entry, since markdown_sections reads an HTML block as a paragraph."""
+    ends the item; a marker with no text after it, a lone `-` or `*`, is no list item, as markdown_sections'
+    `list_item` reads it, so it continues the paragraph above; a fence left open in an item runs past the item's end,
+    as `find_fences` reads it, so the lines after it join the entry; and an HTML block's start, such as `<details>`,
+    `<div>`, or `<!--`, after a bullet's text joins the entry, since markdown_sections reads an HTML block as a
+    paragraph, and a fence line inside an HTML block is read as a fence."""
     fences = {fence.opener: fence for fence in find_fences(list(lines))}
     entries: list[list[str]] = []
     # The column each open list item's content starts at, outermost first, and the entry each one's lines join: the
