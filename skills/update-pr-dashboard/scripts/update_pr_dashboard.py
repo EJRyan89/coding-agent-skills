@@ -598,7 +598,9 @@ def _compares_user_review(item: dict[str, Any], relationship: str) -> bool:
 def _section(item: dict[str, Any], relationship: str, detector: Detector, base: str | None) -> str | None:
     """The item's section. The user's own review is compared from `base`, the base `user_review_bases` recorded for it,
     when there is one, and from the base branch as it is now when there is none or GitHub can no longer compare that
-    base, so a base the update recorded never answers less than the base branch does."""
+    base, so a base the update recorded never answers less than the base branch does. A review of the current head is
+    never compared again from the base branch: there it is one comparison, which reads unchanged whatever the diff
+    on the recorded base was, so an unknown answer stays unknown."""
     if relationship == "authored":
         return SECTION_MINE
     if item["draft"]:
@@ -607,7 +609,7 @@ def _section(item: dict[str, Any], relationship: str, detector: Detector, base: 
         return SECTION_TO_REVIEW
     state = item["user_review_state"]
     change = _changed_since(item, item["user_review_sha"], detector, base)
-    if change == UNKNOWN and base is not None:
+    if change == UNKNOWN and base is not None and item["user_review_sha"] != item["head_sha"]:
         change = _changed_since(item, item["user_review_sha"], detector)
     if state == "APPROVED":
         return None if change == UNCHANGED else SECTION_TO_REVIEW

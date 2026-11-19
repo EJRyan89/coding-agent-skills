@@ -960,6 +960,24 @@ class GenericReviewTests(PipelineFixture):
         self.github.pulls[12] = rest_pull(12, head, squashed)
         self.assertEqual("ready", self.prepare()["status"])
 
+    def test_a_retarget_whose_files_match_is_re_reviewed_when_it_moved_the_merge_base(self) -> None:
+        # The lower and upper branches change one file, so on either base the comparison lists only that file, at the
+        # head's blob. The squash of the lower branch leaves its hunk out of main, and the diff there holds it.
+        start = self.commit_on("main", self.base, {"shared.py": "a\nb\nc\n"})
+        lower = self.commit_on("lower", start, {"shared.py": "A\nb\nc\n"})
+        head = self.commit_on("upper", lower, {"shared.py": "A\nb\nC\n"})
+        self.github.pulls[12] = rest_pull(12, head, lower)
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        self.assertEqual("skip", self.prepare(re_review=True, scope="full")["status"], "the head and base it read")
+
+        squashed = self.commit_on("main", start, {"shared.py": "A2\nb\nc\n"})
+        self.github.pulls[12] = rest_pull(12, head, squashed)
+        self.assertEqual(compared(self.checkout, lower, head), compared(self.checkout, squashed, head))
+        ready = self.prepare(re_review=True, scope="full")
+        self.assertEqual(("ready", "re-review"), (ready["status"], ready["mode"]))
+
     def test_snapshot_comes_from_github_without_a_checkout(self) -> None:
         self.configure(checkout=False)
         fetched: list[tuple[str, str]] = []

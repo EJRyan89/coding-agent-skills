@@ -273,9 +273,10 @@ def _already_reviewed(
 
     Its head and base commit as that review read them, or its head under a legacy review, which recorded no base, need
     none. Its head on another base, as once GitHub retargets a pull request whose lower one in a stack was
-    squash-merged, needs none only when `unchanged_contributions` finds its changes the same there: a comparison that
-    finds them changed, cannot decide, or fails for this pull request alone has it reviewed, and a failure every
-    later GitHub call would meet too is raised. A moved head is always reviewed."""
+    squash-merged, needs none only when `unchanged_contributions` finds its merge base with that base the one it had
+    with the base it was reviewed on, which leaves its diff as reviewed: another merge base, one GitHub cannot name,
+    or a comparison that fails for this pull request alone has it reviewed, and a failure every later GitHub call
+    would meet too is raised. A moved head is always reviewed."""
     head = pull["headRefOid"]
     if reviewed.covers(pull):
         return f"head {head[:12]} is already reviewed"

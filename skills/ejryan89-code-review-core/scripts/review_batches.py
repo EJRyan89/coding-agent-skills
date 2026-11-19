@@ -68,8 +68,10 @@ def unchanged_contributions(github: GitHubClient, repository: str, moved: list[M
     """The pull requests among `moved` whose own changes are what their latest review read, by `ChangeDetector`'s
     comparison: the reviewed head with the base commit the review recorded, and the current head with the base commit
     the listing names, so a rebase that left a pull request's diff as it was, such as a force push to a lower branch of
-    a stack, is no new head to review, and a retarget that left it as it was, such as GitHub's once the lower pull
-    request is merged, is no new base to review.
+    a stack, is no new head to review. The reviewed head on another base, as GitHub retargets a pull request once the
+    lower one of its stack is merged, is compared by its merge base with each base instead, which decides its diff:
+    the same one, as a merge of the lower branch leaves, is no new base to review, and another, as a squash merge
+    leaves, is.
 
     A comparison that is changed or unknown, or that a GitHub call failed for this pull request alone, names nothing,
     so the pull request stays eligible. A failure in `pr_change.FATAL_ERROR_KINDS`, which every later call would meet

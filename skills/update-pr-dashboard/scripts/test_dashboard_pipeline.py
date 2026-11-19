@@ -190,6 +190,9 @@ class FakeGitHub:
                 raise self.ancestry_failure
             if status:
                 return CommandResult(0, json.dumps({"status": status}), "")
+            # A merge base the change detector reads for a reviewed head on another base.
+            if arguments[-1] in self.served:
+                return CommandResult(0, json.dumps(self.served[arguments[-1]]), "")
         elif self.change_failure is not None:
             raise self.change_failure
         elif arguments[-1] in self.served:
@@ -815,11 +818,13 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertFalse(self.record.exists())
 
     def collect_fixture(self, reviews: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
-        """Collect and render example/one#12 of the three-version fixture with the configured user's reviews."""
+        """Collect and render example/one#12 of the three-version fixture with the configured user's reviews, listed
+        on the base commit the fixture's records name, so its reviewed head needs no comparison."""
         node = pull_node(
             12,
             url="https://github.com/example/one/pull/12",
             headRefOid=review_fixture.HEADS[3],
+            baseRef={"target": {"oid": "0" * 40}},
             reviews={"nodes": reviews},
         )
         self.github.pages["example/one"] = [page([node])]
@@ -1333,20 +1338,28 @@ class UpdateTests(TrackerPipelineFixture):
             ["STALE_SINCE_LAST_UPDATE example/one#2", "CANDIDATE stale example/one#2"], out.splitlines()[2:]
         )
 
-    def test_a_retarget_with_no_new_head_that_grew_the_diff_makes_the_review_stale(self) -> None:
-        # The lower pull request was squash-merged, and GitHub retargeted this one to main with its reviewed head: on
-        # main, its diff holds the lower branch's commits too, which the squash left out of main.
+    def test_a_retarget_with_no_new_head_is_stale_only_when_its_merge_base_moved(self) -> None:
+        # The lower pull request was squash-merged, and GitHub retargeted this one to main with its reviewed head: its
+        # merge base with main no longer holds the lower branch's commits, so its diff there holds them too. A merge
+        # into main of the lower branch itself would leave the merge base, and the diff, as they were.
         record = archived_record(OLD_HEAD, base=REVIEWED_BASE)
         commit_record(self.archive, "example/one", 2, record, expected_latest_version=None)
         self.github.pages = {"example/one": [page([pull_node(2, headRefOid=OLD_HEAD)])], "example/two": [page([])]}
-        self.github.served = self.evidence()
-        code, _, err = self.run_main("collect", "--output", str(self.input))
-        self.assertEqual((0, ""), (code, err))
-        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
-        self.assertEqual((0, ""), (code, err))
-        self.assertEqual(
-            [f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", "CANDIDATE stale example/one#2"], out.splitlines()
-        )
+        for merge_base, expected in (("1" * 40, ["CANDIDATE stale example/one#2"]), ("2" * 40, [])):
+            with self.subTest(merge_base=merge_base):
+                self.github.served = {
+                    f"repos/example/one/compare/{REVIEWED_BASE}...{OLD_HEAD}?per_page=1": {
+                        "merge_base_commit": {"sha": "2" * 40}
+                    },
+                    f"repos/example/one/compare/main...{OLD_HEAD}?per_page=1": {
+                        "merge_base_commit": {"sha": merge_base}
+                    },
+                }
+                code, _, err = self.run_main("collect", "--output", str(self.input))
+                self.assertEqual((0, ""), (code, err))
+                code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+                self.assertEqual((0, ""), (code, err))
+                self.assertEqual([f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", *expected], out.splitlines())
 
     def test_a_rebase_that_changed_a_file_makes_the_review_stale(self) -> None:
         self.assert_went_stale(self.rebased(self.evidence(after="blob2")))
