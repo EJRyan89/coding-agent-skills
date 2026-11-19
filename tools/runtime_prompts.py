@@ -3,14 +3,16 @@
 Usage:
   python tools/runtime_prompts.py           report every missing, stale, or extra sample, each on a STALE <sample>
                                             line
-  python tools/runtime_prompts.py --write   render every sample again and remove the extra ones
+  python tools/runtime_prompts.py --write   render every sample again, remove the extra ones, then report each sample
+                                            still not current on a STALE <sample> line
 
 Either prints a FAILED line naming the skill or the path when a skill's prompts cannot be rendered, whatever its
 renderer raised, or a sample cannot be read or written; that is never reported as a stale sample.
 
 Exit status:
-  0  every sample is current, or --write rendered them
-  1  a STALE line for a missing, stale, or extra sample, or a last line FAILED <reason>
+  0  every sample is current, with or without --write
+  1  a STALE line for a missing, stale, or extra sample, --write's for one still not current after it wrote, or a last
+     line FAILED <reason>
   2  a usage error, or a FAILED line when a skill's prompts cannot be rendered or a sample cannot be read or written
 
 A skill whose subagent reads a prompt file a script writes at runtime shows the audit nothing of that prompt in its

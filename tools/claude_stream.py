@@ -31,7 +31,8 @@ def json_kind(value: object) -> str:
 
 
 class StreamError(ValueError):
-    """A line of the stream that is JSON but no event object: a stream in a shape this does not read."""
+    """A line of the stream that is JSON but no event object, or JSON the reader refuses: a stream in a shape this does
+    not read."""
 
 
 def events(output: str) -> Iterator[dict[str, Any]]:
