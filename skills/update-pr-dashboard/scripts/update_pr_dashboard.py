@@ -850,7 +850,7 @@ def update_dashboard_rows(
     if unmatched:
         raise TrackerError(
             f"Removal {unmatched[0]} names no collected pull request the configured user authored, is asked to "
-            "review, or takes part in; check the number, or leave it out if the pull request has closed"
+            "review, or has reviewed; check the number, or leave it out if the pull request has closed"
         )
     rows = evaluate(
         apply_author_names(items, author_names),

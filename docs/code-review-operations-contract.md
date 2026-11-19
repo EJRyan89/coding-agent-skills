@@ -691,7 +691,7 @@ The pull requests `update-pr-dashboard` holds and the AI review of each row it s
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `schema_version` | integer | yes | One of `1`, or `2`. An update writes `2`; a `1` record, written before records held reviews, is still read, as holding no reviews. |
-| `pulls` | array | yes | Every pull request the last update collected that the configured user authored, is asked to review, or takes part in, whether or not its row was shown, as `owner/repo#number` keys matched ignoring case, each once. |
+| `pulls` | array | yes | Every pull request the last update collected that the configured user authored, is asked to review, or has reviewed, whether or not its row was shown, as `owner/repo#number` keys matched ignoring case, each once. |
 | `reviews` | object | when `schema_version` is `2` | Keyed by the `owner/repo#number` key of each row the last update showed, a pull request `pulls` lists; each value is that row's [AI review](#tracker-review-trackerreviewspull). |
 
 #### Tracker review (`tracker.reviews.<pull>`)

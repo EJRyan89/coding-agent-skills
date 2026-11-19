@@ -1079,7 +1079,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.collect()
         before = self.dashboard.read_bytes()
         reason = (
-            "names no collected pull request the configured user authored, is asked to review, or takes part in; "
+            "names no collected pull request the configured user authored, is asked to review, or has reviewed; "
             "check the number, or leave it out if the pull request has closed"
         )
         # A mistyped number, a pull request in another repository, and one the user does not relate to.
