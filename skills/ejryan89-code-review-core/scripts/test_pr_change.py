@@ -330,7 +330,7 @@ class ReviewedBaseTests(unittest.TestCase):
     def test_a_rebase_that_changed_the_diff_is_changed(self) -> None:
         cases = {
             "content": comparison(changed("src/app.py", "blob2")),
-            # The stated limit: a file the rewritten base changes too has another blob once rebased.
+            # The stated limit: a file the rewritten base changes too is compared by the blob it leaves.
             "file both change": comparison(changed("src/app.py", "blob1 rebased")),
             "added file": comparison(changed("src/app.py", "blob1"), changed("src/new.py", "x", "added")),
             "status": comparison(changed("src/app.py", "blob1", "added")),
