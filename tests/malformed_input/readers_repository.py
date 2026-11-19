@@ -422,9 +422,10 @@ def _hub_guard(path: Path) -> object:
     return code
 
 
-# Each Claude Code stream reader reads tools.claude_stream.events, which refuses a JSON line that is no object and
-# passes over a line that is not JSON, and passes over an event it does not know, so a stream from which it takes
-# nothing is its answer to one it cannot read: its caller reports that stream as a session that showed nothing.
+# Each Claude Code stream reader reads tools.claude_stream.events, which refuses a JSON line that is no object or that
+# json_reader refuses, passes over a line that is not JSON, and passes over an event it does not know, so a stream
+# from which it takes nothing is its answer to one it cannot read: its caller reports that stream as a session that
+# showed nothing.
 STREAM_PASSES_OVER = {
     "torn_line": "a line cut off part way is no event, and the events before it are read",
     "blank_lines": "a blank line holds no event and is passed over",

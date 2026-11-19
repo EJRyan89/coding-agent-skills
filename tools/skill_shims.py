@@ -43,6 +43,7 @@ from text_lines import text_lines
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
+from tools.stale_lines import report
 
 # change-skill names this command among the regenerations a change owes, from the checkout without the deployer.
 DUPLICATION_ALLOWED = {
@@ -261,9 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     for path in written:
         print(f"WROTE {path.as_posix()}")
-    for problem in found:
-        print(f"STALE {problem}")
-    return 1 if found else 0
+    return report(found)
 
 
 if __name__ == "__main__":

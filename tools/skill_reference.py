@@ -45,6 +45,7 @@ from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import SKILL_TOOLS
 from tools.checkout import ROOT_HELP, checkout_root
+from tools.stale_lines import report
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -424,9 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json_writer.JsonWriteRefused, SkillReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
-    for problem in found:
-        print(f"STALE {problem}")
-    return 1 if found else 0
+    return report(found)
 
 
 if __name__ == "__main__":

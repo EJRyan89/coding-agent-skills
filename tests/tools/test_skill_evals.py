@@ -57,6 +57,7 @@ from test_review_documents import StubPdftotext
 from conftest import GitHome
 from deployer import fsops, platform_support
 from tools import (
+    claude_stream,
     runtime_canary,
     skill_evals,
     skill_evals_judging,
@@ -5134,6 +5135,27 @@ def test_a_skill_start_whose_event_holds_a_line_break_other_than_newline_is_coun
     output = json.dumps(event, ensure_ascii=False)
     assert skill_evals_runs.skills_in_stream(output) == ["demo"]
     assert skill_evals_runs.stream_models(output) == (frozenset({"claude-haiku-5-5"}), frozenset())
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(
+            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "\\ud800"}, '
+            '{"type": "tool_use", "name": "Skill", "input": {"skill": "demo"}}]}}',
+            id="lone-surrogate",
+        ),
+        pytest.param(
+            '{"type": "assistant", "type": "assistant", "message": {"content": '
+            '[{"type": "tool_use", "name": "Skill", "input": {"skill": "demo"}}]}}',
+            id="repeated-key",
+        ),
+    ],
+)
+def test_a_skill_start_on_a_line_the_reader_refuses_is_unread_never_no_skill_started(line: str) -> None:
+    # Passed over, the line's start was lost and the record said the session started no skill.
+    with pytest.raises(claude_stream.StreamError, match="line 1 of the session's stream is JSON the reader refuses"):
+        skill_evals_runs.skills_in_stream(line)
 
 
 @pytest.mark.parametrize(

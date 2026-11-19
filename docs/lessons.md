@@ -305,7 +305,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_python_checks.py::test_content_errors_policy_reads_the_family_named_for_a_core_reader`,
   `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`,
   `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers`,
-  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_review_report_that_is_not_utf8_fails_only_its_repository`
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_review_report_that_is_not_utf8_fails_only_its_repository`,
+  `tests/tools/test_runtime_changelogs.py::test_a_fetch_of_an_address_urllib_cannot_read_fails_as_unreadable_never_raises`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
   around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
@@ -314,8 +315,10 @@ removed fails validation until its pattern follows it.
   UTF-8 escapes as `UnicodeDecodeError`; `.encode("utf-8")` of a name read
   from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape; in the
   content-errors policy, a table merged into `self.families[` that a second reader fills too, replacing a family
-  without a problem, or an entry stored with no class.
-- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351, #2358, #2591
+  without a problem, or an entry stored with no class; a `urlopen(` or `http.client` call whose handler names
+  `OSError` or `ValueError` but not `http.client.HTTPException`, which `InvalidURL` and `IncompleteRead` are, or
+  whose `Request(` or port read sits outside the `try`.
+- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351, #2358, #2591, #2701
 
 ### A result cut short says it was cut
 
@@ -402,7 +405,8 @@ removed fails validation until its pattern follows it.
   `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
   and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
   on, and the adapter schema's repository pattern is probed against, and `markdown_sections:find_fences`, the one
-  reader of a Markdown fence.
+  reader of a Markdown fence, and `tools.stale_lines:report`, the one stale-file line of the tools that regenerate a
+  file.
   A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
   `skills/ejryan89-code-review-core/scripts/test_review_config.py::ConfigurationTests::test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees`,
@@ -414,6 +418,7 @@ removed fails validation until its pattern follows it.
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_every_job`,
   `tests/tools/test_hub_guard.py::ContractListTests::test_the_forms_the_hub_allows_are_the_read_only_forms`,
+  `tests/tools/test_worktrees.py::GuardImportsTests::test_the_docstring_names_every_name_the_hub_guard_reads_from_here`,
   `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`,
   `tests/validation/test_duplication.py::SharedFactPolicy::test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes`,
@@ -433,7 +438,7 @@ removed fails validation until its pattern follows it.
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
   `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748, #2832
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2701, #2718, #2734, #2738, #2748, #2832
 
 ### A promise in prose is held where its reader reads it
 
@@ -473,8 +478,8 @@ removed fails validation until its pattern follows it.
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
   `tools.claude_stream:events`, the one reader of Claude Code's stream-json output, which refuses a line that is JSON
-  but no event object, by its line, and `tools.runtime_canary:read_records`, which refuses a records line that is
-  JSON but no record object the same way, and `review_dispatch:_read_log`, which refuses a read log line that is
+  but no event object, or JSON the shared JSON reader refuses, by its line, and `tools.runtime_canary:read_records`,
+  which refuses a records line that is JSON but no record object the same way, and `review_dispatch:_read_log`, which refuses a read log line that is
   JSON but neither a path nor a search, by its line, and `review_batches:load_batch`, which reads a batch file whole
   before the advance or prepare command uses any field of it.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
@@ -482,6 +487,7 @@ removed fails validation until its pattern follows it.
   fails a reader that answers on a field or a list item of another type it does not document taking,
   `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
   `tests/tools/test_claude_stream.py::test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind`,
+  `tests/tools/test_claude_stream.py::test_a_json_line_the_reader_refuses_is_refused_by_its_line_never_passed_over`,
   `tests/tools/test_runtime_canary.py::RecordRefusalTests::test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind_not_skipped`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
   which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
@@ -503,7 +509,7 @@ removed fails validation until its pattern follows it.
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2564, #2589, #2705
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2564, #2589, #2701, #2705
 
 ### A reader of another program's language reads it as that program does
 

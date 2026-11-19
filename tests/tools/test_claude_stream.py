@@ -11,6 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
+
 from tools import claude_stream
 
 # Each character other than a newline and a carriage return that str.splitlines() breaks a line on, which a JSON
@@ -40,6 +42,27 @@ def test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind(line: str
 
 
 def test_a_line_that_is_not_json_is_passed_over_and_the_events_around_it_read() -> None:
-    stream = '\n{"type": "system"}\nwarning: not json\n{"type": "result", "type": "x"}\n{"type": "result"}\n{"ty'
+    stream = '\n{"type": "system"}\nwarning: not json\n{"type": "result"}\n{"ty'
     assert list(claude_stream.events(stream)) == [{"type": "system"}, {"type": "result"}]
     assert list(claude_stream.events("")) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param('{"type": "result", "type": "x"}', id="repeated-key"),
+        pytest.param('{"type": "result", "result": "\\ud800"}', id="lone-surrogate"),
+        pytest.param('{"type": "result", "duration": NaN}', id="constant"),
+        pytest.param('{"type": "result", "duration": 1e400}', id="infinite-number"),
+    ],
+)
+def test_a_json_line_the_reader_refuses_is_refused_by_its_line_never_passed_over(line: str) -> None:
+    # Passed over, the stream was judged from the events left, as a skill start on that line read as none.
+    with pytest.raises(json_reader.JsonRefused) as refused:
+        json_reader.loads(line)
+    stream = '{"type": "system"}\n' + line + '\n{"type": "result"}\n'
+    events = claude_stream.events(stream)
+    assert next(events) == {"type": "system"}
+    with pytest.raises(claude_stream.StreamError) as raised:
+        next(events)
+    assert str(raised.value) == f"line 2 of the session's stream is JSON the reader refuses: {refused.value}"

@@ -162,13 +162,28 @@ class RuntimePromptsTestCase(unittest.TestCase):
                     self.assertFalse(folders[-1].exists(), "the throwaway folder goes even when rendering fails")
         self.assertFalse((self.root / "docs").exists())
 
+    def test_each_missing_stale_or_extra_sample_prints_a_stale_line_and_exits_1(self) -> None:
+        # The bare problem printed alone, where its sibling tools print STALE lines change-skill reads.
+        renderers = {"alpha": renderer({"reviewer": "Review it.", "synthesis": "Sum it up."})}
+        runtime_prompts.write(self.root, renderers)
+        samples = self.root / "docs" / "runtime-prompts"
+        (samples / "alpha" / "reviewer.txt").write_text("Stale.\n", encoding="utf-8")
+        (samples / "alpha" / "synthesis.txt").unlink()
+        (samples / "alpha" / "old.txt").write_text("Gone.\n", encoding="utf-8")
+        problems = runtime_prompts.problems(self.root, renderers)
+        self.assertEqual(3, len(problems))
+        self.assertEqual((1, "".join(f"STALE {problem}\n" for problem in problems), ""), self.run_main(renderers))
+        runtime_prompts.write(self.root, renderers)
+        self.assertEqual((0, "", ""), self.run_main(renderers))
+
     def test_a_sample_that_cannot_be_read_or_written_exits_2_and_one_not_utf8_is_stale(self) -> None:
         renderers = {"alpha": renderer({"reviewer": "Review it."})}
         sample = self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt"
         sample.parent.mkdir(parents=True)
         sample.write_bytes(b"\xff\xfe not UTF-8\n")
+        # Changed on purpose: each problem prints as a STALE line, as skill_reference.py and skill_shims.py do.
         self.assertEqual(
-            (1, f"docs/runtime-prompts/alpha/reviewer.txt is stale; {runtime_prompts.WRITE_HINT}\n", ""),
+            (1, f"STALE docs/runtime-prompts/alpha/reviewer.txt is stale; {runtime_prompts.WRITE_HINT}\n", ""),
             self.run_main(renderers),
         )
         with mock.patch.object(Path, "read_text", side_effect=PermissionError("denied")):

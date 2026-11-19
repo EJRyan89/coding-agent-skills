@@ -88,6 +88,8 @@ from deployer.kinds import KINDS
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+# The commands that read the deployed home, and so take --home and --source.
+DEPLOYMENT_COMMANDS = ("verify", "layout", "leftovers")
 
 PASSED = "PASSED"
 SKIPPED = "SKIPPED"
@@ -566,9 +568,10 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("verify", "layout", "leftovers", "summary"):
         command = commands.add_parser(name)
         command.add_argument("--results", required=True, help="the JSON file that collects each pass")
+    for name in DEPLOYMENT_COMMANDS:
         # The home is read once the command line parses, so --help and a usage error never depend on it.
-        command.add_argument("--home", default=None, help=argparse.SUPPRESS)
-        command.add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
+        commands.choices[name].add_argument("--home", default=None, help=argparse.SUPPRESS)
+        commands.choices[name].add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
     commands.choices["verify"].add_argument(
@@ -586,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
     bash = commands.add_parser("bash")
     bash.add_argument("--at-least", required=True, help="the oldest Bash version the deployment may run on")
     arguments = parser.parse_args(argv)
-    if arguments.command not in ("pin", "bash") and arguments.home is None:
+    if arguments.command in DEPLOYMENT_COMMANDS and arguments.home is None:
         try:
             arguments.home = str(platform_support.home_directory())
         except DeployError as exc:

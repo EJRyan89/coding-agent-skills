@@ -31,18 +31,22 @@ def json_kind(value: object) -> str:
 
 
 class StreamError(ValueError):
-    """A line of the stream that is JSON but no event object: a stream in a shape this does not read."""
+    """A line of the stream that is JSON but no event object, or JSON the reader refuses: a stream in a shape this does
+    not read."""
 
 
 def events(output: str) -> Iterator[dict[str, Any]]:
-    """Each event object the stream holds, in order. A line that is JSON of another kind than an object raises
-    StreamError naming its line, since every event Claude Code writes is an object, and passing such a line over would
-    judge the stream from the events left. A line that is not JSON, or is JSON json_reader refuses, is passed over: it
-    is no event of the session's, as a blank line, a warning, or the last line cut off part way when the session was
-    ended at its time limit is not, and the events around it are still the session's."""
+    """Each event object the stream holds, in order. A line that is JSON of another kind than an object, or JSON
+    json_reader refuses, such as an object that repeats a key or a string that holds a lone surrogate, raises
+    StreamError naming its line, since every event Claude Code writes is an object json_reader reads, and passing such
+    a line over would judge the stream from the events left. A line that is not JSON is passed over: it is no event of
+    the session's, as a blank line, a warning, or the last line cut off part way when the session was ended at its time
+    limit is not, and the events around it are still the session's."""
     for number, line in enumerate(program_lines(output), 1):
         try:
             event = json_reader.loads(line)
+        except json_reader.JsonRefused as exc:
+            raise StreamError(f"line {number} of the session's stream is JSON the reader refuses: {exc}") from exc
         except ValueError:
             continue
         if not isinstance(event, dict):
