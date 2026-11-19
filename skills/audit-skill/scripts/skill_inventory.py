@@ -198,6 +198,7 @@ import bash_syntax
 import check_provenance
 import command_wrappers
 import exit_calls
+import folder_walk
 import frontmatter
 import git_subcommands
 import json_reader
@@ -210,7 +211,7 @@ from agent_skills import is_skill_file
 from bash_syntax import BashSyntaxError, Simple
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, program_name
-from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, matching
+from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import (
@@ -246,7 +247,6 @@ CATEGORIES = ("main", "helper", "doc", "data")
 # They are counted in lines, as published; size in bytes is reported as data, never flagged.
 BODY_LINE_LIMIT = 500
 DOC_TOC_LINE_LIMIT = 100
-SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 # Why a file the skill loads cannot be measured.
 NOT_UTF8 = "not UTF-8 text"
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -1362,14 +1362,16 @@ def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
 
 
 def folder_files(directory: Path) -> list[Path]:
-    """Every file of a skill folder that inventory sizes, in the order it lists them."""
-    # A skipped folder is never listed, so a folder it cannot list inside one is never met.
+    """Every file of a skill folder that inventory sizes, in the order it lists them, as `folder_walk` walks the folder:
+    its one skip set, compared case-insensitively, and no nested checkout or link to a folder entered. A skipped folder
+    is never listed, so a folder it cannot list inside one is never met; one elsewhere, or an entry the walk cannot
+    examine, raises its own error, so no file is left out of the measure."""
+    walk = folder_walk.walk_files(directory, lambda _name: True)
+    for entry in walk.not_entered:
+        if entry.error is not None:
+            raise entry.error
     return sorted(
-        (
-            path
-            for path in matching(directory, "**/*", skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
-            if is_listed_file(path)
-        ),
+        (path for path in walk.files if is_listed_file(path)),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
 

@@ -3877,6 +3877,66 @@ def test_folder_files_lists_each_file_below_the_skill_but_those_in_skipped_folde
     assert listed == ["references/deep/notes.md", "scripts/run.py", "SKILL.md"]
 
 
+def listed_below(skill: Path, *names: str) -> list[str]:
+    """The files `folder_files` lists in `skill` once each of `names` is written there, relative to it."""
+    for name in names:
+        write(skill / name, "")
+    return [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+
+
+SKILL_OWN_FILES = ("SKILL.md", "scripts/run.py", "references/deep/notes.md")
+SKILL_OWN_LISTED = ["references/deep/notes.md", "scripts/run.py", "SKILL.md"]
+
+
+def test_folder_files_passes_over_every_folder_of_version_control_dependencies_and_build_output(
+    tmp_path: Path,
+) -> None:
+    # The inventory skipped only .git, __pycache__, and node_modules, so it sized a virtual environment, a test
+    # runner's environments, another version control's store, and build output as the skill's own files.
+    skipped = (
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".tox",
+        ".nox",
+        "__pycache__",
+        "bin",
+        "obj",
+        ".vs",
+    )
+    # A .git below the top makes its folder a nested checkout, which the test below covers, so it is planted on top.
+    below = [f"scripts/{folder}/deep/inside.md" for folder in skipped if folder != ".git"]
+    planted = [f"{folder}/inside.py" for folder in skipped] + below
+    assert listed_below(tmp_path / "skill", *SKILL_OWN_FILES, *planted) == SKILL_OWN_LISTED
+
+
+def test_folder_files_passes_over_a_skipped_folder_in_another_case(tmp_path: Path) -> None:
+    # The skip set was compared by exact spelling, so Node_Modules and .GIT were entered on every file system.
+    planted = ("Node_Modules/x.js", ".GIT/config", "scripts/__PYCACHE__/run.pyc", "BIN/tool.exe", ".Venv/lib/site.py")
+    assert listed_below(tmp_path / "skill", *SKILL_OWN_FILES, *planted) == SKILL_OWN_LISTED
+
+
+def test_folder_files_passes_over_a_nested_checkout_marked_by_a_git_folder_or_a_git_file(tmp_path: Path) -> None:
+    # A clone holds a .git folder, and a worktree or submodule a .git file; either folder is another repository's.
+    planted = ("vendor/clone/.git/HEAD", "vendor/clone/lib.py", "vendor/worktree/.git", "vendor/worktree/lib.md")
+    assert listed_below(tmp_path / "skill", *SKILL_OWN_FILES, *planted) == SKILL_OWN_LISTED
+
+
+def test_folder_files_reads_a_git_entry_in_another_case_as_a_checkout_only_where_its_folder_folds_case(
+    tmp_path: Path,
+) -> None:
+    # On a folding file system git opens vendor/clone/.GIT as its .git folder, so the folder is a nested checkout; on a
+    # case-sensitive one .GIT is another folder, which the skip set passes over by name, and lib.py is the skill's.
+    skill = tmp_path / "skill"
+    listed = listed_below(skill, *SKILL_OWN_FILES, "vendor/clone/.GIT/HEAD", "vendor/clone/lib.py")
+    folds = (skill / "vendor" / "clone" / ".git").exists()
+    expected = SKILL_OWN_LISTED if folds else [*SKILL_OWN_LISTED, "vendor/clone/lib.py"]
+    assert listed == expected
+
+
 def test_folder_files_refuses_a_folder_below_the_skill_it_cannot_list(tmp_path: Path) -> None:
     # A glob matches nothing in a folder it cannot list, which would leave its files out of the measure.
     skill = tmp_path / "skill"
