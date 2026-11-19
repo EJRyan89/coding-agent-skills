@@ -704,7 +704,7 @@ The pull requests `update-pr-dashboard` holds, the AI review of each row it show
 
 #### Tracker user review (`tracker.user_reviews.<pull>`)
 
-GitHub keeps no base commit for a user's review, so the update records one: the tip of the pull request's base branch it collected the first time it saw the review's commit, kept while that commit stays the user's latest review. The update compares the review's commit with that base, rather than with the base branch as it is now, to decide whether the pull request changed since the review, and with the base branch as it is now when GitHub can no longer compare the recorded base.
+GitHub keeps no base commit for a user's review, so the update records one: the tip of the pull request's base branch it collected the first time it saw the review's commit, kept by each later update that collects the pull request while that commit stays the user's latest review. An update that does not collect the pull request, one scoped to other repositories or run while it is closed, forgets its base, as it forgets the record's other entries for it, and the next update that collects it records the tip then. The update compares the review's commit with that base, rather than with the base branch as it is now, to decide whether the pull request changed since the review, and with the base branch as it is now when GitHub can no longer compare the recorded base.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |

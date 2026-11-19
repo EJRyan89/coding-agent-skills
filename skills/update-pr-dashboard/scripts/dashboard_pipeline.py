@@ -268,8 +268,8 @@ def tracker_item(
         name = author.get("name")
         latest = node["reviews"]["nodes"][-1] if node["reviews"]["nodes"] else None
         # The tip of the base branch as GitHub holds it now, which the tracker record keeps as the base a user review
-        # first seen now is compared from; none when the branch is gone.
-        base = node["baseRef"]
+        # first seen now is compared from; none when the branch is gone or GitHub names no commit for it.
+        base_sha = ((node["baseRef"] or {}).get("target") or {}).get("oid")
         deciding = node["decidingReviews"]["nodes"][-1] if node["decidingReviews"]["nodes"] else None
         item = {
             "repository": repository,
@@ -281,7 +281,7 @@ def tracker_item(
             "requested_reviewers": _complete_logins(node["reviewRequests"], "requestedReviewer", "review requests"),
             "draft": node["isDraft"],
             "base_ref": node["baseRefName"],
-            "base_sha": base["target"]["oid"] if base else None,
+            "base_sha": base_sha,
             "head_sha": node["headRefOid"],
             "updated_at": node["updatedAt"],
             "review_decision": node["reviewDecision"],

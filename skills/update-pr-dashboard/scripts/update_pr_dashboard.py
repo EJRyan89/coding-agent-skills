@@ -459,10 +459,13 @@ def user_review_bases(
     review's commit, else the tip of the base branch this collection read, or none when it read none.
 
     GitHub keeps no base for a user's review, so the base is the one the update saw the first time it saw the review's
-    commit, and kept while the review's commit stays the same. Comparing the review's commit with that base rather
-    than the base branch as it is now keeps a pull request a rewrite of a lower branch rebased, with its own changes as
-    reviewed, from reading as changed. Limit: a base rewritten before the first update after the review was recorded
-    after the rewrite, so that review reads as it did before bases were recorded."""
+    commit, kept by each later update that collects the pull request while the review's commit stays the same. Comparing
+    the review's commit with that base rather than the base branch as it is now keeps a pull request a rewrite of a
+    lower branch rebased, with its own changes as reviewed, from reading as changed. Limits: a base rewritten before the
+    first update after the review was recorded after the rewrite, and an update that does not collect the pull
+    request, one scoped to other repositories or run while it is closed, forgets its base, as it forgets the record's
+    other entries for it, so the next update that collects it records the tip then. Either way that review reads as it
+    did before bases were recorded."""
     login_key = login.casefold()
     recorded = previous["user_reviews"] if previous else {}
     bases: dict[str, dict[str, str]] = {}

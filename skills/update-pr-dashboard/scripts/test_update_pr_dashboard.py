@@ -1482,6 +1482,25 @@ class UserReviewBaseTests(unittest.TestCase):
             user_review_bases(items, "reviewer", None),
         )
 
+    def test_two_user_reviews_of_one_pull_request_in_another_case_are_refused(self) -> None:
+        base = {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}
+        self.assertEqual(
+            (
+                "TrackerError",
+                "Tracker user review owner/repo#2 names no pull request the record holds, or is named twice",
+            ),
+            raised(
+                lambda: validate_tracker_record(
+                    {
+                        "schema_version": 3,
+                        "pulls": ["owner/repo#2"],
+                        "reviews": {},
+                        "user_reviews": {"owner/repo#2": base, "Owner/Repo#2": base},
+                    }
+                )
+            ),
+        )
+
     def test_a_review_with_no_base_recorded_or_collected_has_none(self) -> None:
         items = validate_items([reviewed(2, "CHANGES_REQUESTED")])
         self.assertEqual({}, user_review_bases(items, "reviewer", None))

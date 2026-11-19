@@ -530,6 +530,20 @@ class CollectTests(TrackerPipelineFixture):
         self.assertEqual(1, code)
         self.assertIn("user_review_sha is required for APPROVED", out)
 
+    def test_a_base_branch_gone_or_naming_no_commit_collects_no_base_and_records_none(self) -> None:
+        review = {"nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]}
+        bases: tuple[dict[str, Any] | None, ...] = (None, {"target": None}, {"target": {}})
+        for base in bases:
+            with self.subTest(base=base):
+                self.github.pages["example/one"] = [page([pull_node(2, baseRef=base, reviews=review)])]
+                code, out, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+                self.assertEqual((0, ""), (code, err), out)
+                [collected] = json.loads(self.input.read_text(encoding="utf-8"))
+                self.assertIsNone(collected["base_sha"])
+                code, out, err = self.run_main("update", "--input", str(self.input))
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertEqual({}, json.loads(self.record.read_text(encoding="utf-8"))["user_reviews"])
+
     def test_collect_reads_the_user_s_latest_deciding_review_beside_the_latest_review(self) -> None:
         commented = {"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}
         nodes = [
