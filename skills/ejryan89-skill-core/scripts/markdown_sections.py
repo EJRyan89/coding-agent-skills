@@ -40,6 +40,9 @@ THEMATIC_BREAK = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 # as its level, a space or a tab, then its text, less a closing run of `#` after a space or a tab. `\s` would admit
 # every Unicode space, so a line Markdown shows as prose, such as `#` and a no-break space, would be read as a heading.
 ATX_HEADING = re.compile(r" {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+)?[ \t]*$")
+# An ATX heading with no text: up to three spaces of indentation and one to six `#`, with nothing after them but spaces
+# or tabs. It ends a paragraph as any heading does, though ATX_HEADING, which reads a heading's text, matches none.
+EMPTY_ATX_HEADING = re.compile(r" {0,3}#{1,6}[ \t]*")
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
@@ -294,7 +297,7 @@ class _Blocks:
         """A fence's line: its opener ends the items indented past it, and opens one when a list marker holds it."""
         if opener:
             width = indentation(line)
-            del self.items[_holding(self.items, width) :]
+            del self.items[items_holding(self.items, width) :]
             item = _item_content(line, interrupting=False, relative=width - (self.items[-1] if self.items else 0))
             if item is not None:
                 self.items.append(item[0])
@@ -305,7 +308,7 @@ class _Blocks:
         if self.paragraph:
             return False
         width = indentation(line)
-        del self.items[_holding(self.items, width) :]
+        del self.items[items_holding(self.items, width) :]
         if width < (self.items[-1] if self.items else 0) + CODE_INDENT:
             return False
         self.code.update(self.run)
@@ -318,7 +321,7 @@ class _Blocks:
         it, or a paragraph's text."""
         self.run = []
         width = indentation(line)
-        held = _holding(self.items, width)
+        held = items_holding(self.items, width)
         relative = width - (self.items[held - 1] if held else 0)
         block = line.strip(LINE_END) if relative <= MAX_BLOCK_INDENT else ""
         item = _item_content(line, interrupting=self.paragraph, relative=relative)
@@ -343,16 +346,33 @@ class _Blocks:
 
 def _continues(line: str, *, opener: bool) -> bool:
     """Whether a line, its blockquote markers taken off, may lazily continue a paragraph: it holds text and starts no
-    block, neither a fence, nor an ATX heading or a thematic break indented at most MAX_BLOCK_INDENT columns, nor a
-    list item that may interrupt a paragraph, each of which ends the paragraph and what holds it."""
+    block, which would end the paragraph and what holds it."""
+    return not (is_blank(line) or starts_block(line, opener=opener))
+
+
+def starts_block(line: str, *, opener: bool) -> bool:
+    """Whether a line after a paragraph's text, read at the column of the content that holds it, starts a block, which
+    ends the paragraph, rather than lazily continuing it: a fence, whose opener `find_fences` reads and the caller
+    names with `opener`, a blockquote marker, an ATX heading, or a thematic break, each indented at most
+    MAX_BLOCK_INDENT columns, an empty ATX heading among them, or a list item that may interrupt a paragraph."""
     block = line.strip(LINE_END) if indentation(line) <= MAX_BLOCK_INDENT else ""
-    starts = THEMATIC_BREAK.fullmatch(block) or ATX_HEADING.fullmatch(block) or list_item(line, interrupting=True)
-    return not (is_blank(line) or opener or starts)
+    return bool(
+        opener
+        or block.startswith(">")
+        or THEMATIC_BREAK.fullmatch(block)
+        or starts_heading(block)
+        or list_item(line, interrupting=True) is not None
+    )
 
 
-def _holding(items: list[int], width: int) -> int:
-    """How many of the open list items, by the column each one's content starts at, hold a line indented `width`
-    columns."""
+def starts_heading(line: str) -> bool:
+    """Whether a line is an ATX heading, with text as ATX_HEADING reads one or empty, `#` to `######` alone."""
+    return ATX_HEADING.fullmatch(line) is not None or EMPTY_ATX_HEADING.fullmatch(line) is not None
+
+
+def items_holding(items: list[int], width: int) -> int:
+    """How many of the open list items, by the column each one's content starts at, outermost first, hold a line
+    indented `width` columns."""
     held = 0
     while held < len(items) and items[held] <= width:
         held += 1
@@ -366,6 +386,13 @@ def _unquoted(line: str) -> tuple[str, int]:
     while indentation(line) <= MAX_BLOCK_INDENT and (marker := QUOTE_MARKER.match(line)) is not None:
         line, quotes = line[marker.end() :], quotes + 1
     return line, quotes
+
+
+def list_item_content(line: str) -> int | None:
+    """The column the content of the list item a line opens starts at, as `_read_blocks` reads it, or None when the
+    line opens no list item. Whether the item may interrupt a paragraph there is `list_item`'s."""
+    item = _item_content(line, interrupting=False, relative=0)
+    return None if item is None else item[0]
 
 
 def _item_content(line: str, *, interrupting: bool, relative: int) -> tuple[int, str, bool] | None:
