@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult, GitHubError
-from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
+from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError, Query
 from review_config import ConfigurationError, dashboard_status_heading, dashboard_status_key
 from review_github import GitHubClient
 from typed_fields import FieldError
@@ -35,6 +35,7 @@ from update_pr_dashboard import (
     normalize_pull_keys,
     replacement,
     review_candidates,
+    tracked_pulls,
     update_dashboard_rows,
     validate_items,
 )
@@ -49,15 +50,28 @@ USER_REVIEWED = "c" * 40
 
 
 class FakeDetector:
+    """Answers each comparison from `results`, by pull request and earlier commit, and records the base each earlier
+    commit was compared with, by pull request and earlier commit, None for the base branch as it is now."""
+
     def __init__(self, results: dict[tuple[int, str], str] | None = None) -> None:
         self.results = results or {}
+        self.bases: dict[tuple[int, str], str | None] = {}
 
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
+        self.bases[(number, since_sha)] = since_base
         if since_sha == head_sha:
             return UNCHANGED
         return self.results.get((number, since_sha), CHANGED)
 
-    def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
+    def prefetch(self, queries: Iterable[Query]) -> None:
         pass
 
 
@@ -68,10 +82,18 @@ class FailingDetector(FakeDetector):
         super().__init__()
         self.failing = failing
 
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
         if (number, since_sha) in self.failing:
             raise ComparisonError(f"{repository}#{number}", GitHubError(self.failing[(number, since_sha)]))
-        return super().detect(repository, number, base_ref, since_sha, head_sha)
+        return super().detect(repository, number, base_ref, since_sha, head_sha, since_base)
 
 
 def item(repository: str = "owner/repo", number: int = 1) -> dict[str, Any]:
@@ -82,7 +104,6 @@ def item(repository: str = "owner/repo", number: int = 1) -> dict[str, Any]:
         "title": "Improve | behavior",
         "author": "someone",
         "requested_reviewers": ["reviewer"],
-        "participants": [],
         "draft": False,
         "base_ref": "main",
         "head_sha": HEAD,
@@ -565,7 +586,7 @@ class TrackerTests(unittest.TestCase):
         }
         self.assertEqual(
             {state: state for state in cases},
-            {state: _ai_review(value, FakeDetector()) for state, value in cases.items()},
+            {state: _ai_review(validate_items([value])[0], FakeDetector()) for state, value in cases.items()},
         )
         for state in cases:
             for value in (state, state.upper(), f" {state.title()} "):
@@ -698,6 +719,40 @@ class TrackerTests(unittest.TestCase):
             review_candidates(rows),
         )
 
+    def test_a_pull_request_is_tracked_when_the_user_authored_it_is_asked_to_review_it_or_has_reviewed_it(self) -> None:
+        authored = item(number=1) | {"author": "Reviewer", "requested_reviewers": []}
+        requested = item(number=2)
+        # The user has a review in each state GitHub keeps; a review comment alone leaves a COMMENTED review.
+        states = ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED")
+        reviewing = [reviewed(3 + index, state) | {"requested_reviewers": []} for index, state in enumerate(states)]
+        # Pushing commits or commenting on the conversation leaves the user no review and asks for none.
+        unreviewed = item(number=7) | {"requested_reviewers": []}
+        detector = FakeDetector({(number, USER_REVIEWED): CHANGED for number in range(3, 7)})
+        items = validate_items([authored, requested, *reviewing, unreviewed])
+        self.assertEqual([f"owner/repo#{number}" for number in range(1, 7)], tracked_pulls(items, "reviewer"))
+        rows = evaluate(items, "reviewer", detector)
+        self.assertEqual(
+            [
+                (1, "authored"),
+                (2, "review requested"),
+                (3, "reviewing"),
+                (4, "reviewing"),
+                (5, "reviewing"),
+                (6, "reviewing"),
+            ],
+            [(row.item["number"], row.relationship) for row in rows],
+        )
+        self.assertNotIn(7, [candidate["number"] for candidate in review_candidates(rows)])
+
+    def test_the_ai_review_is_compared_from_the_base_it_was_reviewed_on_when_the_record_names_it(self) -> None:
+        rebased = item(number=1) | {"reviewed_base_sha": "e" * 40}
+        legacy = item(number=2)
+        detector = ReadAheadDetector({(1, AI_REVIEWED): UNCHANGED})
+        rows = evaluate(validate_items([rebased, legacy]), "reviewer", detector)
+        self.assertEqual({(1, AI_REVIEWED): "e" * 40, (2, AI_REVIEWED): None}, detector.bases)
+        self.assertIn(("prefetch", Query("owner/repo", "main", AI_REVIEWED, HEAD, "e" * 40)), detector.events)
+        self.assertEqual([2], [candidate["number"] for candidate in review_candidates(rows)])
+
     def test_a_failed_comparison_fails_the_update_and_leaves_the_dashboard_as_it_was(self) -> None:
         failing = {(1, USER_REVIEWED): "HTTP 502: Bad Gateway", (2, AI_REVIEWED): "HTTP 403: Forbidden"}
         before = f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode()
@@ -761,11 +816,19 @@ class RecordingDetector(FakeDetector):
         self.calls: list[int] = []
         self.during = during
 
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
         if not self.calls and self.during is not None:
             self.during()
         self.calls.append(number)
-        return super().detect(repository, number, base_ref, since_sha, head_sha)
+        return super().detect(repository, number, base_ref, since_sha, head_sha, since_base)
 
 
 def dashboard_files(root: Path, dashboard_bytes: bytes, items: list[dict[str, Any]] | None = None) -> tuple[Path, Path]:
@@ -788,15 +851,23 @@ class ReadAheadDetector(FakeDetector):
 
     def __init__(self, results: dict[tuple[int, str], str] | None = None) -> None:
         super().__init__(results)
-        self.events: list[tuple[str, tuple[str, str, str, str]]] = []
+        self.events: list[tuple[str, Query]] = []
 
-    def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
+    def prefetch(self, queries: Iterable[Query]) -> None:
         self.events.extend(("prefetch", query) for query in queries)
-        self.events.append(("round", ("", "", "", "")))
+        self.events.append(("round", Query("", "", "", "")))
 
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
-        self.events.append(("detect", (repository, base_ref, since_sha, head_sha)))
-        return super().detect(repository, number, base_ref, since_sha, head_sha)
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
+        self.events.append(("detect", Query(repository, base_ref, since_sha, head_sha, since_base)))
+        return super().detect(repository, number, base_ref, since_sha, head_sha, since_base)
 
 
 def commit(number: int) -> str:
@@ -865,18 +936,18 @@ class ReadAheadTests(unittest.TestCase):
             detector,
             overrides={"owner/repo#3": "on hold"},
         )
-        user, ai_review = (("owner/repo", "main", sha, HEAD) for sha in (USER_REVIEWED, AI_REVIEWED))
+        user, ai_review = (Query("owner/repo", "main", sha, HEAD) for sha in (USER_REVIEWED, AI_REVIEWED))
         self.assertEqual(
             [
                 ("prefetch", user),  # approved#1
                 ("prefetch", user),  # commented#2; pinned#3 and mine#4 need no user comparison
-                ("round", ("", "", "", "")),
+                ("round", Query("", "", "", "")),
                 ("detect", user),
                 ("detect", user),
                 ("prefetch", ai_review),  # commented#2, pinned#3, mine#4; approved#1 is unchanged and left out
                 ("prefetch", ai_review),
                 ("prefetch", ai_review),
-                ("round", ("", "", "", "")),
+                ("round", Query("", "", "", "")),
                 ("detect", ai_review),
                 ("detect", ai_review),
                 ("detect", ai_review),
@@ -1362,6 +1433,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         self.assertEqual(
             [
                 "reviewed_incomplete",
+                "reviewed_base_sha",
                 "author_name",
                 "review_decision",
                 "user_review_decision",
@@ -1372,7 +1444,6 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 "title",
                 "author",
                 "requested_reviewers",
-                "participants",
                 "draft",
                 "base_ref",
                 "head_sha",
@@ -1386,6 +1457,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         self.assertEqual(
             {
                 "reviewed_incomplete": False,
+                "reviewed_base_sha": None,
                 "author_name": None,
                 "review_decision": None,
                 "user_review_decision": None,
@@ -1402,6 +1474,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             **item(number=3),
             "author_name": "Someone Else",
             "reviewed_incomplete": True,
+            "reviewed_base_sha": "e" * 40,
             "review_decision": "APPROVED",
             "user_review_decision": "APPROVED",
             "user_review_state": "COMMENTED",
@@ -1410,7 +1483,15 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         [result] = validate_items([source])
         self.assertEqual(source, result)
         self.assertEqual(
-            ["reviewed_incomplete", "author_name", "review_decision", "user_review_decision", "ai_review", *item()],
+            [
+                "reviewed_incomplete",
+                "reviewed_base_sha",
+                "author_name",
+                "review_decision",
+                "user_review_decision",
+                "ai_review",
+                *item(),
+            ],
             list(result),
         )
 
@@ -1456,7 +1537,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ),
             *(
                 (field, value, wrong(f"{SECOND}.{field}{index}", expected, found))
-                for field in ("requested_reviewers", "participants")
+                for field in ("requested_reviewers",)
                 for value, index, expected, found in (
                     ("reviewer", "", "an array", 'string "reviewer"'),
                     (None, "", "an array", "null"),
@@ -1469,6 +1550,8 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("draft", 0, wrong(f"{SECOND}.draft", "a boolean", "integer 0")),
             ("reviewed_head_sha", "", wrong(f"{SECOND}.reviewed_head_sha", TEXT_OR_NULL, "an empty string")),
             ("reviewed_head_sha", 5, wrong(f"{SECOND}.reviewed_head_sha", TEXT_OR_NULL, "integer 5")),
+            ("reviewed_base_sha", "", wrong(f"{SECOND}.reviewed_base_sha", TEXT_OR_NULL, "an empty string")),
+            ("reviewed_base_sha", 5, wrong(f"{SECOND}.reviewed_base_sha", TEXT_OR_NULL, "integer 5")),
             ("user_review_sha", "", wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "an empty string")),
             ("user_review_sha", 5, wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "integer 5")),
             (
@@ -1500,6 +1583,14 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         )
         [result] = validate_items([item() | {"reviewed_incomplete": False, "reviewed_head_sha": None}])
         self.assertIsNone(result["reviewed_head_sha"])
+
+    def test_a_reviewed_base_needs_a_reviewed_commit(self) -> None:
+        self.assertEqual(
+            ("TrackerError", "Tracker item owner/repo#1.reviewed_base_sha requires reviewed_head_sha"),
+            refusal([item() | {"reviewed_base_sha": "e" * 40, "reviewed_head_sha": None}]),
+        )
+        [result] = validate_items([item() | {"reviewed_base_sha": "e" * 40}])
+        self.assertEqual("e" * 40, result["reviewed_base_sha"])
 
     def test_review_states_that_need_no_commit_are_accepted(self) -> None:
         for state, sha in ((None, None), ("DISMISSED", None), ("DISMISSED", USER_REVIEWED)):
@@ -1638,9 +1729,9 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("head_sha", "", HEAD),
             ("updated_at", "", "2026-01-02T00:00:00Z"),
             ("requested_reviewers", "x", []),
-            ("participants", [1], []),
             ("draft", None, True),
             ("reviewed_head_sha", "", AI_REVIEWED),
+            ("reviewed_base_sha", "", None),
             ("user_review_sha", "", None),
             ("user_review_state", "PENDING", None),
         ]
@@ -1669,9 +1760,9 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 f"{first}.head_sha must be a non-empty string, found an empty string",
                 f"{first}.updated_at must be a non-empty string, found an empty string",
                 f'{first}.requested_reviewers must be an array, found string "x"',
-                f"{first}.participants[0] must be a non-empty string, found integer 1",
                 f"{first}.draft must be a boolean, found null",
                 f"{first}.reviewed_head_sha must be a non-empty string or null, found an empty string",
+                f"{first}.reviewed_base_sha must be a non-empty string or null, found an empty string",
                 f"{first}.user_review_sha must be a non-empty string or null, found an empty string",
                 f'{first}.user_review_state must be one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED" '
                 'or null, found string "PENDING"',

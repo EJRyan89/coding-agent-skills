@@ -100,8 +100,8 @@ from update_pr_dashboard import (
     validate_tracker_record,
 )
 
-# One query per page of 50 open pull requests. A pull request with more than 100 review requests or participants has
-# that connection read again, whole, by `CONNECTION_QUERIES`, so no item is tracked from partial data.
+# One query per page of 50 open pull requests. A pull request with more than 100 review requests has that connection
+# read again, whole, by `CONNECTION_QUERIES`, so no item is tracked from partial data.
 PULLS_QUERY = """
 query($owner: String!, $name: String!, $login: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -114,7 +114,6 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
           pageInfo { hasNextPage }
           nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
         }
-        participants(first: 100) { pageInfo { hasNextPage } nodes { login } }
         reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
           nodes { state commit { oid } }
         }
@@ -126,7 +125,7 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
   }
 }
 """.strip()
-# Every page of one pull request's review requests or participants, by connection name.
+# Every page of one pull request's review requests, by connection name.
 CONNECTION_QUERIES = {
     connection: f"""
 query($owner: String!, $name: String!, $number: Int!, $after: String) {{
@@ -142,7 +141,6 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {{
             "reviewRequests",
             "requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } }",
         ),
-        ("participants", "login"),
     )
 }
 # Every open pull request one search matches, each read only for its repository's name.
@@ -208,9 +206,8 @@ def configured_login(config: dict[str, Any], github: GitHubClient) -> str:
 
 
 def complete_connections(github: GitHubClient, repository: str, node: Any) -> Any:
-    """The pull-request node with each review-request or participant connection that has another page replaced by
-    every node of it, read through `github`; a node of an unexpected shape is returned as it is, for `tracker_item`
-    to refuse."""
+    """The pull-request node with each review-request connection that has another page replaced by every node of it,
+    read through `github`; a node of an unexpected shape is returned as it is, for `tracker_item` to refuse."""
     if not isinstance(node, dict) or not isinstance(node.get("number"), int):
         return node
     owner, name = repository.split("/", 1)
@@ -229,12 +226,12 @@ def complete_connections(github: GitHubClient, repository: str, node: Any) -> An
     return completed
 
 
-def _complete_logins(connection: dict[str, Any], key: str | None, what: str) -> list[str]:
+def _complete_logins(connection: dict[str, Any], key: str, what: str) -> list[str]:
     if connection["pageInfo"]["hasNextPage"]:
         raise CollectionError(f"has more than 100 {what}")
     logins = []
     for node in connection["nodes"]:
-        actor = node[key] if key else node
+        actor = node[key]
         # A team review request has no login and can never name the configured user.
         try:
             logins.append(READ.string(READ.json_object(actor, "actor").get("login"), "actor.login"))
@@ -278,7 +275,6 @@ def tracker_item(
             "author": author["login"],
             "author_name": _profile_name(name),
             "requested_reviewers": _complete_logins(node["reviewRequests"], "requestedReviewer", "review requests"),
-            "participants": _complete_logins(node["participants"], None, "participants"),
             "draft": node["isDraft"],
             "base_ref": node["baseRefName"],
             "head_sha": node["headRefOid"],
@@ -296,6 +292,9 @@ def tracker_item(
     records = pull_records(archive_root, repository, number)
     reviewed = reviewed_head(archive_root, repository, number, records=records)
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
+    # The base the reviewed head was compared with, so a rebase that leaves the diff as it was is not a change. It is
+    # the latest record's, the one `reviewed_head` read; a legacy review recorded none.
+    item["reviewed_base_sha"] = records[-1]["pull_request"]["base_sha"] if reviewed and records else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
     item["ai_review"] = {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
     # A legacy review has no records to read a ledger from, so its row shows only its counts.

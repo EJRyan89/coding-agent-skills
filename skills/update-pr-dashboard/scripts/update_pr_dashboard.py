@@ -57,7 +57,6 @@ REQUIRED_FIELDS = {
     "title",
     "author",
     "requested_reviewers",
-    "participants",
     "draft",
     "base_ref",
     "head_sha",
@@ -76,7 +75,14 @@ SECTION_TO_REVIEW = DASHBOARD_SECTION_TO_REVIEW
 SECTION_AWAITING = DASHBOARD_SECTION_AWAITING
 SECTION_MINE = DASHBOARD_SECTION_MINE
 SECTION_DRAFTS = DASHBOARD_SECTION_DRAFTS
-OPTIONAL_FIELDS = {"reviewed_incomplete", "author_name", "review_decision", "user_review_decision", "ai_review"}
+OPTIONAL_FIELDS = {
+    "reviewed_incomplete",
+    "reviewed_base_sha",
+    "author_name",
+    "review_decision",
+    "user_review_decision",
+    "ai_review",
+}
 LEDGER_KEYS = {"ledger", "flagged", "since_review"}
 REVIEW_DECISIONS = {None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
 AI_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested", "INCOMPLETE": "Incomplete"}
@@ -132,13 +138,22 @@ READ = FieldReader(TrackerFieldError)
 
 
 class Detector(Protocol):
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
-        """CHANGED, UNCHANGED, or UNKNOWN; raises `ComparisonError` when a GitHub call the comparison needs failed."""
+    def detect(
+        self,
+        repository: str,
+        number: int,
+        base_ref: str,
+        since_sha: str,
+        head_sha: str,
+        since_base: str | None = None,
+    ) -> str:
+        """CHANGED, UNCHANGED, or UNKNOWN; raises `ComparisonError` when a GitHub call the comparison needs failed.
+        `since_base` is the base `since_sha` was reviewed on, the base branch as it is now when None."""
 
 
 class BatchDetector(Detector, Protocol):
     def prefetch(self, queries: Iterable[Query]) -> None:
-        """Read ahead, concurrently, what detecting each (repository, base_ref, since_sha, head_sha) query needs."""
+        """Read ahead, concurrently, what detecting each query needs."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +269,7 @@ def _with_defaults(item: Any, path: str) -> dict[str, Any]:
     latest = item["user_review_state"]
     return {
         "reviewed_incomplete": False,
+        "reviewed_base_sha": None,
         "author_name": None,
         "review_decision": None,
         "user_review_decision": latest if latest in DECIDING_REVIEW_STATES else None,
@@ -280,11 +296,12 @@ def _item_key(item: dict[str, Any], path: str, seen: set[str]) -> tuple[str, str
 def _validate_fields(item: dict[str, Any], key: str, path: str) -> None:
     for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at"):
         READ.string(item[field], f"{path}.{field}")
-    for field in ("requested_reviewers", "participants"):
-        READ.array(item[field], f"{path}.{field}", READ.string)
+    READ.array(item["requested_reviewers"], f"{path}.requested_reviewers", READ.string)
     READ.boolean(item["draft"], f"{path}.draft")
-    for field in ("reviewed_head_sha", "user_review_sha"):
+    for field in ("reviewed_head_sha", "reviewed_base_sha", "user_review_sha"):
         READ.optional(READ.string, item[field], f"{path}.{field}")
+    if item["reviewed_base_sha"] is not None and item["reviewed_head_sha"] is None:
+        raise TrackerError(f"Tracker item {key}.reviewed_base_sha requires reviewed_head_sha")
 
 
 def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
@@ -367,7 +384,7 @@ def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
 
 def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:
     """The pull requests the tracker holds, sorted: every collected item the user authored, is asked to review, or
-    takes part in, whether or not this run shows its row, so a removed or approved one can still be pinned."""
+    has reviewed, whether or not this run shows its row, so a removed or approved one can still be pinned."""
     login_key = login.casefold()
     return sorted(f"{item['repository']}#{item['number']}" for item in items if _relationship(item, login_key))
 
@@ -468,27 +485,32 @@ def apply_author_names(items: list[dict[str, Any]], author_names: dict[str, str]
 
 
 def _relationship(item: dict[str, Any], login_key: str) -> str | None:
-    authored = item["author"].casefold() == login_key
-    requested = any(value.casefold() == login_key for value in item["requested_reviewers"])
-    participating = any(value.casefold() == login_key for value in item["participants"])
-    if not (authored or requested or participating):
-        return None
-    return "authored" if authored else "review requested" if requested else "participating"
+    """How the user relates to the item, or None when it is not theirs to track: they authored it, are asked to review
+    it, or have a review on it in any state, which a review comment alone also leaves. Pushing commits to it or
+    commenting on its conversation, which make the user one of GitHub's participants, is not reviewing it."""
+    if item["author"].casefold() == login_key:
+        return "authored"
+    if any(value.casefold() == login_key for value in item["requested_reviewers"]):
+        return "review requested"
+    return "reviewing" if item["user_review_state"] is not None else None
 
 
-def _changed_since(item: dict[str, Any], since_sha: str, detector: Detector) -> str:
-    return detector.detect(item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"])
+def _changed_since(item: dict[str, Any], since_sha: str, detector: Detector, since_base: str | None = None) -> str:
+    return detector.detect(
+        item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"], since_base
+    )
 
 
-def _query(item: dict[str, Any], since_sha: str) -> Query:
-    return (item["repository"], item["base_ref"], since_sha, item["head_sha"])
+def _query(item: dict[str, Any], since_sha: str, since_base: str | None = None) -> Query:
+    return Query(item["repository"], item["base_ref"], since_sha, item["head_sha"], since_base)
 
 
 def _ai_review(item: dict[str, Any], detector: Detector) -> str:
     """The row's AI review state, always one of `DASHBOARD_AI_REVIEW_STATES`, which a status override may not take."""
     if item["reviewed_head_sha"] is None:
         return DASHBOARD_AI_REVIEW_MISSING
-    change = _changed_since(item, item["reviewed_head_sha"], detector)
+    # The reviewed head is compared with the base its review was made on, when the record names it.
+    change = _changed_since(item, item["reviewed_head_sha"], detector, item["reviewed_base_sha"])
     if change != UNCHANGED:
         return DASHBOARD_AI_REVIEW_STALE
     # Re-reviewing an unchanged head would hit the same coverage gap, so it is not re-offered.
@@ -540,7 +562,11 @@ def evaluate(
             related.append((item, key, relationship))
     failures: dict[tuple[str, int], ComparisonError] = {}
     placed = _place(related, pinned, detector, failures)
-    detector.prefetch(_query(item, item["reviewed_head_sha"]) for item, *_ in placed if item["reviewed_head_sha"])
+    detector.prefetch(
+        _query(item, item["reviewed_head_sha"], item["reviewed_base_sha"])
+        for item, *_ in placed
+        if item["reviewed_head_sha"]
+    )
     rows: list[Row] = []
     for item, relationship, section, overridden in placed:
         try:

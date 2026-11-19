@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Iterable
 from functools import partial
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import NamedTuple, TypeVar, cast
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -34,10 +34,23 @@ FATAL_ERROR_KINDS = {"prerequisite", "execution", "authentication", "rate_limit"
 Fingerprint = tuple[tuple[str, str, str, str, str], ...]
 # A fingerprint without its modes: each changed file's path, status, previous path, and blob ID.
 ChangedFiles = tuple[tuple[str, str, str, str], ...]
-# What `detect` is asked: a repository, its base branch, and the earlier and later head commits.
-Query = tuple[str, str, str, str]
 Key = TypeVar("Key")
 Cached = TypeVar("Cached")
+
+
+class Query(NamedTuple):
+    """What `detect` is asked: a repository, its base branch, the earlier and later head commits, and the base the
+    earlier head is compared with, the base branch itself when `since_base` is None."""
+
+    repository: str
+    base_ref: str
+    since_sha: str
+    head_sha: str
+    since_base: str | None = None
+
+    @property
+    def earlier_base(self) -> str:
+        return self.base_ref if self.since_base is None else self.since_base
 
 
 class ComparisonError(RuntimeError):
@@ -134,8 +147,16 @@ def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str
 
 
 class ChangeDetector:
-    """Answers `detect` from GitHub's comparison of each commit with the base branch, reading a commit's tree only
-    when `needs_modes` says the comparisons alone cannot decide, and each comparison and tree at most once.
+    """Answers `detect` from GitHub's comparison of each commit with its base, reading a commit's tree only when
+    `needs_modes` says the comparisons alone cannot decide, and each comparison and tree at most once.
+
+    The later head is compared with the base branch as it is now, and the earlier head with the base it was compared
+    with when it was reviewed, `since_base`, when the caller knows that commit. Comparing the earlier head with the
+    base branch as it is now would count, once a lower branch of a stack is rewritten, the commits the rewrite dropped
+    as the earlier head's own, so a rebase that left the pull request's diff as it was would read as changed. Limit:
+    a file both the pull request and the rewritten base change has a different blob after the rebase, so that pull
+    request still reads as changed; patches are never compared to relax this, since equal patches can leave different
+    files.
 
     `prefetch` reads what a batch of queries needs, `workers` calls at a time, all through the one client, so its
     rate-limit backoff governs every call. `detect` reads anything still missing one call at a time. A failure in
@@ -151,19 +172,19 @@ class ChangeDetector:
 
     def prefetch(self, queries: Iterable[Query]) -> None:
         """Read every comparison, and then every tree, that detecting `queries` needs."""
-        pending = [query for query in queries if query[2] != query[3]]
+        pending = [query for query in queries if query.since_sha != query.head_sha]
         self._gather(
             self._files,
-            [(repository, base, sha) for repository, base, since, head in pending for sha in (since, head)],
+            [key for query in pending for key in _comparisons(query)],
             self._read_files,
         )
         self._gather(
             self._modes,
             [
-                (repository, sha)
-                for repository, base, since, head in pending
-                if self._comparable(repository, base, since, head)
-                for sha in (since, head)
+                (query.repository, sha)
+                for query in pending
+                if self._comparable(query)
+                for sha in (query.since_sha, query.head_sha)
             ],
             self._read_modes,
         )
@@ -175,12 +196,14 @@ class ChangeDetector:
         base_ref: str,
         since_sha: str,
         head_sha: str,
+        since_base: str | None = None,
     ) -> str:
         if since_sha == head_sha:
             return UNCHANGED
         pull = f"{repository}#{number}"
-        before = _known(pull, self._cached(self._files, (repository, base_ref, since_sha), self._read_files))
-        after = _known(pull, self._cached(self._files, (repository, base_ref, head_sha), self._read_files))
+        earlier, later = _comparisons(Query(repository, base_ref, since_sha, head_sha, since_base))
+        before = _known(pull, self._cached(self._files, earlier, self._read_files))
+        after = _known(pull, self._cached(self._files, later, self._read_files))
         # Two empty contributions mean the commits already reached the base branch,
         # which proves nothing about whether the pull request changed.
         if before is None or after is None or (not before and not after):
@@ -197,9 +220,8 @@ class ChangeDetector:
             return UNKNOWN
         return UNCHANGED if before_modes == after_modes else CHANGED
 
-    def _comparable(self, repository: str, base_ref: str, since_sha: str, head_sha: str) -> bool:
-        before = self._files[(repository, base_ref, since_sha)]
-        after = self._files[(repository, base_ref, head_sha)]
+    def _comparable(self, query: Query) -> bool:
+        before, after = (self._files[key] for key in _comparisons(query))
         return isinstance(before, tuple) and isinstance(after, tuple) and needs_modes(before, after)
 
     def _gather(self, cache: dict[Key, Cached | GitHubError], keys: list[Key], read: Callable[[Key], Cached]) -> None:
@@ -229,6 +251,12 @@ class ChangeDetector:
     def _evidence(self, endpoint: str) -> object:
         """GitHub's answer, or None when it has no such commit or branch; any other failure is raised."""
         return self.client.api_json(endpoint, allow_absent=True)
+
+
+def _comparisons(query: Query) -> tuple[tuple[str, str, str], tuple[str, str, str]]:
+    """The comparisons a query needs, each as its repository, base, and commit: the earlier head with the base it was
+    reviewed on, and the later head with the base branch."""
+    return (query.repository, query.earlier_base, query.since_sha), (query.repository, query.base_ref, query.head_sha)
 
 
 def _outcome[Key, Cached](read: Callable[[Key], Cached], key: Key) -> Cached | GitHubError:
