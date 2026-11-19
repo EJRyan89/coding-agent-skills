@@ -144,8 +144,19 @@ MUTATING_METHODS = frozenset(
         "remove",
         "add",
         "discard",
+        "sort",
+        "reverse",
+        "difference_update",
+        "intersection_update",
+        "symmetric_difference_update",
         "__setitem__",
         "__delitem__",
+        "__iadd__",
+        "__ior__",
+        "__iand__",
+        "__isub__",
+        "__ixor__",
+        "__imul__",
     }
 )
 # CallableResolver's mark for a name bound by a definition, a parameter, or a relative import, which names no module.
@@ -172,7 +183,9 @@ class ContractValues:
     `versions.GH_MIN = ...` in an importer, or an update through another name bound to the same object, is not seen;
     a star import in a followed module after the name's assignment is not seen rebinding it; a comprehension in a
     class body resolves a name to the class's binding, as CallableResolver reads one, where Python reads the module's;
-    and a Tool built through an alias of the class, dataclasses.replace, or functools.partial is not read at all.
+    a Tool built through an alias of the class, dataclasses.replace, or functools.partial is not read at all; and an
+    update through a function or an unbound method that takes the name as an argument, as `dict.update(X, ...)` or
+    `operator.setitem(X, ...)`, is not seen.
     """
 
     def __init__(self, snapshot: Snapshot) -> None:

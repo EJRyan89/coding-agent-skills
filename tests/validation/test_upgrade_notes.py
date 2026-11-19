@@ -411,6 +411,18 @@ def test_a_contract_value_held_in_another_module_or_scope_compares_by_its_value(
             id="a mutating method called in a function",
         ),
         pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": "MINIMUMS = [(4, 6), (26,)]\nMINIMUMS.sort()\n"},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.sort()`; ",
+            id="a list sorted in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS.__ior__({"Xpdf": (4, 7)})\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.__ior__({'Xpdf': (4, 7)})`; ",
+            id="an in-place operator method called",
+        ),
+        pytest.param(
             {
                 "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
                 f"{SKILL_CORE}/versions.py": "GH_MIN = [2, 48, 0]\nGH_MIN.append(1)\n",
