@@ -124,11 +124,30 @@ def revision_snapshot(root: Path, revision: str) -> Snapshot:
     )
 
 
-# The folders a module a contract file imports by name is looked for in, after the importing file's own folder:
-# ejryan89-skill-core's scripts, which deployer/__init__.py and every skill script put first on sys.path, and the
-# repository root, which tools/ and the tests import from. A name a relative import binds is refused, a stated limit,
-# since no contract value is reached through one.
+# The folders a module a contract file imports by name is looked for in, in the order sys.path holds them for the
+# contract files: ejryan89-skill-core's scripts, which deployer/__init__.py puts first and which is pdf_tool.py's own
+# folder, and then the repository root, from which the deployer runs. The importing file's own folder is never
+# searched for the deployer's modules, since Python does not search it for an absolute import. A name a relative
+# import binds is refused, a stated limit, since no contract value is reached through one.
 MODULE_FOLDERS = ("skills/ejryan89-skill-core/scripts", "")
+# The methods that change a list, a dict, or a set in place, which a followed name's module must not call on it.
+MUTATING_METHODS = frozenset(
+    {
+        "update",
+        "append",
+        "extend",
+        "insert",
+        "setdefault",
+        "pop",
+        "popitem",
+        "clear",
+        "remove",
+        "add",
+        "discard",
+        "__setitem__",
+        "__delitem__",
+    }
+)
 # CallableResolver's mark for a name bound by a definition, a parameter, or a relative import, which names no module.
 LOCAL_BINDING = "<local>."
 
@@ -144,9 +163,16 @@ class ContractValues:
     name an import binds, or a module's attribute, to the one value that module binds the name to at its top level,
     when the snapshot holds the module's file. A value that leads anywhere else is refused: a name bound more than
     once, or not at all, or by a parameter, a definition, a loop over anything but a literal, or a relative import, a
-    call, a subscript, an operator a literal does not hold, or a module the snapshot does not hold. `refused` names
-    the file and the expression, so an indirection cannot hide a change, and the value compares by its own text
-    meanwhile.
+    call, a subscript, an operator a literal does not hold, or a module the snapshot does not hold. So is a name its
+    own module updates in place, anywhere: an item or an attribute of it assigned, augmented, or deleted, or one of
+    MUTATING_METHODS called on it. `refused` names the file and the expression, so an indirection cannot hide a
+    change, and the value compares by its own text meanwhile.
+
+    Stated limits, since no code here writes them: a write to a followed name from another module, as
+    `versions.GH_MIN = ...` in an importer, or an update through another name bound to the same object, is not seen;
+    a star import in a followed module after the name's assignment is not seen rebinding it; a comprehension in a
+    class body resolves a name to the class's binding, as CallableResolver reads one, where Python reads the module's;
+    and a Tool built through an alias of the class, dataclasses.replace, or functools.partial is not read at all.
     """
 
     def __init__(self, snapshot: Snapshot) -> None:
@@ -156,6 +182,8 @@ class ContractValues:
         self._unparsed: dict[str, str] = {}
         # Each file's parameter defaults, which CallableResolver binds a parameter to, though a caller may pass another.
         self._defaults: dict[str, set[int]] = {}
+        # Each file's names updated in place, by the id of the scope that owns the name, with the update's text.
+        self._updates: dict[str, dict[tuple[int, str], str]] = {}
 
     def _resolver(self, path: str) -> CallableResolver | None:
         """The bindings of a Python file of the snapshot, or None when it holds no such file or the file does not
@@ -176,6 +204,7 @@ class ContractValues:
                         for default in [*node.defaults, *node.kw_defaults]
                         if default is not None
                     }
+                    self._updates[path] = _updates(resolver)
             self._resolvers[path] = resolver
         return self._resolvers[path]
 
@@ -290,6 +319,9 @@ class ContractValues:
         key = (path, scope, name)
         if len(values) != 1 or key in seen:
             raise UnresolvedValue(name)
+        update = self._updates.get(path, {}).get((scope, name))
+        if update is not None:
+            raise UnresolvedValue(update)
         value = values[0]
         if isinstance(value, ast.expr) and id(value) not in self._defaults.get(path, set()):
             return self._resolve(path, value, seen | {key})
@@ -301,18 +333,49 @@ class ContractValues:
         """The value of a dotted name an import reaches: the name its last part is, bound at the top level of the
         module the rest names, found as the importing file finds it."""
         module, _, name = dotted.rpartition(".")
-        found = self._module_file(path, module) if module else None
+        found = self._module_file(module) if module else None
         resolver = self._resolver(found) if found is not None else None
         if found is None or resolver is None:
             raise UnresolvedValue(shown)
         module_scope = resolver.scopes[id(resolver.tree)]
         return self._binding(found, module_scope.bindings.get(name, []), id(module_scope), name, seen)
 
-    def _module_file(self, importer: str, module: str) -> str | None:
+    def _module_file(self, module: str) -> str | None:
+        """The file an absolute import of a module finds, on the sys.path every contract file shares."""
         relative = f"{module.replace('.', '/')}.py"
-        folders = (PurePosixPath(importer).parent.as_posix(), *MODULE_FOLDERS)
-        candidates = [relative if folder in ("", ".") else f"{folder}/{relative}" for folder in folders]
+        candidates = [f"{folder}/{relative}" if folder else relative for folder in MODULE_FOLDERS]
         return next((name for name in candidates if name in self.snapshot.names), None)
+
+
+def _updates(resolver: CallableResolver) -> dict[tuple[int, str], str]:
+    """Each name a module updates in place, by the id of the scope that owns it and the name, with the first update's
+    text: an item or an attribute of it, at any depth, assigned, augmented, or deleted, or one of MUTATING_METHODS
+    called on it or on an item of it."""
+    found: dict[tuple[int, str], str] = {}
+
+    def note(target: ast.expr, text: str) -> None:
+        root = target
+        while isinstance(root, (ast.Subscript, ast.Attribute)):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return
+        scope = resolver.scopes.get(id(root))
+        owner = scope.owner(root.id) if scope is not None else None
+        if owner is not None:
+            found.setdefault((id(owner), root.id), text)
+
+    # ast.walk meets a statement before its targets, so the statement's text is kept where there is one.
+    for node in ast.walk(resolver.tree):
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+            targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+            for part in (part for target in targets for part in ast.walk(target)):
+                if isinstance(part, (ast.Subscript, ast.Attribute)) and isinstance(part.ctx, (ast.Store, ast.Del)):
+                    note(part, ast.unparse(node))
+        elif isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            note(node, ast.unparse(node))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATING_METHODS:
+            note(node.func.value, ast.unparse(node))
+    return found
 
 
 def _manifest_versions(snapshot: Snapshot) -> dict[str, object]:
@@ -602,7 +665,9 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         ]
         problems += shared_heading_problems(sourced, own)
         sourced += own
-    problems += [problem for item in sourced for problem in notes_entry_problems(item, levels)]
+    # With no tag and no body, the branch's own commits are the only entries read, so their fields are held too.
+    checked = [*sourced, *own] if tag is None and body is None else sourced
+    problems += [problem for item in checked for problem in notes_entry_problems(item, levels)]
     problems += own_change_problems(own_changed, own, base, tag, levels)
     charged = {item for item, _ in own_changed}
     named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}

@@ -225,8 +225,8 @@ whose `Contract:` is `none` or names another item fails. An item that differs on
 upgrade note since the tag. With no release tag reachable from `origin/main`, nothing has been released, so only the
 comparison with the merge-base commit runs. A value in a Python file compares as the literal it holds, followed
 through each name, in whatever scope binds it, and each import to the module the checkout holds, so an indirection
-cannot hide a change; a value the check cannot follow to a literal, such as a name bound twice, a parameter, a call,
-or a relative import, fails it, naming the file and the expression. The check also fails while this list or the
+cannot hide a change; a value the check cannot follow to a literal, such as a name bound twice or updated in place,
+a parameter, a call, or a relative import, fails it, naming the file and the expression. The check also fails while this list or the
 Versioning section of [releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Pull requests

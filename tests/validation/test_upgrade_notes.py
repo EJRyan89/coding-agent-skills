@@ -235,6 +235,36 @@ def changed_trees(before: Mapping[str, str], after: Mapping[str, str]) -> list[s
             "deployer/tools.py",
             id="a floor set inside a class body",
         ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="[2, X, 0]")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="[2, X, 0]")},
+            "deployer/tools.py",
+            id="a name in a list",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="{X}")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="{X}")},
+            "deployer/tools.py",
+            id="a name in a set",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, -X)")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="(2, -X)")},
+            "deployer/tools.py",
+            id="a name under a unary operator",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, X + 1j)")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="(2, X + 1j)")},
+            "deployer/tools.py",
+            id="a name in a complex number a literal holds",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "for GH in ((2, 48, 0),):\n    " + GH_TOOL.format(floor="GH")},
+            {"deployer/tools.py": "for GH in ((2, 49, 0),):\n    " + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py",
+            id="a floor a loop over a one-item literal binds",
+        ),
     ],
 )
 def test_a_contract_value_held_in_another_module_or_scope_compares_by_its_value(
@@ -327,6 +357,69 @@ def test_a_contract_value_held_in_another_module_or_scope_compares_by_its_value(
             id="unpacked arguments",
         ),
         pytest.param(
+            {"deployer/tools.py": "A = B\nB = A\n" + GH_TOOL.format(floor="A")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `A`, to a literal "
+            "past `A`; ",
+            id="names bound to each other",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "for GH in ((2, 48, 0), (2, 49, 0)):\n    " + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, to a literal "
+            "past `GH`; ",
+            id="a floor a loop over several items binds",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, X + 1)")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `(2, X + 1)`, to a "
+            "literal past `(2, X + 1)`; ",
+            id="an operator a literal does not hold",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": 'X = {"Xpdf": (4, 6)}\nT = Tool("pdftotext", "pdftotext", find, '
+                "provider_minimum={**X})\n"
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the provider_minimum of Tool 'pdftotext', "
+            "`{**X}`, to a literal past `{**X}`; ",
+            id="a dict that unpacks a name",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS["Xpdf"] = (4, 7)\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS['Xpdf'] = (4, 7)`; ",
+            id="an item assigned in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS["Xpdf"] += (1,)\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS['Xpdf'] += (1,)`; ",
+            id="an item augmented in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26,)}\ndel MINIMUMS["Poppler"]\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`del MINIMUMS['Poppler']`; ",
+            id="an item deleted",
+        ),
+        pytest.param(
+            {
+                f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\n\ndef raise_floors():\n    '
+                'MINIMUMS.update({"Xpdf": (4, 7)})\n'
+            },
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.update({'Xpdf': (4, 7)})`; ",
+            id="a mutating method called in a function",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
+                f"{SKILL_CORE}/versions.py": "GH_MIN = [2, 48, 0]\nGH_MIN.append(1)\n",
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `versions.GH_MIN`, "
+            "to a literal past `GH_MIN.append(1)`; ",
+            id="a followed name its own module updates",
+        ),
+        pytest.param(
             {"deployer/manifest.py": "MANIFEST_VERSION = (\n"},
             "deployer/manifest.py does not parse, so the upgrade-notes check cannot read its contract values: ",
             id="a contract file that does not parse",
@@ -339,6 +432,32 @@ def test_a_contract_value_the_check_cannot_follow_to_a_literal_is_refused_by_fil
     problems = contract_value_problems(snapshot(files))
     assert len(problems) == 1, problems
     assert problems[0].startswith(refused), problems[0]
+
+
+def test_a_module_is_found_on_the_contract_files_sys_path_never_beside_the_importer() -> None:
+    # Python never searches deployer/ for `import versions` in deployer/tools.py: deployer/__init__.py puts
+    # ejryan89-skill-core's scripts first, so a deployer/versions.py is not the module the floor comes from.
+    tools = {
+        "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
+        "deployer/versions.py": "GH_MIN = (9, 9, 9)\n",
+        f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 48, 0)\n",
+    }
+    assert changed_trees(tools, {**tools, f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 49, 0)\n"}) == [
+        "deployer/tools.py"
+    ]
+    assert changed_trees(tools, {**tools, "deployer/versions.py": "GH_MIN = (9, 9, 10)\n"}) == []
+    # Below ejryan89-skill-core's scripts, the repository root.
+    rooted = {name: text for name, text in tools.items() if name != f"{SKILL_CORE}/versions.py"}
+    rooted["versions.py"] = "GH_MIN = (2, 48, 0)\n"
+    assert changed_trees(rooted, {**rooted, "versions.py": "GH_MIN = (2, 49, 0)\n"}) == ["deployer/tools.py"]
+
+
+def test_an_update_of_a_local_that_shadows_a_followed_name_is_not_its_update() -> None:
+    files = {
+        f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\n\ndef local():\n    MINIMUMS = {}\n'
+        '    MINIMUMS["Xpdf"] = (4, 7)\n'
+    }
+    assert contract_value_problems(snapshot(files)) == []
 
 
 class UpgradeNotesPolicy(unittest.TestCase):
@@ -954,6 +1073,18 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 self.assertEqual(1, len(problems), problems)
                 self.assertRegex(problems[0], own_change)
         self.assertEqual([], self.problems(self.MANIFEST_CHANGE, self.body(self.entry("`deployer/manifest.py`"))))
+
+    def test_with_no_tag_reachable_and_no_body_the_branchs_own_entries_are_held_to_the_levels(self) -> None:
+        self.release(tag=None)
+        entry = self.entry("`deployer/manifest.py`", level="huge")
+        self.commit(f"Change the manifest\n\n{self.body(entry)}", self.MANIFEST_CHANGE)
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertRegex(
+            problems[0],
+            r"^commit [0-9a-f]{7}'s ## Upgrade note entry 'A contract changed' starts its Level with 'huge', not one "
+            r"of the levels in the Versioning section of docs/releasing\.md: patch, minor, or major$",
+        )
 
     def test_with_no_tag_reachable_a_head_that_never_meets_origin_main_is_a_problem_line(self) -> None:
         self.release(tag=None)
