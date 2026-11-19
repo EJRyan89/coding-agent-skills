@@ -2545,8 +2545,8 @@ class KeptTests(unittest.TestCase):
             ),
             (
                 "copilot",
-                "installed plugins' skills, agents, hooks, and MCP servers, the bundled computer-use plugin's "
-                "included once turned on",
+                "installed plugins' skills, agents, hooks, and MCP servers, and the bundled computer-use plugin's MCP "
+                "server once it is turned on",
             ),
             ("copilot", "session history"),
             ("claude", "sign-in only"),

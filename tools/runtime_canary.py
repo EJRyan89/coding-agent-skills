@@ -256,8 +256,8 @@ KEPT = {
     "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; custom agents in ~/.copilot/agents; "
     "MCP servers in ~/.copilot/mcp-config.json; user hooks in ~/.copilot/hooks and the hooks key of "
     "~/.copilot/settings.json; machine-wide policy hooks from /etc/github-copilot/policy.d or, on Windows, ProgramData "
-    "and the registry; installed plugins' skills, agents, hooks, and MCP servers, the bundled computer-use plugin's "
-    "included once turned on; session history",
+    "and the registry; installed plugins' skills, agents, hooks, and MCP servers, and the bundled computer-use "
+    "plugin's MCP server once it is turned on; session history",
 }
 # How many times a skill is run on a runtime while each run starts the real profile's installed copy, which no flag
 # keeps out of a model's reach, so that no such run counts.
