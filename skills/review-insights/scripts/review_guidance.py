@@ -358,10 +358,10 @@ def _statements(text: str) -> list[tuple[int, str]]:
     list item interrupts a paragraph only where CommonMark lets it, so a line Markdown shows as a paragraph's
     continuation joins that paragraph. A paragraph inside a list item is continued by any further item. A blockquote
     starts a statement of its own, which its further quoted lines and lazy lines continue, and a thematic break ends a
-    statement, since markdown_sections' `starts_block` reads either as a block rather than a paragraph's continuation;
-    a setext heading's underline ends its text, which is read as a statement. Fences are read through
-    markdown_sections.find_fences, the one fence reader, so a fence a blockquote or a list item holds is code, and only
-    a run that can close it does."""
+    statement, since markdown_sections' `starts_block` reads either as a block rather than a paragraph's continuation.
+    Fences are read through markdown_sections.find_fences, the one fence reader, so a fence a blockquote or a list
+    item holds is code, and only a run that can close it does. The limits: a setext heading is read as a paragraph, so
+    the text above a `---` underline is a statement, and an `=` underline joins the text above it."""
     found: list[tuple[int, str]] = []
     continued = in_item = in_quote = False
     lines = text_lines(text)

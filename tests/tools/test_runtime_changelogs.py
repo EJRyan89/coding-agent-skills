@@ -265,6 +265,21 @@ def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str,
         pytest.param("- one\n\nprose\n", ("one",), id="prose-after-a-blank-line"),
         pytest.param("- a\n  - b\n  > note\n", ("a > note", "b"), id="quote-in-the-outer-item"),
         pytest.param("- one\n      - deep\n", ("one - deep",), id="deep-marker-continues-the-paragraph"),
+        # A numbered or `+` item is no entry, but a bullet nested in it is, measured from that item's content.
+        pytest.param(
+            "1. Added hooks\n    - a `--resume` flag\n    - a `CLAUDE_ENV` variable\n",
+            ("a `--resume` flag", "a `CLAUDE_ENV` variable"),
+            id="bullets-in-a-numbered-item",
+        ),
+        pytest.param(
+            "- one\n1. Added hooks\n    - a `--resume` flag\n", ("one", "a `--resume` flag"), id="after-a-list"
+        ),
+        pytest.param("10. x\n    - y\n", ("y",), id="bullet-in-a-wide-numbered-item"),
+        pytest.param("1. x\n\n    - y\n", ("y",), id="bullet-after-a-blank-line-in-a-numbered-item"),
+        pytest.param("+ x\n    - y\n", ("y",), id="bullet-in-a-plus-item"),
+        pytest.param("- a\n  1. b\n     more\n- c\n", ("a 1. b more", "c"), id="numbered-item-in-a-bullet"),
+        # A heading with no text ends the entry as any heading does.
+        pytest.param("- one\n#\ntext\n", ("one",), id="empty-heading"),
     ],
 )
 def test_a_bullets_entry_holds_the_lines_github_renders_in_its_list_item(body: str, entries: tuple[str, ...]) -> None:

@@ -95,6 +95,8 @@ def test_only_a_bullet_or_an_item_numbered_one_with_text_interrupts_a_paragraph(
         ("- item", False, True),
         ("1. item", False, True),
         ("```", True, True),
+        ("#", False, True),
+        ("  ###\t", False, True),
         # Text, a marker four columns in, an item that may not interrupt, and a no-break space after the marks continue
         # the paragraph.
         ("text", False, False),
@@ -102,10 +104,27 @@ def test_only_a_bullet_or_an_item_numbered_one_with_text_interrupts_a_paragraph(
         ("    ## heading", False, False),
         ("2. item", False, False),
         (f"##{NBSP}heading", False, False),
+        ("#######", False, False),
+        ("    #", False, False),
     ],
 )
 def test_a_block_start_ends_a_paragraph_and_any_other_line_continues_it(line: str, opener: bool, starts: bool) -> None:
     assert starts_block(line, opener=opener) is starts
+
+
+@pytest.mark.parametrize(
+    ("document", "headings"),
+    [
+        # A heading ends a nested quote that interrupts a paragraph, and a lazy line continuing it.
+        ("para\n> > nested quote\n## after\n", [2]),
+        ("> > nested\nlazy line\n## after\n", [2]),
+        # One quote marker fewer before a heading leaves it in the outer quote, and an empty heading ends a quote.
+        ("> > nested\n> ## inside\n", []),
+        ("> quote\n#\n## after\n", [2]),
+    ],
+)
+def test_a_block_start_ends_a_quote_the_walk_reads(document: str, headings: list[int]) -> None:
+    assert [index for index, _ in document_headings(document.splitlines())] == headings
 
 
 def test_a_list_item_s_content_starts_past_its_marker_and_the_spaces_after_it() -> None:

@@ -40,6 +40,9 @@ THEMATIC_BREAK = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 # as its level, a space or a tab, then its text, less a closing run of `#` after a space or a tab. `\s` would admit
 # every Unicode space, so a line Markdown shows as prose, such as `#` and a no-break space, would be read as a heading.
 ATX_HEADING = re.compile(r" {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+)?[ \t]*$")
+# An ATX heading with no text: up to three spaces of indentation and one to six `#`, with nothing after them but spaces
+# or tabs. It ends a paragraph as any heading does, though ATX_HEADING, which reads a heading's text, matches none.
+EMPTY_ATX_HEADING = re.compile(r" {0,3}#{1,6}[ \t]*")
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
@@ -351,15 +354,20 @@ def starts_block(line: str, *, opener: bool) -> bool:
     """Whether a line after a paragraph's text, read at the column of the content that holds it, starts a block, which
     ends the paragraph, rather than lazily continuing it: a fence, whose opener `find_fences` reads and the caller
     names with `opener`, a blockquote marker, an ATX heading, or a thematic break, each indented at most
-    MAX_BLOCK_INDENT columns, or a list item that may interrupt a paragraph."""
+    MAX_BLOCK_INDENT columns, an empty ATX heading among them, or a list item that may interrupt a paragraph."""
     block = line.strip(LINE_END) if indentation(line) <= MAX_BLOCK_INDENT else ""
     return bool(
         opener
         or block.startswith(">")
         or THEMATIC_BREAK.fullmatch(block)
-        or ATX_HEADING.fullmatch(block)
+        or starts_heading(block)
         or list_item(line, interrupting=True) is not None
     )
+
+
+def starts_heading(line: str) -> bool:
+    """Whether a line is an ATX heading, with text as ATX_HEADING reads one or empty, `#` to `######` alone."""
+    return ATX_HEADING.fullmatch(line) is not None or EMPTY_ATX_HEADING.fullmatch(line) is not None
 
 
 def items_holding(items: list[int], width: int) -> int:

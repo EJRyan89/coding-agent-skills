@@ -112,7 +112,6 @@ from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
 from markdown_sections import (
-    ATX_HEADING,
     LINE_END,
     MARKDOWN_SPACE,
     MAX_BLOCK_INDENT,
@@ -125,6 +124,7 @@ from markdown_sections import (
     list_item,
     list_item_content,
     starts_block,
+    starts_heading,
 )
 from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
@@ -450,15 +450,24 @@ def bullet_entries(lines: Sequence[str]) -> list[str]:
     A list item holds the lines indented as far as its content, a fence among them, and a line that lazily continues
     its paragraph. A line indented less ends it when it starts a block, a blockquote, a fence, an ATX heading, a
     thematic break, or a list item, or follows a blank line, as GitHub renders them, and the block it starts is left
-    out, as text no bullet opens is, so its words never count as an entry's. Block starts and list items are read
-    through ejryan89-skill-core's markdown_sections, and a fenced line is never a bullet. The limit: a lazy line after
-    an indented code block in an item is read as the item's, where CommonMark ends the item."""
+    out, as text no bullet opens is, so its words never count as an entry's. A numbered or `+` item is no entry, but
+    its lines join the bullet that holds it, if one does, and a bullet nested in it is an entry of its own. Block
+    starts and list items are read through ejryan89-skill-core's markdown_sections, and a fenced line is never a
+    bullet. The limits: a lazy line after an indented code block in an item is read as the item's, where CommonMark
+    ends the item; and an HTML block's start, such as `<details>`, `<div>`, or `<!--`, after a bullet's text joins the
+    entry, since markdown_sections reads an HTML block as a paragraph."""
     fences = {fence.opener: fence for fence in find_fences(list(lines))}
     entries: list[list[str]] = []
-    # The column each open list item's content starts at, outermost first, and the entry each one's lines join.
+    # The column each open list item's content starts at, outermost first, and the entry each one's lines join: the
+    # bullet's own, or for a numbered or `+` item the entry of the bullet holding it, None when no bullet does.
     items: list[int] = []
-    holders: list[int] = []
+    holders: list[int | None] = []
     paragraph = False
+
+    def join(text: str) -> None:
+        if holders and holders[-1] is not None:
+            entries[holders[-1]].append(text)
+
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -469,47 +478,42 @@ def bullet_entries(lines: Sequence[str]) -> list[str]:
         held = items_holding(items, width)
         relative = " " * (width - (items[held - 1] if held else 0)) + line.lstrip(MARKDOWN_SPACE)
         fence = fences.get(index)
-        bullet = bullet_text(relative, paragraph=paragraph)
+        item = item_text(relative, paragraph=paragraph)
         content = list_item_content(line)
-        if bullet is not None and content is not None:
+        if item is not None and content is not None:
             del items[held:], holders[held:]
+            if BULLET.fullmatch(relative):
+                holders.append(len(entries))
+                entries.append([item])
+            else:
+                holders.append(holders[-1] if holders else None)
+                join(line.strip())
             items.append(content)
-            holders.append(len(entries))
-            entries.append([bullet])
-            paragraph = fence is None and not is_blank(bullet)
+            paragraph = fence is None and not is_blank(item)
         elif held < len(items) and paragraph and not starts_block(relative, opener=fence is not None):
-            entries[holders[-1]].append(line.strip())  # a lazy continuation of the item's paragraph
+            join(line.strip())  # a lazy continuation of the item's paragraph
         else:
             del items[held:], holders[held:]
-            if holders:
-                entries[holders[-1]].append(line.strip())
+            join(line.strip())
             block = relative.strip(LINE_END)
-            closes = fence is not None or THEMATIC_BREAK.fullmatch(block) or ATX_HEADING.fullmatch(block)
-            paragraph = bool(holders) and not closes
+            closes = fence is not None or THEMATIC_BREAK.fullmatch(block) or starts_heading(block)
+            paragraph = bool(items) and not closes
         if fence is not None:
             for fenced in fence.lines()[1:]:
-                if holders:
-                    entries[holders[-1]].append(lines[fenced].strip())
+                join(lines[fenced].strip())
             index = fence.lines().stop
         else:
             index += 1
     return [text for text in (single_line(" ".join(part for part in parts if part)) for parts in entries) if text]
 
 
-def bullet_text(line: str, *, paragraph: bool) -> str | None:
-    """The text of the bullet a line opens, read at the column of the content that holds it, or None when it opens
-    none the watch reads: a bullet is a `-` or `*` list item as markdown_sections' `list_item` reads one, so a
-    thematic break such as `- - -` is none, and after a paragraph's text neither is one indented past
-    MAX_BLOCK_INDENT columns, which continues the paragraph."""
-    bullet = BULLET.fullmatch(line)
-    if (
-        bullet is None
-        or indentation(line) > MAX_BLOCK_INDENT
-        or THEMATIC_BREAK.fullmatch(line.strip(LINE_END)) is not None
-        or list_item(line, interrupting=paragraph) is None
-    ):
+def item_text(line: str, *, paragraph: bool) -> str | None:
+    """The text of the list item a line opens, read at the column of the content that holds it, as markdown_sections'
+    `list_item` reads one, or None when it opens none: a thematic break such as `- - -` is none, and after a
+    paragraph's text neither is a marker indented past MAX_BLOCK_INDENT columns, which continues the paragraph."""
+    if indentation(line) > MAX_BLOCK_INDENT or THEMATIC_BREAK.fullmatch(line.strip(LINE_END)) is not None:
         return None
-    return bullet.group("text")
+    return list_item(line, interrupting=paragraph)
 
 
 def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:
