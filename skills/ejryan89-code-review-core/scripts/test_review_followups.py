@@ -517,6 +517,7 @@ class ReviewedHeadTests(unittest.TestCase):
         self.assertEqual(
             {
                 "head_sha": "a" * 40,
+                "base_sha": None,
                 "source": "legacy",
                 "version": None,
                 "incomplete": False,
@@ -705,7 +706,7 @@ class ReviewedHeadTests(unittest.TestCase):
     def test_record_takes_precedence_over_legacy(self) -> None:
         self.write_legacy(verdict=None)
         record = {
-            "pull_request": {"head_sha": "b" * 40},
+            "pull_request": {"head_sha": "b" * 40, "base_sha": "c" * 40},
             "review": {
                 "version": 2,
                 "verdict": "INCOMPLETE",
@@ -729,6 +730,7 @@ class ReviewedHeadTests(unittest.TestCase):
             self.assertEqual(
                 {
                     "head_sha": "b" * 40,
+                    "base_sha": "c" * 40,
                     "source": "record",
                     "version": 2,
                     "incomplete": True,
@@ -751,6 +753,7 @@ class ReviewedHeadTests(unittest.TestCase):
         self.assertEqual(
             {
                 "head_sha": "a" * 40,
+                "base_sha": None,
                 "source": "legacy",
                 "version": None,
                 "incomplete": False,
@@ -817,6 +820,9 @@ class EnumerateBatchTests(unittest.TestCase):
         self.pulls: list[dict[str, Any]] = []
         self.endpoints: list[str] = []
         self.open_listing: list[dict[str, Any]] | None = None  # what the open listing serves, when it differs
+        # What GitHub answers for a comparison (`base...head`) or a recursive tree (a commit): a JSON value, or the
+        # stderr of a failed call.
+        self.objects: dict[str, object] = {}
 
     def pull(
         self, number: int, *, merged: str | None = None, updated: str | None = None, is_open: bool = False
@@ -857,6 +863,12 @@ class EnumerateBatchTests(unittest.TestCase):
     def runner(self, arguments: Sequence[str]) -> CommandResult:
         endpoint = arguments[-1]
         self.endpoints.append(endpoint)
+        if "/compare/" in endpoint or "/git/trees/" in endpoint:
+            key = endpoint.split("/compare/", 1)[-1].split("/git/trees/", 1)[-1].removesuffix("?recursive=1")
+            value = self.objects[key]
+            if isinstance(value, str):
+                return CommandResult(1, "", value)
+            return CommandResult(0, json.dumps(value), "")
         query = dict(part.split("=", 1) for part in endpoint.split("?", 1)[1].split("&"))
         selected = [pull for pull in self.pulls if query["state"] in {"all", pull["state"]}]
         if query["state"] == "open" and self.open_listing is not None:
@@ -948,6 +960,81 @@ class EnumerateBatchTests(unittest.TestCase):
                 self.assertEqual((False, []), (entry["complete"], entry["eligible"]))
                 self.assertIn(reason, entry["error"])
         self.assertEqual([], self.enumerate()["eligible"], "read, the review counts")
+
+    # The base the review recorded, the reviewed head, and the pull request's own change as reviewed.
+    REVIEWED_BASE = "e" * 40
+    REVIEWED = "f" * 40
+    OWN: ClassVar[list[dict[str, str]]] = [{"filename": "src/app.py", "status": "modified", "sha": "blob1"}]
+
+    def moved(self, number: int, after: object, mode: str = "100644") -> None:
+        """Pull request `number`, open and last reviewed at `REVIEWED` on `REVIEWED_BASE`, whose current head the
+        listing's base commit compares as `after`."""
+        self.pull(number, is_open=True)
+        head = f"{number:040d}"
+        self.objects[f"{self.REVIEWED_BASE}...{self.REVIEWED}"] = {"status": "ahead", "files": self.OWN}
+        self.objects[f"{'a' * 40}...{head}"] = after
+        self.objects[self.REVIEWED] = {"truncated": False, "tree": [{"path": "src/app.py", "mode": "100644"}]}
+        self.objects[head] = {"truncated": False, "tree": [{"path": "src/app.py", "mode": mode}]}
+
+    def reviewed_on_base(self, base: str | None = None) -> contextlib.AbstractContextManager[object]:
+        """Every listed pull request's latest review read `REVIEWED`, compared with `base`, `REVIEWED_BASE` unless
+        given."""
+        commits = review_operation.ReviewedCommits(self.REVIEWED, base or self.REVIEWED_BASE)
+        return mock.patch.object(
+            review_batches,
+            "latest_reviewed_commits",
+            side_effect=lambda root, repository, numbers: dict.fromkeys(numbers, commits),
+        )
+
+    def test_a_rebase_that_left_the_diff_as_it_was_is_not_selected_and_a_changed_diff_is(self) -> None:
+        self.watermark("2026-03-01")
+        self.moved(1, {"status": "ahead", "files": self.OWN})
+        self.moved(2, {"status": "ahead", "files": [dict(self.OWN[0], sha="blob2")]})
+        self.moved(3, {"status": "ahead", "files": self.OWN}, mode="100755")
+        with self.reviewed_on_base():
+            entry = self.enumerate()
+        self.assertEqual((True, None), (entry["complete"], entry["error"]))
+        self.assertEqual([2, 3], [pull["number"] for pull in entry["eligible"]])
+        # The reviewed head against the base its review recorded, never against the base branch as it is now.
+        self.assertIn(f"repos/owner/repo/compare/{self.REVIEWED_BASE}...{self.REVIEWED}", self.endpoints)
+        self.assertNotIn(f"repos/owner/repo/compare/main...{self.REVIEWED}", self.endpoints)
+
+    def test_a_comparison_that_fails_or_cannot_be_made_keeps_the_pull_eligible(self) -> None:
+        self.watermark("2026-03-01")
+        self.moved(1, "HTTP 403: Resource not accessible by integration")  # fails for this pull request alone
+        self.moved(2, {"status": "ahead"})  # a comparison that lists no files decides nothing
+        with self.reviewed_on_base():
+            entry = self.enumerate()
+        self.assertEqual((True, None), (entry["complete"], entry["error"]))
+        self.assertEqual([1, 2], [pull["number"] for pull in entry["eligible"]])
+
+    def test_a_reviewed_base_github_no_longer_has_keeps_the_pull_eligible(self) -> None:
+        self.watermark("2026-03-01")
+        self.moved(1, {"status": "ahead", "files": self.OWN})
+        self.objects[f"{self.REVIEWED_BASE}...{self.REVIEWED}"] = "HTTP 404: Not Found"
+        with self.reviewed_on_base():
+            entry = self.enumerate()
+        self.assertEqual([1], [pull["number"] for pull in entry["eligible"]])
+
+    def test_a_failure_every_call_would_meet_fails_the_repository_and_keeps_its_watermark(self) -> None:
+        self.watermark("2026-03-01")
+        self.moved(1, "HTTP 401: Bad credentials")
+        with self.reviewed_on_base():
+            entry = self.enumerate()
+        self.assertEqual((False, []), (entry["complete"], entry["eligible"]))
+        self.assertIn("HTTP 401", entry["error"])
+        self.assertEqual(
+            {self.REPOSITORY: review_batches.WatermarkChange("failed", "2026-03-01", None)},
+            review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
+        )
+
+    def test_force_compares_nothing(self) -> None:
+        self.watermark("2026-03-01")
+        self.moved(1, {"status": "ahead", "files": self.OWN})
+        with self.reviewed_on_base():
+            entry = self.enumerate(force=True)
+        self.assertEqual([1], [pull["number"] for pull in entry["eligible"]])
+        self.assertEqual([], [endpoint for endpoint in self.endpoints if "/compare/" in endpoint])
 
     def test_force_reads_no_review(self) -> None:
         self.watermark("2026-03-01")

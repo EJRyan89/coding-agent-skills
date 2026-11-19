@@ -18,6 +18,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+
 from github_client import CommandResult, GitHubError
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError, Query
 from review_config import ConfigurationError, dashboard_status_heading, dashboard_status_key
