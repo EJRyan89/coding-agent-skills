@@ -182,7 +182,9 @@ class ChangeDetector:
     not compared: every blob either comparison lists is the head's own, so a hunk the new base no longer holds, in a
     file the pull request changes too, would leave them equal. A commit's diff on a base is a function of their merge
     base alone, so the two merge bases decide instead (`same_head`): equal is unchanged, different is changed, and one
-    GitHub cannot name is unknown. Each is one `?per_page=1` comparison, which no file limit can truncate.
+    GitHub cannot name is unknown. Each is one `?per_page=1` comparison, which no file limit can truncate. Limit: a
+    criss-cross history has more than one merge base, and the rule relies on GitHub diffing from the one it reports;
+    a different pick on either side reads as changed, which costs only a review.
 
     `prefetch` reads what a batch of queries needs, `workers` calls at a time, all through the one client, so its
     rate-limit backoff governs every call. `detect` reads anything still missing one call at a time. A failure in
