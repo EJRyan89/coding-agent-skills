@@ -21,10 +21,13 @@ import review_state
 from review_archive import commit_record, latest_record, list_versions, pull_directory
 from review_io import PersistenceError
 from review_operation import (
+    MovedHead,
+    ReviewedCommits,
     ReviewOperationError,
     ReviewOperationFieldError,
     archive_base,
     commit_adapter_result,
+    latest_reviewed_commits,
     latest_reviewed_heads,
     merged_date,
     parse_pull_selector,
@@ -43,6 +46,10 @@ def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
 
 
 class ReviewOperationTests(unittest.TestCase):
+    @staticmethod
+    def _never_asked(moved: list[MovedHead]) -> set[int]:
+        raise AssertionError(f"no contribution is compared: {moved}")
+
     @staticmethod
     def _pull(number: int, state: str = "OPEN", merged_at: str | None = None) -> dict[str, Any]:
         return {
@@ -125,7 +132,10 @@ class ReviewOperationTests(unittest.TestCase):
             self._pull(3, "MERGED", "2026-01-03T00:00:00Z"),
         ]
         selected = select_eligible_pulls(
-            pulls, merged_since=date(2026, 1, 1), reviewed_heads=lambda numbers: {1: "c" * 40}
+            pulls,
+            merged_since=date(2026, 1, 1),
+            reviewed_commits=lambda numbers: {1: ReviewedCommits("c" * 40, "a" * 40)},
+            unchanged=self._never_asked,
         )
         self.assertEqual([3], [item["number"] for item in selected])
 
@@ -142,26 +152,71 @@ class ReviewOperationTests(unittest.TestCase):
         ]
         looked_up: list[list[int]] = []
 
-        def heads(numbers: list[int]) -> dict[int, str]:
+        def heads(numbers: list[int]) -> dict[int, ReviewedCommits]:
             looked_up.append(list(numbers))
-            return {5: pulls[0]["headRefOid"]}
+            return {5: ReviewedCommits(pulls[0]["headRefOid"], "a" * 40)}
 
-        selected = select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads)
+        selected = select_eligible_pulls(
+            pulls, merged_since=date(2026, 1, 1), reviewed_commits=heads, unchanged=self._never_asked
+        )
         self.assertEqual([[1, 3, 5]], looked_up)
         self.assertEqual([1, 3], [item["number"] for item in selected])
 
         looked_up.clear()
-        forced = select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads, force=True)
+        forced = select_eligible_pulls(
+            pulls, merged_since=date(2026, 1, 1), reviewed_commits=heads, unchanged=self._never_asked, force=True
+        )
         self.assertEqual([], looked_up)
         self.assertEqual([1, 3, 5], [item["number"] for item in forced])
 
     def test_selection_refuses_duplicate_and_malformed_pulls_before_reading_the_archive(self) -> None:
-        def heads(numbers: list[int]) -> dict[int, str]:
+        def heads(numbers: list[int]) -> dict[int, ReviewedCommits]:
             raise AssertionError("the archive is read only after every pull is validated")
 
         for pulls in ([self._pull(1), self._pull(1)], [self._pull(1), {"number": 2}]):
             with self.subTest(pulls=pulls), self.assertRaises(ReviewOperationError):
-                select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads)
+                select_eligible_pulls(
+                    pulls, merged_since=date(2026, 1, 1), reviewed_commits=heads, unchanged=self._never_asked
+                )
+
+    def test_a_moved_head_is_eligible_unless_its_contribution_is_unchanged(self) -> None:
+        pulls = [self._pull(number) for number in (1, 2, 3, 4, 5)]
+        reviewed = {
+            1: ReviewedCommits("0" * 40, "a" * 40),  # moved, its contribution the same
+            2: ReviewedCommits("0" * 40, "a" * 40),  # moved, its contribution changed or undecided
+            3: ReviewedCommits("0" * 40, None),  # moved under a legacy review, which recorded no base
+            4: ReviewedCommits(pulls[3]["headRefOid"], "a" * 40),  # not moved
+        }
+        asked: list[list[MovedHead]] = []
+
+        def unchanged(moved: list[MovedHead]) -> set[int]:
+            asked.append(moved)
+            return {1}
+
+        selected = select_eligible_pulls(
+            pulls, merged_since=date(2026, 1, 1), reviewed_commits=lambda numbers: reviewed, unchanged=unchanged
+        )
+        self.assertEqual([2, 3, 5], [item["number"] for item in selected])
+        self.assertEqual([[(pulls[0], reviewed[1]), (pulls[1], reviewed[2])]], asked)
+
+    def test_an_answer_about_a_head_that_did_not_move_selects_nothing_it_would_not(self) -> None:
+        pulls = [self._pull(1), self._pull(2)]
+        reviewed = {1: ReviewedCommits("0" * 40, "a" * 40)}
+        selected = select_eligible_pulls(
+            pulls,
+            merged_since=date(2026, 1, 1),
+            reviewed_commits=lambda numbers: reviewed,
+            unchanged=lambda moved: {2},  # never reviewed, so not the comparison's to drop
+        )
+        self.assertEqual([1, 2], [item["number"] for item in selected])
+
+    def test_no_moved_head_with_a_recorded_base_asks_nothing(self) -> None:
+        pulls = [self._pull(1), self._pull(2)]
+        reviewed = {1: ReviewedCommits(pulls[0]["headRefOid"], "a" * 40), 2: ReviewedCommits("0" * 40, None)}
+        selected = select_eligible_pulls(
+            pulls, merged_since=date(2026, 1, 1), reviewed_commits=lambda numbers: reviewed, unchanged=self._never_asked
+        )
+        self.assertEqual([2], [item["number"] for item in selected])
 
     def test_watermark_retains_unreviewed_merges(self) -> None:
         merged = [self._pull(2, "MERGED", "2026-01-05T00:00:00Z"), self._pull(3, "MERGED", "2026-01-08T00:00:00Z")]
@@ -464,3 +519,7 @@ class ReviewOperationTests(unittest.TestCase):
             )
             commit_record(root, "example/one", 12, record, expected_latest_version=None)
             self.assertEqual({12: "b" * 40}, latest_reviewed_heads(root, "example/one", [12, 13]))
+            self.assertEqual(
+                {12: ReviewedCommits("b" * 40, "a" * 40)},
+                latest_reviewed_commits(root, "example/one", [12, 13]),
+            )

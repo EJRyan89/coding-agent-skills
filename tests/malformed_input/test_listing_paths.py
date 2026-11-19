@@ -20,7 +20,6 @@ sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
-sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
 import pr_change
 import review_github

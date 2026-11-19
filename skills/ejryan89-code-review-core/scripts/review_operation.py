@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import whole_number
 from review_archive import (
@@ -100,18 +100,35 @@ def validate_pull(value: Any) -> dict[str, Any]:
     return pull
 
 
+class ReviewedCommits(NamedTuple):
+    """The head commit a pull request's latest review read, and the base commit it compared that head with: the
+    record's `pull_request.base_sha`, or None for a migrated legacy review, which recorded no base."""
+
+    head_sha: str
+    base_sha: str | None
+
+
+# A pull request whose head moved since its latest review, which recorded the base it compared its head with.
+MovedHead = tuple[dict[str, Any], ReviewedCommits]
+
+
 def select_eligible_pulls(
     pulls: Iterable[dict[str, Any]],
     *,
     merged_since: date,
-    reviewed_heads: Callable[[list[int]], dict[int, str]],
+    reviewed_commits: Callable[[list[int]], dict[int, ReviewedCommits]],
+    unchanged: Callable[[list[MovedHead]], set[int]],
     force: bool = False,
 ) -> list[dict[str, Any]]:
-    """The non-draft open pull requests and those merged on or after `merged_since` whose head is not yet reviewed.
+    """The non-draft open pull requests and those merged on or after `merged_since` that still need a review: never
+    reviewed, or whose own changes may differ from what their latest review read.
 
     A merged pull request is judged by its merge date alone, so one merged earlier and updated since stays out.
-    `reviewed_heads` reads the archive, so it is asked only about the pull requests the state, draft, and watermark
-    filters keep, after every pull is validated, and not at all under `force`.
+    `reviewed_commits` reads the archive, so it is asked only about the pull requests the state, draft, and watermark
+    filters keep, after every pull is validated, and not at all under `force`. A pull request whose head moved since
+    its review is eligible unless `unchanged` names it, and `unchanged` is asked only about those whose review recorded
+    a base, so a migrated legacy review's moved head is eligible without a comparison. `unchanged` answers with the
+    numbers whose contribution it found the same, so anything it cannot decide stays eligible.
     """
     window = []
     seen: set[int] = set()
@@ -129,8 +146,21 @@ def select_eligible_pulls(
     window.sort(key=lambda pull: pull["number"])
     if force:
         return window
-    heads = reviewed_heads([pull["number"] for pull in window])
-    return [pull for pull in window if heads.get(pull["number"]) != pull["headRefOid"]]
+    reviewed = reviewed_commits([pull["number"] for pull in window])
+    moved = [
+        (pull, commits)
+        for pull in window
+        if (commits := reviewed.get(pull["number"])) is not None
+        and commits.head_sha != pull["headRefOid"]
+        and commits.base_sha is not None
+    ]
+    same = unchanged(moved) if moved else set()
+    return [
+        pull
+        for pull in window
+        if (commits := reviewed.get(pull["number"])) is None
+        or (commits.head_sha != pull["headRefOid"] and pull["number"] not in same)
+    ]
 
 
 def split_batch(eligible: list[dict[str, Any]], size: int | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -466,11 +496,12 @@ def reviewed_head(
 ) -> dict[str, Any] | None:
     """The latest reviewed head: a validated review record, else a migrated legacy review.
 
-    Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards. A record
-    written before ledgers is summarized from the ledger its pull request's records compute. A legacy review's
-    findings were never converted, so its summary counts its report's findings as open and cannot say how many
-    were addressed (None); it and the report's path are None when the report is unreadable, which is the one read
-    that tells. A caller that already holds the pull request's validated records, oldest first as `pull_records`
+    Its `base_sha` is the base commit a record's review compared the head with, and None for a legacy review, which
+    recorded none. Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards.
+    A record written before ledgers is summarized from the ledger its pull request's records compute. A legacy
+    review's findings were never converted, so its summary counts its report's findings as open and cannot say how
+    many were addressed (None); it and the report's path are None when the report is unreadable, which is the one
+    read that tells. A caller that already holds the pull request's validated records, oldest first as `pull_records`
     returns them, passes them as `records` so none is read again.
     """
     directory = pull_directory(archive_root, repository, number)
@@ -489,6 +520,7 @@ def reviewed_head(
         _, markdown = record_paths(directory, review["version"])
         return {
             "head_sha": record["pull_request"]["head_sha"],
+            "base_sha": record["pull_request"]["base_sha"],
             "source": "record",
             "version": review["version"],
             "incomplete": bool(coverage and coverage["unavailable_sources"]),
@@ -504,6 +536,7 @@ def reviewed_head(
         summary = None if counts is None else {"open": counts, "addressed": None, "since": None, "version": None}
         return {
             "head_sha": legacy["reviewed_head_sha"],
+            "base_sha": None,
             "source": "legacy",
             "version": None,
             "incomplete": False,
@@ -515,13 +548,21 @@ def reviewed_head(
     return None
 
 
-def latest_reviewed_heads(archive_root: Path, repository: str, numbers: Iterable[int]) -> dict[int, str]:
-    heads: dict[int, str] = {}
+def latest_reviewed_commits(archive_root: Path, repository: str, numbers: Iterable[int]) -> dict[int, ReviewedCommits]:
+    """The commits each reviewed pull request among `numbers` was last reviewed at; one never reviewed is absent."""
+    commits: dict[int, ReviewedCommits] = {}
     for number in numbers:
         reviewed = reviewed_head(archive_root, repository, number)
         if reviewed is not None:
-            heads[number] = reviewed["head_sha"]
-    return heads
+            commits[number] = ReviewedCommits(reviewed["head_sha"], reviewed["base_sha"])
+    return commits
+
+
+def latest_reviewed_heads(archive_root: Path, repository: str, numbers: Iterable[int]) -> dict[int, str]:
+    return {
+        number: commits.head_sha
+        for number, commits in latest_reviewed_commits(archive_root, repository, numbers).items()
+    }
 
 
 def recorded_watermark(state: dict[str, Any], repository: str) -> date | None:

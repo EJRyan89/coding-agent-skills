@@ -12,11 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import calendar_date
 from github_client import GitHubError
 from path_containment import resolved_path
+from pr_change import UNCHANGED, ChangeDetector, ComparisonError, Query
 from review_archive import ArchiveError
 from review_config import load_config, resolve_repositories, validate_repository_identity
+from review_github import GitHubClient
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json
 from review_operation import (
+    MovedHead,
+    ReviewedCommits,
     ReviewOperationError,
+    latest_reviewed_commits,
     latest_reviewed_heads,
     recorded_watermark,
     safe_watermark,
@@ -60,6 +65,35 @@ PENDING_KINDS = ("pull", "re-review", "fixture")
 MAX_PREPARE_PULLS = 4
 
 
+def unchanged_contributions(github: GitHubClient, repository: str, moved: list[MovedHead]) -> set[int]:
+    """The pull requests among `moved` whose own changes are what their latest review read, by `ChangeDetector`'s
+    comparison: the reviewed head with the base commit the review recorded, and the current head with the base commit
+    the listing names, so a rebase that left a pull request's diff as it was, such as a force push to a lower branch of
+    a stack, is no new head to review.
+
+    A comparison that is changed or unknown, or that a GitHub call failed for this pull request alone, names nothing,
+    so the pull request stays eligible. A failure in `pr_change.FATAL_ERROR_KINDS`, which every later call would meet
+    too, is raised, failing the repository's enumeration as a listing failure does, so its watermark is kept.
+    """
+    detector = ChangeDetector(github)
+    queries = [
+        Query(repository, pull["baseRefOid"], reviewed.head_sha, pull["headRefOid"], reviewed.base_sha)
+        for pull, reviewed in moved
+    ]
+    detector.prefetch(queries)
+    same: set[int] = set()
+    for (pull, _), query in zip(moved, queries, strict=True):
+        try:
+            outcome = detector.detect(
+                repository, pull["number"], query.base_ref, query.since_sha, query.head_sha, query.since_base
+            )
+        except ComparisonError:
+            continue
+        if outcome == UNCHANGED:
+            same.add(pull["number"])
+    return same
+
+
 def enumerate_batch(
     output: Path,
     *,
@@ -95,9 +129,12 @@ def enumerate_batch(
         }
         read: list[int] = []
 
-        def reviewed_heads(numbers: list[int]) -> dict[int, str]:
+        def reviewed_commits(numbers: list[int]) -> dict[int, ReviewedCommits]:
             read.extend(numbers)
-            return latest_reviewed_heads(archive_root, repository, numbers)
+            return latest_reviewed_commits(archive_root, repository, numbers)
+
+        def unchanged(moved: list[MovedHead]) -> set[int]:
+            return unchanged_contributions(services.github, repository, moved)
 
         configured: dict[str, Any] | None = config["repositories"].get(repository)
         if configured is None:
@@ -121,7 +158,11 @@ def enumerate_batch(
             # A pull request merged between the two listings is in both; the later listing is the current one.
             pulls = {pull["number"]: pull for found in listings for pull in found.pulls}
             eligible = select_eligible_pulls(
-                pulls.values(), merged_since=watermark, reviewed_heads=reviewed_heads, force=force
+                pulls.values(),
+                merged_since=watermark,
+                reviewed_commits=reviewed_commits,
+                unchanged=unchanged,
+                force=force,
             )
             size = configured["batch_size"] if batch_size is None else batch_size
             entry["eligible"], entry["deferred"] = split_batch(eligible, size)
