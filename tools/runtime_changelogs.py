@@ -92,7 +92,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,7 +111,21 @@ from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
-from markdown_sections import document_headings
+from markdown_sections import (
+    ATX_HEADING,
+    LINE_END,
+    MARKDOWN_SPACE,
+    MAX_BLOCK_INDENT,
+    THEMATIC_BREAK,
+    document_headings,
+    find_fences,
+    indentation,
+    is_blank,
+    items_holding,
+    list_item,
+    list_item_content,
+    starts_block,
+)
 from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
@@ -430,20 +444,72 @@ def release_number(text: str) -> tuple[int, ...]:
     return release
 
 
-def bullet_entries(lines: Iterable[str]) -> list[str]:
-    """Each bullet of Markdown, with the lines that continue it joined to it, on one line."""
+def bullet_entries(lines: Sequence[str]) -> list[str]:
+    """Each bullet of Markdown, with the lines its list item holds joined to it, on one line.
+
+    A list item holds the lines indented as far as its content, a fence among them, and a line that lazily continues
+    its paragraph. A line indented less ends it when it starts a block, a blockquote, a fence, an ATX heading, a
+    thematic break, or a list item, or follows a blank line, as GitHub renders them, and the block it starts is left
+    out, as text no bullet opens is, so its words never count as an entry's. Block starts and list items are read
+    through ejryan89-skill-core's markdown_sections, and a fenced line is never a bullet. The limit: a lazy line after
+    an indented code block in an item is read as the item's, where CommonMark ends the item."""
+    fences = {fence.opener: fence for fence in find_fences(list(lines))}
     entries: list[list[str]] = []
-    continuing = False
-    for line in lines:
-        bullet = BULLET.match(line)
-        if bullet:
-            entries.append([bullet.group("text")])
-            continuing = True
-        elif continuing and line.strip() and not line.lstrip().startswith("#"):
-            entries[-1].append(line.strip())
+    # The column each open list item's content starts at, outermost first, and the entry each one's lines join.
+    items: list[int] = []
+    holders: list[int] = []
+    paragraph = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if is_blank(line):
+            paragraph, index = False, index + 1
+            continue
+        width = indentation(line)
+        held = items_holding(items, width)
+        relative = " " * (width - (items[held - 1] if held else 0)) + line.lstrip(MARKDOWN_SPACE)
+        fence = fences.get(index)
+        bullet = bullet_text(relative, paragraph=paragraph)
+        content = list_item_content(line)
+        if bullet is not None and content is not None:
+            del items[held:], holders[held:]
+            items.append(content)
+            holders.append(len(entries))
+            entries.append([bullet])
+            paragraph = fence is None and not is_blank(bullet)
+        elif held < len(items) and paragraph and not starts_block(relative, opener=fence is not None):
+            entries[holders[-1]].append(line.strip())  # a lazy continuation of the item's paragraph
         else:
-            continuing = False
-    return [text for text in (single_line(" ".join(parts)) for parts in entries) if text]
+            del items[held:], holders[held:]
+            if holders:
+                entries[holders[-1]].append(line.strip())
+            block = relative.strip(LINE_END)
+            closes = fence is not None or THEMATIC_BREAK.fullmatch(block) or ATX_HEADING.fullmatch(block)
+            paragraph = bool(holders) and not closes
+        if fence is not None:
+            for fenced in fence.lines()[1:]:
+                if holders:
+                    entries[holders[-1]].append(lines[fenced].strip())
+            index = fence.lines().stop
+        else:
+            index += 1
+    return [text for text in (single_line(" ".join(part for part in parts if part)) for parts in entries) if text]
+
+
+def bullet_text(line: str, *, paragraph: bool) -> str | None:
+    """The text of the bullet a line opens, read at the column of the content that holds it, or None when it opens
+    none the watch reads: a bullet is a `-` or `*` list item as markdown_sections' `list_item` reads one, so a
+    thematic break such as `- - -` is none, and after a paragraph's text neither is one indented past
+    MAX_BLOCK_INDENT columns, which continues the paragraph."""
+    bullet = BULLET.fullmatch(line)
+    if (
+        bullet is None
+        or indentation(line) > MAX_BLOCK_INDENT
+        or THEMATIC_BREAK.fullmatch(line.strip(LINE_END)) is not None
+        or list_item(line, interrupting=paragraph) is None
+    ):
+        return None
+    return bullet.group("text")
 
 
 def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:

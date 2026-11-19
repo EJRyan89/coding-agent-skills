@@ -129,15 +129,15 @@ class ChangelogTests(unittest.TestCase):
         # indentation and closing marks are a heading's, and a tab is Markdown's whitespace.
         text = "## 2.0.0\n- one\n##\u00a01.9.0\n- hidden\n#### 1.8.0\n- deep\n\nText.\n   ## 1.7.0 ##\n-\ttwo\n"
         self.assertEqual(
-            [("2.0.0", ("one", "hidden", "deep")), ("1.7.0", ("two",))],
+            [("2.0.0", ("one ##\u00a01.9.0", "hidden", "deep")), ("1.7.0", ("two",))],
             [(found.name, found.entries) for found in watch.markdown_releases(text)],
         )
 
     def test_a_release_heading_inside_a_list_item_or_a_fence_is_the_entry_s_text(self) -> None:
-        # GitHub renders a heading indented under a list item inside the item, and a fenced one as code.
+        # GitHub renders a heading indented under a list item inside the item, and a fenced one after it as code.
         text = "## 2.0.0\n- one\n  ## 1.9.0\n```\n## 1.8.0\n```\n- two\n## 1.7.0\n- three\n"
         self.assertEqual(
-            [("2.0.0", ("one", "two")), ("1.7.0", ("three",))],
+            [("2.0.0", ("one ## 1.9.0", "two")), ("1.7.0", ("three",))],
             [(found.name, found.entries) for found in watch.markdown_releases(text)],
         )
 
@@ -245,6 +245,32 @@ COPILOT_CHANGELOG = (CAPTURED / "copilot-cli-changelog.md").read_text(encoding="
 def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str, matched: bool) -> None:
     captured = ENTRIES[entry]
     assert (watch.matching(captured["entry"], captured["changelog"], [term]) == [term.text]) is matched
+
+
+@pytest.mark.parametrize(
+    ("body", "entries"),
+    [
+        # A block that starts at the list's indentation ends the entry, and is left out as prose no bullet opens is.
+        pytest.param("- one\n> note\n", ("one",), id="quote"),
+        pytest.param("- one\n> note\n> more\n- two\n", ("one", "two"), id="quote-then-a-bullet"),
+        pytest.param("- one\n### Fixed\n- two\n", ("one", "two"), id="heading"),
+        pytest.param("- one\n```\n- code\n```\n- two\n", ("one", "two"), id="fence"),
+        pytest.param("- one\n---\nprose\n- two\n* * *\n", ("one", "two"), id="thematic-break"),
+        pytest.param("- one\n\n> note\n", ("one",), id="quote-after-a-blank-line"),
+        # A line indented as far as the item's content is the item's, and so is a lazy continuation of its paragraph.
+        pytest.param("- one\n  > note\n", ("one > note",), id="quote-in-the-item"),
+        pytest.param("- one\n  ```\n  - code\n  ```\n", ("one ``` - code ```",), id="fence-in-the-item"),
+        pytest.param("- one\nlazy\n- two\n", ("one lazy", "two"), id="lazy-continuation"),
+        pytest.param("- one\n\n  more\nlazy\n", ("one more lazy",), id="paragraph-after-a-blank-line"),
+        pytest.param("- one\n\nprose\n", ("one",), id="prose-after-a-blank-line"),
+        pytest.param("- a\n  - b\n  > note\n", ("a > note", "b"), id="quote-in-the-outer-item"),
+        pytest.param("- one\n      - deep\n", ("one - deep",), id="deep-marker-continues-the-paragraph"),
+    ],
+)
+def test_a_bullets_entry_holds_the_lines_github_renders_in_its_list_item(body: str, entries: tuple[str, ...]) -> None:
+    assert [("2.0.0", entries)] == [
+        (found.name, found.entries) for found in watch.markdown_releases("## 2.0.0\n" + body)
+    ]
 
 
 CODEX_RELEASES = json.loads((CAPTURED / "codex-releases.json").read_text(encoding="utf-8"))
