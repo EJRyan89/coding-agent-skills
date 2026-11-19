@@ -27,7 +27,13 @@ import executable_locator
 import git_client
 import upgrade_notes
 from release_levels import versioning_levels
-from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
+from upgrade_notes import (
+    Snapshot,
+    changed_contract_items,
+    contract_list_problems,
+    contract_value_problems,
+    upgrade_notes_problems,
+)
 from validation_support import write_fixture_tree
 
 from tests import run_validation
@@ -161,6 +167,309 @@ def test_a_floor_by_position_by_keyword_or_in_a_constant_and_an_annotated_or_nes
     module: str, before: str, after: str
 ) -> None:
     assert [module] == changed(module, before, after)
+
+
+SKILL_CORE = "skills/ejryan89-skill-core/scripts"
+GH_TOOL = 'T = Tool("gh", "gh", find, minimum={floor})\n'
+SCHEMA = "skills/ejryan89-code-review-core/references/record.schema.json"
+
+
+def changed_trees(before: Mapping[str, str], after: Mapping[str, str]) -> list[str]:
+    return [item for item, _ in changed_contract_items(snapshot(before), snapshot(after))]
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "item"),
+    [
+        pytest.param(
+            {"deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN")},
+            {f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 49, 0)\n"},
+            "deployer/tools.py",
+            id="a floor held as an imported module's attribute",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "from versions import GH_MIN as FLOOR\n" + GH_TOOL.format(floor="FLOOR")},
+            {f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 49, 0)\n"},
+            "deployer/tools.py",
+            id="a floor held as an imported name",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
+                f"{SKILL_CORE}/versions.py": "from floors import GH as GH_MIN\n",
+            },
+            {f"{SKILL_CORE}/floors.py": "GH = (2, 49, 0)\n"},
+            "deployer/tools.py",
+            id="a floor an imported module imports in turn",
+        ),
+        pytest.param(
+            {"deployer/manifest.py": "from versions import MANIFEST_VERSION\nOLDEST_READABLE_VERSION = 6\n"},
+            {f"{SKILL_CORE}/versions.py": "MANIFEST_VERSION = 9\n"},
+            "deployer/manifest.py",
+            id="a manifest version held as an imported name",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": "import floors\nMINIMUMS = floors.PDF\n"},
+            {f"{SKILL_CORE}/floors.py": 'PDF = {"Xpdf": (4, 7)}\n'},
+            f"{SKILL_CORE}/pdf_tool.py",
+            id="PDF provider floors held in a module beside it",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "GH = (2, 48, 0)\n\ndef tools():\n    return " + GH_TOOL.format(floor="GH")[4:]},
+            {
+                "deployer/tools.py": "GH = (2, 48, 0)\n\ndef tools():\n    GH = (2, 49, 0)\n    return "
+                + GH_TOOL.format(floor="GH")[4:]
+            },
+            "deployer/tools.py",
+            id="a floor set inside a function body",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "GH = (2, 48, 0)\n\nclass Tools:\n    GH = (2, 48, 0)\n    "
+                + GH_TOOL.format(floor="GH")
+            },
+            {
+                "deployer/tools.py": "GH = (2, 48, 0)\n\nclass Tools:\n    GH = (2, 49, 0)\n    "
+                + GH_TOOL.format(floor="GH")
+            },
+            "deployer/tools.py",
+            id="a floor set inside a class body",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="[2, X, 0]")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="[2, X, 0]")},
+            "deployer/tools.py",
+            id="a name in a list",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="{X}")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="{X}")},
+            "deployer/tools.py",
+            id="a name in a set",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, -X)")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="(2, -X)")},
+            "deployer/tools.py",
+            id="a name under a unary operator",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, X + 1j)")},
+            {"deployer/tools.py": "X = 49\n" + GH_TOOL.format(floor="(2, X + 1j)")},
+            "deployer/tools.py",
+            id="a name in a complex number a literal holds",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "for GH in ((2, 48, 0),):\n    " + GH_TOOL.format(floor="GH")},
+            {"deployer/tools.py": "for GH in ((2, 49, 0),):\n    " + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py",
+            id="a floor a loop over a one-item literal binds",
+        ),
+    ],
+)
+def test_a_contract_value_held_in_another_module_or_scope_compares_by_its_value(
+    before: Mapping[str, str], after: Mapping[str, str], item: str
+) -> None:
+    released = {
+        f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 48, 0)\nMANIFEST_VERSION = 8\n",
+        f"{SKILL_CORE}/floors.py": 'GH = (2, 48, 0)\nPDF = {"Xpdf": (4, 6)}\n',
+        **before,
+    }
+    current = {**released, **after}
+    assert [item] == changed_trees(released, current)
+    assert contract_value_problems(snapshot(current)) == []
+
+
+@pytest.mark.parametrize(
+    ("files", "refused"),
+    [
+        pytest.param(
+            {"deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `versions.GH_MIN`, "
+            "to a literal past `versions.GH_MIN`; write it as a literal, or as a name this file, or a module it "
+            "imports by name, binds once to one, so a change to it is compared by its value",
+            id="a module the tree does not hold",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "from versions import FLOORS\n" + GH_TOOL.format(floor='FLOORS["gh"]'),
+                f"{SKILL_CORE}/versions.py": 'FLOORS = {"gh": (2, 48, 0)}\n',
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `FLOORS['gh']`, to a "
+            "literal past `FLOORS['gh']`; ",
+            id="a subscript",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "GH = (2, 48, 0)\nGH = (2, 49, 0)\n" + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, to a literal "
+            "past `GH`; ",
+            id="a name bound twice",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "GH = (2, 48)\nGH += (0,)\n" + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, ",
+            id="a name updated by an augmented assignment",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "GH = (2, 48, 0)\n\ndef bump():\n    global GH\n    GH = (2, 49, 0)\n\n"
+                + GH_TOOL.format(floor="GH")
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, ",
+            id="a name a function rebinds through global",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "def make(floor=(2, 48, 0)):\n    return " + GH_TOOL.format(floor="floor")[4:]},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `floor`, to a literal "
+            "past `floor`; ",
+            id="a parameter, whatever its default",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "from .versions import GH\n" + GH_TOOL.format(floor="GH"),
+                "deployer/versions.py": "GH = (2, 48, 0)\n",
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, ",
+            id="a relative import",
+        ),
+        pytest.param(
+            {"deployer/tools.py": GH_TOOL.format(floor="tuple([2, 48, 0])")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `tuple([2, 48, 0])`, "
+            "to a literal past `tuple([2, 48, 0])`; ",
+            id="a call",
+        ),
+        pytest.param(
+            {"deployer/manifest.py": "from versions import MANIFEST_VERSION\n"},
+            "deployer/manifest.py: the upgrade-notes check cannot follow `MANIFEST_VERSION` to a literal past "
+            "`versions.MANIFEST_VERSION`; ",
+            id="a manifest version imported from a module the tree does not hold",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": "MINIMUMS = dict(Xpdf=(4, 6))\n"},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`dict(Xpdf=(4, 6))`; ",
+            id="PDF provider floors built by a call",
+        ),
+        pytest.param(
+            {"deployer/tools.py": 'T = Tool("gh", "gh", find, **{"minimum": (2, 48, 0)})\n'},
+            "deployer/tools.py: the Tool at line 1 unpacks its arguments, so the upgrade-notes check cannot tell "
+            "which is a floor; pass each by position or by keyword",
+            id="unpacked arguments",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "A = B\nB = A\n" + GH_TOOL.format(floor="A")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `A`, to a literal "
+            "past `A`; ",
+            id="names bound to each other",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "for GH in ((2, 48, 0), (2, 49, 0)):\n    " + GH_TOOL.format(floor="GH")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `GH`, to a literal "
+            "past `GH`; ",
+            id="a floor a loop over several items binds",
+        ),
+        pytest.param(
+            {"deployer/tools.py": "X = 48\n" + GH_TOOL.format(floor="(2, X + 1)")},
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `(2, X + 1)`, to a "
+            "literal past `(2, X + 1)`; ",
+            id="an operator a literal does not hold",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": 'X = {"Xpdf": (4, 6)}\nT = Tool("pdftotext", "pdftotext", find, '
+                "provider_minimum={**X})\n"
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the provider_minimum of Tool 'pdftotext', "
+            "`{**X}`, to a literal past `{**X}`; ",
+            id="a dict that unpacks a name",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS["Xpdf"] = (4, 7)\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS['Xpdf'] = (4, 7)`; ",
+            id="an item assigned in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS["Xpdf"] += (1,)\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS['Xpdf'] += (1,)`; ",
+            id="an item augmented in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26,)}\ndel MINIMUMS["Poppler"]\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`del MINIMUMS['Poppler']`; ",
+            id="an item deleted",
+        ),
+        pytest.param(
+            {
+                f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\n\ndef raise_floors():\n    '
+                'MINIMUMS.update({"Xpdf": (4, 7)})\n'
+            },
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.update({'Xpdf': (4, 7)})`; ",
+            id="a mutating method called in a function",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": "MINIMUMS = [(4, 6), (26,)]\nMINIMUMS.sort()\n"},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.sort()`; ",
+            id="a list sorted in place",
+        ),
+        pytest.param(
+            {f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\nMINIMUMS.__ior__({"Xpdf": (4, 7)})\n'},
+            f"{SKILL_CORE}/pdf_tool.py: the upgrade-notes check cannot follow `MINIMUMS` to a literal past "
+            "`MINIMUMS.__ior__({'Xpdf': (4, 7)})`; ",
+            id="an in-place operator method called",
+        ),
+        pytest.param(
+            {
+                "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
+                f"{SKILL_CORE}/versions.py": "GH_MIN = [2, 48, 0]\nGH_MIN.append(1)\n",
+            },
+            "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', `versions.GH_MIN`, "
+            "to a literal past `GH_MIN.append(1)`; ",
+            id="a followed name its own module updates",
+        ),
+        pytest.param(
+            {"deployer/manifest.py": "MANIFEST_VERSION = (\n"},
+            "deployer/manifest.py does not parse, so the upgrade-notes check cannot read its contract values: ",
+            id="a contract file that does not parse",
+        ),
+    ],
+)
+def test_a_contract_value_the_check_cannot_follow_to_a_literal_is_refused_by_file_and_expression(
+    files: Mapping[str, str], refused: str
+) -> None:
+    problems = contract_value_problems(snapshot(files))
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(refused), problems[0]
+
+
+def test_a_module_is_found_on_the_contract_files_sys_path_never_beside_the_importer() -> None:
+    # Python never searches deployer/ for `import versions` in deployer/tools.py: deployer/__init__.py puts
+    # ejryan89-skill-core's scripts first, so a deployer/versions.py is not the module the floor comes from.
+    tools = {
+        "deployer/tools.py": "import versions\n" + GH_TOOL.format(floor="versions.GH_MIN"),
+        "deployer/versions.py": "GH_MIN = (9, 9, 9)\n",
+        f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 48, 0)\n",
+    }
+    assert changed_trees(tools, {**tools, f"{SKILL_CORE}/versions.py": "GH_MIN = (2, 49, 0)\n"}) == [
+        "deployer/tools.py"
+    ]
+    assert changed_trees(tools, {**tools, "deployer/versions.py": "GH_MIN = (9, 9, 10)\n"}) == []
+    # Below ejryan89-skill-core's scripts, the repository root.
+    rooted = {name: text for name, text in tools.items() if name != f"{SKILL_CORE}/versions.py"}
+    rooted["versions.py"] = "GH_MIN = (2, 48, 0)\n"
+    assert changed_trees(rooted, {**rooted, "versions.py": "GH_MIN = (2, 49, 0)\n"}) == ["deployer/tools.py"]
+
+
+def test_an_update_of_a_local_that_shadows_a_followed_name_is_not_its_update() -> None:
+    files = {
+        f"{SKILL_CORE}/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6)}\n\ndef local():\n    MINIMUMS = {}\n'
+        '    MINIMUMS["Xpdf"] = (4, 7)\n'
+    }
+    assert contract_value_problems(snapshot(files)) == []
 
 
 class UpgradeNotesPolicy(unittest.TestCase):
@@ -590,6 +899,64 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
         self.assertEqual([], upgrade_notes_problems(self.root))
 
+    def main_changed_and_named_the_manifest(self) -> None:
+        """origin/main after another pull request, merged once this one's branch left main, changed the manifest and
+        named it in its own entry."""
+        self.commit(
+            f"Change the manifest (#8)\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE
+        )
+        self.merged()
+
+    def assert_charged_with_the_schema_alone(self, body: str | None) -> None:
+        problems = upgrade_notes_problems(self.root, body)
+        self.assertEqual([SCHEMA], [problem.split(":", 1)[0] for problem in problems])
+        self.assertRegex(problems[0], self.OWN_CHANGE)
+
+    def test_a_merge_commit_of_the_pull_request_into_main_is_charged_only_with_its_own_changes(self) -> None:
+        # Continuous integration checks a pull request out as a merge commit of its head into main's tip, which here
+        # holds another pull request's manifest change and that pull request's named entry.
+        self.release()
+        self.git("checkout", "-q", "-b", "topic")
+        self.commit("Change the schema", self.CONTRACT_CHANGES[SCHEMA])
+        self.git("checkout", "-q", "main")
+        self.main_changed_and_named_the_manifest()
+        self.git("checkout", "-q", "--detach", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge topic into main", "topic")
+        self.assert_charged_with_the_schema_alone(self.body())
+        own = self.entry(f"`{SCHEMA}`", heading="The schema changed")
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body(own)))
+
+    def test_a_branch_that_merged_origin_main_in_is_charged_only_with_its_own_changes(self) -> None:
+        # The branch merged origin/main in after another pull request changed the manifest and named it, so the
+        # manifest change and its entry reach the branch through the merge, and neither is the branch's own.
+        self.release()
+        self.git("checkout", "-q", "-b", "topic")
+        self.commit("Change the schema", self.CONTRACT_CHANGES[SCHEMA])
+        self.git("checkout", "-q", "main")
+        self.main_changed_and_named_the_manifest()
+        self.git("checkout", "-q", "topic")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into topic", "origin/main")
+        for body in (None, self.body()):
+            with self.subTest(body=body is not None):
+                self.assert_charged_with_the_schema_alone(body)
+        own = self.entry(f"`{SCHEMA}`", heading="The schema changed")
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body(own)))
+        self.commit(f"Name the schema\n\n{self.body(own)}")
+        self.assertEqual([], upgrade_notes_problems(self.root))
+
+    def test_a_contract_value_the_check_cannot_follow_to_a_literal_fails_it(self) -> None:
+        self.release()
+        tools = 'import versions\nMINIMUM_PYTHON = (3, 11)\nGH = Tool("gh", "gh", find, minimum=versions.GH_MIN)\n'
+        problems = self.problems({"deployer/tools.py": tools}, self.body(self.entry("`deployer/tools.py`")))
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(
+            problems[0].startswith(
+                "deployer/tools.py: the upgrade-notes check cannot follow the minimum of Tool 'gh', "
+                "`versions.GH_MIN`, to a literal past `versions.GH_MIN`; "
+            ),
+            problems[0],
+        )
+
     def test_an_item_main_changed_without_an_entry_is_named_as_changed_since_the_tag(self) -> None:
         self.release()
         self.commit("Change the manifest (#8)", self.MANIFEST_CHANGE)
@@ -700,9 +1067,49 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.assertEqual(("v0.1.0", None), (tag, problem))
         self.assertEqual(frozenset(self.RELEASED), names)
 
-    def test_no_tag_reachable_from_origin_main_passes(self) -> None:
+    def test_with_no_tag_reachable_the_pull_requests_own_change_still_needs_its_entry(self) -> None:
+        # Nothing is released, so a change main merged without an entry is free, while the pull request's own change,
+        # compared with the commit where HEAD meets origin/main, which needs no tag, still needs its entry.
         self.release(tag=None)
-        self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
+        self.commit("Change the schema (#8)", self.CONTRACT_CHANGES[SCHEMA])
+        self.merged()
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+        own_change = (
+            r"^deployer/manifest\.py: MANIFEST_VERSION or OLDEST_READABLE_VERSION changed in this pull request, "
+            r"against [0-9a-f]{7} where HEAD meets origin/main, and the pull request's own upgrade note does not name "
+            r"it; add an entry"
+        )
+        for body in (None, self.body()):
+            with self.subTest(body=body is not None):
+                problems = self.problems(self.MANIFEST_CHANGE, body)
+                self.assertEqual(1, len(problems), problems)
+                self.assertRegex(problems[0], own_change)
+        self.assertEqual([], self.problems(self.MANIFEST_CHANGE, self.body(self.entry("`deployer/manifest.py`"))))
+
+    def test_with_no_tag_reachable_and_no_body_the_branchs_own_entries_are_held_to_the_levels(self) -> None:
+        self.release(tag=None)
+        entry = self.entry("`deployer/manifest.py`", level="huge")
+        self.commit(f"Change the manifest\n\n{self.body(entry)}", self.MANIFEST_CHANGE)
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertRegex(
+            problems[0],
+            r"^commit [0-9a-f]{7}'s ## Upgrade note entry 'A contract changed' starts its Level with 'huge', not one "
+            r"of the levels in the Versioning section of docs/releasing\.md: patch, minor, or major$",
+        )
+
+    def test_with_no_tag_reachable_a_head_that_never_meets_origin_main_is_a_problem_line(self) -> None:
+        self.release(tag=None)
+        self.git("checkout", "-q", "--orphan", "unrelated")
+        self.commit("An unrelated root", self.MANIFEST_CHANGE)
+        [problem] = upgrade_notes_problems(self.root, self.body())
+        self.assertTrue(
+            problem.startswith(
+                "the upgrade-notes check cannot read the commits and the tree where HEAD meets origin/main: "
+                "git merge-base HEAD origin/main failed"
+            ),
+            problem,
+        )
 
     def test_the_last_tag_is_the_highest_release_not_a_nearer_tag_of_another_name(self) -> None:
         # A pre-release or any other tag is not a release, so the contract files compare with the release before it.
@@ -719,7 +1126,10 @@ class UpgradeNotesPolicy(unittest.TestCase):
     def test_a_tag_that_is_not_a_release_is_no_release(self) -> None:
         self.release(tag="v0.1.0-rc.1")
         self.assertEqual((None, None), upgrade_notes.last_release_tag(self.root))
-        self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
+        # A change merged since the pre-release is no change since a release, so it needs no entry.
+        self.commit("Change the manifest (#8)", self.MANIFEST_CHANGE)
+        self.merged()
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
 
     def test_a_message_holding_the_old_separators_is_read_and_its_entry_counts(self) -> None:
         self.release()

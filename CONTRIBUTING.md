@@ -24,7 +24,7 @@ Keep a full clone, and fetch `main` and the tags before validating:
 git fetch origin main --tags
 ```
 
-Validation reads both: the runner compares with `origin/main` to find a documentation-only change, and the upgrade-notes check compares the contract files at the last tag reachable from `origin/main`, and at the commit where `HEAD` meets `origin/main`, with the working tree and reads the upgrade notes of the commits since that tag. A missing `origin/main` or a shallow clone fails that check with the command that fixes it. A clone whose `origin` is a fork without this repository's tags passes it silently, because with no tag it treats nothing as released; cloning this repository and pushing to the fork avoids that.
+Validation reads both: the runner compares with `origin/main` to find a documentation-only change, and the upgrade-notes check compares the contract files at the last tag reachable from `origin/main`, and at the commit where `HEAD` meets `origin/main`, with the working tree and reads the upgrade notes of the commits since that tag. A missing `origin/main` or a shallow clone fails that check with the command that fixes it. In a clone whose `origin` is a fork without this repository's tags, the check finds no release, so it compares nothing since one, while it still holds the pull request to naming each contract item it changes against the commit where `HEAD` meets `origin/main`, a comparison that needs no tag; cloning this repository and pushing to the fork keeps the release comparison too.
 
 ## Development environment
 

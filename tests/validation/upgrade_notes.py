@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import copy
 import functools
 import re
 import sys
@@ -24,12 +23,12 @@ from text_lines import LINE_BREAK
 from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
+    CallableResolver,
     PullRequestChecks,
     find_fences,
     is_skill_file,
     listed,
     markdown_section,
-    module_statements,
     parse_python,
     repository_files,
 )
@@ -83,6 +82,11 @@ class Snapshot:
     def text(self, name: str) -> str | None:
         return self.read(name).replace("\r\n", "\n") if name in self.names else None
 
+    @functools.cached_property
+    def python(self) -> ContractValues:
+        """The tree's Python contract values, read once however many readers ask."""
+        return ContractValues(self)
+
 
 def last_release_tag(root: Path) -> tuple[str | None, str | None]:
     """The last release on origin/main, as ejryan89-skill-core's release_tags reads it, and a problem; no release tag
@@ -120,70 +124,308 @@ def revision_snapshot(root: Path, revision: str) -> Snapshot:
     )
 
 
-def _module_values(tree: ast.Module) -> dict[str, ast.expr]:
-    """The value each name a module-level statement assigns, with or without an annotation, one in a module-level if,
-    try, or with block included; the last such assignment of a name holds."""
-    values: dict[str, ast.expr] = {}
-    for node in module_statements(tree.body):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                if isinstance(target, ast.Name):
-                    values[target.id] = node.value
-    return values
+# The folders a module a contract file imports by name is looked for in, in the order sys.path holds them for the
+# contract files: ejryan89-skill-core's scripts, which deployer/__init__.py puts first and which is pdf_tool.py's own
+# folder, and then the repository root, from which the deployer runs. The importing file's own folder is never
+# searched for the deployer's modules, since Python does not search it for an absolute import. A name a relative
+# import binds is refused, a stated limit, since no contract value is reached through one.
+MODULE_FOLDERS = ("skills/ejryan89-skill-core/scripts", "")
+# The methods that change a list, a dict, or a set in place, which a followed name's module must not call on it.
+MUTATING_METHODS = frozenset(
+    {
+        "update",
+        "append",
+        "extend",
+        "insert",
+        "setdefault",
+        "pop",
+        "popitem",
+        "clear",
+        "remove",
+        "add",
+        "discard",
+        "sort",
+        "reverse",
+        "difference_update",
+        "intersection_update",
+        "symmetric_difference_update",
+        "__setitem__",
+        "__delitem__",
+        "__iadd__",
+        "__ior__",
+        "__iand__",
+        "__isub__",
+        "__ixor__",
+        "__imul__",
+    }
+)
+# CallableResolver's mark for a name bound by a definition, a parameter, or a relative import, which names no module.
+LOCAL_BINDING = "<local>."
 
 
-class _Constants(ast.NodeTransformer):
-    """Replaces each module-level name in an expression, wherever it sits, with the value it is assigned."""
-
-    def __init__(self, values: dict[str, ast.expr], seen: frozenset[str]) -> None:
-        self.values = values
-        self.seen = seen
-
-    def visit_Name(self, node: ast.Name) -> ast.expr:
-        if node.id in self.values and node.id not in self.seen:
-            value: ast.expr = _Constants(self.values, self.seen | {node.id}).visit(copy.deepcopy(self.values[node.id]))
-            return value
-        return node
+class UnresolvedValue(ValueError):
+    """The part of a contract value the check cannot follow to a literal, as its source text."""
 
 
-def _value_source(node: ast.expr, values: dict[str, ast.expr], seen: frozenset[str] = frozenset()) -> str:
-    """An expression's text, each module-level name in it followed to the value it is assigned, a key or a value of a
-    dict and a member of a tuple included, so a floor held in a constant compares by the constant's value."""
-    return ast.unparse(_Constants(values, seen).visit(copy.deepcopy(node)))
+class ContractValues:
+    """A snapshot's Python contract values, each read as the literal it holds, wherever it is defined.
+
+    A name is followed to the one value the scope that owns it binds it to, a function's or a class's included, and a
+    name an import binds, or a module's attribute, to the one value that module binds the name to at its top level,
+    when the snapshot holds the module's file. A value that leads anywhere else is refused: a name bound more than
+    once, or not at all, or by a parameter, a definition, a loop over anything but a literal, or a relative import, a
+    call, a subscript, an operator a literal does not hold, or a module the snapshot does not hold. So is a name its
+    own module updates in place, anywhere: an item or an attribute of it assigned, augmented, or deleted, or one of
+    MUTATING_METHODS called on it. `refused` names the file and the expression, so an indirection cannot hide a
+    change, and the value compares by its own text meanwhile.
+
+    Stated limits, since no code here writes them: a write to a followed name from another module, as
+    `versions.GH_MIN = ...` in an importer, or an update through another name bound to the same object, is not seen;
+    a star import in a followed module after the name's assignment is not seen rebinding it; a comprehension in a
+    class body resolves a name to the class's binding, as CallableResolver reads one, where Python reads the module's;
+    a Tool built through an alias of the class, dataclasses.replace, or functools.partial is not read at all; and an
+    update through a function or an unbound method that takes the name as an argument, as `dict.update(X, ...)` or
+    `operator.setitem(X, ...)`, is not seen.
+    """
+
+    def __init__(self, snapshot: Snapshot) -> None:
+        self.snapshot = snapshot
+        self.refused: list[str] = []
+        self._resolvers: dict[str, CallableResolver | None] = {}
+        self._unparsed: dict[str, str] = {}
+        # Each file's parameter defaults, which CallableResolver binds a parameter to, though a caller may pass another.
+        self._defaults: dict[str, set[int]] = {}
+        # Each file's names updated in place, by the id of the scope that owns the name, with the update's text.
+        self._updates: dict[str, dict[tuple[int, str], str]] = {}
+
+    def _resolver(self, path: str) -> CallableResolver | None:
+        """The bindings of a Python file of the snapshot, or None when it holds no such file or the file does not
+        parse, whose reason is kept."""
+        if path not in self._resolvers:
+            source = self.snapshot.text(path)
+            resolver = None
+            if source is not None:
+                try:
+                    resolver = CallableResolver(python_reader.parse(source))
+                except python_reader.PythonRefused as error:
+                    self._unparsed[path] = str(error)
+                else:
+                    self._defaults[path] = {
+                        id(default)
+                        for node in ast.walk(resolver.tree)
+                        if isinstance(node, ast.arguments)
+                        for default in [*node.defaults, *node.kw_defaults]
+                        if default is not None
+                    }
+                    self._updates[path] = _updates(resolver)
+            self._resolvers[path] = resolver
+        return self._resolvers[path]
+
+    def module(self, path: str) -> CallableResolver | None:
+        """A contract file's bindings, None when the snapshot holds no such file, and refused when it does not parse."""
+        resolver = self._resolver(path)
+        if path in self._unparsed:
+            self.record(
+                f"{path} does not parse, so the upgrade-notes check cannot read its contract values: "
+                f"{self._unparsed[path]}"
+            )
+        return resolver
+
+    def source(self, path: str, node: ast.expr, what: str) -> str:
+        """The text of the literal an expression of a contract file holds, or, when the check cannot follow it to one,
+        the expression's own text, with the refusal recorded."""
+        try:
+            return self._checked(self._resolve(path, node, frozenset()), ast.unparse(node))
+        except UnresolvedValue as error:
+            self._refuse(path, f"{what}, `{ast.unparse(node)}`,", error)
+            return ast.unparse(node)
+
+    def module_sources(self, path: str, names: tuple[str, ...]) -> dict[str, str]:
+        """The text of the literal each of names holds, for each name a contract file binds at its top level."""
+        resolver = self.module(path)
+        if resolver is None:
+            return {}
+        scope = resolver.scopes[id(resolver.tree)]
+        sources: dict[str, str] = {}
+        for name in names:
+            if not scope.bindings.get(name):
+                continue
+            try:
+                binding = self._binding(path, scope.bindings[name], id(scope), name, frozenset())
+                sources[name] = self._checked(binding, name)
+            except UnresolvedValue as error:
+                self._refuse(path, f"`{name}`", error)
+                sources[name] = f"{name}, unresolved at {error}"
+        return sources
+
+    def record(self, problem: str) -> None:
+        # A snapshot's values are read once for each comparison, so a refusal is kept once.
+        if problem not in self.refused:
+            self.refused.append(problem)
+
+    def _refuse(self, path: str, what: str, error: UnresolvedValue) -> None:
+        self.record(
+            f"{path}: the upgrade-notes check cannot follow {what} to a literal past `{error}`; write it as a "
+            "literal, or as a name this file, or a module it imports by name, binds once to one, so a change to it "
+            "is compared by its value"
+        )
+
+    @staticmethod
+    def _checked(value: ast.expr, shown: str) -> str:
+        try:
+            python_reader.literal(value)
+        except python_reader.PythonRefused:
+            raise UnresolvedValue(shown) from None
+        return ast.unparse(value)
+
+    def _resolve(self, path: str, node: ast.expr, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+        """A copy of an expression of the file with each name and attribute in it replaced by the value it holds."""
+        resolver = self._resolver(path)
+        if resolver is None:
+            raise UnresolvedValue(ast.unparse(node))
+        if isinstance(node, ast.Name):
+            scope = resolver.scopes.get(id(node))
+            owner = scope.owner(node.id) if scope is not None else None
+            if owner is None:
+                raise UnresolvedValue(node.id)
+            return self._binding(path, owner.bindings.get(node.id, []), id(owner), node.id, seen)
+        if isinstance(node, ast.Attribute):
+            dotted = resolver.name(node)
+            if not dotted or dotted.startswith(LOCAL_BINDING):
+                raise UnresolvedValue(ast.unparse(node))
+            return self._qualified(path, dotted, ast.unparse(node), seen)
+        return self._rebuilt(path, node, seen)
+
+    def _rebuilt(self, path: str, node: ast.expr, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+        """A literal's node, as ast.literal_eval reads one, built again from its parts once each is resolved."""
+
+        def each(part: ast.expr) -> ast.expr:
+            return self._resolve(path, part, seen)
+
+        if isinstance(node, ast.Constant):
+            return node
+        if isinstance(node, ast.Tuple):
+            return ast.Tuple([each(item) for item in node.elts], ast.Load())
+        if isinstance(node, ast.List):
+            return ast.List([each(item) for item in node.elts], ast.Load())
+        if isinstance(node, ast.Set):
+            return ast.Set([each(item) for item in node.elts])
+        if isinstance(node, ast.Dict):
+            keys = [None if key is None else each(key) for key in node.keys]
+            return ast.Dict(keys, [each(value) for value in node.values])
+        if isinstance(node, ast.UnaryOp):
+            return ast.UnaryOp(node.op, each(node.operand))
+        if isinstance(node, ast.BinOp):
+            return ast.BinOp(each(node.left), node.op, each(node.right))
+        raise UnresolvedValue(ast.unparse(node))
+
+    def _binding(
+        self,
+        path: str,
+        values: list[ast.expr | str | None],
+        scope: int,
+        name: str,
+        seen: frozenset[tuple[str, int, str]],
+    ) -> ast.expr:
+        """The value of the one binding a scope of the file, by its id, holds for a name: an expression, or the
+        module-level value an import binds the name to."""
+        key = (path, scope, name)
+        if len(values) != 1 or key in seen:
+            raise UnresolvedValue(name)
+        update = self._updates.get(path, {}).get((scope, name))
+        if update is not None:
+            raise UnresolvedValue(update)
+        value = values[0]
+        if isinstance(value, ast.expr) and id(value) not in self._defaults.get(path, set()):
+            return self._resolve(path, value, seen | {key})
+        if isinstance(value, str) and not value.startswith(LOCAL_BINDING):
+            return self._qualified(path, value, value, seen | {key})
+        raise UnresolvedValue(name)
+
+    def _qualified(self, path: str, dotted: str, shown: str, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+        """The value of a dotted name an import reaches: the name its last part is, bound at the top level of the
+        module the rest names, found as the importing file finds it."""
+        module, _, name = dotted.rpartition(".")
+        found = self._module_file(module) if module else None
+        resolver = self._resolver(found) if found is not None else None
+        if found is None or resolver is None:
+            raise UnresolvedValue(shown)
+        module_scope = resolver.scopes[id(resolver.tree)]
+        return self._binding(found, module_scope.bindings.get(name, []), id(module_scope), name, seen)
+
+    def _module_file(self, module: str) -> str | None:
+        """The file an absolute import of a module finds, on the sys.path every contract file shares."""
+        relative = f"{module.replace('.', '/')}.py"
+        candidates = [f"{folder}/{relative}" if folder else relative for folder in MODULE_FOLDERS]
+        return next((name for name in candidates if name in self.snapshot.names), None)
 
 
-def _assigned_sources(tree: ast.Module, names: tuple[str, ...]) -> dict[str, str]:
-    values = _module_values(tree)
-    return {name: _value_source(values[name], values) for name in names if name in values}
+def _updates(resolver: CallableResolver) -> dict[tuple[int, str], str]:
+    """Each name a module updates in place, by the id of the scope that owns it and the name, with the first update's
+    text: an item or an attribute of it, at any depth, assigned, augmented, or deleted, or one of MUTATING_METHODS
+    called on it or on an item of it."""
+    found: dict[tuple[int, str], str] = {}
+
+    def note(target: ast.expr, text: str) -> None:
+        root = target
+        while isinstance(root, (ast.Subscript, ast.Attribute)):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return
+        scope = resolver.scopes.get(id(root))
+        owner = scope.owner(root.id) if scope is not None else None
+        if owner is not None:
+            found.setdefault((id(owner), root.id), text)
+
+    # ast.walk meets a statement before its targets, so the statement's text is kept where there is one.
+    for node in ast.walk(resolver.tree):
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+            targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+            for part in (part for target in targets for part in ast.walk(target)):
+                if isinstance(part, (ast.Subscript, ast.Attribute)) and isinstance(part.ctx, (ast.Store, ast.Del)):
+                    note(part, ast.unparse(node))
+        elif isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            note(node, ast.unparse(node))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATING_METHODS:
+            note(node.func.value, ast.unparse(node))
+    return found
 
 
 def _manifest_versions(snapshot: Snapshot) -> dict[str, object]:
-    source = snapshot.text(MANIFEST_MODULE)
-    return (
-        {}
-        if source is None
-        else {MANIFEST_MODULE: _assigned_sources(python_reader.parse(source), MANIFEST_CONTRACT_NAMES)}
-    )
+    if snapshot.text(MANIFEST_MODULE) is None:
+        return {}
+    return {MANIFEST_MODULE: snapshot.python.module_sources(MANIFEST_MODULE, MANIFEST_CONTRACT_NAMES)}
 
 
 def _tool_floors(snapshot: Snapshot) -> dict[str, object]:
-    source = snapshot.text(TOOLS_MODULE)
-    if source is None:
+    values = snapshot.python
+    resolver = values.module(TOOLS_MODULE)
+    if resolver is None:
         return {}
-    tree = python_reader.parse(source)
-    values = _module_values(tree)
-    floors: dict[str, object] = dict(_assigned_sources(tree, ("MINIMUM_PYTHON",)))
+    tree = resolver.tree
+    floors: dict[str, object] = dict(values.module_sources(TOOLS_MODULE, ("MINIMUM_PYTHON",)))
     fields = _tool_fields(tree)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and ast.unparse(node.func).rsplit(".", 1)[-1] == TOOL_CLASS):
             continue
+        place = f"the {TOOL_CLASS} at line {node.lineno}"
+        if any(isinstance(argument, ast.Starred) for argument in node.args) or any(
+            item.arg is None for item in node.keywords
+        ):
+            values.record(
+                f"{TOOLS_MODULE}: {place} unpacks its arguments, so the upgrade-notes check cannot tell which is a "
+                "floor; pass each by position or by keyword"
+            )
         given: dict[str | None, ast.expr] = {
             **dict(zip(fields, node.args, strict=False)),
             **{item.arg: item.value for item in node.keywords},
         }
         name = given.get("name")
-        floors[_value_source(name, values) if name is not None else f"{TOOL_CLASS} at line {node.lineno}"] = {
-            field: _value_source(value, values) for field, value in given.items() if field in TOOL_FLOOR_FIELDS
+        key = place if name is None else values.source(TOOLS_MODULE, name, f"the name of {place}")
+        floors[key] = {
+            field: values.source(TOOLS_MODULE, value, f"the {field} of {TOOL_CLASS} {key}")
+            for field, value in given.items()
+            if field in TOOL_FLOOR_FIELDS
         }
     return {TOOLS_MODULE: floors}
 
@@ -208,8 +450,9 @@ def _checkout_tools() -> ast.Module:
 
 
 def _pdf_provider_floors(snapshot: Snapshot) -> dict[str, object]:
-    source = snapshot.text(PDF_POLICY_MODULE)
-    return {} if source is None else {PDF_POLICY_MODULE: _assigned_sources(python_reader.parse(source), ("MINIMUMS",))}
+    if snapshot.text(PDF_POLICY_MODULE) is None:
+        return {}
+    return {PDF_POLICY_MODULE: snapshot.python.module_sources(PDF_POLICY_MODULE, ("MINIMUMS",))}
 
 
 def _required_variables(snapshot: Snapshot) -> dict[str, object]:
@@ -277,6 +520,13 @@ def changed_contract_items(released: Snapshot, current: Snapshot) -> list[tuple[
         before, after = read(released), read(current)
         changed += [(item, description) for item in sorted(before | after) if before.get(item) != after.get(item)]
     return changed
+
+
+def contract_value_problems(snapshot: Snapshot) -> list[str]:
+    """Each Python contract value of a tree that the check cannot follow to a literal, by file and expression."""
+    for _, _, read in CONTRACT_READERS:
+        read(snapshot)
+    return list(snapshot.python.refused)
 
 
 def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
@@ -364,17 +614,18 @@ def _entry_advice(item: str, levels: list[str]) -> str:
 
 
 def own_change_problems(
-    changed: list[tuple[str, str]], own: list[SourcedEntry], base: str, tag: str, levels: list[str]
+    changed: list[tuple[str, str]], own: list[SourcedEntry], base: str, tag: str | None, levels: list[str]
 ) -> list[str]:
     """Each contract item the pull request itself changes, against the commit where HEAD meets origin/main, that the
     pull request's own entries do not name in backticks in '- Contract:'. That one form is accepted: an entry merged
     since the tag that names the item covers that earlier change, and a `none`, a prose mention, or an entry for
-    another item covers nothing, so the release notes tell a user each time the item changes."""
+    another item covers nothing, so the release notes tell a user each time the item changes. With no tag, nothing
+    has been released, so no entry since one is read."""
     named = {item for sourced_entry in own for item in sourced_entry.entry.contract_items}
+    earlier = "" if tag is None else f", whatever an entry since {tag} names"
     return [
         f"{item}: {description} changed in this pull request, against {base[:7]} where HEAD meets {RELEASE_BRANCH}, "
-        f"and the pull request's own upgrade note does not name it, whatever an entry since {tag} names; "
-        + _entry_advice(item, levels)
+        f"and the pull request's own upgrade note does not name it{earlier}; " + _entry_advice(item, levels)
         for item, description in changed
         if item not in named
     ]
@@ -385,36 +636,41 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     contract item changed since the last tag that no upgrade note since then names.
 
     The last tag is the highest release tag reachable from origin/main, as ejryan89-skill-core's release_tags defines
-    one; with none reachable, nothing has been released and every change is free. The notes are the entries
+    one; with none reachable, nothing has been released, so no change since a release is charged, while the pull
+    request is still held to naming its own changes, a comparison that needs no tag. The notes are the entries
     tools/release_notes.py reads from the commits since the tag and, given a pull request body, from its
     `## Upgrade note`. With a body, the commits are origin/main's,
     because the body, not the branch's own commit messages, becomes the squash commit's message; without one, they
     are HEAD's, so a local run reads the branch's commits. The pull request's own changes are the working tree's
     against the merge base of HEAD and origin/main, so a branch behind origin/main is not charged with main's later
     changes, and its own entries are the body's, or without one the branch's commits since that merge base. Each
-    entry must give its level in the Versioning section's own words.
+    entry must give its level in the Versioning section's own words, and each Python contract value must be one the
+    check can follow to a literal, so an indirection cannot hide a change.
     """
     try:
         current = working_snapshot(root)
     except ReleaseNotesError as error:
         return [f"the upgrade-notes check cannot list the checkout's files: {error}"]
-    problems = notes_layout_problems(current.text(UPGRADE_NOTES))
+    problems = notes_layout_problems(current.text(UPGRADE_NOTES)) + contract_value_problems(current)
     tag, problem = last_release_tag(root)
     if problem is not None:
         return [*problems, problem]
-    if tag is None:
-        return problems
     levels = versioning_levels((root / RELEASING_DOC).read_text(encoding="utf-8"))
     if not levels:
         return [f"{RELEASING_DOC} has no **Levels** list under {VERSIONING_HEADING} for upgrade-notes entries to use"]
+    sourced: list[SourcedEntry] = []
+    changed: list[tuple[str, str]] = []
     try:
-        sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
-        changed = changed_contract_items(revision_snapshot(root, tag), current)
+        # With no release, the release comparison has nothing to compare with; the pull request's own still runs.
+        if tag is not None:
+            sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
+            changed = changed_contract_items(revision_snapshot(root, tag), current)
         base = output_line(git_output(root, "merge-base", "HEAD", RELEASE_BRANCH))
         own_changed = changed_contract_items(revision_snapshot(root, base), current)
         own = [] if body is not None else range_entries(root, base, "HEAD")
     except ReleaseNotesError as error:
-        return [*problems, f"the upgrade-notes check cannot read the commits and the tree since {tag}: {error}"]
+        since = f"since {tag}" if tag is not None else f"where HEAD meets {RELEASE_BRANCH}"
+        return [*problems, f"the upgrade-notes check cannot read the commits and the tree {since}: {error}"]
     if body is not None:
         own = [
             SourcedEntry(entry, f"the pull request body's {BODY_HEADING}", None, from_notes=False)
@@ -422,7 +678,9 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         ]
         problems += shared_heading_problems(sourced, own)
         sourced += own
-    problems += [problem for item in sourced for problem in notes_entry_problems(item, levels)]
+    # With no tag and no body, the branch's own commits are the only entries read, so their fields are held too.
+    checked = [*sourced, *own] if tag is None and body is None else sourced
+    problems += [problem for item in checked for problem in notes_entry_problems(item, levels)]
     problems += own_change_problems(own_changed, own, base, tag, levels)
     charged = {item for item, _ in own_changed}
     named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}
