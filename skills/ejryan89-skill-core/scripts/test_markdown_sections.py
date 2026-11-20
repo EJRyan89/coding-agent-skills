@@ -463,10 +463,8 @@ def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tupl
         # An HTML block is read as a paragraph, until a line that starts a block.
         pytest.param("Text.\n<!-- note -->\n", [(0, "paragraph")], id="html"),
         pytest.param("<div>\n# x\n</div>\n", [(0, "paragraph"), (1, "heading"), (2, "paragraph")], id="html-heading"),
-        # A line right after a table's rows is read as a paragraph, where GitHub reads another row.
-        pytest.param(
-            "| a |\n| - |\nnext\n", [(0, "table row"), (1, "table row"), (2, "paragraph")], id="after-a-table"
-        ),
+        # A list item's own line is the item's block, so a heading on it is the item's text.
+        pytest.param("- # H\n", [(0, "item")], id="heading-on-an-item-s-line"),
         # A bare marker right after a quoted line continues the quote, since it opens no item.
         pytest.param("> quoted\n-\n", [(0, "quote")], id="bare-marker-after-a-quote"),
         # A line that starts with `|` is a table row even after a paragraph's text, and a table with no leading pipe
@@ -598,6 +596,53 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
         # A list item with nothing after its marker, then a blank line, is empty and closes.
         pytest.param("1. \n\n   # H\n", [(0, "item"), (2, "heading")], [], ["H"], id="empty-item-closes"),
         pytest.param("- \n\n    code\n", [(0, "item"), (2, "code")], [2], [], id="empty-item-then-code"),
+        # A marker with only spaces or a tab after it opens an empty item whose content is one column past the marker,
+        # so the line under it indented that far is the item's.
+        pytest.param(
+            "1. Do X.\n2.  \n   Do Y.\n3. Do Z.\n",
+            [(0, "item"), (1, "item"), (3, "item")],
+            [],
+            [],
+            id="empty-step-with-spaces-then-the-next-step",
+        ),
+        pytest.param(
+            "- a\n-  \n  # H\n", [(0, "item"), (1, "item"), (2, "heading")], [], [], id="empty-item-with-spaces"
+        ),
+        pytest.param(
+            "- a\n- \t\n  # H\n", [(0, "item"), (1, "item"), (2, "heading")], [], [], id="empty-item-with-a-tab"
+        ),
+        # A list item's content is counted from where the blockquote holding it starts its content on each line.
+        pytest.param("> - qi\n>\n   >     code\n", [(0, "quote")], [], [], id="quoted-item-under-a-reindented-quote"),
+        pytest.param(
+            "> - qi\n  > ```\n> ```\n", [(0, "quote"), (2, "code")], [1, 2], [], id="quoted-fence-leaving-an-item"
+        ),
+        # A `|` row with a delimiter row under it is a table: a list item after it opens at any number, a line that
+        # starts no block is another row, and indented code opens.
+        pytest.param(
+            "| a |\n| - |\n| b |\n2. Do Y.\n3. Do Z.\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "item"), (4, "item")],
+            [],
+            [],
+            id="numbered-steps-after-a-table",
+        ),
+        pytest.param(
+            "| a |\n| - |\ntext\n2. b\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "item")],
+            [],
+            [],
+            id="text-row-after-a-table",
+        ),
+        pytest.param(
+            "| a |\n| - |\n    x\n", [(0, "table row"), (1, "table row"), (2, "code")], [2], [], id="code-after-a-table"
+        ),
+        # A backtick run indented as far as indented code past its container neither opens nor closes a fence.
+        pytest.param("+ p\n      ```\n```\n", [(0, "item"), (3, "code")], [2, 3], [], id="deep-run-in-an-item"),
+        pytest.param(
+            "    ```\n    x\n    ```\n# H\n", [(0, "code"), (3, "heading")], [0, 1, 2], ["H"], id="indented-runs"
+        ),
+        pytest.param(
+            "- a\n  ```\n      ```\n  # H\n", [(0, "item"), (2, "code")], [1, 2, 3, 4], [], id="deep-run-in-a-fence"
+        ),
     ],
 )
 def test_every_reader_holds_a_line_in_the_list_item_github_renders_it_in(
@@ -632,6 +677,32 @@ def test_a_blockquote_s_lines_join_its_block(
     assert [(block.start, block.kind, len(block.lines)) for block in blocks(lines)] == expected
     assert sorted(code_block_lines(lines)) == code
     assert document_headings(lines) == []
+
+
+def _walk_seconds(document: str) -> float:
+    lines = document.split("\n")
+    times = []
+    for _ in range(3):
+        started = time.perf_counter()
+        list(blocks(lines))
+        code_block_lines(lines)
+        document_headings(lines)
+        times.append(time.perf_counter() - started)
+    return min(times)
+
+
+@pytest.mark.parametrize(
+    "repeated",
+    [
+        pytest.param("1. Run:\n   ```bash\ncmd\n   ```\n", id="fence-ending-with-its-item"),
+        pytest.param("> - a\n>   ```\n> b\n", id="fence-ending-with-a-quoted-item"),
+        pytest.param("  - " * 30 + "x\n", id="deep-nesting"),
+    ],
+)
+def test_the_walk_takes_time_in_proportion_to_the_document(repeated: str) -> None:
+    # Four times the lines take about four times as long; a walk that read the rest of the document again at each line
+    # would take about sixteen.
+    assert _walk_seconds(repeated * 2000) < 8 * max(_walk_seconds(repeated * 500), 0.001)
 
 
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:
