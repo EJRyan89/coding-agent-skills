@@ -19,7 +19,7 @@ from unittest import mock
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line, probe_returning
 
 from deployer import discovery, fsops, manifest, platform_support, render, state_files
-from deployer.errors import DeployError
+from deployer.errors import DeployError, SourceRefusal
 from deployer.journal import Journal, valid_entry
 from deployer.source import SOURCE_JSON_REMEDY
 
@@ -65,6 +65,13 @@ class ReaderTests(DeployerTestCase):
         self.assertEqual(
             (f"ERROR: The state at {platform_support.normalize(path)} is not a file.", "Move it aside.", "Then retry."),
             raised.exception.lines,
+        )
+        self.assertNotIsInstance(raised.exception, SourceRefusal)
+        with self.assertRaises(SourceRefusal) as source:
+            state_files.is_present(path, "The source file", "Add it.", of_source=True)
+        self.assertEqual(
+            (f"ERROR: The source file at {platform_support.normalize(path)} is not a file.", "Add it."),
+            source.exception.lines,
         )
 
     def test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error(self) -> None:

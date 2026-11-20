@@ -32,7 +32,7 @@ from .report import (
     plural,
     print_report,
 )
-from .source import Source, is_source_file
+from .source import Source
 
 KINDS_ALLOWED = {
     "check_source_forced_items": "the possible installs come from selectable skills and their dependency closure, "
@@ -399,7 +399,7 @@ def _check_role(paths: Paths, asset: str, role: str) -> None:
         return
     # A stat that fails is refused with its reason, and something other than a file as not a file, never as missing.
     remedy = f"Add the file to the source, or give '{asset}' the role 'dependency' when another source owns it."
-    if not is_source_file(paths.skills_src / asset, f"Owned shared asset '{asset}'", remedy):
+    if not state_files.is_present(paths.skills_src / asset, f"Owned shared asset '{asset}'", remedy, of_source=True):
         raise SourceRefusal(
             f"ERROR: source.json declares '{asset}' as owned but file not found at "
             f"{platform_support.normalize(paths.skills_src / asset)}",

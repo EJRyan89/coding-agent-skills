@@ -26,7 +26,7 @@ from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
 
-from . import platform_support
+from . import platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DEBUG_HINT, DeployError, SourceRefusal, os_error
 from .names import safe_name_problem
@@ -123,18 +123,6 @@ def refuse_other_spellings(folder: Path, name: str, what: str, declared: frozens
             )
 
 
-def is_source_file(path: Path, what: str, step: str) -> bool:
-    """state_files.is_present for a file of the source tree: False when nothing is at path, and something other than a
-    file there refused as the tree's content, a SourceRefusal ending with `step`, which --at replaces with a step naming
-    the commit. A stat that fails with anything but "not found" is refused with its reason, never read as absent."""
-    try:
-        return file_presence.is_present(path)
-    except file_presence.NotAFile:
-        raise SourceRefusal(f"ERROR: {what} at {platform_support.normalize(path)} is not a file.", step) from None
-    except OSError as exc:
-        raise os_error(exc, f"tell whether {what[:1].lower()}{what[1:]} is there") from exc
-
-
 def _load_source_document(paths: Paths) -> dict[str, object]:
     """source.json's object, refused by its fault: a read that fails as unreadable, and content that is not UTF-8 or
     not a JSON object the deployer reads, such as one that repeats a key or holds NaN, as malformed, with
@@ -166,7 +154,7 @@ def load_source_id(paths: Paths) -> str:
         refuse_other_spellings(paths.tree, SOURCE_JSON, "The source file")
     except OSError as exc:
         raise os_error(exc, "read the source's folder") from exc
-    if not is_source_file(paths.source_file, "source.json", SOURCE_JSON_REMEDY):
+    if not state_files.is_present(paths.source_file, "source.json", SOURCE_JSON_REMEDY, of_source=True):
         raise SourceRefusal(
             f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}", SOURCE_JSON_REMEDY
         )

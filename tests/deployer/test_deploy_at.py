@@ -51,31 +51,127 @@ def commit_step(commit: str) -> str:
 
 # The prefix of the directory --at reads a commit's attributes through, apart from the export's.
 ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
-# The functions of deployer/source.py whose refusals are not of the tree's content, so --at keeps their step.
+# The deployer's modules whose refusals the --at export path reaches through source.discover, plan's shared-asset and
+# ownership checks, and rendering, where every refusal of the tree's content must be a SourceRefusal.
+REACHED_MODULES = ("deployer/source.py", "deployer/plan.py", "deployer/render.py", "deployer/names.py")
+# Each raise site among them that stays a plain DeployError, by its module, its innermost function, and its last line
+# as written, with why it is not of the tree's content, so --at keeps its step.
 NOT_CONTENT = {
-    "is_linked_worktree": "a .git file Git wrote in the checkout, which --at reads in the clone",
-    "reject_linked_worktree": "where the checkout lies, not what the tree holds",
-    "_reject_links": "a folder of the tree that cannot be listed, a fault of the machine; its links are content",
-    "discover": "a value json_writer would not write, which no source.json json_reader reads can hold",
+    (
+        "deployer/source.py",
+        "is_linked_worktree",
+        "'Put back the gitdir line Git wrote there, or deploy from a fresh clone.'",
+    ): "a .git file Git wrote in the clone, which --at reads in the clone",
+    (
+        "deployer/source.py",
+        "reject_linked_worktree",
+        "'Deploy from the main checkout on main instead. See docs/parallel-sessions.md.'",
+    ): "where the checkout lies, not what the tree holds",
+    ("deployer/source.py", "_reject_links", "COMPLETE_CHECKOUT"): "a folder that cannot be listed, the machine's fault",
+    ("deployer/source.py", "discover", "DEBUG_HINT"): "a value json_writer would not write, which no source.json holds",
+    ("deployer/plan.py", "_check_dependency", "first"): "a dependency the home lacks or no source owns",
+    ("deployer/plan.py", "_check_dependency", "is_present: first"): "a dependency in the home that is no file",
+    ("deployer/plan.py", "_check_dependency", "redeploy"): "an owner's record in the manifest",
+    (
+        "deployer/plan.py",
+        "_check_dependency",
+        "RESTORE_OWNERS_COPY.format(asset=asset, owner=owner)",
+    ): "the home's copy of a dependency",
+    ("deployer/plan.py", "_ensure_transient_available", "see_recovery('Backups')"): "a backup left in the home",
+    ("deployer/plan.py", "transfer", "ownership"): "an item the manifest records another source owning",
+    ("deployer/plan.py", "collision", "ownership"): "an item of another kind the manifest records",
+    (
+        "deployer/plan.py",
+        "check_ownership",
+        "'Remove it or restore the deployed copy after verifying its contents, then retry.'",
+    ): "a link in the home",
+    ("deployer/render.py", "_escape", "_value_remedy(key)"): "a configured or derived value, which configure changes",
+    ("deployer/render.py", "_require_tools", "'This run installed nothing.'"): "a tool the machine lacks",
+    ("deployer/render.py", "_run_shellcheck", "SHELLCHECK_FAILED_REMEDY"): "ShellCheck failing with no finding",
 }
+# The last line of a refusal whose lines are not written out at its raise site, which the guard cannot classify.
+UNCLASSIFIED = "<lines not written out>"
+
+
+def refusal_sites(module: str, text: str) -> tuple[set[tuple[str, str, str]], int]:
+    """Each plain DeployError a module constructs, by its module, its innermost function, and its last line as
+    written, and how many SourceRefusals it constructs. A refusal whose last line is unpacked, or that has none, is
+    named by UNCLASSIFIED, so it is never taken for an allowed site."""
+    plain: set[tuple[str, str, str]] = set()
+    content = 0
+
+    def visit(node: ast.AST, function: str) -> None:
+        nonlocal content
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else function
+            if isinstance(child, ast.Call):
+                called = child.func.id if isinstance(child.func, ast.Name) else getattr(child.func, "attr", "")
+                if called == "DeployError":
+                    last = child.args[-1] if child.args else None
+                    step = UNCLASSIFIED if last is None or isinstance(last, ast.Starred) else ast.unparse(last)
+                    plain.add((module, function, step))
+                content += called == "SourceRefusal"
+                if called == "is_present" and ast.unparse(child.func).startswith("state_files."):
+                    # state_files.is_present refuses something other than a file there as the source's content only
+                    # when told of_source, so a call without it is a plain refusal, named by its step.
+                    source = any(
+                        word.arg == "of_source" and ast.unparse(word.value) == "True" for word in child.keywords
+                    )
+                    step = ast.unparse(child.args[2]) if len(child.args) > 2 else UNCLASSIFIED
+                    content += source
+                    if not source:
+                        plain.add((module, function, f"is_present: {step}"))
+            visit(child, inner)
+
+    visit(ast.parse(text), "<module>")
+    return plain, content
 
 
 class SourceRefusalTests(unittest.TestCase):
     def test_every_refusal_of_the_source_s_content_is_a_source_refusal(self) -> None:
         """A refusal of the tree's content raised as a plain DeployError keeps the checkout's step under --at, which
-        names a file no change to the checkout reaches, so source.py raises every other refusal as a SourceRefusal."""
-        tree = ast.parse((REPOSITORY_ROOT / "deployer" / "source.py").read_text(encoding="utf-8"))
-        plain: set[str] = set()
-        content = 0
-        for function in ast.walk(tree):
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            for node in ast.walk(function):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                    plain |= {function.name} if node.func.id == "DeployError" else set()
-                    content += node.func.id == "SourceRefusal"
-        self.assertEqual(set(NOT_CONTENT), plain)
-        self.assertGreater(content, len(NOT_CONTENT))
+        names a file no change to the checkout reaches, so each module the export path reaches raises every refusal
+        but the sites NOT_CONTENT names as a SourceRefusal, and NOT_CONTENT names no site that is gone."""
+        found: set[tuple[str, str, str]] = set()
+        for module in REACHED_MODULES:
+            plain, content = refusal_sites(module, (REPOSITORY_ROOT / module).read_text(encoding="utf-8"))
+            with self.subTest(module=module):
+                self.assertGreater(content, 0)
+            found |= plain
+        self.assertEqual(set(), found - set(NOT_CONTENT), "a plain DeployError NOT_CONTENT does not name")
+        self.assertEqual(set(), set(NOT_CONTENT) - found, "a NOT_CONTENT site the module no longer raises")
+
+    def test_the_guard_refuses_a_plain_content_refusal_and_one_it_cannot_classify(self) -> None:
+        violating = (
+            "def _load(name):\n"
+            '    raise DeployError(f"ERROR: Skill {name} is wrong", "Fix deploy-meta.")\n'
+            "def _unpacked(lines):\n"
+            "    raise errors.DeployError(*lines)\n"
+            "def _owned(path):\n"
+            '    return state_files.is_present(path, "The asset", "Add it.")\n'
+        )
+        self.assertEqual(
+            (
+                {
+                    ("m.py", "_load", "'Fix deploy-meta.'"),
+                    ("m.py", "_unpacked", UNCLASSIFIED),
+                    ("m.py", "_owned", "is_present: 'Add it.'"),
+                },
+                0,
+            ),
+            refusal_sites("m.py", violating),
+        )
+        conforming = (
+            "def _load(name):\n"
+            '    raise SourceRefusal(f"ERROR: Skill {name} is wrong", "Fix deploy-meta.")\n'
+            "def _require_tools():\n"
+            '    raise DeployError("ERROR: Tools missing", "This run installed nothing.")\n'
+            "def _owned(path):\n"
+            '    return state_files.is_present(path, "The asset", "Add it.", of_source=True)\n'
+        )
+        plain, content = refusal_sites("deployer/render.py", conforming)
+        self.assertEqual(2, content)
+        self.assertLessEqual(plain, set(NOT_CONTENT))
 
     def test_only_a_pinned_run_gives_a_refusal_of_the_tree_the_step_naming_its_commit(self) -> None:
         refusal = SourceRefusal("ERROR: What is wrong", "  a finding", "Fix the file in the checkout.")
@@ -817,10 +913,15 @@ class DeployAtTests(DeployerTestCase):
         git(self.source, "rm", "-q", "source.json")
         git(self.source, "commit", "-q", "-m", "No source.json")
         missing = git(self.source, "rev-parse", "HEAD")
+        self.write(self.source / "source.json" / "inside", "a folder in source.json's place")
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "A folder for source.json")
+        folder = git(self.source, "rev-parse", "HEAD")
         git(self.source, "switch", "-q", "main")
         for ref, commit, error in (
-            ("broken~1", malformed, "ERROR: source.json is malformed: "),
-            ("broken", missing, "ERROR: source.json not found at "),
+            ("broken~2", malformed, "ERROR: source.json is malformed: "),
+            ("broken~1", missing, "ERROR: source.json not found at "),
+            ("broken", folder, "ERROR: source.json at "),
         ):
             with self.subTest(ref=ref):
                 output = self.deploy_fails("--all", "--at", ref, pattern=error).output
@@ -829,7 +930,7 @@ class DeployAtTests(DeployerTestCase):
                 self.assertEqual([commit_step(commit), SEE_EARLIER_COMMIT], lines[at + 1 : at + 3])
                 self.assertNotIn(SOURCE_JSON_REMEDY, output)
         self.assert_head_unmoved()
-        self.assert_exports_removed(2)
+        self.assert_exports_removed(3)
 
     def refused_at_its_commit(self, change: Callable[[], object], error: str, checkout_step: str) -> None:
         """Commit `change` on a branch, then hold that the checkout's deployment of it refuses with `error` and the
