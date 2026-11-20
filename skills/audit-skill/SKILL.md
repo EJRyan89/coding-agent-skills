@@ -25,6 +25,8 @@ It searches `.claude/skills/` in your home folder, the current repository's `.ag
 
 ## Step 2 — Inventory and token estimate
 
+This command, Step 5's `scan`, and Step 7's `tools` need only Step 1's lines, so run all three in one turn as parallel tool calls, and read each output at its own step.
+
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```

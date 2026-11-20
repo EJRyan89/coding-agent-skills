@@ -61,6 +61,17 @@ class MarkdownLinkPolicy(unittest.TestCase):
         )
         self.assertEqual([], self.problems({"index.md": index, "docs/target.md": self.TARGET}))
 
+    def test_a_destination_is_read_as_commonmark_reads_it(self) -> None:
+        # The policy's own pattern ended a bare destination at its first parenthesis and kept a backslash escape, so it
+        # reported these existing files missing, and it read a link in an indented code block, which is code.
+        index = (
+            "# Index\n\n"
+            "See [a](docs/a(1).md), [b](docs/b\\_2.md), [c](docs/my%20c.md), and [d](<docs/my d.md>).\n\n"
+            "    [code](missing.md)\n"
+        )
+        files = {"index.md": index, "docs/a(1).md": "", "docs/b_2.md": "", "docs/my c.md": "", "docs/my d.md": ""}
+        self.assertEqual([], self.problems(files))
+
     def test_a_link_to_a_missing_file_fails(self) -> None:
         self.assertEqual(
             ["docs/guide.md:3 links to ../missing.md, which does not exist"],
