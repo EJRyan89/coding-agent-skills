@@ -146,6 +146,10 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(
             [".claude/skills/review/references/rules.md"], inspect_skill(SKILL, text, COMMIT, files).references
         )
+        # The stated limit: a reference link's text has no span, so its path is still read as prose from the root.
+        for reference in ("See [docs/rules.md][r].", "See [docs/rules.md][].", "See [docs/rules.md]."):
+            with self.subTest(reference=reference):
+                self.assertEqual(["docs/rules.md"], inspect_skill(SKILL, reference + "\n", COMMIT, files).references)
 
     def test_an_entrypoint_carries_what_the_skill_names_and_needs_no_delegation(self) -> None:
         result = inspect("---\ntools: Read\n---\nApply `docs/rules.md`.\n")

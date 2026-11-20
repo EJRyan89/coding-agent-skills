@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from link_destinations import link_destinations
-from link_targets import link_span, link_target
+from link_targets import link_spans, link_target
 
 SKILL = ".claude/skills/review/SKILL.md"
 
@@ -76,9 +78,58 @@ def test_a_destination_out_of_the_repository_or_at_its_root_leads_to_no_file(
         ("  [r]: docs/a.md 'title'", "[r]: docs/a.md 'title'"),
         # No `[` opens the text: from the `]`.
         ("a](d.md) b", "](d.md)"),
+        # A title that never closes, or no `)` after the title: to the end of the line.
+        ('[a](x.md "t and docs/b.md', '[a](x.md "t and docs/b.md'),
+        ('[a](x.md "t" and docs/b.md', '[a](x.md "t" and docs/b.md'),
     ],
 )
 def test_a_link_s_span_runs_from_its_text_to_its_end(line: str, span: str) -> None:
     (destination,) = link_destinations([line])
-    start, end = link_span(line, destination)
+    ((start, end),) = link_spans(line, [destination])
     assert line[start:end] == span
+
+
+def test_each_link_on_a_line_has_its_own_span() -> None:
+    line = "[a](x.md) then [b [c]](y.md 'z') and z](w.md)"
+    spans = link_spans(line, link_destinations([line]))
+    assert [line[start:end] for start, end in spans] == ["[a](x.md)", "[b [c]](y.md 'z')", "](w.md)"]
+    assert link_spans(line, []) == []
+
+
+# The scaling test reads the same characters as eight lines and as one line eight times as long. A reader whose time
+# grows with the line's length takes about as long either way, a ratio near 1; one that reads the line again for each
+# link takes eight times as long on the long line. The bound is the two ratios' geometric midpoint, and each side is
+# timed for the same work, about ten milliseconds and more, with garbage collection off, so a loaded runner slows both.
+LINES = 8
+LINKS = 1000
+RUNS = 7
+SCALING_BOUND = LINES**0.5
+# A long line this many times past the bound is past any runner's noise, so the test fails without timing it again.
+FAR_PAST = 3
+
+
+def _seconds(lines: list[str]) -> float:
+    found = [(line, link_destinations([line])) for line in lines]
+    start = time.perf_counter()
+    for line, destinations in found:
+        link_spans(line, destinations)
+    return time.perf_counter() - start
+
+
+@pytest.mark.parametrize("unit", ["[a](d/b.md) ", "a](d/b.md) "], ids=["opened", "no-opening-bracket"])
+def test_a_line_of_links_takes_time_in_proportion_to_its_length(unit: str) -> None:
+    # link_span read the whole line again for each link: it masked its code spans, sliced it, and walked back to its
+    # start, so a line of 8000 links took 16 times as long as eight lines of 1000, and 70 times without a `[`.
+    short = [unit * LINKS] * LINES
+    long = [unit * LINKS * LINES]
+    gc.disable()
+    try:
+        eight = min(_seconds(short) for _ in range(RUNS))
+        one = []
+        for _ in range(RUNS):
+            one.append(_seconds(long))
+            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
+                break
+    finally:
+        gc.enable()
+    assert min(one) < SCALING_BOUND * eight

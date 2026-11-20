@@ -41,8 +41,8 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from link_destinations import link_destinations
-from link_targets import link_span, link_target
+from link_destinations import Destination, link_destinations
+from link_targets import link_spans, link_target
 from markdown_sections import PROSE_BLOCKS, blocks
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
@@ -475,12 +475,12 @@ def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, l
     path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here; and the
     columns each link takes, its text and title included, by line number, which are no code reference."""
     linked: dict[int, list[str]] = {}
-    spans: dict[int, list[tuple[int, int]]] = {}
+    by_line: dict[int, list[Destination]] = {}
     for destination in link_destinations(lines):
-        spans.setdefault(destination.line, []).append(link_span(lines[destination.line - 1], destination))
+        by_line.setdefault(destination.line, []).append(destination)
         if not destination.is_url and destination.posix_path.endswith(".md"):
             linked.setdefault(destination.line, []).append(destination.posix_path)
-    return linked, spans
+    return linked, {line: link_spans(lines[line - 1], found) for line, found in by_line.items()}
 
 
 def _code_references(line: str, spans: list[tuple[int, int]]) -> list[str]:
@@ -497,8 +497,11 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
     was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
     or from the repository root when it starts with `/`; a path named in code outside a link counts as given when the
-    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. A link is read only
-    through its destination, so a path its text names in code is not read again."""
+    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. An inline link or
+    a definition is read only through its destination, so a path its text names in code is not read again, within
+    link_targets' limits: a reference link's text, as in `[text][label]`, `[text][]`, or `[label]`, is still read; a
+    definition's line is passed over whole; and an inline link whose title never closes, or that no `)` closes, is
+    passed over to the end of its line."""
     found: list[dict[str, Any]] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
