@@ -287,7 +287,8 @@ DRIVERS: list[Driver] = [
         (TITLE_FILE,),
         not_run={
             UNREADABLE: "run_validation.py starts each prerequisite tool to read its version before a policy check "
-            "reads the title, and the harness stops a run that starts a program other than git"
+            "reads the title, and the harness stops a run that starts a program other than git or the process probe "
+            "/bin/ps"
         },
     ),
 ]

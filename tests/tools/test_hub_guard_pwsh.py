@@ -345,6 +345,27 @@ class ResidentReaderTests(unittest.TestCase):
                 with self.assertRaisesRegex(resident_pwsh.Malfunction, kept):
                     resident.read(b"", 600.0, None)
 
+    def test_a_malfunction_ends_the_resident_so_no_later_read_sees_what_it_left(self) -> None:
+        # Left running, the second read would compare against a $before that already holds the leaked name, and
+        # answer "seen" with no malfunction.
+        reader = 'if ($global:kept) { "seen" } else { $global:kept = 1; "fresh" }'
+        resident = resident_pwsh.ResidentPwsh(found_pwsh(), reader)
+        self.addCleanup(resident.close)
+        with self.assertRaisesRegex(resident_pwsh.Malfunction, "variable kept"):
+            resident.read(b"", 600.0, None)
+        self.assertIsNotNone(resident.process.poll())
+        with self.assertRaisesRegex(resident_pwsh.Malfunction, "took no input"):
+            resident.read(b"", 600.0, None)
+        # Every other malfunction ends it too.
+        for answer in (b"garbage\n", b""):
+            with self.subTest(answer=answer):
+                answering = resident_pwsh.ResidentPwsh(found_pwsh(), "")
+                self.addCleanup(answering.close)
+                answering.answers.put(answer)
+                with self.assertRaises(resident_pwsh.Malfunction):
+                    answering.read(b"", 600.0, None)
+                self.assertIsNotNone(answering.process.poll())
+
     def test_a_reader_s_own_variables_and_errors_end_with_its_read(self) -> None:
         # The reader's own preference makes its error stop it, as the guard's reader sets it; what it wrote before
         # the error is kept on stdout, and the error is on stderr, as pwsh writes them.

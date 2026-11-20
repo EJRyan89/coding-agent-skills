@@ -412,7 +412,7 @@ class RefusalStepTests(RemedyTestCase):
         self.fixture()
         self.config_file().write_bytes(f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\n".encode())
         result = self.deploy_fails("--all", pattern="contains a carriage return")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Config line 1 contains a carriage return.",
             "Convert the file's line endings to LF.",
@@ -424,7 +424,7 @@ class RefusalStepTests(RemedyTestCase):
         self.fixture()
         self.config_file().write_bytes(f"_source_id=test/skills\rREPOS_ROOT={forward(self.repos)}\n".encode())
         result = self.deploy_fails("--all", pattern="contains a carriage return")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Config line 1 contains a carriage return.",
             "Convert the file's line endings to LF.",
@@ -437,7 +437,7 @@ class RefusalStepTests(RemedyTestCase):
         missing = self.root / "missing"
         result = self.configure(stdin=f"{forward(missing)}\n\n\n\n")
         self.assertEqual(1, result.code, result.output)
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: REPOS_ROOT directory does not exist: {forward(missing)}",
             f"Run '{DEPLOY_COMMAND} configure' again and give that value another answer; nothing was saved.",
@@ -455,7 +455,7 @@ class RefusalStepTests(RemedyTestCase):
         self.fixture()
         result = self.run_command(lambda: pipeline.run(["check"], self.paths))
         self.assertEqual(2, result.code, result.output)
-        self.assert_lines(
+        self.assert_refusal(
             result.output, "ERROR: 'check' is a command, not a deployment.", f"Run it as '{DEPLOY_COMMAND} check'."
         )
 
@@ -463,7 +463,7 @@ class RefusalStepTests(RemedyTestCase):
         self.fixture()
         self.write(self.home / ".agents", "not a folder")
         result = self.deploy_fails("--all", pattern="is not a directory")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: Deployment path component is not a directory: {forward(self.home / '.agents')}",
             "Move it aside after checking it, so the deployer can make the folder there, then retry.",
@@ -510,12 +510,12 @@ class RefusalStepTests(RemedyTestCase):
                 self.fixture()
                 arrange()
                 result = self.deploy_fails("--all", pattern=re.escape(message))
-                self.assert_lines(result.output, message, step)
+                self.assert_refusal(result.output, message, step)
 
     def test_at_outside_a_git_checkout_says_to_run_it_from_a_clone(self) -> None:
         self.fixture()
         result = self.deploy_fails("--all", "--at", "main", pattern="needs a Git checkout")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: --at needs a Git checkout, and {forward(self.source)} is not one.",
             'Run --at from a Git clone of the source. See "Deploying an earlier commit" in docs/recovery.md.',
