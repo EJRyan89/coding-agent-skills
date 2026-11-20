@@ -438,6 +438,16 @@ def test_every_reader_s_blocks_split_where_commonmark_splits_them(
         pytest.param("- a\n\n  b\n- c\n", [(0, "item"), (2, "paragraph"), (3, "item")], id="item-after-a-paragraph"),
         pytest.param("- a\n\n  b\n  2. c\n", [(0, "item"), (2, "paragraph")], id="numbered-line-in-a-paragraph"),
         pytest.param("- a\n\nb\n2. c\n", [(0, "item"), (2, "paragraph")], id="paragraph-after-the-list"),
+        # A fence opened on a list item's line opens the item, so a `2.` line after the item's paragraph opens the
+        # list's next item; a fence at the margin ends the items, so a `2.` line after a later paragraph continues it.
+        pytest.param(
+            "- ```\n  x\n  ```\n  Text.\n2. Next.\n",
+            [(1, "code"), (3, "paragraph"), (4, "item")],
+            id="fence-opens-an-item",
+        ),
+        pytest.param(
+            "- a\n```\nx\n```\n\n  b\n2. c\n", [(0, "item"), (2, "code"), (5, "paragraph")], id="fence-ends-the-items"
+        ),
     ],
 )
 def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tuple[int, str]]) -> None:
@@ -460,6 +470,16 @@ def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tupl
         # A numbered line not numbered 1, or a bare marker, right after a quoted line continues the quote.
         pytest.param("> quoted\n2. more\n", [(0, "quote")], id="numbered-line-after-a-quote"),
         pytest.param("> quoted\n-\n", [(0, "quote")], id="bare-marker-after-a-quote"),
+        # A line that starts with `|` is a table row even after a paragraph's text, and a table with no leading pipe
+        # is read as a paragraph.
+        pytest.param("Text\n| a |\n", [(0, "paragraph"), (1, "table row")], id="pipe-after-text"),
+        pytest.param("a | b\n---|---\nc | d\n", [(0, "paragraph")], id="table-without-leading-pipes"),
+        # A list marker with nothing after it opens no item, so it and the lines after it are a paragraph.
+        pytest.param("-\n  a\n- b\n", [(0, "paragraph"), (2, "item")], id="bare-marker"),
+        # A marker past MAX_BLOCK_INDENT columns beyond the content of an item it leaves opens an item.
+        pytest.param(
+            "- a\n  -    b\n      - c\n", [(0, "item"), (1, "item"), (2, "item")], id="deep-marker-leaving-an-item"
+        ),
     ],
 )
 def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expected: list[tuple[int, str]]) -> None:

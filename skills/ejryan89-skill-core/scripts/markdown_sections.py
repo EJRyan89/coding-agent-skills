@@ -465,9 +465,13 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     The limits: a setext heading is read as a paragraph, so the text above a `---` underline is a paragraph the
     thematic break ends and an `=` underline joins the text above it; an HTML block is read as a paragraph, so its
     lines are paragraph text until one that starts a block, such as a heading-shaped or list line, which is read as
-    that block; a line right after a table's rows is read as a paragraph, where GitHub reads it as another row; an
-    ordered marker not numbered 1, or a bare marker, right after a quoted line continues the quote, where CommonMark
-    ends the quote and opens a list; and a quote's own lines are not split into the blocks it holds."""
+    that block; a line that starts with `|` is a table row even where it follows a paragraph's text, a line right
+    after a table's rows is read as a paragraph, where GitHub reads it as another row, and a table with no leading
+    pipe is read as a paragraph; an ordered marker not numbered 1, or a bare marker, right after a quoted line
+    continues the quote, where CommonMark ends the quote and opens a list; a list marker with nothing after it on its
+    line opens no item, so it and the lines after it are read as a paragraph; a list marker more than
+    MAX_BLOCK_INDENT columns past the content of an item it leaves opens an item, where CommonMark continues that
+    item's paragraph; and a quote's own lines are not split into the blocks it holds."""
     fences = {fence.opener: fence for fence in find_fences(lines)}
     code = code_block_lines(lines)
     walk = _Walk()
