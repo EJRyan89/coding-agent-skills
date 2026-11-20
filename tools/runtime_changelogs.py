@@ -486,7 +486,9 @@ def bullet_entries(lines: Sequence[str]) -> list[str]:
         held = items_holding(items, width)
         relative = " " * (width - (items[held - 1] if held else 0)) + line.lstrip(MARKDOWN_SPACE)
         fence = fences.get(index)
-        item = item_text(relative, paragraph=paragraph)
+        # Only a paragraph the line's items all hold limits the marker that may interrupt it, as markdown_sections'
+        # walk reads it: a marker that leaves an item opens the next list's item, whatever its number.
+        item = item_text(relative, paragraph=paragraph and held == len(items))
         content = list_item_content(line)
         if item is not None and content is not None:
             del items[held:], holders[held:]

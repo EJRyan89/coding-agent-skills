@@ -69,7 +69,7 @@ class BodyEntriesTests(unittest.TestCase):
             f"{em}# more",
             "    - more",
             # Past MAX_BLOCK_INDENT columns a heading or a quote is the paragraph's text, as markdown_sections'
-            # `starts_block` reads it.
+            # `blocks` reads it.
             "    # more",
             "    > more",
         ):
@@ -88,6 +88,22 @@ class BodyEntriesTests(unittest.TestCase):
                 self.assertEqual(["- item", started], release_notes.unwrapped(f"- item\n{started}"))
         self.assertEqual(["- item # deep"], release_notes.unwrapped("- item\n      # deep"))
         self.assertEqual([f"Some text {nbsp} more"], release_notes.unwrapped(f"Some text\n{nbsp}\nmore"))
+
+    def test_a_wrapped_line_joins_only_the_paragraph_or_list_item_that_holds_it(self) -> None:
+        # The lines are read as markdown_sections' `blocks` reads them, not from the line above: an item after an
+        # item's paragraph is the list's next item, and a numbered line inside an item's paragraph continues it.
+        self.assertEqual(["1. a", "", "   para", "2. b"], release_notes.unwrapped("1. a\n\n   para\n2. b"))
+        self.assertEqual(["- a 2. b"], release_notes.unwrapped("- a\n  2. b"))
+        # A paragraph on the line right below a heading is the heading's wrapped words; one after a blank line is not.
+        self.assertEqual(["# H more"], release_notes.unwrapped("# H\nmore"))
+        self.assertEqual(["# H", "", "more"], release_notes.unwrapped("# H\n\nmore"))
+        # Only a heading's wrapped words run on below it: a paragraph right below a code block is its own line.
+        self.assertEqual(["Text", "", "    code", "more"], release_notes.unwrapped("Text\n\n    code\nmore"))
+        # A fence's lines, a table's rows, and a quote's lines each stay their own.
+        self.assertEqual(
+            ["Text", "```", "x", "y", "```", "| a |", "| b |", "> q", "> r"],
+            release_notes.unwrapped("Text\n```\nx\ny\n```\n| a |\n| b |\n> q\n> r"),
+        )
 
     def test_a_heading_keeps_any_unicode_space_markdown_keeps_and_a_number_is_ascii(self) -> None:
         nbsp = chr(0xA0)
