@@ -3172,6 +3172,13 @@ def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separato
         pytest.param("Text.\n    # not heading\n", [(1, "Text. # not heading")], id="lazy-heading-shape"),
         pytest.param("- an item\n    # Item heading\n", [(1, "- an item")], id="heading-in-item"),
         pytest.param("- an item\n# Heading\nAfter.\n", [(1, "- an item"), (3, "After.")], id="heading-after-item"),
+        pytest.param("Text.\n   # Heading\nAfter.\n", [(1, "Text."), (3, "After.")], id="heading-indented-three"),
+        pytest.param("Text.\n\u00a0\nMore.\n", [(1, "Text. \u00a0 More.")], id="no-break-space-line"),
+        pytest.param(
+            "| a | b |\n| - | - |\nAfter text.\n",
+            [(1, "| a | b |"), (2, "| - | - |"), (3, "After text.")],
+            id="line-after-table-row",
+        ),
         pytest.param(
             "1. an item\n\n    # Item heading\nAfter.\n", [(1, "1. an item"), (4, "After.")], id="heading-after-blank"
         ),
@@ -3217,6 +3224,13 @@ def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line
     assert rebuilt["content"] == f"# Notes{separator}- [Gone](gone.md) — x\n- [Plain](plain.md) — First # Second\n"
 
 
+def test_a_destination_document_is_read_as_utf_8_with_each_undecodable_byte_replaced(tmp_path: Path) -> None:
+    guide = tmp_path / "CLAUDE.md"
+    guide.write_bytes("Café rule text.\n".encode() + b"Broken \xff byte.\n")
+    blocks = memory_audit.destination_blocks([guide])
+    assert [(start, text) for _, start, text, _ in blocks] == [(1, "Café rule text. Broken \ufffd byte.")]
+
+
 @pytest.mark.parametrize(
     ("body", "hook"),
     [
@@ -3224,6 +3238,7 @@ def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line
         ("# Plain heading\n", "Plain heading"),
         ("## Closed heading ##\n", "Closed heading"),
         ("#\nText.\n", ""),
+        ("\n\n", ""),
     ],
 )
 def test_a_derived_hook_drops_an_atx_heading_s_marks_and_keeps_a_hashtag(body: str, hook: str, tmp_path: Path) -> None:
