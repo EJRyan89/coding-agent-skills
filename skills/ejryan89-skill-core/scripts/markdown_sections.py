@@ -34,6 +34,9 @@ LIST_MARKER = rf"(?:{BULLET_MARKER}|{ORDERED_MARKER})"
 INTERRUPTING_LIST_MARKER = rf"(?:{BULLET_MARKER}|0{{0,8}}1[.)])"
 # A line that opens a list item: any indentation, the marker, then a space or a tab before its text.
 LIST_ITEM = re.compile(rf"[ \t]*(?P<marker>{LIST_MARKER})[ \t]+(?P<text>.*)")
+# A list marker where it stands in a line, with the spaces and tabs after it, at least one: matched at an index, so a
+# reader of a line's nested markers reads each once.
+LIST_MARKER_AT = re.compile(rf"(?P<marker>{LIST_MARKER})[ \t]+")
 # A thematic break, matched in full against a line: up to three spaces, then three or more of one of `-`, `*`, or `_`,
 # with spaces or tabs between. A line of bullets spaced apart is one rather than a list item.
 THEMATIC_BREAK = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
@@ -183,7 +186,11 @@ def find_fences(lines: list[str]) -> list[Fence]:
     commonmark.js splits it, at any whitespace.
     A fence left open runs to the end of the blockquote that holds it, or of the document. Rendering, the extraction
     of Bash for ShellCheck, validation's Markdown policies, and the audit-skill audit all read fences through
-    this one function.
+    this one function. The block readers, `blocks`, `code_block_lines`, and `document_headings`, read the fences
+    `block_fences` gives, which part from these in two shapes: a fence in a list item or blockquote that a line the
+    container does not hold ends there, not where this one ends it, and a run indented four or more columns past the
+    content that holds it neither opens nor closes a fence there. Validation holds the two to the same fences on every
+    tracked Markdown file, so the shapes stay unwritten until this one reads containers too.
     """
     fences: list[Fence] = []
     index = 0
@@ -258,6 +265,14 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
     ends the list, is the document's. How list items and blockquotes hold a line, and the limits of that reading, are
     `_walk`'s, the one walk `blocks` and `code_block_lines` read too."""
     return _walk(lines).headings
+
+
+def block_fences(lines: list[str]) -> list[Fence]:
+    """Each fenced code block as `blocks`, `code_block_lines`, and `document_headings` read it, in document order: one
+    `_walk` reads, which ends a fence where the list item or blockquote holding it ends, and opens or closes one only at
+    a run at most MAX_BLOCK_INDENT columns past the content that holds it. Where it parts from `find_fences` is that
+    function's to state."""
+    return _walk(lines).fences
 
 
 def _starts_leaving(rest: str, column: int, start: int) -> bool:
@@ -376,7 +391,8 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     """Each block of a Markdown document in order, as GitHub renders it: a paragraph, a list item, a blockquote, a
     table row, an ATX heading, or a code block, fenced or indented. A thematic break and a blank line end a block and
     are none. Each reader of a document's blocks walks them here and chooses after the walk what it keeps and how it
-    reads a block's lines, so no two readers split a document apart.
+    reads a block's lines, so no two readers split a document apart. Its fences are `block_fences`', which part from
+    `find_fences`' only in the shapes that function states.
 
     The blocks come from `_walk`, the one walk `code_block_lines` and `document_headings` read too, so a line each
     reader holds in a list item or a blockquote, or reads as code, is held and read alike here. A line after a
@@ -392,11 +408,11 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     paragraph the thematic break ends and an `=` underline joins the text above it; an HTML block is read as a
     paragraph, so its lines are paragraph text until one that starts a block, such as a heading-shaped or list line,
     which is read as that block; a line that starts with `|` is a table row even where it follows a paragraph's text in
-    the same container, though one that lazily continues a paragraph is that paragraph's text, and a table with no
-    leading pipe is read as a paragraph; a list item's own line is the item's block whatever it holds but a blockquote,
-    a fence, or indented code, each a block of its own, so a heading on it, as in `- # H`, is the item's text; and a
-    quote's own lines are not split into the blocks it holds, though a code block inside it is a block of its own and
-    ends the quote's."""
+    the same container, though one that lazily continues a paragraph is that paragraph's text, and a table is read only
+    where its header and its delimiter row both start with `|`; a list item's own line is the item's block whatever it
+    holds but a blockquote, a fence, or indented code, each a block of its own, so a heading on it, as in `- # H`, is
+    the item's text; and a quote's own lines are not split into the blocks it holds, though a code block inside it is a
+    block of its own and ends the quote's."""
     yield from _walk(lines).blocks
 
 
@@ -418,7 +434,8 @@ def _walk(lines: list[str]) -> _Walker:
 
     A fence opens at a run of three or more backticks or tildes at most MAX_BLOCK_INDENT columns past the content that
     holds it, and runs to a run of the same character at least as long, as far in, or to the first line its containers
-    leave; the walk reads its lines itself, where `find_fences` ignores indentation. A table is a `|` row and a
+    leave; the walk reads its lines itself, where `find_fences` ignores indentation and containers, so the two part
+    in the shapes `find_fences` states. A table is a `|` row and a
     delimiter row under it, such as `| - |`; its rows run on, and so does any line under them that starts no block, as
     GitHub reads them, and a list item or indented code after it opens as after any block but a paragraph. A list item
     whose marker has only spaces after it, then a blank line, is empty and closes.
@@ -455,7 +472,7 @@ def _cells(row: str) -> int:
     row = row[1:] if row.startswith("|") else row
     if not row:
         return 0
-    row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+    row = row[:-1] if row.endswith("|") else row
     return len(re.split(r"(?<!\\)\|", row))
 
 
@@ -465,8 +482,8 @@ class _Walker:
     each list item's content past the content that holds it, or QUOTE_CONTAINER; whether a paragraph's text is open;
     whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers hold,
     the first of them, and whether they are a table's; and the open fence, with its run. What it yields: the blocks,
-    the code lines, and the document's headings. The open block: its first line, kind, and lines, and the blank lines
-    after an open indented code block, which join it only when more code follows."""
+    the code lines, the fences, and the document's headings. The open block: its first line, kind, and lines, and the
+    blank lines after an open indented code block, which join it only when more code follows."""
 
     lines: list[str]
     containers: list[int] = field(default_factory=list)
@@ -480,6 +497,7 @@ class _Walker:
     blocks: list[Block] = field(default_factory=list)
     code: set[int] = field(default_factory=set)
     headings: list[tuple[int, re.Match[str]]] = field(default_factory=list)
+    fences: list[Fence] = field(default_factory=list)
     first: int = 0
     kind: str = ""
     open: list[str] = field(default_factory=list)
@@ -496,37 +514,42 @@ class _Walker:
         self.close()
         self.first, self.kind, self.open = index, kind, [self.lines[index]]
 
-    def held(self, line: str) -> tuple[int, str, int, int]:
-        """How many open containers hold the line; what is left of the line past their markers; the column it starts
-        at; and the column the content of the innermost of them starts at."""
-        rest, column, start = line, 0, 0
-        width, blank = indentation(rest), is_blank(rest)
+    def held(self, line: str) -> tuple[int, int, int, int]:
+        """How many open containers hold the line; the index in it past their markers; the column that index is at;
+        and the column the content of the innermost of them starts at. Each character is read once."""
+        position, column, start = 0, 0, 0
+        last = len(line.rstrip(MARKDOWN_SPACE))
+        first, width = _skip(line, 0)
         for count, container in enumerate(self.containers):
             if container == QUOTE_CONTAINER:
-                if column + width - start > MAX_BLOCK_INDENT or not rest.lstrip(MARKDOWN_SPACE).startswith(">"):
-                    return count, rest, column, start
-                rest, column = _past_quote_marker(rest, column)
-                start, width, blank = column, indentation(rest), is_blank(rest)
-            elif blank or column + width >= start + container:
+                if column + width - start > MAX_BLOCK_INDENT or first >= last or line[first] != ">":
+                    return count, position, column, start
+                position, column = _past_quote_marker(line, first, column + width)
+                start = column
+                first, width = _skip(line, position)
+            elif first >= last or column + width >= start + container:
                 start += container
             else:
-                return count, rest, column, start
-        return len(self.containers), rest, column, start
+                return count, position, column, start
+        return len(self.containers), position, column, start
 
     def line(self, index: int) -> None:
         """A line: a fence's, or one that continues, closes, and opens containers and is read as what is left of it."""
         if self.fence is not None and self.fenced(index):
             return
-        count, rest, column, start = self.held(self.lines[index])
+        line = self.lines[index]
+        count, position, column, start = self.held(line)
         closed = count < len(self.containers)
         if closed:
+            rest = line[position:]
             if self.paragraph and not is_blank(rest) and not _starts_leaving(rest, column, start):
                 self.lazy(index)
                 return
             del self.containers[count:]
             self.paragraph, self.bare = False, False
         opened = len(self.containers)
-        rest, column, start, text = self.opened(rest, column, start)
+        position, column, start, empty = self.opened(line, position, column, start)
+        rest = line[position:]
         if len(self.containers) > opened:
             self.paragraph = False
         # Whether the line has the containers of the line above, so an indented code block or a table may run on.
@@ -537,7 +560,7 @@ class _Walker:
         run = _fence_run(rest) if relative <= MAX_BLOCK_INDENT else None
         if run is not None:
             self.open_fence(index, run)
-        elif text is not None and is_blank(text):
+        elif empty:
             self.paragraph, self.bare, self.rows, self.table = False, True, 0, False
             self.emit(index, LIST_ITEM_BLOCK, opened, joins=False)
         elif is_blank(rest):
@@ -552,33 +575,41 @@ class _Walker:
         else:
             self.begin(index, PARAGRAPH)
 
-    def opened(self, rest: str, column: int, start: int) -> tuple[str, int, int, str | None]:
-        """The containers what is left of the line opens, each read past the content that holds it: what is left past
-        their markers, the column it starts at, the column the content of the innermost container starts at, and the
-        text of the last list item it opens, None for none."""
-        interrupting, text = self.paragraph, None
-        while not is_blank(rest) and column + indentation(rest) - start <= MAX_BLOCK_INDENT:
-            stripped = rest.lstrip(MARKDOWN_SPACE)
-            if stripped.startswith(">"):
+    def opened(self, line: str, position: int, column: int, start: int) -> tuple[int, int, int, bool]:
+        """The containers the line opens from `position`, at `column`, each read past the content that holds it: the
+        index past their markers, the column it is at, the column the content of the innermost container starts at,
+        and whether the last list item it opens holds nothing after its marker. Each marker is matched where it stands
+        and each character read once, and a thematic break is looked for only where the rest of the line can be one."""
+        interrupting, empty = self.paragraph, False
+        last = len(line.rstrip(MARKDOWN_SPACE))
+        thematic = _thematic_from(line)
+        first, width = _skip(line, position)
+        while first < last and column + width - start <= MAX_BLOCK_INDENT:
+            if line[first] == ">":
                 self.containers.append(QUOTE_CONTAINER)
-                rest, column = _past_quote_marker(rest, column)
+                position, column = _past_quote_marker(line, first, column + width)
                 start = column
-            elif THEMATIC_BREAK.fullmatch(stripped.rstrip(LINE_END)):
+            elif first >= thematic and THEMATIC_BREAK.fullmatch(line[first:].rstrip(LINE_END)):
                 break
             else:
-                item = _item_content(rest, interrupting=interrupting, relative=column + indentation(rest) - start)
-                match = LIST_ITEM.fullmatch(rest)
-                if item is None or match is None:
+                marker = LIST_MARKER_AT.match(line, first)
+                if marker is None or (
+                    interrupting
+                    and (re.fullmatch(INTERRUPTING_LIST_MARKER, marker.group("marker")) is None or marker.end() >= last)
+                ):
                     break
-                content, text, _ = item
-                self.containers.append(column + content - start)
-                start = column + content
-                column += _columns(rest[: match.end("marker")])
-                rest = rest[match.end("marker") :]
-                if is_blank(text):
+                after = width + len(marker.group("marker"))
+                _, spaces = _skip(line, marker.end("marker"), after)
+                empty = marker.end() >= last
+                opens_code = spaces > CODE_INDENT and not empty
+                content = column + after + (1 if opens_code or empty else spaces)
+                self.containers.append(content - start)
+                position, column, start = marker.end("marker"), column + after, content
+                if empty:
                     break
             interrupting = False
-        return rest, column, start, text
+            first, width = _skip(line, position)
+        return position, column, start, empty
 
     def open_fence(self, index: int, run: re.Match[str]) -> None:
         """A fence's opener: it ends the open block, and its lines run until its closing run or its containers end."""
@@ -594,10 +625,11 @@ class _Walker:
     def fenced(self, index: int) -> bool:
         """Whether the open fence holds the line, as its body or its closing run; when its containers do not hold the
         line, the fence ends above it."""
-        count, rest, column, start = self.held(self.lines[index])
+        count, position, column, start = self.held(self.lines[index])
         if count < len(self.containers):
             self.end_fence(index)
             return False
+        rest = self.lines[index][position:]
         closing = rest.strip(LINE_END)
         near = column + indentation(rest) - start <= MAX_BLOCK_INDENT
         if near and len(closing) >= len(self.run) and set(closing) == {self.run[0]}:
@@ -610,6 +642,7 @@ class _Walker:
             return
         fence = replace(self.fence, closer=closer, stop=stop if closer is None else closer)
         self.fence = None
+        self.fences.append(fence)
         self.code.update(fence.lines())
         self.blocks.append(Block(fence.opener + 1, CODE, tuple(fence.text(self.lines[i]) for i in fence.body())))
 
@@ -688,12 +721,34 @@ class _Walker:
             self.begin(index, kind)
 
 
-def _past_quote_marker(rest: str, column: int) -> tuple[str, int]:
-    """What is left of a line past its next `>` and the space or tab after it, and the column it starts at, given the
-    column `rest` starts at."""
-    marker = len(rest) - len(rest.lstrip(MARKDOWN_SPACE))
-    end = marker + 1 + (rest[marker + 1 : marker + 2] in {" ", "\t"})
-    return rest[end:], column + _columns(rest[:marker]) + end - marker
+def _past_quote_marker(line: str, marker: int, column: int) -> tuple[int, int]:
+    """The index past the `>` at `marker`, which stands at `column`, and the space or tab after it, and the column
+    that index is at."""
+    end = marker + 1 + (line[marker + 1 : marker + 2] in {" ", "\t"})
+    return end, column + end - marker
+
+
+def _skip(line: str, position: int, offset: int = 0) -> tuple[int, int]:
+    """The index of the first character from `position` that is neither a space nor a tab, and the columns the spaces
+    and tabs before it take, a tab advancing to the next multiple of four counted from `offset` columns before
+    `position`."""
+    width, index = 0, position
+    while index < len(line) and line[index] in MARKDOWN_SPACE:
+        width += 4 - (offset + width) % 4 if line[index] == "\t" else 1
+        index += 1
+    return index, width
+
+
+def _thematic_from(line: str) -> int:
+    """The least index from which the line holds only one of `-`, `*`, or `_` and spaces and tabs, where a thematic
+    break may start, or past the line when none can; THEMATIC_BREAK decides whether one does."""
+    text = line.rstrip(LINE_END)
+    if not text or text[-1] not in "-*_":
+        return len(line) + 1
+    index = len(text)
+    while index and text[index - 1] in (text[-1], " ", "\t"):
+        index -= 1
+    return index
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:

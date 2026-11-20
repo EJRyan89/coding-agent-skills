@@ -772,6 +772,13 @@ def test_the_walk_takes_time_in_proportion_to_the_document(repeated: str) -> Non
     assert _walk_seconds(repeated * 2000) < 8 * max(_walk_seconds(repeated * 500), 0.001)
 
 
+@pytest.mark.parametrize("marker", ["- ", "* ", "> - ", "1. "])
+def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker: str) -> None:
+    # Each marker is read where it stands: a walk that read the rest of the line again at each marker would take
+    # about sixteen times as long for four times the markers.
+    assert _walk_seconds(marker * 4000 + "x") < 8 * max(_walk_seconds(marker * 1000 + "x"), 0.001)
+
+
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:
     (item,) = blocks(["- ", "  text"])
     assert (item.kind, item.lines) == ("item", ("- ", "  text"))

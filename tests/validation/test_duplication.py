@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from duplication import (
     containment_problems,
     duplicated_definition_problems,
+    fence_reading_problems,
     shared_fact_owner_problems,
     skill_core_copy_problems,
     skill_core_import_problems,
@@ -1646,3 +1647,32 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+@pytest.mark.parametrize(
+    ("document", "problem"),
+    [
+        # A fence its list item leaves, and a closing run indented four columns past its container, are read apart.
+        pytest.param(
+            "- a\n  ```\nx\n  ```\n",
+            "doc.md:2: the block readers read this fence as lines 2 to 2 and find_fences as lines 2 to 4",
+            id="fence-its-item-leaves",
+        ),
+        pytest.param(
+            "```\nx\n    ```\n```\n",
+            "doc.md:1: the block readers read this fence as lines 1 to 4 and find_fences as lines 1 to 3",
+            id="closing-run-indented-four-columns",
+        ),
+    ],
+)
+def test_fence_policy_refuses_a_fence_the_block_readers_read_apart(tmp_path: Path, document: str, problem: str) -> None:
+    write_fixture_tree(tmp_path, {"doc.md": document, "notes.txt": document}, newline="\n")
+    found = fence_reading_problems(tmp_path, sorted(tmp_path.iterdir()))
+    # The first fence read apart is named; the fences after it may then be read apart too.
+    assert found[0].split(";")[0] == problem
+
+
+def test_fence_policy_passes_fences_every_reader_reads_alike(tmp_path: Path) -> None:
+    document = "- a\n\n  ```bash\n  x\n  ```\n> ```\n> y\n> ```\n~~~\n```\n~~~\n"
+    write_fixture_tree(tmp_path, {"doc.md": document}, newline="\n")
+    assert fence_reading_problems(tmp_path, [tmp_path / "doc.md"]) == []
