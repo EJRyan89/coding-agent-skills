@@ -32,6 +32,7 @@ from test_private_folder import recording_temporary_folders
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
+from deployer.source import SOURCE_JSON_REMEDY
 
 # The prefix of the directory --at reads a commit's attributes through, apart from the export's.
 ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
@@ -750,6 +751,33 @@ class DeployAtTests(DeployerTestCase):
         self.assertIn(f"not this checkout's '{SOURCE_ID}'", output)
         self.assert_head_unmoved()
         self.assert_exports_removed()
+
+    def test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit(self) -> None:
+        # The checkout's own source.json reads, so putting it back changes nothing: the step is another commit.
+        git(self.source, "switch", "-q", "-c", "broken")
+        self.write(self.source / "source.json", "{not json")
+        git(self.source, "commit", "-q", "-am", "Malformed source.json")
+        malformed = git(self.source, "rev-parse", "HEAD")
+        git(self.source, "rm", "-q", "source.json")
+        git(self.source, "commit", "-q", "-m", "No source.json")
+        missing = git(self.source, "rev-parse", "HEAD")
+        git(self.source, "switch", "-q", "main")
+        for ref, commit, error in (
+            ("broken~1", malformed, "ERROR: source.json is malformed: "),
+            ("broken", missing, "ERROR: source.json not found at "),
+        ):
+            with self.subTest(ref=ref):
+                output = self.deploy_fails("--all", "--at", ref, pattern=error).output
+                lines = output.splitlines()
+                step = lines[next(index for index, line in enumerate(lines) if line.startswith(error)) + 1]
+                self.assertEqual(
+                    f"This source.json is the one commit {commit} holds, not the checkout's; name with --at a commit "
+                    "whose source.json the deployer reads.",
+                    step,
+                )
+                self.assertNotIn(SOURCE_JSON_REMEDY, output)
+        self.assert_head_unmoved()
+        self.assert_exports_removed(2)
 
     def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
         plain = self.snapshot_source("plain")
