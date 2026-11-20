@@ -139,6 +139,9 @@ session model and the judged one. A skill with no row has not been run since its
 | audit-skill | haiku | claude-haiku-5-5 | none | none | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | sonnet | claude-sonnet-5-5 | none | none | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | opus | claude-opus-5-5 | none | none | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 5/6 | 1 | description 5/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
@@ -154,9 +157,9 @@ session model and the judged one. A skill with no row has not been run since its
 | review-repository | haiku | claude-haiku-5-5 | high | none | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 1/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
 | review-repository | sonnet | claude-sonnet-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
 | review-repository | opus | claude-opus-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
-| update-pr-dashboard | haiku | claude-haiku-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-19 |
-| update-pr-dashboard | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-19 |
-| update-pr-dashboard | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-19 |
+| update-pr-dashboard | haiku | claude-haiku-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
+| update-pr-dashboard | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
+| update-pr-dashboard | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
 <!-- skill-evals:end -->
 
 ### Notes
@@ -187,9 +190,10 @@ fails while a committed row is still `unread`, so the reading travels with the r
 <!-- skill-evals-samples:begin -->
 | Skill | Scenario | Model | Run | Date | Transcript |
 | --- | --- | --- | --- | --- | --- |
+| curate-agent-memory | description | sonnet | 1 | 2026-11-20 | agrees |
 | review-document | committed-edit | opus | 1 | 2026-11-10 | agrees |
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | clean-change | sonnet | 1 | 2026-11-10 | agrees |
 | review-repository | misstated-exit-status | sonnet | 1 | 2026-11-15 | agrees |
-| update-pr-dashboard | description | haiku | 1 | 2026-11-19 | agrees |
+| update-pr-dashboard | description | sonnet | 1 | 2026-11-20 | agrees |
 <!-- skill-evals-samples:end -->

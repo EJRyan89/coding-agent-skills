@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import json_writer
 import whole_number
 from console import run_main
@@ -261,7 +262,9 @@ def main(arguments: list[str] | None = None, client: GitHubClient | None = None,
         print(f"ERROR: cannot read the validate runs: {error}", file=sys.stderr)
         return 2
     seconds = combine(per_run)
-    table.write_text(render_table(runs, seconds), encoding="utf-8", newline="\n")
+    # Replaced through a copy beside it, so a symbolic link in its place, a link to nothing included, is replaced
+    # itself and never followed to create or change the file it leads to.
+    atomic_file.replace_text(table, render_table(runs, seconds), mode=atomic_file.TRACKED_FILE_MODE)
     named = ", ".join(str(run) for run in sorted(runs))
     platforms = "; ".join(
         f"{platform} {len(jobs)} jobs, {sum(jobs.values()):.1f} job-seconds"

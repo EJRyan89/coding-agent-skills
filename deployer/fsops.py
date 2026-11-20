@@ -94,8 +94,12 @@ def remove(path: Path) -> None:
 
 
 def write_file(path: Path, content: bytes) -> None:
-    """Write a file the deployer creates, such as a staged one; it is never read until the write has finished."""
-    path.write_bytes(content)
+    """Create a file the deployer writes once, such as a staged one; it is never read until the write has finished.
+
+    The create is exclusive, so anything already at `path`, a symbolic link to nothing included, raises
+    FileExistsError, and the write never creates the file such a link leads to."""
+    with path.open("xb") as handle:
+        handle.write(content)
 
 
 def write_atomic(path: Path, content: bytes) -> None:
@@ -126,8 +130,12 @@ def write_atomic(path: Path, content: bytes) -> None:
 
 
 def append_line(path: Path, line: str) -> None:
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line + "\n")
+    """Append a line, encoded as UTF-8 and ended by a line feed, to a file `write_file` created, such as the journal,
+    and sync it. The file is opened without creating it, so a missing file, a symbolic link to nothing included,
+    raises FileNotFoundError, and the append never creates the file such a link leads to."""
+    with path.open("r+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.write(f"{line}\n".encode())
         handle.flush()
         os.fsync(handle.fileno())
 

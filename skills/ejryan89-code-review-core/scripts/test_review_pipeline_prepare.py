@@ -1729,6 +1729,29 @@ class RefusalTests(PrepareFixture):
         self.assertEqual(["earlier.txt"], self.files())
         self.assertEqual([], self.git.calls)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_that_is_a_link_to_nothing_is_refused_and_its_target_never_made(self) -> None:
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory is a link to nothing, which prepare would follow; remove it: <root>/run",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+        )
+        self.assertTrue(self.run_dir.is_symlink())
+        self.assertFalse(os.path.lexists(target))
+        self.assertEqual([], self.git.calls)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_below_a_link_to_nothing_is_never_made_where_the_link_leads(self) -> None:
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        error, message, _ = self.refused(run_directory=self.run_dir / "below")
+        self.assertIs(FileExistsError, error)
+        self.assertIn("<root>/run", message)
+        self.assertFalse(os.path.lexists(target))
+        self.assertEqual([], self.git.calls)
+
 
 class FailureCleanupTests(PrepareFixture):
     """A failure after the run directory exists: prepare removes a directory it created and leaves a given one."""

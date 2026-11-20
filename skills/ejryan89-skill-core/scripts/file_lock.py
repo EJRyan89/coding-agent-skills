@@ -11,15 +11,15 @@ backup, an indexer, or a sync client reading the file; past its end there is not
 `lockf` would not serve, since it drops every lock a process holds on a file when any of its handles to the file
 closes. A descriptor Python opens is never inherited, so no process the holder starts holds the lock after it ends.
 
-`take` opens the file, creating it, and takes the lock without waiting; it answers None while another holds it, or
-when a signal interrupted the attempt, and raises `FileLockError` when the file system refuses the lock itself. A
-refusal is `unsupported` only when its reason says the file system offers no lock at all, as a mount without lock
-support does; any other, such as a lock table that is full or a lock service that does not answer, may come while
-another process holds the lock, so the file is no one's to delete only after an unsupported refusal.
-`release` deletes the file and lets the lock go, so a run leaves nothing behind. On Linux and macOS a waiter may hold
-a descriptor of the file a release deleted and then take the lock of that deleted file, so `take` keeps a lock only
-while its path still names the file it locked. On Windows a file cannot be deleted while another handle holds it open,
-so `release` closes first and leaves the file to a waiter that holds it open.
+`take` opens the file, creating it but never through a symbolic link to nothing, and takes the lock without waiting; it
+answers None while another holds it, or when a signal interrupted the attempt, and raises `FileLockError` when the file
+system refuses the lock itself. A refusal is `unsupported` only when its reason says the file system offers no lock at
+all, as a mount without lock support does; any other, such as a lock table that is full or a lock service that does not
+answer, may come while another process holds the lock, so the file is no one's to delete only after an unsupported
+refusal. `release` deletes the file and lets the lock go, so a run leaves nothing behind. On Linux and macOS a waiter
+may hold a descriptor of the file a release deleted and then take the lock of that deleted file, so `take` keeps a lock
+only while its path still names the file it locked. On Windows a file cannot be deleted while another handle holds it
+open, so `release` closes first and leaves the file to a waiter that holds it open.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+import file_presence
 
 # The errors a lock attempt gives when another holds the lock: msvcrt.locking sets EACCES, or EDEADLOCK, which its
 # blocking form gives after its retries; flock gives EWOULDBLOCK, which is EAGAIN on Linux and macOS.
@@ -61,9 +63,33 @@ class FileLockError(OSError):
         return self.errno in UNSUPPORTED_ERRNOS
 
 
+# How many times `open_for_lock` tries the exclusive create and the open of a file already there, while a release
+# deletes the file between the two.
+OPEN_ATTEMPTS = 3
+
+
 def open_for_lock(path: Path) -> int:
-    """Open `path` for locking, creating it, readable and writable by its owner only."""
-    return os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    """Open `path` for locking, readable and writable by its owner only: created when nothing is there, and opened as
+    it is when a file is, but never through a symbolic link to nothing, which a `FileExistsError` naming the path
+    refuses, so the open never creates the file such a link leads to.
+
+    The create is exclusive, which never follows a link, and a file already there is opened without creating, which a
+    link to nothing fails as not found. A release may delete the file between the two, so they are tried again, and
+    the last open's `FileNotFoundError` is raised when every attempt met that."""
+    attempt = 1
+    while True:
+        with contextlib.suppress(FileExistsError):
+            return os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            return os.open(path, os.O_RDWR)
+        except FileNotFoundError:
+            if file_presence.is_occupied(path):
+                raise FileExistsError(
+                    errno.EEXIST, "a symbolic link to nothing is in the lock file's place; remove it", str(path)
+                ) from None
+            if attempt == OPEN_ATTEMPTS:
+                raise
+        attempt += 1
 
 
 def _lock(descriptor: int) -> None:

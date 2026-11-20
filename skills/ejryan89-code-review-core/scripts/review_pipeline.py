@@ -702,6 +702,17 @@ def _prepare_run(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
+    # A given run directory that is a link to nothing resolves to the place it leads to, which the mkdir below would
+    # create, so it is refused; and the mkdir makes the path as given, which never creates a folder a link above it
+    # leads to.
+    if (
+        run_directory is not None
+        and file_presence.is_occupied(run_directory)
+        and not file_presence.is_there(run_directory)
+    ):
+        raise PipelineError(
+            f"Run directory is a link to nothing, which prepare would follow; remove it: {run_directory}"
+        )
     run = resolved_path(
         Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))
         if run_directory is None
@@ -710,7 +721,7 @@ def _prepare_run(
     if file_presence.is_directory(run) and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
-        run.mkdir(parents=True, exist_ok=True)
+        (run if run_directory is None else run_directory).mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
         parsed, changed, gaps, patches, comments, fallback = review.read_diff(diff_path)
         source = run / "source"

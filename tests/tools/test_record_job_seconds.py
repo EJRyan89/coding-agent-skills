@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -420,6 +421,20 @@ class MainTests(unittest.TestCase):
         )
         # Line feeds on every platform, so a rerun on another machine changes only the seconds.
         self.assertNotIn(b"\r", table.read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_nothing_in_the_tables_place_is_replaced_and_never_followed(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        folder = Path(directory.name)
+        nowhere = folder / "nowhere.json"
+        (folder / "job_seconds.json").symlink_to(nowhere)
+        stub = Stub({"gh run view 38 --json": SUCCESS, "gh run view 38 --log": LOG})
+        code, _, _, table = run_record(["38"], stub, folder)
+        self.assertEqual(0, code)
+        self.assertFalse(table.is_symlink())
+        self.assertEqual([38], json.loads(table.read_text(encoding="utf-8"))["runs"])
+        self.assertFalse(os.path.lexists(nowhere))
 
     def test_named_runs_are_combined_by_median_and_recorded_by_id(self) -> None:
         stub = runs_stub(

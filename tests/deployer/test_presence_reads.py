@@ -553,16 +553,19 @@ class DeployerPresenceTests(DeployerTestCase):
         self.assertIn(SOURCE_ID, self.manifest()["sources"])
         self.assertFalse(os.path.lexists(target))
         place = self.root / "place"
-        writes: list[tuple[str, Callable[[], object]]] = [
-            ("fsops.make_directory", lambda: fsops.make_directory(place)),
-            ("fsops.make_directories", lambda: fsops.make_directories(place)),
-            ("fsops.move", lambda: fsops.move(self.root / "moved", place)),
+        writes: list[tuple[str, Callable[[], object], type[OSError]]] = [
+            ("fsops.make_directory", lambda: fsops.make_directory(place), FileExistsError),
+            ("fsops.make_directories", lambda: fsops.make_directories(place), FileExistsError),
+            ("fsops.move", lambda: fsops.move(self.root / "moved", place), FileExistsError),
+            ("fsops.write_file", lambda: fsops.write_file(place, b"staged"), FileExistsError),
+            ("fsops.append_line", lambda: fsops.append_line(place, "{}"), FileNotFoundError),
+            ("fsops.open_lock_file", lambda: fsops.open_lock_file(place), FileExistsError),
         ]
         (self.root / "moved").write_text("moved", encoding="utf-8")
-        for name, write in writes:
+        for name, write, refusal in writes:
             with self.subTest(writer=name):
                 place.symlink_to(target)
-                with self.assertRaises(FileExistsError):
+                with self.assertRaises(refusal):
                     write()
                 self.assertTrue(place.is_symlink())
                 self.assertFalse(os.path.lexists(target))
