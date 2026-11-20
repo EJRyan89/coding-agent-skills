@@ -59,6 +59,20 @@ FILLED = (
     "\n"
     "None\n"
 )
+# The fixture template with a `## Forms considered` section, its guidance in a comment and its placeholder `None`.
+FORMS_TEMPLATE = TEMPLATE.replace(
+    "## Upgrade note\n",
+    "## Forms considered\n\n<!-- For a fix, replace None with the forms the fix weighed. -->\n\nNone\n\n"
+    "## Upgrade note\n",
+)
+FORMS_WEIGHED = "The construct is a title's quoting; each shell's quoting was read, and `test_title` fails reverted."
+
+
+def with_forms(body: str, forms: str) -> str:
+    """`body` with a `## Forms considered` section holding `forms` before its upgrade note."""
+    return body.replace("## Upgrade note\n", f"## Forms considered\n\n{forms}\n\n## Upgrade note\n")
+
+
 # A title the title rules allow, holding each character either shell could misread.
 AWKWARD_TITLE = (
     'fix(skills): grant each skill\'s scripts by name, keep `$HOME` and "$(x)", and \u2018quote\u2019 \u201atwice\u201b'
@@ -168,6 +182,41 @@ class BodyCheckTests(unittest.TestCase):
 
     def test_a_heading_only_inside_a_template_comment_is_not_required(self) -> None:
         self.assertNotIn("### What changed", " ".join(pull_request.body_problems(FILLED, TEMPLATE)))
+
+
+class FormsCheckTests(unittest.TestCase):
+    """A fix's `## Forms considered` section, read by the reader validation's body check holds a fix body to."""
+
+    template = (REPOSITORY / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+
+    def forms_lines(self, title: str, forms: str | None) -> list[str]:
+        body = FILLED if forms is None else with_forms(FILLED, forms)
+        return pull_request.forms_lines(title, body, self.template)
+
+    def test_a_fix_body_still_holding_the_template_s_none_is_refused(self) -> None:
+        for title in ("fix: read the title", "fix(skills)!: read the title", "Fix: read the title"):
+            with self.subTest(title=title):
+                self.assertEqual(["FORMS_CONSIDERED placeholder"], self.forms_lines(title, "None"))
+
+    def test_a_drafted_fix_body_left_as_the_template_wrote_it_is_refused(self) -> None:
+        body = pull_request.draft_body(self.template, [2500])
+        self.assertEqual(["FORMS_CONSIDERED placeholder"], pull_request.forms_lines("fix: x", body, self.template))
+
+    def test_a_fix_body_with_no_section_or_only_a_filler_is_refused(self) -> None:
+        self.assertEqual(["FORMS_CONSIDERED missing"], self.forms_lines("fix: x", None))
+        self.assertEqual(["FORMS_CONSIDERED empty"], self.forms_lines("fix: x", "TBD"))
+
+    def test_a_fix_body_with_its_own_forms_passes(self) -> None:
+        self.assertEqual([], self.forms_lines("fix: read the title", FORMS_WEIGHED))
+
+    def test_a_body_that_is_not_a_fix_s_is_left_alone(self) -> None:
+        for title in ("docs: say what a fix owes", "feat: add a check", "fixes: read the title", "a fix: no type"):
+            with self.subTest(title=title):
+                self.assertEqual([], self.forms_lines(title, "None"))
+                self.assertEqual([], self.forms_lines(title, None))
+
+    def test_a_template_with_no_forms_section_asks_none_of_a_fix(self) -> None:
+        self.assertEqual([], pull_request.forms_lines("fix: x", FILLED, TEMPLATE))
 
 
 class TitleCheckTests(unittest.TestCase):
@@ -505,6 +554,31 @@ class CheckCommandTests(Repository):
         self.assertFalse([line for line in lines if line.startswith("TITLE ")], lines)
         self.assertIn("CLOSES_LINE 2 Closes #34, #35", lines)
 
+    def use_forms_template(self) -> None:
+        """Commit the fixture template with a `## Forms considered` section, so the branch stays clean."""
+        (self.root / ".github" / "pull_request_template.md").write_text(FORMS_TEMPLATE, encoding="utf-8")
+        self.commit("add the forms section")
+
+    def test_a_fix_body_still_holding_the_template_s_none_is_refused(self) -> None:
+        self.use_forms_template()
+        self.body.write_text(with_forms(FILLED, "None"), encoding="utf-8")
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((1, "FORMS_CONSIDERED placeholder"), (code, lines[-1]), lines)
+        self.assertNotIn("READY", lines)
+
+    def test_a_fix_body_with_its_own_forms_is_ready(self) -> None:
+        self.use_forms_template()
+        self.body.write_text(with_forms(FILLED, FORMS_WEIGHED), encoding="utf-8")
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((0, "READY"), (code, lines[-1]), lines)
+
+    def test_a_body_that_is_not_a_fix_s_keeps_the_template_s_none(self) -> None:
+        self.use_forms_template()
+        self.title.write_text("docs: say what a fix owes\n", encoding="utf-8")
+        self.body.write_text(with_forms(FILLED, "None"), encoding="utf-8")
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((0, "READY"), (code, lines[-1]), lines)
+
     def test_a_fetch_that_fails_is_a_failed_line(self) -> None:
         arguments = [*self.files_arguments()[:-1], "nowhere/main"]
         code, lines = self.run_script("check", *arguments)
@@ -641,6 +715,15 @@ class OpenCommandTests(Repository):
         self.body.write_text(FILLED.replace("Closes #34", "Closes #"), encoding="utf-8")
         code, lines = self.run_script("open", *self.files_arguments())
         self.assertEqual((1, "PLACEHOLDER 2 a Closes line with no issue"), (code, lines[-1]))
+        self.assertEqual([], self.gh_calls)
+
+    def test_a_fix_body_still_holding_the_template_s_none_stops_the_open(self) -> None:
+        (self.root / ".github" / "pull_request_template.md").write_text(FORMS_TEMPLATE, encoding="utf-8")
+        self.commit("add the forms section")
+        git(self.root, "push", "--quiet", "-u", "origin", "HEAD")
+        self.body.write_text(with_forms(FILLED, "None"), encoding="utf-8")
+        code, lines = self.run_script("open", *self.files_arguments())
+        self.assertEqual((1, "FORMS_CONSIDERED placeholder"), (code, lines[-1]), lines)
         self.assertEqual([], self.gh_calls)
 
     def test_a_pushed_ready_branch_opens_with_the_title_passed_unchanged(self) -> None:

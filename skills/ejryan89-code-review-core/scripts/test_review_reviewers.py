@@ -336,6 +336,37 @@ class InspectionTests(unittest.TestCase):
             "an absolute path or a bare file name is not a repository path",
         )
 
+    def test_a_link_references_the_file_commonmark_reads_its_destination_as(self) -> None:
+        # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, and read no definition.
+        backslash = Path("docs\\rules.md").as_posix()
+        files = {
+            "docs/my rules.md",
+            "docs/a(1).md",
+            "docs/the defs.md",
+            "docs/foot note.md",
+            "docs/b-c.md",
+            "docs/in code.md",
+            "docs/rules.md",
+            "docs/my doc.md",
+            "docs/b(2).md",
+            backslash,
+        }
+        text = (
+            "[a](docs/my%20rules.md)\n"
+            "[b](docs/a\\(1\\).md)\n"
+            "[c]: <docs/the defs.md>\n"
+            "[^1]: <docs/foot note.md>\n"
+            "[Note]: see [d](docs/b%2Dc.md)\n"
+            "`[e](<docs/in code.md>)`\n"
+            "[f](docs\\rules.md)\n"
+            "[g](<docs/my doc.md>) and [h](docs/b(2).md)\n"
+        )
+        result = inspect_skill(".claude/agents/review.md", text, COMMIT, files)
+        # A backslash is read as the platform reads one in a path: a separator on Windows, part of the name elsewhere.
+        expected = {"docs/my rules.md", "docs/a(1).md", "docs/the defs.md", "docs/b-c.md", backslash}
+        expected |= {"docs/my doc.md", "docs/b(2).md"}
+        self.assertEqual(sorted(expected), result.references)
+
     def test_frontmatter_value(self) -> None:
         text = (
             "---\nname: x\nModel: 'sonnet'\nmodel: opus # strong\neffort: \"high\"\nempty:\nquoted: ''\n---\n"

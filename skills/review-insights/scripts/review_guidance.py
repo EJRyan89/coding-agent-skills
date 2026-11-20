@@ -41,6 +41,7 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from link_destinations import link_destinations
 from markdown_sections import PROSE_BLOCKS, blocks
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
@@ -96,9 +97,6 @@ FORCE_WORDS = {
 }
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
-# A link to a Markdown file on one line: CommonMark lets spaces and tabs surround the destination, which holds no
-# space or control character; every other Unicode space is part of it.
-LINK = re.compile(r"\]\([ \t]*<?([^)\x00-\x20>#]+\.md)(?:#[^)\x00-\x20]*)?>?[ \t]*\)")
 CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
 
@@ -484,6 +482,17 @@ def _resolved(base: str, reference: str) -> str | None:
     return "/".join(parts) or None
 
 
+def _markdown_links(lines: list[str]) -> dict[int, list[str]]:
+    """The Markdown files the lines link to, by line number, each as a path in the repository: read through
+    ejryan89-skill-core's link_destinations as CommonMark reads a destination, so a percent-encoded, escaped, or `<…>`
+    path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here."""
+    linked: dict[int, list[str]] = {}
+    for destination in link_destinations(lines):
+        if not destination.is_url and destination.posix_path.endswith(".md"):
+            linked.setdefault(destination.line, []).append(destination.posix_path)
+    return linked
+
+
 def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
     was not given."""
@@ -494,8 +503,10 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
             text = texts.get((path, given[path]))
             if text is None:
                 continue
-            for number, line in enumerate(text_lines(text), start=1):
-                links = [_resolved(path, target) for target in LINK.findall(line) if "://" not in target]
+            lines = text_lines(text)
+            linked = _markdown_links(lines)
+            for number, line in enumerate(lines, start=1):
+                links = [_resolved(path, target) for target in linked.get(number, [])]
                 named = [(target, _resolved(path, target)) for target in CODE_REFERENCE.findall(line)]
                 candidates = [link for link in links if link is not None and link not in given]
                 candidates += [target for target, near in named if target not in given and near not in given]
