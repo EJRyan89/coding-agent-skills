@@ -23,6 +23,7 @@ from file_presence import (
     is_occupied,
     is_present,
     is_there,
+    link_to_nothing_on,
     matching,
     refusal_reason,
     require,
@@ -284,6 +285,37 @@ class ThereTests(unittest.TestCase):
         with mock.patch.object(Path, "stat", side_effect=answer):
             self.assertFalse(is_there(self.root / "entry"))
             self.assertTrue(is_occupied(self.root / "entry"))
+
+
+class LinkToNothingOnTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_a_path_with_no_link_to_nothing_along_it_answers_none(self) -> None:
+        (self.root / "folder").mkdir()
+        self.assertIsNone(link_to_nothing_on(self.root / "folder"))
+        self.assertIsNone(link_to_nothing_on(self.root / "folder" / "new" / "deeper"))
+        self.assertIsNone(link_to_nothing_on(self.root / "missing" / "below"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_the_first_link_to_nothing_along_the_path_as_given_is_named(self) -> None:
+        link = self.root / "link"
+        link.symlink_to(self.root / "nowhere", target_is_directory=True)
+        self.assertEqual(link, link_to_nothing_on(link))
+        self.assertEqual(link, link_to_nothing_on(link / "below" / "deeper"))
+        (self.root / "folder").mkdir()
+        through = self.root / "through"
+        through.symlink_to(self.root / "folder", target_is_directory=True)
+        (self.root / "folder" / "inner").symlink_to(self.root / "gone", target_is_directory=True)
+        self.assertEqual(through / "inner", link_to_nothing_on(through / "inner" / "run"))
+        self.assertIsNone(link_to_nothing_on(through / "run"))
+
+    def test_a_stat_that_fails_reaches_the_caller(self) -> None:
+        failure = PermissionError(errno.EACCES, "denied")
+        with mock.patch.object(Path, "stat", side_effect=failure), self.assertRaises(PermissionError):
+            link_to_nothing_on(self.root / "entry")
 
 
 class RefusalReasonTests(unittest.TestCase):

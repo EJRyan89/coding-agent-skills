@@ -169,6 +169,20 @@ def is_occupied(path: Path) -> bool:
     return True
 
 
+def link_to_nothing_on(path: Path) -> Path | None:
+    """The first place along `path` as given, from its first part down to the path itself, where a symbolic link to
+    nothing stands, or None when none does; the stat's `OSError` when it cannot tell. A writer that resolves a path
+    before it creates a folder there asks it of the path as given, since resolving takes such a link to the place it
+    leads to, which the folder's creation would then make. The walk stops at the first place nothing is at, since
+    nothing below it is there either."""
+    for place in reversed((path, *path.parents)):
+        if not is_occupied(place):
+            return None
+        if not is_there(place):
+            return place
+    return None
+
+
 def _never(path: Path) -> bool:
     return False
 

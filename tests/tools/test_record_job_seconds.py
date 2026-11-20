@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 from github_client import CommandResult, GitHubClient
 from json_writer import JsonWriteRefused
 
@@ -433,6 +435,7 @@ class MainTests(unittest.TestCase):
         code, _, _, table = run_record(["38"], stub, folder)
         self.assertEqual(0, code)
         self.assertFalse(table.is_symlink())
+        self.assertEqual(atomic_file.TRACKED_FILE_MODE, stat.S_IMODE(table.stat().st_mode))
         self.assertEqual([38], json.loads(table.read_text(encoding="utf-8"))["runs"])
         self.assertFalse(os.path.lexists(nowhere))
 

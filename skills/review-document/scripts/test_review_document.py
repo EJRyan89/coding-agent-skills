@@ -1982,6 +1982,19 @@ class OutputTests(DocumentTestCase):
         code, lines = run_main("build", str(document), "--output", str(self.root / "empty folder"))
         self.assertEqual((0, str(self.root / "empty folder")), (code, facts(lines)["OUTPUT"]))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_an_output_that_is_or_lies_below_a_link_to_nothing_is_refused_and_its_target_never_made(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        link = self.root.resolve() / "link"
+        link.symlink_to(self.root.resolve() / "nowhere", target_is_directory=True)
+        for target in (link, link / "review"):
+            with self.subTest(target=target.name):
+                code, lines = run_main("build", str(document), "--output", str(target))
+                reason = f"goes through {link}, a link to nothing; name a new or empty directory"
+                self.assertEqual((1, [f"FAILED {target} {reason}"]), (code, lines))
+                self.assertFalse(os.path.lexists(self.root / "nowhere"))
+
     def test_an_output_whose_stat_fails_is_refused_rather_than_taken_for_new(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")

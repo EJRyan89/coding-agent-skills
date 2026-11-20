@@ -765,9 +765,12 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", dispatch)
 
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
-        # An override set to a computed state is refused, so the states a user is told to avoid must be those.
+        # An override set to a computed state is refused, so the states a user is told to avoid must be those. The
+        # skill's own Markdown, which loads on every run, says only that the command refuses one, since the refusal
+        # comes from the configuration's validation; the list a user reads is in the reference and the contract.
+        tracker = (REPOSITORY_ROOT / "skills/update-pr-dashboard/SKILL.md").read_text(encoding="utf-8-sig")
+        self.assertIn("the command refuses a status that names a state the dashboard computes", tracker)
         for path in (
-            "skills/update-pr-dashboard/SKILL.md",
             "docs/code-review-operations-contract.md",
             "docs/skills.md",
         ):

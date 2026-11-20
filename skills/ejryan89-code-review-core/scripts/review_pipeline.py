@@ -702,16 +702,13 @@ def _prepare_run(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    # A given run directory that is a link to nothing resolves to the place it leads to, which the mkdir below would
-    # create, so it is refused; and the mkdir makes the path as given, which never creates a folder a link above it
-    # leads to.
-    if (
-        run_directory is not None
-        and file_presence.is_occupied(run_directory)
-        and not file_presence.is_there(run_directory)
-    ):
+    # A given run directory that is, or lies below, a link to nothing resolves to the place the link leads to, which
+    # the mkdir below would create, so it is refused; and the mkdir makes the path as given.
+    linked = None if run_directory is None else file_presence.link_to_nothing_on(run_directory)
+    if linked is not None:
         raise PipelineError(
-            f"Run directory is a link to nothing, which prepare would follow; remove it: {run_directory}"
+            f"Run directory {run_directory} goes through {linked}, a link to nothing, which prepare would follow; "
+            "remove the link or name another directory"
         )
     run = resolved_path(
         Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))

@@ -1735,7 +1735,8 @@ class RefusalTests(PrepareFixture):
         self.run_dir.symlink_to(target, target_is_directory=True)
         self.assert_refused(
             review_run.PipelineError,
-            "Run directory is a link to nothing, which prepare would follow; remove it: <root>/run",
+            "Run directory <root>/run goes through <root>/run, a link to nothing, which prepare would follow; remove "
+            "the link or name another directory",
             reads=[("get_pull", REPOSITORY, NUMBER)],
         )
         self.assertTrue(self.run_dir.is_symlink())
@@ -1746,9 +1747,13 @@ class RefusalTests(PrepareFixture):
     def test_a_run_directory_below_a_link_to_nothing_is_never_made_where_the_link_leads(self) -> None:
         target = self.root / "elsewhere"
         self.run_dir.symlink_to(target, target_is_directory=True)
-        error, message, _ = self.refused(run_directory=self.run_dir / "below")
-        self.assertIs(FileExistsError, error)
-        self.assertIn("<root>/run", message)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory <root>/run/below goes through <root>/run, a link to nothing, which prepare would follow; "
+            "remove the link or name another directory",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+            run_directory=self.run_dir / "below",
+        )
         self.assertFalse(os.path.lexists(target))
         self.assertEqual([], self.git.calls)
 
