@@ -408,6 +408,51 @@ class RefusalStepFixtures(unittest.TestCase):
             self.problems(files),
         )
 
+    def test_following_a_caught_refusal_through_recursion_or_a_cycle_ends(self) -> None:
+        # Each function is entered once per walk, so a recursive one and two that call each other end: the walk below
+        # finds no excused callee and reads the caught lines as built with their step, and one that reaches the
+        # excused function after the cycle is still refused.
+        files = {
+            "deployer/cycle.py": (
+                'STEP_ALLOWED = {"excused": "its callers add the step"}\n'  # 1
+                "from .errors import DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def excused():\n"  # 5
+                '    raise DeployError("ERROR: Excused")\n'  # 6
+                "\n"  # 7
+                "\n"  # 8
+                "def ping(count):\n"  # 9
+                "    if count:\n"  # 10
+                "        pong(count - 1)\n"  # 11
+                "        ping(count - 1)\n"  # 12
+                "\n"  # 13
+                "\n"  # 14
+                "def pong(count):\n"  # 15
+                "    ping(count)\n"  # 16
+                "\n"  # 17
+                "\n"  # 18
+                "def loop(count):\n"  # 19
+                "    pong(count)\n"  # 20
+                "    excused()\n"  # 21
+                "\n"  # 22
+                "\n"  # 23
+                "def closed():\n"  # 24
+                "    try:\n"  # 25
+                "        ping(3)\n"  # 26
+                "    except DeployError as exc:\n"  # 27
+                "        raise DeployError(*exc.lines) from exc\n"  # 28: the cycle reaches nothing excused
+                "\n"  # 29
+                "\n"  # 30
+                "def reached():\n"  # 31
+                "    try:\n"  # 32
+                "        loop(3)\n"  # 33
+                "    except DeployError as exc:\n"  # 34
+                "        raise DeployError(*exc.lines) from exc\n"  # 35: excused after the cycle
+            ),
+        }
+        self.assertEqual(["deployer/cycle.py:35 DeployError in reached" + UNFOLLOWED_SUFFIX], self.problems(files))
+
     def test_a_caught_refusal_an_excused_function_raises_through_a_helper_fails_when_raised_again_alone(self) -> None:
         # deployer/config.py's load wraps validate_directories, which lets _validate_absolute_directory's refusal,
         # excused because its callers add the step, escape with no handler; with load's step dropped, as below, the
