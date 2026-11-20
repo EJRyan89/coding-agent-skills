@@ -121,14 +121,17 @@ UNREAD_BYTES = 1024 * 1024
 # Run as its own process, with this folder as its first argument and its case as the second, so a close or a write
 # that waits on stdin with no limit hangs that process, which the test's outer limit ends, never the suite. It starts a
 # command that never reads stdin, keeps a write to it blocked as the case says, and closes the session, then prints, as
-# JSON, how long the close took, the error the write raised, and the command's exit status once closed.
+# JSON, how long the close took, the error the write raised, and the command's exit status once closed. The `session`
+# case gives the session half a second and the idle limit thirty, so the session ends first; the others give the idle
+# limit half a second and the session none.
 STDIN_HOLD_PROGRAM = """
 import json, subprocess, sys, threading, time
 sys.path.insert(0, sys.argv[1])
 import bounded_process
 never_reads = [sys.executable, "-c", "import time; time.sleep(30)"]
+limits = {"idle_timeout": 30, "timeout": 0.5} if sys.argv[2] == "session" else {"idle_timeout": 0.5}
 raised = None
-with bounded_process.streaming(never_reads, idle_timeout=0.5, exit_wait=0.5) as running:
+with bounded_process.streaming(never_reads, exit_wait=0.5, **limits) as running:
     if sys.argv[2] == "thread":
         def fill():
             try:
@@ -665,6 +668,12 @@ class StreamingTests(unittest.TestCase):
     def test_a_write_the_command_never_reads_raises_within_the_idle_limit_and_closing_kills_it(self) -> None:
         report = self.stdin_hold("write")
         self.assertEqual("TimeoutExpired 0.5", report["raised"])
+        self.assertLess(report["closed"], EXIT_SECONDS + IDLE_MARGIN_SECONDS)
+        self.assertIsNotNone(report["status"], "the command was killed, not left running")
+
+    def test_a_write_the_session_ends_before_the_idle_limit_raises_the_sessions_limit(self) -> None:
+        report = self.stdin_hold("session")
+        self.assertEqual("TimeoutExpired 0.5", report["raised"])  # the session's half second, not the idle thirty
         self.assertLess(report["closed"], EXIT_SECONDS + IDLE_MARGIN_SECONDS)
         self.assertIsNotNone(report["status"], "the command was killed, not left running")
 
