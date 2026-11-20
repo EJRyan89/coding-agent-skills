@@ -1600,3 +1600,20 @@ removed fails validation until its pattern follows it.
   `hooks` frontmatter, or in a plugin's hooks file; `"python"` as the first item of an argument list a program starts,
   where `sys.executable` belongs; `{{PYTHON}}` answered as `python` in an output built once for every platform.
 - **Examples:** #2742, #2744
+
+### A reader of another program relies only on what every version it accepts does
+
+- **Rule:** A reader of another program's output or matching relies only on behavior every version the repository
+  accepts gives alike, and where releases differ, reads the form whose meaning never changed or handles each answer a
+  release gives; a test stands in for the older release, through an injected runner, so the machine's own version
+  does not decide whether the older answer is covered.
+- **Why:** A behavior a newer release added passes every test on the machines that run them, and on an older install
+  the reader quietly answers differently: `release_tags`' `--points-at` peeled one tag level before Git 2.42, so a
+  release behind two tag objects went unlisted and the update read its own pin as the user's.
+- **Use:** `release_tags:releases_naming`, which peels each release tag still behind a tag object with Git's
+  rev-parse rather than trusting for-each-ref's match or its dereferenced fields to peel it.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_release_behind_any_number_of_tag_objects_is_listed_on_a_git_that_peels_one_level`
+- **Search for:** `--points-at` or a `%(*` field in a `for-each-ref`, `tag`, or `branch` format a script or the
+  deployer reads (a test double over fixtures that tag a commit directly is innocent); a flag or format atom a
+  program's release notes say was added or changed, read with no version floor in `deployer/tools.py`.
+- **Examples:** #2762
