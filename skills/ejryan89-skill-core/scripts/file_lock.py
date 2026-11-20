@@ -16,10 +16,11 @@ answers None while another holds it, or when a signal interrupted the attempt, a
 system refuses the lock itself. A refusal is `unsupported` only when its reason says the file system offers no lock at
 all, as a mount without lock support does; any other, such as a lock table that is full or a lock service that does not
 answer, may come while another process holds the lock, so the file is no one's to delete only after an unsupported
-refusal. `release` deletes the file and lets the lock go, so a run leaves nothing behind. On Linux and macOS a waiter
-may hold a descriptor of the file a release deleted and then take the lock of that deleted file, so `take` keeps a lock
-only while its path still names the file it locked. On Windows a file cannot be deleted while another handle holds it
-open, so `release` closes first and leaves the file to a waiter that holds it open.
+refusal, and `refusal_step` gives every caller's refusal the one step for each. `release` deletes the file and lets the
+lock go, so a run leaves nothing behind. On Linux and macOS a waiter may hold a descriptor of the file a release deleted
+and then take the lock of that deleted file, so `take` keeps a lock only while its path still names the file it locked.
+On Windows a file cannot be deleted while another handle holds it open, so `release` closes first and leaves the file
+to a waiter that holds it open.
 """
 
 from __future__ import annotations
@@ -61,6 +62,22 @@ class FileLockError(OSError):
         """Whether the reason says the file system offers no lock at all, so no process holds this file's lock; any
         other refusal may come while another process holds it."""
         return self.errno in UNSUPPORTED_ERRNOS
+
+
+def refusal_step(error: FileLockError, subject: str, place: str) -> str:
+    """The step a refusal of the lock ends with, as a clause with no capital or full stop, for the caller to place:
+    for a file system that offers no lock at all, that `subject` needs one that does, and for any other refusal, such
+    as of a lock table that is full or a lock service that does not answer, which may pass, to retry. Each ends by
+    naming `place`, what the caller's user keeps on a local disk."""
+    if error.unsupported:
+        return (
+            f"{subject} needs a folder on a file system that supports file locks, which some network and synced "
+            f"folders do not; keep {place} on a local disk"
+        )
+    return (
+        "a file system may refuse a lock this way for a moment, as when its lock table is full or its lock service "
+        f"does not answer; retry in a moment, and if it keeps refusing, keep {place} on a local disk"
+    )
 
 
 # How many times `open_for_lock` tries the exclusive create and the open of a file already there, while a release

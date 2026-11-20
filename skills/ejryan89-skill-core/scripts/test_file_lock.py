@@ -109,6 +109,19 @@ class FileLockTests(unittest.TestCase):
             with self.subTest(errno=errno.errorcode[number]):
                 self.assertFalse(file_lock.FileLockError(number, "transient").unsupported)
 
+    def test_a_refusal_step_names_the_caller_s_lock_and_place_in_the_one_text(self) -> None:
+        # Pinned against literals: the deployer and the review lock end their refusals with this step.
+        self.assertEqual(
+            "the lock needs a folder on a file system that supports file locks, which some network and synced folders "
+            "do not; keep the folder on a local disk",
+            file_lock.refusal_step(file_lock.FileLockError(errno.ENOTSUP, "unsupported"), "the lock", "the folder"),
+        )
+        self.assertEqual(
+            "a file system may refuse a lock this way for a moment, as when its lock table is full or its lock service "
+            "does not answer; retry in a moment, and if it keeps refusing, keep the folder on a local disk",
+            file_lock.refusal_step(file_lock.FileLockError(errno.ENOLCK, "transient"), "the lock", "the folder"),
+        )
+
     def test_every_error_a_held_or_interrupted_lock_gives_reads_as_not_taken(self) -> None:
         for number in sorted(file_lock.HELD_ERRNOS | {errno.EINTR}):
             with (
