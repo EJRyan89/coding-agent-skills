@@ -222,8 +222,9 @@ def _validate_ledger(ledger: Any, key: str, path: str) -> None:
 
 def _validate_ledger_reading(review: dict[str, Any], key: str, path: str) -> None:
     """The open findings flags name and what moved since the user's last review, both read from a ledger: flagged
-    counts open findings, and since_review is null when the user has not reviewed or the review commit could not be
-    placed, else the baseline version (0 when every review came after it) with the entries new and addressed since."""
+    counts open findings, and since_review is null when the user has not reviewed, the review's or a record's time
+    cannot be read, or the review commit could not be placed, else the baseline version (0 when no version was written
+    before the review or every one's head is after its commit) with the entries new and addressed since."""
     if "flagged" not in review and "since_review" not in review:
         return
     invalid = TrackerError(f"Tracker item {key}.ai_review.flagged or since_review is invalid")

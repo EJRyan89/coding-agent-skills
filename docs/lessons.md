@@ -259,11 +259,14 @@ removed fails validation until its pattern follows it.
   `ERROR:` line reads as part of the failure, and a step the refusal's own context rules out sends its reader to a fix
   that changes nothing.
 - **Use:** `deployer.errors:see_recovery`, `deployer.errors:DEBUG_HINT`, `deployer.source:COMPLETE_CHECKOUT`,
-  `deployer.source:SOURCE_JSON_REMEDY`, `deployer.source_ref:exported_source_json_remedy`,
+  `deployer.source:SOURCE_JSON_REMEDY`, `deployer.errors:SourceRefusal`, `deployer.source_ref:exported_refusals`,
   `deployer.lock:REFUSED_STEP`
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
   `tests/deployer/test_remedies.py::RefusalStepTests`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit`,
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_skill_metadata_the_deployer_refuses_is_refused_with_a_step_naming_its_commit`,
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_rendered_skill_the_deployer_refuses_is_refused_with_a_step_naming_its_commit`,
+  `tests/deployer/test_deploy_at.py::SourceRefusalTests::test_every_refusal_of_the_source_s_content_is_a_source_refusal`,
   `tests/deployer/test_rendering_locking.py::LockTests::test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file`
 - **Search for:** a `DeployError(` with one positional argument under `deployer/`, or unpacked lines the guard follows
   to one, which it reads; unpacked lines it cannot follow, such as a parameter, a call's result, or a list grown by
@@ -272,10 +275,11 @@ removed fails validation until its pattern follows it.
   adds the step; a step written after a semicolon or a full stop inside an
   `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too; a step
   the refusal's own context rules out: an option such as `--dry-run` named as allowed in a refusal a run with that
-  option also reaches, the checkout's own file named for a tree `--at` exported (`paths.tree` beside
-  `SOURCE_JSON_REMEDY` or a step naming a file to fix), and a lasting fix such as moving the home for an
+  option also reaches, the checkout's own file named for a tree `--at` exported (a refusal of the source's content
+  raised as a plain `DeployError` rather than a `SourceRefusal`, or a `SourceRefusal` reached outside
+  `exported_refusals`), and a lasting fix such as moving the home for an
   `OSError` or `FileLockError` that may pass on a retry.
-- **Examples:** #2545, #2563, #2696
+- **Examples:** #2545, #2563, #2696, #2933
 
 ### A report of a change names the change the write made
 
