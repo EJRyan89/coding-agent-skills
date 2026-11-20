@@ -481,7 +481,7 @@ class _Walker:
     """What `_walk` has read so far. The structure: the containers that hold the line, outermost first, as the width of
     each list item's content past the content that holds it, or QUOTE_CONTAINER; whether a paragraph's text is open;
     whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers hold,
-    the first of them, and whether they are a table's; and the open fence, with its run. What it yields: the blocks,
+    the last of them, and whether they are a table's; and the open fence, with its run. What it yields: the blocks,
     the code lines, the fences, and the document's headings. The open block: its first line, kind, and lines, and the
     blank lines after an open indented code block, which join it only when more code follows."""
 
@@ -676,10 +676,11 @@ class _Walker:
                 self.headings.append((index, match))
             self.emit(index, HEADING if starts_heading(block) else "", opened, joins=False)
         elif block.startswith("|") or (self.table and not block.startswith("<")):
-            # A delimiter row with as many cells as the row above it makes that row a table's header, as GFM reads one.
-            delimits = self.rows == 1 and DELIMITER_ROW.fullmatch(block) is not None
-            self.table = self.table or (delimits and _cells(block) == _cells(self.header))
-            self.header = block if self.rows == 0 else self.header
+            # A delimiter row with as many cells as the row right above it makes that row a table's header, as GFM reads
+            # one, whatever `|` lines stand above the header.
+            delimits = self.rows and not self.table and DELIMITER_ROW.fullmatch(block) is not None
+            self.table = self.table or bool(delimits and _cells(block) == _cells(self.header))
+            self.header = block
             self.rows += 1
             # A lone `|` line is a paragraph's text, as GitHub reads it, until a delimiter row under it makes a table.
             self.paragraph = not self.table

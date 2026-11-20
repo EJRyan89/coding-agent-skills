@@ -702,6 +702,144 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
             [],
             id="lazy-line-after-a-row-in-an-item",
         ),
+        # A no-break space is text, so a heading-shaped line behind one lazily continues the item.
+        pytest.param("- a\n\u00a0# b\n", [(0, "item")], [], [], id="no-break-space-before-a-heading-shape"),
+        # A marker three columns in that leaves an item opens the next list.
+        pytest.param(
+            "  - a\n   2. b\n", [(0, "item"), (1, "item")], [], [], id="marker-three-columns-in-leaving-an-item"
+        ),
+        # A backtick run whose info string holds a backtick is inline code; a tilde run's may hold one.
+        pytest.param(
+            "``` a`b\nx\n```\n", [(0, "paragraph"), (3, "code")], [2, 3], [], id="backtick-in-a-backtick-run-s-info"
+        ),
+        pytest.param("~~~ a`b\nx\n~~~\n", [(1, "code")], [0, 1, 2], [], id="backtick-in-a-tilde-run-s-info"),
+        # A run three columns in opens and closes a fence; a closing run followed by a no-break space closes none.
+        pytest.param("   ```\nx\n   ```\n", [(1, "code")], [0, 1, 2], [], id="runs-three-columns-in"),
+        pytest.param(
+            "```\nx\n   ```\ny\n", [(1, "code"), (3, "paragraph")], [0, 1, 2], [], id="closing-run-three-columns-in"
+        ),
+        pytest.param(
+            "```\nx\n```\u00a0\ny\n", [(1, "code")], [0, 1, 2, 3, 4], [], id="closing-run-and-a-no-break-space"
+        ),
+        # A row's no-break space is a cell's text, and `||` holds one empty cell.
+        pytest.param(
+            "| a |\u00a0\n| - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="no-break-space-after-a-row",
+        ),
+        pytest.param(
+            "||\n|-|\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "code")],
+            [2],
+            [],
+            id="header-of-one-empty-cell",
+        ),
+        # A table's header is the row right above its delimiter row, whatever rows stand above it.
+        pytest.param(
+            "  | t |\n|a|\n|-|\n   text\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "table row")],
+            [],
+            [],
+            id="header-under-another-row",
+        ),
+        pytest.param(
+            "> - ```\n|a|\n|-|\n\ttext\n",
+            [(1, "code"), (1, "table row"), (2, "table row"), (3, "code")],
+            [0, 3],
+            [],
+            id="table-after-a-quoted-fence",
+        ),
+        pytest.param(
+            "---\n|a|\n|-|\n   2. w\n",
+            [(1, "table row"), (2, "table row"), (3, "item")],
+            [],
+            [],
+            id="table-after-a-thematic-break",
+        ),
+        pytest.param(
+            "\n|a|\n|-|\n    ```\n",
+            [(1, "table row"), (2, "table row"), (3, "code")],
+            [3],
+            [],
+            id="table-after-a-blank-line",
+        ),
+        pytest.param(
+            "  | t |\n  | t |\n    - c\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="rows-without-a-delimiter",
+        ),
+        pytest.param(
+            "| a |\n```\n```\n| - |\n    code\n",
+            [(0, "table row"), (2, "code"), (3, "table row"), (4, "paragraph")],
+            [1, 2],
+            [],
+            id="delimiter-shaped-row-after-a-fence",
+        ),
+        pytest.param(
+            "    ```\n  | t |\n      # H\n",
+            [(0, "code"), (1, "table row"), (2, "paragraph")],
+            [0],
+            [],
+            id="row-after-indented-code",
+        ),
+        # An item's paragraph after a quote, a blank line, or an empty item's next item reads as GitHub renders it.
+        pytest.param(
+            "* s\n  > q\n\n\ttext\n",
+            [(0, "item"), (1, "quote"), (3, "paragraph")],
+            [],
+            [],
+            id="paragraph-after-a-quote-in-an-item",
+        ),
+        pytest.param(
+            "  - b\n\n\n\ttext\n", [(0, "item"), (3, "paragraph")], [], [], id="paragraph-after-blank-lines-in-an-item"
+        ),
+        pytest.param("> 2. qn\n>\n   >     code\n", [(0, "quote")], [], [], id="paragraph-in-a-quoted-numbered-item"),
+        pytest.param(
+            "1. a\n   ```\n   ```\n\n   ```\nb\n",
+            [(0, "item"), (2, "code"), (5, "code"), (5, "paragraph")],
+            [1, 2, 4],
+            [],
+            id="fence-after-a-blank-line-in-an-item",
+        ),
+        pytest.param(
+            "   ~~~\n   ~~~\n- # H\n     text\n",
+            [(1, "code"), (2, "item"), (3, "paragraph")],
+            [0, 1],
+            [],
+            id="paragraph-after-an-item-s-heading",
+        ),
+        pytest.param("* s\n  > q\n>\n", [(0, "item"), (1, "quote"), (2, "quote")], [], [], id="quote-leaving-an-item"),
+        pytest.param("- \n  2. v\n", [(0, "item"), (1, "item")], [], [], id="item-in-an-empty-item"),
+        # A delimiter-shaped row makes a table only right under a row its containers hold: not after a line that opens a
+        # container, a blank line, an empty item, or a heading.
+        pytest.param(
+            "|a|\n> |-|\n>     code\n", [(0, "table row"), (1, "quote")], [], [], id="delimiter-in-a-new-quote"
+        ),
+        pytest.param(
+            "|a|\n\n|-|\n    code\n",
+            [(0, "table row"), (2, "table row"), (3, "paragraph")],
+            [],
+            [],
+            id="delimiter-after-a-blank-line",
+        ),
+        pytest.param(
+            "|a|\n\n- \n  |-|\n      code\n",
+            [(0, "table row"), (2, "item"), (3, "table row"), (4, "paragraph")],
+            [],
+            [],
+            id="delimiter-under-an-empty-item",
+        ),
+        pytest.param(
+            "|a|\n# H\n|-|\n    code\n",
+            [(0, "table row"), (1, "heading"), (2, "table row"), (3, "paragraph")],
+            [],
+            ["H"],
+            id="delimiter-after-a-heading",
+        ),
         # A backtick run indented as far as indented code past its container neither opens nor closes a fence.
         pytest.param("+ p\n      ```\n```\n", [(0, "item"), (3, "code")], [2, 3], [], id="deep-run-in-an-item"),
         pytest.param(
