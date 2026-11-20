@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from link_destinations import link_destinations
-from link_targets import link_spans, link_target
+from link_targets import Cover, link_spans, link_target
 
 SKILL = ".claude/skills/review/SKILL.md"
 
@@ -78,9 +78,16 @@ def test_a_destination_out_of_the_repository_or_at_its_root_leads_to_no_file(
         ("  [r]: docs/a.md 'title'", "[r]: docs/a.md 'title'"),
         # No `[` opens the text: from the `]`.
         ("a](d.md) b", "](d.md)"),
-        # A title that never closes, or no `)` after the title: to the end of the line.
-        ('[a](x.md "t and docs/b.md', '[a](x.md "t and docs/b.md'),
-        ('[a](x.md "t" and docs/b.md', '[a](x.md "t" and docs/b.md'),
+        # A link that does not close, its title never closing or no `)` after it: its destination alone, so what follows
+        # is still read rather than hidden.
+        ('[a](x.md "t and docs/b.md', "x.md"),
+        ('[a](x.md "t" and docs/b.md', "x.md"),
+        # An escaped closer closes nothing: a title runs to its unescaped closer, and the link to the `)` after it.
+        ('[a](x.md "a\\" ) b") c.md', '[a](x.md "a\\" ) b")'),
+        ("[a](x.md (t\\) u)) c.md", "[a](x.md (t\\) u))"),
+        ("[a](x.md 'it\\'s') c.md", "[a](x.md 'it\\'s')"),
+        # Text after a title is passed over to the next `)`, a stated limit.
+        ('[a](x.md "t" docs/b.md (see)) c', '[a](x.md "t" docs/b.md (see)'),
     ],
 )
 def test_a_link_s_span_runs_from_its_text_to_its_end(line: str, span: str) -> None:
@@ -94,6 +101,23 @@ def test_each_link_on_a_line_has_its_own_span() -> None:
     spans = link_spans(line, link_destinations([line]))
     assert [line[start:end] for start, end in spans] == ["[a](x.md)", "[b [c]](y.md 'z')", "](w.md)"]
     assert link_spans(line, []) == []
+
+
+@pytest.mark.parametrize(
+    ("spans", "inside", "outside"),
+    [
+        ([], [], [(0, 5)]),
+        ([(4, 9), (0, 3)], [(2, 5), (8, 20), (0, 1)], [(3, 4), (9, 12)]),
+        # Nested and overlapping spans merge, so a column the outer one takes is taken.
+        ([(0, 20), (3, 8), (18, 25)], [(10, 12), (22, 30), (24, 25)], [(25, 30), (30, 31)]),
+    ],
+)
+def test_a_cover_says_whether_a_link_takes_any_column_of_a_run(
+    spans: list[tuple[int, int]], inside: list[tuple[int, int]], outside: list[tuple[int, int]]
+) -> None:
+    cover = Cover.of(spans)
+    assert all(cover.overlaps(start, end) for start, end in inside)
+    assert not any(cover.overlaps(start, end) for start, end in outside)
 
 
 # The scaling test reads the same characters as eight lines and as one line eight times as long. A reader whose time
@@ -119,7 +143,8 @@ def _seconds(lines: list[str]) -> float:
 @pytest.mark.parametrize("unit", ["[a](d/b.md) ", "a](d/b.md) "], ids=["opened", "no-opening-bracket"])
 def test_a_line_of_links_takes_time_in_proportion_to_its_length(unit: str) -> None:
     # link_span read the whole line again for each link: it masked its code spans, sliced it, and walked back to its
-    # start, so a line of 8000 links took 16 times as long as eight lines of 1000, and 70 times without a `[`.
+    # start, so a line of 8000 links took about 8 times as long as eight lines of 1000, and about 16 times without a
+    # `[`.
     short = [unit * LINKS] * LINES
     long = [unit * LINKS * LINES]
     gc.disable()

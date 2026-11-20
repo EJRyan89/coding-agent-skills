@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -146,6 +148,16 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(
             [".claude/skills/review/references/rules.md"], inspect_skill(SKILL, text, COMMIT, files).references
         )
+        # A link that does not close hides nothing: a path after its destination is still read, from the root.
+        for broken in (
+            '[a](references/rules.md "never closed docs/rules.md',
+            '[a](references/rules.md "t" docs/rules.md',
+        ):
+            with self.subTest(broken=broken):
+                self.assertEqual(
+                    [".claude/skills/review/references/rules.md", "docs/rules.md"],
+                    inspect_skill(SKILL, broken + "\n", COMMIT, files).references,
+                )
         # The stated limit: a reference link's text has no span, so its path is still read as prose from the root.
         for reference in ("See [docs/rules.md][r].", "See [docs/rules.md][].", "See [docs/rules.md]."):
             with self.subTest(reference=reference):
@@ -678,3 +690,48 @@ class SeparatorTests(unittest.TestCase):
             with self.subTest(separator=f"U+{ord(separator):04X}"):
                 result = inspect(f"---\nname: x\n---\nIntro{separator}Ask db-review.\n")
                 self.assertEqual([(4, "Intro Ask db-review.")], result.evidence)
+
+
+# The scaling test reads the same characters as eight lines and as one line eight times as long, each line a run of
+# links whose text holds a code path. A reader whose time grows with the text's length takes about as long either way,
+# a ratio near 1; one that checks each path against every link on its line takes eight times as long on the long line.
+# The bound is the two ratios' geometric midpoint, each side does the same work with garbage collection off, and a long
+# run far past the bound fails without timing it again.
+SCALING_LINES = 8
+SCALING_LINKS = 1000
+SCALING_RUNS = 7
+SCALING_BOUND = SCALING_LINES**0.5
+FAR_PAST = 3
+
+
+def _scaling_ratio_holds(read: Callable[[str], object], unit: str) -> tuple[float, float]:
+    """The fastest of the long line's runs and the bound it is held under, from the fastest of the short lines'."""
+    short = "\n".join([unit * SCALING_LINKS] * SCALING_LINES) + "\n"
+    long = unit * SCALING_LINKS * SCALING_LINES + "\n"
+
+    def seconds(text: str) -> float:
+        start = time.perf_counter()
+        read(text)
+        return time.perf_counter() - start
+
+    gc.disable()
+    try:
+        eight = min(seconds(short) for _ in range(SCALING_RUNS))
+        one: list[float] = []
+        for _ in range(SCALING_RUNS):
+            one.append(seconds(long))
+            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
+                break
+    finally:
+        gc.enable()
+    return min(one), SCALING_BOUND * eight
+
+
+def test_inspecting_a_skill_takes_time_in_proportion_to_a_line_of_links_with_paths_in_their_text() -> None:
+    # Each path was checked against every link on its line, so a line of 8000 links whose text held one took about 8
+    # times as long as eight lines of 1000.
+    files = {SKILL, "docs/a.md"}
+    one, bound = _scaling_ratio_holds(
+        lambda text: inspect_skill(SKILL, text, COMMIT, files), "[`docs/a.md` docs/a.md](d/b.md) "
+    )
+    assert one < bound

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import gc
 import hashlib
 import json
 import os
@@ -8,9 +9,10 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -1019,3 +1021,48 @@ class LinkDestinationTests(unittest.TestCase):
             ],
             [(item["line"], item["reference"]) for item in found],
         )
+
+
+# The scaling test reads the same characters as eight lines and as one line eight times as long, each line a run of
+# links whose text holds a code path. A reader whose time grows with the text's length takes about as long either way,
+# a ratio near 1; one that checks each path against every link on its line takes eight times as long on the long line.
+# The bound is the two ratios' geometric midpoint, each side does the same work with garbage collection off, and a long
+# run far past the bound fails without timing it again.
+SCALING_LINES = 8
+SCALING_LINKS = 1000
+SCALING_RUNS = 7
+SCALING_BOUND = SCALING_LINES**0.5
+FAR_PAST = 3
+
+
+def _scaling_ratio_holds(read: Callable[[str], object], unit: str) -> tuple[float, float]:
+    """The fastest of the long line's runs and the bound it is held under, from the fastest of the short lines'."""
+    short = "\n".join([unit * SCALING_LINKS] * SCALING_LINES) + "\n"
+    long = unit * SCALING_LINKS * SCALING_LINES + "\n"
+
+    def seconds(text: str) -> float:
+        start = time.perf_counter()
+        read(text)
+        return time.perf_counter() - start
+
+    gc.disable()
+    try:
+        eight = min(seconds(short) for _ in range(SCALING_RUNS))
+        one: list[float] = []
+        for _ in range(SCALING_RUNS):
+            one.append(seconds(long))
+            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
+                break
+    finally:
+        gc.enable()
+    return min(one), SCALING_BOUND * eight
+
+
+def test_unsupplied_takes_time_in_proportion_to_a_line_of_links_with_code_in_their_text() -> None:
+    # Each code path was checked against every link on its line, so a line of 8000 links whose text held one took
+    # about 8 times as long as eight lines of 1000.
+    sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+    one, bound = _scaling_ratio_holds(
+        lambda text: rg.unsupplied("r", {("dir/g.md", "h"): text}, sources), "[`docs/a.md`](d/b.md) "
+    )
+    assert one < bound

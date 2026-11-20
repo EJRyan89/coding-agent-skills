@@ -18,9 +18,11 @@ Code resolve it, through ejryan89-skill-core's link_targets: from the skill file
 and from the repository root when it starts with `/`. A path written bare in prose or in a code span has no folder of
 its own and is read from the repository root the reviewer works in, a leading `./` read as that root. An inline link
 or a definition is read only through its destination: a path its text repeats, as in `[docs/rules.md](docs/rules.md)`,
-is not read again as prose. Limits, as link_targets states them: a reference link's text, as in `[text][label]`,
-`[text][]`, or `[label]`, is still read as prose; a definition's line is passed over whole, text after its title
-included; and an inline link whose title never closes, or that no `)` closes, is passed over to the end of its line.
+is not read again as prose. An inline link that does not close, its title never closing or no `)` following it, is
+passed over only at its destination, so a path after it is still read. Limits, as link_targets states them: a
+reference link's text, as in `[text][label]`, `[text][]`, or `[label]`, is still read as prose; a definition's line is
+passed over whole, text after its title included; and an inline link with text after its title is passed over to the
+next `)`.
 
 A reviewer file's frontmatter is read by ejryan89-skill-core's strict frontmatter reader. A block it cannot read is a
 contract fault that fails the review, never a grant guessed from a lenient parse.
@@ -40,7 +42,7 @@ import frontmatter
 from flat_text import flat_text
 from git_client import Runner, subprocess_runner
 from link_destinations import Destination, link_destinations
-from link_targets import link_spans, link_target
+from link_targets import Cover, link_spans, link_target
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -173,13 +175,14 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
     by_line: dict[int, list[Destination]] = {}
     for link in destinations:
         by_line.setdefault(link.line, []).append(link)
-    taken = {line + body_start - 1: link_spans(body[line - 1], links) for line, links in by_line.items()}
+    taken = {line + body_start - 1: Cover.of(link_spans(body[line - 1], links)) for line, links in by_line.items()}
+    nothing = Cover.of([])
     for number, line in enumerate(body, start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, flat_text(line)[:160]))
         for match in PATH_TOKEN.finditer(line):
-            if any(start < match.end() and match.start() < end for start, end in taken.get(number, [])):
+            if taken.get(number, nothing).overlaps(match.start(), match.end()):
                 continue
             token = next(group for group in match.groups() if group).split("#", 1)[0]
             token = token.removeprefix("./")
