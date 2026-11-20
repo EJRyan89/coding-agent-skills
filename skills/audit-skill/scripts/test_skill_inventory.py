@@ -4164,12 +4164,32 @@ def test_a_link_destination_is_read_once_and_a_path_in_prose_still_counts(tmp_pa
         # A path after `,` or `:` was read by its tail; none is read.
         ("Read refs/a,b/x.md, C:z.md, and mailto:a@b.md.\n", []),
         ("Read x!y.md.\n", []),
+        # A path's start was refused after listed characters, so it started after every other one: `&` too, whose
+        # path is read whole, and `'`, `=`, `#`, `;`, and a glob's `*`, after which none is read.
+        (
+            "Read docs/R&D/plan.md, /opt/Q&A.md, and `C:\\Q&A\\x.md`.\n",
+            ["docs/R&D/plan.md", "/opt/Q&A.md", "C:\\Q&A\\x.md"],
+        ),
+        ("Read notes/o'brien.md, refs/a=b/x.md, refs/a#b/x.md, and refs/a;b/x.md.\n", []),
+        ("Read `.github/instructions/**/*.instructions.md` and docs/*-support.md.\n", []),
+        # A quote or emphasis that opens a path still starts it.
+        ("Read 'a.md', \"b.md\", *c.md*, and `d.md`.\n", ["a.md", "b.md", "c.md", "d.md"]),
     ],
 )
 def test_a_path_in_prose_or_code_is_read_whole_or_not_at_all(text: str, references: list[str], tmp_path: Path) -> None:
     assert [reference for _, reference, _ in skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)] == (
         references
     )
+
+
+def test_a_path_holding_an_ampersand_named_by_skill_md_is_no_nested_reference(tmp_path: Path) -> None:
+    # SKILL.md's `references/Q&A.md` was read as `A.md`, so a doc linking Q&A.md was flagged as reached only through it.
+    texts = {
+        "SKILL.md": ("main", "---\nname: demo\n---\nRead `references/Q&A.md` and [the guide](references/guide.md).\n"),
+        "references/guide.md": ("doc", "See [the answers](Q&A.md).\n"),
+        "references/Q&A.md": ("doc", "Answers.\n"),
+    }
+    assert skill_inventory.nested_flags(tmp_path, texts) == []
 
 
 @pytest.mark.parametrize(

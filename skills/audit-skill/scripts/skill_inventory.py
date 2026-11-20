@@ -47,12 +47,13 @@ link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it
 an absolute one. A link's destination is read as CommonMark reads it, through ejryan89-skill-core's link_destinations:
 percent-decoded, between < and > with spaces, or with a backslash, read as the platform reads a path: a separator on
 Windows, part of the name elsewhere. A Markdown path named in prose or a code span is read whole and as written, or
-not at all: its `%`, `+`, `@`, and `~` are part of the name, its backslash is read as a link's is, and an absolute one,
-which starts a line or follows a blank, a quote, a backtick, or an opening bracket, is an outside read. A relative one
-never starts after a character a path holds or one that joins words, `!`, `,`, or `:`, so no path is read by its
-tail, except across a space: prose separates words with spaces, so a path holding one, such as `/opt/my notes/a.md`,
-is read from after its last space. Limits, which no Markdown in this source writes: an absolute path after `=`, `:`,
-`*`, or `|`, as in `--doc=/abs/a.md`, is not read, nor is a UNC path such as `\\\\server\\share\\a.md`, a path that
+not at all: its `%`, `+`, `@`, `~`, and `&` are part of the name, its backslash is read as a link's is, and an absolute
+one is an outside read. A path starts only at a line's start, after a blank, `(`, `[`, or `<`, or after a quote or a
+backtick, or, for a relative one, emphasis `*` or `_`, that follows no path character, so no path is read by its tail,
+except across a space: prose separates words with spaces, so a path holding one, such as `/opt/my notes/a.md`, is read
+from after its last space. Limits, which no skill's Markdown in this source writes: a path holding a character prose
+ends or joins words with, such as `'`, `=`, `#`, `;`, `,`, `:`, or `!`, is not read, nor is an absolute path anywhere
+else, as after `=`, `:`, `*`, or `|` in `--doc=/abs/a.md`, a UNC path such as `\\\\server\\share\\a.md`, a path that
 starts with `~`, `$HOME`, or `${VAR}`, or `${CLAUDE_SKILL_DIR}\\..\\a.md`; and a Markdown backslash escape in prose
 is not taken out of the name. The measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this
 one way.
@@ -705,17 +706,19 @@ EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # A Markdown path named in prose or code, outside every link's destination, which ejryan89-skill-core's
 # `link_destinations` reads instead: `references/a.md`, `.venv/a.md` in a hidden folder, `../shared/a.md`, one after
-# ${CLAUDE_SKILL_DIR}/, or an absolute one, `/opt/a.md` or `C:\a.md`, each whole or not at all. A relative one never
-# starts after a character a path holds, `$`, `}`, or one that joins words, `!`, `,`, or `:`, so it is never the tail
-# of a longer path, a word, `C:z.md`, or `mailto:a@b.md`, though it may be what follows a space in a path that holds
-# one; an absolute one starts a line or follows a blank, a quote, a backtick, or an opening bracket, so it is never the
-# tail of a URL, a glob such as `skills/*/SKILL.md`, or a placeholder such as `<home>/a.md`. It holds `%` as written,
-# as prose is not percent-encoded, `+`, `@`, and `~` after its first character, as in `C:\PROGRA~1\a.md`, and `\`,
-# which `markdown_links` reads as the platform reads a path: a separator on Windows, part of the name elsewhere; and it
-# ends at `.md` that no other path character or extension follows. `markdown_links` resolves where it leads.
+# ${CLAUDE_SKILL_DIR}/, or an absolute one, `/opt/a.md` or `C:\a.md`, each whole or not at all. Where it may start is
+# a list, never a list of where it may not: a line's start, a blank, `(`, `[`, or `<`; a quote or a backtick that
+# follows no PATH_CHARACTER; and, for a relative one alone, emphasis `*` or `_` that follows none. So it is never the
+# tail of a longer path or word, such as `docs/R&D/x.md` cut at `&` or `notes/o'brien.md` at `'`, of a URL, of a glob
+# such as `**/*.instructions.md`, or of a placeholder such as `<home>/a.md`, though it may be what follows a space in a
+# path that holds one. It holds `%` as written, as prose is not percent-encoded, `+`, `@`, `~`, and `&` after its first
+# character, as in `C:\PROGRA~1\a.md` or `Q&A.md`, and `\`, which `markdown_links` reads as the platform reads a path:
+# a separator on Windows, part of the name elsewhere; and it ends at `.md` that no other path character or extension
+# follows. `markdown_links` resolves where it leads.
+PATH_CHARACTER = r"[\w%+@~&./\\-]"
 PROSE_REFERENCE = re.compile(
-    r"(?:(?<![^\s`'\"(\[<])|(?<![\w./\\%+@~$}!,:-])(?![A-Za-z]:[/\\]|[/\\]))(\$\{CLAUDE_SKILL_DIR\}/)?"
-    r"((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w./\\%+@~-]*\.md)(?!\.?[\w/\\%+@~-])"
+    rf"(?:(?<![^\s(\[<])|(?<=(?<!{PATH_CHARACTER})[`'\"])|(?<=(?<!{PATH_CHARACTER})[*_])(?![A-Za-z]:[/\\]|[/\\]))"
+    r"(\$\{CLAUDE_SKILL_DIR\}/)?((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w%+@~&./\\-]*\.md)(?!\.?[\w%+@~&/\\-])"
 )
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
