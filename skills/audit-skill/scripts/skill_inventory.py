@@ -43,7 +43,11 @@ Files: inventory, scan, and the model and effort reading take a skill folder's f
 folder_walk gives them, passing over its skipped folders and nested checkouts, and add each Markdown file in the folder
 that the skill's own Markdown links, directly or through another file so linked, wherever it lies, since the runtime
 loads it all the same. A linked path that leads out of the folder, through `..` at its start or later or through a
-link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it reaches a file already sized.
+link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it reaches a file already sized, and so is
+an absolute one. A link's destination is read as CommonMark reads it, through ejryan89-skill-core's link_destinations:
+percent-decoded, between < and > with spaces, or with a backslash, read as the platform reads a path: a separator on
+Windows, part of the name elsewhere. The
+measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -220,6 +224,7 @@ from executable_locator import RelativeEnvironmentPath, absolute_home, program_n
 from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
+from link_destinations import link_destinations
 from markdown_sections import (
     ATX_HEADING,
     CODE_SPAN,
@@ -693,7 +698,8 @@ SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)*(?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that does not start by leaving the skill folder, such as `references/a.md`, `a.md`, or
 # `.venv/a.md` in a hidden folder; one may still lead out, through a later `..` or a link to a folder, which
-# `markdown_links` resolves.
+# `markdown_links` resolves. It and OUTSIDE_REFERENCE read a path named in prose or code; a link's destination is read
+# through ejryan89-skill-core's `link_destinations` instead, in every spelling CommonMark allows.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?\.?[\w-][\w./-]*\.md)\b")
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
@@ -1388,20 +1394,41 @@ def folder_files(directory: Path) -> list[Path]:
 
 
 def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list[tuple[int, str, Path]]:
-    """Each Markdown path a main or doc file of the skill folder names, out of the frontmatter: the line number, the
-    reference as written, and the file it leads to with every `..` and link followed, as the runtime reading it would.
-    A path resolves from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/."""
+    """Each Markdown path a main or doc file of the skill folder names, out of the frontmatter, in the order written:
+    the line number, the reference as written, and the file it leads to with every `..` and link followed, as the
+    runtime reading it would. A link's destination is read as CommonMark reads it, through `link_destinations`:
+    percent-decoded, between `<` and `>` with spaces, absolute, or with a backslash, read as the platform reads a
+    path: a separator on Windows, part of the name elsewhere; and a path named in prose or code, outside every link's
+    destination, through INSIDE_REFERENCE and OUTSIDE_REFERENCE. A path resolves from the naming file, or from the
+    skill folder after ${CLAUDE_SKILL_DIR}/, and an absolute one from the root it names. Every check of the files a
+    skill's Markdown names reads them here."""
     lines = text_lines(text)
-    found: list[tuple[int, str, Path]] = []
-    for number in range(body_start(lines) if kind == "main" else 0, len(lines)):
-        matches = [*OUTSIDE_REFERENCE.finditer(lines[number]), *INSIDE_REFERENCE.finditer(lines[number])]
+    start = body_start(lines) if kind == "main" else 0
+    naming = (directory / relative).parent
+    # (line index, column, reference as written, path as the runtime reads it)
+    named: list[tuple[int, int, str, str]] = []
+    taken: dict[int, list[tuple[int, int]]] = {}
+    for destination in link_destinations(lines[start:]):
+        index = start + destination.line - 1
+        taken.setdefault(index, []).append((destination.start, destination.end))
+        path = destination.path
+        if not destination.is_url and Path(path).suffix.casefold() == ".md":
+            named.append((index, destination.start, destination.written, path))
+    for index in range(start, len(lines)):
+        matches = [*OUTSIDE_REFERENCE.finditer(lines[index]), *INSIDE_REFERENCE.finditer(lines[index])]
         end = 0
         for match in sorted(matches, key=lambda match: match.start()):
-            if match.start() < end:
+            inside_link = any(left < match.end() and match.start() < right for left, right in taken.get(index, []))
+            if match.start() < end or inside_link:
                 continue
             end = match.end()
-            base = directory if match.group(1) else (directory / relative).parent
-            found.append((number + 1, match.group(0), resolved_path(base / match.group(2))))
+            named.append((index, match.start(), match.group(0), match.group(0)))
+    found: list[tuple[int, str, Path]] = []
+    for index, _, reference, path in sorted(named, key=lambda name: name[:2]):
+        base = naming
+        if path.startswith(SKILL_DIR_PREFIX):
+            base, path = directory, path[len(SKILL_DIR_PREFIX) :]
+        found.append((index + 1, reference, resolved_path(base / path)))
     return found
 
 
@@ -1489,33 +1516,20 @@ def structure_flags(kind: str, text: str, relative: str) -> list[str]:
     return [f"DOC_NO_TOC {len(lines)} {relative}"]
 
 
-def inside_references(root: Path, source: Path, lines: list[str]) -> list[tuple[int, str, Path]]:
-    """Each Markdown path a file names inside the skill folder: line number, text, and the resolved file."""
-    found = []
-    for number, line in enumerate(lines, start=1):
-        for match in INSIDE_REFERENCE.finditer(line):
-            base = root if match.group(1) else source.parent
-            found.append((number, match.group(0), resolved_path(base / match.group(2))))
-    return found
-
-
 def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
-    """Reference files reached only through another reference file; published guidance links each from SKILL.md."""
-    root = resolved_path(directory)
+    """Reference files reached only through another reference file; published guidance links each from SKILL.md. Links
+    are read through `markdown_links`, as the measure reads them."""
     docs = {resolved_path(directory / relative) for relative, (kind, _) in texts.items() if kind == "doc"}
     linked: set[Path] = set()
     for relative, (kind, text) in texts.items():
         if kind == "main":
-            lines = text_lines(text)
-            linked.update(
-                target for _, _, target in inside_references(root, root / relative, lines[body_start(lines) :])
-            )
+            linked.update(target for _, _, target in markdown_links(directory, relative, kind, text))
     flags: list[str] = []
     for relative, (kind, text) in texts.items():
         if kind != "doc":
             continue
         source = resolved_path(directory / relative)
-        for number, reference, target in inside_references(root, source, text_lines(text)):
+        for number, reference, target in markdown_links(directory, relative, kind, text):
             if target != source and target in docs and target not in linked:
                 flags.append(f"NESTED_REFERENCE {relative}:{number} {reference}")
     return flags
