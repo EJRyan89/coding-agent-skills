@@ -2,12 +2,13 @@
 
 A run holds `.deploy.lock` through ejryan89-skill-core's `file_lock`, which the operating system releases when the run
 ends, however it ends, so no run ever judges whether another's lock is stale. Beside it, the record `.deploy.lock.d`
-holds the run's PID, start time, and token: it names the holder when another run is refused, and it keeps out a
-deployer from before the file lock, which takes only the record. Only the holder of the file lock removes or makes
-the record, so a record left by a run that ended is removed by one run at a time; a dry run, and a run refused the
-lock, only read it to name or judge the holder. A deployer from before the file lock may still take the record
-between the judgment and the removal, so the record is moved aside first and removed only when it is still the one
-judged stale; otherwise it is moved back and the run is refused.
+holds the run's PID, start time, and token: it names the holder when another run is refused, and it keeps out a deployer
+from before the file lock, which takes only the record. A run, and a dry run's check, wait LOCK_WAIT_SECONDS for another
+holder before refusing. Only the holder of the file lock removes or makes the record, so a record left by a run that
+ended is removed by one run at a time; a dry run, and a run refused the lock, only read it to name or judge the holder.
+A deployer from before the file lock may still take the record between the judgment and the removal, so the record is
+moved aside first and removed only when it is still the one judged stale; otherwise it is moved back and the run is
+refused.
 """
 
 from __future__ import annotations
@@ -54,6 +55,16 @@ PRESENCE_ALLOWED = {
 # which takes the lock for a moment, and for Windows, which may release a lock a little after its holder ends.
 LOCK_WAIT_SECONDS = 5.0
 LOCK_POLL_SECONDS = 0.1
+# The step after the file system refuses the lock: one that offers no lock at all needs a home elsewhere, while any
+# other refusal, such as of a lock table that is full or a lock service that does not answer, may pass.
+UNSUPPORTED_STEP = (
+    "The deployment lock needs a folder on a file system that supports file locks, which some network and synced "
+    "folders do not; keep the home on a local disk."
+)
+REFUSED_STEP = (
+    "A file system may refuse a lock this way for a moment, as when its lock table is full or its lock service does "
+    "not answer; retry in a moment, and if it keeps refusing, keep the home on a local disk."
+)
 # How long a record may stay without its metadata before it is taken for one a run stopped while making it left: a
 # run writes the metadata at once, and only a deployer from before the file lock makes the record without holding it.
 RECORD_GRACE_SECONDS = 60.0
@@ -249,10 +260,10 @@ def _running(pid: object = None) -> DeployError:
 
 
 def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
+    """The refusal when the file system refuses the lock itself, ending with the step its reason calls for."""
     return DeployError(
         f"ERROR: Could not lock {platform_support.normalize(paths.lock_file)}: {error.strerror or error}.",
-        "The deployment lock needs a folder on a file system that supports file locks, which some network and "
-        "synced folders do not; keep the home on a local disk.",
+        UNSUPPORTED_STEP if error.unsupported else REFUSED_STEP,
         see_recovery(LOCK),
     )
 
@@ -272,25 +283,41 @@ def _judge_left_record(paths: Paths, probe: ProcessProbe) -> Judged | None:
     return _existing_holder(paths, probe)
 
 
+def _waiting[Taken](paths: Paths, attempt: Callable[[], Taken | None]) -> Taken:
+    """What `attempt` answers once the file lock is free to it, trying again while it answers None for
+    LOCK_WAIT_SECONDS, then refusing naming the holder."""
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        taken = attempt()
+        if taken is not None:
+            return taken
+        if time.monotonic() >= deadline:
+            raise _running(_read_info(paths.lock_dir).get("pid"))
+        time.sleep(LOCK_POLL_SECONDS)
+
+
 def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> None:
-    """Judge the lock as acquire judges it, taking and changing nothing, for the dry run: refuse while another
-    deployment holds the file lock, refuse a record acquire refuses, and warn of what the deployment would remove. The
-    file lock is tried and let go at once when it is free. A stat or open that fails raises its OSError."""
+    """Judge the lock as acquire judges it, taking and changing nothing, for the dry run: wait as acquire waits while
+    another process holds the file lock, then refuse, refuse a record acquire refuses, and warn of what the deployment
+    would remove. The file lock is tried and let go at once when it is free. A stat or open that fails raises its
+    OSError."""
+
+    def free() -> bool | None:
+        return None if file_lock.held_elsewhere(paths.lock_file) else True
+
     try:
-        held = file_lock.held_elsewhere(paths.lock_file)
+        _waiting(paths, free)
     except file_lock.FileLockError as exc:
         raise _unlockable(paths, exc) from exc
-    if held:
-        raise _running(_read_info(paths.lock_dir).get("pid"))
     _judge_left_record(paths, probe)
 
 
 def _take_file_lock(paths: Paths) -> int:
     """Take the file lock, waiting LOCK_WAIT_SECONDS for another holder, or refuse naming the holder."""
-    deadline = time.monotonic() + LOCK_WAIT_SECONDS
-    while True:
+
+    def take() -> int | None:
         try:
-            handle = file_lock.take(paths.lock_file, fsops.open_lock_file)
+            return file_lock.take(paths.lock_file, fsops.open_lock_file)
         except file_lock.FileLockError as exc:
             if exc.unsupported:
                 # A file system with no lock at all lets no process hold this one, so the file is no one's. Any other
@@ -300,11 +327,8 @@ def _take_file_lock(paths: Paths) -> int:
             raise _unlockable(paths, exc) from exc
         except OSError as exc:
             raise os_error(exc, "open the deployment lock") from exc
-        if handle is not None:
-            return handle
-        if time.monotonic() >= deadline:
-            raise _running(_read_info(paths.lock_dir).get("pid"))
-        time.sleep(LOCK_POLL_SECONDS)
+
+    return _waiting(paths, take)
 
 
 def _moved_record(aside: Path) -> Judged | None:

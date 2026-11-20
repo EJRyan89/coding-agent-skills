@@ -11,7 +11,7 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import file_presence
@@ -20,9 +20,10 @@ from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, GitResult
 from release_tags import TAGS, releases_naming
 
-from . import fsops, platform_support, tools
+from . import fsops, platform_support, source, tools
 from .arguments import usage_error
 from .errors import DeployError, os_error, see_recovery
+from .paths import Paths
 from .source_commit import COMMIT_PATTERN
 
 # What --at accepts, and what the manifest records as source_ref: a branch, a tag, a commit name, or a revision
@@ -160,6 +161,31 @@ def resolve(source_dir: Path, ref: str) -> Pin:
             see_recovery(EARLIER_COMMIT),
         )
     return Pin(ref, commit)
+
+
+def exported_source_json_remedy(commit: str) -> str:
+    """The step a source.json the deployer cannot read takes when --at exported it: the commit holds that copy, which
+    no change to the checkout reaches, so the step is another commit."""
+    return (
+        f"This source.json is the one commit {commit} holds, not the checkout's; name with --at a commit whose "
+        "source.json the deployer reads."
+    )
+
+
+def exported_source_id(paths: Paths, pin: Pin) -> str:
+    """The source ID of the tree --at exported into `paths.tree`, refused with a step naming the commit when its
+    source.json does not read, and refused when it names another source than the checkout's: deploying it would move
+    every item to another owner, which only an explicit --migrate-from may do."""
+    tree_id = source.load_source_id(paths, exported_source_json_remedy(pin.commit))
+    checkout_id = source.load_source_id(replace(paths, tree_dir=None))
+    if tree_id != checkout_id:
+        raise DeployError(
+            f"ERROR: The commit --at names has source ID '{tree_id}' in its source.json, not this checkout's "
+            f"'{checkout_id}'.",
+            "Name a commit of this source; a change of source ID needs an explicit ownership migration.",
+            see_recovery(EARLIER_COMMIT),
+        )
+    return tree_id
 
 
 def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> bool:
