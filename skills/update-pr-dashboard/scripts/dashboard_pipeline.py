@@ -116,7 +116,7 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
           nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
         }
         reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
-          nodes { state commit { oid } }
+          nodes { id state commit { oid } }
         }
         decidingReviews: reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
           nodes { state }
@@ -287,6 +287,8 @@ def tracker_item(
             "review_decision": node["reviewDecision"],
             "user_review_state": latest["state"] if latest else None,
             "user_review_sha": (latest["commit"] or {}).get("oid") if latest else None,
+            # GitHub's ID for that review, so a review made again at the same commit is told apart from it.
+            "user_review_id": latest["id"] if latest else None,
             "user_review_decision": deciding["state"] if deciding else None,
         }
     except CollectionError as exc:
@@ -297,6 +299,9 @@ def tracker_item(
     records = pull_records(archive_root, repository, number)
     reviewed = reviewed_head(archive_root, repository, number, records=records)
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
+    # The review's version, which tells a review written again at the same head, as a re-review on a new base is, from
+    # the one before it; a legacy review has none.
+    item["reviewed_version"] = reviewed["version"] if reviewed else None
     # The base the reviewed head was compared with, so a rebase that leaves the diff as it was is not a change. It is
     # the latest record's, the one `reviewed_head` read; a legacy review recorded none.
     item["reviewed_base_sha"] = records[-1]["pull_request"]["base_sha"] if reviewed and records else None
