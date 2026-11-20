@@ -964,6 +964,24 @@ removed fails validation until its pattern follows it.
   the policy's catalogue and run through a wrapper whose name does not say git.
 - **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248, #2564
 
+### A folder that holds items by their own names keeps its own files under names no item can take
+
+- **Rule:** Where a program writes items under the names its input declares, its own files in the same folder take
+  names the input cannot declare, or the input's names are refused, compared as the file system compares them, before
+  any change.
+- **Why:** An item named like the program's own file is written where that file is, and one overwrites the other.
+- **Use:** `deployer.names:safe_name_problem`, which refuses a name that starts with a dot, the form of the staging
+  folder's adapter and agent folders and of each root's backup folder and manifest, or that takes a transient
+  name's form; `deployer.plan:_declared_assets`, which refuses a shared asset named, in any case, like the run's
+  journal, `deployer.names:JOURNAL_FILE`, in the staging folder where each asset is staged under its own name.
+- **Guard:** `tests/deployer/test_source_validation.py::test_a_shared_asset_named_like_the_runs_journal_is_refused_before_any_change`,
+  `tests/deployer/test_source_validation.py::test_a_name_the_deployer_reserves_for_its_own_files_is_refused`
+- **Search for:** a fixed file name joined to a folder that items are also written to under their declared names, as
+  `staging_dir / ` beside `staging_dir / logical` in the deployer, or a root's own file beside its items, whose name
+  does not start with a dot; a new item kind staged at the staging folder's top level rather than under a dot-named
+  folder of its own.
+- **Examples:** #2961
+
 ### Two spellings are compared as their consumer compares them
 
 - **Rule:** Two spellings of one thing are compared as the program that consumes them compares them: versions by

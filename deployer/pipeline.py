@@ -37,6 +37,7 @@ from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
 from .manifest import ItemEntry, source_entry
+from .names import JOURNAL_FILE
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
@@ -76,7 +77,7 @@ def _apply(
     journal.check_backup_roots(paths, run_id)
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
-    record = journal.Journal(staging_dir / "journal.jsonl", run_id)
+    record = journal.Journal(staging_dir / JOURNAL_FILE, run_id)
     journal.prepare_roots(paths)
     record.create()
     for entry in entries:

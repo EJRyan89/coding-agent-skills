@@ -16,6 +16,10 @@ DELETION_SUFFIX = ".deploying-del"
 # deletion name of another item can end in, since every one ends in DELETION_SUFFIX or in another such token.
 SPARE_DELETION_TOKEN = re.compile(r"[0-9a-f]{8}")
 TEMPORARY_INFIX = ".tmp."
+# The run's journal, in the run's staging folder beside the staged skills and shared assets, which are written there
+# under their own names. A skill's name has no dot, and a shared asset of this name, in any case, is refused before any
+# change (plan.py), so no staged item is ever written where the journal is.
+JOURNAL_FILE = "journal.jsonl"
 # The step a name require_safe_name refuses takes.
 SAFE_NAME_RULES = (
     "Rename it to one file name of letters, digits, dots, hyphens, underscores, and spaces that does not start with a "
