@@ -56,6 +56,11 @@ ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
 REACHED_MODULES = ("deployer/source.py", "deployer/plan.py", "deployer/render.py", "deployer/names.py")
 # Each raise site among them that stays a plain DeployError, by its module, its innermost function, and its last line
 # as written, with why it is not of the tree's content, so --at keeps its step.
+# Stated limits, none of which these modules write: the guard reads DeployError and state_files.is_present by those
+# names where they are called, so it does not see an alias such as `DeployError as E`, a subclass of DeployError other
+# than SourceRefusal, functools.partial, `type(exc)(...)`, a bare `raise DeployError`, `is_present` imported bare, or
+# a refusal another module's helper builds, and a second plain site with the function and step of an entry below is
+# taken for that entry.
 NOT_CONTENT = {
     (
         "deployer/source.py",
@@ -170,7 +175,10 @@ class SourceRefusalTests(unittest.TestCase):
             '    return state_files.is_present(path, "The asset", "Add it.", of_source=True)\n'
         )
         plain, content = refusal_sites("deployer/render.py", conforming)
-        self.assertEqual(2, content)
+        self.assertEqual(
+            ({("deployer/render.py", "_require_tools", "'This run installed nothing.'")}, 2),
+            (plain, content),
+        )
         self.assertLessEqual(plain, set(NOT_CONTENT))
 
     def test_only_a_pinned_run_gives_a_refusal_of_the_tree_the_step_naming_its_commit(self) -> None:
