@@ -22,6 +22,7 @@ from .errors import DEBUG_HINT, DeployError, see_recovery
 from .kinds import KINDS
 from .names import (
     BACKUP_SUFFIX,
+    JOURNAL_FILE,
     deletion_name,
     safe_name_problem,
     spare_deletion_name,
@@ -915,7 +916,7 @@ def clear_run(run_dir: Path) -> None:
     one holding a file another program has open, is left, named with the reason, and the next deployment's recovery
     deletes it as a run with no journal.
     """
-    fsops.remove(run_dir / "journal.jsonl")
+    fsops.remove(run_dir / JOURNAL_FILE)
     _remove_leftover_run(run_dir)
 
 
@@ -939,7 +940,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             file=sys.stderr,
         )
         return False
-    journal_file = run_dir / "journal.jsonl"
+    journal_file = run_dir / JOURNAL_FILE
     # A journal whose stat fails raises here, failing the run, so a run is never deleted with a journal it could not
     # read.
     if not file_presence.is_occupied(journal_file):
@@ -1034,7 +1035,7 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
         if platform_support.is_link_or_junction(run_dir):
             pending.append((run_dir.name, False))
             continue
-        journal_file = run_dir / "journal.jsonl"
+        journal_file = run_dir / JOURNAL_FILE
         try:
             journaled = file_presence.is_occupied(journal_file)
         except OSError:
@@ -1073,7 +1074,7 @@ def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
         if not file_presence.is_directory(paths.staging_root):
             return []
         run_dirs = [
-            path for path in sorted(paths.staging_root.iterdir()) if file_presence.is_occupied(path / "journal.jsonl")
+            path for path in sorted(paths.staging_root.iterdir()) if file_presence.is_occupied(path / JOURNAL_FILE)
         ]
     except OSError:
         return None
