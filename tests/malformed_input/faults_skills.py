@@ -1114,6 +1114,13 @@ DRIVERS: list[Driver] = [
         git=True,
     ),
     Driver(
+        "skills/ejryan89-skill-core/scripts/release_tags.py",
+        "",
+        ("--naming", "{work}", "HEAD"),
+        prepare=tagged_repository,
+        git=True,
+    ),
+    Driver(
         FLAG_SCRIPT,
         "add",
         ("add", "guideline", "Clarify boundary", "--repository", "example/one", "--pull", "12", "--finding", "v1 F001"),

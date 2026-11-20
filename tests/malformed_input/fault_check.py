@@ -74,8 +74,35 @@ def runs_of(*kinds: str) -> list[Run]:
 
 
 def run_ids(runs: list[Run]) -> list[str]:
-    """Each run's test ID: the driver, the fault, and the input's file name."""
-    return [f"{driver.name}-{fault}-{Path(path).name if path else ''}".rstrip("-") for driver, fault, path in runs]
+    """Each run's test ID: the driver, the fault, and the input's file name. Where drivers sharing a name would give
+    one ID, as two forms of one command do, each follows its name with the first of its arguments the others do not
+    all share, or with its place among them, numbered from one, where that argument leaves two alike or it has none; a
+    run no other driver's run shares an ID with keeps the plain one."""
+
+    def identifier(driver: Driver, label: str, fault: str, path: str | None) -> str:
+        name = f"{driver.name} {label}" if label else driver.name
+        return f"{name}-{fault}-{Path(path).name if path else ''}".rstrip("-")
+
+    def telling(driver: Driver, group: list[Driver]) -> str:
+        width = max(len(each.arguments) for each in group)
+        cells = [[*each.arguments, *[""] * (width - len(each.arguments))] for each in group]
+        index = next((column for column in range(width) if len({cell[column] for cell in cells}) > 1), None)
+        place = next(position for position, each in enumerate(group) if each is driver)
+        labels = [cell[index] for cell in cells] if index is not None else []
+        if not labels or not labels[place] or labels.count(labels[place]) > 1:
+            return f"#{place + 1}"
+        return labels[place]
+
+    plain = [identifier(driver, "", fault, path) for driver, fault, path in runs]
+    sharing: dict[str, list[Driver]] = {}
+    for (driver, _, _), each in zip(runs, plain, strict=True):
+        group = sharing.setdefault(each, [])
+        if not any(member is driver for member in group):
+            group.append(driver)
+    return [
+        each if len(sharing[each]) == 1 else identifier(driver, telling(driver, sharing[each]), fault, path)
+        for (driver, fault, path), each in zip(runs, plain, strict=True)
+    ]
 
 
 @functools.cache

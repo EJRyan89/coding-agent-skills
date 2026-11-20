@@ -56,6 +56,11 @@ TAGS = "refs/tags/"
 RELEASE_PREFIX = "v"
 # What --raises takes for a commit no release tag reaches, which counts as version zero.
 UNTAGGED = "untagged"
+# What releases_naming reads of each tag, NUL-separated since no field can hold one: its object, the object its tag
+# objects peel to (nothing for a lightweight tag), that object's type, and the tag's full name.
+PEEL_FIELDS = ("%(objectname)", "%(*objectname)", "%(*objecttype)", "%(refname)")
+FIELD_SEPARATOR = "\0"
+PEEL_FORMAT = "%00".join(PEEL_FIELDS)
 
 
 def release_order(name: str) -> versions.Version | None:
@@ -88,19 +93,42 @@ def last_release(client: GitClient, repository: str | Path, commit: str) -> str 
 def releases_naming(client: GitClient, repository: str | Path, commit: str) -> list[str]:
     """The release tags that name the commit, each peeled through any tag objects to it, in release order.
 
+    Git's own match, `for-each-ref --points-at`, and its `%(*...)` fields peeled one tag level alone on older Git
+    (`--points-at` before 2.42), so a release behind two tag objects went unlisted there and its pin read as the
+    user's. Each release tag is therefore matched by what it peels to: its object, or the object its `%(*objectname)`
+    names, and when that is still a tag, as on such a Git, the object `rev-parse <tag>^{}` peels it to, which follows
+    every tag object on any Git.
+
     Raises GitError when git cannot read them, a commit the repository does not hold among the causes, since the commit
     is peeled before the tags are matched with it.
     """
-    listed = client.output(
-        ["for-each-ref", f"--points-at={commit}^{{commit}}", "--format=%(refname)", TAGS], directory=repository
-    )
-    releases = []
+    listed = client.output(["for-each-ref", f"--format={PEEL_FORMAT}", TAGS], directory=repository)
+    named = client.commit_of(commit, directory=repository)
+    if named is None:
+        raise GitError(f"{flat_text(commit)} names no commit in {flat_text(str(repository))}")
+    # Each release tag with its order and the object it peels to, and each still behind a tag object, to peel.
+    releases: list[tuple[versions.Version, str, str]] = []
+    nested: list[tuple[versions.Version, str]] = []
     for line in output_lines(listed):
-        name = line.removeprefix(TAGS)
+        fields = line.split(FIELD_SEPARATOR, len(PEEL_FIELDS) - 1)
+        if len(fields) != len(PEEL_FIELDS):
+            raise GitError(f"git for-each-ref answered {flat_text(line)!r}, not {len(PEEL_FIELDS)} fields")
+        object_name, peeled_name, peeled_type, ref = fields
+        name = ref.removeprefix(TAGS)
         order = release_order(name)
-        if order is not None:
-            releases.append((order, name))
-    return [name for _, name in sorted(releases)]
+        if order is None:
+            continue
+        if peeled_type == "tag":
+            nested.append((order, name))
+        else:
+            releases.append((order, name, peeled_name or object_name))
+    if nested:
+        peels = [f"{TAGS}{name}^{{}}" for _, name in nested]
+        peeled = output_lines(client.output(["rev-parse", "--revs-only", *peels], directory=repository))
+        if len(peeled) != len(nested):
+            raise GitError(f"git rev-parse answered {len(peeled)} object names for {len(nested)} nested release tags")
+        releases += [(order, name, target) for (order, name), target in zip(nested, peeled, strict=True)]
+    return [name for _, name, target in sorted(releases) if target == named]
 
 
 def breaking_component(order: versions.Version) -> tuple[int, int]:
