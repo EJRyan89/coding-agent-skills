@@ -1,6 +1,6 @@
 ---
 name: update-coding-agent-skills
-description: "Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill: at the latest release on origin/main by default, or at main on the main channel. Stops before a release that raises the major version until the user passes --cross-major, and over a deployment the user pinned with deploy.py --at until the user passes --unpin."
+description: "Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill: at the latest release on origin/main by default, or at main on the main channel. Stops before a release that raises the major version (the minor version before 1.0.0) until the user passes --cross-major, and over a deployment the user pinned with deploy.py --at until the user passes --unpin."
 argument-hint: "[--channel release | main] [--cross-major] [--unpin]"
 allowed-tools: ["Bash(bash \"${CLAUDE_SKILL_DIR}/scripts/update.sh\" *)", "PowerShell(bash \"${CLAUDE_SKILL_DIR}/scripts/update.sh\" *)"]
 disable-model-invocation: true
