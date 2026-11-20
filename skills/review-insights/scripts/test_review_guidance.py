@@ -163,6 +163,42 @@ class RuleTests(unittest.TestCase):
         )
         self.assertEqual([(3, outside)], [(rule.line, rule.text) for rule in rg.rules("guide.md", text)])
 
+    def test_a_hashtag_line_is_statement_text_where_github_renders_it_as_text(self) -> None:
+        # `#` opens an ATX heading only before a space, a tab, or the line's end, so `#flaky` is no heading: after a
+        # paragraph's text it continues the statement, and after a blank line it opens one.
+        first = "Tag every flaky test so the nightly run can find it."
+        second = "#flaky marks such a test, and the runner retries it once."
+        self.assertEqual([(1, f"{first} {second}")], rg._statements(f"{first}\n{second}\n"))
+        self.assertEqual([(1, first), (3, second)], rg._statements(f"{first}\n\n{second}\n"))
+        self.assertEqual(
+            [(1, f"{first} {second}")],
+            [(rule.line, rule.text) for rule in rg.rules("guide.md", f"{first}\n{second}\n")],
+        )
+
+    def test_statements_split_as_every_markdown_block_reader_splits_them(self) -> None:
+        # The documents every reader of Markdown's blocks splits alike, through markdown_sections' `blocks`; a list
+        # item's marker is left out, and indented code is no statement.
+        for text, expected in (
+            ("Text.\n> quoted\n", [(1, "Text."), (2, "> quoted")]),
+            ("Text.\n***\nMore.\n", [(1, "Text."), (3, "More.")]),
+            ("Text.\n1. first\n", [(1, "Text."), (2, "first")]),
+            ("Text.\n2. second\n", [(1, "Text. 2. second")]),
+            ("Text.\n\n    code\n", [(1, "Text.")]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(expected, rg._statements(text))
+
+    def test_a_heading_shaped_line_past_the_block_indentation_continues_the_statement(self) -> None:
+        # Past MAX_BLOCK_INDENT columns, from the document's margin or a list item's content, `#` and `|` are text.
+        for text, expected in (
+            ("Text.\n    # deep\n", [(1, "Text. # deep")]),
+            ("Text.\n    | deep |\n", [(1, "Text. | deep |")]),
+            ("- An item.\n      # deep\n", [(1, "An item. # deep")]),
+            ("- An item.\n  # Heading\nAfter.\n", [(1, "An item."), (3, "After.")]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(expected, rg._statements(text))
+
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
         self.assertEqual(["docs/x.md"], rg.LINK.findall("see [x]( docs/x.md#part\t)"))
         self.assertEqual([f"{chr(0xA0)}docs/x.md"], rg.LINK.findall(f"see [x]({chr(0xA0)}docs/x.md)"))

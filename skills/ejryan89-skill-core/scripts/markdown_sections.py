@@ -1,11 +1,12 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, the labels of a fence in an executable language, the inline code span
-patterns, the HTML comment pattern, and the block rules every reader of Markdown's structure reads as CommonMark does:
-the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
+reader, the fenced code block reader, the block walker, the labels of a fence in an executable language, the inline
+code span patterns, the HTML comment pattern, and the block rules every reader of Markdown's structure reads as
+CommonMark does: the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from text_lines import LINE_BREAK
@@ -414,6 +415,115 @@ def _columns(text: str) -> int:
     for character in text:
         width += 4 - width % 4 if character == "\t" else 1
     return width
+
+
+# The kinds of block `blocks` yields.
+PARAGRAPH = "paragraph"
+LIST_ITEM_BLOCK = "item"
+QUOTE = "quote"
+TABLE_ROW = "table row"
+HEADING = "heading"
+CODE = "code"
+# The kinds that hold prose: what a reader of a document's statements reads, leaving out code, headings, and tables.
+PROSE_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK, QUOTE})
+
+
+@dataclass(frozen=True)
+class Block:
+    """A block of a Markdown document: the index of its first line, its kind, and its lines as written. A code block's
+    lines are its content: a fenced block's body without the blockquote markers that hold it, an indented block's lines
+    as they are."""
+
+    start: int
+    kind: str
+    lines: tuple[str, ...]
+
+    def text(self, *, marker: bool = True) -> str:
+        """The block's lines without the spaces and tabs around each, joined by a space; without `marker`, a list
+        item's text starts after its marker."""
+        lines = list(self.lines)
+        if not marker and self.kind == LIST_ITEM_BLOCK:
+            lines[0] = list_item(lines[0]) or ""
+        return " ".join(line.strip(MARKDOWN_SPACE) for line in lines)
+
+
+def blocks(lines: list[str]) -> Iterator[Block]:
+    """Each block of a Markdown document in order, as GitHub renders it: a paragraph, a list item, a blockquote, a
+    table row, an ATX heading, or a code block, fenced or indented. A thematic break and a blank line end a block and
+    are none. Each reader of a document's blocks walks them here and chooses after the walk what it keeps and how it
+    reads a block's lines, so no two readers split a document apart.
+
+    A line after a paragraph's text continues it unless `starts_block` reads it as a block of its own, so a list item
+    interrupts a paragraph only at a bullet or `1.`, and a `2.` line continues it; below a list item any marker opens
+    the next item. A list item's further lines, indented or lazy, join it, and a blockquote's quoted and lazy lines
+    join it, though a list item, a heading, a thematic break, or a fence still ends it. A heading or a table row is
+    one line, read up to MAX_BLOCK_INDENT columns past the content of the list item it follows, or at any indentation
+    where no paragraph is open; `#` opens a heading only as `starts_heading` reads one, so `#hashtag` is text. Code,
+    fenced or indented, is read through `find_fences` and `code_block_lines`. The limits: a setext heading is read as
+    a paragraph, so the text above a `---` underline is a paragraph the thematic break ends and an `=` underline
+    joins the text above it; an HTML block is read as paragraph text; a list item's paragraph after a blank line is
+    read as the document's, not the item's; and a quote's own lines are not split into the blocks it holds."""
+    fences = {fence.opener: fence for fence in find_fences(lines)}
+    code = code_block_lines(lines)
+    walk = _Walk()
+    index = 0
+    while index < len(lines):
+        fence = fences.get(index)
+        if fence is not None or index in code:
+            yield from walk.close()
+            stop = fence.lines().stop if fence is not None else _code_run_end(lines, index, code, fences)
+            body = [fence.text(lines[inside]) for inside in fence.body()] if fence is not None else lines[index:stop]
+            yield Block(fence.opener + 1 if fence is not None else index, CODE, tuple(body))
+            index = stop
+            continue
+        yield from walk.line(index, lines[index])
+        index += 1
+    yield from walk.close()
+
+
+def _code_run_end(lines: list[str], start: int, code: set[int], fences: dict[int, Fence]) -> int:
+    """The index past an indented code block that starts at `start`: past its last line, short of a fence."""
+    stop = start + 1
+    while stop < len(lines) and stop in code and stop not in fences:
+        stop += 1
+    return stop
+
+
+@dataclass
+class _Walk:
+    """What `blocks` has read of the lines no code holds: the open block's first line, kind, and lines, and the column
+    the open list item's content starts at, None when the open block is no list item."""
+
+    start: int = 0
+    kind: str = ""
+    open: list[str] = field(default_factory=list)
+    content: int | None = None
+
+    def close(self) -> Iterator[Block]:
+        """The open block, if any, which ends here."""
+        if self.open:
+            yield Block(self.start, self.kind, tuple(self.open))
+        self.open, self.content = [], None
+
+    def line(self, index: int, line: str) -> Iterator[Block]:
+        """A line no code holds: one that ends the open block, opens one, or continues it."""
+        stripped = line.strip(MARKDOWN_SPACE)
+        continued, quoted = bool(self.open), self.kind == QUOTE
+        limit = MAX_BLOCK_INDENT + (self.content or 0)
+        single = not continued or indentation(line) <= limit
+        item = list_item(line, interrupting=continued and self.content is None)
+        if not stripped or THEMATIC_BREAK.fullmatch(line):
+            yield from self.close()
+        elif single and (starts_heading(stripped) or stripped.startswith("|")):
+            yield from self.close()
+            yield Block(index, HEADING if starts_heading(stripped) else TABLE_ROW, (line,))
+        elif item is not None or not continued or (starts_block(line, opener=False) and not quoted):
+            yield from self.close()
+            self.start, self.open = index, [line]
+            self.kind = LIST_ITEM_BLOCK if item is not None else QUOTE if stripped.startswith(">") else PARAGRAPH
+            self.content = list_item_content(line) if item is not None else None
+        else:
+            self.open.append(line)
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:

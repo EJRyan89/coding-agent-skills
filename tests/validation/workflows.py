@@ -11,7 +11,7 @@ from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 
 import file_presence
-from markdown_sections import find_fences
+from markdown_sections import blocks, find_fences
 from python_checks import MYPY_CACHE_VARIABLE
 from text_lines import LINE_BREAK, text_lines
 from toolchain import VALIDATION_FLOORS, removed_install_problems
@@ -2346,7 +2346,8 @@ class WorkflowsPolicies(unittest.TestCase):
 
     def test_the_dependency_document_names_every_workflow_that_shares_validates_action_pins(self) -> None:
         document = (REPOSITORY_ROOT / "docs" / "dependency-updates.md").read_text(encoding="utf-8")
-        paragraph = next(part for part in document.split("\n\n") if "pin their actions the same way" in part)
+        texts = (block.text() for block in blocks(text_lines(document)))
+        paragraph = next(text for text in texts if "pin their actions the same way" in text)
         named = re.findall(r"`\.github/workflows/([^`]+)`", paragraph)
         self.assertEqual(sorted(set(WORKFLOW_GUARDS) - {"validate.yml"}), sorted(named))
 

@@ -63,10 +63,10 @@ from git_client import GitClient, GitError, GitResult, output_lines
 from markdown_sections import (
     HTML_COMMENT,
     MARKDOWN_SPACE,
-    THEMATIC_BREAK,
     find_fences,
     list_item,
     markdown_section,
+    starts_block,
 )
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
@@ -81,10 +81,9 @@ VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*")
 # A line outside every fence that starts an entry, or a heading above one that ends it.
 NOTES_ENTRY_START = re.compile(r"#{1,3} ")
-# A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a quote, or a table row;
-# a list item and a fence are read by markdown_sections' rules. Only spaces and tabs are Markdown's
-# whitespace, as markdown_sections reads it.
-BLOCK_START = re.compile(r"^[ \t]*(?:#{1,6}[ \t]|>|\|)")
+# A table row, which starts a line of its own that no wrapped line continues; markdown_sections' `starts_block` reads
+# every other block start. Only spaces and tabs are Markdown's whitespace, as markdown_sections reads it.
+TABLE_ROW_START = re.compile(r"[ \t]*\|")
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
 # and cuts a message at, so no message text can end a field early.
@@ -140,22 +139,23 @@ def unwrapped(block: str) -> list[str]:
     """The block's lines with each hard-wrapped heading, list item, or paragraph joined back into one line.
 
     A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so a line that starts no block
-    of its own continues the line above it, unless that line is blank or the two are inside a code fence. A list item
-    starts its own line below another, and below any other text only where CommonMark lets a list interrupt a
-    paragraph: at a bullet or an item numbered 1. A thematic break, as markdown_sections reads one, starts its own line
-    too. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
+    of its own continues the line above it, unless that line is blank or the two are inside a code fence. A heading, a
+    quote, a thematic break, and a list item start a line of their own where markdown_sections' `starts_block` reads
+    one, so a list starts below other text only at a bullet or an item numbered 1, and a line indented past
+    MAX_BLOCK_INDENT columns continues the line above it. Below a list item any item starts its own line, and a table
+    row always does. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
     """
     raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
     fenced = {index for fence in find_fences(raw) for index in fence.lines()}
     lines: list[str] = []
     for index, line in enumerate(raw):
         previous = lines[-1] if lines else ""
-        starts_block = (
-            BLOCK_START.match(line) is not None
-            or THEMATIC_BREAK.fullmatch(line) is not None
+        starts = (
+            starts_block(line, opener=False)
+            or TABLE_ROW_START.match(line) is not None
             or list_item(line, interrupting=list_item(previous) is None) is not None
         )
-        if previous and line and not {index - 1, index} & fenced and not starts_block:
+        if previous and line and not {index - 1, index} & fenced and not starts:
             lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"
         else:
             lines.append(line)

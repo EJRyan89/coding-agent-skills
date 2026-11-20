@@ -21,6 +21,7 @@ from markdown_sections import (
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    blocks,
     code_block_lines,
     document_headings,
     find_fences,
@@ -384,3 +385,58 @@ def test_a_document_heading_is_one_no_list_item_quote_or_code_block_holds(docume
 )
 def test_a_block_that_ends_a_list_item_ends_its_indentation(document: str, code: list[int]) -> None:
     assert sorted(code_block_lines(document.split("\n"))) == code
+
+
+# The documents every reader of Markdown's blocks splits alike, since each walks them through `blocks`: a quote and a
+# thematic break after text, a `1.` item, which interrupts a paragraph, a `2.` line, which continues one, and indented
+# code. Each reader's suite holds its reading of the same documents.
+SHARED_SPLITS = [
+    pytest.param("Text.\n> quoted\n", [(0, "paragraph", "Text."), (1, "quote", "> quoted")], id="quote"),
+    pytest.param("Text.\n***\nMore.\n", [(0, "paragraph", "Text."), (2, "paragraph", "More.")], id="thematic-break"),
+    pytest.param("Text.\n1. first\n", [(0, "paragraph", "Text."), (1, "item", "1. first")], id="item-numbered-1"),
+    pytest.param("Text.\n2. second\n", [(0, "paragraph", "Text. 2. second")], id="line-numbered-2"),
+    pytest.param("Text.\n\n    code\n", [(0, "paragraph", "Text."), (2, "code", "code")], id="indented-code"),
+]
+
+
+@pytest.mark.parametrize(("document", "expected"), SHARED_SPLITS)
+def test_every_reader_s_blocks_split_where_commonmark_splits_them(
+    document: str, expected: list[tuple[int, str, str]]
+) -> None:
+    assert [(block.start, block.kind, block.text()) for block in blocks(document.split("\n"))] == expected
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param("# Title\nBody.\n#\n", [(0, "heading"), (1, "paragraph"), (2, "heading")], id="headings"),
+        pytest.param("Tag notes.\n#hashtag\n", [(0, "paragraph")], id="hashtag-continues"),
+        pytest.param("#hashtag opens\n", [(0, "paragraph")], id="hashtag-opens"),
+        pytest.param("| a |\n| - |\nAfter.\n", [(0, "table row"), (1, "table row"), (2, "paragraph")], id="table"),
+        pytest.param("- a\n  more\n- b\n2. c\n", [(0, "item"), (2, "item"), (3, "item")], id="items"),
+        pytest.param("> a\n> b\nlazy\n- item\n", [(0, "quote"), (3, "item")], id="quote-lines"),
+        pytest.param("Text.\n```\nx\n```\nMore.\n", [(0, "paragraph"), (2, "code"), (4, "paragraph")], id="fence"),
+        pytest.param("```\n```\n", [(1, "code")], id="empty-fence"),
+        # Past MAX_BLOCK_INDENT columns a heading-shaped line or a table row continues the paragraph above it, counted
+        # in a list item from the column its content starts at.
+        pytest.param("Text.\n    # deep\n", [(0, "paragraph")], id="deep-heading-after-text"),
+        pytest.param("Text.\n    | deep |\n", [(0, "paragraph")], id="deep-row-after-text"),
+        pytest.param("- item\n     # Heading\n", [(0, "item"), (1, "heading")], id="heading-in-an-item"),
+        pytest.param("- item\n      # deep\n", [(0, "item")], id="deep-line-in-an-item"),
+        # The limits: a setext heading and an HTML block are read as paragraphs.
+        pytest.param("Title\n=====\nText.\n", [(0, "paragraph")], id="setext-equals-limit"),
+        pytest.param("Title\n---\nText.\n", [(0, "paragraph"), (2, "paragraph")], id="setext-dashes-limit"),
+        pytest.param("Text.\n<!-- note -->\n", [(0, "paragraph")], id="html-limit"),
+    ],
+)
+def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tuple[int, str]]) -> None:
+    assert [(block.start, block.kind) for block in blocks(document.split("\n"))] == expected
+
+
+def test_a_block_s_lines_are_kept_as_written_and_its_text_may_leave_a_list_item_s_marker_out() -> None:
+    document = "-   an item\n  wraps\n\n> ```\n> quoted\n> ```\n\n    one\n\n    two\n"
+    item, fenced, code = blocks(document.split("\n"))
+    assert item.lines == ("-   an item", "  wraps")
+    assert (item.text(), item.text(marker=False)) == ("-   an item wraps", "an item wraps")
+    assert (fenced.start, fenced.lines) == (4, ("quoted",))
+    assert code.lines == ("    one", "", "    two")

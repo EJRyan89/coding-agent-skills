@@ -19,7 +19,7 @@ import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
 from bash_syntax import BashSyntaxError
-from markdown_sections import EXECUTABLE_FENCES, markdown_section
+from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
@@ -334,10 +334,10 @@ def runtime_support_problems(root: Path) -> list[str]:
 def runtime_page_problems(root: Path) -> list[str]:
     """Report a runtime's support page that states a skill's support on that runtime otherwise than its metadata.
 
-    A statement is a sentence outside a fence that names one skill and one level, each in backticks (`full`,
-    `partial`, or `none`); its level must be the one the skill's deploy-meta declares for the page's runtime, and the
-    capabilities it names in backticks exactly those the declaration needs. A sentence naming several skills or levels
-    is no statement this reads.
+    A statement is a sentence of a block outside code, as markdown_sections' `blocks` walks them, that names one skill
+    and one level, each in backticks (`full`, `partial`, or `none`); its level must be the one the skill's deploy-meta
+    declares for the page's runtime, and the capabilities it names in backticks exactly those the declaration needs. A
+    sentence naming several skills or levels is no statement this reads.
     """
     import runtime_support
 
@@ -352,11 +352,9 @@ def runtime_page_problems(root: Path) -> list[str]:
         path = root / page
         if not file_presence.is_present(path):
             continue
-        lines = text_lines(path.read_text(encoding="utf-8"))
-        fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-        prose = "\n".join("" if index in fenced else line for index, line in enumerate(lines))
-        for paragraph in re.split(r"\n\s*\n", prose):
-            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(paragraph.split())):
+        prose = (block for block in blocks(text_lines(path.read_text(encoding="utf-8"))) if block.kind != CODE)
+        for block in prose:
+            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(block.text().split())):
                 spans = set(re.findall(r"`([^`]+)`", sentence))
                 skills, stated = spans & declared.keys(), spans & levels
                 if len(skills) != 1 or len(stated) != 1:

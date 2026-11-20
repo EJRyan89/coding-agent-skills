@@ -68,11 +68,15 @@ class BodyEntriesTests(unittest.TestCase):
             f"{em}- more",
             f"{em}# more",
             "    - more",
+            # Past MAX_BLOCK_INDENT columns a heading or a quote is the paragraph's text, as markdown_sections'
+            # `starts_block` reads it.
+            "    # more",
+            "    > more",
         ):
             with self.subTest(continued=continued):
                 joined = f"Some text {continued.lstrip(' ')}"
                 self.assertEqual([joined], release_notes.unwrapped(f"Some text\n{continued}"))
-        for started in ("1. more", "- more", "  * more", "# more", "> more", "---", " * * *", "___"):
+        for started in ("1. more", "- more", "  * more", "# more", "#", "> more", "| a |", "---", " * * *", "___"):
             with self.subTest(started=started):
                 self.assertEqual(["Some text", started], release_notes.unwrapped(f"Some text\n{started}"))
         # Below a list item, any item starts its own line, and a line of no-break spaces is text, not a blank line.

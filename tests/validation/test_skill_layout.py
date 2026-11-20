@@ -1654,6 +1654,39 @@ def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separ
     ]
 
 
+@pytest.mark.parametrize(
+    ("page", "read"),
+    [
+        # The documents every reader of Markdown's blocks splits alike, through markdown_sections' `blocks`: a true
+        # statement with no full stop, then a false one that a quote, a thematic break, or a `1.` item makes a block of
+        # its own, so its sentence is read; a line numbered 2 continues the paragraph, so the sentence names two
+        # levels and is no statement, written `2)` since a sentence ends at `2.`; and a statement in indented code is
+        # code.
+        pytest.param("`fetcher` is `full`\n> `fetcher` is `none`\n", True, id="quote"),
+        pytest.param("`fetcher` is `full`\n***\n`fetcher` is `none`\n", True, id="thematic-break"),
+        pytest.param("`fetcher` is `full`\n1. `fetcher` is `none`\n", True, id="item-numbered-1"),
+        pytest.param("`fetcher` is `full`\n2) `fetcher` is `none`\n", False, id="line-numbered-2"),
+        pytest.param("Intro.\n\n    `fetcher` is `none`\n", False, id="indented-code"),
+        pytest.param("- `fetcher` is `full`\n- `fetcher` is `none`\n", True, id="list-items"),
+    ],
+)
+def test_a_runtime_page_statement_is_a_sentence_of_one_block(page: str, read: bool, tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/fetcher.json": json.dumps(
+                {"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}}
+            ),
+            "docs/copilot-support.md": page,
+        },
+    )
+    problem = (
+        "docs/copilot-support.md says fetcher is none on copilot-cli, but its deploy-meta declares full; see "
+        '"Metadata" in docs/adding-a-skill.md'
+    )
+    assert runtime_page_problems(tmp_path) == ([problem] if read else [])
+
+
 @SEPARATOR
 def test_a_skill_path_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
     write_fixture_tree(
