@@ -10,9 +10,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +48,9 @@ BASE_TIP = "9" * 40
 MOVED_TIP = "8" * 40
 # GitHub's ID for the user's latest review, as the collection reads it.
 REVIEW_ID = "PRR_kwDOreview"
+# When the user's latest review was submitted, as GitHub states it, unless a test names another time: after every
+# review version a fixture writes, so the review versions are placed against it by head alone.
+SUBMITTED_AFTER_EVERY_VERSION = "2026-12-01T00:00:00Z"
 # Each spelling of a status override key the configuration's rule takes and the pull-request identity rule refuses:
 # an owner no GitHub login spells (a leading, trailing, or doubled hyphen, a dot, an underscore that leads, ends, or
 # repeats or comes before a hyphen, more than 39 characters) and a name GitHub refuses (only dots, more than 100).
@@ -96,6 +99,9 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
         "reviews": {"nodes": []},
     }
     node.update(changes)
+    for review in node["reviews"].get("nodes", []):
+        # A review submitted after every fixture's review versions were written, unless a test names its time.
+        review.setdefault("submittedAt", SUBMITTED_AFTER_EVERY_VERSION)
     if "decidingReviews" not in changes:
         # The latest review GitHub returns is the latest deciding one when it decided, as the collection reads them.
         deciding = [{"state": review["state"]} for review in node["reviews"]["nodes"] if review["state"] != "COMMENTED"]
@@ -598,6 +604,14 @@ class CollectTests(TrackerPipelineFixture):
         self.assertEqual(1, code)
         self.assertIn("REPOSITORY_FAILED example/one example/one pull-request data has an unexpected shape", out)
 
+    def test_a_review_without_its_submitted_time_fails_its_repository(self) -> None:
+        node = pull_node(1, reviews={"nodes": [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": HEAD}}]})
+        del node["reviews"]["nodes"][0]["submittedAt"]
+        self.github.pages["example/one"] = [page([node])]
+        code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual(1, code)
+        self.assertIn("REPOSITORY_FAILED example/one example/one pull-request data has an unexpected shape", out)
+
     def test_rate_limit_stops_the_collection(self) -> None:
         for limited in ("example/one", "example/two"):  # first or later repository; both are collected at once
             with self.subTest(limited=limited):
@@ -916,6 +930,35 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertEqual((since, 0), (item["ai_review"]["since_review"], item["ai_review"]["flagged"]))
                 self.assertIn(f"| Changes Requested | {cell} | [AI Review]", row)
                 self.assertEqual(compared, len(self.compares()), "an exact head match needs no comparison")
+
+    def test_a_version_written_after_the_users_review_at_its_commit_is_not_the_baseline(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        heads = review_fixture.HEADS
+        # Version 1 was written at 2026-10-01T09:30Z and version 2 at 2026-10-02T09:30Z.
+        for submitted, since, cell in (
+            # Before version 1 was written at the commit the user reviewed: every open finding is new.
+            ("2026-10-01T09:00:00Z", {"version": 0, "new": 2, "addressed": 0}, "· 2 new since your review"),
+            # In the same second: the user cannot be said to have seen it.
+            ("2026-10-01T09:30:00Z", {"version": 0, "new": 2, "addressed": 0}, "· 2 new since your review"),
+            # The same instant, in another offset.
+            ("2026-10-01T11:30:00+02:00", {"version": 0, "new": 2, "addressed": 0}, "· 2 new since your review"),
+            # After it: version 1 is the baseline.
+            (
+                "2026-10-01T09:30:01Z",
+                {"version": 1, "new": 1, "addressed": 1},
+                "· 1 new, 1 addressed since your review",
+            ),
+            # GitHub states no time, so the review cannot be placed: the cell falls back to what was addressed.
+            (None, None, "· 1 addressed"),
+            ("not a time", None, "· 1 addressed"),
+        ):
+            with self.subTest(submitted=submitted):
+                self.github.calls.clear()
+                review = {"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": heads[1]}, "submittedAt": submitted}
+                item, row = self.collect_fixture([review])
+                self.assertEqual(since, item["ai_review"]["since_review"])
+                self.assertIn(f"| Changes Requested | 1M 1S open (1 repeat) {cell} | [AI Review]", row)
+                self.assertEqual([], self.compares(), "a version written after the review is never compared")
 
     def test_a_review_recorded_before_ledgers_renders_from_the_ledger_its_records_compute(self) -> None:
         heads = review_fixture.HEADS
@@ -1586,6 +1629,89 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [f"UPDATED {self.dashboard} rows=0", "GITHUB_CALLS 0"], result.stdout.decode("utf-8").splitlines()
         )
+
+
+class BaselineTests(unittest.TestCase):
+    """Where the user's last review falls among the review versions: by when each was written against when the review
+    was submitted, then by head. Versions 1 and 2 are at one head, as a re-review on a new base writes them, and
+    version 3 at the next."""
+
+    SAME_HEAD = "1" * 40
+    NEXT_HEAD = "3" * 40
+    WRITTEN: ClassVar[dict[int, str]] = {
+        1: "2026-03-01T12:00:00+00:00",
+        2: "2026-03-02T12:00:00+00:00",
+        3: "2026-03-03T12:00:00+00:00",
+    }
+
+    def records(self, **written: Any) -> list[ReviewRecord]:
+        """The three versions, each written at its `WRITTEN` time unless `v<n>` names another, or none to leave it
+        out."""
+        heads = {1: self.SAME_HEAD, 2: self.SAME_HEAD, 3: self.NEXT_HEAD}
+        built = []
+        for version, head in heads.items():
+            review: dict[str, Any] = {"version": version}
+            at = written.get(f"v{version}", self.WRITTEN[version])
+            if at is not None:
+                review["reviewed_at"] = at
+            built.append(cast(ReviewRecord, {"review": review, "pull_request": {"head_sha": head}}))
+        return built
+
+    def baseline(
+        self, records: list[ReviewRecord], sha: str | None, submitted: Any, places: Mapping[str, bool] | None = None
+    ) -> tuple[int | None, list[str]]:
+        """The baseline, and the heads compared with `sha`, each placed before it or not by `places`."""
+        compared: list[str] = []
+
+        def ancestry(repository: str, earlier: str, later: str) -> bool | None:
+            self.assertEqual(("example/one", sha), (repository, later))
+            compared.append(earlier)
+            return (places or {}).get(earlier)
+
+        return tp._baseline(records, sha, submitted, "example/one", ancestry), compared
+
+    def test_a_re_review_at_the_same_head_after_the_users_review_is_not_the_baseline(self) -> None:
+        for submitted, expected in (
+            ("2026-03-01T18:00:00Z", 1),  # between the two versions at the head the user reviewed
+            ("2026-03-02T18:00:00Z", 2),  # after both
+            ("2026-03-01T06:00:00Z", 0),  # before both
+        ):
+            with self.subTest(submitted=submitted):
+                self.assertEqual((expected, []), self.baseline(self.records(), self.SAME_HEAD, submitted))
+
+    def test_a_version_written_in_the_same_instant_as_the_review_is_after_it(self) -> None:
+        for submitted in ("2026-03-02T12:00:00Z", "2026-03-02T12:00:00+00:00", "2026-03-02T07:00:00-05:00"):
+            with self.subTest(submitted=submitted):
+                self.assertEqual((1, []), self.baseline(self.records(), self.SAME_HEAD, submitted))
+
+    def test_a_time_without_an_offset_is_read_as_utc(self) -> None:
+        self.assertEqual((1, []), self.baseline(self.records(), self.SAME_HEAD, "2026-03-01T18:00:00"))
+        records = self.records(v2="2026-03-01T18:00:00")
+        self.assertEqual((1, []), self.baseline(records, self.SAME_HEAD, "2026-03-01T17:59:59Z"))
+        self.assertEqual((2, []), self.baseline(records, self.SAME_HEAD, "2026-03-01T18:00:01Z"))
+
+    def test_an_unreadable_time_places_no_baseline(self) -> None:
+        for submitted in (None, "", "yesterday", "2026-13-01T00:00:00Z", 1772366400, ["2026-03-04T00:00:00Z"]):
+            with self.subTest(submitted=submitted):
+                self.assertEqual((None, []), self.baseline(self.records(), self.SAME_HEAD, submitted))
+        for written in (None, "", "yesterday", 5):
+            with self.subTest(written=written):
+                records = self.records(v3=written)
+                self.assertEqual((None, []), self.baseline(records, self.SAME_HEAD, "2026-03-04T00:00:00Z"))
+
+    def test_a_commit_between_heads_is_compared_only_with_versions_written_before_the_review(self) -> None:
+        between = "e" * 40
+        # Version 3's head is before the commit, but version 3 was written after the review, so it is never compared.
+        places = {self.NEXT_HEAD: True, self.SAME_HEAD: True}
+        self.assertEqual((2, [self.SAME_HEAD]), self.baseline(self.records(), between, "2026-03-02T18:00:00Z", places))
+        self.assertEqual((3, [self.NEXT_HEAD]), self.baseline(self.records(), between, "2026-03-04T00:00:00Z", places))
+        # None written before the review: version 0, with no comparison.
+        self.assertEqual((0, []), self.baseline(self.records(), between, "2026-02-01T00:00:00Z", places))
+        # GitHub cannot compare: no baseline.
+        self.assertEqual((None, [self.SAME_HEAD]), self.baseline(self.records(), between, "2026-03-02T18:00:00Z"))
+
+    def test_without_a_review_commit_there_is_no_baseline(self) -> None:
+        self.assertEqual((None, []), self.baseline(self.records(), None, "2026-03-04T00:00:00Z"))
 
 
 class ActorFieldTests(unittest.TestCase):
