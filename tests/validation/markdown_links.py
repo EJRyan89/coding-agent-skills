@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+from link_destinations import link_destinations
 from markdown_sections import ATX_HEADING
 from text_lines import text_lines
 from validation_support import (
@@ -26,9 +27,6 @@ from validation_support import (
     repository_files,
 )
 
-MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
-MARKDOWN_REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(?:<([^>\n]+)>|(\S+))")
-URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
 # GitHub's heading slug keeps letters, digits, underscores, hyphens, and spaces, then turns each space into a hyphen.
 SLUG_REMOVED = re.compile(r"[^\w\- ]")
 
@@ -62,41 +60,34 @@ def heading_slugs(text: str) -> set[str]:
 def markdown_link_problems(root: Path) -> list[str]:
     """Report each relative link in the repository's Markdown to a missing file, or to a heading its target lacks.
 
-    Code blocks and spans are not links; URLs with a scheme are not checked. Files Git ignores, and the session
-    worktrees under .claude/worktrees/, are not read.
+    Links are read through ejryan89-skill-core's `link_destinations`, as every reader of a link destination reads them,
+    so code blocks and spans are not links, and a destination is percent-decoded; URLs with a scheme are not checked.
+    Files Git ignores, and the session worktrees under .claude/worktrees/, are not read.
     """
-    from urllib.parse import unquote
-
     problems: list[str] = []
     for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         if path.suffix.casefold() != ".md" or name.startswith(".claude/worktrees/"):
             continue
-        for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
-            # A span may hold a link's brackets, and one written with two backticks a backtick, so neither is a link.
-            text = COMMONMARK_CODE_SPAN.sub("", line)
-            for match in [*MARKDOWN_LINK.finditer(text), *MARKDOWN_REFERENCE.finditer(text)]:
-                target = match.group(1) or match.group(2)
-                if URL_SCHEME.match(target):
-                    continue
-                location, _, fragment = target.partition("#")
-                destination = path.parent / unquote(location) if location else path
-                # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
-                is_file = file_presence.is_present(destination, other_is_absent=True)
-                if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
-                    # Something that is neither a file nor a folder is named so, never as nothing there; a link to
-                    # nothing is nothing there, since nothing can be read through it.
-                    state = (
-                        "is neither a file nor a folder" if file_presence.is_there(destination) else "does not exist"
-                    )
-                    problems.append(f"{name}:{number} links to {target}, which {state}")
-                elif (
-                    fragment
-                    and is_file
-                    and destination.suffix.casefold() == ".md"
-                    and unquote(fragment) not in heading_slugs(destination.read_text(encoding="utf-8"))
-                ):
-                    problems.append(f"{name}:{number} links to {target}, which has no heading with that slug")
+        for link in link_destinations(text_lines(path.read_text(encoding="utf-8"))):
+            if link.is_url:
+                continue
+            number, target, fragment = link.line, link.url, link.fragment
+            destination = path.parent / link.path if link.path else path
+            # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
+            is_file = file_presence.is_present(destination, other_is_absent=True)
+            if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
+                # Something that is neither a file nor a folder is named so, never as nothing there; a link to
+                # nothing is nothing there, since nothing can be read through it.
+                state = "is neither a file nor a folder" if file_presence.is_there(destination) else "does not exist"
+                problems.append(f"{name}:{number} links to {target}, which {state}")
+            elif (
+                fragment
+                and is_file
+                and destination.suffix.casefold() == ".md"
+                and fragment not in heading_slugs(destination.read_text(encoding="utf-8"))
+            ):
+                problems.append(f"{name}:{number} links to {target}, which has no heading with that slug")
     return problems
 
 

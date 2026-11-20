@@ -26,6 +26,7 @@ import skill_inventory
 import skill_menu
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
+from path_containment import resolved_path
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
@@ -4092,6 +4093,77 @@ def test_an_outside_target_the_inventory_already_sizes_is_counted_once(tmp_path:
     assert skill_inventory.outside_lines(skill, texts, []) == [
         "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
         "TOTAL outside 1 9 3",
+    ]
+
+
+def test_inventory_reads_each_link_spelling_commonmark_allows(tmp_path: Path) -> None:
+    # Both reference patterns read only [\w./-] paths, so a percent-encoded or backslash link was read by its tail and
+    # resolved to a file that was not there, and a <...> link with spaces or an absolute one was not read at all: none
+    # got a line, and a file the skill loads was left out of the measure with nothing said.
+    skill = tmp_path / "skill"
+    outside = write(tmp_path / "abs" / "x.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    write(tmp_path / "my out.md", "12345678\n")
+    absolute = outside.as_posix()
+    write(
+        skill / "SKILL.md",
+        "---\nname: skill\n---\n"
+        f"[a](bin/my%20notes.md) [b](<bin/my spaced.md>) [c](bin\\win.md) [d]({absolute})\n"
+        f"[e](../my%20out.md) [f](<{tmp_path.as_posix()}/abs/gone.md>)\n",
+    )
+    for name in ("bin/my notes.md", "bin/my spaced.md"):
+        write(skill / name, "abcd\n")  # 5 bytes, 2 tokens
+    # A Windows path reads the backslash as a separator, into the skipped bin folder; elsewhere it is part of the name.
+    win = write(skill / Path("bin\\win.md"), "abcd\n")
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("FILE doc", "OUTSIDE_", "TOTAL outside"))] == [
+        "FILE doc 5 2 bin/my notes.md",
+        "FILE doc 5 2 bin/my spaced.md",
+        f"FILE doc 5 2 {win.relative_to(skill).as_posix()}",
+        f"OUTSIDE_READ SKILL.md:4 9 3 {absolute}",
+        "OUTSIDE_READ SKILL.md:5 9 3 ../my%20out.md",
+        f"OUTSIDE_MISSING SKILL.md:5 <{tmp_path.as_posix()}/abs/gone.md>",
+        "TOTAL outside 2 18 6",
+    ]
+
+
+def test_a_backslash_in_a_link_is_read_as_the_platform_reads_a_path(tmp_path: Path) -> None:
+    # The pattern read only the tail after the backslash, win.md, which no platform reads the link as.
+    links = skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", "Read [c](bin\\win.md).\n")
+    assert links == [(1, "bin\\win.md", resolved_path(tmp_path / Path("bin\\win.md")))]
+
+
+def test_a_link_destination_is_read_once_and_a_path_in_prose_still_counts(tmp_path: Path) -> None:
+    # A link's text and a path in prose or code are still read; a URL's destination, and the tail of an encoded one,
+    # are not read as a path of the skill.
+    text = "[`a.md`](<b c.md>) `d.md` [e](https://example.com/x%20f.md) [g](h.md#step)\n"
+    links = skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)
+    assert [reference for _, reference, _ in links] == ["a.md", "<b c.md>", "d.md", "h.md#step"]
+
+
+@pytest.mark.parametrize(
+    ("link", "name"),
+    [
+        ("../guides/b.md", "guides/b.md"),
+        ("my%20doc.md", "references/my doc.md"),
+        ("<my doc.md>", "references/my doc.md"),
+        ("{root}/guides/abs.md", "guides/abs.md"),
+        ("sub\\d.md", "references/sub\\d.md"),
+    ],
+)
+def test_nested_flags_reads_links_as_the_measure_does(link: str, name: str, tmp_path: Path) -> None:
+    # nested_flags read through a second reader that took INSIDE_REFERENCE alone, so a link that starts with ../, or
+    # one in any spelling that pattern does not read, was never flagged though the measure reads it.
+    link = link.format(root=resolved_path(tmp_path).as_posix())
+    texts = {
+        "SKILL.md": ("main", "---\nname: demo\n---\nRead [a](references/a.md).\n"),
+        "references/a.md": ("doc", f"See [b]({link}) and [c](c.md).\n"),
+        name: ("doc", "Nested.\n"),
+        "references/c.md": ("doc", "Nested too.\n"),
+    }
+    assert skill_inventory.nested_flags(tmp_path, texts) == [
+        f"NESTED_REFERENCE references/a.md:1 {link}",
+        "NESTED_REFERENCE references/a.md:1 c.md",
     ]
 
 
