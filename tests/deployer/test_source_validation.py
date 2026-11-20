@@ -364,7 +364,7 @@ class MetadataValidationTests(DeployerTestCase):
                 try:
                     for arguments in (("--all", "--dry-run"), ("--all",)):
                         result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
-                        self.assert_lines(
+                        self.assert_refusal(
                             result.output,
                             f"{refusal}spelled in another case than {name}.",
                             f"Rename it {name}, then retry.",

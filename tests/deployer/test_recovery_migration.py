@@ -1347,7 +1347,7 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
                 "Deployment cancelled; reconciling the current journal before exit...",
             ],
         }[deployment_failure]
-        self.assert_lines(result.stderr, *opening)
+        self.assert_refusal(result.stderr, *opening)
         self.assertNotIn(f"Unexpected {deployment_failure}", result.stderr)
         runs = list(self.paths.staging_root.iterdir())
         self.assertEqual(1, len(runs))

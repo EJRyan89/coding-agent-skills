@@ -389,7 +389,12 @@ class ResidentReaderTests(unittest.TestCase):
         self.assertIsNotNone(resident.process.poll())
 
     def test_an_answer_that_is_not_one_is_a_malfunction(self) -> None:
-        for answer, said in ((b"garbage\n", "answered b'garbage"), (b"READ x\n", "answered b'READ x"), (b"", "ended")):
+        for answer, said in (
+            (b"garbage\n", "answered b'garbage"),
+            (b"READ x\n", "answered b'READ x"),
+            (b"READ a b\n", "answered b'READ a b.*is not base64"),
+            (b"", "ended"),
+        ):
             with self.subTest(answer=answer):
                 resident = resident_pwsh.ResidentPwsh(found_pwsh(), "")
                 self.addCleanup(resident.close)
