@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import itertools
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -31,11 +34,64 @@ from harness import (
 from test_private_folder import recording_temporary_folders
 
 from deployer import fsops, platform_support, source_ref, tools
-from deployer.errors import DeployError
+from deployer.errors import DeployError, SourceRefusal
 from deployer.source import SOURCE_JSON_REMEDY
+
+# The last line of a refusal that --at's own context gives a step, written out here rather than read from the deployer.
+SEE_EARLIER_COMMIT = 'See "Deploying an earlier commit" in docs/recovery.md.'
+
+
+def commit_step(commit: str) -> str:
+    """The step a refusal of the files --at exported ends with, written out here rather than read from the deployer."""
+    return (
+        f"The refused files are commit {commit}'s, which no change to the checkout reaches; name with --at another "
+        "commit, one the deployer at this checkout's HEAD accepts, since it may refuse what an older deployer accepted."
+    )
+
 
 # The prefix of the directory --at reads a commit's attributes through, apart from the export's.
 ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
+# The functions of deployer/source.py whose refusals are not of the tree's content, so --at keeps their step.
+NOT_CONTENT = {
+    "is_linked_worktree": "a .git file Git wrote in the checkout, which --at reads in the clone",
+    "reject_linked_worktree": "where the checkout lies, not what the tree holds",
+    "_reject_links": "a folder of the tree that cannot be listed, a fault of the machine; its links are content",
+    "discover": "a value json_writer would not write, which no source.json json_reader reads can hold",
+}
+
+
+class SourceRefusalTests(unittest.TestCase):
+    def test_every_refusal_of_the_source_s_content_is_a_source_refusal(self) -> None:
+        """A refusal of the tree's content raised as a plain DeployError keeps the checkout's step under --at, which
+        names a file no change to the checkout reaches, so source.py raises every other refusal as a SourceRefusal."""
+        tree = ast.parse((REPOSITORY_ROOT / "deployer" / "source.py").read_text(encoding="utf-8"))
+        plain: set[str] = set()
+        content = 0
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    plain |= {function.name} if node.func.id == "DeployError" else set()
+                    content += node.func.id == "SourceRefusal"
+        self.assertEqual(set(NOT_CONTENT), plain)
+        self.assertGreater(content, len(NOT_CONTENT))
+
+    def test_only_a_pinned_run_gives_a_refusal_of_the_tree_the_step_naming_its_commit(self) -> None:
+        refusal = SourceRefusal("ERROR: What is wrong", "  a finding", "Fix the file in the checkout.")
+        with self.assertRaises(SourceRefusal) as unpinned, source_ref.exported_refusals(None):
+            raise refusal
+        self.assertIs(refusal, unpinned.exception)
+        commit = "a" * 40
+        with self.assertRaises(DeployError) as pinned, source_ref.exported_refusals(source_ref.Pin("v1", commit)):
+            raise refusal
+        self.assertEqual(
+            ("ERROR: What is wrong", "  a finding", commit_step(commit), SEE_EARLIER_COMMIT), pinned.exception.lines
+        )
+        self.assertNotIsInstance(pinned.exception, SourceRefusal)
+        with self.assertRaises(DeployError) as other, source_ref.exported_refusals(source_ref.Pin("v1", commit)):
+            raise DeployError("ERROR: The home is wrong", "Fix the home.")
+        self.assertEqual(("ERROR: The home is wrong", "Fix the home."), other.exception.lines)
 
 
 class RefValidationTests(unittest.TestCase):
@@ -769,15 +825,105 @@ class DeployAtTests(DeployerTestCase):
             with self.subTest(ref=ref):
                 output = self.deploy_fails("--all", "--at", ref, pattern=error).output
                 lines = output.splitlines()
-                step = lines[next(index for index, line in enumerate(lines) if line.startswith(error)) + 1]
-                self.assertEqual(
-                    f"This source.json is the one commit {commit} holds, not the checkout's; name with --at a commit "
-                    "whose source.json the deployer reads.",
-                    step,
-                )
+                at = next(index for index, line in enumerate(lines) if line.startswith(error))
+                self.assertEqual([commit_step(commit), SEE_EARLIER_COMMIT], lines[at + 1 : at + 3])
                 self.assertNotIn(SOURCE_JSON_REMEDY, output)
         self.assert_head_unmoved()
         self.assert_exports_removed(2)
+
+    def refused_at_its_commit(self, change: Callable[[], object], error: str, checkout_step: str) -> None:
+        """Commit `change` on a branch, then hold that the checkout's deployment of it refuses with `error` and the
+        step its author takes there, and that a deployment and a dry run of it with --at refuse with `error` and the
+        step naming the commit, since no change to the checkout reaches the commit's files."""
+        git(self.source, "switch", "-q", "-c", "refused")
+        change()
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "Content the deployer refuses")
+        commit = git(self.source, "rev-parse", "HEAD")
+        self.assertIn(checkout_step, self.deploy_fails("--all", pattern=re.escape(error)).output)
+        git(self.source, "switch", "-q", "main")
+        for dry_run in ((), ("--dry-run",)):
+            with self.subTest(dry_run=dry_run):
+                output = self.deploy_fails("--all", "--at", "refused", *dry_run, pattern=re.escape(error)).output
+                self.assertIn(f"\n{commit_step(commit)}\n{SEE_EARLIER_COMMIT}\n", output)
+                self.assertNotIn(checkout_step, output)
+        self.assert_head_unmoved()
+        self.assert_exports_removed(2)
+
+    def test_a_ref_whose_source_json_is_spelled_otherwise_is_refused_with_a_step_naming_its_commit(self) -> None:
+        def respell() -> None:
+            git(self.source, "mv", "source.json", "Source.json")
+
+        self.refused_at_its_commit(respell, "is spelled in another case than source.json.", "Rename it source.json")
+
+    def test_a_ref_whose_skill_frontmatter_does_not_read_is_refused_with_a_step_naming_its_commit(self) -> None:
+        def unclosed() -> None:
+            self.write(self.source / "skills" / "alpha" / "SKILL.md", "---\nname: alpha\n")
+
+        self.refused_at_its_commit(
+            unclosed, "ERROR: Skill 'alpha' frontmatter cannot be read", "Correct the frontmatter of "
+        )
+
+    def test_a_ref_whose_skill_metadata_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_skill("alpha", "Alpha", required_vars=["NOT_A_VARIABLE"]),
+            "ERROR: Skill 'alpha' requires unknown variable 'NOT_A_VARIABLE'",
+            "Remove it from required_vars in deploy-meta/alpha.json",
+        )
+
+    def test_a_ref_whose_skill_folder_has_no_metadata_is_refused_with_a_step_naming_its_commit(self) -> None:
+        def unlisted() -> None:
+            self.write(self.source / "skills" / "gamma" / "SKILL.md", "---\nname: gamma\ndescription: G\n---\n")
+
+        self.refused_at_its_commit(
+            unlisted, "ERROR: Skill 'gamma' has no matching deploy-meta/gamma.json", "Add deploy-meta/gamma.json"
+        )
+
+    def test_a_ref_whose_bundle_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_source_json(bundles={"pack": {"members": ["missing"]}}),
+            "ERROR: Bundle 'pack' references unknown member 'missing'",
+            "Remove 'missing' from the bundle's members in source.json",
+        )
+
+    def test_a_ref_whose_renamed_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_source_json(renamed={"old-name": "missing"}),
+            "ERROR: source.json renames 'old-name' to \"missing\", which is no skill of this source",
+            "Make renamed in source.json map each old name",
+        )
+
+    def test_a_ref_whose_skill_deps_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_skill("alpha", "Alpha", skill_deps=["missing"]),
+            "ERROR: Skill 'alpha' depends on unknown skill 'missing'",
+            "Remove 'missing' from skill_deps in deploy-meta/alpha.json",
+        )
+
+    def test_a_ref_whose_agent_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        def misnamed() -> None:
+            self.make_agent("helper", declared="other")
+            self.make_skill("alpha", "Alpha", agent_deps=["helper"])
+
+        self.refused_at_its_commit(
+            misnamed,
+            "ERROR: Agent 'helper' frontmatter name 'other' does not match its file name",
+            "Set name to 'helper' in agents/helper.md's frontmatter",
+        )
+
+    def test_a_ref_whose_shared_assets_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_skill("alpha", "Alpha", shared_deps=["guide.md"]),
+            "ERROR: Skill 'alpha' declares shared_dep 'guide.md' but it is not in source.json shared_assets",
+            "Add 'guide.md' to shared_assets in source.json",
+        )
+
+    def test_a_ref_whose_rendered_skill_the_deployer_refuses_is_refused_with_a_step_naming_its_commit(self) -> None:
+        self.refused_at_its_commit(
+            lambda: self.make_skill("alpha", "Alpha {{NOT_A_VARIABLE}}"),
+            "ERROR: Unexpanded tokens found in staged output:",
+            "Declare each token above in its skill's required_vars",
+        )
 
     def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
         plain = self.snapshot_source("plain")
