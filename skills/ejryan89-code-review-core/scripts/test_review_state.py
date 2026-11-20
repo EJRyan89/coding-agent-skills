@@ -37,6 +37,9 @@ from review_io import (
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
 from test_review_archive import unstatable
 
+# What the locks these tests take name as the folder to keep on a local disk; each caller names its own.
+PLACE = "the locked folder"
+
 
 @contextlib.contextmanager
 def undeletable(path: Path) -> Iterator[None]:
@@ -59,6 +62,23 @@ def reporting(status: ProcessStatus) -> Callable[[int], ProcessStatus]:
 
 
 class StateAndLockTests(unittest.TestCase):
+    def test_a_state_lock_the_file_system_refuses_names_the_review_state(self) -> None:
+        # Pinned against a literal: the step names the state, the folder this lock guards, to keep on a local disk.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            with (
+                mock.patch.object(file_lock, "_lock", side_effect=OSError(errno.ENOTSUP, "No locks available")),
+                self.assertRaises(PersistenceError) as raised,
+            ):
+                update_state(path, lambda state: state)
+            self.assertEqual(
+                f"Cannot lock {Path(temporary) / '.locks' / 'state.lock.held'}: No locks available; a review lock "
+                "needs a folder on a file system that supports file locks, which some network and synced folders do "
+                "not; keep the review state on a local disk",
+                str(raised.exception),
+            )
+            self.assertFalse(path.exists())
+
     def test_state_update_writes_the_validated_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
@@ -130,8 +150,11 @@ class StateAndLockTests(unittest.TestCase):
     def test_contended_lock_fails_without_removing_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
-            with ResourceLock(path):
-                with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.01):
+            with ResourceLock(path, place=PLACE):
+                with (
+                    self.assertRaisesRegex(PersistenceError, "Timed out"),
+                    ResourceLock(path, place=PLACE, timeout_seconds=0.01),
+                ):
                     pass
                 self.assertTrue(path.exists())
 
@@ -169,7 +192,7 @@ class StateAndLockTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
-            with ResourceLock(path, probe=probe):
+            with ResourceLock(path, place=PLACE, probe=probe):
                 owner = read_json(path / "owner.json")
             self.assertEqual(os.getpid(), owner["pid"])
             self.assertEqual(1234, owner["start_time"])
@@ -200,7 +223,7 @@ class StateAndLockTests(unittest.TestCase):
                 self._old_lock(path, owner)
                 with (
                     self.assertRaisesRegex(PersistenceError, "Timed out"),
-                    ResourceLock(path, timeout_seconds=0.01, probe=reporting(status)),
+                    ResourceLock(path, place=PLACE, timeout_seconds=0.01, probe=reporting(status)),
                 ):
                     pass
                 self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
@@ -219,7 +242,7 @@ class StateAndLockTests(unittest.TestCase):
                 def probe(pid: int, *, status: ProcessStatus = status) -> ProcessStatus:
                     return ProcessStatus(True, 9999) if pid == os.getpid() else status
 
-                with ResourceLock(path, timeout_seconds=0.5, probe=probe):
+                with ResourceLock(path, place=PLACE, timeout_seconds=0.5, probe=probe):
                     self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
                 self.assertFalse(path.exists())
 
@@ -234,7 +257,7 @@ class StateAndLockTests(unittest.TestCase):
                 self.assertRaisesRegex(
                     PersistenceError, re.escape(f"Timed out waiting for lock {path}; delete it if no review is running")
                 ),
-                ResourceLock(path, timeout_seconds=0.2, probe=reporting(ProcessStatus(True, 1))),
+                ResourceLock(path, place=PLACE, timeout_seconds=0.2, probe=reporting(ProcessStatus(True, 1))),
             ):
                 pass
             self.assertGreaterEqual(time.monotonic() - started, 0.2)
@@ -260,7 +283,10 @@ class StateAndLockTests(unittest.TestCase):
                     return ProcessStatus(True, 9999) if pid == os.getpid() else status
 
                 errors = io.StringIO()
-                with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5, probe=probe):
+                with (
+                    contextlib.redirect_stderr(errors),
+                    ResourceLock(path, place=PLACE, timeout_seconds=0.5, probe=probe),
+                ):
                     self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
                 self.assertEqual(f"WARNING: Reclaimed the stale lock {path}: {reason}.\n", errors.getvalue())
                 self.assertEqual([], list(Path(temporary).iterdir()), "the stale lock is deleted")
@@ -270,12 +296,15 @@ class StateAndLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             path.mkdir()
-            with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
+            with (
+                self.assertRaisesRegex(PersistenceError, "Timed out"),
+                ResourceLock(path, place=PLACE, timeout_seconds=0.1),
+            ):
                 pass
             self.assertTrue(path.is_dir(), "a lock without an owner file is kept during the grace period")
             backdated = self._backdate(path)
             errors = io.StringIO()
-            with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
+            with contextlib.redirect_stderr(errors), ResourceLock(path, place=PLACE, timeout_seconds=0.5):
                 self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
             self._assert_reclaimed_after(
                 errors.getvalue(), path, "it has had no owner file for {age} seconds", backdated
@@ -299,7 +328,7 @@ class StateAndLockTests(unittest.TestCase):
 
             with (
                 self.assertRaisesRegex(PersistenceError, "Timed out"),
-                ResourceLock(path, timeout_seconds=0.1, probe=probe),
+                ResourceLock(path, place=PLACE, timeout_seconds=0.1, probe=probe),
             ):
                 pass
             self.assertEqual(taken, read_json(path / "owner.json"))
@@ -311,7 +340,7 @@ class StateAndLockTests(unittest.TestCase):
             path = Path(temporary) / "resource.lock"
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors):
-                lock = ResourceLock(path)
+                lock = ResourceLock(path, place=PLACE)
                 lock.__enter__()
                 with review_io.open_shared(path / "owner.json") as reader:
                     lock.__exit__(None, None, None)
@@ -322,7 +351,7 @@ class StateAndLockTests(unittest.TestCase):
                 status = process_identity.process_status(os.getpid())
                 with (
                     mock.patch.object(time, "sleep", side_effect=AssertionError("waited")),
-                    ResourceLock(path, probe=lambda _pid: status),
+                    ResourceLock(path, place=PLACE, probe=lambda _pid: status),
                 ):
                     pass
             self.assertEqual("", errors.getvalue())
@@ -334,7 +363,7 @@ class StateAndLockTests(unittest.TestCase):
             path = Path(temporary) / "resource.lock"
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors):
-                lock = ResourceLock(path)
+                lock = ResourceLock(path, place=PLACE)
                 lock.__enter__()
                 with undeletable(path / "owner.json"):
                     lock.__exit__(None, None, None)
@@ -350,7 +379,7 @@ class StateAndLockTests(unittest.TestCase):
                 return ProcessStatus(False, None) if pid == os.getpid() else ProcessStatus(True, 1)
 
             errors = io.StringIO()
-            with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5, probe=probe):
+            with contextlib.redirect_stderr(errors), ResourceLock(path, place=PLACE, timeout_seconds=0.5, probe=probe):
                 pass
             self.assertEqual(
                 f"WARNING: Reclaimed the stale lock {path}: PID {os.getpid()} is not running.\n", errors.getvalue()
@@ -360,7 +389,7 @@ class StateAndLockTests(unittest.TestCase):
     def test_release_still_refuses_a_lock_another_session_took(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
-            lock = ResourceLock(path)
+            lock = ResourceLock(path, place=PLACE)
             lock.__enter__()
             atomic_write_json(path / "owner.json", {"pid": os.getpid(), "token": "b" * 32})
             with self.assertRaisesRegex(PersistenceError, "Lock ownership changed before release"):
@@ -371,7 +400,7 @@ class StateAndLockTests(unittest.TestCase):
         for content, found in (([], "an array"), ("owner", 'string "owner"'), (None, "null"), (7, "integer 7")):
             with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "resource.lock"
-                lock = ResourceLock(path)
+                lock = ResourceLock(path, place=PLACE)
                 lock.__enter__()
                 atomic_write_json(path / "owner.json", content)
                 with self.assertRaisesRegex(
@@ -394,7 +423,7 @@ class StateAndLockTests(unittest.TestCase):
                 shutil.rmtree(path)  # the holder releases the lock between the waiter's stat and its read
                 raise FileNotFoundError(2, "gone", str(owner))
 
-            lock = ResourceLock(path, timeout_seconds=0.5, probe=reporting(ProcessStatus(True, 1)))
+            lock = ResourceLock(path, place=PLACE, timeout_seconds=0.5, probe=reporting(ProcessStatus(True, 1)))
             errors = io.StringIO()
             with (
                 mock.patch.object(review_io, "open_shared", side_effect=release_first),
@@ -432,12 +461,15 @@ class StateAndLockTests(unittest.TestCase):
                 path.mkdir()
                 owner = path / "owner.json"
                 owner.write_bytes(content)
-                with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
+                with (
+                    self.assertRaisesRegex(PersistenceError, "Timed out"),
+                    ResourceLock(path, place=PLACE, timeout_seconds=0.1),
+                ):
                     pass
                 self.assertEqual(content, owner.read_bytes(), "a torn owner file is kept during the grace period")
                 backdated = self._backdate(owner)
                 errors = io.StringIO()
-                with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
+                with contextlib.redirect_stderr(errors), ResourceLock(path, place=PLACE, timeout_seconds=0.5):
                     self.assertEqual(os.getpid(), read_json(owner)["pid"])
                 self._assert_reclaimed_after(
                     errors.getvalue(),
@@ -460,7 +492,7 @@ class StateAndLockTests(unittest.TestCase):
             with (
                 mock.patch.object(review_io, "process_status", probe),
                 mock.patch("os.kill", side_effect=AssertionError("os.kill called")),
-                ResourceLock(path, timeout_seconds=0.5),
+                ResourceLock(path, place=PLACE, timeout_seconds=0.5),
             ):
                 self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
             self.assertIn(4242, probed)
@@ -533,7 +565,7 @@ class ResourceFileLockTests(unittest.TestCase):
         holders: list[ResourceLock] = []
 
         def contend(name: str, timeout_seconds: float) -> None:
-            lock = ResourceLock(self.path, timeout_seconds=timeout_seconds, probe=self.probe)
+            lock = ResourceLock(self.path, place=PLACE, timeout_seconds=timeout_seconds, probe=self.probe)
             try:
                 lock.__enter__()
             except PersistenceError as exc:
@@ -568,18 +600,18 @@ class ResourceFileLockTests(unittest.TestCase):
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_holder_keeps_the_file_lock_until_its_release_deletes_it(self) -> None:
-        lock = ResourceLock(self.path)
+        lock = ResourceLock(self.path, place=PLACE)
         with lock:
             self.assertEqual(self.folder / "resource.lock.held", lock.file_lock_path)
             self.assertIsNone(file_lock.take(lock.file_lock_path))
             with self.assertRaisesRegex(
                 PersistenceError, f"^Timed out waiting for lock {re.escape(str(self.path))}: another review holds it$"
             ):
-                ResourceLock(self.path, timeout_seconds=0.01).__enter__()
+                ResourceLock(self.path, place=PLACE, timeout_seconds=0.01).__enter__()
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_release_whose_ownership_changed_still_lets_the_file_lock_go(self) -> None:
-        lock = ResourceLock(self.path)
+        lock = ResourceLock(self.path, place=PLACE)
         lock.__enter__()
         atomic_write_json(self.path / "owner.json", {"pid": os.getpid(), "token": "b" * 32})
         with self.assertRaisesRegex(PersistenceError, "Lock ownership changed before release"):
@@ -593,12 +625,12 @@ class ResourceFileLockTests(unittest.TestCase):
             mock.patch.object(file_lock, "_lock", side_effect=refused),
             self.assertRaises(PersistenceError) as raised,
         ):
-            ResourceLock(self.path).__enter__()
+            ResourceLock(self.path, place=PLACE).__enter__()
         # Pinned against a literal: the step file_lock.refusal_step shares with the deployment lock, naming this lock.
         self.assertEqual(
             f"Cannot lock {self.folder / 'resource.lock.held'}: No locks available; a review lock needs a folder on a "
-            "file system that supports file locks, which some network and synced folders do not; keep the review "
-            "state on a local disk",
+            "file system that supports file locks, which some network and synced folders do not; keep the locked "
+            "folder on a local disk",
             str(raised.exception),
         )
         self.assertEqual([], list(self.folder.iterdir()))
@@ -617,7 +649,7 @@ class ResourceFileLockTests(unittest.TestCase):
                 mock.patch.object(Path, "unlink", side_effect=AssertionError("deleted the lock file")),
                 self.assertRaisesRegex(PersistenceError, "^Cannot lock "),
             ):
-                ResourceLock(self.path).__enter__()
+                ResourceLock(self.path, place=PLACE).__enter__()
             self.assertTrue(file_lock.held_elsewhere(lock_file))
 
     def test_a_lock_refusal_that_may_pass_says_to_retry_rather_than_to_move_the_folder(self) -> None:
@@ -628,11 +660,11 @@ class ResourceFileLockTests(unittest.TestCase):
                 mock.patch.object(file_lock, "_lock", side_effect=OSError(number, "transient")),
                 self.assertRaises(PersistenceError) as raised,
             ):
-                ResourceLock(self.path).__enter__()
+                ResourceLock(self.path, place=PLACE).__enter__()
             self.assertEqual(
                 f"Cannot lock {self.folder / 'resource.lock.held'}: transient; a file system may refuse a lock this "
                 "way for a moment, as when its lock table is full or its lock service does not answer; retry in a "
-                "moment, and if it keeps refusing, keep the review state on a local disk",
+                "moment, and if it keeps refusing, keep the locked folder on a local disk",
                 str(raised.exception),
             )
 
@@ -648,7 +680,7 @@ class ResourceFileLockTests(unittest.TestCase):
             mock.patch.object(Path, "mkdir", mkdir),
             self.assertRaisesRegex(PersistenceError, f"^Cannot acquire lock {re.escape(str(self.path))}: "),
         ):
-            ResourceLock(self.path).__enter__()
+            ResourceLock(self.path, place=PLACE).__enter__()
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_file_lock_that_cannot_be_opened_is_refused_with_the_reason(self) -> None:
@@ -657,14 +689,14 @@ class ResourceFileLockTests(unittest.TestCase):
             mock.patch.object(file_lock, "take", side_effect=denied),
             self.assertRaisesRegex(PersistenceError, "^Cannot open lock .*resource\\.lock\\.held: .*Access is denied"),
         ):
-            ResourceLock(self.path).__enter__()
+            ResourceLock(self.path, place=PLACE).__enter__()
 
     def test_a_failed_owner_write_lets_the_file_lock_go_and_leaves_nothing(self) -> None:
         with (
             mock.patch.object(review_io, "atomic_write_json", side_effect=PersistenceError("synthetic owner failure")),
             self.assertRaisesRegex(PersistenceError, "^synthetic owner failure$"),
         ):
-            ResourceLock(self.path).__enter__()
+            ResourceLock(self.path, place=PLACE).__enter__()
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_directory_an_older_holder_makes_after_a_reclaim_is_waited_for(self) -> None:
@@ -682,7 +714,7 @@ class ResourceFileLockTests(unittest.TestCase):
                 PersistenceError, f"^Timed out waiting for lock {re.escape(str(self.path))}; delete it if no review"
             ),
         ):
-            ResourceLock(self.path, timeout_seconds=0.01, probe=self.probe).__enter__()
+            ResourceLock(self.path, place=PLACE, timeout_seconds=0.01, probe=self.probe).__enter__()
         self.assertTrue(reclaimed)
         self.assertEqual(["resource.lock"], [item.name for item in self.folder.iterdir()])
 
@@ -703,5 +735,5 @@ class ResourceFileLockTests(unittest.TestCase):
             mock.patch.object(Path, "mkdir", mkdir),
             self.assertRaisesRegex(PersistenceError, f"^Cannot acquire lock {re.escape(str(self.path))}: "),
         ):
-            ResourceLock(self.path, probe=self.probe).__enter__()
+            ResourceLock(self.path, place=PLACE, probe=self.probe).__enter__()
         self.assertEqual([], list(self.folder.iterdir()))

@@ -318,12 +318,12 @@ class FlagCliTests(unittest.TestCase):
         store = Path(self.store)
         winning_store: list[bytes] = []
 
-        def before_lock(lock: Path) -> ResourceLock:
+        def before_lock(lock: Path, *, place: str) -> ResourceLock:
             self.assertEqual(store.parent / ".locks" / "flags.lock", lock)
             with mock.patch.object(review_flags, "ResourceLock", ResourceLock):
                 review_flags.resolve_flag(store, "RF-000001", "First")
             winning_store.append(store.read_bytes())
-            return ResourceLock(lock)
+            return ResourceLock(lock, place=place)
 
         stdout, stderr = io.StringIO(), io.StringIO()
         with (

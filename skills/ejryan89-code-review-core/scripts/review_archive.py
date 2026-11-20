@@ -35,6 +35,8 @@ class ArchiveFieldError(FieldError, ArchiveError):
 
 
 READ = FieldReader(ArchiveFieldError)
+# What a refused archive lock tells the user to keep on a local disk.
+ARCHIVE_LOCK_PLACE = "the review archive"
 
 
 def pulls_directory(root: Path, repository: str) -> Path:
@@ -167,7 +169,7 @@ def commit_record(
     # From the folders the records live in, so every spelling of one identity takes one lock.
     lock_key = "__".join(repository_folders(repository)) + f"#{pull_number}.lock"
     lock = root / ".locks" / lock_key
-    with ResourceLock(lock):
+    with ResourceLock(lock, place=ARCHIVE_LOCK_PLACE):
         versions = every_version(directory)
         current = versions[-1] if versions else None
         if current != expected_latest_version:

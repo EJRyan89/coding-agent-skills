@@ -32,6 +32,10 @@ class StateFieldError(FieldError, StateError):
 READ = FieldReader(StateFieldError)
 
 
+# What a refused state lock tells the user to keep on a local disk.
+STATE_LOCK_PLACE = "the review state"
+
+
 def default_state_path() -> Path:
     override = os.environ.get("CODE_REVIEW_STATE")
     if override:
@@ -106,7 +110,7 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
 
 def update_state(path: Path, update: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
     lock_path = path.parent / ".locks" / "state.lock"
-    with ResourceLock(lock_path):
+    with ResourceLock(lock_path, place=STATE_LOCK_PLACE):
         current = load_state(path)
         replacement = validate_state(update(current))
         atomic_write_json(path, replacement, validator=validate_state)
