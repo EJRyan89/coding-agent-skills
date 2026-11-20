@@ -12,7 +12,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from github_client import GitHubError
-from review_github import READ, GitHubClient, merge_base_commit
+from review_github import READ, GitHubClient, read_merge_base_commit
 from review_io import NETWORK_WORKERS, map_in_order
 from typed_fields import FieldError
 
@@ -140,6 +140,14 @@ def needs_modes(before: ChangedFiles, after: ChangedFiles) -> bool:
     removed, need the trees.
     """
     return before == after and any(status != "removed" for _, status, _, _ in before)
+
+
+def merge_base(comparison: object) -> str | None:
+    """The merge base a comparison names, or None when it is malformed or names none."""
+    try:
+        return read_merge_base_commit(comparison)
+    except FieldError:
+        return None
 
 
 def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str) -> bool | None:
@@ -277,9 +285,7 @@ class ChangeDetector:
 
     def _read_merge_base(self, key: tuple[str, str, str]) -> str | None:
         repository, base_ref, sha = key
-        return merge_base_commit(
-            self._evidence(f"repos/{repository}/compare/{quote(base_ref, safe='/')}...{sha}?per_page=1")
-        )
+        return merge_base(self._evidence(f"repos/{repository}/compare/{quote(base_ref, safe='/')}...{sha}?per_page=1"))
 
     def _read_modes(self, key: tuple[str, str]) -> dict[str, str] | None:
         repository, sha = key

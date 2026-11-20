@@ -823,18 +823,17 @@ class GitHubDocumentTests(unittest.TestCase):
                     self.assertEqual(0, client.call_count)
 
     def test_merge_base_rejects_malformed_compare_responses(self) -> None:
-        # The one reader of a compare answer's merge base reads every malformed answer as naming none.
-        message = field_message("compare.merge_base_commit.sha", OBJECT_ID, "no such commit in the answer")
-        values: tuple[Any, ...] = (
-            [],
-            {},
-            {"merge_base_commit": []},
-            {"merge_base_commit": {}},
-            {"merge_base_commit": {"sha": 1}},
-            {"merge_base_commit": {"sha": "a" * 39}},
-            {"merge_base_commit": {"sha": "g" * 40}},
+        sha = "compare.merge_base_commit.sha"
+        values: tuple[tuple[Any, str], ...] = (
+            ([], "compare must be an object, found an array"),
+            ({}, "compare.merge_base_commit must be an object, found null"),
+            ({"merge_base_commit": []}, "compare.merge_base_commit must be an object, found an array"),
+            ({"merge_base_commit": {}}, field_message(sha, OBJECT_ID, "null")),
+            ({"merge_base_commit": {"sha": 1}}, field_message(sha, OBJECT_ID, "integer 1")),
+            ({"merge_base_commit": {"sha": "a" * 39}}, field_message(sha, OBJECT_ID, "a string of 39 characters")),
+            ({"merge_base_commit": {"sha": "g" * 40}}, field_message(sha, OBJECT_ID, NOT_HEX)),
         )
-        for value in values:
+        for value, message in values:
             with self.subTest(value=value):
                 client, calls = self._client(value)
                 with self.assertRaises(GitHubFieldError) as context:

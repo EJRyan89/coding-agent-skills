@@ -71,16 +71,14 @@ class DiffOverLimit(GitHubError):
 READ = FieldReader(GitHubFieldError)
 
 
-def merge_base_commit(compare: object) -> str | None:
-    """The merge base a decoded answer of GitHub's compare endpoint names: its `merge_base_commit`'s commit id, or
-    None when the answer is malformed or names none. The one reader of that field."""
-    try:
-        commit = READ.json_object(
-            READ.json_object(compare, "compare").get("merge_base_commit"), "compare.merge_base_commit"
-        )
-        return READ.hex_digest(commit.get("sha"), "compare.merge_base_commit.sha", 40, 64)
-    except FieldError:
-        return None
+def read_merge_base_commit(compare: object) -> str:
+    """The merge base a decoded answer of GitHub's compare endpoint names: its `merge_base_commit`'s commit id. The one
+    reader of that field, raising `GitHubFieldError`, naming the part that is wrong, for an answer that is malformed or
+    names none."""
+    commit = READ.json_object(
+        READ.json_object(compare, "compare").get("merge_base_commit"), "compare.merge_base_commit"
+    )
+    return READ.hex_digest(commit.get("sha"), "compare.merge_base_commit.sha", 40, 64)
 
 
 ARGUMENTS = FieldReader(GitHubInputError)
@@ -398,12 +396,7 @@ class GitHubClient:
         repository = validate_repository_identity(repository)
         ARGUMENTS.hex_digest(base, "base commit", 40, 64)
         ARGUMENTS.hex_digest(head, "head commit", 40, 64)
-        compare = self.api_json(f"repos/{repository}/compare/{base}...{head}?per_page=1")
-        sha = merge_base_commit(compare)
-        if sha is None:
-            expected = "a lowercase hexadecimal digest of 40 or 64 characters"
-            raise READ.fail("compare.merge_base_commit.sha", expected, "no such commit in the answer")
-        return sha
+        return read_merge_base_commit(self.api_json(f"repos/{repository}/compare/{base}...{head}?per_page=1"))
 
     def get_file_blob(self, repository: str, commit: str, path: str, *, maximum: int) -> tuple[str, bytes | None]:
         """The blob id of the file at `path` in `commit`, and its bytes, or None for a file over `maximum` bytes, whose

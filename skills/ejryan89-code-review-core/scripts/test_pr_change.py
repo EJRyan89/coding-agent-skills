@@ -25,7 +25,7 @@ from pr_change import (
     tree_modes,
     with_modes,
 )
-from review_github import GitHubClient, GitHubFieldError, merge_base_commit
+from review_github import GitHubClient, GitHubFieldError, read_merge_base_commit
 
 REVIEWED = "a" * 40
 HEAD = "d" * 40
@@ -438,15 +438,20 @@ class ReviewedBaseTests(unittest.TestCase):
         )
         for answer, expected in answers:
             with self.subTest(answer=answer):
-                self.assertEqual(expected, merge_base_commit(answer))
                 retargeted = self.detect_retargeted(self.merge_bases(answer, expected or sha))
                 self.assertEqual(UNKNOWN if expected is None else UNCHANGED, retargeted)
                 client = FakeClient({f"{REVIEWED_BASE}...{HEAD}": answer})
                 if expected is None:
-                    with self.assertRaises(GitHubFieldError) as context:
+                    with self.assertRaises(GitHubFieldError) as read:
+                        read_merge_base_commit(answer)
+                    with self.assertRaises(GitHubFieldError) as named:
                         client.get_merge_base("owner/repo", REVIEWED_BASE, HEAD)
-                    self.assertEqual("malformed", context.exception.kind)
+                    self.assertEqual(
+                        str(read.exception), str(named.exception), "get_merge_base keeps the reader's error"
+                    )
+                    self.assertEqual("malformed", named.exception.kind)
                 else:
+                    self.assertEqual(expected, read_merge_base_commit(answer))
                     self.assertEqual(expected, client.get_merge_base("owner/repo", REVIEWED_BASE, HEAD))
 
     def test_prefetch_reads_the_comparison_with_the_reviewed_base_and_detect_needs_no_further_call(self) -> None:
