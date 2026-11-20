@@ -906,6 +906,14 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
             [],
             id="retried-delimiter-after-text",
         ),
+        # A header read across a blank line is no header: the paragraph's text starts the rows anew.
+        pytest.param(
+            "| x | y |\n\na\n| - | - |\n    code\n",
+            [(0, "table row"), (2, "paragraph"), (3, "table row"), (4, "paragraph")],
+            [],
+            [],
+            id="no-header-across-a-blank-line",
+        ),
         pytest.param(
             "| a |\n\n| b |\n|-|\n    code\n",
             [(0, "table row"), (2, "table row"), (3, "table row"), (4, "code")],

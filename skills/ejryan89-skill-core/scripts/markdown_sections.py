@@ -412,9 +412,11 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     which is read as that block; a line that starts with `|` is a table row even where it follows a paragraph's text in
     the same container, though one that lazily continues a paragraph is that paragraph's text, so no delimiter row under
     it makes a table, where GitHub may make one, and a table is read only where its header and its delimiter row both
-    start with `|`; a list item's own line is the item's block whatever it holds but a blockquote, a fence, or indented
-    code, each a block of its own, so a heading on it, as in `- # H`, is the item's text; and a quote's own lines are
-    not split into the blocks it holds, though a code block inside it is a block of its own and ends the quote's."""
+    start with `|`; a delimiter row under a header that does not start with `|` still takes the paragraph's one try, so
+    where GitHub makes that table, the `|` rows under it, a later delimiter row among them, are read as the paragraph's
+    text; a list item's own line is the item's block whatever it holds but a blockquote, a fence, or indented code, each
+    a block of its own, so a heading on it, as in `- # H`, is the item's text; and a quote's own lines are not split
+    into the blocks it holds, though a code block inside it is a block of its own and ends the quote's."""
     yield from _walk(lines).blocks
 
 
@@ -446,8 +448,10 @@ def _walk(lines: list[str]) -> _Walker:
     setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a heading; a list
     marker with nothing after it on its line opens no item, so a bare marker is text, and lazily continues a paragraph
     above it; a `|` line with no delimiter row under it is read as a paragraph's text for what may follow it, as GitHub
-    reads it, though it is a table row of its own; and a table is read only from a header row that starts with `|`,
-    and a line under its rows that starts with `<` ends it as a paragraph, as an HTML block's start would."""
+    reads it, though it is a table row of its own; a table is read only from a header row that starts with `|`, and a
+    line under its rows that starts with `<` ends it as a paragraph, as an HTML block's start would; and a delimiter row
+    under a header that does not start with `|` still takes the paragraph's one try, so where GitHub makes that table,
+    the `|` rows under it, a later delimiter row among them, are read as the paragraph's text."""
     walker = _Walker(lines)
     for index in range(len(lines)):
         walker.line(index)

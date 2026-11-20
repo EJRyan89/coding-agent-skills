@@ -1697,3 +1697,8 @@ def test_fence_policy_reports_a_markdown_file_it_cannot_read(tmp_path: Path) -> 
     (tmp_path / "doc.md").write_bytes(b"```\n\xff\n```\n")
     (found,) = fence_reading_problems(tmp_path, [tmp_path / "doc.md"])
     assert found.startswith("doc.md: cannot be read as UTF-8 text to compare its fences: ")
+
+
+def test_fence_policy_reports_a_markdown_file_it_cannot_open(tmp_path: Path) -> None:
+    (found,) = fence_reading_problems(tmp_path, [tmp_path / "gone.md"])
+    assert found.startswith("gone.md: cannot be read as UTF-8 text to compare its fences: ")
