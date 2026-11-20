@@ -3165,6 +3165,26 @@ def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separato
         pytest.param("Steps follow.\n1. first step\n", [(1, "Steps follow."), (2, "1. first step")], id="numbered"),
         pytest.param("Text.\n2. no list here\n", [(1, "Text. 2. no list here")], id="numbered-not-one"),
         pytest.param("Text.\n+ plus item\n", [(1, "Text."), (2, "+ plus item")], id="plus-item"),
+        pytest.param("Text.\n1) paren item\n", [(1, "Text."), (2, "1) paren item")], id="numbered-paren"),
+        pytest.param(
+            "1. first step\n2. second step\n", [(1, "1. first step"), (2, "2. second step")], id="numbered-list"
+        ),
+        pytest.param("Text.\n    # not heading\n", [(1, "Text. # not heading")], id="lazy-heading-shape"),
+        pytest.param("- an item\n    # Item heading\n", [(1, "- an item")], id="heading-in-item"),
+        pytest.param(
+            "1. an item\n\n    # Item heading\nAfter.\n", [(1, "1. an item"), (4, "After.")], id="heading-after-blank"
+        ),
+        pytest.param("Text.\n```\ncode line\nmore code\n", [(1, "Text.")], id="unclosed-fence"),
+        pytest.param(
+            "Build rules\n===========\nRun the suite before every push.\n",
+            [(1, "Build rules =========== Run the suite before every push.")],
+            id="setext-limit",
+        ),
+        pytest.param(
+            "Keep the index short.\n<!-- generated:summary -->\nMore prose here.\n",
+            [(1, "Keep the index short. <!-- generated:summary --> More prose here.")],
+            id="html-limit",
+        ),
         pytest.param("Tag notes.\n#hashtag stays text\n", [(1, "Tag notes. #hashtag stays text")], id="hashtag"),
         pytest.param("#hashtag opens a paragraph\n", [(1, "#hashtag opens a paragraph")], id="hashtag-first"),
         pytest.param("# Title\nBody text.\n#\nMore.\n", [(2, "Body text."), (4, "More.")], id="headings"),
