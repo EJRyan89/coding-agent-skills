@@ -1293,16 +1293,40 @@ class ReindexTests(unittest.TestCase):
 
     def test_a_backtick_in_a_name_title_or_hook_never_hides_an_entry_from_its_reader(self) -> None:
         # A backtick in the title could pair with one in the file name or the hook into a code span over the
-        # destination, which the reader blanks, so each reindex added the memory again.
+        # destination, which the reader blanks, so each reindex added the memory again. A lone one pairs with none,
+        # so it is kept; a title's that pairs with the hook's is written as `'`, and the hook's then pairs with none.
         write(self.memory_dir / "a`b.md", "plain\n")
         write(self.memory_dir / "keyed.md", "---\nname: Escape the ` key\ndescription: use `x` here\n---\nBody.\n")
-        expected = "- [a'b](a%60b.md) — plain\n- [Escape the ' key](keyed.md) — use 'x' here\n"
+        expected = "- [a`b](a%60b.md) — plain\n- [Escape the ' key](keyed.md) — use `x` here\n"
         for _ in range(3):
             self.reindex("--write")
             self.assertEqual(expected, self.index.read_text(encoding="utf-8"))
         report = memory_audit.audit(self.memory_dir)
         self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
         self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
+
+    def test_inline_code_in_a_hook_is_kept_when_the_title_holds_no_backtick(self) -> None:
+        # Writing every backtick as `'` rewrote inline code in hand-written and description hooks on every reindex.
+        write(self.memory_dir / "kept.md", "Body.\n")
+        described = "---\nname: Arming\ndescription: run `gh pr merge N --auto`\n---\nBody.\n"
+        write(self.memory_dir / "described.md", described)
+        original = "- [Kept](kept.md) — arm with `gh pr merge N` here\n"
+        write(self.index, original)
+        expected = original + "- [Arming](described.md) — run `gh pr merge N --auto`\n"
+        for _ in range(2):
+            self.reindex("--write")
+            self.assertEqual(expected, self.index.read_text(encoding="utf-8"))
+        self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
+
+    def test_a_backtick_in_a_kept_file_spelling_never_pairs_with_one_in_the_hook(self) -> None:
+        # A hand-written destination keeps its raw backtick, so the hook's backticks are the ones written as `'`.
+        write(self.memory_dir / "a`b.md", "---\ndescription: use `x` here\n---\nBody.\n")
+        write(self.index, "- [Ab](a`b.md) — old hook\n")
+        for _ in range(3):
+            self.reindex("--write")
+            self.assertEqual("- [Ab](a`b.md) — use 'x' here\n", self.index.read_text(encoding="utf-8"))
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
 
     def test_a_new_entry_reads_back_as_its_memory_however_the_name_is_spelled(self) -> None:
         # The old writer escaped only a backslash and parentheses, so a space, `%`, `#`, or `&` read back as another

@@ -47,13 +47,15 @@ reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memo
 `- [Title](file.md) — hook`. An entry's file is read as CommonMark reads a link's destination,
 through ejryan89-skill-core's link_destinations, and a new entry's is written so that it reads
 back as the file's name; an entry in code is none, and neither is one whose link has a title.
-A backtick in a title or a hook is written as `'`, so no code span can cover an entry's file.
+A title and a hook are written as given, unless a backtick in them would pair with another into a
+code span over the entry's file; only then is each of the title's backticks written as `'`, and
+the hook's too when a backtick in a kept file spelling still pairs with one in the hook.
 It writes only MEMORY.md, only with --write, and never deletes or changes a memory file.
 Existing lines keep their place: other lines (headings, notes) stay
 as written, an entry is dropped when its file is gone or it repeats an earlier entry, and
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
-all of a `>` or `|` block scalar's lines, else the existing entry's hook, kept as written, else
+all of a `>` or `|` block scalar's lines, else the existing entry's hook, else
 the first line of the body, an ATX heading's text without its marks; a description or a body
 line is collapsed to one line of at most 150 characters, because Claude Code loads the index
 into every session and stops at its load limit.
@@ -687,11 +689,21 @@ def one_line(text: str, limit: int = HOOK_LIMIT) -> str:
 
 
 def index_line(title: str, file: str, hook: str, *, original_target: str | None = None) -> str:
-    """An index entry, written so that index_entries reads it back: a backtick in the title or the hook becomes `'`,
-    since one there could pair with another into a code span over the destination, which a backslash cannot escape,
-    and a new entry's file is written through link_destinations' written_destination."""
+    """An index entry, written so that index_entries reads it back: a new entry's file through link_destinations'
+    written_destination, and the title and the hook as given, unless a backtick in them pairs with another into a code
+    span over the destination, which a backslash cannot escape. Only then is each of the title's backticks written as
+    `'`, and the hook's too when a backtick in a kept destination still pairs with one in the hook."""
     target = original_target if original_target is not None else written_destination(file)
-    title, hook = title.replace("`", "'"), hook.replace("`", "'")
+    plain_title, plain_hook = title.replace("`", "'"), hook.replace("`", "'")
+    for written_title, written_hook in ((title, hook), (plain_title, hook)):
+        line = _entry_line(written_title, target, written_hook)
+        read = index_entries([line]).get(0)
+        if read is not None and read["file"] == target:
+            return line
+    return _entry_line(plain_title, target, plain_hook)
+
+
+def _entry_line(title: str, target: str, hook: str) -> str:
     return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
