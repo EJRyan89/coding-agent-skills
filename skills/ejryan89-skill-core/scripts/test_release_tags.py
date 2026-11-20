@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import stat
 import subprocess
 import sys
 import tempfile
@@ -238,7 +239,9 @@ class LastReleaseTests(unittest.TestCase):
         (self.root / "gone.txt").write_text("gone", encoding="utf-8")
         target = self.git("hash-object", "-w", "gone.txt")
         self.git("tag", "-a", "-m", "broken", name, target)
-        (self.root / ".git" / "objects" / target[:2] / target[2:]).unlink()
+        loose = self.root / ".git" / "objects" / target[:2] / target[2:]
+        loose.chmod(stat.S_IWRITE | stat.S_IREAD)  # git writes its objects read-only, which Windows will not remove
+        loose.unlink()
 
     def test_a_broken_tag_of_another_name_leaves_the_releases_naming_the_commit_listed(self) -> None:
         commit = self.commit("released")
