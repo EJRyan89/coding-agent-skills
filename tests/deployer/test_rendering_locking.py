@@ -196,8 +196,16 @@ class RenderedExecutableTests(DeployerTestCase):
             written.append(path)
             real_write(path, content)
 
+        real_refuse = render.refuse_folded_paths
+        asked: list[Path] = []
+
+        def refuse(staged: render.Staged, staging_root: Path) -> None:
+            asked.append(staging_root)
+            real_refuse(staged, staging_root)
+
         with (
             mock.patch.object(render, "render", colliding),
+            mock.patch.object(render, "refuse_folded_paths", refuse),
             mock.patch("path_keys.folds_case", return_value=True),
             mock.patch.object(fsops, "write_file", recorded),
         ):
@@ -208,6 +216,8 @@ class RenderedExecutableTests(DeployerTestCase):
         # Refused before staging or the journal's first write, on a file system that folds case and one that does not.
         self.assertEqual([], written)
         paths = Paths(self.source, self.home)
+        # Asked of the folder staging writes in, whose file system decides whether the two names are one.
+        self.assertEqual([paths.staging_root], asked)
         self.assertFalse(os.path.lexists(paths.staging_root))
         self.assertFalse((self.skills_dir / "alpha").exists())
 

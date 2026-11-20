@@ -1356,6 +1356,20 @@ class InitialReviewTests(PrepareFixture):
             self.text_file("work/generic-review.prompt.md"),
         )
 
+    def test_a_run_prepare_creates_is_made_in_the_folder_private_folder_judged(self) -> None:
+        judged = self.root / "judged"
+        judged.mkdir()
+        with mock.patch.object(private_folder, "temporary_directory", return_value=judged):
+            result, _ = self.prepare(run_directory=None)
+        self.assertRegex(result["run"], r"^<root>/judged/code-review-run-")
+        self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_given_run_directory_is_made_with_every_missing_folder_above_it(self) -> None:
+        self.run_dir = self.root / "new" / "deeper" / "run"
+        result, _ = self.prepare()
+        self.assertEqual("<root>/new/deeper/run", result["run"])
+        self.assertTrue(self.run_dir.is_dir())
+
     @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
     def test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run(self) -> None:
         # Another account could rename the shared folder's entry and put its own prompts where a reviewer reads them.

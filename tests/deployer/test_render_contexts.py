@@ -624,6 +624,15 @@ class PowerShellExtensionTests(unittest.TestCase):
         with self.assertRaisesRegex(DeployError, r"Rendered PowerShell syntax validation failed: alpha/scripts/X\.ps1"):
             render.validate_executables(render.Staged(skills={"alpha": files}))
 
+    def test_a_broken_shell_file_beside_a_fine_one_its_name_folds_to_is_still_checked(self) -> None:
+        # Each shell file is checked from a folder of its own, as each PowerShell script is.
+        files = {
+            "scripts/X.sh": b"#!/usr/bin/env bash\ncd $1 || exit\n",
+            "scripts/x.sh": b"#!/usr/bin/env bash\nexit 0\n",
+        }
+        with self.assertRaisesRegex(DeployError, r"ShellCheck failed for rendered content: alpha/scripts/X\.sh"):
+            render.validate_executables(render.Staged(skills={"alpha": files}))
+
 
 class FoldedPathTests(unittest.TestCase):
     def staged(self, *names: str) -> render.Staged:
@@ -631,16 +640,35 @@ class FoldedPathTests(unittest.TestCase):
 
     def test_names_that_differ_only_in_case_are_refused_where_the_file_system_folds_case(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, mock.patch("path_keys.folds_case", return_value=True):
-            for names, first, second in (
-                (("scripts/fine.ps1", "scripts/fine.Ps1"), "alpha/scripts/fine.Ps1", "alpha/scripts/fine.ps1"),
-                (("Scripts/a.py", "scripts/b.py"), "alpha/Scripts/a.py", "alpha/scripts/b.py"),
+            for names, first, second, spellings in (
+                (
+                    ("scripts/fine.ps1", "scripts/fine.Ps1"),
+                    "alpha/scripts/fine.Ps1",
+                    "alpha/scripts/fine.ps1",
+                    "alpha/scripts/fine.Ps1 and alpha/scripts/fine.ps1",
+                ),
+                (
+                    ("Scripts/a.py", "scripts/b.py"),
+                    "alpha/Scripts/a.py",
+                    "alpha/scripts/b.py",
+                    "alpha/Scripts and alpha/scripts",
+                ),
             ):
                 with self.subTest(names=names), self.assertRaises(DeployError) as raised:
                     render.refuse_folded_paths(self.staged(*names), Path(temporary))
-                self.assertIn(
-                    f"ERROR: {first} and {second} name one file where the deployer stages them", str(raised.exception)
+                self.assertEqual(
+                    f"ERROR: {first} and {second} name one file where the deployer stages them, since {spellings} "
+                    "differ only in letter case and its file system compares names without it",
+                    raised.exception.lines[0],
                 )
                 self.assertEqual(render.FOLDED_PATHS_REMEDY, raised.exception.lines[1])
+
+    def test_the_folded_paths_step_is_pinned(self) -> None:
+        # A pinned contract value: the step a user is told to take, compared with a literal rather than itself.
+        self.assertEqual(
+            "Rename one of them in the source so that no two names differ only in letter case, then rerun.",
+            render.FOLDED_PATHS_REMEDY,
+        )
 
     def test_names_that_differ_only_in_case_pass_where_the_file_system_keeps_case(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, mock.patch("path_keys.folds_case", return_value=False):
