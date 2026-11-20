@@ -1,4 +1,4 @@
-"""The one reader of a fix pull request's `## Forms considered` section, which validation's body check and the
+r"""The one reader of a fix pull request's `## Forms considered` section, which validation's body check and the
 `implement-change` repository skill's body check share.
 
 A pull request titled `fix` fills the section its template holds with text of the author's own, not nothing and not the
@@ -8,10 +8,25 @@ heading is an ATX `## Forms considered`, indented up to three spaces; a setext `
 second-level heading GitHub renders, ATX, setext, or an HTML `<h1>` or `<h2>`, indented up to three spaces; a
 third-level heading, and a heading inside a quote, a list item, or a fence, are inside it. A list item holds each line
 after its first indented at least to the column its text starts at, and each lazy line continuing its paragraph; one
-that opens empty ends at a blank line right after it, since an item may begin with one blank line at most. A comment
-GitHub hides is not read, one left unclosed running to the end of the body, while a `<!--` inside a fenced or indented
-code block or an inline code span is text GitHub shows; and text that renders as nothing, such as an empty tag, an
-entity for a space, or an invisible character, is no text.
+that opens empty ends at a blank line right after it, since an item may begin with one blank line at most. Text that
+renders as nothing, such as an empty tag, an entity for a space, or an invisible character, is no text.
+
+A comment GitHub hides is not read, while a `<!--` inside a fenced or indented code block or an inline code span is text
+GitHub shows. The blocks are read as CommonMark reads them, before any comment goes: a `<!--` that starts a line, inside
+any blockquotes and up to three spaces in, opens an HTML block that runs to its `-->`, so a fence-like line it holds
+opens no fence, and the code blocks are read once, with each such comment read as the thematic break that, like it,
+ends a paragraph and is no code. The comments and the code spans are then read left to right, each read once, so the
+reading takes time in proportion to the body. A comment that opens a block and is left unclosed runs to the end of the
+body, as GitHub reads it.
+
+The limits: an unclosed `<!--` inside a line also hides the rest of the body, where GitHub shows it as text (#2976). A
+`<!--` after a list item's marker, or past three spaces of a list item's content, is read inside the line, so the
+lines after it are read as the item's paragraph. A code span is read by markdown_sections' `COMMONMARK_CODE_SPAN`,
+which may pair backtick runs of unequal length, so ``` ``a`<!-- x -->` ``` hides a comment GitHub shows in code; a
+backslash-escaped backtick is read as opening a span, so ``\`<!-- x -->\` `` keeps a comment GitHub hides; and a span is
+read within one line, so a span that crosses a line break shields no `<!--` on its second line. `placeholder_forms`
+reads the template's guidance from every comment its section holds, with no code test, so a template whose section shows
+`<!--` in code yields guidance that is no comment.
 
 A title is a fix's when it opens with the type `fix`, in any case, an optional scope, an optional `!`, a colon, and a
 space, by the grammar `TITLE` reads every pull request title with.
@@ -22,6 +37,7 @@ from __future__ import annotations
 import html
 import re
 import unicodedata
+from bisect import bisect_right
 from enum import Enum
 
 from agent_skills import XML_TAG_PATTERN
@@ -74,6 +90,16 @@ MAX_ITEM_GAP = 4
 # An HTML comment as GitHub hides it: the empty forms `<!-->` and `<!--->`, or up to `-->`, or, left unclosed, to the
 # end of the body.
 HIDDEN_COMMENT = re.compile(r"<!--(?:-?>|.*?(?:-->|\Z))", re.DOTALL)
+COMMENT_OPENER = "<!--"
+# A line whose `<!--` opens an HTML block, as CommonMark starts one: inside any blockquotes, up to three spaces in.
+COMMENT_BLOCK_START = re.compile(r"(?:[ \t]*>[ \t]?)*[ ]{0,3}<!--")
+# The blockquote markers a line opens with, which a comment block's later lines keep so the quote holds them.
+QUOTE_PREFIX = re.compile(r"(?:[ \t]*>[ \t]?)*")
+# What a comment block's first line is read as for the code reading: a thematic break, which, as the HTML block does,
+# ends a paragraph and is no code.
+COMMENT_BLOCK_STAND_IN = "***"
+# The lines a fence's closer is first looked for in, doubled until it is found, so a long fence is read once over.
+FENCE_WINDOW = 64
 # Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
 # category: the Hangul fillers and the blank braille pattern.
 INVISIBLE = frozenset("ᅟᅠㅤﾠ⠀")
@@ -120,28 +146,74 @@ def forms_section(body: str) -> str | None:
 
 def without_hidden_comments(text: str) -> str:
     """`text` without each comment GitHub hides, read left to right: one whose `<!--` opens outside every code block
-    and code span, up to its `-->` wherever that falls, or to the end of the text. A `<!--` that code shows is text, and
-    the blocks are read again after each comment goes, so a fence-like line a comment held opens no block."""
-    at = 0
-    while (comment := HIDDEN_COMMENT.search(text, at)) is not None:
-        if _in_code(text, comment.start()):
-            at = comment.start() + 1
-            continue
-        text = text[: comment.start()] + text[comment.end() :]
-        at = comment.start()
-    return text
-
-
-def _in_code(text: str, offset: int) -> bool:
-    """Whether the character at `offset` is inside a fenced or indented code block or an inline code span, as
-    markdown_sections reads them, lines ending where CommonMark ends one."""
-    breaks = [match.end() for match in LINE_BREAK.finditer(text, 0, offset)]
-    line_start = breaks[-1] if breaks else 0
+    and code span, up to its `-->` wherever that falls, or to the end of the text. A `<!--` that code shows is text."""
     lines = LINE_BREAK.split(text)
-    if len(breaks) in code_block_lines(lines):
-        return True
-    column = offset - line_start
-    return any(span.start() <= column < span.end() for span in COMMONMARK_CODE_SPAN.finditer(lines[len(breaks)]))
+    starts = [0, *(match.end() for match in LINE_BREAK.finditer(text))]
+    code = code_block_lines(_comment_blocks_read_as_breaks(text, lines, starts))
+    kept: list[str] = []
+    position = 0
+    span = COMMONMARK_CODE_SPAN.search(text)
+    while (opener := text.find(COMMENT_OPENER, position)) != -1:
+        while span is not None and span.end() <= opener:
+            span = COMMONMARK_CODE_SPAN.search(text, span.end())
+        if span is not None and span.start() < opener:
+            # A code span that holds the `<!--` shows it, and every character up to the span's end.
+            kept.append(text[position : span.end()])
+            position = span.end()
+            continue
+        if bisect_right(starts, opener) - 1 in code:
+            kept.append(text[position : opener + 1])
+            position = opener + 1
+            continue
+        kept.append(text[position:opener])
+        position = _comment_end(text, opener)
+        if span is not None and span.start() < position:
+            span = COMMONMARK_CODE_SPAN.search(text, position)
+    kept.append(text[position:])
+    return "".join(kept)
+
+
+def _comment_blocks_read_as_breaks(text: str, lines: list[str], starts: list[int]) -> list[str]:
+    """The lines with each comment that opens an HTML block outside a fence read as a thematic break on its first
+    line and blank lines after it, inside the blockquotes that hold each line, so the code reading meets no fence-like
+    line the comment holds."""
+    read = list(lines)
+    index = 0
+    while index < len(lines):
+        if find_fences([lines[index]]):
+            index = _fence_stop(lines, index)
+            continue
+        block = COMMENT_BLOCK_START.match(lines[index])
+        if block is None:
+            index += 1
+            continue
+        opener = starts[index] + block.end() - len(COMMENT_OPENER)
+        last = bisect_right(starts, max(_comment_end(text, opener) - 1, opener)) - 1
+        read[index] = lines[index][: block.end() - len(COMMENT_OPENER)] + COMMENT_BLOCK_STAND_IN
+        for later in range(index + 1, last + 1):
+            quotes = QUOTE_PREFIX.match(lines[later])
+            read[later] = quotes.group() if quotes is not None else ""
+        index = last + 1
+    return read
+
+
+def _comment_end(text: str, opener: int) -> int:
+    """The index just past the comment whose `<!--` is at `opener`: past its `-->`, or the end of the text, where the
+    pattern ends every comment left unclosed."""
+    comment = HIDDEN_COMMENT.match(text, opener)
+    return len(text) if comment is None else comment.end()
+
+
+def _fence_stop(lines: list[str], opener: int) -> int:
+    """The index just past the fence that opens at `opener`, read by find_fences over a window from the opener that
+    doubles until the fence ends inside it or the window reaches the last line."""
+    window = FENCE_WINDOW
+    while True:
+        fence = find_fences(lines[opener : opener + window])[0]
+        stop = fence.lines().stop
+        if fence.closer is not None or stop < window or opener + window >= len(lines):
+            return opener + stop
+        window *= 2
 
 
 def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
