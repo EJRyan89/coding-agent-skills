@@ -3121,6 +3121,97 @@ def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separato
     ]
 
 
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param(
+            "Keep every function short and focused.\n> Note: the tests are exempt from this rule.\nRun the suite:\n"
+            "```bash\npython -B tests/run_validation.py\n```\n",
+            [
+                (1, "Keep every function short and focused."),
+                (2, "> Note: the tests are exempt from this rule. Run the suite:"),
+            ],
+            id="reproduction",
+        ),
+        pytest.param(
+            "Keep rules short.\n> Note: tests are exempt.\n",
+            [(1, "Keep rules short."), (2, "> Note: tests are exempt.")],
+            id="quote",
+        ),
+        pytest.param(
+            "Quoted text.\n> more quoted text\n",
+            [(1, "Quoted text."), (2, "> more quoted text")],
+            id="quote-after-text",
+        ),
+        pytest.param(
+            "> Quoted.\n> Still quoted.\n- an item\n",
+            [(1, "> Quoted. > Still quoted."), (3, "- an item")],
+            id="quote-then-item",
+        ),
+        pytest.param(
+            "Run the suite:\n```bash\npython -B tests/run.py\n```\nAfter the fence.\n",
+            [(1, "Run the suite:"), (5, "After the fence.")],
+            id="fence",
+        ),
+        pytest.param("- an item\n  ~~~\n  code in the item\n  ~~~\n", [(1, "- an item")], id="fence-in-item"),
+        pytest.param("Some text.\n\n    indented code\n", [(1, "Some text.")], id="indented-code"),
+        pytest.param(
+            "Text continues\n    indented past four\n", [(1, "Text continues indented past four")], id="lazy-indented"
+        ),
+        pytest.param(
+            "First rule.\n***\nSecond rule.\n", [(1, "First rule."), (3, "Second rule.")], id="thematic-break"
+        ),
+        pytest.param("First rule.\n___\n", [(1, "First rule.")], id="underscore-break"),
+        pytest.param("Steps follow.\n1. first step\n", [(1, "Steps follow."), (2, "1. first step")], id="numbered"),
+        pytest.param("Text.\n2. no list here\n", [(1, "Text. 2. no list here")], id="numbered-not-one"),
+        pytest.param("Text.\n+ plus item\n", [(1, "Text."), (2, "+ plus item")], id="plus-item"),
+        pytest.param("Text.\n1) paren item\n", [(1, "Text."), (2, "1) paren item")], id="numbered-paren"),
+        pytest.param(
+            "1. first step\n2. second step\n", [(1, "1. first step"), (2, "2. second step")], id="numbered-list"
+        ),
+        pytest.param("Text.\n    # not heading\n", [(1, "Text. # not heading")], id="lazy-heading-shape"),
+        pytest.param("- an item\n    # Item heading\n", [(1, "- an item")], id="heading-in-item"),
+        pytest.param("- an item\n# Heading\nAfter.\n", [(1, "- an item"), (3, "After.")], id="heading-after-item"),
+        pytest.param("Text.\n   # Heading\nAfter.\n", [(1, "Text."), (3, "After.")], id="heading-indented-three"),
+        pytest.param("Text.\n\u00a0\nMore.\n", [(1, "Text. \u00a0 More.")], id="no-break-space-line"),
+        pytest.param(
+            "| a | b |\n| - | - |\nAfter text.\n",
+            [(1, "| a | b |"), (2, "| - | - |"), (3, "After text.")],
+            id="line-after-table-row",
+        ),
+        pytest.param(
+            "1. an item\n\n    # Item heading\nAfter.\n", [(1, "1. an item"), (4, "After.")], id="heading-after-blank"
+        ),
+        pytest.param("Text.\n```\ncode line\nmore code\n", [(1, "Text.")], id="unclosed-fence"),
+        pytest.param(
+            "Build rules\n===========\nRun the suite before every push.\n",
+            [(1, "Build rules =========== Run the suite before every push.")],
+            id="setext-limit",
+        ),
+        pytest.param(
+            "Keep the index short.\n<!-- generated:summary -->\nMore prose here.\n",
+            [(1, "Keep the index short. <!-- generated:summary --> More prose here.")],
+            id="html-limit",
+        ),
+        pytest.param("Tag notes.\n#hashtag stays text\n", [(1, "Tag notes. #hashtag stays text")], id="hashtag"),
+        pytest.param("#hashtag opens a paragraph\n", [(1, "#hashtag opens a paragraph")], id="hashtag-first"),
+        pytest.param("# Title\nBody text.\n#\nMore.\n", [(2, "Body text."), (4, "More.")], id="headings"),
+        pytest.param(
+            "- an item\n  its second line\n- next\n", [(1, "- an item its second line"), (3, "- next")], id="item-lines"
+        ),
+        pytest.param(
+            "Text.\n| a | b |\n| - | - |\n", [(1, "Text."), (2, "| a | b |"), (3, "| - | - |")], id="table-rows"
+        ),
+    ],
+)
+def test_a_destination_block_is_a_block_as_github_renders_it(
+    document: str, expected: list[tuple[int, str]], tmp_path: Path
+) -> None:
+    guide = write(tmp_path / "CLAUDE.md", document)
+    blocks = memory_audit.destination_blocks([guide])
+    assert [(start, text) for _, start, text, _ in blocks] == expected
+
+
 @pytest.mark.parametrize("separator", TEXT_SEPARATORS)
 def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line(
     separator: str, tmp_path: Path
@@ -3131,6 +3222,30 @@ def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line
     rebuilt = memory_audit.reindex(tmp_path)
     assert rebuilt["dropped"] == []
     assert rebuilt["content"] == f"# Notes{separator}- [Gone](gone.md) — x\n- [Plain](plain.md) — First # Second\n"
+
+
+def test_a_destination_document_is_read_as_utf_8_with_each_undecodable_byte_replaced(tmp_path: Path) -> None:
+    guide = tmp_path / "CLAUDE.md"
+    guide.write_bytes("Café rule text.\n".encode() + b"Broken \xff byte.\n")
+    blocks = memory_audit.destination_blocks([guide])
+    assert [(start, text) for _, start, text, _ in blocks] == [(1, "Café rule text. Broken \ufffd byte.")]
+
+
+@pytest.mark.parametrize(
+    ("body", "hook"),
+    [
+        ("#hashtag notes\n", "#hashtag notes"),
+        ("# Plain heading\n", "Plain heading"),
+        ("## Closed heading ##\n", "Closed heading"),
+        ("#\nText.\n", ""),
+        ("\n\n", ""),
+    ],
+)
+def test_a_derived_hook_drops_an_atx_heading_s_marks_and_keeps_a_hashtag(body: str, hook: str, tmp_path: Path) -> None:
+    write(tmp_path / "plain.md", body)
+    write(tmp_path / "MEMORY.md", "- [Plain](plain.md)\n")
+    expected = "- [Plain](plain.md)" + (f" — {hook}" if hook else "") + "\n"
+    assert memory_audit.reindex(tmp_path)["content"] == expected
 
 
 def test_a_folder_the_destination_walk_could_not_list_raises_the_error_the_walk_recorded(tmp_path: Path) -> None:
