@@ -1317,6 +1317,15 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
         self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
 
+    def test_a_line_an_earlier_reindex_wrote_over_its_own_destination_is_kept_as_text_beside_the_entry(self) -> None:
+        # The line the old reader wrote for this title is no entry as CommonMark reads it, so the memory is indexed
+        # again below it, once, and the old line is the user's to delete, as the upgrade note says.
+        write(self.memory_dir / "f.md", "---\nname: ``b `\ndescription: '`x` b'\n---\nBody.\n")
+        write(self.index, "- [``b `](f.md) — `x` b\n")
+        self.assertEqual(["INDEX_LINE f.md", "ADDED f.md"], self.reindex("--write")[:2])
+        self.assertEqual("- [``b `](f.md) — `x` b\n- [''b '](f.md) — `x` b\n", self.index.read_text(encoding="utf-8"))
+        self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
+
     def test_inline_code_in_a_hook_is_kept_when_the_title_holds_no_backtick(self) -> None:
         # Writing every backtick as `'` rewrote inline code in hand-written and description hooks on every reindex.
         write(self.memory_dir / "kept.md", "Body.\n")
