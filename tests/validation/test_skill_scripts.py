@@ -2481,6 +2481,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "skills/demo/scripts/quit.py": f"{body}quit(main())\n",
                 "skills/demo/scripts/keyword.py": f"import sys\n\n\n{body}sys.exit(code=main())\n",
                 "skills/demo/scripts/os_exit.py": f"import os\n\n\n{body}os._exit(status=main())\n",
+                # Python runs an argument before it refuses a keyword the call does not take, so main runs here too.
+                "skills/demo/scripts/refused.py": f"{body}exit(status=main())\n",
                 "skills/demo/scripts/control.py": f'{body}if __name__ == "__main__":\n    main()\n',
                 "skills/demo/scripts/good.py": f"from console import run_main\n\n\n{body}"
                 'if "__main__" == __name__:\n    run_main(main)\n',
@@ -2500,6 +2502,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skills/demo/scripts/keyword.py:8 {unguarded}",
                     f"skills/demo/scripts/os_exit.py:8 {unguarded}",
                     f"skills/demo/scripts/quit.py:5 {unguarded}",
+                    f"skills/demo/scripts/refused.py:5 {unguarded}",
                     f"skills/demo/scripts/reversed.py:5 {late}",
                     f"skills/demo/scripts/unguarded.py:8 {unguarded}",
                 ],
@@ -2788,6 +2791,34 @@ PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
             "    except OSError as e:\n        self.cli.error(str(e))\n",
             f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
             id="parser.error on an attribute bound to a parser",
+        ),
+        # The policy read only a name assigned argparse.ArgumentParser(...), so each parser below escaped it, which the
+        # exit tables read: a builder annotated to return one, a subcommand's add_parser(...), and an annotated name.
+        pytest.param(
+            "import argparse\ndef build() -> argparse.ArgumentParser:\n    return argparse.ArgumentParser()\n"
+            "def main():\n    cli = build()\n    try:\n        pass\n    except OSError as e:\n"
+            "        cli.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error on a builder's parser",
+        ),
+        pytest.param(
+            "import argparse\ndef main():\n    commands = argparse.ArgumentParser().add_subparsers()\n"
+            "    cli = commands.add_parser('run')\n    try:\n        pass\n    except OSError as e:\n"
+            "        cli.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error on a subcommand's parser",
+        ),
+        pytest.param(
+            "import argparse\ndef main(cli: 'argparse.ArgumentParser'):\n    try:\n        pass\n"
+            "    except OSError as e:\n        cli.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error on a parameter annotated as a parser",
+        ),
+        pytest.param(
+            "import argparse\nArgs = argparse.ArgumentParser\ndef main():\n    cli = Args()\n    try:\n        pass\n"
+            "    except OSError as e:\n        cli.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error on a parser built through a module-level alias",
         ),
     ],
 )

@@ -1123,7 +1123,11 @@ def test_a_row_continues_on_lines_indented_further_and_130_may_be_named() -> Non
         ("import sys\ndef main() -> int:\n    helper()\n    return 5\ndef helper():\n    sys.exit()\n", {0, 1, 5}),
         ("def main() -> int:\n    helper()\n    return 5\ndef helper():\n    raise SystemExit(None)\n", {0, 1, 5}),
         ("def main() -> int:\n    helper()\n    return 5\ndef helper():\n    raise SystemExit\n", {0, 1, 5}),
-        ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(code=19)\n", {0, 1, 19}),
+        # SystemExit takes no keyword and sys.exit its code by position alone, so Python refuses each call below with
+        # a TypeError, which exits 1, while exit takes its code by keyword.
+        ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(code=19)\n", {0, 1}),
+        ("import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(code=19)\n", {0, 1}),
+        ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    exit(code=19)\n", {0, 1, 19}),
         (
             "import builtins\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    builtins.exit(20)\n",
             {0, 1, 20},
@@ -1474,3 +1478,12 @@ def test_a_run_main_lambda_target_is_read_as_the_call_it_makes() -> None:
     assert problems({"tools/tool.py": script(f"A tool.\n\n{short}", body, "from console import run_main\n")}) == [
         'tools/tool.py can exit 4, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
     ]
+
+
+def test_a_relative_import_past_its_package_s_top_names_no_module() -> None:
+    # The policy kept its own reader of relative imports, which read `from ..tools import run` in the deployer
+    # package as the repository's tools.run, though Python refuses an import past the package's top; it reads them
+    # through validation_support's one reader now.
+    tree = ast.parse("from ..tools import run\nfrom .errors import DeployError\n")
+    module = exit_tables.Module.read(Path("deployer/cli.py"), tree, "deployer")
+    assert module.aliases == {"DeployError": "deployer.errors.DeployError"}

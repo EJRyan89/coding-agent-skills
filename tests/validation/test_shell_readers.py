@@ -1054,8 +1054,8 @@ POWERSHELL_SOURCES = tuple(
 @pytest.fixture(scope="module")
 def powershell_reading() -> dict[str, PowerShellReading]:
     """Each PowerShell row's reading, by its source: powershell_readings over every row's source in one call, with each
-    script a source starts primed first, so the module starts pwsh once for its rows and once for each level of the
-    scripts they start, rather than once for each row."""
+    script a source starts primed first, so the module starts pwsh 2n - 1 times for n levels, the rows and each level
+    of the scripts they start, as skill_scripts.prime says, rather than once for each row."""
     sources = list(POWERSHELL_SOURCES)
     readings = skill_scripts.prime(functools.partial(skill_scripts.powershell_readings, sources))
     return dict(zip(sources, readings, strict=True))

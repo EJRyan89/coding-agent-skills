@@ -502,8 +502,8 @@ jobs:
           python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
-  # pending readers name is open. It is the only job whose command is given the run's token, as GH_TOKEN in its one
+  # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures,
+  # pending readers, and fault drivers' refusal gaps name is open. It is the only job whose command is given the run's token, as GH_TOKEN in its one
   # step that runs anything, tests/known_failure_issues.py, which loads the query's own modules and none of the policy
   # checks or suites. The token reaches that program, the modules it imports, the Python actions/setup-python
   # installs, gh, which sends it, and this job's pinned actions, which take it as the default of their `token` input,

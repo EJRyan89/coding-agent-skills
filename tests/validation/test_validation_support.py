@@ -55,6 +55,7 @@ from validation_support import (
     place_key,
     python_trees,
     qualified_name,
+    relative_import_aliases,
     repository_files,
     resolved_calls,
     resolved_references,
@@ -1397,3 +1398,18 @@ def test_place_key_keys_an_instance_or_class_attribute_by_its_class() -> None:
     ]
     assert place_key(places[0], "Other.save", classes) == "Other.text"
     assert place_key(places[2], "Store", classes) == "Store.text"
+
+
+def test_a_relative_import_binds_its_package_s_module_and_nothing_outside_a_package_or_past_its_top() -> None:
+    tree = ast.parse("from . import pipeline\nfrom .kinds import SKILL as KIND\nfrom .. import tools\n")
+    assert relative_import_aliases(tree, "deployer") == {
+        "pipeline": "deployer.pipeline",
+        "KIND": "deployer.kinds.SKILL",
+    }
+    assert relative_import_aliases(tree, "skills.alpha") == {
+        "pipeline": "skills.alpha.pipeline",
+        "KIND": "skills.alpha.kinds.SKILL",
+        "tools": "skills.tools",
+    }
+    # A module of no package, as a script in a folder without __init__.py, cannot import relatively at all.
+    assert relative_import_aliases(tree, "") == {}

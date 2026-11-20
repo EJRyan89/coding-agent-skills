@@ -237,9 +237,9 @@ def judged(
 ) -> list[str]:
     """What is wrong with a run's end, judged against its entry point's docstring: a stop, a fault never reached, an
     exit 0 or one the table does not name, a traceback, output that never names what failed, or no line naming it
-    that is a refusal, as refuses reads one. A run its driver's refusal_gaps names, with the open
-    issue that gives it a refusal line, is held to every check but the last, and fails once that check passes, so the
-    gaps only shrink."""
+    that is a refusal, as refuses reads one. A run its driver's refusal_gaps names, with the open issue that gives it a
+    refusal line, is held to every check but the last, and fails once that check passes, so the gaps only shrink;
+    tests/validation/known_failures.py holds each gap's issue open, as it holds a known failure's."""
     problems: list[str] = []
     if record["stopped"]:
         problems.append(f"the harness stopped it: {record['stopped']}")

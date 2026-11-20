@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import ast
 import atexit
-import re
 import stat
 import subprocess
 import sys
@@ -31,6 +30,7 @@ import exit_tables
 import fault_check
 import fault_runner
 import faults
+import known_failures
 from fault_check import (
     REPOSITORY,
     TRACEBACK,
@@ -484,13 +484,12 @@ def test_each_refusal_gap_names_a_run_its_driver_makes_and_the_issue_that_closes
         if not any(name in (fault, f"{fault} {path}") for fault, path in driver.runs())
     ]
     assert stale == [], "a refusal gap names no run of its driver"
-    unnamed = [
-        f"{driver.name}: {name}"
-        for driver in faults.DRIVERS
-        for name, reason in driver.refusal_gaps.items()
-        if not re.match(r"#\d+ \S", reason)
-    ]
-    assert unnamed == [], "a refusal gap opens with the open issue that closes it, then says what it lacks"
+    # The known-failure check reads each gap from the tables' source, without running them, to hold its issue open
+    # and refuse a pull request that closes it while the gap stands, so what it reads is every gap the drivers hold;
+    # its reader refuses a reason that does not open with the issue, `#<number> <what the run lacks>`.
+    read = sorted((gap.driver, gap.run) for gap in known_failures.refusal_gaps(fault_check.REPOSITORY))
+    held = sorted((driver.name, name) for driver in faults.DRIVERS for name in driver.refusal_gaps)
+    assert read == held, "the known-failure check reads other refusal gaps than the drivers hold"
 
 
 def test_changes_names_a_write_and_leaves_the_faults_own_path_aside() -> None:

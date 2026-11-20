@@ -332,8 +332,9 @@ names. The check reads the body from `--pr-body <file>` locally, otherwise the b
 request in continuous integration.
 
 A pull request that closes an issue a known failure of the malformed-input suite still names, in
-`tests/malformed_input/known_failures.json`, or that `PENDING` in `tests/malformed_input/readers.py` still names for a
-reader owed its table entry, is refused by the known-failure closing check, in `tests/validation/known_failures.py`:
+`tests/malformed_input/known_failures.json`, that `PENDING` in `tests/malformed_input/readers.py` still names for a
+reader owed its table entry, or that a fault driver's `refusal_gaps` in `tests/malformed_input/faults_*.py` still names
+for a run owed its refusal line, is refused by the known-failure closing check, in `tests/validation/known_failures.py`:
 the issue would close while that work is undone. It reads every closing reference, through ejryan89-skill-core's
 `closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`, `GH-<number>`,
 `<owner>/<repo>#<number>` naming this repository, or the issue's URL, and the spellings of them GitHub's pages leave

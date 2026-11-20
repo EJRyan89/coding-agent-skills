@@ -326,6 +326,16 @@ def test_a_heading_a_list_item_holds_does_not_end_the_section(item: str) -> None
     assert "After." not in section
 
 
+@pytest.mark.parametrize("marker", ["-", "*", "1.", "2)", "- "])
+def test_an_item_that_opens_empty_ends_at_a_blank_line_after_it(marker: str) -> None:
+    # CommonMark lets an item begin with one blank line at most, so the heading below is the document's, not the
+    # item's, and ends the section; the section is the empty item alone.
+    section = forms_section(f"## Forms considered\n\n{marker}\n\n  ## Implications\n\nOther text here.\n")
+    assert section is not None
+    assert "Implications" not in section, section
+    assert "Other text here." not in section, section
+
+
 def test_the_first_section_is_read_when_the_heading_repeats() -> None:
     text = body("", after=f"## Forms considered\n\n{FILLED}")
     assert forms_problems(text, True, TEMPLATE)

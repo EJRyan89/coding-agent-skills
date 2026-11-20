@@ -18,6 +18,7 @@ from typing import Literal
 
 import file_presence
 import json_reader
+import python_reader
 import whole_number
 from bash_syntax import (
     BashSyntaxError,
@@ -51,7 +52,7 @@ from command_wrappers import (
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
-from exit_calls import EXIT_CALLS, code_keyword
+from exit_calls import EXIT_CALLS, call_code, exit_argument
 from fsops_platform import CHECKED_TEMPORARY_DIRECTORY, TEMPORARY_DIRECTORY_CALL, write_destinations, write_nodes
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_subcommands import UNREAD_PART, powershell_program
@@ -318,8 +319,10 @@ def prime[Primed](read: Callable[[], Primed]) -> Primed:
     """What `read` gives once every PowerShell script it reaches through _powershell_script_reading is held in this
     process's readings: run it, deferring each script not yet read, read those in one powershell_readings call, which
     is one pwsh start for them all, and run it again until it defers none. A script a deferred script starts is read
-    the same way before it, so a nesting takes a pwsh start for each level rather than one for each script. The
-    readings are what a single source's call gives, so priming changes no result, only how many times pwsh starts."""
+    the same way before it: each level's scripts are read once to find what they start and once more after those are
+    held, and the deepest level once, so a nesting n levels deep takes 2n - 1 pwsh starts rather than one for each
+    script. The readings are what a single source's call gives, so priming changes no result, only how many times
+    pwsh starts."""
     while True:
         _DEFERRED.append([])
         try:
@@ -1999,20 +2002,31 @@ ENTRY_FUNCTIONS = frozenset({"main", "_main"})
 
 def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
-    program, itself or as what an exit call of ejryan89-skill-core's exit_calls is given, by position or keyword, so
-    it runs whenever the module is imported."""
+    program, itself or as any argument an exit call of ejryan89-skill-core's exit_calls is given, by position or by
+    any keyword, which Python runs before it calls the exit, even one it then refuses, so it runs whenever the module
+    is imported. A stated limit: a main run anywhere but as the statement itself or as an exit call's argument is not
+    read, such as one nested inside that argument, as `sys.exit(main() or 0)` or `sys.exit(int(main()))`, an
+    assignment's value, as `code = main()`, an argument of another call, as `print(main())`, or a statement inside a
+    module-level loop."""
     guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
     lines: list[int] = []
     for statement in module_statements(tree.body):
         if id(statement) in guarded:
             continue
         call = statement.value if isinstance(statement, ast.Expr) else getattr(statement, "exc", None)
-        function = qualified_name(call.func, aliases) if isinstance(call, ast.Call) else ""
-        if isinstance(call, ast.Call) and function in EXIT_CALLS:
-            call = call_argument(call, 0, code_keyword(function))
-        if isinstance(call, ast.Call) and (
-            (isinstance(call.func, ast.Name) and call.func.id in ENTRY_FUNCTIONS)
-            or qualified_name(call.func, aliases) == CONSOLE_FUNCTION
+        runs: list[ast.expr] = [call] if isinstance(call, ast.expr) else []
+        if isinstance(call, ast.Call) and qualified_name(call.func, aliases) in EXIT_CALLS:
+            runs = [
+                given.value if isinstance(given, ast.Starred) else given
+                for given in [*call.args, *(keyword.value for keyword in call.keywords)]
+            ]
+        if any(
+            isinstance(run, ast.Call)
+            and (
+                (isinstance(run.func, ast.Name) and run.func.id in ENTRY_FUNCTIONS)
+                or qualified_name(run.func, aliases) == CONSOLE_FUNCTION
+            )
+            for run in runs
         ):
             lines.append(statement.lineno)
     return lines
@@ -2094,25 +2108,80 @@ def _mentions_failed(node: ast.expr) -> bool:
 STANDARD_ERROR = frozenset({"sys.stderr", "sys.__stderr__"})
 STANDARD_OUTPUT = frozenset({"sys.stdout", "sys.__stdout__"})
 PARSER_CLASS = "argparse.ArgumentParser"
+# The call that adds a subcommand's parser, argparse's add_subparsers(...).add_parser(...), whose result is a parser.
+SUBPARSER_CALL = "add_parser"
+# What a module's names stand for where a node sits: one table for the whole module, as import_aliases gives, or a
+# reader of each node's own scope, as CallableResolver's aliases.
+Aliases = dict[str, str] | Callable[[ast.AST], dict[str, str]]
+
+
+def _aliases_at(aliases: Aliases, node: ast.AST) -> dict[str, str]:
+    """The table of what names stand for where the node sits."""
+    return aliases if isinstance(aliases, dict) else aliases(node)
+
+
+def is_parser_annotation(annotation: ast.expr | None, aliases: Aliases) -> bool:
+    """Whether an annotation names argparse's parser, as a name or a quoted one. A stated limit: a quoted annotation
+    that does not parse or nests past nesting_depth's DEPTH_LIMIT is read as naming nothing."""
+    if annotation is None:
+        return False
+    table = _aliases_at(aliases, annotation)
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = python_reader.parse_expression(annotation.value).body
+        except python_reader.PythonRefused:
+            return False
+    return qualified_name(annotation, table) == PARSER_CLASS
+
+
+def _parser_targets(node: ast.AST, aliases: Aliases, builders: set[str]) -> list[ast.expr]:
+    """The targets one statement binds to an argument parser: one annotated as a parser, or one assigned
+    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function of the module annotated to
+    return a parser."""
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        return []
+    targets: list[ast.expr] = [*node.targets] if isinstance(node, ast.Assign) else [node.target]
+    if isinstance(node, ast.AnnAssign) and is_parser_annotation(node.annotation, aliases):
+        return targets
+    if not isinstance(node.value, ast.Call):
+        return []
+    callee = node.value.func
+    if (
+        qualified_name(callee, _aliases_at(aliases, callee)) == PARSER_CLASS
+        or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
+        or (isinstance(callee, ast.Name) and callee.id in builders)
+    ):
+        return targets
+    return []
+
+
+def _parser_builders(tree: ast.Module, aliases: Aliases) -> set[str]:
+    """The functions of a module, in any scope, annotated to return an argument parser."""
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_parser_annotation(node.returns, aliases)
+    }
+
+
+def parser_names(tree: ast.Module, aliases: Aliases) -> set[str]:
+    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope and as
+    written at the binding: one assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of
+    its own function annotated to return a parser, and a parameter, name, or attribute annotated as one. The one
+    reader of a module's parser bindings, which the script-results policy and the exit tables both read."""
+    builders = _parser_builders(tree, aliases)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
+            found.add(node.arg)
+        found.update(binding(target) for target in _parser_targets(node, aliases, builders))
+    return found - {""}
 
 
 def binding(target: ast.expr) -> str:
     """The spelling an assignment target binds, as a receiver reads it: a name, or an attribute chain on one, such as
     self.cli; "" for a target that is neither, such as a subscript or a tuple."""
     return qualified_name(target, {})
-
-
-def _parser_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
-    """The names and attribute chains, such as self.cli, the module binds to an argparse.ArgumentParser it builds, in
-    any scope."""
-    return {
-        binding(target)
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and isinstance(node.value, ast.Call)
-        and resolver.name(node.value.func) == PARSER_CLASS
-        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-    } - {""}
 
 
 def _is_parser(receiver: ast.expr, parsers: set[str]) -> bool:
@@ -2135,7 +2204,7 @@ def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str]
         and _is_parser(node.func.value, parsers)
     ):
         breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
-    code = call_argument(node, 0, code_keyword(function)) if function in EXIT_CALLS else None
+    code = exit_argument(node, function) if function in EXIT_CALLS and call_code(node, function) is None else None
     if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
         breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
     stream: ast.expr | None = None
@@ -2163,7 +2232,9 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     the module's imports and the names it binds to one."""
     breaches: list[tuple[int, str]] = []
     resolver = CallableResolver(tree)
-    parsers = _parser_names(tree, resolver)
+    # Each node's names read in its own scope, and an annotation the resolver never visited, such as a function's
+    # return annotation, in the module's.
+    parsers = parser_names(tree, lambda node: resolver.aliases(node if id(node) in resolver.scopes else tree))
     handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
     in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
     entry_points = [

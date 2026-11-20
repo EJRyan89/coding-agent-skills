@@ -6,7 +6,8 @@ is an ATX `## Forms considered`, indented up to three spaces; a setext `Forms co
 and a heading inside a quote or a list item are read as missing. The section ends at the next first- or second-level
 heading GitHub renders, ATX, setext, or an HTML `<h1>` or `<h2>`, indented up to three spaces; a third-level heading,
 and a heading inside a quote, a list item, or a fence, are inside it. A list item holds each line after its first
-indented at least to the column its text starts at, and each lazy line continuing its paragraph. A comment GitHub
+indented at least to the column its text starts at, and each lazy line continuing its paragraph; one that opens empty
+ends at a blank line right after it, since an item may begin with one blank line at most. A comment GitHub
 hides is not read, one left unclosed running to the end of the body, and text that renders as nothing, such as an
 empty tag, an entity for a space, or an invisible character, is no text.
 """
@@ -117,12 +118,19 @@ def forms_section(body: str) -> str | None:
 def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
     """The index of each line after a list item's first that the item holds, as CommonMark reads it: a blank line, a
     line indented at least to the column its text starts at, a fence's body, or a lazy line continuing its paragraph.
-    Only the outermost item is tracked, since a line a nested item holds is held by the outer one too."""
+    An item that opens empty holds no blank line right after its marker's line, since CommonMark lets an item begin
+    with one blank line at most, so that line ends it. Only the outermost item is tracked, since a line a nested item
+    holds is held by the outer one too."""
     held: set[int] = set()
     content: int | None = None
+    # Whether the item opened empty on the line before, so a blank line now ends it.
+    opened_empty = False
     # Whether the line before is paragraph text, which a lazy line continues and only some markers interrupt.
     paragraph = False
     for index, line in enumerate(lines):
+        if content is not None and opened_empty and is_blank(line) and index not in inside_fences:
+            content = None
+        opened_empty = False
         if content is not None:
             if index in inside_fences or is_blank(line) or indentation(line) >= content:
                 held.add(index)
@@ -141,10 +149,12 @@ def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
         ):
             content = _content_column(opener)
             paragraph = not is_blank(opener.group("text"))
+            opened_empty = not paragraph
         elif opener is not None and is_blank(opener.group("gap") + opener.group("text")) and not paragraph:
             # An item that opens empty: its content starts one column after the marker.
             content = len(opener.group("indent")) + len(opener.group("marker")) + 1
             paragraph = False
+            opened_empty = True
         else:
             paragraph = index not in inside_fences and not NOT_PARAGRAPH.match(line)
     return held

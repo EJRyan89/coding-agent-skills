@@ -902,6 +902,33 @@ class RequiredCheckFixtures(unittest.TestCase):
             "the linux job sets continue-on-error",
             id="continue-on-error set at all",
         ),
+        # A step that goes on after an error ends its job in success whatever it found, so the job's result reads green.
+        pytest.param(
+            REQUIRED_CHECK.replace(
+                "    runs-on: macos-latest\n",
+                "    runs-on: macos-latest\n    steps:\n      - name: Run repository validation\n"
+                "        continue-on-error: true\n        run: python -B tests/run_validation.py\n",
+            ),
+            "the macos job's step 'Run repository validation' sets continue-on-error",
+            id="the validation step goes on after an error",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace(
+                "    runs-on: windows-latest\n",
+                "    runs-on: windows-latest\n    steps:\n      - run: python -B tests/run_validation.py\n"
+                "        continue-on-error: ${{ matrix.experimental }}\n",
+            ),
+            "the suite job's step 1 sets continue-on-error",
+            id="an unnamed step goes on after an error by an expression",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace(
+                "      - name: Require every leg to pass\n",
+                "      - name: Require every leg to pass\n        continue-on-error: true\n",
+            ),
+            "the validate job's step 'Require every leg to pass' sets continue-on-error",
+            id="the check's own step goes on after an error",
+        ),
         pytest.param(
             REQUIRED_CHECK.replace('          test "$LINUX" = success\n', ""),
             "linux job's result",

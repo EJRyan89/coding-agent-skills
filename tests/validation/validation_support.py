@@ -305,13 +305,15 @@ def python_trees(paths: Iterable[Path], root: Path, problems: list[str]) -> Iter
 
 
 def relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:
-    """What each name a relative import binds stands for, such as deployer.kinds.SKILL for `from .kinds import SKILL`
-    in a module of the deployer package."""
+    """What each name a relative import binds stands for, as a dotted name from the repository root, such as
+    deployer.kinds.SKILL for `from .kinds import SKILL` in a module of the deployer package. A relative import in a
+    module of no package, `package` empty, or one that climbs past the top of its package binds nothing here, since
+    Python refuses it with an ImportError."""
     aliases: dict[str, str] = {}
+    parts = package.split(".") if package else []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level == 0:
+        if not isinstance(node, ast.ImportFrom) or node.level == 0 or node.level > len(parts):
             continue
-        parts = package.split(".")
         base = ".".join(parts[: len(parts) - (node.level - 1)])
         module = f"{base}.{node.module}" if node.module else base
         for alias in node.names:

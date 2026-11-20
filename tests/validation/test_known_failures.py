@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from github_client import CommandResult, GitHubClient
 from known_failures import (
+    FAULT_TABLES,
     KNOWN_FAILURES,
     PENDING_MODULE,
     KnownFailure,
@@ -29,6 +30,8 @@ from known_failures import (
     pending_problems,
     read_known_failures,
     read_pending,
+    refusal_gap_problems,
+    refusal_gaps,
 )
 from validation_support import REPOSITORY_ROOT, git
 
@@ -46,12 +49,87 @@ class KnownFailureFixture(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / KNOWN_FAILURES).parent.mkdir(parents=True)
+        # A fault table with no refusal gap, since a tree with none fails as one whose gaps were never read.
+        (self.root / FAULT_TABLES / "faults_tools.py").write_text("DRIVERS = []\n", encoding="utf-8")
 
     def write(self, value: object) -> None:
         (self.root / KNOWN_FAILURES).write_text(json.dumps(value), encoding="utf-8")
 
     def write_pending(self, source: str) -> None:
         (self.root / PENDING_MODULE).write_text(source, encoding="utf-8")
+
+    def write_gaps(self, gaps: str, table: str = "faults_tools.py") -> None:
+        """A fault table with one driver whose refusal_gaps are the given source."""
+        (self.root / FAULT_TABLES / table).write_text(
+            "from fault_table import Driver\n\n"
+            f'DRIVERS = [Driver("tools/tool.py", "run", (), git=True, refusal_gaps={gaps})]\n',
+            encoding="utf-8",
+        )
+
+
+class RefusalGapTests(KnownFailureFixture):
+    """Each fault driver's refusal gap names the open issue that gives its run a refusal line, read without running the
+    table, and is held as a known failure is: closing its issue fails, and the issue is asked about."""
+
+    def test_a_literal_gap_is_read_with_its_driver_and_issue(self) -> None:
+        self.write_gaps('{"git_exit": "#4242 gives it a FAILED line"}')
+        [gap] = refusal_gaps(self.root)
+        self.assertEqual(
+            ("tests/malformed_input/faults_tools.py", "tools/tool.py run", "git_exit", 4242),
+            (gap.table, gap.driver, gap.run, gap.issue),
+        )
+        self.assertEqual([], refusal_gap_problems(self.root))
+
+    def test_a_gap_this_module_cannot_read_fails(self) -> None:
+        for gaps, problem in (
+            ("GAPS", "must be a literal dict"),
+            ('{"git_exit": "gives it a FAILED line"}', "must open with the open issue"),
+            ('{"git_exit": "#0 none"}', "must open with the open issue"),
+            ('{"git_exit": 4242}', "must open with the open issue"),
+            ('["git_exit"]', "must map each run to its reason"),
+            # Built from a call or with a splat, the gaps are known only when the table runs, so the check fails closed.
+            ("make_gaps()", "must be a literal dict"),
+            ('{**OTHER, "git_exit": "#7 a FAILED line"}', "must be a literal dict"),
+            ('{"git_exit": "#7 a FAILED line"}, **options', "built with an unpacking"),
+        ):
+            with self.subTest(gaps=gaps):
+                self.write_gaps(gaps)
+                [found] = refusal_gap_problems(self.root)
+                self.assertTrue(found.startswith("tests/malformed_input/faults_tools.py line 3: "), found)
+                self.assertIn(problem, found)
+        (self.root / FAULT_TABLES / "faults_tools.py").write_text(
+            'Driver(ENTRY, "run", (), refusal_gaps={"git_exit": "#7 a FAILED line"})\n', encoding="utf-8"
+        )
+        [found] = refusal_gap_problems(self.root)
+        self.assertIn("must name its entry and command", found)
+
+    def test_no_table_an_unlistable_folder_or_a_table_that_does_not_parse_is_a_problem_never_no_gaps(self) -> None:
+        # Each would otherwise read as a tree with no refusal gap, which asks GitHub nothing and passes, so the check
+        # would say every gap's issue is open without reading one.
+        tables = self.root / FAULT_TABLES
+        (tables / "faults_tools.py").unlink()
+        self.assertEqual(
+            ["tests/malformed_input holds no faults_*.py fault table, so no refusal gap could be read"],
+            refusal_gap_problems(self.root),
+        )
+        (tables / "faults_tools.py").write_text("def broken(:\n", encoding="utf-8")
+        [problem] = refusal_gap_problems(self.root)
+        self.assertTrue(problem.startswith("tests/malformed_input/faults_tools.py cannot be read: "), problem)
+        (tables / "faults_tools.py").unlink()
+        tables.rmdir()
+        tables.write_text("", encoding="utf-8")
+        [problem] = refusal_gap_problems(self.root)
+        self.assertTrue(problem.startswith("tests/malformed_input cannot be listed: "), problem)
+
+    def test_a_pull_request_closing_an_issue_a_refusal_gap_names_fails(self) -> None:
+        self.write([])
+        self.write_pending("PENDING = {}\n")
+        self.write_gaps('{"git_exit": "#4242 gives it a FAILED line"}')
+        [problem] = closed_known_failure_problems(self.root, "Closes #4242\n")
+        self.assertIn(
+            "tests/malformed_input/faults_tools.py still names tools/tool.py run's refusal gap 'git_exit'", problem
+        )
+        self.assertEqual([], closed_known_failure_problems(self.root, "Closes #4243\n"))
 
 
 class ListShapeTests(KnownFailureFixture):
@@ -346,6 +424,15 @@ class OpenIssueTests(KnownFailureFixture):
                 [problem] = self.problems()
                 self.assertIn("names #4242, which GitHub reports as a pull request or without its URL", problem)
 
+    def test_each_issue_a_refusal_gap_names_is_asked_about_too(self) -> None:
+        # A gap was held only to the shape `#N text`, so one naming a closed issue passed while nobody fixed its run.
+        self.write([])
+        self.write_gaps('{"git_exit": "#7 gives it a FAILED line"}')
+        self.answer = CommandResult(0, ISSUE_ANSWER.replace("OPEN", "CLOSED"), "")
+        [problem] = self.problems()
+        self.assertEqual(["7"], [call[3] for call in self.calls])
+        self.assertIn("tests/malformed_input/faults_tools.py names #7, which GitHub reports as CLOSED", problem)
+
     def test_each_issue_pending_names_is_asked_about_too(self) -> None:
         self.write([])
         self.write_pending('PENDING: dict[str, int] = {"module.reader": 4242, "other.reader": 7}\n')
@@ -384,7 +471,7 @@ class OpenIssueTests(KnownFailureFixture):
     def test_a_list_that_cannot_be_read_fails_and_asks_github_nothing(self) -> None:
         # Read as empty, an unreadable list would ask about nothing and pass, so the check would say every issue it
         # names is open without ever reading one.
-        for path in (KNOWN_FAILURES, PENDING_MODULE):
+        for path in (KNOWN_FAILURES, PENDING_MODULE, FAULT_TABLES / "faults_tools.py"):
             with self.subTest(path=path.as_posix()):
                 self.write([ENTRY])
                 self.write_pending('PENDING = {"other.reader": 7}\n')

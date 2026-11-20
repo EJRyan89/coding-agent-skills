@@ -920,8 +920,10 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
 def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
     """Report how validate.yml's `validate` job departs from the one required check over `jobs`: named `Validation`,
     as branch protection requires it, needing each of them, running when one fails, since a skipped required check
-    counts as passing, and failing unless each one's result is success. None of them goes on after an error, since a
-    job that does keeps the run's conclusion when one of its legs fails."""
+    counts as passing, and failing unless each one's result is success. None of them, nor the validate job, goes on
+    after an error, at the job or at any step, since a job that does keeps the run's conclusion when one of its legs
+    fails, and a step that does, such as the one that runs the validation, ends its job in success whatever it
+    found."""
     tree = read_workflow(workflow)
     validate = _mapping(tree, "jobs", "validate")
     problems: list[str] = []
@@ -939,8 +941,16 @@ def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
         names = [name for step in steps for name, value in _mapping(step, "env").items() if value == result]
         if not any(f'test "${name}" = success' in str(step.get("run", "")) for step in steps for name in names):
             problems.append(f"no step of the validate job fails unless the {job} job's result is success")
-        if "continue-on-error" in _mapping(tree, "jobs", job):
+    for job in [*jobs, "validate"]:
+        settings = _mapping(tree, "jobs", job)
+        if "continue-on-error" in settings:
             problems.append(f"the {job} job sets continue-on-error, so a red leg would not fail the run")
+        problems += [
+            f"the {job} job's step {step.get('name', index)!r} sets continue-on-error, so its failure would not fail "
+            "the job"
+            for index, step in enumerate(_steps(settings), start=1)
+            if "continue-on-error" in step
+        ]
     return problems
 
 

@@ -41,22 +41,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
-import python_reader
 import whole_number
-from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
+from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, call_code, exit_argument
 from path_containment import within
-from skill_scripts import PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
+from skill_scripts import (
+    RESULTS_DOC,
+    _is_parser,
+    _parser_builders,
+    _parser_targets,
+    main_blocks,
+    parser_names,
+)
 from text_lines import text_lines
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
-    call_argument,
     import_aliases,
     is_test_script,
     module_allowance,
     parse_python,
     python_source,
     qualified_name,
+    relative_import_aliases,
     repository_files,
 )
 
@@ -80,7 +86,6 @@ PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_a
 USAGE_ERROR_CALL = "error"
 # The decorator that makes a method static, as a bare name and as resolved through an import of builtins.
 STATIC_METHOD = frozenset({"staticmethod", "builtins.staticmethod"})
-SUBPARSER_CALL = "add_parser"
 # The folder below the repository whose Python never runs as a program the repository ships or uses.
 NOT_SCANNED = Path("tests") / "fixtures"
 SKILL_CORE_SCRIPTS = Path("skills") / "ejryan89-skill-core" / "scripts"
@@ -195,7 +200,7 @@ class Module:
 
     @classmethod
     def read(cls, path: Path, tree: ast.Module, package: str = "") -> Module:
-        module = cls(path, tree, aliases={**relative_aliases(tree, package), **import_aliases(tree)})
+        module = cls(path, tree, aliases={**relative_import_aliases(tree, package), **import_aliases(tree)})
         module.parsers = parser_names(tree, module.aliases)
         module.method_parsers = method_parsers(tree, module.aliases)
         for node in tree.body:
@@ -227,60 +232,6 @@ class Module:
         module.allowed = allowed or {}
         module.allowance_malformed = allowed is None
         return module
-
-
-def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -> bool:
-    """Whether an annotation names argparse's parser, as a name or a quoted one. A stated limit: a quoted annotation
-    that does not parse or nests past nesting_depth's DEPTH_LIMIT is read as naming nothing."""
-    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-        try:
-            annotation = python_reader.parse_expression(annotation.value).body
-        except python_reader.PythonRefused:
-            return False
-    return annotation is not None and qualified_name(annotation, aliases) == PARSER_CLASS
-
-
-def _parser_targets(node: ast.AST, aliases: dict[str, str], builders: set[str]) -> list[ast.expr]:
-    """The targets one statement binds to an argument parser: one annotated as a parser, or one assigned
-    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function of the module annotated to
-    return a parser."""
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-        return []
-    targets: list[ast.expr] = [*node.targets] if isinstance(node, ast.Assign) else [node.target]
-    if isinstance(node, ast.AnnAssign) and is_parser_annotation(node.annotation, aliases):
-        return targets
-    if not isinstance(node.value, ast.Call):
-        return []
-    callee = node.value.func
-    if (
-        qualified_name(callee, aliases) == PARSER_CLASS
-        or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
-        or (isinstance(callee, ast.Name) and callee.id in builders)
-    ):
-        return targets
-    return []
-
-
-def _parser_builders(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
-    """The functions of a module, in any scope, annotated to return an argument parser."""
-    return {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_parser_annotation(node.returns, aliases)
-    }
-
-
-def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
-    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope and as
-    written at the binding: one assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of
-    its own function annotated to return a parser, and a parameter, name, or attribute annotated as one."""
-    builders = _parser_builders(tree, aliases)
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
-            found.add(node.arg)
-        found.update(binding(target) for target in _parser_targets(node, aliases, builders))
-    return found - {""}
 
 
 def _class_scope(owner: ast.ClassDef) -> Iterator[ast.AST]:
@@ -319,20 +270,6 @@ def method_parsers(tree: ast.Module, aliases: dict[str, str]) -> dict[Function, 
             receiver = [*method.args.posonlyargs, *method.args.args][:1]
             if receiver:
                 found[method] = {f"{receiver[0].arg}.{name}" for name in names}
-    return found
-
-
-def relative_aliases(tree: ast.Module, package: str) -> dict[str, str]:
-    """What each name a relative import binds stands for, as a dotted name from the repository root: in the deployer,
-    `from . import pipeline` binds pipeline to deployer.pipeline."""
-    found: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.ImportFrom) and node.level > 0 and package):
-            continue
-        parts = package.split(".")
-        base = parts[: len(parts) - (node.level - 1)]
-        owner = ".".join([*base, *([node.module] if node.module else [])])
-        found |= {alias.asname or alias.name: f"{owner}.{alias.name}" for alias in node.names}
     return found
 
 
@@ -1001,14 +938,15 @@ class CodeReader:
         else:
             self.unread_seen[found] = min(self.unread_seen[found], column)
 
-    def exits(self, argument: ast.expr | None, scope: Scope) -> None:
-        """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
-        and exits 1, as exit_calls.fixed_code reads them, and any other argument is read as a returned expression is,
-        so one the reader cannot follow is recorded as unread."""
-        if (code := fixed_code(argument)) is not None:
+    def exits(self, call: ast.Call, function: str, scope: Scope) -> None:
+        """Add the codes an exit call or a raised SystemExit, `function` by its dotted name, exits with: no argument or
+        None exits 0, a string is printed and exits 1, and a call Python refuses for its arguments, such as
+        `SystemExit(code=3)`, exits 1, as exit_calls.call_code reads them, and any other argument is read as a returned
+        expression is, so one the reader cannot follow is recorded as unread."""
+        if (code := call_code(call, function)) is not None:
             self.reading.codes.add(code)
         else:
-            self.value(argument, scope)
+            self.value(exit_argument(call, function), scope)
 
     def reach(self, module: Module, function: Function) -> None:
         """Add the codes every function this one can call exits with or parses arguments for, followed through
@@ -1032,7 +970,7 @@ class CodeReader:
                         self.error_codes.add(number)
                 name = qualified_name(node.func, module.aliases)
                 if name in EXIT_CALLS:
-                    self.exits(call_argument(node, 0, code_keyword(name)), self.scope(module, function, (), None))
+                    self.exits(node, name, self.scope(module, function, (), None))
                 elif isinstance(node.func, ast.Attribute) and (
                     node.func.attr in PARSING_CALLS
                     or (

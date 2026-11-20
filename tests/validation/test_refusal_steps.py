@@ -335,6 +335,285 @@ class RefusalStepFixtures(unittest.TestCase):
             self.problems(files),
         )
 
+    def test_a_caught_refusal_whose_step_its_callers_add_fails_when_its_lines_are_raised_again_alone(self) -> None:
+        # config.parse's refusals end without a step, which its STEP_ALLOWED says its callers add, and a cancellation
+        # needs none, so a refusal re-built from either's caught lines alone ends at its ERROR line; one caught around
+        # a function no allowance excuses was built with its step, and one that adds the step after them has it.
+        files = {
+            "deployer/config.py": (
+                'STEP_ALLOWED = {"parse": "read adds the step to drop the key"}\n'  # 1
+                "from .errors import DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def parse(text):\n"  # 5
+                '    raise DeployError("ERROR: Unknown key")\n'  # 6
+            ),
+            "deployer/load.py": (
+                "from . import config\n"  # 1
+                "from .errors import Cancelled, DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def wrapped(text):\n"  # 5
+                "    try:\n"  # 6
+                "        config.parse(text)\n"  # 7
+                "    except DeployError as exc:\n"  # 8
+                "        raise DeployError(*exc.lines) from exc\n"  # 9: parse's lines, with no step
+                "\n"  # 10
+                "\n"  # 11
+                "def cancelled():\n"  # 12
+                "    try:\n"  # 13
+                "        ask()\n"  # 14
+                "    except Cancelled as exc:\n"  # 15
+                "        raise DeployError(*exc.lines) from exc\n"  # 16: a cancellation's one line
+                "\n"  # 17
+                "\n"  # 18
+                "def raised_here():\n"  # 19
+                "    try:\n"  # 20
+                '        raise Cancelled("Cancelled.")\n'  # 21
+                "    except DeployError as exc:\n"  # 22
+                "        raise DeployError(*exc.lines) from exc\n"  # 23: the cancellation built in the try
+                "\n"  # 24
+                "\n"  # 25
+                "def stepped(text):\n"  # 26
+                "    try:\n"  # 27
+                "        config.parse(text)\n"  # 28
+                "    except DeployError as exc:\n"  # 29
+                '        raise DeployError(*exc.lines, "Run configure again.") from exc\n'  # 30
+                "\n"  # 31
+                "\n"  # 32
+                "def other():\n"  # 33
+                "    try:\n"  # 34
+                "        check(len([]))\n"  # 35
+                "    except DeployError as exc:\n"  # 36
+                "        raise DeployError(*exc.lines) from exc\n"  # 37: check's refusal ends with its step
+                "\n"  # 38
+                "\n"  # 39
+                "def check(count):\n"  # 40
+                "    if count:\n"  # 41
+                '        raise DeployError("ERROR: Counted", "Retry.")\n'  # 42
+                "\n"  # 43
+                "\n"  # 44
+                "def unknown(store):\n"  # 45
+                "    try:\n"  # 46
+                "        store.save()\n"  # 47
+                "    except DeployError as exc:\n"  # 48
+                "        raise DeployError(*exc.lines) from exc\n"  # 49: a method of a value, known only at run time
+            ),
+        }
+        self.assertEqual(
+            [
+                f"deployer/load.py:{line} DeployError in {scope}" + UNFOLLOWED_SUFFIX
+                for line, scope in ((9, "wrapped"), (16, "cancelled"), (23, "raised_here"), (49, "unknown"))
+            ],
+            self.problems(files),
+        )
+
+    def test_a_caught_refusal_is_followed_into_each_kind_of_call_and_fails_closed_where_it_cannot_be(self) -> None:
+        # One case per branch of the walk: a call rooted in no name, a deployer name with no definition, a class whose
+        # __init__ reaches the excused function, one whose __init__ does not, and a class with no __init__ of its own.
+        files = {
+            "deployer/objects.py": (
+                'STEP_ALLOWED = {"excused": "its callers add the step"}\n'  # 1
+                "from .config import missing\n"  # 2
+                "from .errors import DeployError\n"  # 3
+                "\n"  # 4
+                "\n"  # 5
+                "def excused():\n"  # 6
+                '    raise DeployError("ERROR: Excused")\n'  # 7
+                "\n"  # 8
+                "\n"  # 9
+                "class Reaching:\n"  # 10
+                "    def __init__(self):\n"  # 11
+                "        excused()\n"  # 12
+                "\n"  # 13
+                "\n"  # 14
+                "class Quiet:\n"  # 15
+                "    def __init__(self):\n"  # 16
+                "        self.count = len([])\n"  # 17
+                "\n"  # 18
+                "\n"  # 19
+                "class Plain:\n"  # 20
+                "    count = 0\n"  # 21
+                "\n"  # 22
+                "\n"  # 23
+                "def unnamed():\n"  # 24
+                "    try:\n"  # 25
+                "        (lambda: excused())()\n"  # 26
+                "    except DeployError as exc:\n"  # 27
+                "        raise DeployError(*exc.lines) from exc\n"  # 28: a call rooted in a lambda
+                "\n"  # 29
+                "\n"  # 30
+                "def made(factory):\n"  # 31
+                "    try:\n"  # 32
+                "        factory()()\n"  # 33
+                "    except DeployError as exc:\n"  # 34
+                "        raise DeployError(*exc.lines) from exc\n"  # 35: a call of a call's result
+                "\n"  # 36
+                "\n"  # 37
+                "def undefined():\n"  # 38
+                "    try:\n"  # 39
+                "        missing()\n"  # 40
+                "    except DeployError as exc:\n"  # 41
+                "        raise DeployError(*exc.lines) from exc\n"  # 42: a deployer name with no definition
+                "\n"  # 43
+                "\n"  # 44
+                "def built():\n"  # 45
+                "    try:\n"  # 46
+                "        Reaching()\n"  # 47
+                "    except DeployError as exc:\n"  # 48
+                "        raise DeployError(*exc.lines) from exc\n"  # 49: its __init__ reaches excused
+                "\n"  # 50
+                "\n"  # 51
+                "def quiet():\n"  # 52
+                "    try:\n"  # 53
+                "        Quiet()\n"  # 54
+                "    except DeployError as exc:\n"  # 55
+                "        raise DeployError(*exc.lines) from exc\n"  # 56: its __init__ reaches nothing excused
+                "\n"  # 57
+                "\n"  # 58
+                "def plain():\n"  # 59
+                "    try:\n"  # 60
+                "        Plain()\n"  # 61
+                "    except DeployError as exc:\n"  # 62
+                "        raise DeployError(*exc.lines) from exc\n"  # 63: no __init__ of its own
+            ),
+            "deployer/config.py": "VALUE = 1\n",
+        }
+        self.assertEqual(
+            [
+                f"deployer/objects.py:{line} DeployError in {scope}" + UNFOLLOWED_SUFFIX
+                for line, scope in ((28, "unnamed"), (35, "made"), (42, "undefined"), (49, "built"))
+            ],
+            self.problems(files),
+        )
+
+    def test_following_a_caught_refusal_through_recursion_or_a_cycle_ends(self) -> None:
+        # Each function is entered once per walk, so a recursive one and two that call each other end: the walk below
+        # finds no excused callee and reads the caught lines as built with their step, and one that reaches the
+        # excused function after the cycle is still refused.
+        files = {
+            "deployer/cycle.py": (
+                'STEP_ALLOWED = {"excused": "its callers add the step"}\n'  # 1
+                "from .errors import DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def excused():\n"  # 5
+                '    raise DeployError("ERROR: Excused")\n'  # 6
+                "\n"  # 7
+                "\n"  # 8
+                "def ping(count):\n"  # 9
+                "    if count:\n"  # 10
+                "        pong(count - 1)\n"  # 11
+                "        ping(count - 1)\n"  # 12
+                "\n"  # 13
+                "\n"  # 14
+                "def pong(count):\n"  # 15
+                "    ping(count)\n"  # 16
+                "\n"  # 17
+                "\n"  # 18
+                "def loop(count):\n"  # 19
+                "    pong(count)\n"  # 20
+                "    excused()\n"  # 21
+                "\n"  # 22
+                "\n"  # 23
+                "def closed():\n"  # 24
+                "    try:\n"  # 25
+                "        ping(3)\n"  # 26
+                "    except DeployError as exc:\n"  # 27
+                "        raise DeployError(*exc.lines) from exc\n"  # 28: the cycle reaches nothing excused
+                "\n"  # 29
+                "\n"  # 30
+                "def reached():\n"  # 31
+                "    try:\n"  # 32
+                "        loop(3)\n"  # 33
+                "    except DeployError as exc:\n"  # 34
+                "        raise DeployError(*exc.lines) from exc\n"  # 35: excused after the cycle
+            ),
+        }
+        self.assertEqual(["deployer/cycle.py:35 DeployError in reached" + UNFOLLOWED_SUFFIX], self.problems(files))
+
+    def test_a_caught_refusal_an_excused_function_raises_through_a_helper_fails_when_raised_again_alone(self) -> None:
+        # deployer/config.py's load wraps validate_directories, which lets _validate_absolute_directory's refusal,
+        # excused because its callers add the step, escape with no handler; with load's step dropped, as below, the
+        # policy read the caught lines as built with a step, since the try body named no excused function itself.
+        files = {
+            "deployer/config.py": (
+                'STEP_ALLOWED = {"_validate_absolute_directory": "its callers add the step"}\n'  # 1
+                "from .errors import DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def _validate_absolute_directory(key, value):\n"  # 5
+                '    raise DeployError(f"ERROR: {key} is not absolute")\n'  # 6
+                "\n"  # 7
+                "\n"  # 8
+                "def validate_directories(values):\n"  # 9
+                "    for key in values:\n"  # 10
+                '        _validate_absolute_directory(key, values.get(key, ""))\n'  # 11
+                "\n"  # 12
+                "\n"  # 13
+                "def load(values):\n"  # 14
+                "    try:\n"  # 15
+                "        validate_directories(values)\n"  # 16
+                "    except DeployError as exc:\n"  # 17
+                "        raise DeployError(*exc.lines) from exc\n"  # 18: the step load added, dropped
+                "    return values\n"  # 19
+                "\n"  # 20
+                "\n"  # 21
+                "def stepped(values):\n"  # 22
+                "    try:\n"  # 23
+                "        validate_directories(values)\n"  # 24
+                "    except DeployError as exc:\n"  # 25
+                '        raise DeployError(*exc.lines, "Run configure to change it.") from exc\n'  # 26
+            ),
+        }
+        self.assertEqual(
+            ["deployer/config.py:18 DeployError in load" + UNFOLLOWED_SUFFIX],
+            self.problems(files),
+        )
+
+    def test_a_one_line_list_handed_to_another_name_or_a_call_fails_as_unfollowed(self) -> None:
+        # The list's display shows one line, but the name or the call it is handed to may change it in place, so the
+        # display is no longer the whole story; a list only unpacked, indexed, compared, or looped over still is.
+        files = {
+            "deployer/handed.py": (
+                "from .errors import DeployError\n"  # 1
+                "\n"  # 2
+                "\n"  # 3
+                "def aliased():\n"  # 4
+                '    lines = ["ERROR: Aliased", "Retry."]\n'  # 5
+                "    alias = lines\n"  # 6
+                "    alias.pop()\n"  # 7
+                "    raise DeployError(*lines)\n"  # 8
+                "\n"  # 9
+                "\n"  # 10
+                "def trimmed():\n"  # 11
+                '    lines = ["ERROR: Trimmed", "Retry."]\n'  # 12
+                "    trim(lines)\n"  # 13
+                "    raise DeployError(*lines)\n"  # 14
+                "\n"  # 15
+                "\n"  # 16
+                "def read():\n"  # 17
+                '    lines = ["ERROR: Read", "Retry."]\n'  # 18
+                "    first = lines[0]\n"  # 19
+                "    for line in lines:\n"  # 20
+                "        print(line, first, lines == [], lines.count(line))\n"  # 21
+                "    raise DeployError(*lines)\n"  # 22: read, never handed on
+                "\n"  # 23
+                "\n"  # 24
+                "def held_tuple():\n"  # 25
+                '    lines = ("ERROR: Tuple", "Retry.")\n'  # 26
+                "    keep(lines)\n"  # 27
+                "    raise DeployError(*lines)\n"  # 28: a tuple nothing can change
+            ),
+        }
+        self.assertEqual(
+            [
+                "deployer/handed.py:8 DeployError in aliased" + UNFOLLOWED_SUFFIX,
+                "deployer/handed.py:14 DeployError in trimmed" + UNFOLLOWED_SUFFIX,
+            ],
+            self.problems(files),
+        )
+
     def test_lines_the_policy_cannot_follow_pass_beside_a_written_step_or_a_stated_reason(self) -> None:
         files = {
             "deployer/beside.py": (
