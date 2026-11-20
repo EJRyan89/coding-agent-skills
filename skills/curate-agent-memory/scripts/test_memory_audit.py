@@ -3171,6 +3171,7 @@ def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separato
         ),
         pytest.param("Text.\n    # not heading\n", [(1, "Text. # not heading")], id="lazy-heading-shape"),
         pytest.param("- an item\n    # Item heading\n", [(1, "- an item")], id="heading-in-item"),
+        pytest.param("- an item\n# Heading\nAfter.\n", [(1, "- an item"), (3, "After.")], id="heading-after-item"),
         pytest.param(
             "1. an item\n\n    # Item heading\nAfter.\n", [(1, "1. an item"), (4, "After.")], id="heading-after-blank"
         ),
