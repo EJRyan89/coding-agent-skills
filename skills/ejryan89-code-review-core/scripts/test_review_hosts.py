@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_lock
 import review_hosts
 from git_client import GitClient, GitError, GitResult
 from path_keys import name_key
@@ -36,6 +37,7 @@ from review_hosts import (
     require_no_added_configuration,
     run_copilot,
 )
+from review_io import PersistenceError
 from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
 from test_path_containment import resolving_as_python_312
 from test_review_archive import unstatable
@@ -50,6 +52,23 @@ SKILL_REVIEWER_FILES = {
 
 
 class RuntimeHostTests(unittest.TestCase):
+    def test_a_host_lock_the_file_system_refuses_names_the_temporary_directory(self) -> None:
+        # Pinned against a literal: a run folder lives under the system temporary directory, which the step names.
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            with (
+                mock.patch.object(file_lock, "_lock", side_effect=OSError(errno.ENOTSUP, "No locks available")),
+                self.assertRaises(PersistenceError) as raised,
+                review_hosts.host_lock(run),
+            ):
+                self.fail("the refused lock was held")
+            self.assertEqual(
+                f"Cannot lock {run / 'copilot-host.lock.held'}: No locks available; a review lock needs a folder on a "
+                "file system that supports file locks, which some network and synced folders do not; keep the system "
+                "temporary directory on a local disk",
+                str(raised.exception),
+            )
+
     @staticmethod
     def _promote_fixture_result(staging: Path, result: Path) -> bool:
         """Rename a result in this test's owned temporary fixture."""

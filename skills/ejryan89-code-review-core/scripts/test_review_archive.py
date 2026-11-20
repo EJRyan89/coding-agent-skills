@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_lock
 import review_archive
 from file_presence import NotADirectory
 from review_archive import (
@@ -31,7 +32,7 @@ from review_archive import (
     record_files,
 )
 from review_config import ConfigurationError
-from review_io import ResourceLock
+from review_io import PersistenceError, ResourceLock
 from review_records import ReviewRecord, build_record, validate_adapter_result
 from test_review_records import valid_adapter_result, valid_request
 
@@ -170,14 +171,31 @@ class ArchiveTests(unittest.TestCase):
             taken: list[Path] = []
             original = ResourceLock
 
-            def recording(path: Path) -> Any:
+            def recording(path: Path, *, place: str) -> Any:
                 taken.append(path)
-                return original(path)
+                return original(path, place=place)
 
             with mock.patch.object(review_archive, "ResourceLock", recording):
                 commit_record(root, "Example/One", 3, self._record("example/one", 3, 1), expected_latest_version=None)
                 commit_record(root, "example/one", 3, self._record("example/one", 3, 2), expected_latest_version=1)
             self.assertEqual([root / ".locks" / "example__one#3.lock"] * 2, taken)
+
+    def test_an_archive_lock_the_file_system_refuses_names_the_review_archive(self) -> None:
+        # Pinned against a literal: the step names the archive, the folder this lock guards, to keep on a local disk.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                mock.patch.object(file_lock, "_lock", side_effect=OSError(errno.ENOTSUP, "No locks available")),
+                self.assertRaises(PersistenceError) as raised,
+            ):
+                commit_record(root, "example/one", 3, self._record("example/one", 3, 1), expected_latest_version=None)
+            self.assertEqual(
+                f"Cannot lock {root / '.locks' / 'example__one#3.lock.held'}: No locks available; a review lock needs "
+                "a folder on a file system that supports file locks, which some network and synced folders do not; "
+                "keep the review archive on a local disk",
+                str(raised.exception),
+            )
+            self.assertIsNone(latest_record(root, "example/one", 3))
 
     def test_versions_are_allocated_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

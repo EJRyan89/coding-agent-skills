@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import file_lock
 import json_writer
 import path_keys
 import review_guidance
@@ -1811,6 +1813,18 @@ class RecordingTests(InsightFixture):
         with mock.patch.object(ri, "resolve_flag", record_then_resolve):
             self.assertEqual(0, self.decide(json_path, "REC-001", "Correctness", flag)[0])
         self.assertEqual([[flag]], seen)
+
+    def test_a_report_lock_the_file_system_refuses_names_the_review_insights_reports(self) -> None:
+        # Pinned against a literal: the step names the reports, under summary_root, to keep on a local disk.
+        self.commit("owner/repo", 7, ["Correctness"])
+        with mock.patch.object(file_lock, "_lock", side_effect=OSError(errno.ENOTSUP, "No locks available")):
+            result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertFailed(result, ".locks")
+        step = (
+            "insights.lock.held: No locks available; a review lock needs a folder on a file system that supports file "
+            "locks, which some network and synced folders do not; keep the review-insights reports on a local disk\n"
+        )
+        self.assertTrue(result[1].endswith(step), result[1])
 
     def test_every_report_write_reads_the_report_only_once_it_holds_the_lock(self) -> None:
         # Another run's decision, recorded while this run waits for the lock, is in the report this run reads, so

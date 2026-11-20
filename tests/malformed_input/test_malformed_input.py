@@ -381,7 +381,7 @@ def test_the_lock_owner_reason_states_the_pid_bound_stale_holds(tmp_path: Path) 
         probed.append(pid)
         return process_identity.ProcessStatus(False, None)
 
-    lock = review_io.ResourceLock(tmp_path / "lock", probe=probe)
+    lock = review_io.ResourceLock(tmp_path / "lock", place="the locked folder", probe=probe)
     owned = review_io.LockIdentity("ab12")
     # A pid past the bound is not one, so the lock is held as the reason says, and no process is asked about.
     for pid in (0, process_identity.PID_MAXIMUM + 1):
