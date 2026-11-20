@@ -419,11 +419,11 @@ class MetadataValidationTests(DeployerTestCase):
             with self.subTest(case=f"source.json {case}"):
                 self.write(source_json, text.replace('"required_vars"', '"id"'))
                 result = self.deploy_fails("--dry-run", pattern="ERROR: source.json is malformed")
-                self.assert_lines(result.output, *malformed)
+                self.assert_refusal(result.output, *malformed)
                 self.assertNotIn("FAILED", result.stdout + result.stderr)
         source_json.write_bytes(b'{"id": "test/skills", "name": "\xff"}')
         result = self.deploy_fails("--dry-run", pattern="ERROR: source.json is malformed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: source.json is malformed: {forward(source_json)} is not UTF-8 text.",
             SOURCE_JSON_REMEDY,

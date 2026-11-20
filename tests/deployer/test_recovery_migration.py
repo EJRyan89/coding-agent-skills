@@ -1118,10 +1118,13 @@ class RecoveryFailureTests(RecoveryTestCase):
         staging = self.home / ".claude" / "deployer" / "staging"
         with path_method_failing_at("iterdir", staging):
             result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"  ERROR: Cannot list the staging runs in {forward(staging)}: Access is denied",
             f"  {SEE_RECOVERY_FAILED}",
+        )
+        self.assert_lines(
+            result.output,
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
         self.assertNotIn("Traceback", result.output)
@@ -1793,11 +1796,14 @@ class RecoveryBranchTests(RecoveryTestCase):
                 changes_home=FAILS_PARTWAY,
             )
         run_id = self.manifest()["last_run_id"]
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Could not finish the deployment: synthetic staging removal failure",
             "Check that the path exists and that you can read it, then retry.",
             "Rerun with --debug to see the traceback.",
+        )
+        self.assert_lines(
+            result.output,
             "",
             "Deployment failed; reconciling the current journal before exit...",
             f"Recovering committed run {run_id} (completing finalization)...",

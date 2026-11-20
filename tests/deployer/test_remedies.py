@@ -60,7 +60,7 @@ class SourceRemedyTests(RemedyTestCase):
         self.make_skill("alpha", "Test", shared_deps=[".hidden.md"])
         self.make_config()
         result = self.deploy_fails("--all", pattern="starts with dot")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: shared asset name '.hidden.md' starts with dot",
             "Rename it to one file name of letters, digits, dots, hyphens, underscores, and spaces that does not start "
@@ -108,7 +108,7 @@ class SourceRemedyTests(RemedyTestCase):
                     json.dumps({"required_vars": required, **metadata}),
                 )
                 result = self.deploy_fails("--all", pattern=re.escape(message))
-                self.assert_lines(result.output, message, step)
+                self.assert_refusal(result.output, message, step)
 
     def test_a_selection_it_cannot_read_states_what_to_enter(self) -> None:
         self.fixture()
@@ -116,7 +116,7 @@ class SourceRemedyTests(RemedyTestCase):
         for answer, message in (("x", "ERROR: Invalid selection 'x'"), ("9", "ERROR: Selection '9' is out of range")):
             with self.subTest(answer=answer):
                 result = self.deploy_fails(stdin=f"{answer}\n", pattern=re.escape(message))
-                self.assert_lines(result.output, message, step)
+                self.assert_refusal(result.output, message, step)
 
     def test_every_invalid_name_states_the_naming_rules(self) -> None:
         self.make_config()
@@ -139,22 +139,22 @@ class SourceRemedyTests(RemedyTestCase):
             with self.subTest(name=name):
                 self.make_source_json()
                 self.make_skill(name, "Test")
-                self.assert_lines(self.deploy_fails("--all", pattern=re.escape(message)).output, message, NAME_RULES)
+                self.assert_refusal(self.deploy_fails("--all", pattern=re.escape(message)).output, message, NAME_RULES)
                 self.remove_skill(name)
         self.make_skill("alpha", "Test")
         self.make_source_json(bundles={"Bad_Name": {"members": ["alpha"]}})
         result = self.deploy_fails("--all", pattern="Bundle name")
-        self.assert_lines(result.output, "ERROR: Bundle name 'Bad_Name' is invalid", NAME_RULES)
+        self.assert_refusal(result.output, "ERROR: Bundle name 'Bad_Name' is invalid", NAME_RULES)
         self.make_source_json()
         self.make_agent("Bad_Name")
         result = self.deploy_fails("--all", pattern="Agent name")
-        self.assert_lines(result.output, "ERROR: Agent name 'Bad_Name' does not match naming grammar", NAME_RULES)
+        self.assert_refusal(result.output, "ERROR: Agent name 'Bad_Name' does not match naming grammar", NAME_RULES)
 
     def test_invalid_metadata_shape_states_the_expected_keys(self) -> None:
         self.fixture()
         self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"required_vars": "HOME"}))
         result = self.deploy_fails("--all", pattern="invalid metadata shape")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: deploy-meta/alpha.json has an invalid metadata shape",
             "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, optional_tools, and "
@@ -170,7 +170,7 @@ class SourceRemedyTests(RemedyTestCase):
             json.dumps({"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "most"}}),
         )
         result = self.deploy_fails("--all", pattern="runtime_support")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             'ERROR: deploy-meta/alpha.json: copilot-cli must be "full" or an object with level, needs, and reason',
             "runtime_support, where present, must name each of claude-code, codex, and copilot-cli once: either "
@@ -190,7 +190,7 @@ class UnreadableFileTests(RemedyTestCase):
         with self.unreadable(path):
             result = self.deploy("--all", "--dry-run")
         self.assertEqual(1, result.code, result.output)
-        self.assert_lines(
+        self.assert_refusal(
             result.output, f"ERROR: {message}: {forward(path)}: Permission denied", remedy, self.DEBUG_HINT
         )
         self.assertNotIn(malformed, result.output)
@@ -237,13 +237,15 @@ class ManifestRemedyTests(RemedyTestCase):
     def assert_refused(self, data: dict[str, Any], message: str, *remedy: str) -> None:
         self.write_manifest(data)
         result = self.deploy_fails("--all", "--dry-run", pattern=re.escape(message))
-        self.assert_lines(result.output, message, *(remedy or (self.PUT_BACK, self.SEE_STATE_FILE)))
+        self.assert_refusal(result.output, message, *(remedy or (self.PUT_BACK, self.SEE_STATE_FILE)))
 
     def test_a_malformed_manifest_names_its_path_with_forward_slashes(self) -> None:
         self.fixture()
         self.write(self.manifest_file, "[]\n")
         result = self.deploy_fails("--all", "--dry-run", pattern="Manifest is malformed")
-        self.assert_lines(result.output, f"ERROR: Manifest is malformed: {forward(self.manifest_file)}", self.PUT_BACK)
+        self.assert_refusal(
+            result.output, f"ERROR: Manifest is malformed: {forward(self.manifest_file)}", self.PUT_BACK
+        )
 
     def test_each_malformed_field_names_the_step_to_take(self) -> None:
         source = "test/skills"
@@ -316,7 +318,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Test")
         result = self.deploy_fails("--all", pattern="No config found")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: No config found at {forward(self.config_file())}",
             f"Run '{DEPLOY_COMMAND} configure' first.",
@@ -328,9 +330,9 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.repos.mkdir()
         self.write(self.config_file("real/source"), f"_source_id=wrong/source\nREPOS_ROOT={forward(self.repos)}\n")
         message = "ERROR: Config _source_id (wrong/source) does not match source.json (real/source)"
-        self.assert_lines(self.deploy_fails("--all", pattern="does not match source.json").output, message, RESET)
+        self.assert_refusal(self.deploy_fails("--all", pattern="does not match source.json").output, message, RESET)
         # configure reads the same file, so only the remedy's --reset gets past it.
-        self.assert_lines(self.configure().output, message, RESET)
+        self.assert_refusal(self.configure().output, message, RESET)
         self.assertEqual(0, self.configure("--reset", stdin=f"{forward(self.repos)}\n\n\n\n").code)
         self.deploy_ok("--all")
 
@@ -338,7 +340,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.fixture()
         self.make_config(extra="GH_ORG=someone\n")
         result = self.deploy_fails("--all", pattern="not a recognized variable")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Config key GH_ORG is not a recognized variable",
             f"Run '{DEPLOY_COMMAND} configure' to drop it.",
@@ -351,7 +353,9 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.fixture()
         self.config_file().write_bytes(b"_source_id=test/skills\nREPOS_ROOT=\xff\n")
         result = self.deploy_fails("--all", pattern="not valid UTF-8")
-        self.assert_lines(result.output, f"ERROR: Config file is not valid UTF-8: {forward(self.config_file())}", RESET)
+        self.assert_refusal(
+            result.output, f"ERROR: Config file is not valid UTF-8: {forward(self.config_file())}", RESET
+        )
 
     def canonical_directory_of_repos(self, canonical: Exception | str) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         """Make the configured REPOS_ROOT canonicalize to canonical, or fail with it, leaving every other path alone."""
@@ -372,7 +376,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.make_config()
         with self.canonical_directory_of_repos(PermissionError(13, "Permission denied")):
             result = self.deploy_fails("--all", pattern="cannot be canonicalized")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: REPOS_ROOT cannot be canonicalized: {forward(self.repos)}",
             f"Run '{DEPLOY_COMMAND} configure' to change it.",
@@ -385,7 +389,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         root = "C:/" if platform_support.WINDOWS else "/"
         with self.canonical_directory_of_repos(root):
             result = self.deploy_fails("--all", pattern="resolves to filesystem root")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: REPOS_ROOT resolves to filesystem root: {root}",
             f"Run '{DEPLOY_COMMAND} configure' to change it.",
@@ -397,7 +401,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         root = "C:/" if platform_support.WINDOWS else "/"
         self.write(self.config_file(), f"_source_id=test/skills\nREPOS_ROOT={root}\n")
         result = self.deploy_fails("--all", pattern="must not be a filesystem root")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: REPOS_ROOT must not be a filesystem root (got: {root})",
             f"Run '{DEPLOY_COMMAND} configure' to change it.",
@@ -533,7 +537,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_config("test/source-b")
         self.deploy_from(source_a, "--all")
         result = self.deploy_fails("--all", pattern="is owned by source")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Skill 'alpha' is owned by source 'test/source-a'.",
             f"To take it over, run '{DEPLOY_COMMAND} --migrate-from test/source-a', then rerun this deployment.",
@@ -555,7 +559,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_config("test/source-b")
         self.deploy_from(source_a, "--all")
         result = self.deploy_fails("--all", pattern="collides with")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Shared asset 'alpha' collides with a skill owned by source 'test/source-a'.",
             "One name cannot be deployed as two kinds. Rename it in one source, or stop deploying it from "
@@ -574,7 +578,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         )
         self.deploy_ok("--all")
         result = self.deploy_fails("--migrate-from", "old/source", pattern="is not present in the manifest")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Migration source 'old/source' is not present in the manifest.",
             f'Name a source ID listed under "sources" in {forward(self.manifest_file)}.',
@@ -584,7 +588,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_skill("beta", "Beta")
         self.write_manifest(data)
         result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is missing")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Cannot migrate 'beta': destination is missing.",
             "Restore the copy the old source deployed, for example by deploying from that source again, "
@@ -594,7 +598,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         # A file in the skill folder's place is named as the wrong kind, never as missing.
         (self.skills_dir / "beta").write_text("", encoding="utf-8")
         result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is not a directory")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Cannot migrate 'beta': destination is not a directory.",
             "Restore the copy the old source deployed, for example by deploying from that source again, "
@@ -606,7 +610,7 @@ class OwnershipRemedyTests(RemedyTestCase):
             (self.skills_dir / "beta").unlink()
             (self.skills_dir / "beta").symlink_to(self.root / "nowhere", target_is_directory=True)
             result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is missing")
-            self.assert_lines(
+            self.assert_refusal(
                 result.output,
                 "ERROR: Cannot migrate 'beta': destination is missing.",
                 "Restore the copy the old source deployed, for example by deploying from that source again, "
@@ -624,7 +628,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_config("new/source")
         (self.source / "skills" / "guide.md").unlink()
         result = self.deploy_fails("--migrate-from", "old/source", pattern="source owner file is missing")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Cannot migrate shared asset 'guide.md': source owner file is missing.",
             "Put back skills/guide.md in this checkout, or remove 'guide.md' from source.json's shared_assets, then "
@@ -819,7 +823,7 @@ class LockRemedyTests(RemedyTestCase):
         self.fixture()
         self.write_lock({"pid": 4242, "token": "old-token", "start_time": 7})
         result = self.deploy_fails("--all", pattern="Another deployment is running", probe=probe_returning(True, 7))
-        self.assert_lines(
+        self.assert_refusal(
             result.output, "ERROR: Another deployment is running (PID 4242).", "Wait for it to finish, then retry."
         )
 
@@ -830,13 +834,13 @@ class LockRemedyTests(RemedyTestCase):
         )
         self.fixture()
         self.write_lock(None)
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="no metadata").output,
             "ERROR: Lock exists but has no metadata (may be initializing).",
             *stale,
         )
         self.write(self.lock_dir / "info.json", json.dumps({"token": "x"}))
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="no valid PID").output,
             "ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
             f"{process_identity.PID_MAXIMUM}, found null.",
@@ -845,14 +849,14 @@ class LockRemedyTests(RemedyTestCase):
         info = self.lock_dir / "info.json"
         info.unlink()
         info.mkdir()
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="is not a file").output,
             f"ERROR: The lock's metadata at {forward(info)} is not a file.",
             *stale,
         )
         info.rmdir()
         info.write_bytes(b'{"pid": 4242, "token": "\xff"}')
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="not UTF-8").output,
             f"ERROR: Lock metadata is malformed: {forward(info)} is not UTF-8 text.",
             *stale,
@@ -866,19 +870,19 @@ class LockRemedyTests(RemedyTestCase):
             return real_read(path, *arguments, **options)
 
         with mock.patch.object(Path, "read_text", read_text):
-            self.assert_lines(
+            self.assert_refusal(
                 self.deploy_fails("--all", pattern="Could not read the lock's metadata").output,
                 f"ERROR: Could not read the lock's metadata at {forward(info)}: Access is denied.",
                 *stale,
             )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": None}))
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="cannot be verified", probe=probe_returning(True, 7)).output,
             "ERROR: Lock PID 4242 is alive but its process identity cannot be verified.",
             *stale,
         )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": 7}))
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="start time cannot be read", probe=probe_returning(True, None)).output,
             "ERROR: Lock PID 4242 is alive but its start time cannot be read.",
             *stale,
@@ -892,7 +896,7 @@ class LockRemedyTests(RemedyTestCase):
         self.write_lock(None)
         target = self.root / "gone.json"
         (self.lock_dir / "info.json").symlink_to(target)
-        self.assert_lines(
+        self.assert_refusal(
             self.deploy_fails("--all", pattern="no metadata").output,
             "ERROR: Lock exists but has no metadata (may be initializing).",
             f"If no deployment is running, the lock is stale: remove {forward(self.lock_dir)}, then retry.",
@@ -937,7 +941,7 @@ class LockRemedyTests(RemedyTestCase):
             result = self.deploy_fails(
                 "--all", pattern="Could not remove the stale lock", probe=probe_returning(False, None)
             )
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: Could not remove the stale lock {forward(self.lock_dir)}: synthetic move failure.",
             "Delete it once no deployment is running, then retry.",
@@ -967,7 +971,7 @@ class LockRemedyTests(RemedyTestCase):
             result = self.deploy_fails(
                 "--all", pattern="Another deployment is running", changes_home="an older deployer makes its record"
             )
-        self.assert_lines(
+        self.assert_refusal(
             result.output, "ERROR: Another deployment is running (PID 5151).", "Wait for it to finish, then retry."
         )
 
