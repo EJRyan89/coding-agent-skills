@@ -467,8 +467,7 @@ def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tupl
         pytest.param(
             "| a |\n| - |\nnext\n", [(0, "table row"), (1, "table row"), (2, "paragraph")], id="after-a-table"
         ),
-        # A numbered line not numbered 1, or a bare marker, right after a quoted line continues the quote.
-        pytest.param("> quoted\n2. more\n", [(0, "quote")], id="numbered-line-after-a-quote"),
+        # A bare marker right after a quoted line continues the quote, since it opens no item.
         pytest.param("> quoted\n-\n", [(0, "quote")], id="bare-marker-after-a-quote"),
         # A line that starts with `|` is a table row even after a paragraph's text, and a table with no leading pipe
         # is read as a paragraph.
@@ -522,17 +521,117 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
             [],
             id="quote-shaped-line-in-a-fenced-item",
         ),
+        # A blockquote inside a list item leaves the item open: a marker that leaves both opens the list's next item,
+        # and a heading the item holds ends the quote but stays in the item.
+        pytest.param(
+            "1. Do X.\n   > Note\n2. Do Y.\n",
+            [(0, "item"), (1, "quote"), (2, "item")],
+            [],
+            [],
+            id="quote-in-an-item-then-the-next-item",
+        ),
+        pytest.param(
+            "1. Do X.\n\n   > Note\n2. Do Y.\n",
+            [(0, "item"), (2, "quote"), (3, "item")],
+            [],
+            [],
+            id="quote-after-a-blank-line-in-an-item-then-the-next-item",
+        ),
+        pytest.param(
+            "* s\n  > q\n    # H\n",
+            [(0, "item"), (1, "quote"), (2, "heading")],
+            [],
+            [],
+            id="heading-ending-a-quote-in-an-item",
+        ),
+        # A marker other than `1.` after a quoted line opens a list, since the paragraph is the quote's.
+        pytest.param("> quoted\n2. more\n", [(0, "quote"), (1, "item")], [], [], id="numbered-item-after-a-quote"),
+        # A `|` line that lazily continues an item's paragraph is that paragraph's text, so the item stays open; a
+        # table row is a paragraph's text for what may follow it.
+        pytest.param("- a\n| t |\n  # H\n", [(0, "item"), (2, "heading")], [], [], id="lazy-pipe-line-in-an-item"),
+        pytest.param(
+            "1. x\n  | t |\n   # H\n    - c\n",
+            [(0, "item"), (2, "heading"), (3, "item")],
+            [],
+            [],
+            id="lazy-pipe-line-then-a-nested-item",
+        ),
+        pytest.param(
+            "| t |\n- \n\n\t- t\n",
+            [(0, "table row"), (1, "paragraph"), (3, "code")],
+            [3],
+            [],
+            id="bare-marker-after-a-row-then-code",
+        ),
+        pytest.param(
+            "  | t |\n  2. v\n\n        code\n",
+            [(0, "table row"), (1, "paragraph"), (3, "code")],
+            [3],
+            [],
+            id="numbered-line-after-a-row-then-code",
+        ),
+        # A marker whose text opens indented code opens a code block of its own, apart from the code above it.
+        pytest.param("    x\n\n-     y\n", [(0, "code"), (2, "code")], [0, 2], [], id="item-opening-code-after-code"),
+        pytest.param(
+            "- a\n\n      x\n\n-     y\n",
+            [(0, "item"), (2, "code"), (4, "code")],
+            [2, 4],
+            [],
+            id="item-opening-code-after-an-item-s-code",
+        ),
+        # A fence in a list item ends at the first line the item does not hold, so the run that would have closed it
+        # opens a fence of its own.
+        pytest.param(
+            "- a\n  ```\nx\n  ```\n# H\n",
+            [(0, "item"), (2, "code"), (2, "paragraph"), (4, "code")],
+            [1, 3, 4, 5],
+            [],
+            id="fence-ending-with-its-item",
+        ),
+        pytest.param(
+            "  - ```\n> - qi\n  ```\n    # H\n",
+            [(1, "code"), (1, "quote"), (3, "code")],
+            [0, 2, 3, 4],
+            [],
+            id="fence-ending-at-a-quote",
+        ),
+        # A list item with nothing after its marker, then a blank line, is empty and closes.
+        pytest.param("1. \n\n   # H\n", [(0, "item"), (2, "heading")], [], ["H"], id="empty-item-closes"),
+        pytest.param("- \n\n    code\n", [(0, "item"), (2, "code")], [2], [], id="empty-item-then-code"),
     ],
 )
 def test_every_reader_holds_a_line_in_the_list_item_github_renders_it_in(
     document: str, expected: list[tuple[int, str]], code: list[int], headings: list[str]
 ) -> None:
-    # `blocks`, `code_block_lines`, and `document_headings` read one walk's item stack, so none of them reads a line in
+    # `blocks`, `code_block_lines`, and `document_headings` read one walk's container stack, so none reads a line in
     # an item another leaves it out of.
     lines = document.split("\n")
     assert [(block.start, block.kind) for block in blocks(lines)] == expected
     assert sorted(code_block_lines(lines)) == code
     assert [heading.group("text") for _, heading in document_headings(lines)] == headings
+
+
+@pytest.mark.parametrize(
+    ("document", "expected", "code"),
+    [
+        # A nested blockquote and a lazy line join the quote's block, as every line a blockquote holds does.
+        pytest.param("> a\n>> b\n", [(0, "quote", 2)], [], id="nested-quote-opens"),
+        pytest.param(">> a\n> b\n", [(0, "quote", 2)], [], id="nested-quote-continues-lazily"),
+        pytest.param("> | r |\nlazy\n", [(0, "quote", 2)], [], id="lazy-line-after-a-quoted-row"),
+        pytest.param(
+            "> a\n>\n> b\n> # h\n> | r |\n> - i\n>     code\n", [(0, "quote", 7)], [], id="every-quoted-block-joins"
+        ),
+        # Indented code inside a blockquote is a code block of its own.
+        pytest.param("> a\n>\n>     code\n", [(0, "quote", 2), (2, "code", 1)], [2], id="quoted-code"),
+    ],
+)
+def test_a_blockquote_s_lines_join_its_block(
+    document: str, expected: list[tuple[int, str, int]], code: list[int]
+) -> None:
+    lines = document.split("\n")
+    assert [(block.start, block.kind, len(block.lines)) for block in blocks(lines)] == expected
+    assert sorted(code_block_lines(lines)) == code
+    assert document_headings(lines) == []
 
 
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:

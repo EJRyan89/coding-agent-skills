@@ -141,10 +141,10 @@ def unwrapped(block: str) -> list[str]:
 
     A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so the lines are read as
     markdown_sections' `blocks` reads them, and the lines of one paragraph or one list item are joined, while every
-    other line, a blank one, a code block's, a table row, a quote's, or a thematic break, stays its own. A paragraph that
-    starts on the line right below a heading joins the heading, since a wrapped heading's words run on there. What
-    starts a block, and which list item holds a line, is `blocks`' reading; its limits are this reading's, such as a
-    setext heading's `=` underline joining the line above it, as no upgrade note writes one.
+    other line, a blank one, a code block's, a table row, a quote's, or a thematic break, stays its own. A paragraph
+    that starts on the line right below a heading joins the heading, since a wrapped heading's words run on there.
+    What starts a block, and which list item holds a line, is `blocks`' reading; its limits are this reading's, such as
+    a setext heading's `=` underline joining the line above it, as no upgrade note writes one.
     """
     raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
     lines: list[str | None] = list(raw)
