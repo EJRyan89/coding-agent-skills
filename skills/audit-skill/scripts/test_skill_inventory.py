@@ -4174,6 +4174,11 @@ def test_a_link_destination_is_read_once_and_a_path_in_prose_still_counts(tmp_pa
         ("Read `.github/instructions/**/*.instructions.md` and docs/*-support.md.\n", []),
         # A quote or emphasis that opens a path still starts it.
         ("Read 'a.md', \"b.md\", *c.md*, and `d.md`.\n", ["a.md", "b.md", "c.md", "d.md"]),
+        # An emphasis `_` started only the tail of a name that holds one, since `_` is a path character.
+        ("Read _c.md_, `references/{lang}_guide.md`, `${PREFIX}_notes.md`, and --doc=_draft.md.\n", []),
+        # A bare glob's `*` started a tail; an emphasis `*` starts a path only when it closes right after the `.md`.
+        ("Read `*.instructions.md`, *-support.md, and *_test.md.\n", []),
+        ("Read *a.md*, **g.md**, and *${CLAUDE_SKILL_DIR}/h.md*.\n", ["a.md", "g.md", "${CLAUDE_SKILL_DIR}/h.md"]),
     ],
 )
 def test_a_path_in_prose_or_code_is_read_whole_or_not_at_all(text: str, references: list[str], tmp_path: Path) -> None:
@@ -4198,8 +4203,10 @@ def test_a_path_holding_an_ampersand_named_by_skill_md_is_no_nested_reference(tm
         # Prose separates words with spaces, so a path holding one is read from after its last space.
         ("`/opt/my notes/a.md`\n", ["notes/a.md"]),
         ("`C:\\Program Files\\x\\a.md`\n", ["Files\\x\\a.md"]),
-        # An absolute path after `=`, `:`, `*`, or `|` is not read.
-        ("Run --doc=/abs/a.md, key:/abs/b.md, |/abs/c.md|, and */abs/e.md.\n", []),
+        # An absolute path that starts anywhere but at a listed start is not read.
+        ("Run --doc=/abs/a.md, key:/abs/b.md, |/abs/c.md|, */abs/e.md, #/abs/f.md, and ;/abs/g.md.\n", []),
+        # A path followed right away by `&` is not read, `a.md&b.md` is one path, and none starts after an entity.
+        ("Read a.md&nbsp;, ?f=b.md&x=1, c.md&d.md, and &lt;e.md&gt;.\n", ["c.md&d.md"]),
         # Nor is a UNC path, a home or variable path, or a backslash after ${CLAUDE_SKILL_DIR}.
         ("Read \\\\server\\share\\a.md, ~/b.md, $HOME/c.md, ${VAR}/d.md, and ${CLAUDE_SKILL_DIR}\\..\\e.md.\n", []),
         # A Markdown backslash escape in prose stays in the name.
