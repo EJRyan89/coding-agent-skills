@@ -400,7 +400,7 @@ def _execute(
     debug: bool,
 ) -> int:
     try:
-        paths, source_id, options, values, src = _prepare(namespace, paths)
+        paths, source_id, options, values, src = _prepare(namespace, paths, pin)
     except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
@@ -412,7 +412,8 @@ def _execute(
         values, held = _claim(paths, options, source_id, values, probe)
     except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
-    # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
+    # The one release point: every way out of this block releases the lock and removes its record, unless a failed
+    # recovery retained the record.
     with held:
         step = "check the source checkout"
         try:
@@ -441,12 +442,12 @@ def _execute(
             return _recover_from_failure(exc, debug, paths, held)
 
 
-def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, Options, dict[str, str], source.Source]:
+def _prepare(
+    namespace: argparse.Namespace, paths: Paths, pin: source_ref.Pin | None
+) -> tuple[Paths, str, Options, dict[str, str], source.Source]:
     """The run's paths (a canary home's, when given), source ID, options, configured values, and source."""
     platform_support.ensure_supported()
-    source_id = source.load_source_id(paths)
-    if paths.tree_dir is not None:
-        _reject_other_source_id(paths, source_id)
+    source_id = source.load_source_id(paths) if pin is None else source_ref.exported_source_id(paths, pin)
     options = parse_arguments(namespace, source_id)
     if options.canary_home:
         # The canary's runtimes read their configuration from the canary home, never from the user's COPILOT_HOME.
@@ -462,21 +463,6 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
     selection_module.check_includes(src, options.include)
     plan.check_source_forced_items(src, options.force_items)
     return paths, source_id, options, values, src
-
-
-def _reject_other_source_id(paths: Paths, tree_id: str) -> None:
-    """Refuse an exported tree whose source.json names another source than the checkout's.
-
-    Deploying it would move every item to another owner, which only an explicit --migrate-from may do.
-    """
-    checkout_id = source.load_source_id(dataclasses.replace(paths, tree_dir=None))
-    if tree_id != checkout_id:
-        raise DeployError(
-            f"ERROR: The commit --at names has source ID '{tree_id}' in its source.json, not this checkout's "
-            f"'{checkout_id}'.",
-            "Name a commit of this source; a change of source ID needs an explicit ownership migration.",
-            see_recovery(source_ref.EARLIER_COMMIT),
-        )
 
 
 def _dry_run(
@@ -566,8 +552,8 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths) -> int:
 def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
     """Report a failed deployment, then recover its journal.
 
-    An exception during recovery keeps the journal; unreconciled entries keep both it and the lock, which this
-    retains so the caller's release leaves it.
+    An exception during recovery keeps the journal; unreconciled entries keep both it and the lock's record, which this
+    retains so the caller's release leaves the record. The file lock ends with the run all the same.
     """
     outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
     # An OSError, such as of a file another program holds open, ends as every command's does; Ctrl+C as a cancellation.
@@ -588,9 +574,12 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
         return _stopped_recovery(recovery_error, debug, paths)
     if not recovered:
         held.retain()
-        print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
         print(
-            "The next run reclaims the lock and retries recovery. If that fails too, "
+            "ERROR: Immediate recovery failed; deployment evidence and the lock's record were retained.",
+            file=sys.stderr,
+        )
+        print(
+            "The next run removes the record and retries recovery. If that fails too, "
             f"reconcile the run by hand. {see_recovery(RECOVERY_FAILED)}",
             file=sys.stderr,
         )
