@@ -25,7 +25,7 @@ from pr_change import (
     tree_modes,
     with_modes,
 )
-from review_github import GitHubClient
+from review_github import GitHubClient, GitHubFieldError, read_merge_base_commit
 
 REVIEWED = "a" * 40
 HEAD = "d" * 40
@@ -421,6 +421,38 @@ class ReviewedBaseTests(unittest.TestCase):
             self.detect_retargeted(self.merge_bases(GitHubError("HTTP 403", kind="forbidden"), "2" * 40))
         with self.assertRaises(GitHubError):
             self.detect_retargeted(self.merge_bases(GitHubError("HTTP 401", kind="authentication"), "2" * 40))
+
+    def test_a_compare_answer_s_merge_base_reads_the_same_way_for_the_detector_and_get_merge_base(self) -> None:
+        sha = "2" * 40
+        answers: tuple[tuple[object, str | None], ...] = (
+            ({"merge_base_commit": {"sha": sha}}, sha),
+            ({"merge_base_commit": {"sha": "3" * 64}}, "3" * 64),
+            ([], None),
+            ({}, None),
+            ({"merge_base_commit": None}, None),
+            ({"merge_base_commit": []}, None),
+            ({"merge_base_commit": {}}, None),
+            ({"merge_base_commit": {"sha": 1}}, None),
+            ({"merge_base_commit": {"sha": "A" * 40}}, None),
+            ({"merge_base_commit": {"sha": "2" * 39}}, None),
+        )
+        for answer, expected in answers:
+            with self.subTest(answer=answer):
+                retargeted = self.detect_retargeted(self.merge_bases(answer, expected or sha))
+                self.assertEqual(UNKNOWN if expected is None else UNCHANGED, retargeted)
+                client = FakeClient({f"{REVIEWED_BASE}...{HEAD}": answer})
+                if expected is None:
+                    with self.assertRaises(GitHubFieldError) as read:
+                        read_merge_base_commit(answer)
+                    with self.assertRaises(GitHubFieldError) as named:
+                        client.get_merge_base("owner/repo", REVIEWED_BASE, HEAD)
+                    self.assertEqual(
+                        str(read.exception), str(named.exception), "get_merge_base keeps the reader's error"
+                    )
+                    self.assertEqual("malformed", named.exception.kind)
+                else:
+                    self.assertEqual(expected, read_merge_base_commit(answer))
+                    self.assertEqual(expected, client.get_merge_base("owner/repo", REVIEWED_BASE, HEAD))
 
     def test_prefetch_reads_the_comparison_with_the_reviewed_base_and_detect_needs_no_further_call(self) -> None:
         client = self.client(self.OWN)
