@@ -48,6 +48,7 @@ from workflows import (
     mutation_checkout_problems,
     mutation_job_problems,
     mutation_pin_problems,
+    mutation_windows_shellcheck_problems,
     mypy_cache_problems,
     pinned_tool_problems,
     posix_job_problems,
@@ -2022,10 +2023,32 @@ MUTATION_LINUX_SHELLCHECK = (
     '"shellcheck-v$SHELLCHECK_VERSION/shellcheck"\n'
     '          echo "$shellcheck" >> "$GITHUB_PATH"\n'
 )
+MUTATION_WINDOWS_SHELLCHECK_RESTORE = (
+    "      - name: Restore ShellCheck\n        id: shellcheck\n        uses: actions/cache/restore@abc\n        with:\n"
+    "          path: ${{ runner.temp }}\\shellcheck\n"
+    "          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}\n"
+)
+MUTATION_WINDOWS_SHELLCHECK_INSTALL = (
+    "          # ShellCheck is one executable, kept in its own folder ahead of everything else on PATH.\n"
+    "          $shellcheck = Join-Path $env:RUNNER_TEMP 'shellcheck'\n"
+    "          if ($env:SHELLCHECK_CACHED -ne 'true') {\n"
+    "            choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress\n"
+    "            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    "            $installed = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib\\shellcheck') -Recurse "
+    "-Filter shellcheck.exe\n"
+    "            New-Item -ItemType Directory -Path $shellcheck -Force | Out-Null\n"
+    "            Copy-Item -LiteralPath ($installed | Select-Object -First 1).FullName -Destination $shellcheck "
+    "-ErrorAction Stop\n"
+    "          }\n"
+    "          Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck\n"
+)
+MUTATION_WINDOWS_SHELLCHECK_CACHED = (
+    "        env:\n          SHELLCHECK_CACHED: ${{ steps.shellcheck.outputs.cache-hit }}\n"
+)
 MUTATION_WINDOWS_SHELLCHECK = (
-    "      - name: Install ShellCheck\n        shell: pwsh\n        run: |\n"
-    "          choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress\n"
-    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    f"{MUTATION_WINDOWS_SHELLCHECK_RESTORE}"
+    f"      - name: Install ShellCheck\n        shell: pwsh\n{MUTATION_WINDOWS_SHELLCHECK_CACHED}        run: |\n"
+    f"{MUTATION_WINDOWS_SHELLCHECK_INSTALL}"
 )
 MUTATION_SHELLCHECK_VERIFY = (
     "      - name: Verify ShellCheck\n        shell: pwsh\n        run: |\n"
@@ -2142,6 +2165,52 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
             MUTATION.replace(" --version $env:SHELLCHECK_VERSION", ""),
             "windows job's scripts",
             id="Chocolatey's latest ShellCheck",
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_WINDOWS_SHELLCHECK_RESTORE, ""),
+            "windows job's caches",
+            id="Chocolatey on every Windows shard",
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "uses: actions/cache/restore@abc\n        with:\n          path: ${{ runner.temp }}",
+                "uses: actions/cache@abc\n        with:\n          path: ${{ runner.temp }}",
+            ),
+            "windows job's caches",
+            id="a shard that saves the validation legs' ShellCheck cache",
+        ),
+        pytest.param(
+            MUTATION.replace("shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}", "shellcheck-windows"),
+            "windows job's caches",
+            id="a ShellCheck cache the validation legs never fill",
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_WINDOWS_SHELLCHECK_CACHED, ""),
+            "windows job's envs",
+            id="an install that never learns the restore hit",
+        ),
+        pytest.param(
+            MUTATION.replace("        id: shellcheck\n", ""),
+            "windows job's ids",
+            id="a restore whose hit no step reads",
+        ),
+        pytest.param(
+            MUTATION.replace("          if ($env:SHELLCHECK_CACHED -ne 'true') {\n", "          if ($true) {\n"),
+            "windows job's scripts",
+            id="Chocolatey on a hit too",
+        ),
+        pytest.param(
+            MUTATION.replace("          Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck\n", ""),
+            "windows job's scripts",
+            id="a restored ShellCheck left off PATH",
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "        shell: bash\n        run: |\n",
+                "        shell: bash\n        env:\n          PATH: elsewhere\n        run: |\n",
+            ),
+            "linux job's envs",
+            id="a step's own PATH",
         ),
         pytest.param(
             MUTATION.replace('          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict\n', ""),
@@ -2500,6 +2569,67 @@ def test_the_mutation_legs_read_validates_shellcheck_pins() -> None:
 )
 def test_a_mutation_pin_off_validates_fails(mutation: str, validate: str, problem: str) -> None:
     problems = mutation_pin_problems(mutation + MUTATION, validate)
+    assert any(problem in found for found in problems), problems
+
+
+# validate.yml's Windows legs as the mutation gate's Windows leg copies them: the same restore, and one install step
+# that also installs PSScriptAnalyzer around the same ShellCheck lines.
+VALIDATE_WINDOWS_SHELLCHECK = (
+    "jobs:\n  suite:\n    runs-on: windows-latest\n    steps:\n"
+    f"{MUTATION_WINDOWS_SHELLCHECK_RESTORE.replace('actions/cache/restore@', 'actions/cache@')}"
+    "      - name: Install validation tools\n        shell: pwsh\n"
+    f"{MUTATION_WINDOWS_SHELLCHECK_CACHED}"
+    "          PSSCRIPTANALYZER_CACHED: ${{ steps.psscriptanalyzer.outputs.cache-hit }}\n        run: |\n"
+    f"{MUTATION_WINDOWS_SHELLCHECK_INSTALL}"
+    "          if ($env:PSSCRIPTANALYZER_CACHED -ne 'true') {\n"
+    "            Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
+    "          }\n"
+)
+
+
+def test_the_mutation_windows_leg_installs_shellcheck_as_the_validation_legs_do() -> None:
+    assert mutation_windows_shellcheck_problems(VALIDATE_WINDOWS_SHELLCHECK) == []
+
+
+@pytest.mark.parametrize(
+    ("validate", "problem"),
+    [
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace("        id: shellcheck\n", ""),
+            "restores ShellCheck as []",
+            id="no restore",
+        ),
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace("key: shellcheck-${{ runner.os }}-", "key: shellcheck-v2-"),
+            "restores ShellCheck as",
+            id="another key",
+        ),
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace("${{ runner.temp }}\\shellcheck", "${{ runner.temp }}\\tools"),
+            "restores ShellCheck as",
+            id="another folder",
+        ),
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace(MUTATION_WINDOWS_SHELLCHECK_CACHED, "        env:\n"),
+            "no one script given SHELLCHECK_CACHED",
+            id="an install that never learns the restore hit",
+        ),
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace(" --yes --no-progress", " --yes"),
+            "no one script given SHELLCHECK_CACHED",
+            id="another install",
+        ),
+        pytest.param(
+            VALIDATE_WINDOWS_SHELLCHECK.replace(
+                "          Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck\n", ""
+            ),
+            "no one script given SHELLCHECK_CACHED",
+            id="a ShellCheck left off PATH",
+        ),
+    ],
+)
+def test_a_validation_shellcheck_install_the_mutation_leg_does_not_copy_fails(validate: str, problem: str) -> None:
+    problems = mutation_windows_shellcheck_problems(validate)
     assert any(problem in found for found in problems), problems
 
 
