@@ -2011,7 +2011,8 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 # dealt into. Each leg runs one job for each of its shards, none stopping another, and checks out what its platform's
 # validation job does, since a suite run unmutated there reads main's history and tags, installs the same lock, and
 # ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive checked
-# against its pinned digest, the Windows leg through Chocolatey, each refusing another version on PATH. Each shard runs
+# against its pinned digest, the Windows leg as the Windows validation legs do, from their cache, through Chocolatey
+# only on a miss, each refusing another version on PATH. Each shard runs
 # its share of its platform's leg of the mutants, never mutmut, within its own cap (DEFAULT_MINUTES in
 # tools/mutation_gate.py), which sits well inside the job's time limit, and hands on its outcomes under its shard's
 # name. The join, named as the gate and never as the required check, runs whatever the legs did, reads the files, the
@@ -2034,9 +2035,23 @@ MUTATION_LINUX_SHELLCHECK = [
     SHELLCHECK_PATH_ENTRY,
 ]
 MUTATION_WINDOWS_SHELLCHECK = [
+    "$shellcheck = Join-Path $env:RUNNER_TEMP 'shellcheck'",
+    "if ($env:SHELLCHECK_CACHED -ne 'true') {",
     "choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress",
     "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+    "$installed = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib\\shellcheck') -Recurse -Filter shellcheck.exe",
+    "New-Item -ItemType Directory -Path $shellcheck -Force | Out-Null",
+    "Copy-Item -LiteralPath ($installed | Select-Object -First 1).FullName -Destination $shellcheck -ErrorAction Stop",
+    "}",
+    "Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck",
 ]
+# The Windows leg restores, and never saves, the ShellCheck the Windows validation legs cache, under their key, and
+# tells its install step whether the restore hit, as theirs does.
+MUTATION_WINDOWS_SHELLCHECK_CACHE = {
+    "path": "${{ runner.temp }}\\shellcheck",
+    "key": "shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}",
+}
+MUTATION_WINDOWS_SHELLCHECK_ENV = {"SHELLCHECK_CACHED": "${{ steps.shellcheck.outputs.cache-hit }}"}
 # The verify step's ShellCheck lines, which the validation legs' verify step runs too.
 MUTATION_SHELLCHECK_VERIFY = list(PINNED_TOOL_LINES[:2])
 MUTATION_LOCKED_PYTHON = {
@@ -2054,12 +2069,16 @@ MUTATION_VERDICT_PATH = "mutation/verdict"
 MUTATION_LEG_ORDER = ["checkout", "setup-python", "run", "run", "run", "download-artifact", "run", "upload-artifact"]
 
 
-def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]]) -> dict[str, object]:
+def _mutation_leg(
+    platform: str, runner: str, shellcheck: tuple[str, list[str]], cache: dict[str, str] | None = None
+) -> dict[str, object]:
     """The job of one leg: after the select job, only when it dealt the leg a shard, one job for each shard it lists,
-    none cancelling another, on the platform's runner, installing ShellCheck in the shell `shellcheck` names and
-    verifying it in pwsh before the lock, and running and handing on its own shard."""
+    none cancelling another, on the platform's runner, installing ShellCheck in the shell `shellcheck` names, after
+    restoring it from `cache` when one is given, and verifying it in pwsh before the lock, and running and handing on
+    its own shard."""
     leg = platform.casefold()
     shell, install = shellcheck
+    restore = ["cache/restore"] if cache else []
     return {
         "name": f"Mutation gate on {platform}",
         "needs": "select",
@@ -2076,8 +2095,9 @@ def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]])
             [f"{MUTATION_GATE} leg mutation --shard {MUTATION_SHARD}"],
         ],
         "shells": [shell, "pwsh", None, None],
-        "ids": [],
-        "order": MUTATION_LEG_ORDER,
+        "envs": [MUTATION_WINDOWS_SHELLCHECK_ENV if cache else None, None, None, None],
+        "ids": ["shellcheck"] if cache else [],
+        "order": [*MUTATION_LEG_ORDER[:2], *restore, *MUTATION_LEG_ORDER[2:]],
         "artifacts": [
             ["download-artifact", MUTATION_MUTANTS],
             [
@@ -2089,7 +2109,7 @@ def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]])
                 },
             ],
         ],
-        "caches": [],
+        "caches": [["cache/restore", cache, None]] if cache else [],
     }
 
 
@@ -2106,6 +2126,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [[MUTATION_INSTALL], [f"{MUTATION_GATE} select mutation"]],
         "shells": [None, None],
+        "envs": [None, None],
         "ids": ["select"],
         # The verdict is restored before the select step reads it.
         "order": ["checkout", "setup-python", "run", "cache/restore", "run", "upload-artifact"],
@@ -2128,7 +2149,9 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         ],
     },
     "linux": _mutation_leg("Linux", "ubuntu-latest", ("bash", MUTATION_LINUX_SHELLCHECK)),
-    "windows": _mutation_leg("Windows", "windows-latest", ("pwsh", MUTATION_WINDOWS_SHELLCHECK)),
+    "windows": _mutation_leg(
+        "Windows", "windows-latest", ("pwsh", MUTATION_WINDOWS_SHELLCHECK), MUTATION_WINDOWS_SHELLCHECK_CACHE
+    ),
     "mutation": {
         "name": "Mutation gate",
         "needs": ["select", "linux", "windows"],
@@ -2140,6 +2163,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "python": {"python-version": "3.12"},
         "scripts": [[f"{MUTATION_GATE} join mutation"]],
         "shells": [None],
+        "envs": [None],
         "ids": ["join"],
         # The verdict is saved after the join writes it, and only when the join names its key.
         "order": ["checkout", "setup-python", "download-artifact", "run", "cache/save"],
@@ -2162,7 +2186,7 @@ def _uses(step: dict[str, Node], action: str) -> bool:
 def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
     """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its matrix, its checkout's and Python's
     inputs, its scripts, the shell each names, and the ids they take, the order of its steps, each artifact step with
-    its inputs, and each cache step with its inputs and condition."""
+    its inputs, and each cache step with its inputs and condition, and each script's own `env`."""
     steps = _steps(job)
     checkouts: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "checkout")]
     pythons: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "setup-python")]
@@ -2184,6 +2208,7 @@ def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
         "python": pythons[0] if len(pythons) == 1 else pythons,
         "scripts": [_script_lines(step) for step in steps if "run" in step],
         "shells": [step.get("shell") for step in steps if "run" in step],
+        "envs": [step.get("env") for step in steps if "run" in step],
         "ids": [step.get("id") for step in steps if "id" in step],
         "order": [
             "run" if "run" in step else str(step.get("uses", "")).split("@")[0].removeprefix("actions/")
@@ -2198,8 +2223,8 @@ def mutation_job_problems(workflow: str) -> list[str]:
     """Report how mutation.yml departs from the mutation gate: run on a pull request's opening, pushes, and reopening
     but not an edit of its text, as the jobs MUTATION_JOBS gives, in its order, each with its name, none the required
     check's, its dependencies and condition, matrix, runner, time limit, checkout, Python, scripts, step ids, the order
-    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards. A step's
-    own `env` is not read, so an `env: PATH` on a step after Verify ShellCheck passes; no leg sets one."""
+    of its steps, its artifact and cache steps, and each script's own `env`, and the select job's outputs listing each
+    leg's shards."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
@@ -2236,6 +2261,32 @@ def mutation_pin_problems(workflow: str, validate: str) -> list[str]:
         for name in MUTATION_PINS
         if name in pins and pins.get(name) != reviewed.get(name)
     ]
+    return problems
+
+
+def mutation_windows_shellcheck_problems(validate: str) -> list[str]:
+    """Report how validate.yml's Windows legs depart from the ShellCheck cache and install the mutation gate's Windows
+    leg copies, MUTATION_WINDOWS_SHELLCHECK_CACHE and MUTATION_WINDOWS_SHELLCHECK under MUTATION_WINDOWS_SHELLCHECK_ENV,
+    so the two keep restoring one cache and installing the same way: the restore step `shellcheck` with those inputs,
+    and one script given that env whose lines hold the install's, in order and together."""
+    steps = _steps(_mapping(read_workflow(validate), "jobs", "suite"))
+    problems: list[str] = []
+    restores = [_mapping(step, "with") for step in steps if step.get("id") == "shellcheck" and _uses(step, "cache")]
+    if restores != [MUTATION_WINDOWS_SHELLCHECK_CACHE]:
+        problems.append(f"the suite job restores ShellCheck as {restores}, not {MUTATION_WINDOWS_SHELLCHECK_CACHE}")
+    installs = [
+        _script_lines(step)
+        for step in steps
+        if "run" in step
+        and _mapping(step, "env").get("SHELLCHECK_CACHED") == MUTATION_WINDOWS_SHELLCHECK_ENV["SHELLCHECK_CACHED"]
+    ]
+    size = len(MUTATION_WINDOWS_SHELLCHECK)
+    if len(installs) != 1 or not any(
+        installs[0][start : start + size] == MUTATION_WINDOWS_SHELLCHECK for start in range(len(installs[0]))
+    ):
+        problems.append(
+            "the suite job has no one script given SHELLCHECK_CACHED that runs the mutation gate's ShellCheck install"
+        )
     return problems
 
 
@@ -2364,6 +2415,7 @@ class WorkflowsPolicies(unittest.TestCase):
         validate = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "validate.yml").read_text(encoding="utf-8")
         self.assertEqual([], mutation_pin_problems(workflow, validate))
         self.assertEqual([], mutation_checkout_problems(workflow, validate))
+        self.assertEqual([], mutation_windows_shellcheck_problems(validate))
 
     def test_validate_workflow_reads_the_pull_requests_body_and_title_from_the_event_payload(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")

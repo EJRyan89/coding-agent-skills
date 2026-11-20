@@ -182,12 +182,31 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-mutation.txt
 
-      # The image ships no ShellCheck, so Chocolatey installs the pinned release.
+      # The image ships no ShellCheck. The validation legs' cache holds the pinned release under this key, so a shard
+      # restores it and reaches Chocolatey only on a miss, where an outage of its source would fail the shard before
+      # any mutant ran; tests/validation/workflows.py holds this cache and install equal to validate.yml's.
+      - name: Restore ShellCheck
+        id: shellcheck
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
       - name: Install ShellCheck
         shell: pwsh
+        env:
+          SHELLCHECK_CACHED: ${{ steps.shellcheck.outputs.cache-hit }}
         run: |
-          choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # ShellCheck is one executable, kept in its own folder ahead of everything else on PATH.
+          $shellcheck = Join-Path $env:RUNNER_TEMP 'shellcheck'
+          if ($env:SHELLCHECK_CACHED -ne 'true') {
+            choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $installed = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib\shellcheck') -Recurse -Filter shellcheck.exe
+            New-Item -ItemType Directory -Path $shellcheck -Force | Out-Null
+            Copy-Item -LiteralPath ($installed | Select-Object -First 1).FullName -Destination $shellcheck -ErrorAction Stop
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck
 
       # The suites run the first ShellCheck on PATH, so it must be the pin.
       - name: Verify ShellCheck
