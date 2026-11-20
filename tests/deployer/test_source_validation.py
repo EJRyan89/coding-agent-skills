@@ -817,7 +817,7 @@ class SourceCheckoutTests(LinkedWorktreeTestCase):
         self.assert_refusal(
             result.output,
             f"ERROR: {forward(linked)} is a linked git worktree.",
-            "Deploy from the main checkout on main instead; --dry-run is allowed here. See docs/parallel-sessions.md.",
+            "Deploy from the main checkout on main instead. See docs/parallel-sessions.md.",
         )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())

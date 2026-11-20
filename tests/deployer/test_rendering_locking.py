@@ -1188,6 +1188,25 @@ class LockTests(DeployerTestCase):
         self.assertEqual(lock.LOCK_POLL_SECONDS, slept[0])
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
+    def test_a_dry_run_waits_for_a_holder_that_lets_the_lock_go(self) -> None:
+        # A dry run judges the lock as the deployment does, so a holder that ends within the wait, such as another
+        # dry run's moment with the lock, never refuses it.
+        self.fixture()
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        handle = file_lock.take(self.paths.lock_file)
+        assert handle is not None
+        slept: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            if len(slept) == 1:
+                file_lock.release(handle, self.paths.lock_file)
+
+        with mock.patch("deployer.lock.time.sleep", sleep):
+            self.deploy_ok("--all", "--dry-run")
+        self.assertEqual(lock.LOCK_POLL_SECONDS, slept[0])
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_a_file_system_with_no_lock_is_named_by_a_deployment_and_a_dry_run(self) -> None:
         self.fixture()
         refused = OSError(errno.ENOTSUP, "No locks available")
@@ -1227,7 +1246,16 @@ class LockTests(DeployerTestCase):
                     mock.patch("file_lock._lock", side_effect=OSError(number, "transient")),
                     mock.patch("deployer.fsops.remove", side_effect=remove),
                 ):
-                    self.deploy_fails("--all", pattern="Could not lock")
+                    result = self.deploy_fails("--all", pattern="Could not lock")
+                # Pinned against a literal: such a refusal may pass, so its step is a retry, not another file system.
+                self.assert_refusal(
+                    result.output,
+                    f"ERROR: Could not lock {forward(self.paths.lock_file)}: transient.",
+                    "A file system may refuse a lock this way for a moment, as when its lock table is full or its lock "
+                    "service does not answer; retry in a moment, and if it keeps refusing, keep the home on a local "
+                    "disk.",
+                    'See "The deployment lock" in docs/recovery.md.',
+                )
                 self.assertNotIn(self.paths.lock_file, removed)
                 self.assertTrue(file_lock.held_elsewhere(self.paths.lock_file))
         self.assertFalse((self.skills_dir / "alpha").exists())
