@@ -19,7 +19,7 @@ from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, SourceRefusal, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
-from .names import require_safe_name, transient_name
+from .names import JOURNAL_FILE, require_safe_name, transient_name
 from .paths import Paths
 from .report import (
     ACTION_LABELS,
@@ -363,13 +363,20 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
 
 
 def _declared_assets(src: Source) -> dict[str, str]:
-    """source.json's shared assets and their roles, once every name is safe and none names a skill's file or another's.
+    """source.json's shared assets and their roles, once every name is safe and none names a skill's file, another's,
+    or the run's journal, which lies in the staging folder each asset is staged in under its own name.
 
     Names are compared as the file system compares them, so Guide.md and guide.md are one file on Windows.
     """
     assets: dict[str, str] = {}
     for asset, role in src.shared_assets.items():
         require_safe_name(asset, "shared asset name")
+        if platform_support.name_key(asset) == platform_support.name_key(JOURNAL_FILE):
+            raise SourceRefusal(
+                f"ERROR: Shared asset '{asset}' takes the name of a run's journal, '{JOURNAL_FILE}', which the "
+                "deployer reserves for its own files.",
+                'Rename the asset; see "Shared assets" in docs/adding-a-skill.md.',
+            )
         assets[asset] = role
     taken = {platform_support.name_key(name): (SKILL.noun, name) for name in sorted(src.skills)}
     for asset in sorted(assets):

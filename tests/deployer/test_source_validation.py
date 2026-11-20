@@ -1452,6 +1452,27 @@ def test_a_name_the_deployer_reserves_for_its_own_files_is_refused(
     assert not deployer.manifest_file.exists()
 
 
+@pytest.mark.parametrize("asset", ["journal.jsonl", "Journal.JSONL"])
+@pytest.mark.parametrize("arguments", [("--all", "--dry-run"), ("--all",)])
+def test_a_shared_asset_named_like_the_runs_journal_is_refused_before_any_change(
+    deployer: Deployment, asset: str, arguments: tuple[str, ...]
+) -> None:
+    # A run stages each shared asset in its staging folder beside the run's journal, so an asset of the journal's name,
+    # in any case, would be written where the journal is, and the journal over it.
+    deployer.make_source_json(shared_assets={asset: "owner"})
+    deployer.make_shared_asset(asset, "Shared")
+    deployer.make_skill("alpha", "Test", shared_deps=[asset])
+    deployer.make_config()
+    result = deployer.deploy_fails(*arguments, pattern=re.escape(f"ERROR: Shared asset '{asset}'"))
+    deployer.assert_refusal(
+        result.output,
+        f"ERROR: Shared asset '{asset}' takes the name of a run's journal, 'journal.jsonl', which the deployer "
+        "reserves for its own files.",
+        'Rename the asset; see "Shared assets" in docs/adding-a-skill.md.',
+    )
+    assert not deployer.manifest_file.exists()
+
+
 @pytest.mark.parametrize(
     ("name", "reason"),
     [
