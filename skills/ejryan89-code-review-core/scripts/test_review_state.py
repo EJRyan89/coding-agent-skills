@@ -618,6 +618,22 @@ class ResourceFileLockTests(unittest.TestCase):
                 ResourceLock(self.path).__enter__()
             self.assertTrue(file_lock.held_elsewhere(lock_file))
 
+    def test_a_lock_refusal_that_may_pass_says_to_retry_rather_than_to_move_the_folder(self) -> None:
+        # Pinned against a literal: ENOLCK or EIO may clear on a retry, so a user on a local disk is not sent elsewhere.
+        for number in (errno.ENOLCK, errno.EIO):
+            with (
+                self.subTest(errno=errno.errorcode[number]),
+                mock.patch.object(file_lock, "_lock", side_effect=OSError(number, "transient")),
+                self.assertRaises(PersistenceError) as raised,
+            ):
+                ResourceLock(self.path).__enter__()
+            self.assertEqual(
+                f"Cannot lock {self.folder / 'resource.lock.held'}: transient; a file system may refuse a lock this "
+                "way for a moment, as when its lock table is full or its lock service does not answer; retry in a "
+                "moment, and if it keeps refusing, keep the review state on a local disk",
+                str(raised.exception),
+            )
+
     def test_a_first_make_that_fails_is_refused_and_lets_the_file_lock_go(self) -> None:
         real_mkdir = Path.mkdir
 
