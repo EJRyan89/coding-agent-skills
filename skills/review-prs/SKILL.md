@@ -1,6 +1,6 @@
 ---
 name: review-prs
-description: "Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated canaries of pull requests or local fixtures, and produce validated structured reports. Use it when asked to review or re-review pull requests."
+description: "Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated canaries of pull requests or local fixtures, and produce validated structured reports. Use it when asked to review or re-review a pull request, named by number, owner/repo#number, or URL, before fetching its diff yourself, or the open pull requests in configured repositories; not to review only a pull request's documents."
 argument-hint: "[owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ... | --canary --fixture DIR [--re-review --prior RECORD]"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py\" *)", "Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_source.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_source.py\" *)", "Agent", "AskUserQuestion", "Workflow"]
 ---

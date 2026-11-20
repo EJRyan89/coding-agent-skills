@@ -321,7 +321,7 @@ In Copilot CLI, start it from an interactive session: a headless `copilot -p` se
 ## `review-document`
 
 <!-- generated:review-document -->
-Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, or the documents a pull request changes, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document, a Word or PDF draft, another text file, or a pull request's documents rather than its code.
+Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, or the documents a pull request changes, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a document by its path or file name, before finding, reading, or diffing it yourself: a design document, a Word or PDF draft, my uncommitted edits or changes to a document, or another text file; or only the documents a pull request changes, not its code.
 
 ```text
 /review-document <path> | owner/repo#number [--document PATH] [--base none|committed] [--stage draft|review|final] [--output DIR]
@@ -379,7 +379,7 @@ It counts the findings by category and analyzer rule, and finds where reviews di
 ## `review-prs`
 
 <!-- generated:review-prs -->
-Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated canaries of pull requests or local fixtures, and produce validated structured reports. Use it when asked to review or re-review pull requests.
+Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated canaries of pull requests or local fixtures, and produce validated structured reports. Use it when asked to review or re-review a pull request, named by number, owner/repo#number, or URL, before fetching its diff yourself, or the open pull requests in configured repositories; not to review only a pull request's documents.
 
 ```text
 /review-prs [owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ... | --canary --fixture DIR [--re-review --prior RECORD]
