@@ -9,8 +9,9 @@ second-level heading GitHub renders, ATX, setext, or an HTML `<h1>` or `<h2>`, i
 third-level heading, and a heading inside a quote, a list item, or a fence, are inside it. A list item holds each line
 after its first indented at least to the column its text starts at, and each lazy line continuing its paragraph; one
 that opens empty ends at a blank line right after it, since an item may begin with one blank line at most. A comment
-GitHub hides is not read, one left unclosed running to the end of the body, and text that renders as nothing, such as
-an empty tag, an entity for a space, or an invisible character, is no text.
+GitHub hides is not read, one left unclosed running to the end of the body, while a `<!--` inside a fenced or indented
+code block or an inline code span is text GitHub shows; and text that renders as nothing, such as an empty tag, an
+entity for a space, or an invisible character, is no text.
 
 A title is a fix's when it opens with the type `fix`, in any case, an optional scope, an optional `!`, a colon, and a
 space, by the grammar `TITLE` reads every pull request title with.
@@ -25,10 +26,12 @@ from enum import Enum
 
 from agent_skills import XML_TAG_PATTERN
 from markdown_sections import (
+    COMMONMARK_CODE_SPAN,
     INTERRUPTING_LIST_MARKER,
     LIST_MARKER,
     ORDERED_MARKER,
     THEMATIC_BREAK,
+    code_block_lines,
     find_fences,
     indentation,
     is_blank,
@@ -101,7 +104,7 @@ def forms_section(body: str) -> str | None:
     """The text under the body's first `## Forms considered` heading, up to the next heading of the first or second
     level, with hidden comments removed; None when the body has no such heading. A heading inside a hidden comment or a
     fenced block is not the section's, and neither ends it."""
-    lines = LINE_BREAK.split(HIDDEN_COMMENT.sub("", body))
+    lines = LINE_BREAK.split(without_hidden_comments(body))
     fences = find_fences(lines)
     fenced = {index for fence in fences for index in fence.lines()}
     # A line inside a list item is the item's, so a heading there neither opens the section nor ends it.
@@ -113,6 +116,32 @@ def forms_section(body: str) -> str | None:
         return None
     end = next((index for index in range(start, len(lines)) if _ends_section(lines, index, start, held)), len(lines))
     return "\n".join(lines[start:end])
+
+
+def without_hidden_comments(text: str) -> str:
+    """`text` without each comment GitHub hides, read left to right: one whose `<!--` opens outside every code block
+    and code span, up to its `-->` wherever that falls, or to the end of the text. A `<!--` that code shows is text, and
+    the blocks are read again after each comment goes, so a fence-like line a comment held opens no block."""
+    at = 0
+    while (comment := HIDDEN_COMMENT.search(text, at)) is not None:
+        if _in_code(text, comment.start()):
+            at = comment.start() + 1
+            continue
+        text = text[: comment.start()] + text[comment.end() :]
+        at = comment.start()
+    return text
+
+
+def _in_code(text: str, offset: int) -> bool:
+    """Whether the character at `offset` is inside a fenced or indented code block or an inline code span, as
+    markdown_sections reads them, lines ending where CommonMark ends one."""
+    breaks = [match.end() for match in LINE_BREAK.finditer(text, 0, offset)]
+    line_start = breaks[-1] if breaks else 0
+    lines = LINE_BREAK.split(text)
+    if len(breaks) in code_block_lines(lines):
+        return True
+    column = offset - line_start
+    return any(span.start() <= column < span.end() for span in COMMONMARK_CODE_SPAN.finditer(lines[len(breaks)]))
 
 
 def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
@@ -204,7 +233,7 @@ def placeholder_forms(template: str) -> tuple[str, set[str]]:
     the comment markers dropped, each as _words gives it."""
     section = markdown_section(template.replace("\r\n", "\n"), FORMS_HEADING) or ""
     guidance = {_words(comment.removeprefix("<!--").removesuffix("-->")) for comment in HIDDEN_COMMENT.findall(section)}
-    return _words(HIDDEN_COMMENT.sub("", section)), guidance - {""}
+    return _words(without_hidden_comments(section)), guidance - {""}
 
 
 def is_placeholder(words: str, template: str) -> bool:

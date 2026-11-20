@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from forms_considered import FormsFault, forms_fault, forms_section, is_fix_title
+from forms_considered import FormsFault, forms_fault, forms_section, is_fix_title, without_hidden_comments
 
 TEMPLATE = (
     "## Changes\n\n-\n\n## Forms considered\n\n"
@@ -43,6 +43,40 @@ def body(forms: str | None) -> str:
 )
 def test_each_section_is_judged_against_the_template(forms: str | None, fault: FormsFault | None) -> None:
     assert forms_fault(body(forms), TEMPLATE) is fault
+
+
+# A fix's own forms that show `<!--` in code, which GitHub renders as text, so no comment hides what follows it.
+CODE_OPENERS = {
+    "a fenced <!-- with no -->": f"```\n<!-- an opener the fix reads\n```\n\n{WEIGHED}",
+    "an inline <!--": f"`<!--` with no closing marker is the construct. {WEIGHED}",
+    "an inline <!-- in a double-backtick span": f"``<!-- `x` `` is the construct. {WEIGHED}",
+    "an indented <!-- after a blank line": f"Read:\n\n    <!-- an opener the fix reads\n\n{WEIGHED}",
+}
+
+
+@pytest.mark.parametrize("forms", CODE_OPENERS.values(), ids=CODE_OPENERS.keys())
+def test_a_comment_opener_code_shows_hides_nothing(forms: str) -> None:
+    assert forms_fault(body(forms), TEMPLATE) is None
+    section = forms_section(body(forms))
+    assert section is not None
+    assert section.strip().endswith(forms.splitlines()[-1])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a <!-- b --> c", "a  c"),
+        ("a <!-- b", "a "),
+        ("`<!--` a <!-- b --> c", "`<!--` a  c"),
+        ("```\n<!--\n```\nx <!-- y -->", "```\n<!--\n```\nx "),
+        # A fence-like line a comment holds opens no block, so the comment ends at its own `-->`.
+        ("<!--\n```\n-->\n## Forms considered", "\n## Forms considered"),
+        # A backtick a comment holds pairs with none after the comment goes.
+        ("<!-- ` --> a <!-- ` --> b", " a  b"),
+    ],
+)
+def test_a_comment_is_hidden_only_where_it_opens_outside_code(text: str, expected: str) -> None:
+    assert without_hidden_comments(text) == expected
 
 
 def test_the_section_ends_at_the_next_second_level_heading() -> None:

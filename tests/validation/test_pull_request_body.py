@@ -279,6 +279,10 @@ def test_the_template_holds_a_placeholder_and_guidance() -> None:
         f"{chr(0x663)}.",
         "1234567890.",
         f"<h2{chr(0xA0)}id='x'>Not a heading</h2>\n\n{FILLED}",
+        # A `<!--` that code shows is text, never a comment opener left unclosed that hides the rest of the body.
+        f"```\n<!-- an opener the fix reads\n```\n\n{FILLED}",
+        f"`<!--` with no closing marker is the construct.\n{FILLED}",
+        f"    <!-- an opener the fix reads\n\n{FILLED}",
     ],
 )
 def test_a_fix_body_with_a_filled_section_passes(section: str) -> None:
