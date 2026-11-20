@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-import re
 
+from forms_considered import TITLE
 from git_client import output_line
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, listed, markdown_section
 
@@ -15,7 +15,6 @@ from tools.release_notes import ReleaseNotesError, git_output
 # one statement of a release level.
 from tools.worktrees import TITLE_TYPES
 
-TITLE = re.compile(r"(?P<type>[A-Za-z]+)(?P<scope>\([^()\s][^()]*\))?(?P<mark>!?): \S.*")
 # The documents that state the convention, by the section that states it; each must name every type.
 TITLE_GUIDES = (
     ("docs/implementing-changes.md", "## Pull requests"),
