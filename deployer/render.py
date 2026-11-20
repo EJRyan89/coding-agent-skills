@@ -23,7 +23,7 @@ from text_lines import lines_and_breaks, program_lines, text_lines
 from . import fsops, hashing, platform_support
 from .arguments import CONFIGURE_COMMAND_LINE
 from .config import DERIVED_SOURCES, DERIVED_VARIABLES, INTERPRETER_VARIABLES
-from .errors import DeployError
+from .errors import DeployError, SourceRefusal
 from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
 
 # What a token in a fence of a language the deployer knows no escaping for asks of the skill's author.
@@ -177,7 +177,7 @@ def _escape(key: str, value: str, context: str, logical: str) -> str:
             _value_remedy(key),
         )
     if context in UNESCAPED_CONTEXTS:
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Variable {key} cannot be substituted into {logical}: the deployer knows no escaping for a "
             f"{context} fence",
             UNESCAPED_FENCE_REMEDY,
@@ -247,7 +247,7 @@ def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str
         lf_index += "\n" in end
         renderings = {_substitute(line, values, reading, logical) for reading in dict.fromkeys((context, other))}
         if len(renderings) > 1:
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: A value cannot be substituted into {logical}: a lone carriage return puts its line in the "
                 f"{context} context where a line feed ends a line, and in the {other} context where only a line feed "
                 "does, and the two render it differently",
@@ -275,14 +275,14 @@ def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
         try:
             json_reader.loads(rendered)
         except ValueError as exc:  # a decoding error, the digit limit, or nesting json_reader refuses
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Rendered JSON validation failed: {logical}: {exc}", RENDERED_PARSE_REMEDY
             ) from exc
     if rendered != text and context == "toml":
         try:
             tomllib.loads(rendered)
         except (ValueError, RecursionError) as exc:  # TOMLDecodeError is a ValueError; tomllib recurses per level
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Rendered TOML validation failed: {logical}: {exc}", RENDERED_PARSE_REMEDY
             ) from exc
     return rendered.encode("utf-8")
@@ -301,24 +301,24 @@ def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, str | None, 
         hint = document.string("argument-hint")
         user_only = document.user_only()
     except (UnicodeError, frontmatter.FrontmatterError) as exc:
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Skill '{skill}' frontmatter cannot be read: {exc}",
             f'Correct the frontmatter of skills/{skill}/SKILL.md; see "Files" in docs/adding-a-skill.md.',
         ) from exc
     if not description or not description.strip():
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Skill '{skill}' has no description for its runtime adapter",
             f'Give skills/{skill}/SKILL.md a description; see "Description" in docs/adding-a-skill.md.',
         )
     if len(description) > MAX_DESCRIPTION:
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Skill '{skill}' description is {len(description)} characters; "
             f"runtime adapters allow at most {MAX_DESCRIPTION}",
             f'Shorten the description in skills/{skill}/SKILL.md; see "Description" in docs/adding-a-skill.md.',
         )
     tag = xml_tag(description)
     if tag:
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Skill '{skill}' description contains the XML tag '{tag}', {AGENT_SKILLS_RULE}", XML_TAG_REMEDY
         )
     return description, hint, user_only
@@ -426,7 +426,7 @@ def reject_unexpanded_tokens(staged: Staged) -> None:
             if TOKEN.search(line):
                 matches.append(f"{logical}:{number}:{line}")
     if matches:
-        raise DeployError("ERROR: Unexpanded tokens found in staged output:", *matches, UNEXPANDED_REMEDY)
+        raise SourceRefusal("ERROR: Unexpanded tokens found in staged output:", *matches, UNEXPANDED_REMEDY)
 
 
 @dataclass(frozen=True)
@@ -445,7 +445,7 @@ def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
         if fence_context(fence) != "shell":
             continue
         if fence.closer is None:
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Unclosed Bash code fence in {logical}",
                 "Close the fence with the characters that open it, then retry.",
             )
@@ -522,7 +522,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             kind = "block syntax" if unit.is_block else "syntax"
             # Bash's lines are the reason; a Bash that printed nothing is named by its exit code.
             reason = program_lines(result.output.rstrip()) if result.output.strip() else []
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}",
                 *(reason or [f"bash exited with code {result.returncode} and printed nothing"]),
                 RENDERED_CHECK_REMEDY,
@@ -572,7 +572,7 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
         prefix = "ShellCheck failed for rendered " + ("Bash block" if first.is_block else "content")
         findings = (line for unit in failing for line in reported[platform_support.normalize(unit.path)])
         # A line that names no unit, such as ShellCheck's own error, is reported beside the findings, never dropped.
-        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings, *unattributed, RENDERED_CHECK_REMEDY)
+        raise SourceRefusal(f"ERROR: {prefix}: {first.origin}", *findings, *unattributed, RENDERED_CHECK_REMEDY)
     if failed:
         raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed, SHELLCHECK_FAILED_REMEDY)
 
@@ -612,7 +612,7 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
             failed = origins.get(lines[0].strip(), lines[0].strip())
         else:
             failed = f"pwsh exited with code {result.returncode} and printed nothing"
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:], RENDERED_CHECK_REMEDY
         )
 
