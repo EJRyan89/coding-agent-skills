@@ -17,7 +17,7 @@ Every step is one command, run exactly as shown, in the turn that invoked the sk
 
 **Which model.** A Markdown, plain-text, Word, or PDF document (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.docx`, or `.pdf`) goes to the design-review specialist; any other text file goes to the generic code reviewer. The reviewer runs on this session's model. Design review needs Sonnet or stronger: a smaller model over-reported on a clean design document in evaluation. If this session runs on a smaller model, say so before starting and let the user switch.
 
-1. **Build** the fixture from the path, or the pull request in place of it, adding `--document "<path>"`, `--base`, `--stage`, and `--output "<directory>"` only when the user gave them:
+1. **Build** the fixture from the path, or the pull request in place of it. When the user names the document by its file name alone and no file of that name is in the working directory, find it under the working directory and build the one path found; when none or several match, ask the user which file they mean. Add `--document "<path>"`, `--base`, `--stage`, and `--output "<directory>"` only when the user gave them:
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_document.py" build "<path>"
    ```
