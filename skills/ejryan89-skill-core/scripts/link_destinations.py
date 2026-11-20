@@ -1,13 +1,16 @@
 """The one reader of Markdown link destinations, as CommonMark reads them.
 
 A destination is the target of an inline link or image, `[text](destination "title")`, or of a link reference
-definition, `[label]: destination "title"`, at the start of a line with at most three spaces before it. CommonMark
-writes one in either of two forms: between `<` and `>`, where it may hold spaces but no line ending, `<`, or `>`
-unescaped; or bare, a run with no space or control character whose parentheses balance unless escaped. In both a
-backslash before an ASCII punctuation character escapes it, and a backslash before anything else is itself, so
-`references\\win.md` keeps its backslash, which a Windows path reads as a separator; an entity or numeric character
-reference, such as `&amp;` or `&#32;`, stands for its character. A link's text is not read, and neither is anything
-inside a code span or a code block, fenced or indented, which CommonMark reads as code rather than as a link.
+definition, `[label]: destination "title"`, at the start of a line with at most three spaces before it. A line that
+opens like a definition but holds none, such as `[Note]: see [a](b.md)`, is read for its inline links, and a footnote,
+`[^1]: text`, which GitHub renders as a footnote, is never a definition. CommonMark writes a destination in either of
+two forms: between `<` and `>`, where it may hold spaces but no line ending, `<`, or `>` unescaped; or bare, a run with
+no space or control character whose parentheses balance unless escaped. In both a backslash before an ASCII
+punctuation character escapes it, and a backslash before anything else is itself, so `references\\win.md` keeps its
+backslash, which a path reads as the platform does: a separator on Windows, part of the name elsewhere; an entity or
+numeric character reference, such as `&amp;` or `&#32;`, stands for its character. A link's text is not read, and
+neither is anything inside a code span or a code block, fenced or indented, which CommonMark reads as code rather than
+as a link.
 
 The `url` this gives is the destination after its escapes and references, which CommonMark percent-encodes into the
 rendered `href`; `path` and `fragment` are what a reader opening the destination as a URL reaches, each percent-decoded.
@@ -32,6 +35,8 @@ from markdown_sections import COMMONMARK_CODE_SPAN, code_block_lines
 INLINE_OPENER = re.compile(r"\]\([ \t]*")
 # A link reference definition's label and colon, at the start of a line, and the spaces or tabs before its destination.
 DEFINITION_OPENER = re.compile(r" {0,3}\[(?:[^\\\[\]]|\\.)*[^\s\\\[\]](?:[^\\\[\]]|\\.)*\]:[ \t]*")
+# What opens a footnote's label, `[^1]: text`, which GitHub renders as a footnote, never as a link reference definition.
+FOOTNOTE_LABEL = "[^"
 # An entity or numeric character reference CommonMark replaces with its character; one with no `;` is text.
 CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
 # A URL scheme, as a CommonMark autolink reads one: two to 32 characters, so a Windows drive letter such as `C:` is
@@ -81,11 +86,11 @@ def link_destinations(lines: list[str]) -> list[Destination]:
             continue
         text = COMMONMARK_CODE_SPAN.sub(lambda span: " " * len(span.group(0)), line)
         definition = DEFINITION_OPENER.match(text)
-        if definition:
+        if definition and not text.lstrip(" ").startswith(FOOTNOTE_LABEL):
             parsed = _destination(text, definition.end(), inline=False)
             if parsed is not None:
                 found.append(_found(index, line, definition.end(), *parsed))
-            continue
+                continue
         for opener in INLINE_OPENER.finditer(text):
             parsed = _destination(text, opener.end(), inline=True)
             if parsed is not None:

@@ -45,7 +45,8 @@ that the skill's own Markdown links, directly or through another file so linked,
 loads it all the same. A linked path that leads out of the folder, through `..` at its start or later or through a
 link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it reaches a file already sized, and so is
 an absolute one. A link's destination is read as CommonMark reads it, through ejryan89-skill-core's link_destinations:
-percent-decoded, between < and > with spaces, or with a backslash, which a Windows path reads as a separator. The
+percent-decoded, between < and > with spaces, or with a backslash, read as the platform reads a path: a separator on
+Windows, part of the name elsewhere. The
 measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
@@ -1396,10 +1397,11 @@ def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list
     """Each Markdown path a main or doc file of the skill folder names, out of the frontmatter, in the order written:
     the line number, the reference as written, and the file it leads to with every `..` and link followed, as the
     runtime reading it would. A link's destination is read as CommonMark reads it, through `link_destinations`:
-    percent-decoded, between `<` and `>` with spaces, absolute, or with a backslash, which a Windows path reads as a
-    separator; and a path named in prose or code, outside every link's destination, through INSIDE_REFERENCE and
-    OUTSIDE_REFERENCE. A path resolves from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/, and an
-    absolute one from the root it names. Every check of the files a skill's Markdown names reads them here."""
+    percent-decoded, between `<` and `>` with spaces, absolute, or with a backslash, read as the platform reads a
+    path: a separator on Windows, part of the name elsewhere; and a path named in prose or code, outside every link's
+    destination, through INSIDE_REFERENCE and OUTSIDE_REFERENCE. A path resolves from the naming file, or from the
+    skill folder after ${CLAUDE_SKILL_DIR}/, and an absolute one from the root it names. Every check of the files a
+    skill's Markdown names reads them here."""
     lines = text_lines(text)
     start = body_start(lines) if kind == "main" else 0
     naming = (directory / relative).parent

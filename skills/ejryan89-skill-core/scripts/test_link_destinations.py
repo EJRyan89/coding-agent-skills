@@ -24,7 +24,7 @@ def urls(*lines: str) -> list[str]:
         ("[a](bin/my%20notes.md)", "bin/my%20notes.md", "bin/my notes.md"),
         # Between < and > a destination may hold spaces.
         ("[b](<bin/my notes.md>)", "bin/my notes.md", "bin/my notes.md"),
-        # A backslash before a letter is itself, which a Windows path reads as a separator.
+        # A backslash before a letter is itself: a separator on Windows, part of the name elsewhere.
         ("[c](references\\win.md)", "references\\win.md", "references\\win.md"),
         ("[d](/abs/x.md)", "/abs/x.md", "/abs/x.md"),
         # An escaped punctuation character and a character reference stand for their characters.
@@ -68,6 +68,23 @@ def test_a_destination_is_read_as_commonmark_reads_it(line: str, url: str, path:
 )
 def test_text_commonmark_reads_as_no_destination_gives_none(line: str) -> None:
     assert link_destinations([line]) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # A label and colon that open no definition leave the line's inline links to read.
+        ("[Note]: see [a](missing.md)", ["missing.md"]),
+        ("[Note]: two.md words, then [b](b.md)", ["b.md"]),
+        # A footnote is no definition, so its text is not read as a destination, and its inline links are.
+        ("[^1]: notes.md", []),
+        ("[^1]: See [c](c.md).", ["c.md"]),
+    ],
+)
+def test_a_line_that_opens_like_a_definition_but_holds_none_is_read_for_its_links(
+    line: str, expected: list[str]
+) -> None:
+    assert urls(line) == expected
 
 
 def test_a_link_in_a_code_block_is_code() -> None:
