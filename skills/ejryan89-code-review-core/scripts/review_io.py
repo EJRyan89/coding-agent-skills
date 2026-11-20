@@ -263,10 +263,10 @@ def atomic_write_json(
 # killed, or a file torn outside the lock's protocol, leaves one that long.
 OWNER_GRACE_SECONDS = 60.0
 OWNER_MAXIMUM_BYTES = 64 * 1024
-# What the step after the file system refuses a review lock names: the lock that needs a file system with file locks,
-# and what to keep on a local disk; file_lock.refusal_step holds the step itself, which the deployment lock shares.
+# What the step after the file system refuses a review lock names: the lock that needs a file system with file locks.
+# What to keep on a local disk is each lock's own `place`, the folder its caller locks; file_lock.refusal_step holds
+# the step itself, which the deployment lock shares.
 LOCK_SUBJECT = "a review lock"
-LOCK_PLACE = "the review state"
 
 
 @dataclass(frozen=True)
@@ -299,17 +299,22 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
     file through open_shared, so it never stops a holder from before the file lock releasing its directory; a release
     that cannot remove the directory all the same warns and returns, since the holder's work is done and the directory
     is stale once it exits.
+
+    `place` names what the caller's user keeps on a local disk when the file system refuses the lock: the folder the
+    lock directory sits in, by the name the user knows it by, so the refusal's step points at the folder refused.
     """
 
     def __init__(
         self,
         directory: Path,
         *,
+        place: str,
         timeout_seconds: float = 10.0,
         owner_grace_seconds: float = OWNER_GRACE_SECONDS,
         probe: Callable[[int], ProcessStatus] | None = None,
     ) -> None:
         self.directory = directory
+        self.place = place
         self.probe = probe or process_status
         self.timeout_seconds = timeout_seconds
         self.owner_grace_seconds = owner_grace_seconds
@@ -364,7 +369,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 # refusal may come while a holder runs, whose file this one must not delete.
                 with contextlib.suppress(OSError):
                     self.file_lock_path.unlink()
-            step = file_lock.refusal_step(exc, LOCK_SUBJECT, LOCK_PLACE)
+            step = file_lock.refusal_step(exc, LOCK_SUBJECT, self.place)
             raise PersistenceError(f"Cannot lock {self.file_lock_path}: {exc.strerror or exc}; {step}") from exc
         except OSError as exc:
             raise PersistenceError(f"Cannot open lock {self.file_lock_path}: {exc}") from exc

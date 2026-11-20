@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sys
 import tempfile
@@ -9,16 +10,44 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_lock
 from review_flags import FlagAlreadyResolved, FlagError, add_flag, edit_flag, load_store, resolve_flag
 from review_io import FileUnreadable, PersistenceError
 from test_review_archive import unstatable
 
 
 class FlagTests(unittest.TestCase):
+    def test_a_flag_store_lock_the_file_system_refuses_names_the_flag_store(self) -> None:
+        # Pinned against a literal: each change the store takes its lock for names the store to keep on a local disk.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            flag = add_flag(path, category="Guideline", body="Consider a repository rule.")["id"]
+            before = path.read_bytes()
+            changes: dict[str, Callable[[], object]] = {
+                "add": lambda: add_flag(path, category="Guideline", body="Another."),
+                "edit": lambda: edit_flag(path, flag, body="Edited."),
+                "resolve": lambda: resolve_flag(path, flag, "Accepted"),
+            }
+            for name, change in changes.items():
+                with (
+                    self.subTest(name),
+                    mock.patch.object(file_lock, "_lock", side_effect=OSError(errno.ENOTSUP, "No locks available")),
+                    self.assertRaises(PersistenceError) as raised,
+                ):
+                    change()
+                self.assertEqual(
+                    f"Cannot lock {Path(temporary) / '.locks' / 'flags.lock.held'}: No locks available; a review lock "
+                    "needs a folder on a file system that supports file locks, which some network and synced folders "
+                    "do not; keep the flag store on a local disk",
+                    str(raised.exception),
+                )
+                self.assertEqual(before, path.read_bytes())
+
     def test_add_and_resolve_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "flags.json"
