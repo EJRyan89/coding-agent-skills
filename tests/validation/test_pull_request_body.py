@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request_body
+from forms_considered import FILLERS, forms_section, placeholder_forms
 from markdown_sections import HTML_COMMENT
-from pull_request_body import FILLERS, forms_problems, forms_section, is_fix, placeholder_forms
+from pull_request_body import forms_problems, is_fix
 from validation_support import REPOSITORY_ROOT, PullRequest
 
 from tools.release_notes import ReleaseNotesError
@@ -278,6 +279,10 @@ def test_the_template_holds_a_placeholder_and_guidance() -> None:
         f"{chr(0x663)}.",
         "1234567890.",
         f"<h2{chr(0xA0)}id='x'>Not a heading</h2>\n\n{FILLED}",
+        # A `<!--` that code shows is text, never a comment opener left unclosed that hides the rest of the body.
+        f"```\n<!-- an opener the fix reads\n```\n\n{FILLED}",
+        f"`<!--` with no closing marker is the construct.\n{FILLED}",
+        f"    <!-- an opener the fix reads\n\n{FILLED}",
     ],
 )
 def test_a_fix_body_with_a_filled_section_passes(section: str) -> None:

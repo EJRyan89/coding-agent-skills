@@ -11,9 +11,11 @@ The template is `pull_request_template.md`, in any case, in `.github/`, the top 
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
 issue, and an empty list item; every closing reference GitHub reads, through ejryan89-skill-core's closing_references,
 that is not a `Closes #<n>` line of its own, in prose, a list, a quote, with a colon, or inside a comment the author
-wrote alike, since the squash commit carries the body as written; and a template heading the body dropped. The title
-check refuses a title holding a closing reference, which the squash commit carries as its title, so every issue the
-pull request closes is named by a `Closes #<n>` line of the body.
+wrote alike, since the squash commit carries the body as written; a template heading the body dropped; and, for a
+title of type `fix` and a template holding a `## Forms considered` section, that section missing, empty, or still the
+template's placeholder, read by ejryan89-skill-core's forms_considered, the reader validation's body check holds a fix
+body to. The title check refuses a title holding a closing reference, which the squash commit carries as its title, so
+every issue the pull request closes is named by a `Closes #<n>` line of the body.
 
 Every line is one fact:
 
@@ -29,6 +31,7 @@ Every line is one fact:
     PLACEHOLDER <line> <what>      a placeholder the template left in the body, at its line
     CLOSES_LINE <line> <text>      a line holding a closing reference that is not `Closes #<n>` alone
     HEADING_MISSING <heading>      a template heading the body does not keep
+    FORMS_CONSIDERED <fault>       a fix's `## Forms considered` section is missing, placeholder, or empty
     BEHIND <base> <sha>            the branch does not hold the base's tip: bring it up to date
     NO_COMMITS <base>              the branch has no commit the base does not hold
     UNCOMMITTED <count>            changed or untracked files the pull request would leave out
@@ -70,6 +73,7 @@ from closing_references import (
 from console import run_main
 from file_presence import NotADirectory, is_directory, is_present
 from flat_text import flat_text
+from forms_considered import forms_fault, forms_section, is_fix_title
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT, LINE_END, LIST_MARKER, MARKDOWN_SPACE
@@ -219,6 +223,15 @@ def body_problems(body: str, template: str) -> list[str]:
     return lines + [f"HEADING_MISSING {flat_text(heading)}" for heading in headings(template) if heading not in kept]
 
 
+def forms_lines(title: str, body: str, template: str) -> list[str]:
+    """`FORMS_CONSIDERED <fault>` when the title is a fix's, the template holds a `## Forms considered` section, and
+    the body's is missing, still the template's placeholder, or empty, by the reader validation holds a fix body to."""
+    if not is_fix_title(title) or forms_section(template) is None:
+        return []
+    fault = forms_fault(body, template)
+    return [] if fault is None else [f"FORMS_CONSIDERED {fault.value}"]
+
+
 def read_title(text: str) -> tuple[str, list[str]]:
     """The title a title file holds, and its problems: none, more than one line, or a closing reference, which the
     squash commit's title carries as GitHub reads it in the body."""
@@ -331,7 +344,9 @@ def check(
     closed = closed_issues(body, title or None)
     facts = ([f"TITLE {flat_text(title)}"] if title else []) + [f"CLOSES {number}" for number in closed]
     base_facts, branch_problems = branch_facts(git, repository, base)
-    problems = title_problems + body_problems(body, read_file(template)) + branch_problems
+    template_text = read_file(template)
+    body_lines = body_problems(body, template_text) + forms_lines(title, body, template_text)
+    problems = title_problems + body_lines + branch_problems
     return title, facts + base_facts, problems
 
 
