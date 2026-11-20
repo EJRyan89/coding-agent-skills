@@ -413,7 +413,7 @@ It runs fully only in Claude Code. Codex and Copilot CLI start subagents and run
 ## `update-coding-agent-skills`
 
 <!-- generated:update-coding-agent-skills -->
-Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill: at the latest release on origin/main by default, or at main on the main channel. Stops before a release that raises the major version until the user passes --cross-major, and over a deployment the user pinned with deploy.py --at until the user passes --unpin.
+Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill: at the latest release on origin/main by default, or at main on the main channel. Stops before a release that raises the major version (the minor version before 1.0.0) until the user passes --cross-major, and over a deployment the user pinned with deploy.py --at until the user passes --unpin.
 
 ```text
 /update-coding-agent-skills [--channel release | main] [--cross-major] [--unpin]
