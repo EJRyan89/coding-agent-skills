@@ -269,12 +269,17 @@ def read_refusal_gaps(path: Path, table: str) -> list[RefusalGap]:
 
 def refusal_gaps(root: Path) -> list[RefusalGap]:
     """Every fault table's refusal gaps, table by table in path order; KnownFailuresUnreadable, naming the table, when
-    one cannot be read."""
+    one cannot be read, and when the tables' folder cannot be listed or holds none, since no table read would only
+    mean nothing was looked at."""
     gaps: list[RefusalGap] = []
     try:
         tables = file_presence.matching(root / FAULT_TABLES, FAULT_TABLE_PATTERN)
     except OSError as error:
         raise KnownFailuresUnreadable(f"{FAULT_TABLES.as_posix()} cannot be listed: {error}") from error
+    if not tables:
+        raise KnownFailuresUnreadable(
+            f"{FAULT_TABLES.as_posix()} holds no {FAULT_TABLE_PATTERN} fault table, so no refusal gap could be read"
+        )
     for path in tables:
         table = path.relative_to(root).as_posix()
         try:

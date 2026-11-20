@@ -49,6 +49,8 @@ class KnownFailureFixture(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / KNOWN_FAILURES).parent.mkdir(parents=True)
+        # A fault table with no refusal gap, since a tree with none fails as one whose gaps were never read.
+        (self.root / FAULT_TABLES / "faults_tools.py").write_text("DRIVERS = []\n", encoding="utf-8")
 
     def write(self, value: object) -> None:
         (self.root / KNOWN_FAILURES).write_text(json.dumps(value), encoding="utf-8")
@@ -100,6 +102,24 @@ class RefusalGapTests(KnownFailureFixture):
         )
         [found] = refusal_gap_problems(self.root)
         self.assertIn("must name its entry and command", found)
+
+    def test_no_table_an_unlistable_folder_or_a_table_that_does_not_parse_is_a_problem_never_no_gaps(self) -> None:
+        # Each would otherwise read as a tree with no refusal gap, which asks GitHub nothing and passes, so the check
+        # would say every gap's issue is open without reading one.
+        tables = self.root / FAULT_TABLES
+        (tables / "faults_tools.py").unlink()
+        self.assertEqual(
+            ["tests/malformed_input holds no faults_*.py fault table, so no refusal gap could be read"],
+            refusal_gap_problems(self.root),
+        )
+        (tables / "faults_tools.py").write_text("def broken(:\n", encoding="utf-8")
+        [problem] = refusal_gap_problems(self.root)
+        self.assertTrue(problem.startswith("tests/malformed_input/faults_tools.py cannot be read: "), problem)
+        (tables / "faults_tools.py").unlink()
+        tables.rmdir()
+        tables.write_text("", encoding="utf-8")
+        [problem] = refusal_gap_problems(self.root)
+        self.assertTrue(problem.startswith("tests/malformed_input cannot be listed: "), problem)
 
     def test_a_pull_request_closing_an_issue_a_refusal_gap_names_fails(self) -> None:
         self.write([])
@@ -451,7 +471,7 @@ class OpenIssueTests(KnownFailureFixture):
     def test_a_list_that_cannot_be_read_fails_and_asks_github_nothing(self) -> None:
         # Read as empty, an unreadable list would ask about nothing and pass, so the check would say every issue it
         # names is open without ever reading one.
-        for path in (KNOWN_FAILURES, PENDING_MODULE):
+        for path in (KNOWN_FAILURES, PENDING_MODULE, FAULT_TABLES / "faults_tools.py"):
             with self.subTest(path=path.as_posix()):
                 self.write([ENTRY])
                 self.write_pending('PENDING = {"other.reader": 7}\n')

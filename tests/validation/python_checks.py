@@ -82,6 +82,7 @@ from validation_support import (
     python_trees,
     qualified_name,
     relative,
+    relative_import_aliases,
     repository_files,
     resolved_calls,
     resolved_references,
@@ -5045,11 +5046,7 @@ def _content_aliases(tree: ast.Module, module: str) -> dict[str, str]:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     }
     aliases |= {name: f"{module}.{name}" for name in [*_module_tuples(tree), *_module_lambdas(tree)]}
-    package = module.rpartition(".")[0]
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 1 and package:
-            base = f"{package}.{node.module}" if node.module else package
-            aliases |= {alias.asname or alias.name: f"{base}.{alias.name}" for alias in node.names}
+    aliases |= relative_import_aliases(tree, module.rpartition(".")[0])
     aliases |= import_aliases(tree)
     bound = [_module_binding(node) for node in _top_level(tree.body)]
     counts = Counter(name for name, _ in filter(None, bound))

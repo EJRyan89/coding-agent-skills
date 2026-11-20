@@ -11,7 +11,10 @@ excuses, such as the configuration's parse. A refusal whose step could be among 
 own message, unless its module states why in STEP_ALLOWED: end it with a literal step after them, or write the step
 before them, as `DeployError(error, step, *more)` does, whose lines are two at the least. A refusal raised on
 unchanged, by a bare `raise` or no handler at all, is no refusal this policy reads: it is its own function's, whose
-allowance's reason says which callers add the step.
+allowance's reason says which callers add the step. A stated limit: a caught refusal is read as one that may lack its
+step only when the `try` body calls the excused function or builds the cancellation itself, so a refusal re-built
+alone from lines caught around a helper that calls one, as `try: load()` where `load` calls `config.parse`, reads as
+COVERED; no deployer code re-builds a caught refusal from its lines alone, each adding a step after them.
 """
 
 from __future__ import annotations

@@ -8847,3 +8847,13 @@ def test_line_split_policy_refuses_an_allowance_entry_that_sanctions_nothing() -
     assert found == [
         "skills/alpha/scripts/alpha.py: LINE_SPLIT_ALLOWED allows f, which holds nothing it sanctions; remove the entry"
     ]
+
+
+def test_content_errors_policy_reads_a_relative_import_at_any_level_through_the_one_reader() -> None:
+    # The policy kept its own reader of relative imports, which read only `from . import`, so `from ..x import y` in a
+    # nested package bound nothing; it reads them through validation_support's one reader now.
+    tree = ast.parse("from ..readers import read_file\nfrom . import sibling\nfrom ... import outside\n")
+    aliases = python_checks._content_aliases(tree, "pkg.sub.mod")
+    assert aliases["read_file"] == "pkg.readers.read_file"
+    assert aliases["sibling"] == "pkg.sub.sibling"
+    assert "outside" not in aliases
