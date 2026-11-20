@@ -47,9 +47,9 @@ Run it from the hub on main. One tick:
   pull request that changes the validation policies or the runner's selection is open, every other pull request's
   update waits for it;
 - checks, for each admitted pull request in step, not in conflict, and with a check neither red nor missing, held
-  or not, whether the machine's code-review archive holds a review-repository review of its head, and prints the
-  review-prs arguments that review those it does not; the review is report-only, and premerge_review.py's docstring
-  lists its lines, which change no exit status;
+  or not, whether the machine's code-review archive holds a review-repository review that covers it on origin's
+  main, by review-prs's own rule, and prints the review-prs arguments that review those it does not; the review is
+  report-only, and premerge_review.py's docstring states the rule and lists its lines, which change no exit status;
 - names each worktree a merged pull request carried and no open pull request, a draft included, still carries, for
   repo-cleanup to retire, judged by commit as repo-cleanup judges a branch merged (pull_carried.py in
   ejryan89-skill-core): one whose HEAD is the pull request's head commit, or one of the pull request's own commits
@@ -1063,7 +1063,7 @@ def act(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, sta
 
 
 def premerge_reviews(
-    git: GitClient, place: Place, pulls: Sequence[Pull], heads: dict[str, str], reviews: Callable[[str], Reader]
+    client: GitHubClient, place: Place, pulls: Sequence[Pull], heads: dict[str, str], reviews: Callable[[str], Reader]
 ) -> list[str]:
     """The pre-merge review's lines (premerge_review.py) for each admitted pull request in step with its branch, not
     in conflict, and with a Validation check that is neither red nor missing; a red head waits for its fix."""
@@ -1081,7 +1081,7 @@ def premerge_reviews(
         read = reviews(place.repository)
     except ReviewUnread as exc:
         return [f"REVIEW_UNREAD {flat_text(str(exc))}"]
-    return review_lines(git, place.top, heads.get(BASE), place.repository, ready, read)
+    return review_lines(client, heads.get(BASE), place.repository, ready, read)
 
 
 def tick(
@@ -1121,7 +1121,7 @@ def tick(
         return 1
     pulls = [pull for pull in listed if not pull.draft]
     flagged = shepherd_pulls(git, client, place, pulls, heads, dry_run, emit) or flagged
-    for line in premerge_reviews(git, place, pulls, heads, reviews) if reviews is not None else []:
+    for line in premerge_reviews(client, place, pulls, heads, reviews) if reviews is not None else []:
         emit(line)
     try:
         for line in merged_lines(git, client, place, listed, heads.get(BASE)):

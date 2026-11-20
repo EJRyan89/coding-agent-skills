@@ -1,22 +1,28 @@
 """The pre-merge review step of a shepherd tick: whether review-repository's review, which review-prs records in the
-machine's code-review archive, covers each pull request's head, and the review-prs arguments that review the ones it
-does not.
+machine's code-review archive, covers each pull request as it would merge, and the review-prs arguments that review
+the ones it does not.
 
 The review is report-only: nothing here arms, holds, or blocks a pull request, and no line it prints changes the
-tick's exit status. A head is covered when the archive's latest record of the pull request reviewed it, or reviewed an
-earlier head of the same branch from which every commit since is a merge, as when main was merged in: the branch's own
-change is what was reviewed. A conflict a merge resolved is not reviewed again. Every other head is due on each tick
-until a record covers it: the record review-prs writes covers it from the next tick on, and a head whose review
-failed stays due.
+tick's exit status. A review covers a pull request by review-prs's own rule (code-review-core's
+`ReviewedCommits.covers` and `review_batches.unchanged_contributions`): at the head and the base commit it read, the
+base being origin's main as the tick reads it; or, when either moved, when GitHub's comparison finds the pull
+request's own changes as the review read them. The reviewed head on another base, as once GitHub retargets a pull
+request whose lower one in a stack was squash-merged, is compared by its merge base with each base, and a moved head,
+as when main was merged in, by the files its changes leave. A migrated legacy review recorded no base, so it covers
+its head on any base and never a moved head. A comparison GitHub cannot make or answer, or one with no base to read,
+covers nothing. Every other pull request is due on each tick until a record covers it: the record review-prs writes
+covers it from the next tick on, and a head whose review failed stays due.
 
 Its lines, printed after the PR lines:
 
     REVIEWED #<number> <branch> head <commit> v<version>|legacy <verdict> report "<path>"|none [carried from <commit>]
-                                       the record that covers the head, or the migrated legacy review, with its
-                                       Markdown report, none for a legacy review whose report is gone
+                                       the record that covers the pull request, or the migrated legacy review, with
+                                       its Markdown report, none for a legacy review whose report is gone; carried
+                                       from the reviewed head when the head moved and its changes compare as that
+                                       review read them
     REVIEW_DUE #<number> <branch> head <commit> first|since <commit>
-                                       a head no record covers: first when the pull request has no review, else the
-                                       head the latest record reviewed
+                                       a pull request no record covers: first when it has no review, else the head
+                                       the latest record reviewed, which is the head itself when only its base moved
     REVIEW_ARGUMENTS <arguments>       after the REVIEW_DUE lines: the review-prs arguments that review every one of
                                        them in one run, --pull for a first review and --re-review --scope auto after
     REVIEW_UNREAD [#<number>] <reason> the configuration, or one pull request's records, could not be read
@@ -36,11 +42,13 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from github_client import GitHubClient, GitHubError
 from review_archive import ArchiveError
+from review_batches import unchanged_contributions
 from review_config import ConfigurationError, load_config, validate_repository_identity
+from review_github import GitHubClient as ReviewGitHubClient
 from review_io import PersistenceError
-from review_operation import ReviewOperationError, reviewed_head
+from review_operation import MovedPull, ReviewedCommits, ReviewOperationError, reviewed_head
 from review_records import RecordError
 
 
@@ -58,6 +66,7 @@ class Head:
 @dataclass(frozen=True)
 class Reviewed:
     head: str
+    base: str | None  # the base commit the review compared its head with; None for a migrated legacy review
     verdict: str
     version: int | None  # None for a migrated legacy review
     report: str | None  # the Markdown report's path; None for a legacy review whose report is gone
@@ -88,57 +97,72 @@ def archive_reader(repository: str) -> Reader:
         if found is None:
             return None
         report = found["report"]
+        base = found["base_sha"]
         return Reviewed(
-            str(found["head_sha"]), str(found["verdict"]), found["version"], None if report is None else str(report)
+            str(found["head_sha"]),
+            None if base is None else str(base),
+            str(found["verdict"]),
+            found["version"],
+            None if report is None else str(report),
         )
 
     return read
 
 
-def merges_only(git: GitClient, top: Path, reviewed: str, head: str, base: str | None) -> bool:
-    """Whether `head` descends from `reviewed` and every commit between them that main does not hold is a merge. A
-    commit git does not hold, and any git failure, carries no review: the pull request is reviewed again."""
-    if base is None:
-        return False
+def unchanged(client: GitHubClient, repository: str, moved: list[MovedPull]) -> set[int]:
+    """The numbers among `moved` whose own changes GitHub compares as their review read them, through review-prs's
+    comparison; none when a GitHub failure every comparison would meet, such as a lost login, ends it."""
+    if not moved:
+        return set()
+    github = ReviewGitHubClient(client.runner, sleeper=client.sleeper, clock=client.clock)
     try:
-        # merge-base --is-ancestor exits 1 saying nothing for a head that does not descend from the reviewed commit.
-        if git.quiet_output(["merge-base", "--is-ancestor", reviewed, head], directory=top) is None:
-            return False
-        listed = git.output(["rev-list", "--no-merges", head, f"^{reviewed}", f"^{base}"], directory=top)
-    except GitError:
-        return False
-    return not listed
+        return unchanged_contributions(github, repository, moved)
+    except GitHubError:
+        return set()
 
 
 def review_lines(
-    git: GitClient, top: Path, base: str | None, repository: str, heads: Sequence[Head], read: Reader
+    client: GitHubClient, base: str | None, repository: str, heads: Sequence[Head], read: Reader
 ) -> list[str]:
     """The REVIEWED, REVIEW_DUE, REVIEW_UNREAD, and REVIEW_ARGUMENTS lines for `heads`, the admitted pull requests
-    whose head the tick would let merge, where `base` is origin's main."""
-    lines: list[str] = []
-    first: list[int] = []
-    again: list[int] = []
+    whose head the tick would let merge, where `base` is origin's main, None when the tick could not read it."""
+    found: list[tuple[Head, Reviewed | ReviewUnread | None]] = []
+    moved: list[MovedPull] = []
+    covered: set[int] = set()
     for pull in heads:
-        named = f"#{pull.number} {flat_text(pull.branch)} head {pull.head[:7]}"
         try:
             reviewed = read(pull.number)
         except ReviewUnread as exc:
-            lines.append(f"REVIEW_UNREAD #{pull.number} {flat_text(str(exc))}")
+            found.append((pull, exc))
             continue
+        found.append((pull, reviewed))
         if reviewed is None:
+            continue
+        listed = {"number": pull.number, "headRefOid": pull.head, "baseRefOid": base}
+        commits = ReviewedCommits(reviewed.head, reviewed.base)
+        if commits.covers(listed):
+            covered.add(pull.number)
+        elif reviewed.base is not None and base is not None:
+            moved.append((listed, commits))
+    covered |= unchanged(client, repository, moved)
+    lines: list[str] = []
+    first: list[int] = []
+    again: list[int] = []
+    for pull, outcome in found:
+        named = f"#{pull.number} {flat_text(pull.branch)} head {pull.head[:7]}"
+        if isinstance(outcome, ReviewUnread):
+            lines.append(f"REVIEW_UNREAD #{pull.number} {flat_text(str(outcome))}")
+        elif outcome is None:
             lines.append(f"REVIEW_DUE {named} first")
             first.append(pull.number)
-            continue
-        version = "legacy" if reviewed.version is None else f"v{reviewed.version}"
-        report = "none" if reviewed.report is None else f'"{flat_text(Path(reviewed.report).as_posix())}"'
-        recorded = f"{version} {flat_text(reviewed.verdict)} report {report}"
-        if reviewed.head == pull.head:
-            lines.append(f"REVIEWED {named} {recorded}")
-        elif merges_only(git, top, reviewed.head, pull.head, base):
-            lines.append(f"REVIEWED {named} {recorded} carried from {reviewed.head[:7]}")
-        else:
-            lines.append(f"REVIEW_DUE {named} since {reviewed.head[:7]}")
+        elif pull.number not in covered:
+            lines.append(f"REVIEW_DUE {named} since {outcome.head[:7]}")
             again.append(pull.number)
+        else:
+            version = "legacy" if outcome.version is None else f"v{outcome.version}"
+            report = "none" if outcome.report is None else f'"{flat_text(Path(outcome.report).as_posix())}"'
+            carried = "" if outcome.head == pull.head else f" carried from {outcome.head[:7]}"
+            lines.append(f"REVIEWED {named} {version} {flat_text(outcome.verdict)} report {report}{carried}")
     arguments = [argument for number in first for argument in ("--pull", f"{repository}#{number}")]
     arguments += [argument for number in again for argument in ("--re-review", f"{repository}#{number}")]
     if again:
