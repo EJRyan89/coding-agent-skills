@@ -4051,6 +4051,26 @@ def test_a_link_that_leaves_the_skill_after_its_first_part_is_an_outside_read(tm
     ]
 
 
+def test_a_link_that_leaves_the_skill_after_a_leading_dot_slash_is_read(tmp_path: Path) -> None:
+    # Neither pattern read ./../ as leaving the folder, so such a path got no line: neither an outside read, a missing
+    # one, nor a file of the skill when it led back into a skipped folder.
+    skill = tmp_path / "skill"
+    write(
+        skill / "SKILL.md",
+        "---\nname: skill\n---\n[a](./../out.md) [c](./../missing.md) [d](./../skill/node_modules/nm.md)\n",
+    )
+    write(tmp_path / "out.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    write(skill / "node_modules" / "nm.md", "abcd\n")  # 5 bytes, 2 tokens
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("FILE doc", "OUTSIDE_", "TOTAL outside"))] == [
+        "FILE doc 5 2 node_modules/nm.md",
+        "OUTSIDE_READ SKILL.md:4 9 3 ./../out.md",
+        "OUTSIDE_MISSING SKILL.md:4 ./../missing.md",
+        "TOTAL outside 1 9 3",
+    ]
+
+
 def test_an_outside_target_the_inventory_already_sizes_is_counted_once(tmp_path: Path) -> None:
     # A file of the skill folder that is a link to a file outside is listed and sized as a FILE line, so the read its
     # link leads to is not counted again as an outside read.

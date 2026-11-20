@@ -690,7 +690,7 @@ MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
-OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
+OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)*(?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that does not start by leaving the skill folder, such as `references/a.md`, `a.md`, or
 # `.venv/a.md` in a hidden folder; one may still lead out, through a later `..` or a link to a folder, which
 # `markdown_links` resolves.
