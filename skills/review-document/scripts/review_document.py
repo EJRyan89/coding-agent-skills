@@ -422,6 +422,9 @@ def output_directory(output: Path | None) -> Path | None:
     if output is None:
         return None
     given = working_path(output, "review-document-", "")
+    # The name as given is judged first: Windows refuses a stat of a name holding `"`, which the walk below would
+    # report as a directory it cannot tell about rather than as the name the PREPARE_ARGUMENTS line cannot quote.
+    refuse_unquotable(given)
     # Resolving takes a link to nothing on the path to the place it leads to, which the fixture's folders would make.
     try:
         linked = file_presence.link_to_nothing_on(given)

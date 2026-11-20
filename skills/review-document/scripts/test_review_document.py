@@ -2027,6 +2027,18 @@ class OutputTests(DocumentTestCase):
                 self.assertEqual((1, [f"FAILED {shown} {reason}"]), (code, lines))
                 self.assertFalse(target.exists())
 
+    def test_an_unquotable_output_is_refused_by_name_before_any_stat_of_it(self) -> None:
+        # Windows refuses a stat of a name holding `"` as an invalid name; the name is refused for what it holds first.
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        target = self.root / 'out"put'
+        invalid = OSError(22, "The filename, directory name, or volume label syntax is incorrect")
+        with mock.patch.object(file_presence, "link_to_nothing_on", side_effect=invalid) as walked:
+            code, lines = run_main("build", str(document), "--output", str(target))
+        reason = 'holds ", which a quoted argument does not keep; name another --output'
+        self.assertEqual((1, [f"FAILED {target.as_posix()} {reason}"]), (code, lines))
+        walked.assert_not_called()
+
     def test_a_temporary_output_a_quoted_argument_does_not_keep_is_refused_and_removed(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
