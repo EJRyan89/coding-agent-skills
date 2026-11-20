@@ -5008,3 +5008,16 @@ def test_prose_and_an_untagged_fence_read_every_path_they_name(tmp_path: Path) -
         "OUTSIDE_MISSING SKILL.md:7 ../untagged.md",
         "TOTAL outside 0 0 0",
     ]
+
+
+def test_a_bash_fence_a_here_document_runs_to_the_end_of_reads_a_path_on_a_line_that_runs_a_file_command(
+    tmp_path: Path,
+) -> None:
+    # Bash takes the text's end for the unclosed here-document's, so the grammar alone would read `cat ../body.md` as
+    # the document's data; such a fence is read by first word, as scan's cue refuses it.
+    folder = source_skill(tmp_path, "```bash\ncat ../read.md\npython x.py << EOF\ncat ../body.md\n```\n")
+    assert outside_report(folder) == [
+        "OUTSIDE_MISSING SKILL.md:5 ../read.md",
+        "OUTSIDE_MISSING SKILL.md:7 ../body.md",
+        "TOTAL outside 0 0 0",
+    ]
