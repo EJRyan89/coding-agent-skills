@@ -1544,12 +1544,15 @@ class RecoveryBranchTests(RecoveryTestCase):
         link = self.skills_dir / "alpha" / "linked"
         make_directory_link(link, outside)
         result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
-            f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  ERROR: Refusing to hash content containing a symlink or junction: {forward(link)}",
             # Pinned against a literal: the step a user reads.
             "  Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run.",
+        )
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
             f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",

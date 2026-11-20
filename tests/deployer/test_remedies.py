@@ -22,6 +22,7 @@ from harness import (
     TAKES_THE_LOCK,
     ZERO_HASH,
     DeployerTestCase,
+    assert_refusal,
     backup_entry,
     contended_lock,
     failing_lock_metadata_write,
@@ -448,12 +449,14 @@ class RefusalStepTests(RemedyTestCase):
         )
 
     def test_a_canary_home_whose_path_a_configured_value_refuses_says_to_choose_another(self) -> None:
+        home = self.root / "canary+home"
         with self.assertRaises(DeployError) as raised:
-            config.canary("test/skills", self.root / "canary+home", self.source)
-        self.assertEqual(
-            "Choose another --canary-home under the temporary directory, then retry.", raised.exception.lines[-1]
+            config.canary("test/skills", home, self.source)
+        assert_refusal(
+            raised.exception.lines,
+            f"ERROR: Config key REPOS_ROOT contains disallowed character '+' at position {forward(home).index('+')}",
+            "Choose another --canary-home under the temporary directory, then retry.",
         )
-        self.assertIn("contains disallowed character '+'", raised.exception.lines[0])
 
     def test_a_command_given_to_a_deployment_says_how_to_run_it(self) -> None:
         self.fixture()
@@ -650,6 +653,9 @@ class RecoveryRemedyTests(RemedyTestCase):
             "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
             ".backups/20260101-000000-gone/ in the same root.",
             f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
+        )
+        self.assert_refusal(
+            result.output,
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
             f"Reconcile the run named above by hand, then rerun with --dry-run. {SEE_RECOVERY_FAILED}",
         )

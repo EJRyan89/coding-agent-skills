@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import binascii
 import contextlib
 import queue
 import subprocess
@@ -139,7 +140,10 @@ class ResidentPwsh:
         streams = rest.split(b" ")
         if kind != b"READ" or len(streams) != 2:
             raise Malfunction(f"the resident pwsh answered {answer[:200]!r}")
-        stdout, stderr = (kept(base64.b64decode(stream), output_limit) for stream in streams)
+        try:
+            stdout, stderr = (kept(base64.b64decode(stream, validate=True), output_limit) for stream in streams)
+        except binascii.Error as exc:
+            raise Malfunction(f"the resident pwsh answered {answer[:200]!r}, which is not base64 ({exc})") from exc
         return Finished(0 if not stderr else 1, stdout, stderr)
 
     def close(self) -> None:

@@ -357,7 +357,7 @@ class ResidentReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(resident_pwsh.Malfunction, "took no input"):
             resident.read(b"", 600.0, None)
         # Every other malfunction ends it too.
-        for answer in (b"garbage\n", b""):
+        for answer in (b"garbage\n", b"READ a b\n", b""):
             with self.subTest(answer=answer):
                 answering = resident_pwsh.ResidentPwsh(found_pwsh(), "")
                 self.addCleanup(answering.close)
