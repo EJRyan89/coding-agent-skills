@@ -85,6 +85,10 @@ class RefusalGapTests(KnownFailureFixture):
             ('{"git_exit": "#0 none"}', "must open with the open issue"),
             ('{"git_exit": 4242}', "must open with the open issue"),
             ('["git_exit"]', "must map each run to its reason"),
+            # Built from a call or with a splat, the gaps are known only when the table runs, so the check fails closed.
+            ("make_gaps()", "must be a literal dict"),
+            ('{**OTHER, "git_exit": "#7 a FAILED line"}', "must be a literal dict"),
+            ('{"git_exit": "#7 a FAILED line"}, **options', "built with an unpacking"),
         ):
             with self.subTest(gaps=gaps):
                 self.write_gaps(gaps)

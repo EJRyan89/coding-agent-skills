@@ -45,6 +45,8 @@ PENDING = "PENDING"
 FAULT_TABLES = Path("tests") / "malformed_input"
 FAULT_TABLE_PATTERN = "faults_*.py"
 REFUSAL_GAPS = "refusal_gaps"
+# The fault table's driver class, as the tables call it.
+DRIVER = "Driver"
 GAP_REASON = re.compile(r"#(?P<issue>[1-9][0-9]*) \S", re.ASCII)
 # The state gh reports for an open issue, and what a pull request's URL holds where an issue's holds /issues/.
 OPEN = "OPEN"
@@ -225,14 +227,24 @@ def _driver_name(call: ast.Call) -> str:
 def read_refusal_gaps(path: Path, table: str) -> list[RefusalGap]:
     """The refusal gaps a fault table's drivers name, read from the syntax tree, never run: each call given a
     refusal_gaps keyword, which must be a literal dict of runs to reasons that open with `#<issue> `, beside an entry
-    and a command given as literal strings; KnownFailuresUnreadable otherwise. A gap given another way, such as through
-    a `**` unpacking, is not seen here; test_faults holds what this reads to each driver's own refusal_gaps."""
+    and a command given as literal strings; KnownFailuresUnreadable otherwise, and for a Driver built with a `*` or
+    `**` unpacking, which could carry gaps this reads no literal of, since fault_table's Driver takes refusal_gaps by
+    keyword alone. A gap given another way, such as a dataclass replace, is held by test_faults, which compares what
+    this reads with every driver's own refusal_gaps."""
     try:
         tree = parse_python(path)
     except (OSError, UnreadablePython) as error:
         raise KnownFailuresUnreadable(f"cannot be read: {error}") from error
     gaps: list[RefusalGap] = []
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        callee = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", "")
+        if callee == DRIVER and (
+            any(isinstance(given, ast.Starred) for given in call.args) or any(k.arg is None for k in call.keywords)
+        ):
+            raise KnownFailuresUnreadable(
+                f"line {call.lineno}: a {DRIVER} built with an unpacking may carry {REFUSAL_GAPS} this check cannot "
+                "read; write each argument out"
+            )
         for keyword in call.keywords:
             if keyword.arg != REFUSAL_GAPS:
                 continue

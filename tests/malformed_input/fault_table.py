@@ -149,8 +149,9 @@ class Driver:
     handed_to_writer: tuple[str, ...] = ()
     # Each run whose refusal is a line led by a word its docstring does not name, by its fault, or `<fault> <input>`
     # for one input alone, with the open issue that gives it a FAILED or documented line, as `#<number> <what it
-    # lacks>`, in a literal dict that tests/validation/known_failures.py reads from the source to hold the issue open.
-    refusal_gaps: Mapping[str, str] = field(default_factory=dict)
+    # lacks>`, in a literal dict that tests/validation/known_failures.py reads from the source to hold the issue
+    # open, so it is given by keyword alone.
+    refusal_gaps: Mapping[str, str] = field(default_factory=dict, kw_only=True)
 
     @property
     def name(self) -> str:
