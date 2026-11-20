@@ -1356,6 +1356,20 @@ class InitialReviewTests(PrepareFixture):
             self.text_file("work/generic-review.prompt.md"),
         )
 
+    def test_a_run_prepare_creates_is_made_in_the_folder_private_folder_judged(self) -> None:
+        judged = self.root / "judged"
+        judged.mkdir()
+        with mock.patch.object(private_folder, "temporary_directory", return_value=judged):
+            result, _ = self.prepare(run_directory=None)
+        self.assertRegex(result["run"], r"^<root>/judged/code-review-run-")
+        self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_given_run_directory_is_made_with_every_missing_folder_above_it(self) -> None:
+        self.run_dir = self.root / "new" / "deeper" / "run"
+        result, _ = self.prepare()
+        self.assertEqual("<root>/new/deeper/run", result["run"])
+        self.assertTrue(self.run_dir.is_dir())
+
     @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
     def test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run(self) -> None:
         # Another account could rename the shared folder's entry and put its own prompts where a reviewer reads them.
@@ -1728,6 +1742,49 @@ class RefusalTests(PrepareFixture):
         )
         self.assertEqual(["earlier.txt"], self.files())
         self.assertEqual([], self.git.calls)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_that_is_a_link_to_nothing_is_refused_and_its_target_never_made(self) -> None:
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory <root>/run goes through <root>/run, a link to nothing, which prepare would follow; remove "
+            "the link or name another directory",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+        )
+        self.assertTrue(self.run_dir.is_symlink())
+        self.assertFalse(os.path.lexists(target))
+        self.assertEqual([], self.git.calls)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_below_a_link_to_nothing_is_never_made_where_the_link_leads(self) -> None:
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory <root>/run/below goes through <root>/run, a link to nothing, which prepare would follow; "
+            "remove the link or name another directory",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+            run_directory=self.run_dir / "below",
+        )
+        self.assertFalse(os.path.lexists(target))
+        self.assertEqual([], self.git.calls)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_reached_through_a_dot_dot_after_a_missing_part_is_refused_at_the_link(self) -> None:
+        # Resolving takes the `..` after `missing` by name alone, then follows the link to nothing after it.
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory <root>/missing/../run/below goes through <root>/run, a link to nothing, which prepare "
+            "would follow; remove the link or name another directory",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+            run_directory=self.root / "missing" / ".." / "run" / "below",
+        )
+        self.assertFalse(os.path.lexists(target))
+        self.assertFalse(os.path.lexists(self.root / "missing"))
 
 
 class FailureCleanupTests(PrepareFixture):

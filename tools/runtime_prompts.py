@@ -1,4 +1,4 @@
-"""Keep a rendered sample of each prompt a skill's script writes for a subagent at runtime, for audit-skill.
+"""Keep a sample of the prompt a script writes at runtime for each subagent role RENDERERS names, for audit-skill.
 
 Usage:
   python tools/runtime_prompts.py           report every missing, stale, or extra sample, each on a STALE <sample>
@@ -15,15 +15,15 @@ Exit status:
      line FAILED <reason>
   2  a usage error, or a FAILED line when a skill's prompts cannot be rendered or a sample cannot be read or written
 
-A skill whose subagent reads a prompt file a script writes at runtime shows the audit nothing of that prompt in its
-own files. This tool renders such prompts from the repository's fixtures, the way a fixture canary does, with no
-model and no network, in a throwaway folder under the system temporary directory, and keeps each as
+A skill whose subagent reads a prompt file a script writes at runtime shows the audit nothing of that prompt in its own
+files. This tool renders the prompts of the roles it samples from the repository's fixtures, the way a fixture canary
+does, with no model and no network, in a throwaway folder under the system temporary directory, and keeps each as
 docs/runtime-prompts/<skill>/<role>.txt, where `skill_inventory.py scan` measures it. RENDERERS names the skills and
 each renderer the roles it samples: every role a review-prs or review-document fixture run writes a prompt for, with
 review-prs' prompt for the bounded Copilot CLI host, review-insights' synthesis, and of review-repository only the
-sibling-spellings specialist, the one prompt that skill adds to, as `review_repository` says. The throwaway folder
-reads as <temp> and this checkout as <source>, so a sample names no machine's paths and renders the same everywhere;
-its paths are therefore shorter than a real run's, and its estimate slightly low.
+sibling-spellings specialist, the one prompt that skill adds to, as `review_repository` says. The throwaway folder reads
+as <temp> and this checkout as <source>, so a sample names no machine's paths and renders the same everywhere; its paths
+are therefore shorter than a real run's, and its estimate slightly low.
 The entrypoint sample replaces the fixture's generated commit IDs with <base-commit> and <head-commit>.
 """
 
@@ -366,13 +366,14 @@ def _removable(root: Path, expected: Mapping[Path, str]) -> tuple[list[Path], li
 
 
 def write(root: Path, renderers: Renderers | None = None) -> None:
+    """Render every sample again and remove the extra ones. Each sample is replaced through a copy beside it, so a
+    symbolic link in a sample's place, a link to nothing included, is replaced itself and never followed to create
+    or change the file it leads to."""
     expected = rendered(RENDERERS if renderers is None else renderers)
     extras, emptied = _removable(root, expected)
     for relative, text in expected.items():
-        path = root / relative
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8", newline="\n")
+            atomic_file.replace_text(root / relative, text, mode=atomic_file.TRACKED_FILE_MODE)
         except OSError as exc:
             raise RenderError(f"cannot write {relative.as_posix()}: {exc}") from exc
     # Each extra file, then each folder left empty, the deepest first.

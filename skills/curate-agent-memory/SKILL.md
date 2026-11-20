@@ -55,7 +55,7 @@ For a move to a skill, find the file to edit. Add `--repo "<repository>"` as in 
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" skill-source "<skill>"
 ```
 
-It prints `SKILL_FILE <path>` for each source of the skill: the checkout the deployer installed it from, and a project skill in the repository. Never edit a deployed copy under a skills directory: the deployer then stops updating that skill, and the next audit never sees the rule. A `NOTE` line names a file it passed over. When it ends with `FAILED <reason>`, show the reason; the outcome is Keep unless the user names a source file that `--file` accepts.
+It prints `SKILL_FILE <path>` for each source of the skill: the checkout the deployer installed it from, and a project skill in the repository. Never edit a deployed copy under a skills directory: the deployer then stops updating that skill, and the next audit never sees the rule. A `NOTE` line names a file it passed over, or says no project skill was looked for because git could not read the repository. When it ends with `FAILED <reason>`, show the reason; the outcome is Keep unless the user names a source file that `--file` accepts.
 
 A memory whose rule is not yet at its destination is never simply deleted. Its outcome is the move, and the memory is deleted only after the destination change is applied. If the user declines the move, keep the memory. Record nothing about deferrals; the next run checks again.
 

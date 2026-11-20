@@ -5,7 +5,9 @@ from __future__ import annotations
 import contextlib
 import errno
 import io
+import os
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -191,11 +193,30 @@ class RuntimePromptsTestCase(unittest.TestCase):
         self.assertEqual(
             (2, "", "FAILED cannot read docs/runtime-prompts/alpha/reviewer.txt: denied\n"), (code, stdout, stderr)
         )
-        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+        with mock.patch.object(atomic_file, "replace_bytes", side_effect=PermissionError("denied")):
             code, stdout, stderr = self.run_main(renderers, "--write")
         self.assertEqual(
             (2, "", "FAILED cannot write docs/runtime-prompts/alpha/reviewer.txt: denied\n"), (code, stdout, stderr)
         )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_in_a_samples_place_is_replaced_and_never_followed(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."}), "beta": renderer({"synthesis": "Sum it up."})}
+        nowhere = self.root.parent / "nowhere.txt"
+        kept = self.root.parent / "kept.txt"
+        kept.write_text("Kept.\n", encoding="utf-8")
+        samples = self.root / "docs" / "runtime-prompts"
+        (samples / "alpha").mkdir(parents=True)
+        (samples / "beta").mkdir()
+        (samples / "alpha" / "reviewer.txt").symlink_to(nowhere)
+        (samples / "beta" / "synthesis.txt").symlink_to(kept)
+        runtime_prompts.write(self.root, renderers)
+        self.assertEqual([], runtime_prompts.problems(self.root, renderers))
+        for sample in (samples / "alpha" / "reviewer.txt", samples / "beta" / "synthesis.txt"):
+            self.assertFalse(sample.is_symlink(), sample)
+            self.assertEqual(atomic_file.TRACKED_FILE_MODE, stat.S_IMODE(sample.stat().st_mode))
+        self.assertFalse(os.path.lexists(nowhere), "the link to nothing's target is never created")
+        self.assertEqual("Kept.\n", kept.read_text(encoding="utf-8"), "the file a link leads to is never changed")
 
     def test_a_sample_or_the_samples_folder_misplaced_or_unexamined_exits_2_never_reads_as_missing(self) -> None:
         renderers = {"alpha": renderer({"reviewer": "Review it."})}

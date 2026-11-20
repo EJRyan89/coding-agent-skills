@@ -252,6 +252,7 @@ def _deploy(
         staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
         render.reject_unexpanded_tokens(staged)
         render.validate_executables(staged)
+        render.refuse_folded_paths(staged, paths.staging_root)
     print("")
     if run_id is None:
         print("Rendered and validated in memory (dry run).")

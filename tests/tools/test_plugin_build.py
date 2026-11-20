@@ -700,6 +700,24 @@ def test_an_output_that_is_a_file_or_holds_files_is_refused_and_an_absent_one_is
     assert made.is_dir()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link needs a privilege on Windows")
+@pytest.mark.parametrize("below", ["", "plugins", "missing/../link/plugins"])
+def test_an_output_that_is_or_lies_below_a_link_to_nothing_is_refused_and_its_target_never_made(
+    tmp_path: Path, below: str
+) -> None:
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+    # The last case reaches the link through a `..` after a missing part, which resolving takes by name alone.
+    requested = (tmp_path / below if below.startswith("missing") else link / below) if below else link
+    with pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.output_directory(requested, tmp_path / "source")
+    assert (
+        str(raised.value) == f"--output {requested} goes through {link}, a link to nothing; remove it or name another"
+    )
+    assert not os.path.lexists(tmp_path / "nowhere")
+    assert not os.path.lexists(tmp_path / "missing")
+
+
 @pytest.mark.parametrize("stat", [True, False])
 def test_an_output_it_cannot_examine_or_list_is_refused_never_taken_for_an_empty_one(
     tmp_path: Path, stat: bool

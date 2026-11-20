@@ -33,7 +33,7 @@ from harness import (
 )
 from test_private_folder import recording_temporary_folders
 
-from deployer import fsops, platform_support, source_ref, tools
+from deployer import fsops, platform_support, render, source_ref, tools
 from deployer.errors import DeployError, SourceRefusal
 from deployer.source import SOURCE_JSON_REMEDY
 
@@ -1033,6 +1033,23 @@ class DeployAtTests(DeployerTestCase):
             "ERROR: Unexpanded tokens found in staged output:",
             "Declare each token above in its skill's required_vars",
         )
+
+    def test_a_ref_whose_staged_names_differ_only_in_case_is_refused_with_a_step_naming_its_commit(self) -> None:
+        # Such a pair can be committed and exported only where the file system keeps case, so the rendered tree takes
+        # the pair here, and the staging root reads as one that folds case.
+        real = render.render
+
+        def colliding(*arguments: Any, **options: Any) -> render.Staged:
+            staged = real(*arguments, **options)
+            staged.skills["alpha"].update({"scripts/Notes.txt": b"one\n", "scripts/notes.txt": b"two\n"})
+            return staged
+
+        with mock.patch.object(render, "render", colliding), mock.patch("path_keys.folds_case", return_value=True):
+            self.refused_at_its_commit(
+                lambda: self.write(self.source / "skills" / "alpha" / "notes.md", "Notes\n"),
+                "alpha/scripts/Notes.txt and alpha/scripts/notes.txt name one file where the deployer stages them",
+                render.FOLDED_PATHS_REMEDY,
+            )
 
     def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
         plain = self.snapshot_source("plain")

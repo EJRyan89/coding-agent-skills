@@ -1982,6 +1982,21 @@ class OutputTests(DocumentTestCase):
         code, lines = run_main("build", str(document), "--output", str(self.root / "empty folder"))
         self.assertEqual((0, str(self.root / "empty folder")), (code, facts(lines)["OUTPUT"]))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_an_output_that_is_or_lies_below_a_link_to_nothing_is_refused_and_its_target_never_made(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        link = self.root.resolve() / "link"
+        link.symlink_to(self.root.resolve() / "nowhere", target_is_directory=True)
+        # The last reaches the link through a `..` after a missing part, which resolving takes by name alone.
+        for target in (link, link / "review", self.root.resolve() / "missing" / ".." / "link" / "review"):
+            with self.subTest(target=str(target)):
+                code, lines = run_main("build", str(document), "--output", str(target))
+                reason = f"goes through {link}, a link to nothing; name a new or empty directory"
+                self.assertEqual((1, [f"FAILED {target} {reason}"]), (code, lines))
+                self.assertFalse(os.path.lexists(self.root / "nowhere"))
+                self.assertFalse(os.path.lexists(self.root / "missing"))
+
     def test_an_output_whose_stat_fails_is_refused_rather_than_taken_for_new(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
@@ -2011,6 +2026,18 @@ class OutputTests(DocumentTestCase):
                 shown = flat_text(target.as_posix())
                 self.assertEqual((1, [f"FAILED {shown} {reason}"]), (code, lines))
                 self.assertFalse(target.exists())
+
+    def test_an_unquotable_output_is_refused_by_name_before_any_stat_of_it(self) -> None:
+        # Windows refuses a stat of a name holding `"` as an invalid name; the name is refused for what it holds first.
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        target = self.root / 'out"put'
+        invalid = OSError(22, "The filename, directory name, or volume label syntax is incorrect")
+        with mock.patch.object(file_presence, "link_to_nothing_on", side_effect=invalid) as walked:
+            code, lines = run_main("build", str(document), "--output", str(target))
+        reason = 'holds ", which a quoted argument does not keep; name another --output'
+        self.assertEqual((1, [f"FAILED {target.as_posix()} {reason}"]), (code, lines))
+        walked.assert_not_called()
 
     def test_a_temporary_output_a_quoted_argument_does_not_keep_is_refused_and_removed(self) -> None:
         document = self.root / "plan.md"

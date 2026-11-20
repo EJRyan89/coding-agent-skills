@@ -124,6 +124,53 @@ class FileLockTests(unittest.TestCase):
             file_lock.take(missing)
         self.assertFalse(file_lock.held_elsewhere(missing))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_nothing_in_the_files_place_is_refused_and_its_target_never_created(self) -> None:
+        target = self.path.parent / "elsewhere"
+        self.path.symlink_to(target)
+        with self.assertRaises(FileExistsError) as raised:
+            file_lock.take(self.path)
+        self.assertEqual(str(self.path), raised.exception.filename)
+        self.assertIn("a symbolic link to nothing is in the lock file's place; remove it", str(raised.exception))
+        self.assertFalse(os.path.lexists(target))
+        self.assertTrue(self.path.is_symlink())
+
+    def test_a_file_already_there_is_opened_as_it_is(self) -> None:
+        self.path.write_bytes(b"kept")
+        before = self.path.stat()
+        handle = self.take()
+        self.addCleanup(file_lock.release, handle, self.path)
+        # Read through another open, as a backup would: the descriptor's own position is the byte Windows locks.
+        self.assertEqual(b"kept", self.path.read_bytes())
+        self.assertEqual((before.st_dev, before.st_ino), (os.fstat(handle).st_dev, os.fstat(handle).st_ino))
+
+    def test_a_file_a_release_deletes_between_the_create_and_the_open_is_created_again(self) -> None:
+        real_open = os.open
+        refusals = [FileExistsError(errno.EEXIST, "exists"), FileNotFoundError(errno.ENOENT, "gone")]
+
+        def opened(path: Path, flags: int, mode: int = 0o777) -> int:
+            if refusals:
+                raise refusals.pop(0)
+            return real_open(path, flags, mode)
+
+        with mock.patch.object(os, "open", side_effect=opened) as calls:
+            descriptor = file_lock.open_for_lock(self.path)
+        os.close(descriptor)
+        self.assertEqual(3, calls.call_count)
+        self.assertTrue(calls.call_args.args[1] & os.O_EXCL, "the file is created again, exclusively")
+        self.assertTrue(self.path.is_file())
+
+    def test_an_open_that_meets_a_release_every_time_raises_its_last_not_found(self) -> None:
+        def opened(path: Path, flags: int, mode: int = 0o777) -> int:
+            if flags & os.O_EXCL:
+                raise FileExistsError(errno.EEXIST, "exists", str(path))
+            raise FileNotFoundError(errno.ENOENT, "gone", str(path))
+
+        with mock.patch.object(os, "open", side_effect=opened) as calls, self.assertRaises(FileNotFoundError):
+            file_lock.open_for_lock(self.path)
+        self.assertEqual(2 * file_lock.OPEN_ATTEMPTS, calls.call_count)
+        self.assertFalse(os.path.lexists(self.path))
+
     def test_a_release_whose_deletion_or_unlock_fails_still_lets_the_lock_go(self) -> None:
         handle = self.take()
 

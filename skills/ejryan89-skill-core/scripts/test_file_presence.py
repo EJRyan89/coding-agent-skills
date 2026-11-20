@@ -14,6 +14,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
+import path_containment
 import path_keys
 from file_presence import (
     MISSING,
@@ -23,10 +25,30 @@ from file_presence import (
     is_occupied,
     is_present,
     is_there,
+    link_to_nothing_on,
     matching,
     refusal_reason,
     require,
 )
+
+
+def link_directory(target: Path, link: Path) -> None:
+    """A real link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def link_directory_to_nothing(target: Path, link: Path) -> None:
+    """A real link to the folder `target`, which nothing is at: Windows makes a junction only to a folder that is there,
+    so the folder is made for the link and removed once the link leads to it."""
+    target.mkdir()
+    link_directory(target, link)
+    target.rmdir()
+
 
 # The errno values Python gives a directory and an invalid argument on Windows and on Linux alike, written out so the
 # refusal is held to them, not to the constants it uses.
@@ -284,6 +306,73 @@ class ThereTests(unittest.TestCase):
         with mock.patch.object(Path, "stat", side_effect=answer):
             self.assertFalse(is_there(self.root / "entry"))
             self.assertTrue(is_occupied(self.root / "entry"))
+
+
+class LinkToNothingOnTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_a_path_with_no_link_to_nothing_along_it_answers_none(self) -> None:
+        (self.root / "folder").mkdir()
+        self.assertIsNone(link_to_nothing_on(self.root / "folder"))
+        self.assertIsNone(link_to_nothing_on(self.root / "folder" / "new" / "deeper"))
+        self.assertIsNone(link_to_nothing_on(self.root / "missing" / "below"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_the_first_link_to_nothing_along_the_path_as_given_is_named(self) -> None:
+        link = self.root / "link"
+        link.symlink_to(self.root / "nowhere", target_is_directory=True)
+        self.assertEqual(link, link_to_nothing_on(link))
+        self.assertEqual(link, link_to_nothing_on(link / "below" / "deeper"))
+        (self.root / "folder").mkdir()
+        through = self.root / "through"
+        through.symlink_to(self.root / "folder", target_is_directory=True)
+        (self.root / "folder" / "inner").symlink_to(self.root / "gone", target_is_directory=True)
+        self.assertEqual(through / "inner", link_to_nothing_on(through / "inner" / "run"))
+        self.assertIsNone(link_to_nothing_on(through / "run"))
+        # Resolving takes a `..` after a missing part by name alone, then follows the link after it.
+        self.assertEqual(self.root / "link", link_to_nothing_on(self.root / "missing" / ".." / "link" / "out"))
+        # A `..` after a link to a folder leaves the folder it leads to, as resolving does, not the link's own folder.
+        (self.root / "folder" / "sub").mkdir()
+        (self.root / "deep").symlink_to(self.root / "folder" / "sub", target_is_directory=True)
+        (self.root / "folder" / "dang").symlink_to(self.root / "gone", target_is_directory=True)
+        self.assertEqual(
+            Path(os.path.realpath(self.root / "folder")) / "dang",
+            link_to_nothing_on(self.root / "deep" / ".." / "dang"),
+        )
+
+    def test_a_dot_dot_after_a_link_to_a_folder_is_taken_as_resolving_takes_it(self) -> None:
+        # Linux and macOS resolve `deep/..` through the link, to its target's parent; Windows normalizes the path
+        # first, so `deep/..` is `deep`'s own folder. A real link on each platform, a junction on Windows, which needs
+        # no privilege: the walk names `x` exactly when resolving the path leads through it.
+        root = path_containment.resolved_path(self.root)
+        (root / "folder" / "sub").mkdir(parents=True)
+        link_directory(root / "folder" / "sub", root / "deep")
+        link_directory_to_nothing(root / "nowhere", root / "x")
+        path = root / "deep" / ".." / "x" / "out"
+        through_x = path_containment.within(path_containment.resolved_path(path), root / "nowhere")
+        self.assertEqual(root / "x" if through_x else None, link_to_nothing_on(path))
+
+    def test_a_dot_dot_after_a_link_is_taken_by_name_where_resolving_normalizes_first(self) -> None:
+        # Windows' resolving normalizes a path before it follows any link, as ntpath.realpath does; with it, `deep/..`
+        # is the folder holding `deep`, and the link to nothing `x` there is found.
+        root = path_containment.resolved_path(self.root)
+        (root / "folder" / "sub").mkdir(parents=True)
+        link_directory(root / "folder" / "sub", root / "deep")
+        link_directory_to_nothing(root / "nowhere", root / "x")
+
+        def normalizing_first(path: Path) -> Path:
+            return Path(os.path.realpath(os.path.normpath(path)))
+
+        with mock.patch.object(file_presence, "resolved_path", normalizing_first):
+            self.assertEqual(root / "x", link_to_nothing_on(root / "deep" / ".." / "x" / "out"))
+
+    def test_a_stat_that_fails_reaches_the_caller(self) -> None:
+        failure = PermissionError(errno.EACCES, "denied")
+        with mock.patch.object(Path, "stat", side_effect=failure), self.assertRaises(PermissionError):
+            link_to_nothing_on(self.root / "entry")
 
 
 class RefusalReasonTests(unittest.TestCase):

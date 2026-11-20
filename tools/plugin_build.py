@@ -319,6 +319,13 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     must lie outside the source tree and every skills directory and be absent or empty."""
     if requested is None:
         return Path(tempfile.mkdtemp(prefix="coding-agent-skills-plugins-", dir=private_folder.temporary_directory()))
+    # Resolving takes a link to nothing on the path to the place it leads to, which the mkdir below would create.
+    try:
+        linked = file_presence.link_to_nothing_on(requested)
+    except OSError as exc:
+        raise BuildError(f"--output {requested} cannot be examined: {exc}") from exc
+    if linked is not None:
+        raise BuildError(f"--output {requested} goes through {linked}, a link to nothing; remove it or name another")
     target = resolved_path(requested)
     if within(target, resolved_path(source_dir)):
         raise BuildError(f"--output {requested} lies inside the source tree {source_dir}, which is never written")

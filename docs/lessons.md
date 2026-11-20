@@ -1453,22 +1453,25 @@ removed fails validation until its pattern follows it.
   there; and a write that follows it creates a file wherever the link points, outside the folder the writer owns.
 - **Use:** `file_presence:is_present`, `file_presence:is_directory`, `file_presence:is_there`, and
   `file_presence:refusal_reason`, which answer a link to nothing as missing; `file_presence:is_occupied`, the writer's
-  question, which counts it as occupying its place and which no reader asks; and `atomic_file:replace_bytes`, which
-  replaces the link itself.
+  question, which counts it as occupying its place and which no reader asks; `file_presence:link_to_nothing_on`,
+  which a writer asks of a path as given before it resolves it; and `atomic_file:replace_bytes`, which replaces the
+  link itself.
 - **Guard:** `tests/malformed_input/test_faults_link.py::test_each_command_reads_a_link_to_nothing_as_the_file_missing_and_never_writes_through_it`,
   which places a link to nothing at each file every driven command reads and fails a run that names it as another
   kind, refuses it otherwise than a missing file, or creates the file it leads to,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_link_to_nothing_reads_as_missing_and_occupies_its_place`,
-  and
-  `tests/deployer/test_presence_reads.py::DeployerPresenceTests::test_a_link_to_nothing_reads_as_missing_and_no_write_creates_its_target`
+  `tests/deployer/test_presence_reads.py::DeployerPresenceTests::test_a_link_to_nothing_reads_as_missing_and_no_write_creates_its_target`,
+  which drives each deployer write, and
+  `skills/ejryan89-skill-core/scripts/test_file_lock.py::FileLockTests::test_a_link_to_nothing_in_the_files_place_is_refused_and_its_target_never_created`
 - **Search for:** `is_occupied(path) and not is_present(path, other_is_absent=True)`, which names a link to nothing as
-  of another kind; `not path.is_file()` or `other_is_absent=True` worded as `is not a file`, which names a missing
-  path so too; `.write_text(` or `open(path, "w")` after a reading of absence, which follows the link; `path.resolve()`
-  before a write that creates a missing target; a missing path handed to a writer that follows it, as `next_role`
-  hands a role's result file to its reviewer; `is_occupied(` asked by a reader that names what is there, where
-  `is_there(` answers; and a listing that counts an entry by its name alone, such as `_version_from_name(path)` in a
-  comprehension over `iterdir()`.
-- **Examples:** #2716
+  of another kind; `not path.is_file()` or `other_is_absent=True` worded as `is not a file`, which names a missing path
+  so too; `.write_text(` or `open(path, "w")` after a reading of absence, or with no reading at all, which follows the
+  link; `open(path, "a")` or `os.open(` with `O_CREAT` and without `O_EXCL`, which create through it too;
+  `path.resolve()` or `resolved_path(` before a write or a `mkdir` that creates a missing target; a missing path handed
+  to a writer that follows it, as `next_role` hands a role's result file to its reviewer; `is_occupied(` asked by a
+  reader that names what is there, where `is_there(` answers; and a listing that counts an entry by its name alone, such
+  as `_version_from_name(path)` in a comprehension over `iterdir()`.
+- **Examples:** #2716, #2771
 
 ### A grant is earned by a step that names its tool
 
