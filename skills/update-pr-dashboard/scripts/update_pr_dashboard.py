@@ -421,11 +421,11 @@ def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:
 
 def validate_tracker_record(value: Any) -> dict[str, Any]:
     """The tracker record `update` keeps beside the configuration: the pull requests its last run held, keyed as a
-    status override is, so `override` can refuse one naming none of them, the AI review each shown row had, so the
-    next update can name a review that went stale since, and the base each of the user's own reviews is compared from
-    (see `user_review_bases`). A version 1 record holds no reviews and a version 2 record no user reviews, and each
-    reads as holding none; a version 2 or 3 record names neither review beside its commit, so each reads as naming
-    none (see `_other_review`)."""
+    status override is, so `override` can refuse one naming none of them, the AI review each shown row had with its
+    review version, so the next update can name a review that went stale since, and the base each of the user's own
+    reviews is compared from with GitHub's ID for that review (see `user_review_bases`). A version 1 record holds no
+    reviews and a version 2 record no user reviews, and each reads as holding none; a version 2 or 3 record names
+    neither review beside its commit, so each reads as naming none (see `_other_review`)."""
     version = READ.one_of(
         READ.json_object(value, "tracker").get("schema_version"), "tracker.schema_version", TRACKER_SCHEMA_VERSIONS
     )
