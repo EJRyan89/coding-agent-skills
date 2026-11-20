@@ -129,6 +129,8 @@ KINDS = ("category", "analyzer", "synthesized")
 SET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 REC_ID = re.compile(r"REC-(\d{3,})")
 EXAMPLES_PRINTED = 3
+# What a refused report lock tells the user to keep on a local disk: the report sits under `summary_root`.
+REPORT_LOCK_PLACE = "the review-insights reports"
 EVIDENCE_RENDERED = 10
 # The options whose values are a subject as a report printed it or a note as the user gave it, each with how many
 # values it takes. Such a value may begin with `-`, which argparse would read as an option, so each is bound to its
@@ -183,7 +185,7 @@ class Services:
     )
     guidance_reader: review_guidance.Reader = field(default_factory=review_guidance.Reader)
     report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
-        json_path.parent / ".locks" / "insights.lock"
+        json_path.parent / ".locks" / "insights.lock", place=REPORT_LOCK_PLACE
     )
 
 

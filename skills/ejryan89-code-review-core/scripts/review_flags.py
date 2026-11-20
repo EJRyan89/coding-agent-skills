@@ -61,6 +61,10 @@ class FlagFieldError(FieldError, FlagError):
 READ = FieldReader(FlagFieldError)
 
 
+# What a refused flag store lock tells the user to keep on a local disk.
+FLAGS_LOCK_PLACE = "the flag store"
+
+
 def default_flags_path() -> Path:
     """CODE_REVIEW_FLAGS, else the standard flag store beside the code-review configuration."""
     override = os.environ.get("CODE_REVIEW_FLAGS")
@@ -245,7 +249,7 @@ def add_flag(
     # the flag is added to.
     load_store(path)
     lock = path.parent / ".locks" / "flags.lock"
-    with ResourceLock(lock):
+    with ResourceLock(lock, place=FLAGS_LOCK_PLACE):
         store = load_store(path)
         numeric = store["next_id"]
         now = datetime.now(UTC).isoformat()
@@ -300,7 +304,7 @@ def edit_flag(path: Path, flag_id: str, *, category: str | None = None, body: st
         raise FlagError("Name a new category, a new body, or both")
     _refuse_without_store(path, flag_id)
     lock = path.parent / ".locks" / "flags.lock"
-    with ResourceLock(lock):
+    with ResourceLock(lock, place=FLAGS_LOCK_PLACE):
         store = load_store(path)
         flag = _stored_flag(store, flag_id)
         if flag["status"] != "open":
@@ -316,7 +320,7 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
         raise FlagError("Resolution is required")
     _refuse_without_store(path, flag_id)
     lock = path.parent / ".locks" / "flags.lock"
-    with ResourceLock(lock):
+    with ResourceLock(lock, place=FLAGS_LOCK_PLACE):
         store = load_store(path)
         flag = _stored_flag(store, flag_id)
         if flag["status"] != "open":
