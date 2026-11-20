@@ -20,13 +20,13 @@ whose target the policy cannot name, such as a method of a value the deployer bu
 from __future__ import annotations
 
 import ast
-import builtins
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
 from validation_support import (
+    BUILTIN_NAMES,
     REPOSITORY_ROOT,
     import_aliases,
     module_allowance,
@@ -121,8 +121,6 @@ def excused_callees(trees: list[tuple[str, ast.Module]]) -> frozenset[str]:
     )
 
 
-# The names Python binds in every module, whose calls never reach the deployer's code.
-BUILTIN_NAMES = frozenset(dir(builtins))
 Function = ast.FunctionDef | ast.AsyncFunctionDef
 
 
