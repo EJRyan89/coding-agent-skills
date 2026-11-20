@@ -137,9 +137,12 @@ class FileLockTests(unittest.TestCase):
 
     def test_a_file_already_there_is_opened_as_it_is(self) -> None:
         self.path.write_bytes(b"kept")
+        before = self.path.stat()
         handle = self.take()
-        self.assertEqual(b"kept", os.read(handle, 4))
-        file_lock.release(handle, self.path)
+        self.addCleanup(file_lock.release, handle, self.path)
+        # Read through another open, as a backup would: the descriptor's own position is the byte Windows locks.
+        self.assertEqual(b"kept", self.path.read_bytes())
+        self.assertEqual((before.st_dev, before.st_ino), (os.fstat(handle).st_dev, os.fstat(handle).st_ino))
 
     def test_a_file_a_release_deletes_between_the_create_and_the_open_is_created_again(self) -> None:
         real_open = os.open

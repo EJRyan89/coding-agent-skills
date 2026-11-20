@@ -35,7 +35,7 @@ from markdown_sections import find_fences
 from suite_names import is_suite_name
 from test_presence_reads import stat_failing_at
 
-from deployer import fsops, hashing, lock, platform_support
+from deployer import fsops, hashing, lock, platform_support, render
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -176,6 +176,22 @@ class RenderedExecutableTests(DeployerTestCase):
                 result = platform_support.run_tool([sys.executable, "-c", bodies[label]])
                 self.assertEqual(0, result.returncode, result.output)
                 self.assertEqual(forward(repos), result.output.strip())
+
+    def test_staged_names_that_differ_only_in_case_are_refused_before_anything_is_deployed(self) -> None:
+        # A source on a case-sensitive volume can hold both; staging them on a folding one would meet the first.
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        real = render.render
+
+        def colliding(*arguments: Any, **options: Any) -> render.Staged:
+            staged = real(*arguments, **options)
+            staged.skills["alpha"].update({"scripts/Notes.txt": b"one\n", "scripts/notes.txt": b"two\n"})
+            return staged
+
+        with mock.patch.object(render, "render", colliding), mock.patch("path_keys.folds_case", return_value=True):
+            self.deploy_fails("--all", pattern=r"alpha/scripts/Notes\.txt and alpha/scripts/notes\.txt name one file")
+        self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_a_token_in_a_cmd_fence_is_refused_before_anything_is_deployed(self) -> None:
         self.make_source_json()

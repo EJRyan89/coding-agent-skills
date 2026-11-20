@@ -458,7 +458,9 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     units: list[ShellUnit] = []
     for logical in sorted(files):
         if Path(logical).suffix.casefold() in (".sh", ".bash"):
-            target = workspace / "files" / logical
+            # A folder of its own for each file, so two names a case-folding file system takes for one, such as
+            # `run.sh` and `Run.sh`, are each checked, never one written over the other.
+            target = workspace / "files" / str(len(units)) / logical
             _write(target, files[logical])
             units.append(ShellUnit(target, logical, False))
     for logical in sorted(files):
@@ -587,6 +589,29 @@ POWERSHELL_PARSE = (
 )
 
 
+FOLDED_PATHS_REMEDY = "Rename one of them in the source so that no two names differ only in letter case, then rerun."
+
+
+def refuse_folded_paths(staged: Staged, staging_root: Path) -> None:
+    """Refuse a staged tree two of whose paths name one file or folder where the deployer stages it: names that
+    differ only in letter case, on a file system that compares names without regard to it, such as a source checked
+    out on a case-sensitive volume and deployed to a home on a folding one. Staging creates each file exclusively, so
+    the second would meet the first; refused here, before anything is written, it names both."""
+    seen: dict[str, tuple[str, str]] = {}
+    for logical in sorted(staged.logical_files()):
+        parts = PurePosixPath(logical).parts
+        for depth in range(1, len(parts) + 1):
+            spelling = "/".join(parts[:depth])
+            key = "/".join(platform_support.name_key(part, staging_root) for part in parts[:depth])
+            first, first_logical = seen.setdefault(key, (spelling, logical))
+            if first != spelling:
+                raise DeployError(
+                    f"ERROR: {first_logical} and {logical} name one file where the deployer stages them, since "
+                    f"{first} and {spelling} differ only in letter case and its file system compares names without it",
+                    FOLDED_PATHS_REMEDY,
+                )
+
+
 def _powershell_files(staged: Staged) -> dict[str, bytes]:
     return {
         logical: content
@@ -597,8 +622,9 @@ def _powershell_files(staged: Staged) -> dict[str, bytes]:
 
 def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str) -> None:
     origins: dict[str, str] = {}
-    for logical, content in sorted(files.items()):
-        target = workspace / "powershell" / logical
+    for index, (logical, content) in enumerate(sorted(files.items())):
+        # A folder of its own for each script, as _extract_units gives each shell file.
+        target = workspace / "powershell" / str(index) / logical
         _write(target, content)
         origins[str(target)] = logical
     result = platform_support.run_tool(
