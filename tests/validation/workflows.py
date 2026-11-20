@@ -2271,8 +2271,8 @@ def mutation_windows_shellcheck_problems(validate: str) -> list[str]:
     leg copies, MUTATION_WINDOWS_SHELLCHECK_CACHE and MUTATION_WINDOWS_SHELLCHECK under MUTATION_WINDOWS_SHELLCHECK_ENV,
     so the two keep restoring one cache and installing the same way: the restore step `shellcheck` with those inputs,
     and one script given that env whose lines hold the install's, in order and together. Lines that script runs
-    before or after that block, such as its PSScriptAnalyzer install, are not compared, so a ShellCheck line validate.yml
-    adds there passes without a copy in mutation.yml; no ShellCheck line sits outside the block."""
+    before or after that block, such as its PSScriptAnalyzer install, are not compared, so a ShellCheck line
+    validate.yml adds there passes without a copy in mutation.yml; no ShellCheck line sits outside the block."""
     steps = _steps(_mapping(read_workflow(validate), "jobs", "suite"))
     problems: list[str] = []
     restores = [_mapping(step, "with") for step in steps if step.get("id") == "shellcheck" and _uses(step, "cache")]
