@@ -635,6 +635,73 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
         pytest.param(
             "| a |\n| - |\n    x\n", [(0, "table row"), (1, "table row"), (2, "code")], [2], [], id="code-after-a-table"
         ),
+        # A table needs a delimiter row with as many cells as the row above it, counting a pipe in a code span and not
+        # an escaped one; otherwise both lines are a paragraph's text, which an indented line continues.
+        pytest.param(
+            "| a | b |\n| - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="fewer-delimiter-cells-than-header-cells",
+        ),
+        pytest.param(
+            "| a |\n| - | - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="more-delimiter-cells-than-header-cells",
+        ),
+        pytest.param(
+            "|\n| - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="header-of-one-pipe",
+        ),
+        pytest.param(
+            "| a | b |\n|\t-\t|\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="mismatched-cells-with-tabs",
+        ),
+        pytest.param(
+            "- x\n  | a | b |\n  | - |\n      code\n",
+            [(0, "item"), (1, "table row"), (2, "table row"), (3, "paragraph")],
+            [],
+            [],
+            id="mismatched-cells-in-an-item",
+        ),
+        pytest.param("> | a | b |\n> | - |\n>     code\n", [(0, "quote")], [], [], id="mismatched-cells-in-a-quote"),
+        pytest.param(
+            "| a \\| b |\n| - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "code")],
+            [2],
+            [],
+            id="escaped-pipe-is-one-cell",
+        ),
+        pytest.param(
+            "| `a|b` |\n| - | - |\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "code")],
+            [2],
+            [],
+            id="pipe-in-a-code-span-divides-cells",
+        ),
+        pytest.param(
+            "| a |\n|\t-\t|\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "code")],
+            [2],
+            [],
+            id="matching-cells-with-tabs",
+        ),
+        # A line that lazily continues a lone row's paragraph, where no block is open, opens a paragraph block.
+        pytest.param(
+            "- a\n  | t |\nlazy\n",
+            [(0, "item"), (1, "table row"), (2, "paragraph")],
+            [],
+            [],
+            id="lazy-line-after-a-row-in-an-item",
+        ),
         # A backtick run indented as far as indented code past its container neither opens nor closes a fence.
         pytest.param("+ p\n      ```\n```\n", [(0, "item"), (3, "code")], [2, 3], [], id="deep-run-in-an-item"),
         pytest.param(

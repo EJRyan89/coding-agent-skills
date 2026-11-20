@@ -393,9 +393,10 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     paragraph, so its lines are paragraph text until one that starts a block, such as a heading-shaped or list line,
     which is read as that block; a line that starts with `|` is a table row even where it follows a paragraph's text in
     the same container, though one that lazily continues a paragraph is that paragraph's text, and a table with no
-    leading pipe is read as a paragraph; a list item's own line is the item's block whatever it holds, so a heading on
-    it, as in `- # H`, is the item's text; and a quote's own lines are not split into the blocks it holds, though a
-    code block inside it is a block of its own and ends the quote's."""
+    leading pipe is read as a paragraph; a list item's own line is the item's block whatever it holds but a blockquote,
+    a fence, or indented code, each a block of its own, so a heading on it, as in `- # H`, is the item's text; and a
+    quote's own lines are not split into the blocks it holds, though a code block inside it is a block of its own and
+    ends the quote's."""
     yield from _walk(lines).blocks
 
 
@@ -446,20 +447,33 @@ QUOTE_CONTAINER = -1
 DELIMITER_ROW = re.compile(r"\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*")
 
 
+def _cells(row: str) -> int:
+    """How many cells a table row holds: the parts its dividing pipes make once a leading and a trailing pipe are taken
+    off, as GitHub reads them, so a row of one pipe holds none and `||` one empty cell. A dividing pipe is one no
+    backslash escapes, inside a code span too."""
+    row = row.strip(LINE_END)
+    row = row[1:] if row.startswith("|") else row
+    if not row:
+        return 0
+    row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+    return len(re.split(r"(?<!\\)\|", row))
+
+
 @dataclass
 class _Walker:
     """What `_walk` has read so far. The structure: the containers that hold the line, outermost first, as the width of
     each list item's content past the content that holds it, or QUOTE_CONTAINER; whether a paragraph's text is open;
-    whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers hold;
-    whether they are a table's; and the open fence, with its run. What it yields: the blocks, the code lines, and the
-    document's headings. The open block: its first line, kind, and lines, and the blank lines after an open indented
-    code block, which join it only when more code follows."""
+    whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers hold,
+    the first of them, and whether they are a table's; and the open fence, with its run. What it yields: the blocks,
+    the code lines, and the document's headings. The open block: its first line, kind, and lines, and the blank lines
+    after an open indented code block, which join it only when more code follows."""
 
     lines: list[str]
     containers: list[int] = field(default_factory=list)
     paragraph: bool = False
     bare: bool = False
     rows: int = 0
+    header: str = ""
     table: bool = False
     fence: Fence | None = None
     run: str = ""
@@ -629,7 +643,10 @@ class _Walker:
                 self.headings.append((index, match))
             self.emit(index, HEADING if starts_heading(block) else "", opened, joins=False)
         elif block.startswith("|") or (self.table and not block.startswith("<")):
-            self.table = self.table or (self.rows == 1 and DELIMITER_ROW.fullmatch(block) is not None)
+            # A delimiter row with as many cells as the row above it makes that row a table's header, as GFM reads one.
+            delimits = self.rows == 1 and DELIMITER_ROW.fullmatch(block) is not None
+            self.table = self.table or (delimits and _cells(block) == _cells(self.header))
+            self.header = block if self.rows == 0 else self.header
             self.rows += 1
             # A lone `|` line is a paragraph's text, as GitHub reads it, until a delimiter row under it makes a table.
             self.paragraph = not self.table
