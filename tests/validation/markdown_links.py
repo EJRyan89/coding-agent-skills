@@ -62,6 +62,10 @@ def markdown_link_problems(root: Path) -> list[str]:
     Links are read through ejryan89-skill-core's `link_destinations`, as every reader of a link destination reads them,
     so code blocks and spans are not links, and a destination is percent-decoded; URLs with a scheme are not checked.
     Files Git ignores, and the session worktrees under .claude/worktrees/, are not read.
+
+    Limit: a root-absolute destination, one that opens with `/`, is not read from the repository root, as GitHub
+    resolves it, but from the file system's root, so a link to `/docs/x.md` is reported missing however the repository
+    holds that file. No document in the repository writes one.
     """
     problems: list[str] = []
     for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):

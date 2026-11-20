@@ -47,6 +47,11 @@ class MarkdownLinkPolicy(unittest.TestCase):
             write_fixture_tree(root, files)
             return markdown_link_problems(root)
 
+    def test_a_root_absolute_destination_is_read_from_the_file_system_root_as_the_policy_states(self) -> None:
+        # The policy's stated limit: GitHub resolves `/docs/target.md` from the repository root, the policy does not.
+        problems = self.problems({"index.md": "See [it](/docs/target.md).\n", "docs/target.md": "# Target\n"})
+        self.assertEqual(["index.md:1 links to /docs/target.md, which does not exist"], problems)
+
     def test_fragments_follow_githubs_heading_slugs(self) -> None:
         # Backticks and punctuation go, underscores and hyphens stay, and a repeated heading is numbered.
         index = (
