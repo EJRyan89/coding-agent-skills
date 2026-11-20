@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import contextlib
 import io
 import os
@@ -499,10 +498,26 @@ class DraftCommandTests(Repository):
                     template.rmdir()
                 template.write_text(TEMPLATE, encoding="utf-8")
 
-    def test_an_issue_that_is_not_a_positive_number_is_a_usage_error(self) -> None:
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            self.run_script("draft", "--closes", "#12")
-        self.assertEqual(2, raised.exception.code)
+    def test_an_issue_that_is_not_a_positive_whole_number_is_a_usage_error_naming_it(self) -> None:
+        # Each value int() or a lower bound of 0 would read, and one past the digit limit.
+        for value in ["#12", "0", "00", "-1", "+1", " 1", "1 ", "1_0", "\u0661", "1" + "0" * 5000]:
+            with self.subTest(value=value[:8]):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                    self.run_script("draft", "--closes", value)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(
+                    f"argument --closes: must be a whole number of at least 1 in ASCII digits, not {value!r}",
+                    stderr.getvalue(),
+                )
+
+    def test_an_issue_written_with_leading_zeros_is_read_as_its_number(self) -> None:
+        code, lines = self.run_script("draft", "--closes", "012", "--closes", "0001")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(["CLOSES 12", "CLOSES 1"], lines[1:3])
+        body = Path(lines[3][len('BODY "') : -1])
+        self.addCleanup(remove_tree, body.parent)
+        self.assertIn("Closes #12\nCloses #1\n", body.read_text(encoding="utf-8"))
 
 
 class CheckCommandTests(Repository):
@@ -857,14 +872,6 @@ def test_each_spelling_the_reader_reads_is_refused_as_a_closing_line(line: str) 
     body = FILLED.replace("Closes #34", line)
     assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
     assert pull_request.closed_issues(body) == [12]
-
-
-def test_an_issue_argument_past_the_digit_limit_is_not_an_issue_number() -> None:
-    value = "1" + "0" * 5000
-    with pytest.raises(argparse.ArgumentTypeError) as raised:
-        pull_request.issue_argument(value)
-    assert f"{value!r} is not an issue number" == str(raised.value)
-    assert pull_request.issue_argument("12") == 12
 
 
 @pytest.mark.parametrize(
