@@ -154,7 +154,8 @@ Worktrees isolate files. These are still shared:
   - Prefer a temporary WIP commit.
   - If you must stash, push with a unique message, then apply your entry by SHA.
 - **Deployer state under `~/.claude`.** The deploy lock is keyed by the home folder, so it spans worktrees: a
-  second deploy, or a `--dry-run`, fails at once with "Another deployment is running". Deploying records its
+  second deploy, or a `--dry-run`, waits a few seconds (`LOCK_WAIT_SECONDS` in `deployer/lock.py`) for the lock, then
+  fails with "Another deployment is running" while it is still held. Deploying records its
   source path in the manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to
   deploy from a linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. A
   `--dry-run` refuses any checkout other than the one the manifest records, as the deployment does, so once the hub
