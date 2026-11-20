@@ -1659,6 +1659,11 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
             id="fence-its-item-leaves",
         ),
         pytest.param(
+            "\t```\nx\n\t```\n",
+            "doc.md:1: the block readers read this fence as no fence and find_fences as lines 1 to 3",
+            id="opening-run-indented-four-columns",
+        ),
+        pytest.param(
             "```\nx\n    ```\n```\n",
             "doc.md:1: the block readers read this fence as lines 1 to 4 and find_fences as lines 1 to 3",
             id="closing-run-indented-four-columns",
@@ -1676,3 +1681,19 @@ def test_fence_policy_passes_fences_every_reader_reads_alike(tmp_path: Path) -> 
     document = "- a\n\n  ```bash\n  x\n  ```\n> ```\n> y\n> ```\n~~~\n```\n~~~\n"
     write_fixture_tree(tmp_path, {"doc.md": document}, newline="\n")
     assert fence_reading_problems(tmp_path, [tmp_path / "doc.md"]) == []
+
+
+def test_fence_policy_refuses_a_set_with_no_markdown_file(tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, {"notes.txt": "```\nx\n```\n"}, newline="\n")
+    assert fence_reading_problems(tmp_path, sorted(tmp_path.iterdir())) == [
+        "no Markdown file to read the fences of; the fence policy compares nothing"
+    ]
+    assert fence_reading_problems(tmp_path, []) == [
+        "no Markdown file to read the fences of; the fence policy compares nothing"
+    ]
+
+
+def test_fence_policy_reports_a_markdown_file_it_cannot_read(tmp_path: Path) -> None:
+    (tmp_path / "doc.md").write_bytes(b"```\n\xff\n```\n")
+    (found,) = fence_reading_problems(tmp_path, [tmp_path / "doc.md"])
+    assert found.startswith("doc.md: cannot be read as UTF-8 text to compare its fences: ")

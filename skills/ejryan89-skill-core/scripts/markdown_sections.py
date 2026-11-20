@@ -5,6 +5,7 @@ CommonMark does: the whitespace of block structure, list markers, and which list
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
@@ -184,13 +185,14 @@ def find_fences(lines: list[str]) -> list[Fence]:
     spaces, tabs, and the blockquote markers that hold the fence, closes it, so a ``` line inside a ```` fence is body,
     and so is one indented with any other Unicode space. The info string's first word, the language, is split as
     commonmark.js splits it, at any whitespace.
-    A fence left open runs to the end of the blockquote that holds it, or of the document. Rendering, the extraction
-    of Bash for ShellCheck, validation's Markdown policies, and the audit-skill audit all read fences through
-    this one function. The block readers, `blocks`, `code_block_lines`, and `document_headings`, read the fences
-    `block_fences` gives, which part from these in two shapes: a fence in a list item or blockquote that a line the
-    container does not hold ends there, not where this one ends it, and a run indented four or more columns past the
-    content that holds it neither opens nor closes a fence there. Validation holds the two to the same fences on every
-    tracked Markdown file, so the shapes stay unwritten until this one reads containers too.
+    A fence left open runs to the end of the blockquote that holds it, or of the document. Rendering, the extraction of
+    Bash for ShellCheck, validation's Markdown policies, and the audit-skill audit all read fences through this one
+    function. The block readers, `blocks`, `code_block_lines`, and `document_headings`, read the fences `block_fences`
+    gives, which part from these in two shapes: a fence in a list item, one inside a blockquote included, that a line
+    the item does not hold ends there, not where this one ends it, and a run indented four or more columns past the
+    content that holds it neither opens nor closes a fence there. A blockquote alone never parts them, since this one
+    also ends a fence where its blockquote ends. Validation holds the two to the same fences on every tracked Markdown
+    file, so the shapes stay unwritten until this one reads containers too.
     """
     fences: list[Fence] = []
     index = 0
@@ -408,11 +410,11 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     paragraph the thematic break ends and an `=` underline joins the text above it; an HTML block is read as a
     paragraph, so its lines are paragraph text until one that starts a block, such as a heading-shaped or list line,
     which is read as that block; a line that starts with `|` is a table row even where it follows a paragraph's text in
-    the same container, though one that lazily continues a paragraph is that paragraph's text, and a table is read only
-    where its header and its delimiter row both start with `|`; a list item's own line is the item's block whatever it
-    holds but a blockquote, a fence, or indented code, each a block of its own, so a heading on it, as in `- # H`, is
-    the item's text; and a quote's own lines are not split into the blocks it holds, though a code block inside it is a
-    block of its own and ends the quote's."""
+    the same container, though one that lazily continues a paragraph is that paragraph's text, so no delimiter row under
+    it makes a table, where GitHub may make one, and a table is read only where its header and its delimiter row both
+    start with `|`; a list item's own line is the item's block whatever it holds but a blockquote, a fence, or indented
+    code, each a block of its own, so a heading on it, as in `- # H`, is the item's text; and a quote's own lines are
+    not split into the blocks it holds, though a code block inside it is a block of its own and ends the quote's."""
     yield from _walk(lines).blocks
 
 
@@ -434,11 +436,11 @@ def _walk(lines: list[str]) -> _Walker:
 
     A fence opens at a run of three or more backticks or tildes at most MAX_BLOCK_INDENT columns past the content that
     holds it, and runs to a run of the same character at least as long, as far in, or to the first line its containers
-    leave; the walk reads its lines itself, where `find_fences` ignores indentation and containers, so the two part
-    in the shapes `find_fences` states. A table is a `|` row and a
-    delimiter row under it, such as `| - |`; its rows run on, and so does any line under them that starts no block, as
-    GitHub reads them, and a list item or indented code after it opens as after any block but a paragraph. A list item
-    whose marker has only spaces after it, then a blank line, is empty and closes.
+    leave; the walk reads its lines itself, where `find_fences` ignores indentation and containers, so the two part in
+    the shapes `find_fences` states. A table is a `|` row and a delimiter row right under it with as many cells, such as
+    `| - |`, a paragraph trying only its first delimiter-shaped row; its rows run on, and so does any line under them
+    that starts no block, as GitHub reads them, and a list item or indented code after it opens as after any block but a
+    paragraph. A list item whose marker has only spaces after it, then a blank line, is empty and closes.
 
     The limits: the partial tab a blockquote or list marker consumes is counted as a whole one; an HTML block or a
     setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a heading; a list
@@ -478,19 +480,23 @@ def _cells(row: str) -> int:
 
 @dataclass
 class _Walker:
-    """What `_walk` has read so far. The structure: the containers that hold the line, outermost first, as the width of
-    each list item's content past the content that holds it, or QUOTE_CONTAINER; whether a paragraph's text is open;
-    whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers hold,
-    the last of them, and whether they are a table's; and the open fence, with its run. What it yields: the blocks,
-    the code lines, the fences, and the document's headings. The open block: its first line, kind, and lines, and the
-    blank lines after an open indented code block, which join it only when more code follows."""
+    """What `_walk` has read so far. The structure: the containers that hold the line, outermost first, as the width
+    of each list item's content past the content that holds it, or QUOTE_CONTAINER, and the place of each blockquote
+    among them; whether a paragraph's text is
+    open; whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers
+    hold, the last of them, whether the paragraph they are in has tried to be a table, and whether they are a
+    table's; and the open fence, with its run. What it yields: the blocks, the code lines, the fences, and the
+    document's headings. The open block: its first line, kind, and lines, and the blank lines after an open indented
+    code block, which join it only when more code follows."""
 
     lines: list[str]
     containers: list[int] = field(default_factory=list)
+    quoted: list[int] = field(default_factory=list)
     paragraph: bool = False
     bare: bool = False
     rows: int = 0
     header: str = ""
+    tried: bool = False
     table: bool = False
     fence: Fence | None = None
     run: str = ""
@@ -527,7 +533,16 @@ class _Walker:
                 position, column = _past_quote_marker(line, first, column + width)
                 start = column
                 first, width = _skip(line, position)
-            elif first >= last or column + width >= start + container:
+            elif first >= last:
+                # Every list item holds a blank line, so the next blockquote is the first container that may not.
+                later = bisect.bisect_left(self.quoted, count)
+                return (
+                    (self.quoted[later] if later < len(self.quoted) else len(self.containers)),
+                    position,
+                    column,
+                    start,
+                )
+            elif column + width >= start + container:
                 start += container
             else:
                 return count, position, column, start
@@ -545,7 +560,7 @@ class _Walker:
             if self.paragraph and not is_blank(rest) and not _starts_leaving(rest, column, start):
                 self.lazy(index)
                 return
-            del self.containers[count:]
+            self.leave(count)
             self.paragraph, self.bare = False, False
         opened = len(self.containers)
         position, column, start, empty = self.opened(line, position, column, start)
@@ -568,6 +583,11 @@ class _Walker:
         else:
             self.leaf(index, rest, relative, opened, same=same)
 
+    def leave(self, count: int) -> None:
+        """The containers past the first `count` close."""
+        del self.containers[count:]
+        del self.quoted[bisect.bisect_left(self.quoted, count) :]
+
     def lazy(self, index: int) -> None:
         """A line that lazily continues the open paragraph, though a container that holds it does not hold the line."""
         if self.open:
@@ -586,6 +606,7 @@ class _Walker:
         first, width = _skip(line, position)
         while first < last and column + width - start <= MAX_BLOCK_INDENT:
             if line[first] == ">":
+                self.quoted.append(len(self.containers))
                 self.containers.append(QUOTE_CONTAINER)
                 position, column = _past_quote_marker(line, first, column + width)
                 start = column
@@ -618,7 +639,7 @@ class _Walker:
         words = run.group("info").split()
         opener = _fence_opener(self.lines[index])
         indent = 0 if opener is None else _opened_fence(self.lines[index], index, opener).indent
-        quotes = self.containers.count(QUOTE_CONTAINER)
+        quotes = len(self.quoted)
         self.fence = Fence(index, None, words[0] if words else "", index, quotes, indent)
         self.run = run.group("marker")
 
@@ -654,7 +675,7 @@ class _Walker:
         self.paragraph, self.bare, self.rows, self.table = False, False, 0, False
         if self.kind == CODE and same:
             self.pending.append(index)
-        elif QUOTE_CONTAINER in self.containers and not is_blank(self.lines[index]):
+        elif self.quoted and not is_blank(self.lines[index]):
             self.emit(index, QUOTE, opened, joins=True)
         else:
             self.close()
@@ -676,16 +697,18 @@ class _Walker:
                 self.headings.append((index, match))
             self.emit(index, HEADING if starts_heading(block) else "", opened, joins=False)
         elif block.startswith("|") or (self.table and not block.startswith("<")):
-            # A delimiter row with as many cells as the row right above it makes that row a table's header, as GFM reads
-            # one, whatever `|` lines stand above the header.
-            delimits = self.rows and not self.table and DELIMITER_ROW.fullmatch(block) is not None
-            self.table = self.table or bool(delimits and _cells(block) == _cells(self.header))
+            # A paragraph's first delimiter-shaped row makes the row right above it a table's header when their cells
+            # match, whatever `|` lines stand above the header, and GFM tries no later one in the paragraph.
+            self.tried = self.tried and self.paragraph
+            if not self.table and self.paragraph and not self.tried and DELIMITER_ROW.fullmatch(block) is not None:
+                self.table, self.tried = bool(self.rows and _cells(block) == _cells(self.header)), True
             self.header = block
             self.rows += 1
             # A lone `|` line is a paragraph's text, as GitHub reads it, until a delimiter row under it makes a table.
             self.paragraph = not self.table
             self.emit(index, TABLE_ROW, opened, joins=False)
         else:
+            self.tried = self.tried and self.paragraph
             self.paragraph, self.rows, self.table = True, 0, False
             self.emit(index, PARAGRAPH, opened, joins=joins)
 
@@ -704,8 +727,8 @@ class _Walker:
         """The line's block, given its own kind, or none for a thematic break: a line a blockquote holds joins the
         blockquote's block, unless the blockquote opens on it, a line that opens a list item opens the item's block,
         and any other line opens a block of its kind, or joins the open one when it continues its paragraph."""
-        if QUOTE_CONTAINER in self.containers:
-            if self.kind == QUOTE and self.containers.index(QUOTE_CONTAINER) < opened:
+        if self.quoted:
+            if self.kind == QUOTE and self.quoted[0] < opened:
                 self.open.append(self.lines[index])
             else:
                 self.begin(index, QUOTE)

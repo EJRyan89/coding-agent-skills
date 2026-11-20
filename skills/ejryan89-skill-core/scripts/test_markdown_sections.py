@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from markdown_sections import (
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    block_fences,
     blocks,
     code_block_lines,
     document_headings,
@@ -840,6 +842,77 @@ def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expect
             ["H"],
             id="delimiter-after-a-heading",
         ),
+        # GFM tries a paragraph's first delimiter-shaped row as a table and no later one; a blank line starts a new try.
+        pytest.param(
+            "| a |\n|---|---|\n| b | c |\n|---|---|\n2. y\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "table row"), (4, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-under-rows",
+        ),
+        pytest.param(
+            "text\n|---|---|\n| b | c |\n|---|---|\n2. y\n",
+            [(0, "paragraph"), (1, "table row"), (2, "table row"), (3, "table row"), (4, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-under-text",
+        ),
+        pytest.param(
+            "- | a |\n  |---|---|\n  | b | c |\n  |---|---|\n  2. y\n",
+            [(0, "item"), (1, "table row"), (2, "table row"), (3, "table row"), (4, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-in-an-item",
+        ),
+        pytest.param(
+            "> | a |\n> |---|---|\n> | b | c |\n> |---|---|\n>     code\n",
+            [(0, "quote")],
+            [],
+            [],
+            id="retried-delimiter-in-a-quote",
+        ),
+        pytest.param(
+            "|\n|---|---|\n|---|---|\n\ttext\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-under-a-lone-pipe",
+        ),
+        pytest.param(
+            "   | - |\n| - | - |\n| - | - |\n\ttext\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-after-a-mismatch",
+        ),
+        pytest.param(
+            "  |-|-|\n   | - |\n|-|\n    code\n",
+            [(0, "table row"), (1, "table row"), (2, "table row"), (3, "paragraph")],
+            [],
+            [],
+            id="retried-delimiter-after-delimiter-shaped-rows",
+        ),
+        pytest.param(
+            "| a |\n|-|-|\ntext\n| b | c |\n|---|---|\n2. y\n",
+            [
+                (0, "table row"),
+                (1, "table row"),
+                (2, "paragraph"),
+                (3, "table row"),
+                (4, "table row"),
+                (5, "paragraph"),
+            ],
+            [],
+            [],
+            id="retried-delimiter-after-text",
+        ),
+        pytest.param(
+            "| a |\n\n| b |\n|-|\n    code\n",
+            [(0, "table row"), (2, "table row"), (3, "table row"), (4, "code")],
+            [4],
+            [],
+            id="delimiter-tried-again-after-a-blank-line",
+        ),
         # A backtick run indented as far as indented code past its container neither opens nor closes a fence.
         pytest.param("+ p\n      ```\n```\n", [(0, "item"), (3, "code")], [2, 3], [], id="deep-run-in-an-item"),
         pytest.param(
@@ -915,6 +988,42 @@ def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker:
     # Each marker is read where it stands: a walk that read the rest of the line again at each marker would take
     # about sixteen times as long for four times the markers.
     assert _walk_seconds(marker * 4000 + "x") < 8 * max(_walk_seconds(marker * 1000 + "x"), 0.001)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param(lambda depth: "- " * depth + "x\n" + "\n" * depth, id="blank-lines"),
+        pytest.param(lambda depth: "- " * depth + "x\n" + "   \n" * depth, id="lines-of-spaces"),
+        pytest.param(lambda depth: "> - " * depth + "x\n" + ">\n" * depth, id="quoted-blank-lines"),
+        pytest.param(lambda depth: "- " * depth + "```\n" + "\n" * depth, id="blank-lines-in-a-fence"),
+    ],
+)
+def test_blank_lines_under_a_deep_item_take_time_in_proportion_to_them(shape: Callable[[int], str]) -> None:
+    # Every list item holds a blank line, so it is read past them at once: one that visited each item the line passes
+    # would take about sixteen times as long for four times the depth and the lines.
+    assert _walk_seconds(shape(4000)) < 8 * max(_walk_seconds(shape(1000)), 0.001)
+
+
+@pytest.mark.parametrize(
+    ("document", "body", "content"),
+    [
+        pytest.param("- a\n\n  ```bash\n  x\n  ```\n", ("  x",), ["x"], id="in-an-indented-list-item"),
+        pytest.param("> ```py\n> x\n> ```\n", ("x",), ["x"], id="in-a-quote"),
+        pytest.param("> 1. a\n>    ~~~\n>      y\n>    ~~~\n", ("     y",), ["  y"], id="in-a-quoted-list-item"),
+    ],
+)
+def test_the_block_readers_fence_is_the_one_fence_detector_s(
+    document: str, body: tuple[str, ...], content: list[str]
+) -> None:
+    # Where the two readers read a fence alike, the walk records its language, blockquotes, and indentation as
+    # find_fences does, so its body reads the same content.
+    lines = document.split("\n")
+    (fence,) = block_fences(lines)
+    assert [fence] == find_fences(lines)
+    (code,) = [block for block in blocks(lines) if block.kind == "code"]
+    assert code.lines == body
+    assert [fence.content(lines[index]) for index in fence.body()] == content
 
 
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:

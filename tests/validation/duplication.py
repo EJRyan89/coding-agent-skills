@@ -1627,24 +1627,30 @@ def containment_problems(root: Path, files: list[Path]) -> list[str]:
 def fence_reading_problems(root: Path, files: list[Path]) -> list[str]:
     """Each Markdown file whose fences the block readers read apart from markdown_sections.find_fences, the one fence
     detector the deployer, the ShellCheck extraction, and validation read: `block_fences` ends a fence with the list
-    item or blockquote that holds it and reads a run only up to three columns past that content, so a fence in such a
-    container that ends early, or a run indented further, would be one block for one reader and another for the
-    other, which find_fences' docstring states."""
+    item that holds it, an item inside a blockquote included, and reads a run only up to three columns past its
+    content, so a fence in such an item that ends early, or a run indented further, would be one block for one reader
+    and another for the other, which find_fences' docstring states. A file it cannot read as UTF-8 text is a problem,
+    and so is a set with no Markdown file, which would compare nothing."""
+    markdown = [path for path in files if path.suffix.lower() == ".md"]
+    if not markdown:
+        return ["no Markdown file to read the fences of; the fence policy compares nothing"]
     problems: list[str] = []
-    for path in files:
-        if path.suffix.lower() != ".md":
+    for path in markdown:
+        relative = path.relative_to(root).as_posix()
+        try:
+            lines = LINE_BREAK.split(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as error:
+            problems.append(f"{relative}: cannot be read as UTF-8 text to compare its fences: {error}")
             continue
-        lines = LINE_BREAK.split(path.read_text(encoding="utf-8"))
         walked = {fence.opener: fence.lines() for fence in block_fences(lines)}
         detected = {fence.opener: fence.lines() for fence in find_fences(lines)}
-        relative = path.relative_to(root).as_posix()
         parted = sorted(
             opener for opener in walked.keys() | detected.keys() if walked.get(opener) != detected.get(opener)
         )
         problems.extend(
             f"{relative}:{opener + 1}: the block readers read this fence as {_line_span(walked.get(opener))} and "
-            f"find_fences as {_line_span(detected.get(opener))}; write the fence inside its list item or blockquote, "
-            "with its runs at most three columns past their content"
+            f"find_fences as {_line_span(detected.get(opener))}; write the fence inside its list item, with its runs "
+            "at most three columns past their content"
             for opener in parted
         )
     return problems
