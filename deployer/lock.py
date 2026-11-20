@@ -55,16 +55,10 @@ PRESENCE_ALLOWED = {
 # which takes the lock for a moment, and for Windows, which may release a lock a little after its holder ends.
 LOCK_WAIT_SECONDS = 5.0
 LOCK_POLL_SECONDS = 0.1
-# The step after the file system refuses the lock: one that offers no lock at all needs a home elsewhere, while any
-# other refusal, such as of a lock table that is full or a lock service that does not answer, may pass.
-UNSUPPORTED_STEP = (
-    "The deployment lock needs a folder on a file system that supports file locks, which some network and synced "
-    "folders do not; keep the home on a local disk."
-)
-REFUSED_STEP = (
-    "A file system may refuse a lock this way for a moment, as when its lock table is full or its lock service does "
-    "not answer; retry in a moment, and if it keeps refusing, keep the home on a local disk."
-)
+# What the step after the file system refuses the lock names: the lock that needs a file system with file locks, and
+# what to keep on a local disk; file_lock.refusal_step holds the step itself, which the review lock shares.
+LOCK_SUBJECT = "the deployment lock"
+LOCK_PLACE = "the home"
 # How long a record may stay without its metadata before it is taken for one a run stopped while making it left: a
 # run writes the metadata at once, and only a deployer from before the file lock makes the record without holding it.
 RECORD_GRACE_SECONDS = 60.0
@@ -259,11 +253,16 @@ def _running(pid: object = None) -> DeployError:
     return DeployError(f"ERROR: Another deployment is running{named}.", "Wait for it to finish, then retry.")
 
 
+def _sentence(clause: str) -> str:
+    """A clause as a line of its own: its first letter capitalized, ending with a full stop."""
+    return f"{clause[:1].upper()}{clause[1:]}."
+
+
 def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
     """The refusal when the file system refuses the lock itself, ending with the step its reason calls for."""
     return DeployError(
         f"ERROR: Could not lock {platform_support.normalize(paths.lock_file)}: {error.strerror or error}.",
-        UNSUPPORTED_STEP if error.unsupported else REFUSED_STEP,
+        _sentence(file_lock.refusal_step(error, LOCK_SUBJECT, LOCK_PLACE)),
         see_recovery(LOCK),
     )
 
