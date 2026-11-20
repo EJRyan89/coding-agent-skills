@@ -16,7 +16,7 @@ label to the end of its line, so `[references/rules.md](references/rules.md)` na
 leads to. An inline link that does not close, because its title never closes or no `)` follows it on its line, is
 passed over only at its destination, so its text and what follows it are still read: text an author leaves after a
 broken link is never hidden from a reader of prose paths. `Cover` holds a line's spans for a reader that asks of each
-path it matches whether a link takes it, in time in proportion to the matches and the spans.
+path it matches whether a link takes it, in time logarithmic in the spans for each match.
 
 Limits: only a line a destination is read on has a span, so a reference link's text, as in `[text][label]`,
 `[text][]`, or `[label]`, is still read as prose; `link_spans` finds the `[` that opens an inline link's text by

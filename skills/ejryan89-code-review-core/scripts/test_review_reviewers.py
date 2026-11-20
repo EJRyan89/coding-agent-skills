@@ -158,6 +158,13 @@ class InspectionTests(unittest.TestCase):
                     [".claude/skills/review/references/rules.md", "docs/rules.md"],
                     inspect_skill(SKILL, broken + "\n", COMMIT, files).references,
                 )
+        # Below frontmatter, the link's text is still passed over on the line the body holds it.
+        self.assertEqual(
+            [".claude/skills/review/references/rules.md"],
+            inspect_skill(
+                SKILL, "---\nname: review\ntools: Read\n---\n[docs/rules.md](references/rules.md)\n", COMMIT, files
+            ).references,
+        )
         # The stated limit: a reference link's text has no span, so its path is still read as prose from the root.
         for reference in ("See [docs/rules.md][r].", "See [docs/rules.md][].", "See [docs/rules.md]."):
             with self.subTest(reference=reference):
