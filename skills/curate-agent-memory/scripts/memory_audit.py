@@ -126,19 +126,7 @@ from file_presence import is_directory, is_present, matching, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
-from markdown_sections import (
-    ATX_HEADING,
-    CODE_SPAN,
-    EMPTY_ATX_HEADING,
-    MARKDOWN_SPACE,
-    MAX_BLOCK_INDENT,
-    THEMATIC_BREAK,
-    code_block_lines,
-    list_item,
-    starts_block,
-    starts_heading,
-)
-from markdown_sections import indentation as markdown_indentation
+from markdown_sections import ATX_HEADING, CODE, CODE_SPAN, EMPTY_ATX_HEADING, HEADING, blocks
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
@@ -554,37 +542,12 @@ def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]
 
 
 def passages(lines: list[str]) -> list[tuple[int, str]]:
-    """Each paragraph, list item, blockquote, and table row of Markdown, with the line it starts on, its lines joined.
-
-    Lines are read as markdown_sections reads Markdown's blocks, as GitHub renders them: only spaces and tabs are its
-    whitespace, a list item interrupts a paragraph only where CommonMark lets it (a bullet or `1.`), and any other line
-    after a paragraph's text continues it unless markdown_sections' `starts_block` reads it as a block of its own. A
-    list item's further lines, and a blockquote's quoted and lazy lines, join it. Headings and thematic breaks end a
-    passage and are left out, and `#` starts a heading only before a space or the line's end, so `#hashtag` is text.
-    Code, fenced or indented, is left out as markdown_sections' `code_block_lines` reads it: a memory is compared with
-    the prose that states a rule, and a code block's identifiers and flags would match a memory's words by
-    coincidence, while the prose around the block still carries the overlap. A table row is a passage of its own. The
-    limits: a setext heading's text is read as a paragraph, and an HTML block as paragraph text."""
-    found: list[tuple[int, str]] = []
-    continued = in_item = in_quote = False
-    code = code_block_lines(lines)
-    for index, raw in enumerate(lines):
-        stripped = raw.strip(MARKDOWN_SPACE)
-        item = list_item(raw, interrupting=continued and not in_item)
-        heading = starts_heading(stripped) and (
-            not continued or in_item or markdown_indentation(raw) <= MAX_BLOCK_INDENT
-        )
-        if index in code or not stripped or heading or THEMATIC_BREAK.fullmatch(raw):
-            continued = in_item = in_quote = False
-        elif stripped.startswith("|"):
-            found.append((index + 1, stripped))
-            continued = in_item = in_quote = False
-        elif item is not None or not continued or (starts_block(raw, opener=False) and not in_quote):
-            found.append((index + 1, stripped))
-            continued, in_item, in_quote = True, item is not None, item is None and stripped.startswith(">")
-        else:
-            found[-1] = (found[-1][0], f"{found[-1][1]} {stripped}")
-    return found
+    """Each paragraph, list item, blockquote, and table row of Markdown, with the line it starts on, its lines joined,
+    as markdown_sections' `blocks` walks them, as GitHub renders them; a list item keeps its marker. Headings and code,
+    fenced or indented, are left out: a memory is compared with the prose that states a rule, and a code block's
+    identifiers and flags would match a memory's words by coincidence, while the prose around the block still carries
+    the overlap. The walker states its limits."""
+    return [(block.start + 1, block.text()) for block in blocks(lines) if block.kind not in {CODE, HEADING}]
 
 
 def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> tuple[list[Overlap], int]:

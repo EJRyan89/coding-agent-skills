@@ -64,6 +64,31 @@ class UnitTests(unittest.TestCase):
             [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)],
         )
 
+    def test_units_split_as_every_markdown_block_reader_splits_them(self) -> None:
+        # The documents every reader of Markdown's blocks splits alike, through markdown_sections' `blocks`: a quote
+        # and a thematic break end a paragraph, a `1.` item interrupts one and a `2.` line continues it, and indented
+        # code is a code block.
+        for text, expected in (
+            ("Text.\n> quoted\n", [(1, "Text.", False), (2, "> quoted", False)]),
+            ("Text.\n***\nMore.\n", [(1, "Text.", False), (3, "More.", False)]),
+            ("Text.\n1. first\n", [(1, "Text.", False), (2, "1. first", False)]),
+            ("Text.\n2. second\n", [(1, "Text.\n2. second", False)]),
+            ("Text.\n\n    code\n", [(1, "Text.", False), (3, "    code", True)]),
+            (
+                "1. Run it.\n\n   It prints.\n2. Then stop.\n",
+                [(1, "1. Run it.", False), (3, "It prints.", False), (4, "2. Then stop.", False)],
+            ),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(expected, [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)])
+
+    def test_indented_code_names_a_module_as_a_fenced_block_does(self) -> None:
+        name = doc_passages.Name("doc_passages", "module", doc_passages.Hunk("x.py", "@@", 1, 1))
+        for text in ("Run it:\n\n    doc_passages.main()\n", "Run it:\n\n```\ndoc_passages.main()\n```\n"):
+            with self.subTest(text=text):
+                units = list(doc_passages.units(text))
+                self.assertTrue(any(name.pattern().search(span) for unit in units for _, span in unit.spans()))
+
 
 class ConditionTests(unittest.TestCase):
     def setUp(self) -> None:
