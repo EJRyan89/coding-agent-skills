@@ -52,6 +52,15 @@ class MarkdownLinkPolicy(unittest.TestCase):
         problems = self.problems({"index.md": "See [it](/docs/target.md).\n", "docs/target.md": "# Target\n"})
         self.assertEqual(["index.md:1 links to /docs/target.md, which does not exist"], problems)
 
+    def test_a_destination_that_climbs_past_the_repository_root_leaves_it_as_the_policy_states(self) -> None:
+        # The policy's stated limit: a file beside the checkout is found, though GitHub links to nothing there.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "checkout"
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"index.md": "See [it](../beside.md).\n"})
+            (Path(temporary) / "beside.md").write_text("# Beside\n", encoding="utf-8")
+            self.assertEqual([], markdown_link_problems(root))
+
     def test_fragments_follow_githubs_heading_slugs(self) -> None:
         # Backticks and punctuation go, underscores and hyphens stay, and a repeated heading is numbered.
         index = (

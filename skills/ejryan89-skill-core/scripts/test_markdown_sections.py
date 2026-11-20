@@ -236,6 +236,7 @@ class CodeSpanTests(unittest.TestCase):
         pytest.param("````", [], id="one run is no span"),
         pytest.param("``open\nclose``", [], id="a line break ends a run's search"),
         pytest.param("x\n`b`", [CodeSpan(2, 5, 1, "b")], id="a span after a line break keeps its column"),
+        pytest.param("a\nbb\n`c`", [CodeSpan(5, 8, 1, "c")], id="a span after two line breaks keeps its column"),
     ],
 )
 def test_a_code_span_pairs_whole_backtick_runs_as_commonmark_does(line: str, expected: list[CodeSpan]) -> None:
@@ -257,21 +258,40 @@ def test_a_line_without_its_code_spans_keeps_an_unmatched_run(fill: str, expecte
     assert without_code_spans("see ``[a](b)`` and [x](y) ``", fill) == expected
 
 
-# Lines of 65,536 characters whose runs the old pattern searched in time growing with the square of a run's length, or
-# with each run's length times the line's: one long run that no other matches, a run of every length up to the
-# line's square root, none matched, and many single-backtick spans.
+def test_a_line_without_its_code_spans_drops_them_by_default() -> None:
+    assert without_code_spans("a `b` c") == "a  c"
+
+
+# Lines sixteen times as long as others: a linear reading takes about sixteen times as long, a reading that searches
+# the rest of the line from each run that no other matches, as the old pattern did, about 64 times, and a quadratic
+# one about 256 times. The bound sits halfway between linear and the former in log space.
+SPAN_FACTOR = 16
+SPAN_BOUND = SPAN_FACTOR**1.25
+# Each shape at a size and at SPAN_FACTOR times it, and the slower reading it catches: one long run that no other
+# matches, which the old pattern, `(`+)(.+?)\1`, searched from each backtick of the run to the line's end; a run of
+# every length up to about the line's square root, none matched, which a pattern that pairs whole runs, such as
+# ``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``, searches from each run to the line's end; and many spans of one run length,
+# which a reader that looked for a closer among every run of the length, not only those past the opener, reads in
+# time growing with their square.
 SPAN_SCALING = {
-    "one long unmatched run": "`" * 32_768 + "a" * 32_768,
-    "unmatched runs of every length": "".join("`" * length + "a" for length in range(1, 362)),
-    "many spans": "`a` " * 16_384,
+    "one long unmatched run": (lambda size: "`" * size + "a" * size, 1024, 1024 * SPAN_FACTOR),
+    "unmatched runs of every length": (
+        lambda size: "".join("`" * length + "a" for length in range(1, size + 1)),
+        64,
+        257,
+    ),
+    "many spans": (lambda size: "`a` " * size, 256, 256 * SPAN_FACTOR),
 }
 
 
-@pytest.mark.parametrize("line", SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
-def test_a_line_s_code_spans_are_read_in_time_in_proportion_to_it(line: str) -> None:
-    started = time.perf_counter()
-    code_spans(line)
-    assert time.perf_counter() - started < 1.0
+@pytest.mark.parametrize(("shape", "small", "large"), SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
+def test_a_line_s_code_spans_are_read_in_time_in_proportion_to_it(
+    shape: Callable[[int], str], small: int, large: int
+) -> None:
+    # The runs of every length grow as the square of their count, so four times the lengths is about sixteen times
+    # the line.
+    assert round(len(shape(large)) / len(shape(small))) == SPAN_FACTOR
+    assert_time_in_proportion(code_spans, shape(small), shape(large), SPAN_BOUND)
 
 
 class HtmlCommentTests(unittest.TestCase):
@@ -1024,16 +1044,53 @@ def test_a_blockquote_s_lines_join_its_block(
     assert document_headings(lines) == []
 
 
-def _walk_seconds(document: str) -> float:
-    lines = document.split("\n")
-    times = []
-    for _ in range(3):
-        started = time.perf_counter()
-        list(blocks(lines))
-        code_block_lines(lines)
-        document_headings(lines)
-        times.append(time.perf_counter() - started)
-    return min(times)
+# The least processor time the smaller input's reading is timed for, repeated as often as that takes, so the clock's
+# tick, about 16 ms on Windows, is a small part of each measurement; and how many times each input is timed.
+LEAST_TIMED_SECONDS = 0.1
+TIMINGS = 3
+
+
+def _seconds[T](read: Callable[[T], object], value: T, repeats: int) -> float:
+    """The processor time the process spends reading `value` `repeats` times. A runner whose pool runs more suites
+    than it has processors shares each processor between them, so a reading long enough to span several of the
+    scheduler's slices takes about twice its own time on the wall clock, while a short one may run in one slice
+    alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
+    started = time.process_time()
+    for _ in range(repeats):
+        read(value)
+    return time.process_time() - started
+
+
+def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T, bound: float) -> None:
+    """Fail when reading `large` takes `bound` times as long as reading `small`, or longer, on every timing. Each
+    reading repeats until the smaller takes LEAST_TIMED_SECONDS; the smaller keeps the least of TIMINGS timings, and
+    the larger passes at its first timing under the bound, so only a reading slower on every try fails. The bound
+    sits between the ratio a linear reading gives and the one the slower reading the test guards against gives, with
+    a margin of at least two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
+    repeats = 1
+    while (elapsed := _seconds(read, small, repeats)) < LEAST_TIMED_SECONDS:
+        repeats *= 2
+    least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))])
+    timed: list[float] = []
+    for _ in range(TIMINGS):
+        timed.append(_seconds(read, large, repeats))
+        if timed[-1] < bound * least:
+            return
+    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
+
+
+def _walked(lines: list[str]) -> object:
+    return list(blocks(lines)), code_block_lines(lines), document_headings(lines)
+
+
+# Documents eight times as long as others: a linear walk takes about eight times as long and a quadratic one about 64
+# times. The bound sits halfway between them in log space.
+WALK_FACTOR = 8
+WALK_BOUND = WALK_FACTOR**1.5
+
+
+def assert_walked_in_proportion(small: str, large: str) -> None:
+    assert_time_in_proportion(_walked, small.split("\n"), large.split("\n"), WALK_BOUND)
 
 
 @pytest.mark.parametrize(
@@ -1045,16 +1102,15 @@ def _walk_seconds(document: str) -> float:
     ],
 )
 def test_the_walk_takes_time_in_proportion_to_the_document(repeated: str) -> None:
-    # Four times the lines take about four times as long; a walk that read the rest of the document again at each line
-    # would take about sixteen.
-    assert _walk_seconds(repeated * 2000) < 8 * max(_walk_seconds(repeated * 500), 0.001)
+    # A walk that read the rest of the document again at each line would take time growing with its square.
+    assert_walked_in_proportion(repeated * 500, repeated * 500 * WALK_FACTOR)
 
 
 @pytest.mark.parametrize("marker", ["- ", "* ", "> - ", "1. "])
 def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker: str) -> None:
-    # Each marker is read where it stands: a walk that read the rest of the line again at each marker would take
-    # about sixteen times as long for four times the markers.
-    assert _walk_seconds(marker * 4000 + "x") < 8 * max(_walk_seconds(marker * 1000 + "x"), 0.001)
+    # Each marker is read where it stands: a walk that read the rest of the line again at each marker, such as one that
+    # tried a thematic break there, would take time growing with the square of the markers.
+    assert_walked_in_proportion(marker * 4000 + "x", marker * 4000 * WALK_FACTOR + "x")
 
 
 @pytest.mark.parametrize(
@@ -1068,8 +1124,8 @@ def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker:
 )
 def test_blank_lines_under_a_deep_item_take_time_in_proportion_to_them(shape: Callable[[int], str]) -> None:
     # Every list item holds a blank line, so it is read past them at once: one that visited each item the line passes
-    # would take about sixteen times as long for four times the depth and the lines.
-    assert _walk_seconds(shape(4000)) < 8 * max(_walk_seconds(shape(1000)), 0.001)
+    # would take time growing with the square of the depth and the lines.
+    assert_walked_in_proportion(shape(1000), shape(1000 * WALK_FACTOR))
 
 
 @pytest.mark.parametrize(
