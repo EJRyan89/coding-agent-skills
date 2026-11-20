@@ -39,6 +39,12 @@ PLUGIN_HOOK <event> <matcher> <program> timeout=<seconds or default> on_failure=
 plugin's hooks file holds, a hook that counts as guarding every agent the plugin carries, since the build moves each
 agent's own hooks there. Every other line measures the plugin's bytes as it measures a deployed copy's.
 
+Files: inventory, scan, and the model and effort reading take a skill folder's files as ejryan89-skill-core's
+folder_walk gives them, passing over its skipped folders and nested checkouts, and add each Markdown file in the folder
+that the skill's own Markdown links, directly or through another file so linked, wherever it lies, since the runtime
+loads it all the same. A linked path that leads out of the folder, through `..` at its start or later or through a
+link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it reaches a file already sized.
+
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
 including the fence lines, are code and the rest is prose. A helper script or data file that is not UTF-8 text
@@ -685,8 +691,10 @@ EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
-# A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
-INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
+# A relative Markdown path that does not start by leaving the skill folder, such as `references/a.md`, `a.md`, or
+# `.venv/a.md` in a hidden folder; one may still lead out, through a later `..` or a link to a folder, which
+# `markdown_links` resolves.
+INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?\.?[\w-][\w./-]*\.md)\b")
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
 
@@ -1365,15 +1373,60 @@ def folder_files(directory: Path) -> list[Path]:
     """Every file of a skill folder that inventory sizes, in the order it lists them, as `folder_walk` walks the folder:
     its one skip set, compared case-insensitively, and no nested checkout or link to a folder entered. A skipped folder
     is never listed, so a folder it cannot list inside one is never met; one elsewhere, or an entry the walk cannot
-    examine, raises its own error, so no file the walk reaches is left out of the measure unreported."""
+    examine, raises its own error, so no file the walk reaches is left out of the measure unreported. A Markdown file
+    the skill's own Markdown links in the folder, which the runtime loads wherever it lies, is listed too, even where
+    the walk passes over its folder, so a linked file is never left out of the measure either."""
     walk = folder_walk.walk_files(directory, lambda _name: True)
     for entry in walk.not_entered:
         if entry.error is not None:
             raise entry.error
+    files = [path for path in walk.files if is_listed_file(path)]
     return sorted(
-        (path for path in walk.files if is_listed_file(path)),
+        [*files, *linked_files(directory, files)],
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
+
+
+def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list[tuple[int, str, Path]]:
+    """Each Markdown path a main or doc file of the skill folder names, out of the frontmatter: the line number, the
+    reference as written, and the file it leads to with every `..` and link followed, as the runtime reading it would.
+    A path resolves from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/."""
+    lines = text_lines(text)
+    found: list[tuple[int, str, Path]] = []
+    for number in range(body_start(lines) if kind == "main" else 0, len(lines)):
+        matches = [*OUTSIDE_REFERENCE.finditer(lines[number]), *INSIDE_REFERENCE.finditer(lines[number])]
+        end = 0
+        for match in sorted(matches, key=lambda match: match.start()):
+            if match.start() < end:
+                continue
+            end = match.end()
+            base = directory if match.group(1) else (directory / relative).parent
+            found.append((number + 1, match.group(0), resolved_path(base / match.group(2))))
+    return found
+
+
+def linked_files(directory: Path, files: list[Path]) -> list[Path]:
+    """Each Markdown file in the skill folder that the main or a doc file among `files`, or one found so, links, and
+    `files` does not hold, as the walk passed over a folder it skips or a nested checkout: by its path in the folder."""
+    root = resolved_path(directory)
+    known = {identity(path) for path in files}
+    pending = list(files)
+    found: list[Path] = []
+    while pending:
+        source = pending.pop(0)
+        relative = posix(source.relative_to(directory))
+        kind = category(Path(relative), directory)
+        text = read_text(source) if kind in ("main", "doc") else None
+        if text is None:
+            continue
+        for _, _, target in markdown_links(directory, relative, kind, text):
+            if not within(target, root) or identity(target) in known or not is_listed_file(target):
+                continue
+            known.add(identity(target))
+            path = directory.joinpath(*target.parts[len(root.parts) :])
+            found.append(path)
+            pending.append(path)
+    return found
 
 
 def inventory(directory: Path) -> list[str]:
@@ -1412,7 +1465,7 @@ def inventory(directory: Path) -> list[str]:
         *flags,
         *duplicate_flags(texts),
         *nested_flags(directory, texts),
-        *outside_lines(directory, texts),
+        *outside_lines(directory, texts, files),
         *declared_lines(directory),
         *plugin_lines(directory),
     ]
@@ -1468,44 +1521,39 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
     return flags
 
 
-def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
-    """Markdown the skill's own Markdown points to outside its folder: a read, and its cost, on every run."""
+def outside_lines(directory: Path, texts: dict[str, tuple[str, str]], listed: list[Path]) -> list[str]:
+    """Markdown the skill's own Markdown points to outside its folder: a read, and its cost, on every run. A path leads
+    out by a leading `..`, a later one, or a link to a folder; one that leads to a file of `listed`, the files the
+    inventory already sizes, such as a link to a file outside, is counted there once."""
     root = resolved_path(directory)
+    sized = {identity(path) for path in listed}
     lines: list[str] = []
     counted: dict[str, tuple[int, int]] = {}
     unreadable: dict[str, str] = {}
     for relative, (kind, text) in texts.items():
         if kind not in ("main", "doc"):
             continue
-        body = text_lines(text)
-        start = body_start(body) if kind == "main" else 0
-        for number in range(start, len(body)):
-            for match in OUTSIDE_REFERENCE.finditer(body[number]):
-                reference = match.group(0)
-                base = directory if match.group(1) else (directory / relative).parent
-                target = resolved_path(base / match.group(2))
-                if within(target, root):
+        for number, reference, target in markdown_links(directory, relative, kind, text):
+            key = identity(target)
+            if within(target, root) or key in sized or key in unreadable:
+                continue
+            where = f"{relative}:{number}"
+            try:
+                present = is_listed_file(target)
+            except OSError as exc:
+                unreadable[key] = f"UNREADABLE {outside_path(root, target)} {exc.strerror or exc}"
+                continue
+            if not present:
+                lines.append(f"OUTSIDE_MISSING {where} {reference}")
+                continue
+            if key not in counted:
+                outside = read_text(target)
+                if outside is None:
+                    unreadable[key] = f"UNREADABLE {outside_path(root, target)} {NOT_UTF8}"
                     continue
-                where = f"{relative}:{number + 1}"
-                key = identity(target)
-                if key in unreadable:
-                    continue
-                try:
-                    present = is_listed_file(target)
-                except OSError as exc:
-                    unreadable[key] = f"UNREADABLE {outside_path(root, target)} {exc.strerror or exc}"
-                    continue
-                if not present:
-                    lines.append(f"OUTSIDE_MISSING {where} {reference}")
-                    continue
-                if key not in counted:
-                    outside = read_text(target)
-                    if outside is None:
-                        unreadable[key] = f"UNREADABLE {outside_path(root, target)} {NOT_UTF8}"
-                        continue
-                    counted[key] = (target.stat().st_size, estimate_tokens(outside, "doc"))
-                size, tokens = counted[key]
-                lines.append(f"OUTSIDE_READ {where} {size} {tokens} {reference}")
+                counted[key] = (target.stat().st_size, estimate_tokens(outside, "doc"))
+            size, tokens = counted[key]
+            lines.append(f"OUTSIDE_READ {where} {size} {tokens} {reference}")
     sizes = list(counted.values())
     lines.append(f"TOTAL outside {len(sizes)} {sum(size for size, _ in sizes)} {sum(tokens for _, tokens in sizes)}")
     return [*lines, *unreadable.values()]
