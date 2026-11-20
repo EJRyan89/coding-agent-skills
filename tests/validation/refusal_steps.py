@@ -11,16 +11,18 @@ excuses, such as the configuration's parse. A refusal whose step could be among 
 own message, unless its module states why in STEP_ALLOWED: end it with a literal step after them, or write the step
 before them, as `DeployError(error, step, *more)` does, whose lines are two at the least. A refusal raised on
 unchanged, by a bare `raise` or no handler at all, is no refusal this policy reads: it is its own function's, whose
-allowance's reason says which callers add the step. A stated limit: a caught refusal is read as one that may lack its
-step only when the `try` body calls the excused function or builds the cancellation itself, so a refusal re-built
-alone from lines caught around a helper that calls one, as `try: load()` where `load` calls `config.parse`, reads as
-COVERED; no deployer code re-builds a caught refusal from its lines alone, each adding a step after them.
+allowance's reason says which callers add the step. A caught refusal's lines are followed through the calls the `try`
+body makes into the deployer's own functions, so one an excused function raises through a helper, as
+`validate_directories` lets `_validate_absolute_directory`'s escape, may lack its step, and so may one from any call
+whose target the policy cannot name, such as a method of a value the deployer builds at run time.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
 import unittest
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
@@ -28,6 +30,7 @@ from validation_support import (
     REPOSITORY_ROOT,
     import_aliases,
     module_allowance,
+    module_statements,
     python_trees,
     qualified_name,
     relative_import_aliases,
@@ -118,15 +121,54 @@ def excused_callees(trees: list[tuple[str, ast.Module]]) -> frozenset[str]:
     )
 
 
+# The names Python binds in every module, whose calls never reach the deployer's code.
+BUILTIN_NAMES = frozenset(dir(builtins))
+Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass
+class _Program:
+    """The deployer's code as the policy follows a caught refusal through it: each module's name, each function and
+    method by its dotted name with the reader of its module, and each class by its dotted name."""
+
+    modules: set[str] = field(default_factory=set)
+    functions: dict[str, tuple[_Refusals, Function]] = field(default_factory=dict)
+    classes: set[str] = field(default_factory=set)
+
+    def holds(self, name: str) -> bool:
+        """Whether a dotted name is in the deployer's own code: one of its modules or something one defines."""
+        return any(name == module or name.startswith(f"{module}.") for module in self.modules)
+
+
+def _own_nodes(statements: list[ast.stmt]) -> list[ast.AST]:
+    """Every node the statements run, never the body of a function, lambda, or class they define."""
+    found: list[ast.AST] = []
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        if not isinstance(node, DEFINITIONS):
+            stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
 class _Refusals:
     """How one module's refusal calls are read: which class a name stands for, and where an unpacked argument's lines
     come from."""
 
-    def __init__(self, tree: ast.Module, name: str, refusals: set[str], excused: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        tree: ast.Module,
+        name: str,
+        refusals: set[str],
+        excused: frozenset[str] = frozenset(),
+        program: _Program | None = None,
+    ) -> None:
         self.aliases = _aliases(tree, name)
         self.module = _module_name(name)
         self.refusals = refusals
         self.excused = excused
+        self.program = program or _Program()
         self.parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
 
     def called(self, node: ast.expr) -> str | None:
@@ -247,16 +289,48 @@ class _Refusals:
         return False
 
     def _guards_stepless(self, handler: ast.ExceptHandler) -> bool:
-        """Whether the `try` body an `except` clause guards may raise a refusal that ends without its step: it calls a
-        function a STEP_ALLOWED excuses, whose callers add the step, or builds a cancellation, which needs none."""
+        """Whether the `try` body an `except` clause guards may raise a refusal that ends without its step: it reaches
+        a function a STEP_ALLOWED excuses, whose callers add the step, or a cancellation, which needs none, directly or
+        through the deployer's own functions, or calls what the policy cannot follow (`_call_reaches_stepless`)."""
         guarded = self.parents.get(handler)
         body = guarded.body if isinstance(guarded, (ast.Try, ast.TryStar)) else []
+        return self._reaches_stepless(body, set())
+
+    def _reaches_stepless(self, statements: list[ast.stmt], seen: set[str]) -> bool:
+        """Whether the statements may raise a refusal without its step, through any call they make."""
         return any(
-            isinstance(node, ast.Call)
-            and (self.called(node.func) in self.excused or self.called(node.func) in STEPLESS)
-            for statement in body
-            for node in ast.walk(statement)
+            isinstance(node, ast.Call) and self._call_reaches_stepless(node, seen) for node in _own_nodes(statements)
         )
+
+    def _call_reaches_stepless(self, call: ast.Call, seen: set[str]) -> bool:
+        """Whether one call may raise a refusal without its step. An excused function or a cancellation does; a
+        refusal built here is read where it is built; a deployer function, or a class's __init__, is followed into,
+        each once, every handler in it read as letting the refusal through; a deployer class with no __init__ of its
+        own, a builtin the module does not define again, and an import from outside the deployer reach none; and any
+        other call may, since its target is known only when the deployer runs: a method of a value, a name bound
+        otherwise, or a deployer name the policy finds no definition of."""
+        root = call.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return True
+        name = self.called(call.func) or ""
+        if name in self.excused or name in STEPLESS:
+            return True
+        if name in self.refusals:
+            return False
+        target = self.program.functions.get(name) or self.program.functions.get(f"{name}.__init__")
+        if target is not None:
+            if name in seen:
+                return False
+            seen.add(name)
+            reader, function = target
+            return reader._reaches_stepless(function.body, seen)
+        if name in self.program.classes:
+            return False
+        if isinstance(call.func, ast.Name) and root.id in BUILTIN_NAMES and root.id not in self.aliases:
+            return False
+        return self.program.holds(name) or root.id not in self.aliases
 
     def _enclosing(self, node: ast.AST, kinds: tuple[type[ast.AST], ...]) -> ast.AST:
         """The innermost ancestor of one of the kinds; the module holds every node."""
@@ -277,13 +351,36 @@ def _changes_in_place(node: ast.AST, name: str) -> bool:
     return isinstance(node, ast.arg) and node.arg == name
 
 
+def read_program(trees: list[tuple[str, ast.Module]], refusals: set[str], excused: frozenset[str]) -> _Program:
+    """The deployer's modules, functions, and classes, each function with the reader of its module: a module-level
+    function, one a module-level if, try, or with block defines, and each method of a module-level class."""
+    program = _Program()
+    for name, tree in trees:
+        reader = _Refusals(tree, name, refusals, excused, program)
+        program.modules.add(reader.module)
+        for statement in module_statements(tree.body):
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                program.functions[f"{reader.module}.{statement.name}"] = (reader, statement)
+            elif isinstance(statement, ast.ClassDef):
+                program.classes.add(f"{reader.module}.{statement.name}")
+                for method in statement.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        program.functions[f"{reader.module}.{statement.name}.{method.name}"] = (reader, method)
+    return program
+
+
 def stepless_refusals(
-    tree: ast.Module, name: str, refusals: set[str], excused: frozenset[str] = frozenset()
+    tree: ast.Module,
+    name: str,
+    refusals: set[str],
+    excused: frozenset[str] = frozenset(),
+    program: _Program | None = None,
 ) -> list[tuple[int, str, str, str]]:
     """Each refusal a module builds from one line, written or followed, or from lines this policy cannot follow, as
     (line, scope, class, ending), where the ending is ONE_LINE or UNFOLLOWED, ignoring its allowance; `excused` is
-    each function a STEP_ALLOWED excuses, by its dotted name, whose caught refusals may lack their step."""
-    reader = _Refusals(tree, name, refusals, excused)
+    each function a STEP_ALLOWED excuses, by its dotted name, whose caught refusals may lack their step, and `program`
+    the deployer's code a caught refusal is followed through."""
+    reader = _Refusals(tree, name, refusals, excused, program)
     statements = [
         statement
         for statement in tree.body
@@ -336,13 +433,14 @@ def refusal_step_problems(root: Path) -> list[str]:
         )
     refusals = refusal_classes(trees)
     excused = excused_callees(trees)
+    program = read_program(trees, refusals, excused)
     found: list[str] = []
     for name, tree in trees:
         allowed = module_allowance(tree, STEP_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {STEP_ALLOWANCE} must map each scope to the reason its refusals need no step")
             allowed = {}
-        findings = stepless_refusals(tree, name, refusals, excused)
+        findings = stepless_refusals(tree, name, refusals, excused, program)
         found += [
             _finding(name, line, scope, called, ending)
             for line, scope, called, ending in findings

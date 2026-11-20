@@ -383,16 +383,67 @@ class RefusalStepFixtures(unittest.TestCase):
                 "\n"  # 32
                 "def other():\n"  # 33
                 "    try:\n"  # 34
-                "        check()\n"  # 35
+                "        check(len([]))\n"  # 35
                 "    except DeployError as exc:\n"  # 36
                 "        raise DeployError(*exc.lines) from exc\n"  # 37: check's refusal ends with its step
+                "\n"  # 38
+                "\n"  # 39
+                "def check(count):\n"  # 40
+                "    if count:\n"  # 41
+                '        raise DeployError("ERROR: Counted", "Retry.")\n'  # 42
+                "\n"  # 43
+                "\n"  # 44
+                "def unknown(store):\n"  # 45
+                "    try:\n"  # 46
+                "        store.save()\n"  # 47
+                "    except DeployError as exc:\n"  # 48
+                "        raise DeployError(*exc.lines) from exc\n"  # 49: a method of a value, known only at run time
             ),
         }
         self.assertEqual(
             [
                 f"deployer/load.py:{line} DeployError in {scope}" + UNFOLLOWED_SUFFIX
-                for line, scope in ((9, "wrapped"), (16, "cancelled"), (23, "raised_here"))
+                for line, scope in ((9, "wrapped"), (16, "cancelled"), (23, "raised_here"), (49, "unknown"))
             ],
+            self.problems(files),
+        )
+
+    def test_a_caught_refusal_an_excused_function_raises_through_a_helper_fails_when_raised_again_alone(self) -> None:
+        # deployer/config.py's load wraps validate_directories, which lets _validate_absolute_directory's refusal,
+        # excused because its callers add the step, escape with no handler; with load's step dropped, as below, the
+        # policy read the caught lines as built with a step, since the try body named no excused function itself.
+        files = {
+            "deployer/config.py": (
+                'STEP_ALLOWED = {"_validate_absolute_directory": "its callers add the step"}\n'  # 1
+                "from .errors import DeployError\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def _validate_absolute_directory(key, value):\n"  # 5
+                '    raise DeployError(f"ERROR: {key} is not absolute")\n'  # 6
+                "\n"  # 7
+                "\n"  # 8
+                "def validate_directories(values):\n"  # 9
+                "    for key in values:\n"  # 10
+                '        _validate_absolute_directory(key, values.get(key, ""))\n'  # 11
+                "\n"  # 12
+                "\n"  # 13
+                "def load(values):\n"  # 14
+                "    try:\n"  # 15
+                "        validate_directories(values)\n"  # 16
+                "    except DeployError as exc:\n"  # 17
+                "        raise DeployError(*exc.lines) from exc\n"  # 18: the step load added, dropped
+                "    return values\n"  # 19
+                "\n"  # 20
+                "\n"  # 21
+                "def stepped(values):\n"  # 22
+                "    try:\n"  # 23
+                "        validate_directories(values)\n"  # 24
+                "    except DeployError as exc:\n"  # 25
+                '        raise DeployError(*exc.lines, "Run configure to change it.") from exc\n'  # 26
+            ),
+        }
+        self.assertEqual(
+            ["deployer/config.py:18 DeployError in load" + UNFOLLOWED_SUFFIX],
             self.problems(files),
         )
 

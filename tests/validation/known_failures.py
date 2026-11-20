@@ -230,7 +230,8 @@ def read_refusal_gaps(path: Path, table: str) -> list[RefusalGap]:
     and a command given as literal strings; KnownFailuresUnreadable otherwise, and for a Driver built with a `*` or
     `**` unpacking, which could carry gaps this reads no literal of, since fault_table's Driver takes refusal_gaps by
     keyword alone. A gap given another way, such as a dataclass replace, is held by test_faults, which compares what
-    this reads with every driver's own refusal_gaps."""
+    this reads with every driver's own refusal_gaps. A stated limit: that comparison holds each gap's driver and run,
+    not the issue its reason names, so a reason the table changes while it runs is not seen."""
     try:
         tree = parse_python(path)
     except (OSError, UnreadablePython) as error:

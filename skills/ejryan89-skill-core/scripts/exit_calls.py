@@ -39,7 +39,9 @@ def code_keyword(function: str) -> str | None:
 def _refused(call: ast.Call, function: str) -> bool:
     """Whether Python refuses the call's written arguments with a TypeError: a keyword the call does not take, or the
     code given by position and by its keyword at once. More than one positional argument exits 1 too, as a TypeError
-    for every call but SystemExit, which prints the tuple of them as its message, so call_code reads it as refused."""
+    for every call but SystemExit, which prints the tuple of them as its message, so call_code reads it as refused.
+    A stated limit: `os._exit()` with no status, and `os._exit(None)`, are read as exiting 0, as every other exit
+    given no code is, though Python refuses both with a TypeError, which exits 1."""
     keyword = code_keyword(function)
     named = [given.arg for given in call.keywords if given.arg is not None]
     positional = [given for given in call.args if not isinstance(given, ast.Starred)]
