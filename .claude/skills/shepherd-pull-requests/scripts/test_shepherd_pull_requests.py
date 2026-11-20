@@ -397,7 +397,7 @@ def pool_report(*attempts: Callable[[], None]) -> str:
 
 class StubGh:
     """gh as the tick calls it: the open and merged listings, each run, the runs on a head, each job's failed log,
-    and the writes."""
+    the writes, and, from `checkout`'s real commits, the comparisons and trees the pre-merge review reads."""
 
     def __init__(
         self,
@@ -423,6 +423,10 @@ class StubGh:
         self.failing = tuple(failing)
         self.calls: list[list[str]] = []
         self.requested: dict[str, set[str]] = {}
+        # The checkout whose commits GitHub's comparisons and trees are read from, and gh's stderr when every
+        # comparison fails instead.
+        self.checkout: Path | None = None
+        self.compare_failure: str | None = None
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
         self.calls.append(list(command))
@@ -464,6 +468,8 @@ class StubGh:
                 [{"filename": path} for path in files[start : start + 100]] for start in range(0, len(files), 100)
             ]
             return CommandResult(0, json.dumps(slurped), "")
+        if verb.startswith((f"api repos/{REPOSITORY}/compare/", f"api repos/{REPOSITORY}/git/trees/")):
+            return self.commits(arguments[1:])
         if verb.startswith("api repos/"):
             match = re.fullmatch(rf"repos/{REPOSITORY}/pulls/(\d+)", arguments[1])
             if match is None or len(arguments) != 2:
@@ -474,6 +480,36 @@ class StubGh:
             return CommandResult(0, json.dumps({"head": {"sha": answer}} if isinstance(answer, str) else answer), "")
         raise AssertionError(f"unexpected gh call: {command}")
 
+    def commits(self, arguments: Sequence[str]) -> CommandResult:
+        """GitHub's comparison of two commits, or a commit's recursive tree, read from the checkout; a commit it does
+        not hold is GitHub's 404."""
+        if self.checkout is None or len(arguments) != 1:
+            raise AssertionError(f"unexpected gh api call: {arguments}")
+        compare = re.fullmatch(rf"repos/{REPOSITORY}/compare/(\w+)\.\.\.(\w+)(?:\?per_page=1)?", arguments[0])
+        tree = re.fullmatch(rf"repos/{REPOSITORY}/git/trees/(\w+)\?recursive=1", arguments[0])
+        if compare is not None and self.compare_failure is not None:
+            return CommandResult(1, "", self.compare_failure)
+        found: dict[str, Any]
+        try:
+            if compare is not None:
+                base, head = compare.groups()
+                found = {
+                    "merge_base_commit": {"sha": git("merge-base", base, head, directory=self.checkout)},
+                    "files": compared(self.checkout, base, head),
+                }
+            elif tree is not None:
+                listed = git("ls-tree", "-r", "--full-tree", tree.group(1), directory=self.checkout)
+                entries = [line.split("\t", 1) for line in listed.splitlines()]
+                found = {
+                    "tree": [{"path": path, "mode": meta.split()[0]} for meta, path in entries],
+                    "truncated": False,
+                }
+            else:
+                raise AssertionError(f"unexpected gh api call: {arguments}")
+        except subprocess.CalledProcessError:
+            return CommandResult(1, "", "gh: Not Found (HTTP 404)")
+        return CommandResult(0, json.dumps(found), "")
+
     @staticmethod
     def check_run_list(arguments: Sequence[str]) -> None:
         """The runs on a head are the required check's workflow's pull request runs, as gh filters them."""
@@ -483,6 +519,20 @@ class StubGh:
 
     def writes(self) -> list[list[str]]:
         return [call[1:] for call in self.calls if " ".join(call[1:3]) in ("pr merge", "pr update-branch", "run rerun")]
+
+
+def compared(checkout: Path, base: str, head: str) -> list[dict[str, str]]:
+    """The files GitHub's comparison of `base...head` lists, each with the blob it leaves, read from the checkout."""
+    files = []
+    for line in git("diff", "--raw", "--no-abbrev", "-M", f"{base}...{head}", directory=checkout).splitlines():
+        meta, *paths = line.split("\t")
+        _, _, old, new, status = meta.split(" ")
+        kind = {"A": "added", "D": "removed", "R": "renamed"}.get(status[0], "modified")
+        entry = {"filename": paths[-1], "status": kind, "sha": old if kind == "removed" else new}
+        if kind == "renamed":
+            entry["previous_filename"] = paths[0]
+        files.append(entry)
+    return files
 
 
 def limited(arguments: Sequence[str], items: list[Any]) -> list[Any]:
@@ -2469,9 +2519,15 @@ REPORT = "reviews/pull requests/review.md"
 
 
 def reviewed(
-    head: str, version: int | None = 1, verdict: str = "APPROVE", report: str | None = REPORT
+    head: str,
+    version: int | None = 1,
+    verdict: str = "APPROVE",
+    report: str | None = REPORT,
+    *,
+    base: str | None = None,
 ) -> premerge_review.Reviewed:
-    return premerge_review.Reviewed(head, verdict, version, report)
+    """A review of `head` on the base commit `base`, which a migrated legacy review (version None) never records."""
+    return premerge_review.Reviewed(head, base, verdict, version, report)
 
 
 class PremergeReviewTest(FixtureTestCase):
@@ -2494,9 +2550,41 @@ class PremergeReviewTest(FixtureTestCase):
             return read
 
         lines: list[str] = []
+        gh.checkout = self.hub
         client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
         status = shepherd.tick(GitClient(), client, self.hub, dry_run=True, emit=lines.append, reviews=reviews)
         return status, lines, opened
+
+    def commit(self, name: str, *, start: str | None = None) -> str:
+        """A commit adding `name` on `start`, or on the commit checked out, left checked out on a detached HEAD."""
+        if start is not None:
+            git("checkout", "-q", "--detach", start, directory=self.hub)
+        (self.hub / name).write_text(f"{name}\n", encoding="utf-8")
+        git("add", name, directory=self.hub)
+        git("commit", "-q", "-m", name, directory=self.hub)
+        return git("rev-parse", "HEAD", directory=self.hub)
+
+    def stack(self) -> tuple[str, str, str]:
+        """Main's first commit, a lower branch's commit on it, and an upper branch's commit on that, whose review
+        read it on the lower branch's commit, as review-prs records a stacked pull request."""
+        first = git("rev-parse", "HEAD", directory=self.hub)
+        lower = self.commit("lower.md", start=first)
+        upper = self.commit("upper.md")
+        return first, lower, upper
+
+    def squash(self, lower: str, onto: str) -> str:
+        """The squash merge of the lower branch onto `onto`: one commit with the lower branch's change, pushed as
+        origin's main."""
+        git("checkout", "-q", "--detach", onto, directory=self.hub)
+        git("checkout", "-q", lower, "--", ".", directory=self.hub)
+        git("commit", "-q", "-m", "lower (squashed)", directory=self.hub)
+        squashed = git("rev-parse", "HEAD", directory=self.hub)
+        self.push_branch(squashed, "main")
+        git("checkout", "-q", "main", directory=self.hub)
+        return squashed
+
+    def compares(self, gh: StubGh) -> list[str]:
+        return [call[-1] for call in gh.calls if call[1:2] == ["api"] and "/compare/" in call[-1]]
 
     def topic(self) -> tuple[str, str, str]:
         """A branch's own commit on the hub's first commit, a merge of origin's newer main into it, and another
@@ -2519,9 +2607,10 @@ class PremergeReviewTest(FixtureTestCase):
     def test_each_head_is_named_reviewed_carried_or_due_and_due_ones_get_one_set_of_arguments(self) -> None:
         own, merged, more = self.topic()
         gh = StubGh([pull(20, head=own), pull(21, head=own), pull(22, head=merged), pull(23, head=more), pull(24)])
+        first = git("rev-parse", "main", directory=self.hub)
         records = {
-            21: reviewed(own),
-            22: reviewed(own, 2, "CHANGES_REQUESTED"),
+            21: reviewed(own, base=first),
+            22: reviewed(own, 2, "CHANGES_REQUESTED", base=first),
             23: reviewed(own, None),
             24: reviewed(HEAD, None, report=None),
         }
@@ -2592,34 +2681,110 @@ class PremergeReviewTest(FixtureTestCase):
             [line for line in lines if line.startswith("REVIEW")],
         )
 
-    def test_a_head_git_cannot_relate_to_its_reviewed_head_is_due(self) -> None:
-        own, merged, _ = self.topic()
-        base = git("rev-parse", "origin/main", directory=self.hub)
-        self.assertTrue(premerge_review.merges_only(GitClient(), self.hub, own, merged, base))
-        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, own, merged, None))
-        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, merged, own, base))
-        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, "c" * 40, merged, base))
-        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, own, merged, "c" * 40))
+    def test_a_retarget_whose_merge_base_moved_is_due(self) -> None:
+        # GitHub retargets the upper pull request to main once the lower one merges, with no new head. A squash
+        # merge leaves the lower branch's commit out of main, so the diff on main holds its change too.
+        _, lower, upper = self.stack()
+        self.squash(lower, git("rev-parse", "main", directory=self.hub))
+        gh = StubGh([pull(60, head=upper)])
+        status, lines, _ = self.review_tick(gh, {60: reviewed(upper, base=lower)})
+        self.assertEqual(0, status, lines)
+        self.assertEqual(
+            [
+                f"REVIEW_DUE #60 fix/topic-60 head {upper[:7]} since {upper[:7]}",
+                "REVIEW_ARGUMENTS --re-review owner/repo#60 --scope auto",
+            ],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
+        self.assertEqual(2, len(self.compares(gh)), "two merge bases decide it")
 
-    def test_any_git_failure_carries_no_review(self) -> None:
-        own, merged, _ = self.topic()
-        base = git("rev-parse", "origin/main", directory=self.hub)
+    def test_a_retarget_that_left_its_merge_base_is_reviewed(self) -> None:
+        # A merge of the lower branch keeps its commit in main, so the upper pull request's diff on main is the one
+        # its review read on the lower branch.
+        first, lower, upper = self.stack()
+        git("checkout", "-q", "--detach", first, directory=self.hub)
+        git("merge", "-q", "--no-ff", "--no-edit", lower, directory=self.hub)
+        self.push_branch(git("rev-parse", "HEAD", directory=self.hub), "main")
+        git("checkout", "-q", "main", directory=self.hub)
+        gh = StubGh([pull(61, head=upper)])
+        _, lines, _ = self.review_tick(gh, {61: reviewed(upper, base=lower)})
+        self.assertEqual(
+            [f'REVIEWED #61 fix/topic-61 head {upper[:7]} v1 APPROVE report "{REPORT}"'],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
 
-        def answering(word: str, answer: GitResult) -> GitClient:
-            def run(command: Sequence[str], timeout: float) -> GitResult:
-                return answer if word in command else subprocess_runner(command, timeout)
+    def test_a_head_moved_only_by_merges_is_due_when_its_changes_on_main_grew(self) -> None:
+        # The upper branch merged main in before the lower one was squash-merged onto that main and the upper pull
+        # request retargeted: every commit since its reviewed head that main lacks is a merge, yet its diff on main
+        # now holds the lower branch's change, which the squash left out of what the upper branch merged.
+        _, lower, upper = self.stack()
+        newer = self.advance_origin()
+        git("fetch", "-q", "origin", directory=self.hub)
+        self.squash(lower, newer)
+        git("checkout", "-q", "--detach", upper, directory=self.hub)
+        git("merge", "-q", "--no-edit", newer, directory=self.hub)
+        merged = git("rev-parse", "HEAD", directory=self.hub)
+        git("checkout", "-q", "main", directory=self.hub)
+        _, lines, _ = self.review_tick(StubGh([pull(62, head=merged)]), {62: reviewed(upper, base=lower)})
+        self.assertEqual(
+            [
+                f"REVIEW_DUE #62 fix/topic-62 head {merged[:7]} since {upper[:7]}",
+                "REVIEW_ARGUMENTS --re-review owner/repo#62 --scope auto",
+            ],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
 
-            return GitClient(run)
+    def test_a_review_of_the_head_on_main_s_tip_is_reviewed_without_a_comparison(self) -> None:
+        tip = git("rev-parse", "main", directory=self.hub)
+        gh = StubGh([pull(63)])
+        _, lines, _ = self.review_tick(gh, {63: reviewed(HEAD, base=tip)})
+        self.assertEqual(
+            f'REVIEWED #63 fix/topic-63 head {HEAD[:7]} v1 APPROVE report "{REPORT}"', self.line(lines, "REVIEWED ")
+        )
+        self.assertEqual([], self.compares(gh))
 
-        for word, answer in (
-            ("merge-base", GitResult(1, "", "warning: ignoring broken ref refs/heads/main\n")),
-            ("merge-base", GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")),
-            ("rev-list", GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")),
-        ):
-            with self.subTest(word=word, answer=answer):
-                self.assertFalse(premerge_review.merges_only(answering(word, answer), self.hub, own, merged, base))
-        clean = answering("merge-base", GitResult(0, "", ""))
-        self.assertTrue(premerge_review.merges_only(clean, self.hub, own, merged, base), "a clean ancestor carries it")
+    def test_a_comparison_that_fails_or_cannot_be_made_is_due(self) -> None:
+        own, _, _ = self.topic()
+        first = git("rev-parse", "main", directory=self.hub)
+        cases = {
+            "a refused call": ("gh: Validation Failed (HTTP 422)", first),
+            "a lost login": ("HTTP 401: Bad credentials", first),
+            "a base GitHub does not hold": (None, "c" * 40),
+        }
+        for name, (failure, base) in cases.items():
+            with self.subTest(name):
+                gh = StubGh([pull(64, head=own)])
+                gh.compare_failure = failure
+                _, lines, _ = self.review_tick(gh, {64: reviewed(own, base=base)})
+                self.assertEqual(
+                    [
+                        f"REVIEW_DUE #64 fix/topic-64 head {own[:7]} since {own[:7]}",
+                        "REVIEW_ARGUMENTS --re-review owner/repo#64 --scope auto",
+                    ],
+                    [line for line in lines if line.startswith("REVIEW")],
+                )
+                self.assertNotEqual([], self.compares(gh))
+
+    def test_with_no_base_to_read_only_a_legacy_review_of_the_head_covers_it(self) -> None:
+        gh = StubGh()
+        client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
+        records = {
+            70: reviewed(HEAD, base="b" * 40),
+            71: reviewed("c" * 40, base="b" * 40),
+            72: reviewed(HEAD, None),
+        }
+        heads = [premerge_review.Head(number, f"fix/topic-{number}", HEAD) for number in records]
+        lines = premerge_review.review_lines(client, None, REPOSITORY, heads, records.get)
+        self.assertEqual(
+            [
+                f"REVIEW_DUE #70 fix/topic-70 head {HEAD[:7]} since {HEAD[:7]}",
+                f"REVIEW_DUE #71 fix/topic-71 head {HEAD[:7]} since ccccccc",
+                f'REVIEWED #72 fix/topic-72 head {HEAD[:7]} legacy APPROVE report "{REPORT}"',
+                "REVIEW_ARGUMENTS --re-review owner/repo#70 --re-review owner/repo#71 --scope auto",
+            ],
+            lines,
+        )
+        self.assertEqual([], gh.calls)
 
 
 class ArchiveReaderTest(unittest.TestCase):
@@ -2683,11 +2848,22 @@ class ArchiveReaderTest(unittest.TestCase):
     def test_a_review_reads_as_its_head_verdict_and_version_and_an_unreadable_one_is_unread(self) -> None:
         self.configure()
         read = premerge_review.archive_reader(REPOSITORY)
-        found = {"head_sha": HEAD, "verdict": "COMMENT", "version": 3, "source": "record", "report": REPORT}
+        base = "b" * 40
+        found = {
+            "head_sha": HEAD,
+            "base_sha": base,
+            "verdict": "COMMENT",
+            "version": 3,
+            "source": "record",
+            "report": REPORT,
+        }
         with mock.patch.object(premerge_review, "reviewed_head", return_value=found) as latest:
-            self.assertEqual(reviewed(HEAD, 3, "COMMENT"), read(20))
+            self.assertEqual(reviewed(HEAD, 3, "COMMENT", base=base), read(20))
         with mock.patch.object(premerge_review, "reviewed_head", return_value={**found, "report": None}):
-            self.assertEqual(reviewed(HEAD, 3, "COMMENT", None), read(20))
+            self.assertEqual(reviewed(HEAD, 3, "COMMENT", None, base=base), read(20))
+        legacy = {**found, "base_sha": None, "version": None, "source": "legacy"}
+        with mock.patch.object(premerge_review, "reviewed_head", return_value=legacy):
+            self.assertEqual(reviewed(HEAD, None, "COMMENT"), read(20))
         self.assertEqual((self.root / "reviews" / "archive", REPOSITORY, 20), latest.call_args.args)
         failing = mock.patch.object(
             premerge_review,
