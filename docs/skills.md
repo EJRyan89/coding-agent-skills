@@ -129,7 +129,7 @@ It reads the commands a skill's PowerShell scripts run, and those a Bash script 
 ## `curate-agent-memory`
 
 <!-- generated:curate-agent-memory -->
-Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked to review, tidy, or prune a project's memories.
+Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked which of a project's memories are stale, out of date, or repeated, or to review, tidy, or prune them; not to save a new memory.
 
 ```text
 /curate-agent-memory [repository path] [--memory-dir DIR]
