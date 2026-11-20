@@ -19,7 +19,7 @@ ends a paragraph and is no code. The comments and the code spans are then read l
 reading takes time in proportion to the body. A comment that opens a block and is left unclosed runs to the end of the
 body, as GitHub reads it.
 
-The limits: an unclosed `<!--` inside a line also hides the rest of the body, where GitHub shows it as text (#2976). A
+The limits: an unclosed `<!--` inside a line also hides the rest of the body, where GitHub shows it as text. A
 `<!--` after a list item's marker, or past three spaces of a list item's content, is read inside the line, so the
 lines after it are read as the item's paragraph. A code span is read by markdown_sections' `COMMONMARK_CODE_SPAN`,
 which may pair backtick runs of unequal length, so ``` ``a`<!-- x -->` ``` hides a comment GitHub shows in code; a
@@ -99,7 +99,7 @@ QUOTE_PREFIX = re.compile(r"(?:[ \t]*>[ \t]?)*")
 # ends a paragraph and is no code.
 COMMENT_BLOCK_STAND_IN = "***"
 # The lines a fence's closer is first looked for in, doubled until it is found, so a long fence is read once over.
-FENCE_WINDOW = 64
+FENCE_WINDOW = 32
 # Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
 # category: the Hangul fillers and the blank braille pattern.
 INVISIBLE = frozenset("ᅟᅠㅤﾠ⠀")

@@ -82,7 +82,7 @@ def test_a_comment_opener_code_shows_hides_nothing(forms: str) -> None:
         # A comment block inside a quote holds its fence-like lines too.
         ("> <!-- x\n> ```\n> -->\n<!-- y -->", "> \n"),
         # A fence-like line inside a comment within a line is a fence, as GitHub reads the blocks before the comments,
-        # so the fence shows the `<!--` after it; the comment within the line still goes, as #2976 says.
+        # so the fence shows the `<!--` after it; the comment within the line still goes, a stated limit.
         ("a <!-- b\n```\n--> <!-- c -->", "a  <!-- c -->"),
         ("<!-->x<!--->y", "xy"),
     ],
@@ -95,7 +95,7 @@ def test_a_comment_is_hidden_only_where_it_opens_outside_code(text: str, expecte
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param("a <!-- b\n\nc", "a ", id="an unclosed opener inside a line hides the rest, #2976"),
+        pytest.param("a <!-- b\n\nc", "a ", id="an unclosed opener inside a line hides the rest"),
         pytest.param("``a`<!-- x -->` z", "``a`` z", id="backtick runs of unequal length pair as a span"),
         pytest.param("\\`<!-- x -->\\` z", "\\`<!-- x -->\\` z", id="an escaped backtick opens a span"),
         pytest.param("`a\n<!-- x --> b` z", "`a\n b` z", id="a span is read within one line"),
