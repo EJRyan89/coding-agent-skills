@@ -46,8 +46,21 @@ loads it all the same. A linked path that leads out of the folder, through `..` 
 link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it reaches a file already sized, and so is
 an absolute one. A link's destination is read as CommonMark reads it, through ejryan89-skill-core's link_destinations:
 percent-decoded, between < and > with spaces, or with a backslash, read as the platform reads a path: a separator on
-Windows, part of the name elsewhere. The
-measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
+Windows, part of the name elsewhere. A Markdown path named in prose or a code span is read as written, from where it
+starts to its `.md`. It starts at a line's start, after a blank, `(`, `[`, or `<`, or after a quote or a backtick that
+follows no path character, and a relative one also after an emphasis `*` that follows none and closes right after the
+`.md`, as in `*a.md*`; it may begin with ${CLAUDE_SKILL_DIR}/, and an absolute one opens with its root, `/`, `\\`, or a
+drive such as `C:\\`. Its first character, or the one after the root, is a word character, `.`, `%`, or `-`; the rest
+are those, `/`, `\\`, `+`, `@`, `~`, or `&`; and it ends at `.md` that is followed by none of those characters other
+than `.`, and by no `.` followed by one. Its `%` is part of the name, its backslash is read as a link's is, and an
+absolute one is an outside read. So a path holding another character, such as `'`, `=`, `#`, `;`, `,`, `:`, or `!`, is
+not read, nor is an absolute one that starts anywhere else, as after `=` in `--doc=/abs/a.md`; and since prose separates
+words with spaces, a path holding one, such as `/opt/my notes/a.md`, is read from after its last space. Limits, which no
+skill's Markdown in this source writes: a path followed right away by `&`, as in `a.md&nbsp;` or `?f=a.md&x=1`, is not
+read, and `a.md&b.md` is read as one path; a path after an HTML entity, as in `&lt;a.md&gt;`, is not read; nor is a UNC
+path such as `\\\\server\\share\\a.md`, a path that starts with `~`, `$HOME`, or `${VAR}`, or
+`${CLAUDE_SKILL_DIR}\\..\\a.md`; and a Markdown backslash escape in prose is not taken out of the name. The measure,
+NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -695,12 +708,22 @@ MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
-OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)*(?:\.\./)+[\w./-]+\.md)\b")
-# A relative Markdown path that does not start by leaving the skill folder, such as `references/a.md`, `a.md`, or
-# `.venv/a.md` in a hidden folder; one may still lead out, through a later `..` or a link to a folder, which
-# `markdown_links` resolves. It and OUTSIDE_REFERENCE read a path named in prose or code; a link's destination is read
-# through ejryan89-skill-core's `link_destinations` instead, in every spelling CommonMark allows.
-INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?\.?[\w-][\w./-]*\.md)\b")
+# A Markdown path named in prose or code, outside every link's destination, which ejryan89-skill-core's
+# `link_destinations` reads instead: `references/a.md`, `.venv/a.md` in a hidden folder, `../shared/a.md`, one after
+# ${CLAUDE_SKILL_DIR}/, or an absolute one, `/opt/a.md` or `C:\a.md`. It starts at one of these, and nowhere else: a
+# line's start; a blank, `(`, `[`, or `<`; a quote or a backtick that follows no PATH_CHARACTER; or, for a relative
+# one alone, an emphasis `*` that follows none and closes right after the `.md`, so `*a.md*` is read and the glob
+# `*.instructions.md` is not. An absolute one opens with its root, `/`, `\`, or a drive such as `C:\`. Its first
+# character, or the one after the root, is a word character, `.`, `%`, or `-`; the rest are those, `/`, `\`, `+`, `@`,
+# `~`, or `&`, so `%` is read as written, as prose is not percent-encoded, and `\` is kept for `markdown_links` to read
+# as the platform reads a path: a separator on Windows, part of the name elsewhere. It ends at `.md` that is followed
+# by none of those characters other than `.`, and by no `.` followed by one. `markdown_links` resolves where it leads.
+PATH_CHARACTER = r"[\w%+@~&./\\-]"
+PROSE_REFERENCE = re.compile(
+    rf"(?:(?<![^\s(\[<])|(?<=(?<!{PATH_CHARACTER})[`'\"])"
+    rf"|(?<=(?<!{PATH_CHARACTER})\*)(?=(?:\$\{{CLAUDE_SKILL_DIR\}}/)?[\w.%-][\w%+@~&./\\-]*\.md\*))"
+    r"(\$\{CLAUDE_SKILL_DIR\}/)?((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w%+@~&./\\-]*\.md)(?!\.?[\w%+@~&/\\-])"
+)
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
 
@@ -1399,9 +1422,9 @@ def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list
     runtime reading it would. A link's destination is read as CommonMark reads it, through `link_destinations`:
     percent-decoded, between `<` and `>` with spaces, absolute, or with a backslash, read as the platform reads a
     path: a separator on Windows, part of the name elsewhere; and a path named in prose or code, outside every link's
-    destination, through INSIDE_REFERENCE and OUTSIDE_REFERENCE. A path resolves from the naming file, or from the
-    skill folder after ${CLAUDE_SKILL_DIR}/, and an absolute one from the root it names. Every check of the files a
-    skill's Markdown names reads them here."""
+    destination, through PROSE_REFERENCE, whole and as written, its backslash read as a link's is. A path resolves
+    from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/, and an absolute one from the root it
+    names. Every check of the files a skill's Markdown names reads them here."""
     lines = text_lines(text)
     start = body_start(lines) if kind == "main" else 0
     naming = (directory / relative).parent
@@ -1415,14 +1438,12 @@ def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list
         if not destination.is_url and Path(path).suffix.casefold() == ".md":
             named.append((index, destination.start, destination.written, path))
     for index in range(start, len(lines)):
-        matches = [*OUTSIDE_REFERENCE.finditer(lines[index]), *INSIDE_REFERENCE.finditer(lines[index])]
-        end = 0
-        for match in sorted(matches, key=lambda match: match.start()):
-            inside_link = any(left < match.end() and match.start() < right for left, right in taken.get(index, []))
-            if match.start() < end or inside_link:
-                continue
-            end = match.end()
-            named.append((index, match.start(), match.group(0), match.group(0)))
+        links = taken.get(index, [])
+        named.extend(
+            (index, match.start(), match.group(0), match.group(0))
+            for match in PROSE_REFERENCE.finditer(lines[index])
+            if not any(left < match.end() and match.start() < right for left, right in links)
+        )
     found: list[tuple[int, str, Path]] = []
     for index, _, reference, path in sorted(named, key=lambda name: name[:2]):
         base = naming
