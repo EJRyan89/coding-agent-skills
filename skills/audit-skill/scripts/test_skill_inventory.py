@@ -4925,3 +4925,86 @@ def test_a_script_eval_or_a_shell_runs_that_bash_refuses_names_its_fence_unread(
             f"BASH_UNREADABLE {skill.as_posix()} 1 expected `fi`"
         ], command
         assert cued_lines(lines, "shell-file-command") == [], command
+
+
+def outside_report(folder: Path) -> list[str]:
+    code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (0, "")
+    return [line for line in lines if line.startswith(("OUTSIDE_", "TOTAL outside"))]
+
+
+def test_a_path_a_bash_fence_command_writes_or_passes_to_a_program_is_no_outside_read(tmp_path: Path) -> None:
+    # Every .md path on a fence line was read as a file the skill loads, so a command's output option, a scratch
+    # body passed with --body-file, and a redirection's target were each a false OUTSIDE_MISSING, a MUST FIX.
+    scratch = (tmp_path / "scratch" / "issue-body.md").as_posix()
+    folder = source_skill(
+        tmp_path,
+        "```bash\n"
+        f"gh issue create --title t --body-file {scratch}\n"
+        "gh pr create --body-file ../pr-body.md > ../log.md\n"
+        "python scripts/render.py --output ../out.md <<'EOF'\n"
+        "cat ../in-a-document.md\n"
+        "EOF\n"
+        "```\n",
+    )
+    assert outside_report(folder) == ["TOTAL outside 0 0 0"]
+
+
+def test_a_path_a_bash_fence_file_command_prints_is_an_outside_read(tmp_path: Path) -> None:
+    write(tmp_path / "skills" / "shared.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    folder = source_skill(
+        tmp_path,
+        "```sh\n"
+        "cat ../shared.md > ../written.md\n"
+        "grep -n x < ../input.md\n"
+        "sudo head \\\n"
+        "  ../continued.md\n"
+        'echo "$(tail ../substituted.md)" > ../echoed.md\n'
+        'bash -c "wc ../wrapped.md"\n'
+        "head ../twice.md; gh issue create --body-file ../twice.md\n"
+        "```\n",
+    )
+    assert outside_report(folder) == [
+        "OUTSIDE_READ SKILL.md:5 9 3 ../shared.md",
+        "OUTSIDE_MISSING SKILL.md:6 ../input.md",
+        "OUTSIDE_MISSING SKILL.md:8 ../continued.md",
+        "OUTSIDE_MISSING SKILL.md:9 ../substituted.md",
+        "OUTSIDE_MISSING SKILL.md:10 ../wrapped.md",
+        "OUTSIDE_MISSING SKILL.md:11 ../twice.md",
+        "TOTAL outside 1 9 3",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("label", "prompt"),
+    [("powershell", ""), ("pwsh", "> "), ("cmd", ""), ("fish", ""), ("console", "$ ")],
+)
+def test_another_shell_fence_reads_a_path_only_on_a_line_that_runs_a_file_command(
+    label: str, prompt: str, tmp_path: Path
+) -> None:
+    folder = source_skill(
+        tmp_path,
+        f"```{label}\n{prompt}gh pr create --body-file ../pr-body.md\n{prompt}cat ../read.md\n```\n",
+    )
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:6 ../read.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_console_session_reads_no_path_its_output_names(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path, "```console\n$ make report\nwrote ../report.md\n$ cat ../read.md\n```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:7 ../read.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_bash_fence_the_grammar_refuses_reads_a_path_on_a_line_that_runs_a_file_command(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path, "```bash\ncat ../read.md\ngh pr create --body-file ../pr-body.md )\n```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../read.md", "TOTAL outside 0 0 0"]
+
+
+def test_prose_and_an_untagged_fence_read_every_path_they_name(tmp_path: Path) -> None:
+    folder = source_skill(
+        tmp_path, "Pass `--body-file ../span.md`.\n\n```\ngh pr create --body-file ../untagged.md\n```\n"
+    )
+    assert outside_report(folder) == [
+        "OUTSIDE_MISSING SKILL.md:4 ../span.md",
+        "OUTSIDE_MISSING SKILL.md:7 ../untagged.md",
+        "TOTAL outside 0 0 0",
+    ]

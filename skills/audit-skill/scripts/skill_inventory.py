@@ -55,12 +55,25 @@ are those, `/`, `\\`, `+`, `@`, `~`, or `&`; and it ends at `.md` that is follow
 than `.`, and by no `.` followed by one. Its `%` is part of the name, its backslash is read as a link's is, and an
 absolute one is an outside read. So a path holding another character, such as `'`, `=`, `#`, `;`, `,`, `:`, or `!`, is
 not read, nor is an absolute one that starts anywhere else, as after `=` in `--doc=/abs/a.md`; and since prose separates
-words with spaces, a path holding one, such as `/opt/my notes/a.md`, is read from after its last space. Limits, which no
+words with spaces, a path holding one, such as `/opt/my notes/a.md`, is read from after its last space. In a shell or
+PowerShell fence below the frontmatter, a path is read only where a file command, one of SHELL_FILE_COMMANDS (cat,
+head, tail, find, grep, rg, sed, awk, wc, or ls), reads it for the model: in a fence BASH_FENCES labels that the one
+Bash grammar reads, a path in a word, or in a `<` redirection's target, of a simple command that runs one, wherever
+Bash starts it and through a wrapper, eval, or a shell's -c too; in a console, fish, cmd, or PowerShell fence, and a
+Bash fence the grammar refuses or a here-document in it runs to its end of, a path on a line whose first word, after
+its prompt, names one, as scan's shell-file-command cue reads it. Any other path such a fence names, such as a
+redirection's target in `> ../log.md`, an option's operand in `gh pr create --body-file /tmp/b.md`, a script's
+argument, a here-document's line, or a session's output, is one the command writes or hands its program at run time,
+which the skill does not load. An untagged fence, and one of any other language, is read as prose is. Limits, which no
 skill's Markdown in this source writes: a path followed right away by `&`, as in `a.md&nbsp;` or `?f=a.md&x=1`, is not
 read, and `a.md&b.md` is read as one path; a path after an HTML entity, as in `&lt;a.md&gt;`, is not read; nor is a UNC
 path such as `\\\\server\\share\\a.md`, a path that starts with `~`, `$HOME`, or `${VAR}`, or
-`${CLAUDE_SKILL_DIR}\\..\\a.md`; and a Markdown backslash escape in prose is not taken out of the name. The measure,
-NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
+`${CLAUDE_SKILL_DIR}\\..\\a.md`; a Markdown backslash escape in prose is not taken out of the name; a path that prose or
+a code span names is read though the skill may only write it, as in `write the body to /tmp/b.md`; in a fence that is
+not Bash, a path on a line that continues the command before it is not read, as `../a.md` after `cat \\`, nor one
+PowerShell's Get-Content or cmd's type reads; and a path in a `<` redirection's target of a compound command, as in
+`{ cat; } < a.md`, is not read. The measure, NESTED_REFERENCE, and the outside reads all read the paths a file names
+this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -211,6 +224,7 @@ import fnmatch
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from itertools import dropwhile, pairwise
 from pathlib import Path, PureWindowsPath
@@ -1437,12 +1451,15 @@ def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list
         path = destination.path
         if not destination.is_url and Path(path).suffix.casefold() == ".md":
             named.append((index, destination.start, destination.written, path))
+    commands = fence_reads(lines, start)
     for index in range(start, len(lines)):
         links = taken.get(index, [])
+        reads = commands.get(index)
         named.extend(
             (index, match.start(), match.group(0), match.group(0))
             for match in PROSE_REFERENCE.finditer(lines[index])
             if not any(left < match.end() and match.start() < right for left, right in links)
+            and (reads is None or taken_from(reads, match.group(0)))
         )
     found: list[tuple[int, str, Path]] = []
     for index, _, reference, path in sorted(named, key=lambda name: name[:2]):
@@ -1450,6 +1467,69 @@ def markdown_links(directory: Path, relative: str, kind: str, text: str) -> list
         if path.startswith(SKILL_DIR_PREFIX):
             base, path = directory, path[len(SKILL_DIR_PREFIX) :]
         found.append((index + 1, reference, resolved_path(base / path)))
+    return found
+
+
+def taken_from(reads: Counter[str], path: str) -> bool:
+    """Whether `reads` holds one more read of `path`, which this takes from it."""
+    if reads[path] <= 0:
+        return False
+    reads[path] -= 1
+    return True
+
+
+def fence_reads(lines: list[str], start: int) -> dict[int, Counter[str]]:
+    """The Markdown paths a file command reads on each body line of a shell or PowerShell fence below the frontmatter,
+    by the line's index, each as PROSE_REFERENCE reads it: on a line no file command reads a path on, none. A file
+    command is one of SHELL_FILE_COMMANDS, which prints what it reads for the model, and the path is one it reads. A
+    fence BASH_FENCES labels is read whole through the one Bash grammar, each line as CommonMark gives it to the
+    fence's content, and its paths are those in the words, and the `<` redirections' targets, of each simple command
+    that runs a file command, wherever Bash starts one and through each wrapper, eval, or shell's -c that runs it, as
+    bash_programs reads it. Any other such fence, and a Bash fence the grammar refuses or a here-document in it runs to
+    its end of, reads every path on each line whose first word names a file command, as
+    first_word_file_command_lines reads it. A line outside such fences is not here: every path on it is read."""
+    reads: dict[int, Counter[str]] = {}
+    for fence in find_fences(lines):
+        label = fence.language.casefold()
+        if fence.opener < start or label not in BASH_FENCES | FIRST_WORD_FENCES:
+            continue
+        body = list(fence.body())
+        reads.update((index, Counter()) for index in body)
+        if label in BASH_FENCES:
+            content = "\n".join(fence.content(lines[index]) for index in body)
+            try:
+                found = file_command_paths(content)
+                if open_here_document(content):
+                    raise BashSyntaxError("a here-document is still open where the fence ends")
+            except BashSyntaxError:
+                pass
+            else:
+                for line, path in found:
+                    reads[body[line - 1]][path] += 1
+                continue
+        for index in first_word_file_command_lines(fence, lines):
+            reads[index] = Counter(match.group(0) for match in PROSE_REFERENCE.finditer(lines[index]))
+    return reads
+
+
+def file_command_paths(text: str) -> list[tuple[int, str]]:
+    """Each Markdown path a Bash text gives a file command, one of SHELL_FILE_COMMANDS, to read, as PROSE_REFERENCE
+    reads it in the source of a word, or of a `<` redirection's target, of a simple command that runs one, as
+    bash_programs reads the programs a command runs; with the line, counted from 1, the path stands on. A path in
+    another redirection's target, such as `> out.md`, or in a command that runs no file command, such as
+    `gh pr create --body-file b.md`, is one the command writes or hands its program at run time. Raises
+    BashSyntaxError where the grammar refuses the text, or a script eval or a shell's -c runs in it."""
+    found: list[tuple[int, str]] = []
+    for command in bash_syntax.simple_commands(text):
+        programs = command_programs(command, bash_syntax.command_words(command, git_subcommands.UNREAD_PART))
+        if not any(command_wrappers.bash_program(words[0]) in SHELL_FILE_COMMANDS for _, words in programs):
+            continue
+        inputs = [redirect.target for redirect in command.redirects if redirect.operator == "<" and redirect.target]
+        for word in [*command.words, *inputs]:
+            found.extend(
+                (word.line + word.raw.count("\n", 0, match.start()), match.group(0))
+                for match in PROSE_REFERENCE.finditer(word.raw)
+            )
     return found
 
 
