@@ -17,7 +17,7 @@ from text_lines import text_lines
 from . import fsops, hashing, journal, platform_support, render, source, state_files
 from .arguments import PROG, usage_error
 from .context import Context
-from .errors import DeployError, see_recovery
+from .errors import DeployError, SourceRefusal, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
 from .names import require_safe_name, transient_name
 from .paths import Paths
@@ -354,7 +354,7 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
     for name in selected:
         for dependency in src.skills[name].shared_deps:
             if dependency not in assets:
-                raise DeployError(
+                raise SourceRefusal(
                     f"ERROR: Skill '{name}' declares shared_dep "
                     f"'{dependency}' but it is not in source.json shared_assets",
                     f"Add '{dependency}' to shared_assets in source.json, or remove it from {name}'s shared_deps.",
@@ -374,13 +374,13 @@ def _declared_assets(src: Source) -> dict[str, str]:
     taken = {platform_support.name_key(name): (SKILL.noun, name) for name in sorted(src.skills)}
     for asset in sorted(assets):
         if asset in src.skills:
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Shared asset '{asset}' collides with a skill of the same name", "Rename one of them."
             )
         key = platform_support.name_key(asset)
         if key in taken:
             noun, existing = taken[key]
-            raise DeployError(
+            raise SourceRefusal(
                 f"ERROR: Shared asset '{asset}' collides with {noun} '{existing}'.",
                 f"The file system treats '{asset}' and '{existing}' as one name. Rename one of them.",
             )
@@ -391,7 +391,7 @@ def _declared_assets(src: Source) -> dict[str, str]:
 def _check_role(paths: Paths, asset: str, role: str) -> None:
     """A role is owner or dependency, and an owned asset is a file in this source."""
     if role not in ("owner", "dependency"):
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')",
             f"Give '{asset}' the role 'owner' or 'dependency' in source.json.",
         )
@@ -399,8 +399,8 @@ def _check_role(paths: Paths, asset: str, role: str) -> None:
         return
     # A stat that fails is refused with its reason, and something other than a file as not a file, never as missing.
     remedy = f"Add the file to the source, or give '{asset}' the role 'dependency' when another source owns it."
-    if not state_files.is_present(paths.skills_src / asset, f"Owned shared asset '{asset}'", remedy):
-        raise DeployError(
+    if not state_files.is_present(paths.skills_src / asset, f"Owned shared asset '{asset}'", remedy, of_source=True):
+        raise SourceRefusal(
             f"ERROR: source.json declares '{asset}' as owned but file not found at "
             f"{platform_support.normalize(paths.skills_src / asset)}",
             remedy,
@@ -436,7 +436,7 @@ def _check_dependency(context: Context, asset: str) -> None:
     if owner is None:
         raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest", first)
     if owner == context.source_id:
-        raise DeployError(
+        raise SourceRefusal(
             f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source",
             OWN_IT.format(asset=asset),
         )

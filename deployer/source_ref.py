@@ -10,7 +10,8 @@ import re
 import sys
 import tarfile
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from release_tags import TAGS, releases_naming
 
 from . import fsops, platform_support, source, tools
 from .arguments import usage_error
-from .errors import DeployError, os_error, see_recovery
+from .errors import DeployError, SourceRefusal, os_error, see_recovery
 from .paths import Paths
 from .source_commit import COMMIT_PATTERN
 
@@ -163,20 +164,39 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     return Pin(ref, commit)
 
 
-def exported_source_json_remedy(commit: str) -> str:
-    """The step a source.json the deployer cannot read takes when --at exported it: the commit holds that copy, which
-    no change to the checkout reaches, so the step is another commit."""
+def exported_tree_step(commit: str) -> str:
+    """The step a refusal of the tree --at exported takes: the commit holds those files, which no change to the
+    checkout reaches, so the step is another commit. The deployer judging them is the checkout's, so an older commit
+    may hold what the deployer of its own day accepted."""
     return (
-        f"This source.json is the one commit {commit} holds, not the checkout's; name with --at a commit whose "
-        "source.json the deployer reads."
+        f"The refused files are commit {commit}'s, which no change to the checkout reaches; name with --at another "
+        "commit, one the deployer at this checkout's HEAD accepts, since it may refuse what an older deployer accepted."
     )
+
+
+@contextmanager
+def exported_refusals(pin: Pin | None) -> Iterator[None]:
+    """Under --at, end a refusal of the exported tree's content, a SourceRefusal, with the step naming the commit in
+    place of the step for a checkout, keeping what it says is wrong; without --at, leave it as it is."""
+    try:
+        yield
+    except SourceRefusal as refusal:
+        if pin is None:
+            raise
+        raise DeployError(
+            *refusal.problem,
+            exported_tree_step(pin.commit),
+            see_recovery(EARLIER_COMMIT),
+            exit_code=refusal.exit_code,
+        ) from refusal
 
 
 def exported_source_id(paths: Paths, pin: Pin) -> str:
     """The source ID of the tree --at exported into `paths.tree`, refused with a step naming the commit when its
     source.json does not read, and refused when it names another source than the checkout's: deploying it would move
     every item to another owner, which only an explicit --migrate-from may do."""
-    tree_id = source.load_source_id(paths, exported_source_json_remedy(pin.commit))
+    with exported_refusals(pin):
+        tree_id = source.load_source_id(paths)
     checkout_id = source.load_source_id(replace(paths, tree_dir=None))
     if tree_id != checkout_id:
         raise DeployError(

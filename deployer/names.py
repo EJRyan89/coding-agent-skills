@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from . import platform_support
-from .errors import DeployError
+from .errors import SourceRefusal
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._ -]+$")
 # The deployer's own files beside an item: <item>.deploying-bak is its transient backup during a deployment (plan.py,
@@ -85,7 +85,8 @@ def _reserved_problem(name: str, context: str) -> str | None:
 
 
 def require_safe_name(name: str, context: str) -> None:
-    """DeployError, ending with the step to take, unless name is a safe single-level file name."""
+    """A SourceRefusal, ending with the step to take, unless name is a safe single-level file name: its callers ask it
+    of a name the source declares, such as a shared asset's, so the refusal is of the source's content."""
     problem = safe_name_problem(name, context)
     if problem is not None:
-        raise DeployError(problem, SAFE_NAME_RULES)
+        raise SourceRefusal(problem, SAFE_NAME_RULES)
