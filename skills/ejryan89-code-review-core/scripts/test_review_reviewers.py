@@ -112,8 +112,27 @@ class InspectionTests(unittest.TestCase):
         self.assertNotIn(".claude/agents/review.md", result.references, "the skill never references itself")
 
     def test_references_come_from_code_spans_links_and_bare_paths_that_exist(self) -> None:
-        result = inspect("Read [the rules](docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
+        result = inspect("Read [the rules](../../docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)
+
+    def test_a_link_resolves_from_the_skills_folder_and_a_slash_from_the_root(self) -> None:
+        # A link's destination was read from the repository root, so the sibling reference file of the usual skill
+        # layout was never given to the entrypoint reviewer, and a root path written as a link was given instead.
+        files = {SKILL, ".claude/skills/review/references/rules.md", "references/rules.md", "docs/rules.md", "x.md"}
+        text = "Apply [the rules](references/rules.md) and [the style](docs/rules.md).\nSee [x](/x.md).\n"
+        inspection = inspect_skill(SKILL, text, COMMIT, files)
+        self.assertEqual([".claude/skills/review/references/rules.md", "x.md"], inspection.references)
+        self.assertEqual(inspection.references, entrypoint_manifest("solo", inspection)["resources"])
+        self.assertEqual(
+            ["docs/rules.md"],
+            inspect_skill(SKILL, "Apply `docs/rules.md` and docs/rules.md.\n", COMMIT, files).references,
+            "a path in a code span or bare in prose is read from the repository root",
+        )
+        self.assertEqual(
+            [],
+            inspect_skill(SKILL, "[out](../../../../outside.md) [root](../../../)\n", COMMIT, files).references,
+            "a link out of the repository, or to its root, names no file",
+        )
 
     def test_an_entrypoint_carries_what_the_skill_names_and_needs_no_delegation(self) -> None:
         result = inspect("---\ntools: Read\n---\nApply `docs/rules.md`.\n")
@@ -328,8 +347,13 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual({"['.claude/agents/db-review.md', '.github/agents/db-review.md']"}, seen)
 
     def test_reference_paths_are_normalized_and_must_be_repository_files(self) -> None:
+        # A link's leading `./` is the skill's folder, as GitHub reads it, and a code span's the repository root.
         result = inspect("[a](./docs/rules.md#x) `./src/A.cs` /src/A.cs rules.md `.claude/agents/review.md`\n")
-        self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)
+        self.assertEqual(["src/A.cs"], result.references)
+        nearby = inspect_skill(
+            ".claude/agents/review.md", "[a](./x/rules.md#x)\n", COMMIT, FILES | {".claude/agents/x/rules.md"}
+        )
+        self.assertEqual([".claude/agents/x/rules.md"], nearby.references)
         self.assertEqual(
             [],
             inspect("Read /src/A.cs and rules.md.\n").references,
@@ -361,7 +385,8 @@ class InspectionTests(unittest.TestCase):
             "[f](docs\\rules.md)\n"
             "[g](<docs/my doc.md>) and [h](docs/b(2).md)\n"
         )
-        result = inspect_skill(".claude/agents/review.md", text, COMMIT, files)
+        # A skill at the root, so each destination resolves from the root.
+        result = inspect_skill("review.md", text, COMMIT, files)
         # A backslash is read as the platform reads one in a path: a separator on Windows, part of the name elsewhere.
         expected = {"docs/my rules.md", "docs/a(1).md", "docs/the defs.md", "docs/b-c.md", backslash}
         expected |= {"docs/my doc.md", "docs/b(2).md"}

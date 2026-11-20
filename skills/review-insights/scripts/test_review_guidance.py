@@ -972,6 +972,17 @@ class SeparatorTests(unittest.TestCase):
 
 
 class LinkDestinationTests(unittest.TestCase):
+    def test_a_link_resolves_from_the_guidance_files_folder_or_from_the_root_after_a_slash(self) -> None:
+        # `_resolved` kept a root-absolute destination's `/`, so `[a](/x.md)` in `dir/g.md` was the unsupplied
+        # `dir///x.md` even for a reviewer given `x.md`.
+        lines = ["[a](/x.md)", "[b](/docs/y.md)", "[c](./z.md)", "[d](../w.md)", "[e](/../out.md)", "`/x.md`"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h", "x.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual(
+            [(2, "docs/y.md"), (3, "dir/z.md"), (4, "w.md")],
+            [(item["line"], item["reference"]) for item in found],
+        )
+
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
         # read a link in a code span, and took `mailto:` for a file beside the guidance.

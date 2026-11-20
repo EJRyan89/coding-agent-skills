@@ -42,6 +42,7 @@ import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_destinations import link_destinations
+from link_targets import link_target
 from markdown_sections import PROSE_BLOCKS, blocks
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
@@ -468,20 +469,6 @@ def _overlap_rank(item: dict[str, Any]) -> tuple[Any, ...]:
     return item["relation"] != "conflict", -item["similarity"], item["repository"], item["paths"], item["lines"]
 
 
-def _resolved(base: str, reference: str) -> str | None:
-    """A relative Markdown reference resolved against the directory `base` is in, or None when it leaves the
-    repository."""
-    parts: list[str] = list(PurePosixPath(base).parent.parts) if base else []
-    for part in PurePosixPath(reference).parts:
-        if part == "..":
-            if not parts:
-                return None
-            parts.pop()
-        elif part != ".":
-            parts.append(part)
-    return "/".join(parts) or None
-
-
 def _markdown_links(lines: list[str]) -> dict[int, list[str]]:
     """The Markdown files the lines link to, by line number, each as a path in the repository: read through
     ejryan89-skill-core's link_destinations as CommonMark reads a destination, so a percent-encoded, escaped, or `<…>`
@@ -495,7 +482,9 @@ def _markdown_links(lines: list[str]) -> dict[int, list[str]]:
 
 def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
-    was not given."""
+    was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
+    or from the repository root when it starts with `/`; a path named in code counts as given when the reviewer was
+    given it as written, from the root, or from the guidance file's folder."""
     found: list[dict[str, Any]] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
@@ -506,8 +495,8 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
             lines = text_lines(text)
             linked = _markdown_links(lines)
             for number, line in enumerate(lines, start=1):
-                links = [_resolved(path, target) for target in linked.get(number, [])]
-                named = [(target, _resolved(path, target)) for target in CODE_REFERENCE.findall(line)]
+                links = [link_target(path, target) for target in linked.get(number, [])]
+                named = [(target, link_target(path, target)) for target in CODE_REFERENCE.findall(line)]
                 candidates = [link for link in links if link is not None and link not in given]
                 candidates += [target for target, near in named if target not in given and near not in given]
                 found += [
