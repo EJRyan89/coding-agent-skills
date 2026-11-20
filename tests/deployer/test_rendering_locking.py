@@ -189,8 +189,26 @@ class RenderedExecutableTests(DeployerTestCase):
             staged.skills["alpha"].update({"scripts/Notes.txt": b"one\n", "scripts/notes.txt": b"two\n"})
             return staged
 
-        with mock.patch.object(render, "render", colliding), mock.patch("path_keys.folds_case", return_value=True):
-            self.deploy_fails("--all", pattern=r"alpha/scripts/Notes\.txt and alpha/scripts/notes\.txt name one file")
+        written: list[Path] = []
+        real_write = fsops.write_file
+
+        def recorded(path: Path, content: bytes) -> None:
+            written.append(path)
+            real_write(path, content)
+
+        with (
+            mock.patch.object(render, "render", colliding),
+            mock.patch("path_keys.folds_case", return_value=True),
+            mock.patch.object(fsops, "write_file", recorded),
+        ):
+            result = self.deploy_fails(
+                "--all", pattern=r"alpha/scripts/Notes\.txt and alpha/scripts/notes\.txt name one file"
+            )
+        self.assertIn(render.FOLDED_PATHS_REMEDY, result.output)
+        # Refused before staging or the journal's first write, on a file system that folds case and one that does not.
+        self.assertEqual([], written)
+        paths = Paths(self.source, self.home)
+        self.assertFalse(os.path.lexists(paths.staging_root))
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_a_token_in_a_cmd_fence_is_refused_before_anything_is_deployed(self) -> None:

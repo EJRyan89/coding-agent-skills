@@ -311,6 +311,16 @@ class LinkToNothingOnTests(unittest.TestCase):
         (self.root / "folder" / "inner").symlink_to(self.root / "gone", target_is_directory=True)
         self.assertEqual(through / "inner", link_to_nothing_on(through / "inner" / "run"))
         self.assertIsNone(link_to_nothing_on(through / "run"))
+        # Resolving takes a `..` after a missing part by name alone, then follows the link after it.
+        self.assertEqual(self.root / "link", link_to_nothing_on(self.root / "missing" / ".." / "link" / "out"))
+        # A `..` after a link to a folder leaves the folder it leads to, as resolving does, not the link's own folder.
+        (self.root / "folder" / "sub").mkdir()
+        (self.root / "deep").symlink_to(self.root / "folder" / "sub", target_is_directory=True)
+        (self.root / "folder" / "dang").symlink_to(self.root / "gone", target_is_directory=True)
+        self.assertEqual(
+            Path(os.path.realpath(self.root / "folder")) / "dang",
+            link_to_nothing_on(self.root / "deep" / ".." / "dang"),
+        )
 
     def test_a_stat_that_fails_reaches_the_caller(self) -> None:
         failure = PermissionError(errno.EACCES, "denied")

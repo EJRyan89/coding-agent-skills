@@ -42,6 +42,7 @@ from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
 
 from device_names import is_reserved_device_name
+from path_containment import resolved_path
 
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "refuses a glob pattern Windows reads as more than names a forward slash separates, "
@@ -170,16 +171,22 @@ def is_occupied(path: Path) -> bool:
 
 
 def link_to_nothing_on(path: Path) -> Path | None:
-    """The first place along `path` as given, from its first part down to the path itself, where a symbolic link to
-    nothing stands, or None when none does; the stat's `OSError` when it cannot tell. A writer that resolves a path
-    before it creates a folder there asks it of the path as given, since resolving takes such a link to the place it
-    leads to, which the folder's creation would then make. The walk stops at the first place nothing is at, since
-    nothing below it is there either."""
-    for place in reversed((path, *path.parents)):
-        if not is_occupied(place):
-            return None
-        if not is_there(place):
-            return place
+    """The first place along `path` as given, from its first part to the path itself, where a symbolic link to nothing
+    stands, or None when none does; the stat's `OSError` when it cannot tell. A writer that resolves a path before it
+    creates a folder there asks it of the path as given, since resolving takes such a link to the place it leads to,
+    which the folder's creation would then make.
+
+    It walks the parts as `path_containment.resolved_path` resolves them, so it finds every link that resolving would
+    follow: a `..` leaves a place that is there for the parent of where it resolves, and leaves a place nothing is at by
+    its name alone, so a link to nothing after a missing part and a `..`, as in `missing/../link`, is found too."""
+    current = Path(path.anchor)
+    for part in path.parts[1:] if path.anchor else path.parts:
+        if part == "..":
+            current = resolved_path(current).parent if is_occupied(current) else current.parent
+            continue
+        current = current / part
+        if is_occupied(current) and not is_there(current):
+            return current
     return None
 
 

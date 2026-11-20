@@ -1757,6 +1757,21 @@ class RefusalTests(PrepareFixture):
         self.assertFalse(os.path.lexists(target))
         self.assertEqual([], self.git.calls)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_run_directory_reached_through_a_dot_dot_after_a_missing_part_is_refused_at_the_link(self) -> None:
+        # Resolving takes the `..` after `missing` by name alone, then follows the link to nothing after it.
+        target = self.root / "elsewhere"
+        self.run_dir.symlink_to(target, target_is_directory=True)
+        self.assert_refused(
+            review_run.PipelineError,
+            "Run directory <root>/missing/../run/below goes through <root>/run, a link to nothing, which prepare "
+            "would follow; remove the link or name another directory",
+            reads=[("get_pull", REPOSITORY, NUMBER)],
+            run_directory=self.root / "missing" / ".." / "run" / "below",
+        )
+        self.assertFalse(os.path.lexists(target))
+        self.assertFalse(os.path.lexists(self.root / "missing"))
+
 
 class FailureCleanupTests(PrepareFixture):
     """A failure after the run directory exists: prepare removes a directory it created and leaves a given one."""
