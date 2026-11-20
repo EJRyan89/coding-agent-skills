@@ -233,6 +233,29 @@ class LastReleaseTests(unittest.TestCase):
                 self.assertEqual(["v1.0.0", "v1.0.1", "v1.0.2"], releases_naming(client, self.root, commit))
                 self.assertEqual(["v2.0.0", "v2.0.1"], releases_naming(client, self.root, later))
 
+    def broken_tag(self, name: str) -> None:
+        """An annotated tag whose target the repository has lost, which git reads as `fatal: bad tag`."""
+        (self.root / "gone.txt").write_text("gone", encoding="utf-8")
+        target = self.git("hash-object", "-w", "gone.txt")
+        self.git("tag", "-a", "-m", "broken", name, target)
+        (self.root / ".git" / "objects" / target[:2] / target[2:]).unlink()
+
+    def test_a_broken_tag_of_another_name_leaves_the_releases_naming_the_commit_listed(self) -> None:
+        commit = self.commit("released")
+        self.git("tag", "-a", "-m", "release", "v1.0.0", commit)
+        self.broken_tag("nightly")
+        for client in (GitClient(one_level_git), GitClient()):
+            with self.subTest(client=client.runner.__name__):
+                self.assertEqual(["v1.0.0"], releases_naming(client, self.root, commit))
+
+    def test_a_broken_release_tag_fails_closed_never_reads_as_no_release(self) -> None:
+        # Which commit a release tag whose target is lost names is unknown, so its pin's owner is never guessed.
+        commit = self.commit("released")
+        self.git("tag", "-a", "-m", "release", "v1.0.0", commit)
+        self.broken_tag("v1.0.1")
+        with self.assertRaises(GitError):
+            releases_naming(GitClient(), self.root, commit)
+
     def test_a_tag_listing_that_is_not_its_fields_raises_never_reads_as_no_release(self) -> None:
         with self.assertRaises(GitError):
             releases_naming(answering(f"{'1' * 40} refs/tags/v1.0.0\n", ""), self.root, "HEAD")

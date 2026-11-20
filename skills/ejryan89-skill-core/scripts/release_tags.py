@@ -54,6 +54,8 @@ from git_client import GitClient, GitError, output_lines
 
 TAGS = "refs/tags/"
 RELEASE_PREFIX = "v"
+# The tags a release may be among, as a for-each-ref pattern: every tag named with the release prefix.
+RELEASE_TAGS = f"{TAGS}{RELEASE_PREFIX}*"
 # What --raises takes for a commit no release tag reaches, which counts as version zero.
 UNTAGGED = "untagged"
 # What releases_naming reads of each tag, NUL-separated since no field can hold one: its object, the object its tag
@@ -99,10 +101,14 @@ def releases_naming(client: GitClient, repository: str | Path, commit: str) -> l
     names, and when that is still a tag, as on such a Git, the object `rev-parse <tag>^{}` peels it to, which follows
     every tag object on any Git.
 
-    Raises GitError when git cannot read them, a commit the repository does not hold among the causes, since the commit
-    is peeled before the tags are matched with it.
+    Only tags named like a release, `v` and anything after it, are listed, since reading what a tag peels to fails for
+    one whose target the repository lost, and a broken tag of another name must not hide the releases beside it.
+
+    Raises GitError when git cannot read them, a commit the repository does not hold or a release tag whose target it
+    lost among the causes, since the commit is peeled before the tags are matched with it, and which commit a broken
+    release tag names is unknown, so no pin's owner is guessed from the others.
     """
-    listed = client.output(["for-each-ref", f"--format={PEEL_FORMAT}", TAGS], directory=repository)
+    listed = client.output(["for-each-ref", f"--format={PEEL_FORMAT}", RELEASE_TAGS], directory=repository)
     named = client.commit_of(commit, directory=repository)
     if named is None:
         raise GitError(f"{flat_text(commit)} names no commit in {flat_text(str(repository))}")
