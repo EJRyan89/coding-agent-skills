@@ -78,6 +78,9 @@ COPILOT_TIMEOUT_SECONDS = 1800
 COPILOT_OUTPUT_BYTES = 1024 * 1024
 HOST_CLAIM = "copilot-host.json"
 HOST_LOCK = "copilot-host.lock"
+# What a refused host lock tells the user to keep on a local disk: a run folder lives under the system temporary
+# directory.
+HOST_LOCK_PLACE = "the system temporary directory"
 # A claimed host that has not recorded its process this long after dispatch never started.
 HOST_START_GRACE_SECONDS = 60
 # How long past the Copilot limit a host may take to record its outcome before it counts as gone.
@@ -158,7 +161,7 @@ def _outcome_path(run: Path, attempt: int) -> Path:
 
 def host_lock(run: Path) -> ResourceLock:
     """Held around every read-decide-write of a run's claim, its promotion, and check's set-aside."""
-    return ResourceLock(run / HOST_LOCK)
+    return ResourceLock(run / HOST_LOCK, place=HOST_LOCK_PLACE)
 
 
 def read_claim(run: Path) -> dict[str, Any] | None:
