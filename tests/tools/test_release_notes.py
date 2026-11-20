@@ -68,15 +68,25 @@ class BodyEntriesTests(unittest.TestCase):
             f"{em}- more",
             f"{em}# more",
             "    - more",
+            # Past MAX_BLOCK_INDENT columns a heading or a quote is the paragraph's text, as markdown_sections'
+            # `starts_block` reads it.
+            "    # more",
+            "    > more",
         ):
             with self.subTest(continued=continued):
                 joined = f"Some text {continued.lstrip(' ')}"
                 self.assertEqual([joined], release_notes.unwrapped(f"Some text\n{continued}"))
-        for started in ("1. more", "- more", "  * more", "# more", "> more", "---", " * * *", "___"):
+        for started in ("1. more", "- more", "  * more", "# more", "#", "> more", "| a |", "---", " * * *", "___"):
             with self.subTest(started=started):
                 self.assertEqual(["Some text", started], release_notes.unwrapped(f"Some text\n{started}"))
         # Below a list item, any item starts its own line, and a line of no-break spaces is text, not a blank line.
         self.assertEqual(["1. first", "2. second"], release_notes.unwrapped("1. first\n2. second"))
+        # A line the item holds is read from the column of its content: a heading or a quote up to MAX_BLOCK_INDENT
+        # columns past it starts its own line, and one further in continues the item.
+        for started in ("     # Heading", "    > quoted"):
+            with self.subTest(started=started):
+                self.assertEqual(["- item", started], release_notes.unwrapped(f"- item\n{started}"))
+        self.assertEqual(["- item # deep"], release_notes.unwrapped("- item\n      # deep"))
         self.assertEqual([f"Some text {nbsp} more"], release_notes.unwrapped(f"Some text\n{nbsp}\nmore"))
 
     def test_a_heading_keeps_any_unicode_space_markdown_keeps_and_a_number_is_ascii(self) -> None:

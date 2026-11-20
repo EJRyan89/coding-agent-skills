@@ -10,10 +10,10 @@ script's old ones as well as its new, and each top-level function or class a hun
 (`def`/`class` lines and the hunk header's function context). It searches the documents under the snapshot (the
 top-level Markdown, `docs/`, the agent definitions, and every skill's SKILL.md and references, a repository skill's
 included, but no release's notes or evaluation results) for those names, but only where a document writes code:
-inside a code span or a fenced block. A file name counts as a path's last segment there; a module, function, or class
-name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose never counts, nor `main`,
-which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is also a common word does
-not match every sentence that uses the word. A suite's names, by validation's rule, are left out.
+inside a code span or a code block, fenced or indented. A file name counts as a path's last segment there; a module,
+function, or class name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose never
+counts, nor `main`, which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is also a
+common word does not match every sentence that uses the word. A suite's names, by validation's rule, are left out.
 
 A document the snapshot records leaving out, such as `CLAUDE.md`, `AGENTS.md`, and every repository skill's SKILL.md
 and references, which it leaves out as `agent-instruction` so no reviewer reads them, cannot be searched. When the diff
@@ -22,7 +22,7 @@ so no passage in it was searched; judge from the diff whether it may name what c
 opens the route as a passage does, so a route never closes as "no passage names the change" over a document it never
 read.
 
-It writes each matching passage (a paragraph, a list item, a table row, a heading, or a fenced block) as
+It writes each matching passage (a paragraph, a list item, a blockquote, a table row, a heading, or a code block) as
 `PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, with
 `, renamed from <old path>` after the changed file when the name is a renamed script's old one, then the passage, at
 most MAX_PASSAGES of them taken in turn from each name, the names fewest passages name first, with an `OMITTED <n>`
@@ -73,16 +73,7 @@ from conditions import (
     unset_variables_line,
 )
 from console import run_main
-from markdown_sections import (
-    ATX_HEADING,
-    COMMONMARK_CODE_SPAN,
-    MARKDOWN_SPACE,
-    MAX_BLOCK_INDENT,
-    find_fences,
-    indentation,
-    is_blank,
-    list_item,
-)
+from markdown_sections import CODE, COMMONMARK_CODE_SPAN, HEADING, TABLE_ROW, blocks
 from text_lines import LINE_BREAK
 
 DUPLICATION_ALLOWED = {
@@ -121,9 +112,8 @@ MAX_PASSAGE_CHARACTERS = 1200
 
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 DEFINITION = re.compile(r"^(async\s+def|def|class)\s+([A-Za-z_]\w*)")
-# A table's delimiter row, which holds no passage. ejryan89-skill-core's markdown_sections reads every other block
-# rule a passage is split by, as CommonMark does: a fence, a list item, a heading, and the space and the tab as
-# Markdown's whitespace.
+# A table's delimiter row, which holds no passage. ejryan89-skill-core's markdown_sections' `blocks` splits a document
+# into the blocks a passage is.
 TABLE_SEPARATOR = re.compile(r"[ \t]*\|[ \t:|-]+\|[ \t]*")
 
 
@@ -268,46 +258,20 @@ def unsearched(root: Path) -> list[tuple[str, str]]:
     )
 
 
-def _single_line(line: str) -> bool:
-    """Whether a line is a passage of its own: an ATX heading, or a table row, indented at most MAX_BLOCK_INDENT
-    columns."""
-    return ATX_HEADING.fullmatch(line) is not None or (
-        indentation(line) <= MAX_BLOCK_INDENT and line.lstrip(MARKDOWN_SPACE).startswith("|")
-    )
-
-
 def units(text: str) -> Iterator[Unit]:
-    """A document's passages: each heading, table row, list item, paragraph, and fenced block, with its first line.
-    Fences, list items, headings, and blank lines are read through ejryan89-skill-core's markdown_sections."""
-    lines = LINE_BREAK.split(text)
-    fences = {fence.opener: fence for fence in find_fences(lines)}
-    block: list[str] = []
-    start = 0
-    index = 0
-    while index < len(lines):
-        line, number = lines[index], index + 1
-        fence = fences.get(index)
-        single = fence is None and _single_line(line)
-        if fence is not None or is_blank(line) or single or list_item(line) is not None:
-            if block:
-                yield Unit(start, "\n".join(block).strip(), False)
-            block = []
-        if fence is not None:
-            body = [fence.text(lines[inside]) for inside in fence.body()]
-            if body:
-                yield Unit(number + 1, "\n".join(body), True)
-            index = fence.lines().stop
-            continue
-        if single:
-            if not TABLE_SEPARATOR.fullmatch(line):
-                yield Unit(number, line.strip(MARKDOWN_SPACE), False)
-        elif not is_blank(line):
-            if not block:
-                start = number
-            block.append(line)
-        index += 1
-    if block:
-        yield Unit(start, "\n".join(block).strip(), False)
+    """A document's passages: each heading, table row but a delimiter row, list item, paragraph, blockquote, and code
+    block, fenced or indented, with its first line, as ejryan89-skill-core's markdown_sections' `blocks` walks them,
+    which states its limits. A code block is all code; any other passage keeps its lines as written, and only its
+    code spans are code. A fenced block with no body is no passage."""
+    for block in blocks(LINE_BREAK.split(text)):
+        if block.kind == CODE:
+            if block.lines:
+                yield Unit(block.start + 1, "\n".join(block.lines), True)
+        elif block.kind in {HEADING, TABLE_ROW}:
+            if not TABLE_SEPARATOR.fullmatch(block.lines[0]):
+                yield Unit(block.start + 1, block.text(), False)
+        else:
+            yield Unit(block.start + 1, "\n".join(block.lines).strip(), False)
 
 
 def passages(root: Path, names: list[Name]) -> list[Passage]:

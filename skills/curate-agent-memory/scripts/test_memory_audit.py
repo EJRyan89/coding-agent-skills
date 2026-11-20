@@ -3171,6 +3171,8 @@ def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separato
         ),
         pytest.param("Text.\n    # not heading\n", [(1, "Text. # not heading")], id="lazy-heading-shape"),
         pytest.param("- an item\n    # Item heading\n", [(1, "- an item")], id="heading-in-item"),
+        # Past MAX_BLOCK_INDENT columns from the item's content, a heading-shaped line continues the item's text.
+        pytest.param("- an item\n      # deep text\n", [(1, "- an item # deep text")], id="deep-line-in-item"),
         pytest.param("- an item\n# Heading\nAfter.\n", [(1, "- an item"), (3, "After.")], id="heading-after-item"),
         pytest.param("Text.\n   # Heading\nAfter.\n", [(1, "Text."), (3, "After.")], id="heading-indented-three"),
         pytest.param("Text.\n\u00a0\nMore.\n", [(1, "Text. \u00a0 More.")], id="no-break-space-line"),
@@ -3222,6 +3224,28 @@ def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line
     rebuilt = memory_audit.reindex(tmp_path)
     assert rebuilt["dropped"] == []
     assert rebuilt["content"] == f"# Notes{separator}- [Gone](gone.md) — x\n- [Plain](plain.md) — First # Second\n"
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        # The documents every reader of Markdown's blocks splits alike, through markdown_sections' `blocks`.
+        pytest.param("Text.\n> quoted\n", [(1, "Text."), (2, "> quoted")], id="quote"),
+        pytest.param("Text.\n***\nMore.\n", [(1, "Text."), (3, "More.")], id="thematic-break"),
+        pytest.param("Text.\n1. first\n", [(1, "Text."), (2, "1. first")], id="item-numbered-1"),
+        pytest.param("Text.\n2. second\n", [(1, "Text. 2. second")], id="line-numbered-2"),
+        pytest.param("Text.\n\n    code\n", [(1, "Text.")], id="indented-code"),
+        pytest.param(
+            "1. Run it.\n\n   It prints.\n2. Then stop.\n",
+            [(1, "1. Run it."), (3, "It prints."), (4, "2. Then stop.")],
+            id="item-after-an-item-s-paragraph",
+        ),
+    ],
+)
+def test_destination_blocks_split_as_every_markdown_block_reader_splits_them(
+    document: str, expected: list[tuple[int, str]]
+) -> None:
+    assert memory_audit.passages(document.split("\n")) == expected
 
 
 def test_a_destination_document_is_read_as_utf_8_with_each_undecodable_byte_replaced(tmp_path: Path) -> None:
