@@ -2004,8 +2004,10 @@ def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int
     """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
     program, itself or as any argument an exit call of ejryan89-skill-core's exit_calls is given, by position or by
     any keyword, which Python runs before it calls the exit, even one it then refuses, so it runs whenever the module
-    is imported. A stated limit: a main run nested inside an exit call's argument, as `sys.exit(main() or 0)` or
-    `sys.exit(int(main()))`, is not read; the argument itself must be the call."""
+    is imported. A stated limit: a main run anywhere but as the statement itself or as an exit call's argument is not
+    read, such as one nested inside that argument, as `sys.exit(main() or 0)` or `sys.exit(int(main()))`, an
+    assignment's value, as `code = main()`, an argument of another call, as `print(main())`, or a statement inside a
+    module-level loop."""
     guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
     lines: list[int] = []
     for statement in module_statements(tree.body):

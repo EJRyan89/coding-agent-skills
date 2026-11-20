@@ -15,6 +15,14 @@ allowance's reason says which callers add the step. A caught refusal's lines are
 body makes into the deployer's own functions, so one an excused function raises through a helper, as
 `validate_directories` lets `_validate_absolute_directory`'s escape, may lack its step, and so may one from any call
 whose target the policy cannot name, such as a method of a value the deployer builds at run time.
+
+Stated limits, none of which deployer code writes:
+- A deployer function or lambda handed to a builtin or an outside import, as `sorted(xs, key=check)` or
+  `shutil.rmtree(p, onexc=check)`, is not followed, so a refusal it raises without its step reads as COVERED.
+- A call Python makes itself, such as a property, `__enter__` or `__exit__`, `__post_init__`, an inherited
+  `__init__`, or a decorator's wrapper, is not followed.
+- A call through a local name, a parameter, or a module assignment that shadows a builtin or a module-level function
+  is read as that builtin or function.
 """
 
 from __future__ import annotations

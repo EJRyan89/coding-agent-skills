@@ -408,6 +408,85 @@ class RefusalStepFixtures(unittest.TestCase):
             self.problems(files),
         )
 
+    def test_a_caught_refusal_is_followed_into_each_kind_of_call_and_fails_closed_where_it_cannot_be(self) -> None:
+        # One case per branch of the walk: a call rooted in no name, a deployer name with no definition, a class whose
+        # __init__ reaches the excused function, one whose __init__ does not, and a class with no __init__ of its own.
+        files = {
+            "deployer/objects.py": (
+                'STEP_ALLOWED = {"excused": "its callers add the step"}\n'  # 1
+                "from .config import missing\n"  # 2
+                "from .errors import DeployError\n"  # 3
+                "\n"  # 4
+                "\n"  # 5
+                "def excused():\n"  # 6
+                '    raise DeployError("ERROR: Excused")\n'  # 7
+                "\n"  # 8
+                "\n"  # 9
+                "class Reaching:\n"  # 10
+                "    def __init__(self):\n"  # 11
+                "        excused()\n"  # 12
+                "\n"  # 13
+                "\n"  # 14
+                "class Quiet:\n"  # 15
+                "    def __init__(self):\n"  # 16
+                "        self.count = len([])\n"  # 17
+                "\n"  # 18
+                "\n"  # 19
+                "class Plain:\n"  # 20
+                "    count = 0\n"  # 21
+                "\n"  # 22
+                "\n"  # 23
+                "def unnamed():\n"  # 24
+                "    try:\n"  # 25
+                "        (lambda: excused())()\n"  # 26
+                "    except DeployError as exc:\n"  # 27
+                "        raise DeployError(*exc.lines) from exc\n"  # 28: a call rooted in a lambda
+                "\n"  # 29
+                "\n"  # 30
+                "def made(factory):\n"  # 31
+                "    try:\n"  # 32
+                "        factory()()\n"  # 33
+                "    except DeployError as exc:\n"  # 34
+                "        raise DeployError(*exc.lines) from exc\n"  # 35: a call of a call's result
+                "\n"  # 36
+                "\n"  # 37
+                "def undefined():\n"  # 38
+                "    try:\n"  # 39
+                "        missing()\n"  # 40
+                "    except DeployError as exc:\n"  # 41
+                "        raise DeployError(*exc.lines) from exc\n"  # 42: a deployer name with no definition
+                "\n"  # 43
+                "\n"  # 44
+                "def built():\n"  # 45
+                "    try:\n"  # 46
+                "        Reaching()\n"  # 47
+                "    except DeployError as exc:\n"  # 48
+                "        raise DeployError(*exc.lines) from exc\n"  # 49: its __init__ reaches excused
+                "\n"  # 50
+                "\n"  # 51
+                "def quiet():\n"  # 52
+                "    try:\n"  # 53
+                "        Quiet()\n"  # 54
+                "    except DeployError as exc:\n"  # 55
+                "        raise DeployError(*exc.lines) from exc\n"  # 56: its __init__ reaches nothing excused
+                "\n"  # 57
+                "\n"  # 58
+                "def plain():\n"  # 59
+                "    try:\n"  # 60
+                "        Plain()\n"  # 61
+                "    except DeployError as exc:\n"  # 62
+                "        raise DeployError(*exc.lines) from exc\n"  # 63: no __init__ of its own
+            ),
+            "deployer/config.py": "VALUE = 1\n",
+        }
+        self.assertEqual(
+            [
+                f"deployer/objects.py:{line} DeployError in {scope}" + UNFOLLOWED_SUFFIX
+                for line, scope in ((28, "unnamed"), (35, "made"), (42, "undefined"), (49, "built"))
+            ],
+            self.problems(files),
+        )
+
     def test_following_a_caught_refusal_through_recursion_or_a_cycle_ends(self) -> None:
         # Each function is entered once per walk, so a recursive one and two that call each other end: the walk below
         # finds no excused callee and reads the caught lines as built with their step, and one that reaches the
