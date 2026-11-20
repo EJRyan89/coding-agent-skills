@@ -532,6 +532,19 @@ class ThreatModelPolicy(unittest.TestCase):
         )
         self.assertEqual([], self.problems({THREAT_MODEL_DOC: table}))
 
+    def test_a_citation_whose_closing_backtick_is_part_of_a_longer_run_names_no_test(self) -> None:
+        # CommonMark reads a span only between whole runs of one length, so neither run here opens one, and the row
+        # cites nothing in code. The old reader closed the span on the double run's first backtick.
+        table = (
+            "# Contract\n\n## Threat model\n\n"
+            "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
+            "| Runs | Text. | `test_adversarial_inputs.py::test_held`` |\n"
+        )
+        self.assertEqual(
+            [f"{THREAT_MODEL_DOC}: the threat-model row 'Runs' names no test in test_adversarial_inputs.py"],
+            self.problems({THREAT_MODEL_DOC: table}),
+        )
+
     def test_a_contract_without_the_table_fails(self) -> None:
         self.assertEqual(
             [f"{THREAT_MODEL_DOC} has no table under '## Threat model'"],

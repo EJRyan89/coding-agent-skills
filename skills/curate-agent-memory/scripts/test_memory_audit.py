@@ -1305,6 +1305,18 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
         self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
 
+    def test_a_title_s_backtick_after_an_unmatched_run_is_written_as_a_quote_when_it_pairs_with_the_hook(self) -> None:
+        # CommonMark reads the title's double run, which no other matches, as text, and pairs its single backtick with
+        # the hook's first one into a code span over the destination. The old reader paired the double run with that
+        # single backtick, so the line was written as given and rendered on GitHub as no link.
+        write(self.memory_dir / "f.md", "---\nname: ``b `\ndescription: '`x` b'\n---\nBody.\n")
+        for _ in range(2):
+            self.reindex("--write")
+            self.assertEqual("- [''b '](f.md) — `x` b\n", self.index.read_text(encoding="utf-8"))
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
+        self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
+
     def test_inline_code_in_a_hook_is_kept_when_the_title_holds_no_backtick(self) -> None:
         # Writing every backtick as `'` rewrote inline code in hand-written and description hooks on every reindex.
         write(self.memory_dir / "kept.md", "Body.\n")

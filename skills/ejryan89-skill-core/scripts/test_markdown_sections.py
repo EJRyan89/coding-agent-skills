@@ -22,9 +22,11 @@ from markdown_sections import (
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    CodeSpan,
     block_fences,
     blocks,
     code_block_lines,
+    code_spans,
     document_headings,
     find_fences,
     is_blank,
@@ -34,6 +36,7 @@ from markdown_sections import (
     markdown_section,
     prose_code_spans,
     starts_block,
+    without_code_spans,
 )
 
 NBSP = chr(0xA0)
@@ -213,6 +216,62 @@ class CodeSpanTests(unittest.TestCase):
         )
         self.assertEqual("see  and [x](y)", COMMONMARK_CODE_SPAN.sub("", "see ``[a](b)`` and [x](y)"))
         self.assertEqual([], COMMONMARK_CODE_SPAN.findall("``open\nclose``"))
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        pytest.param(
+            "`a` and ``b ` c`` and ```d```",
+            [CodeSpan(0, 3, 1, "a"), CodeSpan(8, 17, 2, "b ` c"), CodeSpan(22, 29, 3, "d")],
+            id="each run closes on the next run of its length and a span may hold a shorter run",
+        ),
+        # The issue's line: CommonMark reads the double run, which no other matches, as text, and pairs the single
+        # backticks after it into a span over the link. The old pattern opened a span on the double run's last backtick.
+        pytest.param("``a` [x](y.md) `", [CodeSpan(3, 16, 1, " [x](y.md) ")], id="an unmatched run is text"),
+        # The old pattern closed a single run's span on the first backtick of the double run.
+        pytest.param("`a``", [], id="a span never closes on part of a longer run"),
+        pytest.param("`` [x](y.md) ```", [], id="a double run never closes on part of a triple run"),
+        pytest.param("a``b`` ```c``", [CodeSpan(1, 6, 2, "b")], id="runs after a span pair only with their own length"),
+        pytest.param("````", [], id="one run is no span"),
+        pytest.param("``open\nclose``", [], id="a line break ends a run's search"),
+        pytest.param("x\n`b`", [CodeSpan(2, 5, 1, "b")], id="a span after a line break keeps its column"),
+    ],
+)
+def test_a_code_span_pairs_whole_backtick_runs_as_commonmark_does(line: str, expected: list[CodeSpan]) -> None:
+    assert code_spans(line) == expected
+
+
+def test_a_span_s_text_starts_past_its_opening_run() -> None:
+    line = "see ``a ` b`` here"
+    [span] = code_spans(line)
+    assert (span.text_start, line[span.text_start : span.end - span.run]) == (6, "a ` b")
+
+
+@pytest.mark.parametrize(
+    ("fill", "expected"),
+    [("", "see  and [x](y) ``"), (" ", "see " + " " * 10 + " and [x](y) ``")],
+    ids=["removed", "blanked"],
+)
+def test_a_line_without_its_code_spans_keeps_an_unmatched_run(fill: str, expected: str) -> None:
+    assert without_code_spans("see ``[a](b)`` and [x](y) ``", fill) == expected
+
+
+# Lines of 65,536 characters whose runs the old pattern searched in time growing with the square of a run's length, or
+# with each run's length times the line's: one long run that no other matches, a run of every length up to the
+# line's square root, none matched, and many single-backtick spans.
+SPAN_SCALING = {
+    "one long unmatched run": "`" * 32_768 + "a" * 32_768,
+    "unmatched runs of every length": "".join("`" * length + "a" for length in range(1, 362)),
+    "many spans": "`a` " * 16_384,
+}
+
+
+@pytest.mark.parametrize("line", SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
+def test_a_line_s_code_spans_are_read_in_time_in_proportion_to_it(line: str) -> None:
+    started = time.perf_counter()
+    code_spans(line)
+    assert time.perf_counter() - started < 1.0
 
 
 class HtmlCommentTests(unittest.TestCase):

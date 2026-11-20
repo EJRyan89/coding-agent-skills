@@ -5418,6 +5418,8 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             "\t@tabbed.md\n": [],
             "    @a.md\n\n    @b.md\n\nText @c.md\n": ["c.md"],
             "Keep ``@two `ticks`` literal and @kept.md.\n": ["kept.md"],
+            # A double run that no other matches is text, and the single backticks after it hold the import in code.
+            "Keep ``a` and @in_span.md `\n": [],
             # A thematic break ends a paragraph as a heading does, and is no list item even spelled with bullets.
             "***\n    @after_rule.md\n": [],
             "* * *\n    @spaced_rule.md\n": [],

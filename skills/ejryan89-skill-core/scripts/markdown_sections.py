@@ -1,12 +1,13 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
 reader, the fenced code block reader, the block walker, the labels of a fence in an executable language, the inline
-code span patterns, the HTML comment pattern, and the block rules every reader of Markdown's structure reads as
-CommonMark does: the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
+code span patterns and reader, the HTML comment pattern, and the block rules every reader of Markdown's structure reads
+as CommonMark does: the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
 import bisect
 import re
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 
@@ -50,9 +51,13 @@ ATX_HEADING = re.compile(r" {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+
 EMPTY_ATX_HEADING = re.compile(r" {0,3}#{1,6}[ \t]*")
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
-# An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
-# as the first group and the text as the second. A reader that must not take a span's text for prose, such as a link
-# or a name a document cites, reads spans by it, since a span written with two backticks may hold one.
+# A run of backticks, which opens or closes an inline code span only whole.
+BACKTICK_RUN = re.compile(r"`+")
+# An inline code span read by a regular expression: a run of backticks, its text, and a run of the same backticks, with
+# the run as the first group and the text as the second. It closes a span on part of a longer run and opens one on the
+# end of a run that no other matches, where CommonMark reads text, and its search takes time growing with the square of
+# a line's backtick run. It is kept only for forms_considered's search between positions; every other reader of
+# CommonMark's code spans reads them through code_spans.
 COMMONMARK_CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 # An HTML comment, which Markdown renders as nothing, across lines.
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -777,6 +782,78 @@ def _thematic_from(line: str) -> int:
     while index and text[index - 1] in (text[-1], " ", "\t"):
         index -= 1
     return index
+
+
+@dataclass(frozen=True)
+class CodeSpan:
+    """An inline code span: the column of its opening backtick run, the column just past its closing run, how many
+    backticks each run holds, and its text as written between them, its spaces kept."""
+
+    start: int
+    end: int
+    run: int
+    text: str
+
+    @property
+    def text_start(self) -> int:
+        """The column of the span's text, just past its opening run."""
+        return self.start + self.run
+
+
+def code_spans(line: str) -> list[CodeSpan]:
+    """Every inline code span of `line`, left to right, as CommonMark pairs backtick runs. A whole run opens a span,
+    which the next whole run of the same length closes, and a run that no later run matches is text, so a span never
+    closes on part of a longer run or opens on the end of one. A span is read within one line: a line break in `line`
+    ends every run's search. A reader that must not take a span's text for prose, such as a link or a name a document
+    cites, reads spans by it, since a span written with two backticks may hold one.
+
+    Limit: a backtick run after a backslash still opens a span, where CommonMark reads its first backtick as escaped
+    text and lets only the rest of the run open one.
+
+    Each run is read once as an opener and passed over once as a candidate closer, so the time is linear in the
+    line's length, however its runs are written."""
+    spans: list[CodeSpan] = []
+    offset = 0
+    for segment in line.split("\n"):
+        spans.extend(_segment_code_spans(segment, offset))
+        offset += len(segment) + 1
+    return spans
+
+
+def _segment_code_spans(segment: str, offset: int) -> list[CodeSpan]:
+    """The code spans of a text with no line break, each column moved by `offset`."""
+    runs = [(run.start(), run.end()) for run in BACKTICK_RUN.finditer(segment)]
+    # The indexes of the runs of each length, in order; a run behind the one read is dropped once from its front.
+    by_length: dict[int, deque[int]] = {}
+    for index, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, deque()).append(index)
+    spans: list[CodeSpan] = []
+    index = 0
+    while index < len(runs):
+        start, end = runs[index]
+        same = by_length[end - start]
+        while same and same[0] <= index:
+            same.popleft()
+        if not same:
+            index += 1
+            continue
+        closer = same.popleft()
+        close_start, close_end = runs[closer]
+        spans.append(CodeSpan(offset + start, offset + close_end, end - start, segment[end:close_start]))
+        index = closer + 1
+    return spans
+
+
+def without_code_spans(line: str, fill: str = "") -> str:
+    """`line` with each code span code_spans reads replaced by `fill` once for each of its characters: removed by
+    default, or blanked with `" "`, which keeps every later column where it was."""
+    kept: list[str] = []
+    position = 0
+    for span in code_spans(line):
+        kept.append(line[position : span.start] + fill * (span.end - span.start))
+        position = span.end
+    kept.append(line[position:])
+    return "".join(kept)
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:
