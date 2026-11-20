@@ -971,10 +971,25 @@ def state_fixtures() -> list[dict[str, Any]]:
 
 
 def tracker_fixtures() -> list[dict[str, Any]]:
-    """A tracker record holding pull requests in two repositories, the reviews of the rows it showed, and the base of
-    one of the user's own reviews, one holding none, and ones written before records held the user's reviews or any
-    review."""
+    """A tracker record holding pull requests in two repositories, the reviews of the rows it showed, each with the
+    review version that identifies it or none, and the bases of the user's own reviews, each with GitHub's ID for the
+    review or none, one holding none, and ones written before records identified reviews beside their commits, held
+    the user's reviews, or held any review."""
     return [
+        {
+            "schema_version": 4,
+            "pulls": ["example/one#2", "example/one#3", "Example/Two#5", "example/two#6", "example/two#7"],
+            "reviews": {
+                "example/one#2": {"state": "stale", "reviewed_head_sha": "a" * 40, "reviewed_version": 2},
+                "example/one#3": {"state": "current", "reviewed_head_sha": "b" * 40, "reviewed_version": None},
+                "example/two#5": {"state": "missing", "reviewed_head_sha": None, "reviewed_version": None},
+            },
+            "user_reviews": {
+                "example/two#6": {"user_review_sha": "c" * 40, "base_sha": "d" * 40, "user_review_id": "PRR_fixture"},
+                "example/two#7": {"user_review_sha": "c" * 40, "base_sha": "d" * 40, "user_review_id": None},
+            },
+        },
+        {"schema_version": 4, "pulls": [], "reviews": {}, "user_reviews": {}},
         {
             "schema_version": 3,
             "pulls": ["example/one#2", "Example/Two#5", "example/two#6"],
