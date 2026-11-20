@@ -46,6 +46,8 @@ REVIEWED_BASE = "d" * 40
 # The tip of the base branch every collection reads unless a test moves it, and the tip a force push moves it to.
 BASE_TIP = "9" * 40
 MOVED_TIP = "8" * 40
+# GitHub's ID for the user's latest review, as the collection reads it.
+REVIEW_ID = "PRR_kwDOreview"
 # Each spelling of a status override key the configuration's rule takes and the pull-request identity rule refuses:
 # an owner no GitHub login spells (a leading, trailing, or doubled hyphen, a dot, an underscore that leads, ends, or
 # repeats or comes before a hyphen, more than 39 characters) and a name GitHub refuses (only dots, more than 100).
@@ -201,9 +203,10 @@ class FakeGitHub:
         return CommandResult(1, "", "HTTP 404: Not Found")
 
 
-def archived_record(head: str, number: int = 2, base: str = BASE_TIP) -> ReviewRecord:
+def archived_record(head: str, number: int = 2, base: str = BASE_TIP, version: int = 1) -> ReviewRecord:
     """A record of a review of `head` on the base commit `base`, by default the tip every collection reads, so a
-    review of the listed head reads current without a comparison."""
+    review of the listed head reads current without a comparison, as review version `version`, which starts its
+    findings afresh."""
     request = {
         "repository": "example/one",
         "pull_number": number,
@@ -246,7 +249,7 @@ def archived_record(head: str, number: int = 2, base: str = BASE_TIP) -> ReviewR
     return build_record(
         request,
         result,
-        version=1,
+        version=version,
         policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
         reviewed_at="2026-03-01T12:00:00+00:00",
     )
@@ -332,7 +335,7 @@ class TrackerPipelineFixture(unittest.TestCase):
             2,
             author={"login": "bob", "name": "  "},
             reviewDecision="REVIEW_REQUIRED",
-            reviews={"nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]},
+            reviews={"nodes": [{"id": REVIEW_ID, "state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]},
         )
         mine = pull_node(
             3,
@@ -384,9 +387,11 @@ class CollectTests(TrackerPipelineFixture):
                 "review_decision": None,
                 "user_review_state": None,
                 "user_review_sha": None,
+                "user_review_id": None,
                 "user_review_decision": None,
                 "reviewed_head_sha": None,
                 "reviewed_base_sha": None,
+                "reviewed_version": None,
                 "reviewed_incomplete": False,
                 "ai_review": None,
             },
@@ -395,10 +400,15 @@ class CollectTests(TrackerPipelineFixture):
         second = items["example/one#2"]
         self.assertIsNone(second["author_name"], "a blank display name is unset")
         self.assertEqual(
-            ("CHANGES_REQUESTED", USER_REVIEWED, "CHANGES_REQUESTED"),
-            (second["user_review_state"], second["user_review_sha"], second["user_review_decision"]),
+            ("CHANGES_REQUESTED", USER_REVIEWED, REVIEW_ID, "CHANGES_REQUESTED"),
+            (
+                second["user_review_state"],
+                second["user_review_sha"],
+                second["user_review_id"],
+                second["user_review_decision"],
+            ),
         )
-        self.assertEqual(OLD_HEAD, second["reviewed_head_sha"])
+        self.assertEqual((OLD_HEAD, 1), (second["reviewed_head_sha"], second["reviewed_version"]))
         self.assertEqual(REVIEWED_BASE, second["reviewed_base_sha"], "the base the record says it was reviewed on")
         self.assertEqual("CHANGES_REQUESTED", second["ai_review"]["verdict"])
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, second["ai_review"]["counts"])
@@ -531,14 +541,14 @@ class CollectTests(TrackerPipelineFixture):
         )
 
     def test_active_review_without_a_commit_fails_its_repository(self) -> None:
-        orphan = pull_node(1, reviews={"nodes": [{"state": "APPROVED", "commit": None}]})
+        orphan = pull_node(1, reviews={"nodes": [{"id": REVIEW_ID, "state": "APPROVED", "commit": None}]})
         self.github.pages["example/one"] = [page([orphan])]
         code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
         self.assertEqual(1, code)
         self.assertIn("user_review_sha is required for APPROVED", out)
 
     def test_a_base_branch_gone_or_naming_no_commit_collects_no_base_and_records_none(self) -> None:
-        review = {"nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]}
+        review = {"nodes": [{"id": REVIEW_ID, "state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]}
         bases: tuple[dict[str, Any] | None, ...] = (None, {"target": None}, {"target": {}})
         for base in bases:
             with self.subTest(base=base):
@@ -552,7 +562,7 @@ class CollectTests(TrackerPipelineFixture):
                 self.assertEqual({}, json.loads(self.record.read_text(encoding="utf-8"))["user_reviews"])
 
     def test_collect_reads_the_user_s_latest_deciding_review_beside_the_latest_review(self) -> None:
-        commented = {"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}
+        commented = {"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}
         nodes = [
             pull_node(1, reviews={"nodes": [commented]}, decidingReviews={"nodes": [{"state": "APPROVED"}]}),
             pull_node(2, reviews={"nodes": [commented]}, decidingReviews={"nodes": []}),
@@ -572,7 +582,7 @@ class CollectTests(TrackerPipelineFixture):
     def test_a_deciding_review_that_is_not_the_latest_deciding_one_fails_its_repository(self) -> None:
         approved = pull_node(
             1,
-            reviews={"nodes": [{"state": "APPROVED", "commit": {"oid": HEAD}}]},
+            reviews={"nodes": [{"id": REVIEW_ID, "state": "APPROVED", "commit": {"oid": HEAD}}]},
             decidingReviews={"nodes": [{"state": "CHANGES_REQUESTED"}]},
         )
         self.github.pages["example/one"] = [page([approved])]
@@ -604,7 +614,9 @@ class CollectTests(TrackerPipelineFixture):
 
     def test_a_failed_ancestry_comparison_fails_its_repository(self) -> None:
         review_fixture.commit_fixture(self.archive)
-        reviews = [{"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]  # not a review's head, so compared
+        reviews = [
+            {"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}
+        ]  # not a review's head, so compared
         node = pull_node(12, headRefOid=review_fixture.HEADS[3], reviews={"nodes": reviews})
         self.github.pages = {"example/one": [page([node])], "example/two": [page([])]}
         cases: tuple[tuple[GitHubErrorKind, list[str]], ...] = (
@@ -770,25 +782,31 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn("| example/two | [#5 Change 5](https://github.com/example/two/pull/5) | Open |", content)
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
-        missing = {"state": "missing", "reviewed_head_sha": None}
+        missing = {"state": "missing", "reviewed_head_sha": None, "reviewed_version": None}
         self.assertEqual(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "pulls": ["example/one#1", "example/one#2", "example/one#3", "example/two#5"],
                 "reviews": {
                     "example/one#1": missing,
-                    "example/one#2": {"state": "stale", "reviewed_head_sha": OLD_HEAD},
+                    "example/one#2": {"state": "stale", "reviewed_head_sha": OLD_HEAD, "reviewed_version": 1},
                     "example/one#3": missing,
                     "example/two#5": missing,
                 },
-                "user_reviews": {"example/one#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}},
+                "user_reviews": {
+                    "example/one#2": {
+                        "user_review_sha": USER_REVIEWED,
+                        "base_sha": BASE_TIP,
+                        "user_review_id": REVIEW_ID,
+                    }
+                },
             },
             json.loads(self.record.read_text(encoding="utf-8")),
         )
 
     def test_update_records_every_pull_request_the_user_relates_to_whether_or_not_its_row_shows(self) -> None:
         unrelated = pull_node(7, reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []})
-        approved = pull_node(8, reviews={"nodes": [{"state": "APPROVED", "commit": {"oid": HEAD}}]})
+        approved = pull_node(8, reviews={"nodes": [{"id": REVIEW_ID, "state": "APPROVED", "commit": {"oid": HEAD}}]})
         self.github.pages["example/one"] = [page([pull_node(1), unrelated, approved])]
         self.github.pages["example/two"] = [page([])]
         self.track("example/one#99")
@@ -800,11 +818,13 @@ class UpdateTests(TrackerPipelineFixture):
         # The record replaces the last one: a removed or approved pull request is still held, an unrelated one never.
         self.assertEqual(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "pulls": ["example/one#1", "example/one#8"],
                 "reviews": {},
                 # The approved pull request keeps the base its review is compared from, though its row is hidden.
-                "user_reviews": {"example/one#8": {"user_review_sha": HEAD, "base_sha": BASE_TIP}},
+                "user_reviews": {
+                    "example/one#8": {"user_review_sha": HEAD, "base_sha": BASE_TIP, "user_review_id": REVIEW_ID}
+                },
             },
             json.loads(self.record.read_text(encoding="utf-8")),
         )
@@ -839,7 +859,7 @@ class UpdateTests(TrackerPipelineFixture):
 
     def test_collect_reads_each_record_once(self) -> None:
         review_fixture.commit_fixture(self.archive)
-        reviews = [{"state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}]
+        reviews = [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}]
         validate = validate_record_pair
         with mock.patch.object(review_archive, "validate_record_pair", wraps=validate) as read:
             item, _ = self.collect_fixture(reviews)
@@ -881,7 +901,7 @@ class UpdateTests(TrackerPipelineFixture):
         ):
             with self.subTest(sha=sha):
                 self.github.calls.clear()
-                reviews = [{"state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
+                reviews = [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
                 item, row = self.collect_fixture(reviews)
                 self.assertEqual(
                     {
@@ -980,7 +1000,7 @@ class UpdateTests(TrackerPipelineFixture):
             (heads[1], {"version": 1, "new": 1, "addressed": 1}, "1M 1S open · 1 new, 1 addressed since your review"),
         ):
             with self.subTest(sha=sha):
-                reviews = [{"state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
+                reviews = [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
                 item, row = self.collect_fixture(reviews)
                 self.assertEqual({"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, item["ai_review"]["counts"])
                 self.assertEqual(
@@ -1017,7 +1037,9 @@ class UpdateTests(TrackerPipelineFixture):
             "<summary><strong>SHOULD FIX (1)</strong></summary>\n<summary><strong>SUGGESTIONS (2)</strong></summary>\n",
             encoding="utf-8",
         )
-        item, row = self.collect_fixture([{"state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}])
+        item, row = self.collect_fixture(
+            [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}]
+        )
         self.assertEqual(
             {
                 "open": {"MUST_FIX": 0, "SHOULD_FIX": 1, "SUGGESTION": 2},
@@ -1271,7 +1293,7 @@ class UpdateTests(TrackerPipelineFixture):
             2,
             reviewRequests=unrequested,
             participants=participant,
-            reviews={"nodes": [{"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]},
+            reviews={"nodes": [{"id": REVIEW_ID, "state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]},
         )
         self.github.pages = {"example/one": [page([committed, commented])], "example/two": [page([])]}
         code, _, err = self.run_main("collect", "--output", str(self.input))
@@ -1361,6 +1383,38 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertEqual((0, ""), (code, err))
                 self.assertEqual([f"UPDATED {self.dashboard} rows=1", "GITHUB_CALLS 2", *expected], out.splitlines())
 
+    def test_a_review_written_again_at_the_same_head_on_a_new_base_that_went_stale_is_named(self) -> None:
+        # An update shows example/one#2 stale after a retarget moved its merge base, and records its review as stale at
+        # OLD_HEAD. review-prs --re-review then reviews OLD_HEAD again on the new base as version 2, and a push makes
+        # that review stale before the next update, which names it.
+        commit_record(
+            self.archive, "example/one", 2, archived_record(OLD_HEAD, base=REVIEWED_BASE), expected_latest_version=None
+        )
+        self.github.pages = {"example/one": [page([pull_node(2, headRefOid=OLD_HEAD)])], "example/two": [page([])]}
+        self.github.served = {
+            f"repos/example/one/compare/{REVIEWED_BASE}...{OLD_HEAD}?per_page=1": {
+                "merge_base_commit": {"sha": "2" * 40}
+            },
+            f"repos/example/one/compare/main...{OLD_HEAD}?per_page=1": {"merge_base_commit": {"sha": "1" * 40}},
+        }
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["CANDIDATE stale example/one#2"], out.splitlines()[2:])
+        commit_record(self.archive, "example/one", 2, archived_record(OLD_HEAD, version=2), expected_latest_version=1)
+        self.github.pages["example/one"] = [page([pull_node(2, headRefOid=HEAD)])]
+        self.github.served = self.evidence(after="blob2", reviewed_base=False)
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual((0, ""), (code, err))
+        self.assert_went_stale(out)
+        self.assertEqual(
+            {"state": "stale", "reviewed_head_sha": OLD_HEAD, "reviewed_version": 2},
+            json.loads(self.record.read_text(encoding="utf-8"))["reviews"]["example/one#2"],
+        )
+
     def test_a_rebase_that_changed_a_file_makes_the_review_stale(self) -> None:
         self.assert_went_stale(self.rebased(self.evidence(after="blob2")))
 
@@ -1375,7 +1429,7 @@ class UpdateTests(TrackerPipelineFixture):
         the base branch's tip was BASE_TIP: one while its head is the reviewed commit, then one after a force push to
         the lower branch beneath it moved that tip to MOVED_TIP and rebased the pull request to HEAD, `served` giving
         the comparisons and trees GitHub answers then."""
-        review = {"nodes": [{"state": state, "commit": {"oid": USER_REVIEWED}}]}
+        review = {"nodes": [{"id": REVIEW_ID, "state": state, "commit": {"oid": USER_REVIEWED}}]}
         self.record.unlink(missing_ok=True)
         self.github.pages["example/two"] = [page([])]
         for head, tip in ((USER_REVIEWED, BASE_TIP), (HEAD, MOVED_TIP)):
@@ -1813,7 +1867,25 @@ class OverrideTests(TrackerPipelineFixture):
         original = self.config_path.read_bytes()
         stale = {"state": "stale", "reviewed_head_sha": HEAD}
         for record, reason in (
-            ({"schema_version": 4, "pulls": []}, "tracker.schema_version must be one of 1, 2, 3, found integer 4"),
+            ({"schema_version": 5, "pulls": []}, "tracker.schema_version must be one of 1, 2, 3, 4, found integer 5"),
+            (
+                {
+                    "schema_version": 4,
+                    "pulls": ["example/one#2"],
+                    "reviews": {"example/one#2": stale},
+                    "user_reviews": {},
+                },
+                "tracker.reviews.example/one#2 must be an object with field reviewed_version",
+            ),
+            (
+                {
+                    "schema_version": 4,
+                    "pulls": ["example/one#2"],
+                    "reviews": {},
+                    "user_reviews": {"example/one#2": {"user_review_sha": HEAD, "base_sha": BASE_TIP}},
+                },
+                "tracker.user_reviews.example/one#2 must be an object with field user_review_id",
+            ),
             ({"schema_version": 2, "pulls": []}, "tracker must be an object with field reviews"),
             ({"schema_version": 3, "pulls": [], "reviews": {}}, "tracker must be an object with field user_reviews"),
             ({"schema_version": 2, "pulls": [], "reviews": {}, "user_reviews": {}}, 'unknown field "user_reviews"'),
