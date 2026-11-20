@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import contextlib
 import csv
 import io
@@ -1113,13 +1112,14 @@ def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) ->
 
 
 @pytest.mark.parametrize("value", ["0", "37", "²", "1" * 5000, "", "+3", " 3"])
-def test_months_refuses_what_is_no_whole_number_in_range_with_its_own_message(value: str) -> None:
+def test_months_refuses_what_is_no_whole_number_in_range_with_a_message_naming_the_range(value: str) -> None:
     # argparse would turn int()'s ValueError into a usage error too, but one that names no range.
-    with pytest.raises(argparse.ArgumentTypeError) as raised:
-        report._months(value)
-    assert str(raised.value) == f"must be an integer from 1 to {report.MAX_MONTHS}"
-    assert report._months("1") == 1
-    assert report._months(str(report.MAX_MONTHS)) == report.MAX_MONTHS
+    code, _, stderr = run_report(["--org", "acme", "--user", "octo", "--months", value])
+    assert code == 2
+    assert f"argument --months: must be a whole number from 1 to 36 in ASCII digits, not {value!r}" in stderr
+    for months in (1, 36):
+        options = report._parser().parse_args(["--org", "acme", "--user", "octo", "--months", str(months)])
+        assert options.months == months
 
 
 class GroupGitHub(FakeGitHub):
