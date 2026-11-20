@@ -5082,3 +5082,13 @@ def test_a_prompt_inside_a_here_document_or_a_string_leaves_a_bash_fence_read_th
     # string dropped every read on the fence's unprompted lines.
     folder = source_skill(tmp_path, f"```bash\n{fence}```\n")
     assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../read.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_path_in_a_quoted_argument_is_placed_on_the_line_it_stands_on(tmp_path: Path) -> None:
+    # A path a file command's quoted argument holds after a newline stands on a later line than the word starts on.
+    folder = source_skill(tmp_path, '```bash\ngrep -e x "../first.md\n../second.md"\n```\n')
+    assert outside_report(folder) == [
+        "OUTSIDE_MISSING SKILL.md:5 ../first.md",
+        "OUTSIDE_MISSING SKILL.md:6 ../second.md",
+        "TOTAL outside 0 0 0",
+    ]

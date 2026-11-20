@@ -60,31 +60,31 @@ PowerShell fence below the frontmatter, a path is read only where a file command
 tail, find, grep, rg, sed, awk, wc, or ls), reads it for the model. A fence BASH_FENCES labels that the one Bash grammar
 reads is read whole: a path in a word, or in a `<` redirection's target, of a simple command that runs one, wherever
 Bash starts it and through a wrapper, eval, or a shell's -c too. A console, fish, cmd, or PowerShell fence, and a Bash
-fence the grammar refuses, a here-document in it runs to its end of, or in which it finds a command whose program is an
-unquoted `$` alone, a prompt, are read by command line, such a Bash fence one of whose lines starts with `$ ` as a
-console session is, its commands the prompted lines and the lines that continue them: a path on a line whose first word,
-after its prompt, names one, as scan's shell-file-command cue reads it, from that word to the line's first `>`, `|`,
-`;`, or `&`, which ends the command's own words in each of these shells. Any other path such a fence names, such as a
-redirection's target in `> ../log.md`, `Out-File ../w.md` after a pipe, an option's operand in `gh pr create --body-file
-/tmp/b.md`, a script's argument, a here-document's line, or a session's output, is one the command writes or hands its
-program at run time, which the skill does not load. An untagged fence, and one of any other language, is read as prose
-is. Limits, which no skill's Markdown in this source writes: a path followed right away by `&`, as in `a.md&nbsp;` or
-`?f=a.md&x=1`, is not read, and `a.md&b.md` is read as one path; a path after an HTML entity, as in `&lt;a.md&gt;`, is
-not read; nor is a UNC path such as `\\\\server\\share\\a.md`, a path that starts with `~`, `$HOME`, or `${VAR}`, or
-`${CLAUDE_SKILL_DIR}\\..\\a.md`; a Markdown backslash escape in prose is not taken out of the name; a path that prose or
-a code span names is read though the skill may only write it, as in `write the body to /tmp/b.md`; a path a file command
-writes itself is read, as in awk's `print > "../a.md"`, sed's `w ../a.md` or `-i`, or find's `-fprint ../a.md`; in Bash
-a path reaches a file command only through its own words, so `for f in ../a.md; do cat "$f"; done`, `echo ../a.md |
-xargs cat`, and a program SHELL_FILE_COMMANDS does not name, such as diff or less, read none, and a path in a `<`
-redirection's target of a compound command, as in `{ cat; } < a.md`, is not read; read by command line, a file command
-that is not the line's first word reads none, as in PowerShell's `$x = cat ../a.md`, `& cat ../a.md`, `gci | cat`, or
-`$x = 1; cat ../a.md`, or a session's `ls | grep x ../a.md`, nor do PowerShell's gc, Get-Content, Select-String, or sls,
-or cmd's type, a `>`, `|`, `;`, or `&` inside quotes ends the line's reading too, as in `grep 'a|b' ../a.md`, and so
-does a redirection before the file command's operands, as in `cat 2> err.log ../a.md`, and a path on a line that
-continues the command before it is not read, as `../a.md` after `cat \\`; and only the inventory reads a Bash fence
-written with `$ ` prompts as a session: scan's cue reads it through the grammar, which takes the `$` for the program,
-and the grant checks read each line's text, its `$ ` included. The measure, NESTED_REFERENCE, and the outside reads all
-read the paths a file names this one way.
+fence the grammar refuses, a here-document in it runs to its end of, or in which it finds a command whose program, past
+any assignments before it, is an unquoted `$` alone, a prompt, are read by command line, such a Bash fence one of whose
+lines starts with `$ ` as a console session is, its commands the prompted lines and the lines that continue them: a path
+on a line whose first word, after its prompt, names one, as scan's shell-file-command cue reads it, from that word to
+the line's first `>`, `|`, `;`, or `&`, which ends the command's own words in each of these shells. Any other path such
+a fence names, such as a redirection's target in `> ../log.md`, `Out-File ../w.md` after a pipe, an option's operand in
+`gh pr create --body-file /tmp/b.md`, a script's argument, a here-document's line, or a session's output, is one the
+command writes or hands its program at run time, which the skill does not load. An untagged fence, and one of any other
+language, is read as prose is. Limits, which no skill's Markdown in this source writes: a path followed right away by
+`&`, as in `a.md&nbsp;` or `?f=a.md&x=1`, is not read, and `a.md&b.md` is read as one path; a path after an HTML entity,
+as in `&lt;a.md&gt;`, is not read; nor is a UNC path such as `\\\\server\\share\\a.md`, a path that starts with `~`,
+`$HOME`, or `${VAR}`, or `${CLAUDE_SKILL_DIR}\\..\\a.md`; a Markdown backslash escape in prose is not taken out of the
+name; a path that prose or a code span names is read though the skill may only write it, as in `write the body to
+/tmp/b.md`; a path a file command writes itself is read, as in awk's `print > "../a.md"`, sed's `w ../a.md` or `-i`, or
+find's `-fprint ../a.md`; in Bash a path reaches a file command only through its own words, so `for f in ../a.md; do cat
+"$f"; done`, `echo ../a.md | xargs cat`, and a program SHELL_FILE_COMMANDS does not name, such as diff or less, read
+none, and a path in a `<` redirection's target of a compound command, as in `{ cat; } < a.md`, is not read; read by
+command line, a file command that is not the line's first word reads none, as in PowerShell's `$x = cat ../a.md`, `& cat
+../a.md`, `gci | cat`, or `$x = 1; cat ../a.md`, or a session's `ls | grep x ../a.md`, nor do PowerShell's gc,
+Get-Content, Select-String, or sls, or cmd's type, a `>`, `|`, `;`, or `&` inside quotes ends the line's reading too, as
+in `grep 'a|b' ../a.md`, and so does a redirection before the file command's operands, as in `cat 2> err.log ../a.md`,
+and a path on a line that continues the command before it is not read, as `../a.md` after `cat \\`; and only the
+inventory reads a Bash fence written with `$ ` prompts as a session: scan's cue reads it through the grammar, which
+takes the `$` for the program, and the grant checks read each line's text, its `$ ` included. The measure,
+NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
