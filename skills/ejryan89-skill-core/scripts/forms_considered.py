@@ -20,10 +20,10 @@ fence-like line or a heading it holds is neither. Such a block changes how the l
 taken again past each one, over windows of lines that double, and a walk confirms a run of blocks it reads alike at
 once; the reading takes time in proportion to the body.
 
-A comment GitHub hides is not read, and the comments are read left to right: one inside a code block or an inline code
-span is text GitHub shows; one that opens an HTML block, and one on a line GitHub passes on as HTML, runs to its `-->`,
-or to the end of the body; and one inside a block's text runs to its `-->` when that falls within the block, and is
-otherwise text.
+A comment GitHub hides is not read, and the comments are read left to right: one inside a code block is text GitHub
+shows, and so is one inside an inline code span but on a line GitHub passes on as HTML, where no backtick opens a span;
+one that opens an HTML block, and one on a line GitHub passes on as HTML, runs to its `-->`, or to the end of the body;
+and one inside a block's text runs to its `-->` when that falls within the block, and is otherwise text.
 
 The limits:
 - inside a quote, a comment within a line runs to a `-->` anywhere in the quote, past the paragraph it opens in, where
@@ -582,8 +582,9 @@ def _hidden_comments(
             searched = line_end
         while span is not None and span.end() <= opener:
             span = COMMONMARK_CODE_SPAN.search(text, span.end(), line_end)
-        if span is not None and span.start() < opener:
-            # A code span that holds the `<!--` shows it, and every character up to the span's end.
+        if span is not None and span.start() < opener and line not in raw:
+            # A code span that holds the `<!--` shows it, and every character up to the span's end, but on a line GitHub
+            # passes on as HTML, where no backtick opens a span.
             position = span.end()
             continue
         end = _comment_end(text, closers, opener)

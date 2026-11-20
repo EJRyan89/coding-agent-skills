@@ -297,6 +297,9 @@ GITHUB_SECTIONS = {
         "## Forms considered\n\nw1\n\n- <!-- w2 -->\nw3\n---\nw4\n",
         "\nw1\n\n- ",
     ),
+    # A line an HTML heading's block holds is passed on as HTML, where no backtick opens a code span, so its `<!--`
+    # opens a comment that hides the rest of the body.
+    "a backticked opener an HTML heading's block holds": ("<h2>x</h2>\n`<!--` y\n\n## Forms considered\n\nw1", None),
     "a comment under an item that opens empty": (
         "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
         "\n-\n  \n  ## not a section\n\nafter",
