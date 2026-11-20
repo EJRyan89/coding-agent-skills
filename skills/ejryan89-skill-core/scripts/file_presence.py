@@ -177,12 +177,14 @@ def link_to_nothing_on(path: Path) -> Path | None:
     which the folder's creation would then make.
 
     It walks the parts as `path_containment.resolved_path` resolves them, so it finds every link that resolving would
-    follow: a `..` leaves a place that is there for the parent of where it resolves, and leaves a place nothing is at by
-    its name alone, so a link to nothing after a missing part and a `..`, as in `missing/../link`, is found too."""
+    follow: a `..` after a place that is there is resolved with that place, which on Linux and macOS leads to the parent
+    of the place a link leads to and on Windows to the parent by name, as each platform's resolving takes it; a `..`
+    after a place nothing is at is taken by name, so a link to nothing after a missing part and a `..`, as in
+    `missing/../link`, is found too."""
     current = Path(path.anchor)
     for part in path.parts[1:] if path.anchor else path.parts:
         if part == "..":
-            current = resolved_path(current).parent if is_occupied(current) else current.parent
+            current = resolved_path(current / "..") if is_occupied(current) else current.parent
             continue
         current = current / part
         if is_occupied(current) and not is_there(current):
