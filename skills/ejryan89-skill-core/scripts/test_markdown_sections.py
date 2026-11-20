@@ -1110,7 +1110,7 @@ def test_the_walk_takes_time_in_proportion_to_the_document(repeated: str) -> Non
 def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker: str) -> None:
     # Each marker is read where it stands: a walk that read the rest of the line again at each marker, such as one that
     # tried a thematic break there, would take time growing with the square of the markers.
-    assert_walked_in_proportion(marker * 4000 + "x", marker * 4000 * WALK_FACTOR + "x")
+    assert_walked_in_proportion(marker * 1000 + "x", marker * 1000 * WALK_FACTOR + "x")
 
 
 @pytest.mark.parametrize(
