@@ -97,6 +97,8 @@ class BodyEntriesTests(unittest.TestCase):
         # A paragraph on the line right below a heading is the heading's wrapped words; one after a blank line is not.
         self.assertEqual(["# H more"], release_notes.unwrapped("# H\nmore"))
         self.assertEqual(["# H", "", "more"], release_notes.unwrapped("# H\n\nmore"))
+        # Only a heading's wrapped words run on below it: a paragraph right below a code block is its own line.
+        self.assertEqual(["Text", "", "    code", "more"], release_notes.unwrapped("Text\n\n    code\nmore"))
         # A fence's lines, a table's rows, and a quote's lines each stay their own.
         self.assertEqual(
             ["Text", "```", "x", "y", "```", "| a |", "| b |", "> q", "> r"],
