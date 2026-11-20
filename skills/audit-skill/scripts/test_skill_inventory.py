@@ -3975,6 +3975,115 @@ def test_folder_files_never_lists_a_skipped_folder_so_one_it_cannot_list_inside_
     assert listed == ["SKILL.md"]
 
 
+def linking_skill(root: Path, body: str) -> Path:
+    """A skill folder whose SKILL.md body is `body`, with a nested checkout at vendor/docs, marked by a .git file."""
+    skill = root / "skill"
+    write(skill / "SKILL.md", f"---\nname: skill\n---\n{body}")
+    write(skill / "vendor" / "docs" / ".git", "gitdir: elsewhere\n")
+    return skill
+
+
+def test_folder_files_lists_a_markdown_file_the_skill_links_in_a_skipped_folder_or_a_nested_checkout(
+    tmp_path: Path,
+) -> None:
+    # The walk passed over both folders, and outside_lines over every target inside the skill, so the runtime loaded
+    # each linked file while the inventory, scan, and the model reading never saw it. Unlinked files there stay out.
+    skill = linking_skill(
+        tmp_path,
+        "Read [g](vendor/docs/guide.md) and [b](bin/notes.md),\n"
+        "then `${CLAUDE_SKILL_DIR}/.venv/env.md` and `../skill/node_modules/pkg/readme.md`.\n",
+    )
+    for name in ("vendor/docs/guide.md", "bin/notes.md", ".venv/env.md", "node_modules/pkg/readme.md"):
+        write(skill / name, "Linked.\n")
+    for name in ("vendor/docs/unlinked.md", "bin/other.md", "node_modules/pkg/index.js"):
+        write(skill / name, "Unlinked.\n")
+    listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+    assert listed == [".venv/env.md", "bin/notes.md", "node_modules/pkg/readme.md", "SKILL.md", "vendor/docs/guide.md"]
+    scanned = [path.relative_to(skill).as_posix() for path in skill_inventory.scanned_files(skill)]
+    assert scanned == ["SKILL.md", ".venv/env.md", "bin/notes.md", "node_modules/pkg/readme.md", "vendor/docs/guide.md"]
+
+
+def test_folder_files_lists_a_file_linked_only_from_a_linked_file_the_walk_passed_over(tmp_path: Path) -> None:
+    # The runtime follows the guide's own link, so the file it names is loaded too, wherever it lies.
+    skill = linking_skill(tmp_path, "Read `vendor/docs/guide.md`.\n")
+    write(skill / "vendor" / "docs" / "guide.md", "Then read `more.md` and `../../bin/last.md`.\n")
+    write(skill / "vendor" / "docs" / "more.md", "More.\n")
+    write(skill / "bin" / "last.md", "Last.\n")
+    listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+    assert listed == ["bin/last.md", "SKILL.md", "vendor/docs/guide.md", "vendor/docs/more.md"]
+
+
+def test_inventory_sizes_a_linked_file_the_walk_passed_over_and_stops_on_one_that_is_not_utf8(tmp_path: Path) -> None:
+    # The issue's reproduction printed only FILE main and TOTAL outside 0 0 0, exit 0: neither link was counted, and a
+    # linked file that is not UTF-8 text did not stop the audit, as a Markdown file the skill loads does elsewhere.
+    skill = linking_skill(tmp_path, "Read [g](vendor/docs/guide.md) and [b](bin/notes.md).\n")
+    write(skill / "vendor" / "docs" / "guide.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    notes = write(skill / "bin" / "notes.md", "abcd\n")  # 5 bytes, 2 tokens
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("FILE doc", "TOTAL doc"))] == [
+        "FILE doc 5 2 bin/notes.md",
+        "FILE doc 9 3 vendor/docs/guide.md",
+        "TOTAL doc 2 14 5",
+    ]
+    write(notes, "caf\xe9\n".encode("cp1252"))
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (1, "")
+    assert "UNREADABLE bin/notes.md not UTF-8 text" in lines
+
+
+def test_a_link_that_leaves_the_skill_after_its_first_part_is_an_outside_read(tmp_path: Path) -> None:
+    # Only a path that starts with ../ was read as leaving the folder, so one that leaves through a later .. or a link
+    # to a folder outside was neither an outside read nor a file of the skill: the read it costs had no line at all.
+    folder = source_skill(
+        tmp_path, "Read `references/../../shared.md` and `linked/elsewhere.md`.\nThen `linked/missing.md`.\n"
+    )
+    write(tmp_path / "skills" / "shared.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    write(tmp_path / "outside" / "elsewhere.md", "abcd\n")  # 5 bytes, 2 tokens
+    link_folder(tmp_path / "outside", folder / "linked")
+    code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("OUTSIDE_", "TOTAL outside"))] == [
+        "OUTSIDE_READ SKILL.md:4 9 3 references/../../shared.md",
+        "OUTSIDE_READ SKILL.md:4 5 2 linked/elsewhere.md",
+        "OUTSIDE_MISSING SKILL.md:5 linked/missing.md",
+        "TOTAL outside 2 14 5",
+    ]
+
+
+def test_a_link_that_leaves_the_skill_after_a_leading_dot_slash_is_read(tmp_path: Path) -> None:
+    # Neither pattern read ./../ as leaving the folder, so such a path got no line: neither an outside read, a missing
+    # one, nor a file of the skill when it led back into a skipped folder.
+    skill = tmp_path / "skill"
+    write(
+        skill / "SKILL.md",
+        "---\nname: skill\n---\n[a](./../out.md) [c](./../missing.md) [d](./../skill/node_modules/nm.md)\n",
+    )
+    write(tmp_path / "out.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    write(skill / "node_modules" / "nm.md", "abcd\n")  # 5 bytes, 2 tokens
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("FILE doc", "OUTSIDE_", "TOTAL outside"))] == [
+        "FILE doc 5 2 node_modules/nm.md",
+        "OUTSIDE_READ SKILL.md:4 9 3 ./../out.md",
+        "OUTSIDE_MISSING SKILL.md:4 ./../missing.md",
+        "TOTAL outside 1 9 3",
+    ]
+
+
+def test_an_outside_target_the_inventory_already_sizes_is_counted_once(tmp_path: Path) -> None:
+    # A file of the skill folder that is a link to a file outside is listed and sized as a FILE line, so the read its
+    # link leads to is not counted again as an outside read.
+    skill = tmp_path / "skills" / "alpha"
+    shared = write(tmp_path / "skills" / "shared.md", "12345678\n")
+    texts = {"SKILL.md": ("main", "---\nname: alpha\n---\nRead `../shared.md`.\n")}
+    assert skill_inventory.outside_lines(skill, texts, [shared]) == ["TOTAL outside 0 0 0"]
+    assert skill_inventory.outside_lines(skill, texts, []) == [
+        "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
+        "TOTAL outside 1 9 3",
+    ]
+
+
 class MainFileCaseTests(TemporaryTestCase):
     """A skill's main file is SKILL.md as its folder's file system compares names, as the runtime that opens it finds
     it: in any case where the folder folds case, and exactly SKILL.md where it does not. It was SKILL.md in any case
@@ -4116,7 +4225,7 @@ def test_an_outside_read_is_placed_on_the_line_commonmark_breaks(separator: str,
     skill = tmp_path / "skills" / "alpha"
     write(tmp_path / "skills" / "shared.md", "12345678\n")
     texts = {"SKILL.md": ("main", f"---\nname: alpha\n---\nIntro{separator}read `../shared.md`.\n")}
-    assert skill_inventory.outside_lines(skill, texts) == [
+    assert skill_inventory.outside_lines(skill, texts, []) == [
         "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
         "TOTAL outside 1 9 3",
     ]
