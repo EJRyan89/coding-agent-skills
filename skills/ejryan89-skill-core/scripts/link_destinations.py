@@ -20,7 +20,9 @@ other direction: the text to write as a link's destination so that this reader r
 Limits: a destination is read on the line its `](` or its definition's `]:` is on, so a link whose destination
 starts on the next line, or whose `)` or title follows on the next line, is not read; a `](` is read as a link's
 without matching the `[` that opens its text, and a definition wherever a line starts with one, even where it would
-continue a paragraph.
+continue a paragraph; a title after a destination is not checked to end the definition's line or the link, so
+`[r]: x.md "t" and [b](y.md)` reads `x.md` and drops `y.md`; and a backslash-escaped backtick still opens a code span,
+so ``see \\` and [a](x.md) and `y` `` reads no link.
 """
 
 from __future__ import annotations
@@ -48,9 +50,9 @@ URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{1,31}:|//")
 # What may open the title after a destination and the spaces or tabs before it; an inline link may instead close with
 # its `)`, and a definition end its line.
 TITLE_OPENERS = frozenset("\"'(")
-# What written_destination percent-encodes in a path, beside the control characters: `%`, which the path decodes, and
-# `#` and `?`, which would end it.
-PERCENT_ENCODED = frozenset("%#?")
+# What written_destination percent-encodes in a path, beside the control characters: `%`, which the path decodes, `#`
+# and `?`, which would end it, and a backtick, which could open or close a code span, where a backslash escapes none.
+PERCENT_ENCODED = frozenset("%#?`")
 # What written_destination escapes with a backslash: the backslash itself, the parentheses that would end or unbalance
 # a bare destination, the `<` and `>` that open and close the other form, and the `&` that would open a reference.
 BACKSLASH_ESCAPED = frozenset("\\()<>&")
@@ -95,10 +97,10 @@ class Destination:
 def written_destination(path: str) -> str:
     """The destination text that `link_destinations` reads back as `path`, as `Destination.path` gives it.
 
-    A control character, `%`, `#`, and `?` are percent-encoded, and a backslash, a parenthesis, `<`, `>`, and `&` are
-    escaped with a backslash; a path holding a space is written between `<` and `>`, where a space needs no encoding.
-    Any other character is written as it is, so a plain name such as `notes.md` is written unchanged. `path` is not
-    empty, since an empty destination is none.
+    A control character, `%`, `#`, `?`, and a backtick are percent-encoded, and a backslash, a parenthesis, `<`, `>`,
+    and `&` are escaped with a backslash; a path holding a space is written between `<` and `>`, where a space needs no
+    encoding. Any other character is written as it is, so a plain name such as `notes.md` is written unchanged.
+    `path` is not empty, since an empty destination is none.
     """
     text = "".join(_written_character(character) for character in path)
     return f"<{text}>" if " " in path else text

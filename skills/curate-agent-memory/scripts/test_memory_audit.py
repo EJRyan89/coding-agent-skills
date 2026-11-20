@@ -1282,6 +1282,28 @@ class ReindexTests(unittest.TestCase):
             memory_audit.reindex(self.memory_dir)["content"],
         )
 
+    def test_blanks_around_an_entry_destination_are_not_its_file(self) -> None:
+        write(self.memory_dir / "rule.md", "Body.\n")
+        original = "- [Rule](  rule.md \t) — kept hook\n- [Tabbed](\trule.md) — duplicate\n"
+        write(self.index, original)
+        entries, _ = memory_audit.parse_index(self.index)
+        self.assertEqual([("rule.md", "rule.md")] * 2, [(entry["file"], entry["target"]) for entry in entries])
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
+
+    def test_a_backtick_in_a_name_title_or_hook_never_hides_an_entry_from_its_reader(self) -> None:
+        # A backtick in the title could pair with one in the file name or the hook into a code span over the
+        # destination, which the reader blanks, so each reindex added the memory again.
+        write(self.memory_dir / "a`b.md", "plain\n")
+        write(self.memory_dir / "keyed.md", "---\nname: Escape the ` key\ndescription: use `x` here\n---\nBody.\n")
+        expected = "- [a'b](a%60b.md) — plain\n- [Escape the ' key](keyed.md) — use 'x' here\n"
+        for _ in range(3):
+            self.reindex("--write")
+            self.assertEqual(expected, self.index.read_text(encoding="utf-8"))
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
+        self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
+
     def test_a_new_entry_reads_back_as_its_memory_however_the_name_is_spelled(self) -> None:
         # The old writer escaped only a backslash and parentheses, so a space, `%`, `#`, or `&` read back as another
         # name, or as no link at all.

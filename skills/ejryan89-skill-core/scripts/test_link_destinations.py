@@ -148,10 +148,13 @@ def test_a_posix_path_names_the_file_as_a_repository_does(line: str, posix_path:
         ("a\\b<c>&amp;.md", "a\\\\b\\<c\\>\\&amp;.md"),
         ("<lead.md", "\\<lead.md"),
         ("tab\tbell\x07.md", "tab%09bell%07.md"),
+        # A backslash escapes no backtick from a code span, so a backtick is percent-encoded.
+        ("a`b`.md", "a%60b%60.md"),
         ("ünïcode\u00a0name.md", "ünïcode\u00a0name.md"),
     ],
 )
 def test_a_written_destination_reads_back_as_its_path(path: str, written: str) -> None:
     assert written_destination(path) == written
-    [destination] = link_destinations([f"- [Title]({written}) — hook"])
+    # A backtick in the text before the destination pairs with none written in it.
+    [destination] = link_destinations([f"- [Ti`tle]({written}) — hook"])
     assert (destination.path, destination.written) == (path, written)

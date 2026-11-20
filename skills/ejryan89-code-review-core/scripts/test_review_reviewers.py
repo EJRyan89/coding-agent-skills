@@ -347,6 +347,8 @@ class InspectionTests(unittest.TestCase):
             "docs/b-c.md",
             "docs/in code.md",
             "docs/rules.md",
+            "docs/my doc.md",
+            "docs/b(2).md",
             backslash,
         }
         text = (
@@ -357,10 +359,12 @@ class InspectionTests(unittest.TestCase):
             "[Note]: see [d](docs/b%2Dc.md)\n"
             "`[e](<docs/in code.md>)`\n"
             "[f](docs\\rules.md)\n"
+            "[g](<docs/my doc.md>) and [h](docs/b(2).md)\n"
         )
         result = inspect_skill(".claude/agents/review.md", text, COMMIT, files)
         # A backslash is read as the platform reads one in a path: a separator on Windows, part of the name elsewhere.
         expected = {"docs/my rules.md", "docs/a(1).md", "docs/the defs.md", "docs/b-c.md", backslash}
+        expected |= {"docs/my doc.md", "docs/b(2).md"}
         self.assertEqual(sorted(expected), result.references)
 
     def test_frontmatter_value(self) -> None:

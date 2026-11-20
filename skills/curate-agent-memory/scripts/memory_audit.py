@@ -47,6 +47,7 @@ reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memo
 `- [Title](file.md) — hook`. An entry's file is read as CommonMark reads a link's destination,
 through ejryan89-skill-core's link_destinations, and a new entry's is written so that it reads
 back as the file's name; an entry in code is none, and neither is one whose link has a title.
+A backtick in a title or a hook is written as `'`, so no code span can cover an entry's file.
 It writes only MEMORY.md, only with --write, and never deletes or changes a memory file.
 Existing lines keep their place: other lines (headings, notes) stay
 as written, an entry is dropped when its file is gone or it repeats an earlier entry, and
@@ -686,7 +687,11 @@ def one_line(text: str, limit: int = HOOK_LIMIT) -> str:
 
 
 def index_line(title: str, file: str, hook: str, *, original_target: str | None = None) -> str:
+    """An index entry, written so that index_entries reads it back: a backtick in the title or the hook becomes `'`,
+    since one there could pair with another into a code span over the destination, which a backslash cannot escape,
+    and a new entry's file is written through link_destinations' written_destination."""
     target = original_target if original_target is not None else written_destination(file)
+    title, hook = title.replace("`", "'"), hook.replace("`", "'")
     return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
