@@ -43,8 +43,8 @@ RECONCILING = "Deployment failed; reconciling the current journal before exit...
 # A file another program holds, as Windows reports it, at a path written the same on every platform.
 HELD_FILE = "C:/home/.claude/skills/alpha/SKILL.md"
 RETAINED = [
-    "ERROR: Immediate recovery failed; deployment evidence and lock were retained.",
-    "The next run reclaims the lock and retries recovery. If that fails too, reconcile the run by hand. "
+    "ERROR: Immediate recovery failed; deployment evidence and the lock's record were retained.",
+    "The next run removes the record and retries recovery. If that fails too, reconcile the run by hand. "
     'See "When recovery fails" in docs/recovery.md.',
 ]
 

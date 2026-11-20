@@ -37,8 +37,9 @@ PRESENCE_ALLOWED = {
 def move(source: Path, destination: Path) -> None:
     """Rename without ever replacing an existing destination: a FileExistsError leaves both as they were.
 
-    Journal finalization and recovery rely on it, so platform_support refuses an existing destination
-    where the platform's rename would replace it.
+    Journal finalization and recovery rely on it, and so does the lock's removal of a stale record, which moves a
+    record another deployment took meanwhile back only while nothing is in its place, so platform_support refuses an
+    existing destination where the platform's rename would replace it.
     """
     platform_support.refuse_existing_destination(destination)
     source.rename(destination)
