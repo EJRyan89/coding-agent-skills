@@ -57,23 +57,34 @@ absolute one is an outside read. So a path holding another character, such as `'
 not read, nor is an absolute one that starts anywhere else, as after `=` in `--doc=/abs/a.md`; and since prose separates
 words with spaces, a path holding one, such as `/opt/my notes/a.md`, is read from after its last space. In a shell or
 PowerShell fence below the frontmatter, a path is read only where a file command, one of SHELL_FILE_COMMANDS (cat,
-head, tail, find, grep, rg, sed, awk, wc, or ls), reads it for the model: in a fence BASH_FENCES labels that the one
-Bash grammar reads, a path in a word, or in a `<` redirection's target, of a simple command that runs one, wherever
-Bash starts it and through a wrapper, eval, or a shell's -c too; in a console, fish, cmd, or PowerShell fence, and a
-Bash fence the grammar refuses or a here-document in it runs to its end of, a path on a line whose first word, after
-its prompt, names one, as scan's shell-file-command cue reads it. Any other path such a fence names, such as a
-redirection's target in `> ../log.md`, an option's operand in `gh pr create --body-file /tmp/b.md`, a script's
-argument, a here-document's line, or a session's output, is one the command writes or hands its program at run time,
-which the skill does not load. An untagged fence, and one of any other language, is read as prose is. Limits, which no
-skill's Markdown in this source writes: a path followed right away by `&`, as in `a.md&nbsp;` or `?f=a.md&x=1`, is not
-read, and `a.md&b.md` is read as one path; a path after an HTML entity, as in `&lt;a.md&gt;`, is not read; nor is a UNC
-path such as `\\\\server\\share\\a.md`, a path that starts with `~`, `$HOME`, or `${VAR}`, or
+head, tail, find, grep, rg, sed, awk, wc, or ls), reads it for the model. A fence BASH_FENCES labels that the one Bash
+grammar reads is read whole: a path in a word, or in a `<` redirection's target, of a simple command that runs one,
+wherever Bash starts it and through a wrapper, eval, or a shell's -c too. A console, fish, cmd, or PowerShell fence, a
+Bash fence the grammar refuses or a here-document in it runs to its end of, and a Bash fence a line of which starts
+with a `$ ` prompt, read as a console session is, its commands the prompted lines and the lines that continue them,
+are read by command line: a path on a line whose first word, after its prompt, names one, as scan's
+shell-file-command cue reads it, from that word to the line's first `>`, `|`, `;`, or `&`, which ends the command's
+own words in each of these shells. Any other path such a fence names, such as a redirection's target in
+`> ../log.md`, `Out-File ../w.md` after a pipe, an option's operand in `gh pr create --body-file /tmp/b.md`, a
+script's argument, a here-document's line, or a session's output, is one the command writes or hands its program at
+run time, which the skill does not load. An untagged fence, and one of any other language, is read as prose is.
+Limits, which no skill's Markdown in this source writes: a path followed right away by `&`, as in `a.md&nbsp;` or
+`?f=a.md&x=1`, is not read, and `a.md&b.md` is read as one path; a path after an HTML entity, as in
+`&lt;a.md&gt;`, is not read; nor is a UNC path such as `\\\\server\\share\\a.md`, a path that starts with `~`,
+`$HOME`, or `${VAR}`, or
 `${CLAUDE_SKILL_DIR}\\..\\a.md`; a Markdown backslash escape in prose is not taken out of the name; a path that prose or
-a code span names is read though the skill may only write it, as in `write the body to /tmp/b.md`; in a fence that is
-not Bash, a path on a line that continues the command before it is not read, as `../a.md` after `cat \\`, nor one
-PowerShell's Get-Content or cmd's type reads; and a path in a `<` redirection's target of a compound command, as in
-`{ cat; } < a.md`, is not read. The measure, NESTED_REFERENCE, and the outside reads all read the paths a file names
-this one way.
+a code span names is read though the skill may only write it, as in `write the body to /tmp/b.md`; a path a file
+command writes itself is read, as in awk's `print > "../a.md"`, sed's `w ../a.md` or `-i`, or find's
+`-fprint ../a.md`; in Bash a path reaches a file command only through its own words, so `for f in ../a.md; do cat
+"$f"; done`, `echo ../a.md | xargs cat`, and a program SHELL_FILE_COMMANDS does not name, such as diff or less, read
+none, and a path in a `<` redirection's target of a compound command, as in `{ cat; } < a.md`, is not read; read by
+command line, a file command that is not the line's first word reads none, as in PowerShell's `$x = cat ../a.md`,
+`& cat ../a.md`, `gci | cat`, or `$x = 1; cat ../a.md`, or a session's `ls | grep x ../a.md`, nor do PowerShell's
+gc, Get-Content, Select-String, or sls, or cmd's type, a `>`, `|`, `;`, or `&` inside quotes ends the line's reading
+too, as in `grep 'a|b' ../a.md`, and a path on a line that continues the command before it is not read, as `../a.md`
+after `cat \\`; and only the inventory reads a Bash fence written with `$ ` prompts as a session: scan's cue and the
+grant checks read it through the grammar, which takes the `$` for the program. The measure, NESTED_REFERENCE, and the
+outside reads all read the paths a file names this one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -425,6 +436,13 @@ PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
 # A user and host and the word after them hold no prompt character, so `user@host:~$ ls # list` runs `ls # list`.
 PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:][^\s$#%\u276f]+(?:[ \t]+[^\s$#%\u276f]+)?|sh-[\d.]+"
 SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST})[ \t]*[$#%\u276f]|[$%\u276f]) ")
+# The prompt that makes a BASH_FENCES fence a session, as SESSION_PROMPT makes a console fence one: `$` alone, then a
+# space, which starts no Bash command. The other forms SESSION_PROMPT reads are not taken there, since a Bash line
+# such as `[ -d build ] # check` starts like a bracketed one.
+BASH_PROMPT = re.compile(r"\A[ \t]*\$ ")
+# Where a command line read by its first word stops naming the command's own words: a redirection, a pipe, or the
+# next command, in a POSIX shell's, fish's, cmd's, and PowerShell's own syntax.
+COMMAND_END = re.compile(r"[>|;&]")
 # The prompt Bash shows on each line that continues a command.
 CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
 # A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
@@ -1010,13 +1028,20 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
     would settle them."""
     if fence.language.casefold() not in SESSION_FENCES:
         return None
+    return prompted_commands(fence, lines, SESSION_PROMPT)
+
+
+def prompted_commands(fence: Fence, lines: list[str], prompt_pattern: re.Pattern[str]) -> list[tuple[int, str]] | None:
+    """The body lines a fence runs as a session, by index, each as CommonMark gives it to the fence's content without
+    its prompt, where `prompt_pattern` reads a command line's prompt, as session_commands reads them, or None for a
+    fence no line of which that prompt starts."""
     contents = [(index, fence.content(lines[index])) for index in fence.body()]
-    if not any(SESSION_PROMPT.match(text) for _, text in contents):
+    if not any(prompt_pattern.match(text) for _, text in contents):
         return None
     commands: list[tuple[int, str]] = []
     prompted = continued = False
     for index, text in contents:
-        if (prompt := SESSION_PROMPT.match(text)) is not None:
+        if (prompt := prompt_pattern.match(text)) is not None:
             command = text[prompt.end() :]
         elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
             command = CONTINUATION_PROMPT.sub("", text, count=1)
@@ -1485,9 +1510,10 @@ def fence_reads(lines: list[str], start: int) -> dict[int, Counter[str]]:
     fence BASH_FENCES labels is read whole through the one Bash grammar, each line as CommonMark gives it to the
     fence's content, and its paths are those in the words, and the `<` redirections' targets, of each simple command
     that runs a file command, wherever Bash starts one and through each wrapper, eval, or shell's -c that runs it, as
-    bash_programs reads it. Any other such fence, and a Bash fence the grammar refuses or a here-document in it runs to
-    its end of, reads every path on each line whose first word names a file command, as
-    first_word_file_command_lines reads it. A line outside such fences is not here: every path on it is read."""
+    bash_programs reads it. Any other such fence, a Bash fence the grammar refuses or a here-document in it runs to
+    its end of, and a Bash fence a line of which BASH_PROMPT starts, a session whose commands prompted_commands reads,
+    is read by command line, as command_line_paths reads each. A line outside such fences is not here: every path on it
+    is read."""
     reads: dict[int, Counter[str]] = {}
     for fence in find_fences(lines):
         label = fence.language.casefold()
@@ -1495,7 +1521,8 @@ def fence_reads(lines: list[str], start: int) -> dict[int, Counter[str]]:
             continue
         body = list(fence.body())
         reads.update((index, Counter()) for index in body)
-        if label in BASH_FENCES:
+        session = prompted_commands(fence, lines, BASH_PROMPT) if label in BASH_FENCES else None
+        if label in BASH_FENCES and session is None:
             content = "\n".join(fence.content(lines[index]) for index in body)
             try:
                 found = file_command_paths(content)
@@ -1507,9 +1534,21 @@ def fence_reads(lines: list[str], start: int) -> dict[int, Counter[str]]:
                 for line, path in found:
                     reads[body[line - 1]][path] += 1
                 continue
-        for index in first_word_file_command_lines(fence, lines):
-            reads[index] = Counter(match.group(0) for match in PROSE_REFERENCE.finditer(lines[index]))
+        any_case = label in ANY_CASE_FENCES
+        for index, command in first_word_commands(fence, lines) if session is None else session:
+            reads[index] = command_line_paths(command, any_case=any_case)
     return reads
+
+
+def command_line_paths(command: str, *, any_case: bool) -> Counter[str]:
+    """The Markdown paths a command line read by its first word gives a file command to read, as PROSE_REFERENCE reads
+    them: none unless first_word_runs_file_command reads its first word as one, and then each from that word to the
+    line's first COMMAND_END, after which a path is a redirection's target, as in `> log.md`, or another command's, as
+    in `| Out-File w.md`."""
+    if not first_word_runs_file_command(command, any_case=any_case):
+        return Counter()
+    words = COMMAND_END.split(command, maxsplit=1)[0]
+    return Counter(match.group(0) for match in PROSE_REFERENCE.finditer(words))
 
 
 def file_command_paths(text: str) -> list[tuple[int, str]]:
@@ -1526,10 +1565,11 @@ def file_command_paths(text: str) -> list[tuple[int, str]]:
             continue
         inputs = [redirect.target for redirect in command.redirects if redirect.operator == "<" and redirect.target]
         for word in [*command.words, *inputs]:
-            found.extend(
-                (word.line + word.raw.count("\n", 0, match.start()), match.group(0))
-                for match in PROSE_REFERENCE.finditer(word.raw)
-            )
+            line, position = word.line, 0
+            for match in PROSE_REFERENCE.finditer(word.raw):
+                line += word.raw.count("\n", position, match.start())
+                position = match.start()
+                found.append((line, match.group(0)))
     return found
 
 
@@ -2238,11 +2278,22 @@ def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
     labels name a script. A continuation line's first word is read as a command name though it may be an argument of
     the command it continues, as `  head` after `$ git log --author \\`. A first word is matched in any case in an
     ANY_CASE_FENCES fence, and as written otherwise."""
+    any_case = fence.language.casefold() in ANY_CASE_FENCES
+    return {
+        index
+        for index, text in first_word_commands(fence, lines)
+        if first_word_runs_file_command(text, any_case=any_case)
+    }
+
+
+def first_word_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]]:
+    """The command lines of a fence read by its first word, by index, each as CommonMark gives it to the fence's
+    content without its prompt: a session's, as session_commands reads them, and otherwise every body line, after its
+    blanks and any `$ ` or `> ` prompt."""
     commands = session_commands(fence, lines)
     if commands is None:
         commands = [(index, PROMPT.sub("", fence.content(lines[index]), count=1)) for index in fence.body()]
-    any_case = fence.language.casefold() in ANY_CASE_FENCES
-    return {index for index, text in commands if first_word_runs_file_command(text, any_case=any_case)}
+    return commands
 
 
 def first_word_runs_file_command(command: str, *, any_case: bool) -> bool:

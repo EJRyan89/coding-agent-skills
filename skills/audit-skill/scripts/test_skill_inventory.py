@@ -5021,3 +5021,47 @@ def test_a_bash_fence_a_here_document_runs_to_the_end_of_reads_a_path_on_a_line_
         "OUTSIDE_MISSING SKILL.md:7 ../body.md",
         "TOTAL outside 0 0 0",
     ]
+
+
+@pytest.mark.parametrize(
+    ("label", "prompt", "refused"),
+    [
+        ("powershell", "", ""),
+        ("pwsh", "> ", ""),
+        ("cmd", "", ""),
+        ("fish", "", ""),
+        ("console", "$ ", ""),
+        ("bash", "$ ", ""),
+        ("bash", "", "gh pr create )\n"),
+    ],
+)
+def test_a_line_read_by_its_first_word_reads_no_path_after_a_redirection_a_pipe_or_another_command(
+    label: str, prompt: str, refused: str, tmp_path: Path
+) -> None:
+    # A line read by its first word read every path on it, so a redirection's target, or Out-File's or Set-Content's
+    # after a pipe or a `;`, was an outside read whenever a file command started the line.
+    folder = source_skill(
+        tmp_path,
+        f"```{label}\n"
+        f"{prompt}cat ../shared.md > ../log.md\n"
+        f"{prompt}cat ../piped.md | Out-File ../w.md\n"
+        f"{prompt}grep -n x ../listed.md; Set-Content ../set.md x\n"
+        f"{refused}```\n",
+    )
+    assert outside_report(folder) == [
+        "OUTSIDE_MISSING SKILL.md:5 ../shared.md",
+        "OUTSIDE_MISSING SKILL.md:6 ../piped.md",
+        "OUTSIDE_MISSING SKILL.md:7 ../listed.md",
+        "TOTAL outside 0 0 0",
+    ]
+
+
+@pytest.mark.parametrize("label", ["bash", "sh", "shell", "zsh"])
+def test_a_bash_fence_written_with_prompts_is_read_as_a_session(label: str, tmp_path: Path) -> None:
+    # The grammar took a `$ ` prompt for the program, so a file command after one read nothing.
+    folder = source_skill(
+        tmp_path,
+        f"```{label}\n$ cat ../shared.md\n$ gh pr create --body-file ../pr-body.md\nwrote ../output.md\n"
+        "$ head \\\n> ../continued.md\n```\n",
+    )
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../shared.md", "TOTAL outside 0 0 0"]
