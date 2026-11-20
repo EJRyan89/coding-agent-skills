@@ -690,10 +690,10 @@ The pull requests `update-pr-dashboard` holds, the AI review of each row it show
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `schema_version` | integer | yes | One of `1`, `2`, or `3`. An update writes `3`; a `1` record, written before records held reviews, is still read, as holding no reviews, and a `2` record, written before records held the user's own reviews, as holding none of those. |
+| `schema_version` | integer | yes | One of `1`, `2`, `3`, or `4`. An update writes `4`; a `1` record, written before records held reviews, is still read, as holding no reviews, a `2` record, written before records held the user's own reviews, as holding none of those, and a `2` or `3` record, written before records identified a review beside its commit, as naming no review version and no user review ID, so each of its reviews is told apart by its commit alone. |
 | `pulls` | array | yes | Every pull request the last update collected that the configured user authored, is asked to review, or has reviewed, whether or not its row was shown, as `owner/repo#number` keys matched ignoring case, each once. |
-| `reviews` | object | when `schema_version` is `2` or `3` | Keyed by the `owner/repo#number` key of each row the last update showed, a pull request `pulls` lists; each value is that row's [AI review](#tracker-review-trackerreviewspull). |
-| `user_reviews` | object | when `schema_version` is `3` | Keyed by the `owner/repo#number` key of each pull request `pulls` lists that the configured user did not author and whose latest review by them is `APPROVED`, `CHANGES_REQUESTED`, or `COMMENTED`, shown or not, when a base is known for it; each value is that review's [base](#tracker-user-review-trackeruser_reviewspull). |
+| `reviews` | object | when `schema_version` is `2`, `3`, or `4` | Keyed by the `owner/repo#number` key of each row the last update showed, a pull request `pulls` lists; each value is that row's [AI review](#tracker-review-trackerreviewspull). |
+| `user_reviews` | object | when `schema_version` is `3` or `4` | Keyed by the `owner/repo#number` key of each pull request `pulls` lists that the configured user did not author and whose latest review by them is `APPROVED`, `CHANGES_REQUESTED`, or `COMMENTED`, shown or not, when a base is known for it; each value is that review's [base](#tracker-user-review-trackeruser_reviewspull). |
 
 #### Tracker review (`tracker.reviews.<pull>`)
 
@@ -701,15 +701,17 @@ The pull requests `update-pr-dashboard` holds, the AI review of each row it show
 | --- | --- | --- | --- |
 | `state` | string | yes | One of `missing`, `current`, `stale`, or `incomplete`: the row's AI review state. |
 | `reviewed_head_sha` | string or null | yes | The head its latest AI review covered; null exactly when `state` is `missing`. |
+| `reviewed_version` | integer or null | when `schema_version` is `4` | That review's version, at least `1`, which tells a review written again at the same head, as `review-prs --re-review` writes one on a new base, from the one before it; null when `state` is `missing`, for a migrated legacy review, which has no version, and when the update's input named none. The next update names a review that went stale since as written since when its head differs or, both versions being known, its version differs; a null on either side is compared by the head alone. |
 
 #### Tracker user review (`tracker.user_reviews.<pull>`)
 
-GitHub keeps no base commit for a user's review, so the update records one: the tip of the pull request's base branch it collected the first time it saw the review's commit, kept by each later update that collects the pull request while that commit stays the user's latest review. An update that does not collect the pull request, one scoped to other repositories or run while it is closed, forgets its base, as it forgets the record's other entries for it, and the next update that collects it records the tip then. The update compares the review's commit with that base, rather than with the base branch as it is now, to decide whether the pull request changed since the review, and with the base branch as it is now when GitHub can no longer compare the recorded base.
+GitHub keeps no base commit for a user's review, so the update records one: the tip of the pull request's base branch it collected the first time it saw the review, kept by each later update that collects the pull request while that review stays the user's latest. A review is the same while its commit is the same and, when both the record and the collection name one, its GitHub ID is too, so a review the user makes again at the same commit, such as after a retarget made the pull request read changed, takes the tip collected with it. An update that does not collect the pull request, one scoped to other repositories or run while it is closed, forgets its base, as it forgets the record's other entries for it, and the next update that collects it records the tip then. The update compares the review's commit with that base, rather than with the base branch as it is now, to decide whether the pull request changed since the review, and with the base branch as it is now when GitHub can no longer compare the recorded base.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `user_review_sha` | string | yes | The commit the user's latest review was made on. |
-| `base_sha` | string | yes | The tip of the base branch the update collected when it first saw that commit as the user's latest review. |
+| `base_sha` | string | yes | The tip of the base branch the update collected when it first saw that review as the user's latest. |
+| `user_review_id` | string or null | when `schema_version` is `4` | GitHub's ID for that review (`PullRequestReview.id`); null when the update's input named none. A record that names none for a review the collection still finds at the same commit takes the ID collected then. |
 
 ### Legacy review index
 

@@ -31,6 +31,7 @@ from update_pr_dashboard import (
     SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
     ComparisonFailures,
+    Row,
     TrackerError,
     TrackerFieldError,
     _ai_review,
@@ -39,6 +40,7 @@ from update_pr_dashboard import (
     normalize_pull_keys,
     replacement,
     review_candidates,
+    stale_since,
     tracked_pulls,
     update_dashboard_rows,
     user_review_bases,
@@ -1465,7 +1467,7 @@ class PreviousVersionTests(unittest.TestCase):
             item(number=3) | {"author": "reviewer", "review_decision": "APPROVED"},
         ]
         detector = FakeDetector({(2, USER_REVIEWED): UNCHANGED})
-        record_value = {
+        record_value: dict[str, Any] = {
             "schema_version": 2,
             "pulls": ["owner/other#2", "owner/repo#1", "owner/repo#3"],
             "reviews": {
@@ -1494,10 +1496,11 @@ class PreviousVersionTests(unittest.TestCase):
                 "- | - | (stale) |",
             ):
                 self.assertIn(f"\n{line}\n", content)
-            # The record takes the new version, and an input collected before base tips were read gives no user review
-            # a base to record.
+            # The record takes the new version, and an input collected before base tips and review versions were
+            # read gives no user review a base to record and no AI review a version.
+            reviews = {key: review | {"reviewed_version": None} for key, review in record_value["reviews"].items()}
             self.assertEqual(
-                {**record_value, "schema_version": 3, "user_reviews": {}},
+                {**record_value, "schema_version": 4, "reviews": reviews, "user_reviews": {}},
                 json.loads(record.read_text(encoding="utf-8")),
             )
             update_dashboard_rows(source, dashboard, "reviewer", detector=detector, record=record)
@@ -1516,18 +1519,21 @@ class UserReviewBaseTests(unittest.TestCase):
 
     def test_a_review_first_seen_takes_the_base_tip_collected_with_it(self) -> None:
         items = validate_items([reviewed(2, "CHANGES_REQUESTED") | {"base_sha": BASE_TIP}])
-        expected = {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}}
+        expected = {"owner/repo#2": user_base(USER_REVIEWED, BASE_TIP)}
         self.assertEqual(expected, user_review_bases(items, "reviewer", None))
         self.assertEqual(expected, user_review_bases(items, "reviewer", self.record({})))
 
     def test_the_recorded_base_is_kept_while_the_review_commit_stays_the_same(self) -> None:
         items = validate_items([reviewed(2, "APPROVED") | {"base_sha": BASE_TIP}])
         kept = {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}}
-        self.assertEqual(kept, user_review_bases(items, "Reviewer", self.record(kept)))
+        self.assertEqual(
+            {"owner/repo#2": user_base(USER_REVIEWED, RECORDED_BASE)},
+            user_review_bases(items, "Reviewer", self.record(kept)),
+        )
         # A later review's commit is seen for the first time, so it takes the tip collected with it.
         earlier = {"owner/repo#2": {"user_review_sha": AI_REVIEWED, "base_sha": RECORDED_BASE}}
         self.assertEqual(
-            {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP}},
+            {"owner/repo#2": user_base(USER_REVIEWED, BASE_TIP)},
             user_review_bases(items, "reviewer", self.record(earlier)),
         )
 
@@ -1544,7 +1550,7 @@ class UserReviewBaseTests(unittest.TestCase):
         ]
         items = validate_items([value | {"base_sha": BASE_TIP} for value in compared + others])
         self.assertEqual(
-            {f"owner/repo#{number}": {"user_review_sha": USER_REVIEWED, "base_sha": BASE_TIP} for number in (1, 2, 3)},
+            {f"owner/repo#{number}": user_base(USER_REVIEWED, BASE_TIP) for number in (1, 2, 3)},
             user_review_bases(items, "reviewer", None),
         )
 
@@ -1593,13 +1599,182 @@ class UserReviewBaseTests(unittest.TestCase):
                 )
                 self.assertEqual(["Awaiting Response"], [row.section for row in rows])
                 self.assertEqual(
-                    {"owner/repo#2": {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}},
+                    {"owner/repo#2": user_base(USER_REVIEWED, RECORDED_BASE)},
                     json.loads(record.read_text(encoding="utf-8"))["user_reviews"],
                 )
         self.assertEqual(
             [(USER_REVIEWED, None), (USER_REVIEWED, RECORDED_BASE)],
             [pair for pair in detector.compared if pair[0] == USER_REVIEWED],
         )
+
+
+class ReviewIdentityTests(unittest.TestCase):
+    """What tells a review apart from the one the tracker record holds beside its commit: an AI review's version and a
+    user review's GitHub ID, each compared only when the record and the collection both name it."""
+
+    KEY = "owner/repo#1"
+    FIRST_ID = "PRR_first"
+    SECOND_ID = "PRR_second"
+
+    def record(self, review: dict[str, Any], version: int = 4) -> dict[str, Any]:
+        return validate_tracker_record(
+            {"schema_version": version, "pulls": [self.KEY], "reviews": {self.KEY: review}, "user_reviews": {}}
+        )
+
+    def stale_row(self, head: str, version: int | None) -> Row:
+        value = validate_items([item() | {"reviewed_head_sha": head, "reviewed_version": version}])[0]
+        return Row(value, "review requested", SECTION_TO_REVIEW, "stale", False)
+
+    def test_a_review_written_again_at_the_same_head_that_went_stale_is_named(self) -> None:
+        # The record held version 1 stale at the head; a re-review on a new base wrote version 2 at the same head,
+        # which went stale before this update.
+        previous = self.record({"state": "stale", "reviewed_head_sha": AI_REVIEWED, "reviewed_version": 1})
+        self.assertEqual([self.KEY], stale_since(previous, [self.stale_row(AI_REVIEWED, 2)]))
+        self.assertEqual([], stale_since(previous, [self.stale_row(AI_REVIEWED, 1)]), "the same review stayed stale")
+
+    def test_a_review_with_no_version_on_either_side_is_told_apart_by_its_head_alone(self) -> None:
+        # A version 3 record names no review version, nor does a migrated legacy review or an input without one.
+        held = {"state": "stale", "reviewed_head_sha": AI_REVIEWED}
+        for previous, version in (
+            (self.record(held, version=3), 2),
+            (self.record(held | {"reviewed_version": None}), 2),
+            (self.record(held | {"reviewed_version": 1}), None),
+        ):
+            with self.subTest(previous=previous, version=version):
+                self.assertEqual([], stale_since(previous, [self.stale_row(AI_REVIEWED, version)]))
+                self.assertEqual([self.KEY], stale_since(previous, [self.stale_row(HEAD, version)]))
+
+    def test_a_version_3_record_reads_with_no_review_version_and_no_user_review_id(self) -> None:
+        record = validate_tracker_record(
+            {
+                "schema_version": 3,
+                "pulls": [self.KEY],
+                "reviews": {self.KEY: {"state": "stale", "reviewed_head_sha": AI_REVIEWED}},
+                "user_reviews": {self.KEY: {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}},
+            }
+        )
+        self.assertEqual(
+            {
+                "schema_version": 4,
+                "pulls": [self.KEY],
+                "reviews": {self.KEY: {"state": "stale", "reviewed_head_sha": AI_REVIEWED, "reviewed_version": None}},
+                "user_reviews": {self.KEY: user_base(USER_REVIEWED, RECORDED_BASE)},
+            },
+            record,
+        )
+
+    def test_each_record_version_takes_exactly_its_own_review_fields(self) -> None:
+        unversioned = {"state": "stale", "reviewed_head_sha": AI_REVIEWED}
+        review = unversioned | {"reviewed_version": 1}
+        unidentified = {"user_review_sha": USER_REVIEWED, "base_sha": RECORDED_BASE}
+        base = unidentified | {"user_review_id": self.FIRST_ID}
+        path = f"tracker.reviews.{self.KEY}"
+        user_path = f"tracker.user_reviews.{self.KEY}"
+        cases: list[tuple[int, dict[str, Any], dict[str, Any], tuple[str, str]]] = [
+            (4, unversioned, {}, wrong(path, "an object with field reviewed_version", "an object without it")),
+            (4, review, unidentified, wrong(user_path, "an object with field user_review_id", "an object without it")),
+            (3, review, {}, wrong(path, "an object of known fields", 'unknown field "reviewed_version"')),
+            (3, {}, base, wrong(user_path, "an object of known fields", 'unknown field "user_review_id"')),
+            (
+                4,
+                review | {"reviewed_version": 0},
+                {},
+                wrong(f"{path}.reviewed_version", "an integer of at least 1 or null", "integer 0"),
+            ),
+            (
+                4,
+                {},
+                base | {"user_review_id": ""},
+                wrong(f"{user_path}.user_review_id", TEXT_OR_NULL, "an empty string"),
+            ),
+            (
+                4,
+                {"state": "missing", "reviewed_head_sha": None, "reviewed_version": 1},
+                {},
+                ("TrackerError", f"Tracker review {self.KEY} names a review version without a reviewed head"),
+            ),
+        ]
+        for version, given_review, given_base, expected in cases:
+            with self.subTest(version=version, review=given_review, base=given_base):
+                value = {
+                    "schema_version": version,
+                    "pulls": [self.KEY],
+                    "reviews": {self.KEY: given_review} if given_review else {},
+                    "user_reviews": {self.KEY: given_base} if given_base else {},
+                }
+                self.assertEqual(expected, raised(partial(validate_tracker_record, value)))
+
+    def user_record(self, identity: str | None, version: int = 4) -> dict[str, Any]:
+        base = user_base(USER_REVIEWED, RECORDED_BASE, identity)
+        if version == 3:
+            del base["user_review_id"]
+        return validate_tracker_record(
+            {"schema_version": version, "pulls": [self.KEY], "reviews": {}, "user_reviews": {self.KEY: base}}
+        )
+
+    def collected(self, identity: str | None) -> list[dict[str, Any]]:
+        return validate_items([reviewed(1, "APPROVED") | {"base_sha": BASE_TIP, "user_review_id": identity}])
+
+    def test_a_user_review_made_again_at_the_same_commit_takes_the_tip_collected_with_it(self) -> None:
+        self.assertEqual(
+            {self.KEY: user_base(USER_REVIEWED, BASE_TIP, self.SECOND_ID)},
+            user_review_bases(self.collected(self.SECOND_ID), "reviewer", self.user_record(self.FIRST_ID)),
+        )
+
+    def test_the_same_user_review_keeps_its_base_and_gains_an_id_its_record_lacked(self) -> None:
+        for record, identity, expected in (
+            (self.user_record(self.FIRST_ID), self.FIRST_ID, self.FIRST_ID),
+            # A version 3 record, or one written from an input that collected no ID, names none, so the review is
+            # told apart by its commit alone and takes the ID collected now.
+            (self.user_record(None, version=3), self.FIRST_ID, self.FIRST_ID),
+            (self.user_record(None), self.FIRST_ID, self.FIRST_ID),
+            # An input that collected no ID keeps the one recorded.
+            (self.user_record(self.FIRST_ID), None, self.FIRST_ID),
+        ):
+            with self.subTest(record=record, identity=identity):
+                self.assertEqual(
+                    {self.KEY: user_base(USER_REVIEWED, RECORDED_BASE, expected)},
+                    user_review_bases(self.collected(identity), "reviewer", record),
+                )
+
+    def test_an_approval_made_again_after_a_retarget_moved_its_merge_base_is_kept(self) -> None:
+        # The user approved the head on the recorded base; a retarget moved its merge base, so the approval is offered
+        # again. The user approves again at the same head, and from then on the approval is compared from the tip
+        # collected with it, which the base branch is still at.
+        detector = BaseDetector({(HEAD, None): UNCHANGED})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = root / "tracker.json"
+            approved = reviewed(1, "APPROVED") | {"user_review_sha": HEAD, "reviewed_head_sha": None}
+            sections = []
+            for tip, identity in (
+                (RECORDED_BASE, self.FIRST_ID),
+                (BASE_TIP, self.FIRST_ID),
+                (BASE_TIP, self.SECOND_ID),
+            ):
+                source, dashboard = dashboard_files(
+                    root,
+                    f"{START_MARKER}\n{END_MARKER}\n".encode(),
+                    [approved | {"base_sha": tip, "user_review_id": identity}],
+                )
+                previous = (
+                    validate_tracker_record(json.loads(record.read_text(encoding="utf-8"))) if record.exists() else None
+                )
+                rows = update_dashboard_rows(
+                    source, dashboard, "reviewer", detector=detector, record=record, previous=previous
+                )
+                sections.append([row.section for row in rows])
+            self.assertEqual([[], [SECTION_TO_REVIEW], []], sections)
+            self.assertEqual(
+                {self.KEY: user_base(HEAD, BASE_TIP, self.SECOND_ID)},
+                json.loads(record.read_text(encoding="utf-8"))["user_reviews"],
+            )
+
+
+def user_base(sha: str, base: str, identity: str | None = None) -> dict[str, str | None]:
+    """A user review's base as the tracker record holds it: the review's commit, the base it is compared from, and its
+    GitHub ID, null when none was collected."""
+    return {"user_review_sha": sha, "base_sha": base, "user_review_id": identity}
 
 
 def raised(call: Callable[[], object]) -> tuple[str, str]:
@@ -1623,6 +1798,7 @@ def wrong(path: str, expected: str, found: str) -> tuple[str, str]:
 
 TEXT = "a non-empty string"
 TEXT_OR_NULL = "a non-empty string or null"
+VERSION_OR_NULL = "an integer of at least 1 or null"
 USER_REVIEW_STATES = 'one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED" or null'
 REVIEW_DECISIONS = 'one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null'
 USER_REVIEW_DECISIONS = 'one of "APPROVED", "CHANGES_REQUESTED", "DISMISSED" or null'
@@ -1673,10 +1849,12 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             [
                 "reviewed_incomplete",
                 "reviewed_base_sha",
+                "reviewed_version",
                 "base_sha",
                 "author_name",
                 "review_decision",
                 "user_review_decision",
+                "user_review_id",
                 "ai_review",
                 "repository",
                 "number",
@@ -1698,10 +1876,12 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             {
                 "reviewed_incomplete": False,
                 "reviewed_base_sha": None,
+                "reviewed_version": None,
                 "base_sha": None,
                 "author_name": None,
                 "review_decision": None,
                 "user_review_decision": None,
+                "user_review_id": None,
                 "ai_review": None,
                 **original,
                 "repository": "owner/repo",
@@ -1716,9 +1896,11 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             "author_name": "Someone Else",
             "reviewed_incomplete": True,
             "reviewed_base_sha": "e" * 40,
+            "reviewed_version": 2,
             "base_sha": "f" * 40,
             "review_decision": "APPROVED",
             "user_review_decision": "APPROVED",
+            "user_review_id": "PRR_kwDOAbc",
             "user_review_state": "COMMENTED",
             "user_review_sha": USER_REVIEWED,
         }
@@ -1728,10 +1910,12 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             [
                 "reviewed_incomplete",
                 "reviewed_base_sha",
+                "reviewed_version",
                 "base_sha",
                 "author_name",
                 "review_decision",
                 "user_review_decision",
+                "user_review_id",
                 "ai_review",
                 *item(),
             ],
@@ -1797,6 +1981,13 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("reviewed_base_sha", 5, wrong(f"{SECOND}.reviewed_base_sha", TEXT_OR_NULL, "integer 5")),
             ("base_sha", "", wrong(f"{SECOND}.base_sha", TEXT_OR_NULL, "an empty string")),
             ("base_sha", 5, wrong(f"{SECOND}.base_sha", TEXT_OR_NULL, "integer 5")),
+            *(
+                ("reviewed_version", value, wrong(f"{SECOND}.reviewed_version", VERSION_OR_NULL, found))
+                for value, found in ((0, "integer 0"), ("2", 'string "2"'), (True, "boolean true"), (2.0, "number 2.0"))
+            ),
+            ("user_review_id", "", wrong(f"{SECOND}.user_review_id", TEXT_OR_NULL, "an empty string")),
+            ("user_review_id", 5, wrong(f"{SECOND}.user_review_id", TEXT_OR_NULL, "integer 5")),
+            ("user_review_id", "PRR_kwDOAbc", ("TrackerError", f"{key}.user_review_id requires a review state")),
             ("user_review_sha", "", wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "an empty string")),
             ("user_review_sha", 5, wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "integer 5")),
             (
@@ -1836,6 +2027,14 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         )
         [result] = validate_items([item() | {"reviewed_base_sha": "e" * 40}])
         self.assertEqual("e" * 40, result["reviewed_base_sha"])
+
+    def test_a_review_version_needs_a_reviewed_commit(self) -> None:
+        self.assertEqual(
+            ("TrackerError", "Tracker item owner/repo#1.reviewed_version requires reviewed_head_sha"),
+            refusal([item() | {"reviewed_version": 1, "reviewed_head_sha": None}]),
+        )
+        [result] = validate_items([item() | {"reviewed_version": 1}])
+        self.assertEqual(1, result["reviewed_version"])
 
     def test_review_states_that_need_no_commit_are_accepted(self) -> None:
         for state, sha in ((None, None), ("DISMISSED", None), ("DISMISSED", USER_REVIEWED)):

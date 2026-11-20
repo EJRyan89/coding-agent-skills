@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -78,10 +78,12 @@ SECTION_DRAFTS = DASHBOARD_SECTION_DRAFTS
 OPTIONAL_FIELDS = {
     "reviewed_incomplete",
     "reviewed_base_sha",
+    "reviewed_version",
     "base_sha",
     "author_name",
     "review_decision",
     "user_review_decision",
+    "user_review_id",
     "ai_review",
 }
 LEDGER_KEYS = {"ledger", "flagged", "since_review"}
@@ -105,16 +107,21 @@ OPEN_SECTIONS = {SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE}
 FINDINGS_LEGEND = (
     "Findings: M must fix, H should fix, S suggestion; flagged means you flagged it with flag-review-finding."
 )
-# The tracker record's version: 2 adds each shown row's AI review, and 3 the base each of the user's own reviews is
-# compared from; a version 1 or 2 record, still read, lacks what later versions add.
-TRACKER_SCHEMA_VERSION = 3
-TRACKER_SCHEMA_VERSIONS = (1, 2, TRACKER_SCHEMA_VERSION)
+# The tracker record's version: 2 adds each shown row's AI review, 3 the base each of the user's own reviews is
+# compared from, and 4 what identifies each review beside its commit, the AI review's version and the user's review's
+# GitHub ID; a record of an earlier version, still read, lacks what later versions add.
+TRACKER_SCHEMA_VERSION = 4
+TRACKER_SCHEMA_VERSIONS = (1, 2, 3, TRACKER_SCHEMA_VERSION)
 # The fields each version's record holds.
 TRACKER_RECORD_FIELDS = {
     1: {"schema_version", "pulls"},
     2: {"schema_version", "pulls", "reviews"},
     3: {"schema_version", "pulls", "reviews", "user_reviews"},
+    4: {"schema_version", "pulls", "reviews", "user_reviews"},
 }
+# The fields each version's AI reviews and user reviews hold, by the version that first holds them.
+TRACKER_REVIEW_FIELDS = {2: {"state", "reviewed_head_sha"}, 4: {"state", "reviewed_head_sha", "reviewed_version"}}
+TRACKER_USER_REVIEW_FIELDS = {3: {"user_review_sha", "base_sha"}, 4: {"user_review_sha", "base_sha", "user_review_id"}}
 # The AI review states a row is offered for review in, unless a status override pins it.
 CANDIDATE_STATES = frozenset({DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE})
 # A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
@@ -162,6 +169,15 @@ class Detector(Protocol):
 class BatchDetector(Detector, Protocol):
     def prefetch(self, queries: Iterable[Query]) -> None:
         """Read ahead, concurrently, what detecting each query needs."""
+
+
+class UserReviewBase(TypedDict):
+    """One of the user's own reviews as the tracker record holds it: its commit, the base it is compared from, and
+    GitHub's ID for it, None when the record or the input named none."""
+
+    user_review_sha: str
+    base_sha: str
+    user_review_id: str | None
 
 
 @dataclass(frozen=True)
@@ -278,10 +294,12 @@ def _with_defaults(item: Any, path: str) -> dict[str, Any]:
     return {
         "reviewed_incomplete": False,
         "reviewed_base_sha": None,
+        "reviewed_version": None,
         "base_sha": None,
         "author_name": None,
         "review_decision": None,
         "user_review_decision": latest if latest in DECIDING_REVIEW_STATES else None,
+        "user_review_id": None,
         "ai_review": None,
         **item,
     }
@@ -307,18 +325,21 @@ def _validate_fields(item: dict[str, Any], key: str, path: str) -> None:
         READ.string(item[field], f"{path}.{field}")
     READ.array(item["requested_reviewers"], f"{path}.requested_reviewers", READ.string)
     READ.boolean(item["draft"], f"{path}.draft")
-    for field in ("reviewed_head_sha", "reviewed_base_sha", "base_sha", "user_review_sha"):
+    for field in ("reviewed_head_sha", "reviewed_base_sha", "base_sha", "user_review_sha", "user_review_id"):
         READ.optional(READ.string, item[field], f"{path}.{field}")
-    if item["reviewed_base_sha"] is not None and item["reviewed_head_sha"] is None:
-        raise TrackerError(f"Tracker item {key}.reviewed_base_sha requires reviewed_head_sha")
+    READ.optional(READ.integer, item["reviewed_version"], f"{path}.reviewed_version", minimum=1)
+    for field in ("reviewed_base_sha", "reviewed_version"):
+        if item[field] is not None and item["reviewed_head_sha"] is None:
+            raise TrackerError(f"Tracker item {key}.{field} requires reviewed_head_sha")
 
 
 def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
     review_state = READ.optional(
         READ.one_of, item["user_review_state"], f"{path}.user_review_state", USER_REVIEW_STATES - {None}
     )
-    if review_state is None and item["user_review_sha"] is not None:
-        raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
+    for field in ("user_review_sha", "user_review_id"):
+        if review_state is None and item[field] is not None:
+            raise TrackerError(f"Tracker item {key}.{field} requires a review state")
     if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
         raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
     # The latest review is the latest deciding one when it decided, and there is no deciding review without a review.
@@ -403,14 +424,15 @@ def validate_tracker_record(value: Any) -> dict[str, Any]:
     status override is, so `override` can refuse one naming none of them, the AI review each shown row had, so the
     next update can name a review that went stale since, and the base each of the user's own reviews is compared from
     (see `user_review_bases`). A version 1 record holds no reviews and a version 2 record no user reviews, and each
-    reads as holding none."""
+    reads as holding none; a version 2 or 3 record names neither review beside its commit, so each reads as naming
+    none (see `_other_review`)."""
     version = READ.one_of(
         READ.json_object(value, "tracker").get("schema_version"), "tracker.schema_version", TRACKER_SCHEMA_VERSIONS
     )
     record = READ.json_object(value, "tracker", required=TRACKER_RECORD_FIELDS[version])
     pulls = normalize_pull_keys(READ.array(record["pulls"], "tracker.pulls", READ.string), "tracker")
-    reviews = _validate_record_reviews(record.get("reviews", {}), pulls)
-    user_reviews = _validate_record_user_reviews(record.get("user_reviews", {}), pulls)
+    reviews = _validate_record_reviews(record.get("reviews", {}), pulls, version)
+    user_reviews = _validate_record_user_reviews(record.get("user_reviews", {}), pulls, version)
     return {
         "schema_version": TRACKER_SCHEMA_VERSION,
         "pulls": sorted(pulls),
@@ -419,47 +441,64 @@ def validate_tracker_record(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_record_reviews(value: Any, pulls: set[str]) -> dict[str, dict[str, Any]]:
-    """Each recorded row's AI review state and the head its review covered, which only a missing review lacks, keyed
-    as `pulls` is and naming only pull requests it holds."""
+def _fields(fields: dict[int, set[str]], version: int) -> set[str]:
+    """The fields a record of `version` holds in an entry whose fields `fields` gives by the version that first holds
+    them."""
+    return fields[max(first for first in fields if first <= version)]
+
+
+def _validate_record_reviews(value: Any, pulls: set[str], version: int) -> dict[str, dict[str, Any]]:
+    """Each recorded row's AI review state, the head its review covered, which only a missing review lacks, and the
+    review's version, which a missing or migrated legacy review lacks, as does every review of a record before version
+    4, keyed as `pulls` is and naming only pull requests it holds."""
     reviews: dict[str, dict[str, Any]] = {}
     for raw_key, raw_review in READ.json_object(value, "tracker.reviews").items():
         key = next(iter(normalize_pull_keys([raw_key], "tracker review")))
         if key not in pulls or key in reviews:
             raise TrackerError(f"Tracker review {key} names no pull request the record holds, or is named twice")
         path = f"tracker.reviews.{raw_key}"
-        review = READ.json_object(raw_review, path, required={"state", "reviewed_head_sha"})
+        review = READ.json_object(raw_review, path, required=_fields(TRACKER_REVIEW_FIELDS, version))
         state = READ.one_of(review["state"], f"{path}.state", DASHBOARD_AI_REVIEW_STATES)
         head = READ.optional(READ.string, review["reviewed_head_sha"], f"{path}.reviewed_head_sha")
         if (head is None) != (state == DASHBOARD_AI_REVIEW_MISSING):
             raise TrackerError(f"Tracker review {key} must name a reviewed head exactly when its review is not missing")
-        reviews[key] = {"state": state, "reviewed_head_sha": head}
+        reviewed = READ.optional(READ.integer, review.get("reviewed_version"), f"{path}.reviewed_version", minimum=1)
+        if reviewed is not None and head is None:
+            raise TrackerError(f"Tracker review {key} names a review version without a reviewed head")
+        reviews[key] = {"state": state, "reviewed_head_sha": head, "reviewed_version": reviewed}
     return dict(sorted(reviews.items()))
 
 
-def _validate_record_user_reviews(value: Any, pulls: set[str]) -> dict[str, dict[str, str]]:
-    """The commit of each of the user's own reviews and the base it is compared from, keyed as `pulls` is and naming
-    only pull requests it holds."""
-    user_reviews: dict[str, dict[str, str]] = {}
+def _validate_record_user_reviews(value: Any, pulls: set[str], version: int) -> dict[str, UserReviewBase]:
+    """The commit of each of the user's own reviews, its GitHub ID, which an input that did not collect it lacks, as
+    does every user review of a version 3 record, and the base it is compared from, keyed as `pulls` is and naming only
+    pull requests it holds."""
+    user_reviews: dict[str, UserReviewBase] = {}
     for raw_key, raw_review in READ.json_object(value, "tracker.user_reviews").items():
         key = next(iter(normalize_pull_keys([raw_key], "tracker user review")))
         if key not in pulls or key in user_reviews:
             raise TrackerError(f"Tracker user review {key} names no pull request the record holds, or is named twice")
         path = f"tracker.user_reviews.{raw_key}"
-        review = READ.json_object(raw_review, path, required={"user_review_sha", "base_sha"})
-        user_reviews[key] = {field: READ.string(review[field], f"{path}.{field}") for field in sorted(review)}
+        review = READ.json_object(raw_review, path, required=_fields(TRACKER_USER_REVIEW_FIELDS, version))
+        user_reviews[key] = UserReviewBase(
+            user_review_sha=READ.string(review["user_review_sha"], f"{path}.user_review_sha"),
+            base_sha=READ.string(review["base_sha"], f"{path}.base_sha"),
+            user_review_id=READ.optional(READ.string, review.get("user_review_id"), f"{path}.user_review_id"),
+        )
     return dict(sorted(user_reviews.items()))
 
 
 def user_review_bases(
     items: list[dict[str, Any]], login: str, previous: dict[str, Any] | None
-) -> dict[str, dict[str, str]]:
+) -> dict[str, UserReviewBase]:
     """The base each of the user's own reviews is compared from, by pull request, for the tracker record: for each item
     the user did not author whose latest review is one `_section` compares, the base `previous` recorded for that
-    review's commit, else the tip of the base branch this collection read, or none when it read none.
+    review, else the tip of the base branch this collection read, or none when it read none.
 
-    GitHub keeps no base for a user's review, so the base is the one the update saw the first time it saw the review's
-    commit, kept by each later update that collects the pull request while the review's commit stays the same. Comparing
+    GitHub keeps no base for a user's review, so the base is the one the update saw the first time it saw the review,
+    kept by each later update that collects the pull request while the review stays the same: its commit, and its
+    GitHub ID when both the record and the item name one (see `_other_review`), so a review the user makes again at the
+    same commit, such as after a retarget made the pull request read changed, takes the tip collected with it. Comparing
     the review's commit with that base rather than the base branch as it is now keeps a pull request a rewrite of a
     lower branch rebased, with its own changes as reviewed, from reading as changed. Limits: a base rewritten before the
     first update after the review was recorded after the rewrite, and an update that does not collect the pull
@@ -468,24 +507,45 @@ def user_review_bases(
     did before bases were recorded."""
     login_key = login.casefold()
     recorded = previous["user_reviews"] if previous else {}
-    bases: dict[str, dict[str, str]] = {}
+    bases: dict[str, UserReviewBase] = {}
     for item in items:
         key = f"{item['repository']}#{item['number']}"
         relationship = _relationship(item, login_key)
         if relationship in {None, "authored"} or item["user_review_state"] not in ACTIVE_REVIEW_STATES:
             continue
         before = recorded.get(key)
-        if before is not None and before["user_review_sha"] == item["user_review_sha"]:
-            bases[key] = before
+        identity = item["user_review_id"]
+        if (
+            before is not None
+            and before["user_review_sha"] == item["user_review_sha"]
+            and not _other_review(before["user_review_id"], identity)
+        ):
+            # A record that named no ID for the review takes the one collected now, so the next review is told apart.
+            bases[key] = UserReviewBase(
+                user_review_sha=before["user_review_sha"],
+                base_sha=before["base_sha"],
+                user_review_id=before["user_review_id"] or identity,
+            )
         elif item["base_sha"] is not None:
-            bases[key] = {"user_review_sha": item["user_review_sha"], "base_sha": item["base_sha"]}
+            bases[key] = UserReviewBase(
+                user_review_sha=item["user_review_sha"], base_sha=item["base_sha"], user_review_id=identity
+            )
     return dict(sorted(bases.items()))
+
+
+def _other_review(recorded: object, collected: object) -> bool:
+    """Whether what identifies a review beside its commit, as the tracker record holds it and as the collection read
+    it, names another review. Either may be unknown (None): a record before version 4 names none, nor does a migrated
+    legacy AI review or an input collected before the identity was, and an unknown one never differs, so such a
+    review is told apart by its commit alone, as before."""
+    return recorded is not None and collected is not None and recorded != collected
 
 
 def stale_since(previous: dict[str, Any] | None, rows: list[Row]) -> list[str]:
     """The rows whose AI review went stale since the update that wrote `previous`, in row order: one that update held
-    as current or incomplete, or whose review was written since, so it covers another head, and is now stale. A row a
-    status override pins is never offered for review, so it is left out, as is one `previous` did not show."""
+    as current or incomplete, or whose review was written since, so it covers another head or, at the same head, as a
+    re-review on a new base is, has another review version, and is now stale. A row a status override pins is never
+    offered for review, so it is left out, as is one `previous` did not show."""
     if previous is None:
         return []
     went: list[str] = []
@@ -494,14 +554,21 @@ def stale_since(previous: dict[str, Any] | None, rows: list[Row]) -> list[str]:
         if row.ai_review != DASHBOARD_AI_REVIEW_STALE or row.overridden or before is None:
             continue
         held = before["state"] in {DASHBOARD_AI_REVIEW_CURRENT, DASHBOARD_AI_REVIEW_INCOMPLETE}
-        if held or before["reviewed_head_sha"] != row.item["reviewed_head_sha"]:
+        written = before["reviewed_head_sha"] != row.item["reviewed_head_sha"] or _other_review(
+            before["reviewed_version"], row.item["reviewed_version"]
+        )
+        if held or written:
             went.append(row.key)
     return went
 
 
 def _record_reviews(rows: list[Row]) -> dict[str, dict[str, Any]]:
     return {
-        row.key: {"state": row.ai_review, "reviewed_head_sha": row.item["reviewed_head_sha"]}
+        row.key: {
+            "state": row.ai_review,
+            "reviewed_head_sha": row.item["reviewed_head_sha"],
+            "reviewed_version": row.item["reviewed_version"],
+        }
         for row in sorted(rows, key=lambda row: row.key)
     }
 
@@ -910,8 +977,8 @@ def update_dashboard_rows(
 ) -> list[Row]:
     """Update the owned section and return the rendered rows, then, given a `record` path, write there the pull
     requests the tracker holds, each shown row's AI review, and the base each of the user's own reviews is compared
-    from, keeping the one `previous`, the validated record that path held, names for a review commit that has not
-    changed (see `user_review_bases`). `login` is the configured user, or what finds it, called
+    from, keeping the one `previous`, the validated record that path held, names for a review that has not changed
+    (see `user_review_bases`). `login` is the configured user, or what finds it, called
     only once the dashboard and record are known to be writable. A dashboard or record `replacement` refuses is refused
     before GitHub is asked anything, and a removal naming no pull request the tracker holds before anything but that
     call asks it. Each write replaces the file its path leads to, through any symbolic link, and keeps that file's
