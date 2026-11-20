@@ -4142,6 +4142,66 @@ def test_a_link_destination_is_read_once_and_a_path_in_prose_still_counts(tmp_pa
 
 
 @pytest.mark.parametrize(
+    ("text", "references"),
+    [
+        # Both prose patterns read only [\w./-] and let a match start after `%` or `\`, so each read a path's tail.
+        ("Read bin/x%20y.md first.\n", ["bin/x%20y.md"]),
+        ("`[a](bin/my%20notes.md)`\n", ["bin/my%20notes.md"]),
+        ("Then read `..\\shared\\guide.md`.\n", ["..\\shared\\guide.md"]),
+        ("Read sub\\d.md.\n", ["sub\\d.md"]),
+        # Neither read an absolute path at all.
+        ("And /opt/notes.md.\n", ["/opt/notes.md"]),
+        ("And `C:\\notes\\a.md` or (C:/notes/b.md).\n", ["C:\\notes\\a.md", "C:/notes/b.md"]),
+        # A path's head was read too: `x.md` out of `x.md.bak`.
+        ("Keep x.md.bak and y.md-old.\n", []),
+        # The tail of a URL, a glob, a placeholder, or a word is no absolute path.
+        ("See https://example.com/a/b.md, <home>/c.md, `skills/*/SKILL.md`, and e/f.md.\n", ["e/f.md"]),
+        ("**g.md**, ${CLAUDE_SKILL_DIR}/h.md, and ./../i.md.\n", ["g.md", "${CLAUDE_SKILL_DIR}/h.md", "./../i.md"]),
+    ],
+)
+def test_a_path_in_prose_or_code_is_read_whole_or_not_at_all(text: str, references: list[str], tmp_path: Path) -> None:
+    assert [reference for _, reference, _ in skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)] == (
+        references
+    )
+
+
+def test_a_prose_path_resolves_as_the_platform_reads_it(tmp_path: Path) -> None:
+    # A backslash is a separator on Windows and part of the name elsewhere, as in a link; an absolute path is read
+    # from the root it names; a percent sign is part of the name, as prose is not percent-encoded.
+    skill = tmp_path / "skill"
+    absolute = resolved_path(tmp_path / "abs" / "notes.md")
+    text = f"Read `..\\shared\\guide.md`, bin/x%20y.md, and {absolute.as_posix()}.\n"
+    assert skill_inventory.markdown_links(skill, "SKILL.md", "doc", text) == [
+        (1, "..\\shared\\guide.md", resolved_path(skill / Path("..\\shared\\guide.md"))),
+        (1, "bin/x%20y.md", resolved_path(skill / "bin" / "x%20y.md")),
+        (1, absolute.as_posix(), absolute),
+    ]
+
+
+def test_inventory_reads_a_backslash_or_absolute_path_in_prose_as_an_outside_read(tmp_path: Path) -> None:
+    # A backslash path was read by its tail beside the naming file, and an absolute one not at all, so neither read
+    # from outside the folder got a line.
+    skill = tmp_path / "skill"
+    write(tmp_path / "shared" / "guide.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    outside = write(tmp_path / "abs" / "x.md", "abcd\n")  # 5 bytes, 2 tokens
+    gone = (tmp_path / "abs" / "gone.md").as_posix()
+    write(
+        skill / "SKILL.md",
+        f"---\nname: skill\n---\nRead `..\\shared\\guide.md`.\nThen {outside.as_posix()} and `{gone}`.\n",
+    )
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    backslash_separates = Path("a\\b").name == "b"  # the platform's own reading of a path
+    expected = ["OUTSIDE_READ SKILL.md:4 9 3 ..\\shared\\guide.md"] if backslash_separates else []
+    assert [line for line in lines if line.startswith(("OUTSIDE_", "TOTAL outside"))] == [
+        *expected,
+        f"OUTSIDE_READ SKILL.md:5 5 2 {outside.as_posix()}",
+        f"OUTSIDE_MISSING SKILL.md:5 {gone}",
+        f"TOTAL outside {len(expected) + 1} {9 * len(expected) + 5} {3 * len(expected) + 2}",
+    ]
+
+
+@pytest.mark.parametrize(
     ("link", "name"),
     [
         ("../guides/b.md", "guides/b.md"),
