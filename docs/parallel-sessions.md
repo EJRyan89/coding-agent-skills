@@ -124,15 +124,18 @@ and never armed, judged, updated, or rerun, so it merges only when the maintaine
 them, and the orchestrator keeps its own for the decisions.
 
 Each tick also checks the pre-merge review, which is report-only. For each admitted pull request in step, not in
-conflict, and with a check neither red nor missing, the script reads the machine's code-review archive for a
-`review-repository` review of its head. A head is covered by a review of that head, or of an earlier head from which
-every commit since is a merge, such as a merge of `main`. The script prints the `review-prs` arguments that review
-every head no review covers, and the shepherd runs `review-prs` once with them. The review it records covers that
-head from the next tick on, so a tick starts a review only for a head none covers, and never holds, disarms, or delays
-a merge for one. A covered head's line names the record's verdict and report, which the shepherd gives the
-orchestrating session and the session that owns the branch. It posts nothing on the pull request: a public text
-passes a private-term scan the skill cannot run, so the orchestrating session relays the findings and posts any public
-summary itself after that scan.
+conflict, and with a check neither red nor missing, the script reads the machine's code-review archive for its latest
+`review-repository` review and applies `review-prs`'s own rule. A review covers the pull request at the head and the
+base commit it read, the base being origin's `main` as the tick reads it. When either moved, `review-prs`'s comparison
+decides: the same head on another base, as after GitHub retargets a pull request whose lower one in a stack was
+squash-merged, by its merge base with each base, and a moved head, as after a merge of `main`, by the files its
+changes leave. A comparison that fails or cannot be made covers nothing. The script prints the `review-prs` arguments
+that review every pull request no review covers, and the shepherd runs `review-prs` once with them. The review it
+records covers that pull request from the next tick on, so a tick starts a review only for one none covers, and never
+holds, disarms, or delays a merge for one. A covered pull request's line names the record's verdict and report,
+which the shepherd gives the orchestrating session and the session that owns the branch. It posts nothing on the
+pull request: a public text passes a private-term scan the skill cannot run, so the orchestrating session relays the
+findings and posts any public summary itself after that scan.
 [Pull requests](implementing-changes.md#pull-requests) states what the author answers and how a kind of finding is
 promoted to blocking.
 
