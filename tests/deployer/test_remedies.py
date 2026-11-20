@@ -686,7 +686,7 @@ class RecoveryRemedyTests(RemedyTestCase):
             result = self.deploy_fails("--all", pattern="Immediate recovery failed", changes_home=FAILS_PARTWAY)
         self.assert_lines(
             result.output,
-            "The next run reclaims the lock and retries recovery. If that fails too, reconcile the run by hand. "
+            "The next run removes the record and retries recovery. If that fails too, reconcile the run by hand. "
             f"{SEE_RECOVERY_FAILED}",
         )
 

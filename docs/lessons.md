@@ -254,20 +254,28 @@ removed fails validation until its pattern follows it.
 
 - **Rule:** A deployer refusal names what is wrong on its `ERROR:` line and the step to take on a line of its own,
   or its module states beside the code why it needs none: every caller adds the step, or it is caught before it
-  reaches the user.
-- **Why:** A refusal that names only what is wrong leaves its reader to guess the fix, and a step inside the
-  `ERROR:` line reads as part of the failure.
+  reaches the user. The step is one its reader can take from where the refusal reaches them.
+- **Why:** A refusal that names only what is wrong leaves its reader to guess the fix, a step inside the
+  `ERROR:` line reads as part of the failure, and a step the refusal's own context rules out sends its reader to a fix
+  that changes nothing.
 - **Use:** `deployer.errors:see_recovery`, `deployer.errors:DEBUG_HINT`, `deployer.source:COMPLETE_CHECKOUT`,
-  `deployer.source:SOURCE_JSON_REMEDY`
+  `deployer.source:SOURCE_JSON_REMEDY`, `deployer.source_ref:exported_source_json_remedy`,
+  `deployer.lock:REFUSED_STEP`
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
-  `tests/deployer/test_remedies.py::RefusalStepTests`
+  `tests/deployer/test_remedies.py::RefusalStepTests`,
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit`,
+  `tests/deployer/test_rendering_locking.py::LockTests::test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file`
 - **Search for:** a `DeployError(` with one positional argument under `deployer/`, or unpacked lines the guard follows
   to one, which it reads; unpacked lines it cannot follow, such as a parameter, a call's result, or a list grown by
   append, with no step written beside them, which it refuses too; a function that takes the step its refusal ends with
   as optional, as `*remedy` does, rather than as a parameter of its own; a `STEP_ALLOWED` entry whose caller no longer
   adds the step; a step written after a semicolon or a full stop inside an
-  `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too.
-- **Examples:** #2545, #2563
+  `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too; a step
+  the refusal's own context rules out: an option such as `--dry-run` named as allowed in a refusal a run with that
+  option also reaches, the checkout's own file named for a tree `--at` exported (`paths.tree` beside
+  `SOURCE_JSON_REMEDY` or a step naming a file to fix), and a lasting fix such as moving the home for an
+  `OSError` or `FileLockError` that may pass on a retry.
+- **Examples:** #2545, #2563, #2696
 
 ### A report of a change names the change the write made
 
@@ -462,7 +470,7 @@ removed fails validation until its pattern follows it.
   `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
   pull request can change at those paths; a document's list of the cases a step stops or refuses on, checked against
   each `return False` or `raise` of that step.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296, #2694
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296, #2694, #2696
 
 ### A reader refuses a shape it does not know
 
