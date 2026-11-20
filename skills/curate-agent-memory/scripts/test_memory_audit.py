@@ -3235,6 +3235,11 @@ def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line
         pytest.param("Text.\n1. first\n", [(1, "Text."), (2, "1. first")], id="item-numbered-1"),
         pytest.param("Text.\n2. second\n", [(1, "Text. 2. second")], id="line-numbered-2"),
         pytest.param("Text.\n\n    code\n", [(1, "Text.")], id="indented-code"),
+        pytest.param(
+            "1. Run it.\n\n   It prints.\n2. Then stop.\n",
+            [(1, "1. Run it."), (3, "It prints."), (4, "2. Then stop.")],
+            id="item-after-an-item-s-paragraph",
+        ),
     ],
 )
 def test_destination_blocks_split_as_every_markdown_block_reader_splits_them(

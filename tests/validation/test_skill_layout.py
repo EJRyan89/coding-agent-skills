@@ -1668,6 +1668,12 @@ def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separ
         pytest.param("`fetcher` is `full`\n2) `fetcher` is `none`\n", False, id="line-numbered-2"),
         pytest.param("Intro.\n\n    `fetcher` is `none`\n", False, id="indented-code"),
         pytest.param("- `fetcher` is `full`\n- `fetcher` is `none`\n", True, id="list-items"),
+        # A list item stays open past a blank line, so the next item, numbered 2, opens a block of its own.
+        pytest.param(
+            "1. `fetcher` is `full`\n\n   `fetcher` is `full`\n2) `fetcher` is `none`\n",
+            True,
+            id="item-after-an-item-s-paragraph",
+        ),
     ],
 )
 def test_a_runtime_page_statement_is_a_sentence_of_one_block(page: str, read: bool, tmp_path: Path) -> None:

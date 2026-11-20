@@ -184,6 +184,7 @@ class RuleTests(unittest.TestCase):
             ("Text.\n1. first\n", [(1, "Text."), (2, "first")]),
             ("Text.\n2. second\n", [(1, "Text. 2. second")]),
             ("Text.\n\n    code\n", [(1, "Text.")]),
+            ("1. Run it.\n\n   It prints.\n2. Then stop.\n", [(1, "Run it."), (3, "It prints."), (4, "Then stop.")]),
         ):
             with self.subTest(text=text):
                 self.assertEqual(expected, rg._statements(text))

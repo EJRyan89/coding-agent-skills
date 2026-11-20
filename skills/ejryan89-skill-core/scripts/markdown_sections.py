@@ -453,16 +453,21 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     are none. Each reader of a document's blocks walks them here and chooses after the walk what it keeps and how it
     reads a block's lines, so no two readers split a document apart.
 
-    A line after a paragraph's text continues it unless `starts_block` reads it as a block of its own, so a list item
-    interrupts a paragraph only at a bullet or `1.`, and a `2.` line continues it; below a list item any marker opens
-    the next item. A list item's further lines, indented or lazy, join it, and a blockquote's quoted and lazy lines
-    join it, though a list item, a heading, a thematic break, or a fence still ends it. A heading or a table row is
-    one line, read up to MAX_BLOCK_INDENT columns past the content of the list item it follows, or at any indentation
-    where no paragraph is open; `#` opens a heading only as `starts_heading` reads one, so `#hashtag` is text. Code,
-    fenced or indented, is read through `find_fences` and `code_block_lines`. The limits: a setext heading is read as
-    a paragraph, so the text above a `---` underline is a paragraph the thematic break ends and an `=` underline
-    joins the text above it; an HTML block is read as paragraph text; a list item's paragraph after a blank line is
-    read as the document's, not the item's; and a quote's own lines are not split into the blocks it holds."""
+    A list item stays open across blank lines for the lines indented as far as its content, as `_read_blocks` reads
+    it, and each line is read at the column of the content of the items that hold it. A line after a paragraph's text
+    continues it unless `starts_block` reads it, at that column, as a block of its own: a heading, a thematic break,
+    a blockquote, or a list item, which starts a list inside the paragraph's item, or the document, only at a bullet
+    or `1.`, while a marker that leaves an open item opens that list's next item, whatever its number. A table row is
+    a block of its own read the same way. A list item's further lines, indented or lazy, join it, and a blockquote's
+    quoted and lazy lines join it. A heading or a table row is one line; `#` opens a heading only as `starts_heading`
+    reads one, so `#hashtag` is text. Code, fenced or indented, is read through `find_fences` and `code_block_lines`.
+
+    The limits: a setext heading is read as a paragraph, so the text above a `---` underline is a paragraph the
+    thematic break ends and an `=` underline joins the text above it; an HTML block is read as a paragraph, so its
+    lines are paragraph text until one that starts a block, such as a heading-shaped or list line, which is read as
+    that block; a line right after a table's rows is read as a paragraph, where GitHub reads it as another row; an
+    ordered marker not numbered 1, or a bare marker, right after a quoted line continues the quote, where CommonMark
+    ends the quote and opens a list; and a quote's own lines are not split into the blocks it holds."""
     fences = {fence.opener: fence for fence in find_fences(lines)}
     code = code_block_lines(lines)
     walk = _Walk()
@@ -471,6 +476,8 @@ def blocks(lines: list[str]) -> Iterator[Block]:
         fence = fences.get(index)
         if fence is not None or index in code:
             yield from walk.close()
+            if fence is not None:
+                walk.fence(lines[index])
             stop = fence.lines().stop if fence is not None else _code_run_end(lines, index, code, fences)
             body = [fence.text(lines[inside]) for inside in fence.body()] if fence is not None else lines[index:stop]
             yield Block(fence.opener + 1 if fence is not None else index, CODE, tuple(body))
@@ -492,36 +499,55 @@ def _code_run_end(lines: list[str], start: int, code: set[int], fences: dict[int
 @dataclass
 class _Walk:
     """What `blocks` has read of the lines no code holds: the open block's first line, kind, and lines, and the column
-    the open list item's content starts at, None when the open block is no list item."""
+    each open list item's content starts at, outermost first."""
 
     start: int = 0
     kind: str = ""
     open: list[str] = field(default_factory=list)
-    content: int | None = None
+    items: list[int] = field(default_factory=list)
 
     def close(self) -> Iterator[Block]:
-        """The open block, if any, which ends here."""
+        """The open block, if any, which ends here; the list items that hold it stay open."""
         if self.open:
             yield Block(self.start, self.kind, tuple(self.open))
-        self.open, self.content = [], None
+        self.open = []
+
+    def fence(self, line: str) -> None:
+        """A fence's opener: it ends the items indented past it, and opens one when a list marker holds it."""
+        width = indentation(line)
+        del self.items[items_holding(self.items, width) :]
+        item = _item_content(line, interrupting=False, relative=width - (self.items[-1] if self.items else 0))
+        if item is not None:
+            self.items.append(item[0])
 
     def line(self, index: int, line: str) -> Iterator[Block]:
         """A line no code holds: one that ends the open block, opens one, or continues it."""
         stripped = line.strip(MARKDOWN_SPACE)
-        continued, quoted = bool(self.open), self.kind == QUOTE
-        limit = MAX_BLOCK_INDENT + (self.content or 0)
-        single = not continued or indentation(line) <= limit
-        item = list_item(line, interrupting=continued and self.content is None)
-        if not stripped or THEMATIC_BREAK.fullmatch(line):
+        if not stripped:
             yield from self.close()
+            return
+        width = indentation(line)
+        held = items_holding(self.items, width)
+        relative = width - (self.items[held - 1] if held else 0)
+        # The line as the content that holds it reads it: indented only past that content's column.
+        at = " " * relative + line.lstrip(MARKDOWN_SPACE)
+        continued, quoted = bool(self.open), self.kind == QUOTE
+        single = not continued or relative <= MAX_BLOCK_INDENT
+        item = _item_content(line, interrupting=continued and held == len(self.items), relative=relative)
+        if THEMATIC_BREAK.fullmatch(at):
+            yield from self.close()
+            del self.items[held:]
         elif single and (starts_heading(stripped) or stripped.startswith("|")):
             yield from self.close()
+            del self.items[held:]
             yield Block(index, HEADING if starts_heading(stripped) else TABLE_ROW, (line,))
-        elif item is not None or not continued or (starts_block(line, opener=False) and not quoted):
+        elif item is not None or not continued or (starts_block(at, opener=False) and not quoted):
             yield from self.close()
+            del self.items[held:]
+            if item is not None:
+                self.items.append(item[0])
             self.start, self.open = index, [line]
             self.kind = LIST_ITEM_BLOCK if item is not None else QUOTE if stripped.startswith(">") else PARAGRAPH
-            self.content = list_item_content(line) if item is not None else None
         else:
             self.open.append(line)
 

@@ -74,6 +74,10 @@ class UnitTests(unittest.TestCase):
             ("Text.\n1. first\n", [(1, "Text.", False), (2, "1. first", False)]),
             ("Text.\n2. second\n", [(1, "Text.\n2. second", False)]),
             ("Text.\n\n    code\n", [(1, "Text.", False), (3, "    code", True)]),
+            (
+                "1. Run it.\n\n   It prints.\n2. Then stop.\n",
+                [(1, "1. Run it.", False), (3, "It prints.", False), (4, "2. Then stop.", False)],
+            ),
         ):
             with self.subTest(text=text):
                 self.assertEqual(expected, [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)])

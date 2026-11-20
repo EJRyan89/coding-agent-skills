@@ -64,7 +64,9 @@ from markdown_sections import (
     HTML_COMMENT,
     MARKDOWN_SPACE,
     find_fences,
+    indentation,
     list_item,
+    list_item_content,
     markdown_section,
     starts_block,
 )
@@ -142,18 +144,24 @@ def unwrapped(block: str) -> list[str]:
     of its own continues the line above it, unless that line is blank or the two are inside a code fence. A heading, a
     quote, a thematic break, and a list item start a line of their own where markdown_sections' `starts_block` reads
     one, so a list starts below other text only at a bullet or an item numbered 1, and a line indented past
-    MAX_BLOCK_INDENT columns continues the line above it. Below a list item any item starts its own line, and a table
-    row always does. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
+    MAX_BLOCK_INDENT columns continues the line above it. Below a list item any item starts its own line, and a line
+    indented as far as the item's content is read from that column, as the item holds it. A table row always starts
+    its own line. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
     """
     raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
     fenced = {index for fence in find_fences(raw) for index in fence.lines()}
     lines: list[str] = []
     for index, line in enumerate(raw):
         previous = lines[-1] if lines else ""
+        content = list_item_content(previous)
+        width = indentation(line)
+        held = content is not None and width >= content
+        # The line as the list item above holds it: indented only past the item's content.
+        at = " " * (width - content) + line.lstrip(MARKDOWN_SPACE) if held and content is not None else line
         starts = (
-            starts_block(line, opener=False)
+            starts_block(at, opener=False)
             or TABLE_ROW_START.match(line) is not None
-            or list_item(line, interrupting=list_item(previous) is None) is not None
+            or list_item(line, interrupting=content is None) is not None
         )
         if previous and line and not {index - 1, index} & fenced and not starts:
             lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"
