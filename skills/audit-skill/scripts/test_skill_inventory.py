@@ -5065,3 +5065,20 @@ def test_a_bash_fence_written_with_prompts_is_read_as_a_session(label: str, tmp_
         "$ head \\\n> ../continued.md\n```\n",
     )
     assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../shared.md", "TOTAL outside 0 0 0"]
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "cat ../read.md\ncat <<'EOF' > ../written.md\n$ example\nEOF\n",
+        "grep x ../read.md\necho 'one\n$ two'\n",
+    ],
+    ids=["here-document", "quoted-string"],
+)
+def test_a_prompt_inside_a_here_document_or_a_string_leaves_a_bash_fence_read_through_the_grammar(
+    fence: str, tmp_path: Path
+) -> None:
+    # A `$ ` line anywhere in the fence made it a session, so a prompt shown inside a here-document's body or a quoted
+    # string dropped every read on the fence's unprompted lines.
+    folder = source_skill(tmp_path, f"```bash\n{fence}```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../read.md", "TOTAL outside 0 0 0"]
