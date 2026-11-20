@@ -1087,14 +1087,6 @@ def _team(value: str) -> str:
     return value
 
 
-def _months(value: str) -> int:
-    refused = argparse.ArgumentTypeError(f"must be an integer from 1 to {MAX_MONTHS}")
-    months = whole_number.read(value, refused)
-    if not 1 <= months <= MAX_MONTHS:
-        raise refused
-    return months
-
-
 def _history_path(value: str) -> Path:
     """The history file the caller names: outside every skills directory, and in a folder that exists, since the
     report neither chooses nor creates a place for per-person data."""
@@ -1128,7 +1120,7 @@ def _parser() -> argparse.ArgumentParser:
     who = parser.add_mutually_exclusive_group(required=True)
     who.add_argument("--user", type=_login, action="append", help="a login to report; repeat it for a group")
     who.add_argument("--team", type=_team, help="the slug of an organization team, reported as its current members")
-    parser.add_argument("--months", type=_months, default=12)
+    parser.add_argument("--months", type=whole_number.argument(1, MAX_MONTHS), default=12)
     parser.add_argument("--history", type=_history_path, help="a CSV file of every run's months, kept private")
     parser.add_argument("--metric", choices=tuple(METRICS), help=f"the comparison's metric (default {DEFAULT_METRIC})")
     return parser

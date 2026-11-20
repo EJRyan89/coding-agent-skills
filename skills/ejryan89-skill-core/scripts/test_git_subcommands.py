@@ -55,6 +55,12 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
         ("eval git fetch", {"fetch"}),
         ("bash -lc 'cd x && git pull'", {"pull"}),
+        # A shell given no -c script runs a script file, or reads its script from stdin, so the words after it are that
+        # file's arguments or the shell's options, never a command. Bash looks a script-file operand up on PATH too, so
+        # `bash git push` runs git only where git is itself a shell script, which this reader does not follow.
+        ("bash git push", set()),
+        ("bash run.sh git push", set()),
+        ("bash -e", set()),
         # A trap's action is a script Bash runs as eval runs its own when the condition fires, as `bash -c "trap 'echo
         # A' EXIT"` prints A; `-`, an unsigned integer first operand, a lone operand, and -p, -l, or -P set none.
         ("trap 'git push' EXIT", {"push"}),
