@@ -150,7 +150,7 @@ class FileLockTests(unittest.TestCase):
                 raise refusals.pop(0)
             return real_open(path, flags, mode)
 
-        with mock.patch.object(file_lock.os, "open", side_effect=opened) as calls:
+        with mock.patch.object(os, "open", side_effect=opened) as calls:
             descriptor = file_lock.open_for_lock(self.path)
         os.close(descriptor)
         self.assertEqual(3, calls.call_count)
@@ -163,7 +163,7 @@ class FileLockTests(unittest.TestCase):
                 raise FileExistsError(errno.EEXIST, "exists", str(path))
             raise FileNotFoundError(errno.ENOENT, "gone", str(path))
 
-        with mock.patch.object(file_lock.os, "open", side_effect=opened) as calls, self.assertRaises(FileNotFoundError):
+        with mock.patch.object(os, "open", side_effect=opened) as calls, self.assertRaises(FileNotFoundError):
             file_lock.open_for_lock(self.path)
         self.assertEqual(2 * file_lock.OPEN_ATTEMPTS, calls.call_count)
         self.assertFalse(os.path.lexists(self.path))
