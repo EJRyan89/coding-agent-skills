@@ -42,6 +42,7 @@ from fault_check import (
     placed,
     read_as_absent,
     run_entry,
+    run_ids,
     written_through,
 )
 from fault_table import (
@@ -180,6 +181,39 @@ def test_each_name_not_run_is_a_command_no_driver_drives() -> None:
     assert stale == [], "remove each from FAULTS_NOT_RUN: it names no entry point or command, or a driver drives it"
     unknown = [driver.name for driver in faults.DRIVERS if driver.entry not in ENTRIES or driver.name not in known]
     assert unknown == [], "each driver names an entry point and one of its commands"
+
+
+def test_drivers_sharing_a_name_are_told_apart_and_a_name_no_other_shares_keeps_its_id() -> None:
+    # Two forms of one command, told apart by their first differing argument; three whose first differing argument
+    # leaves two alike, told apart by their place; and a driver no other shares a name with, which keeps its plain ID.
+    plain = Driver("tools/one.py", "", ("{work}", "HEAD"), git=True)
+    naming = Driver("tools/one.py", "", ("--naming", "{work}", "HEAD"), git=True)
+    first = Driver("tools/two.py", "", ("--a", "1"), git=True)
+    second = Driver("tools/two.py", "", ("--a", "2"), git=True)
+    third = Driver("tools/two.py", "", ("--b", "1"), git=True)
+    alone = Driver("tools/three.py", "list", ("list",), inputs=("{work}/a.json",))
+    runs = [
+        (plain, GIT_EXIT, None),
+        (naming, GIT_EXIT, None),
+        (first, GIT_EXIT, None),
+        (second, GIT_EXIT, None),
+        (third, GIT_EXIT, None),
+        (alone, MISSING, "{work}/a.json"),
+    ]
+    assert run_ids(runs) == [
+        f"tools/one.py {{work}}-{GIT_EXIT}",
+        f"tools/one.py --naming-{GIT_EXIT}",
+        f"tools/two.py #1-{GIT_EXIT}",
+        f"tools/two.py #2-{GIT_EXIT}",
+        f"tools/two.py --b-{GIT_EXIT}",
+        f"tools/three.py list-{MISSING}-a.json",
+    ]
+
+
+def test_every_run_of_the_corpus_has_its_own_id() -> None:
+    runs = fault_check.runs_of(*FAULTS)
+    ids = run_ids(runs)
+    assert len(ids) == len(set(ids)), "two runs of the corpus share a test ID"
 
 
 def test_each_driver_runs_a_fault_and_names_only_faults_it_could_run() -> None:

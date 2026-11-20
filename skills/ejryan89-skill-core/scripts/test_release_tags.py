@@ -5,18 +5,77 @@ from __future__ import annotations
 
 import contextlib
 import io
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from release_tags import breaking_component, highest_release, is_release_tag, last_release, main, releases_naming
+
+# The tag fields a Git whose ref-filter peels one tag level gives, as Git did before 2.42 for --points-at and for the
+# `%(*...)` fields.
+ONE_LEVEL_FIELDS = ("%(objectname)", "%(objecttype)", "%(*objectname)", "%(*objecttype)", "%(refname)")
+
+
+def one_level_git(command: Sequence[str], timeout: float) -> GitResult:
+    """GitClient's runner as an older Git: `for-each-ref` over tags, by `--points-at` and in its `%(*...)` fields,
+    peels one tag level alone, so a tag of a tag reads as pointing at a tag; every other command is real git's."""
+    arguments = list(command)
+    if "for-each-ref" not in arguments:
+        return subprocess_runner(command, timeout)
+    directory = arguments[arguments.index("-C") + 1]
+
+    def git(*words: str) -> str:
+        return subprocess.run(
+            ["git", "-C", directory, *words], capture_output=True, text=True, encoding="utf-8", check=True
+        ).stdout
+
+    tags = []
+    for line in git("for-each-ref", "--format=%(objectname) %(objecttype) %(refname)", "refs/tags/").splitlines():
+        object_name, object_type, ref = line.split(" ", 2)
+        inner = {"object": "", "type": ""}
+        if object_type == "tag":
+            header = git("cat-file", "tag", object_name).split("\n\n", 1)[0]
+            inner = dict(field.split(" ", 1) for field in header.splitlines())
+        tags.append(
+            dict(zip(ONE_LEVEL_FIELDS, (object_name, object_type, inner["object"], inner["type"], ref), strict=True))
+        )
+    points_at = [word.removeprefix("--points-at=") for word in arguments if word.startswith("--points-at=")]
+    if points_at:
+        commit = git("rev-parse", "--verify", points_at[0]).strip()
+        tags = [tag for tag in tags if commit in {tag["%(objectname)"], tag["%(*objectname)"]}]
+    form = next(word.removeprefix("--format=") for word in arguments if word.startswith("--format="))
+    lines = []
+    for tag in tags:
+        line = form.replace("%00", "\0")
+        for field, value in tag.items():
+            line = line.replace(field, value)
+        lines.append(line + "\n")
+    return GitResult(0, "".join(lines), "")
+
+
+def answering(for_each_ref: str, rev_parse: str) -> GitClient:
+    """A GitClient whose git names the commit by forty 1s, answers `for-each-ref` and an unverified `rev-parse` as
+    given, and refuses everything else."""
+
+    def runner(command: Sequence[str], timeout: float) -> GitResult:
+        if "for-each-ref" in command:
+            return GitResult(0, for_each_ref, "")
+        if "--verify" in command:
+            return GitResult(0, "1" * 40 + "\n", "")
+        if "rev-parse" in command:
+            return GitResult(0, rev_parse, "")
+        raise AssertionError(f"unexpected git command: {command}")
+
+    return GitClient(runner)
 
 
 class ReleaseTagTests(unittest.TestCase):
@@ -154,6 +213,61 @@ class LastReleaseTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertTrue(output.startswith("FAILED git for-each-ref: "), output)
         self.assertEqual(1, len(output.splitlines()), output)
+
+    def test_a_release_behind_any_number_of_tag_objects_is_listed_on_a_git_that_peels_one_level(self) -> None:
+        # A release, a tag of it, and a tag of that all name the commit; a release tag of a tree, and a tag of that,
+        # name none; a release and a tag of it on a later commit name only that one.
+        commit = self.commit("released")
+        self.git("tag", "-a", "-m", "release", "v1.0.0", commit)
+        self.git("tag", "-a", "-m", "nested", "v1.0.1", "refs/tags/v1.0.0")
+        self.git("tag", "-a", "-m", "nested again", "v1.0.2", "refs/tags/v1.0.1")
+        self.git("tag", "-a", "-m", "tree", "v3.0.0", f"{commit}^{{tree}}")
+        self.git("tag", "-a", "-m", "nested tree", "v3.0.1", "refs/tags/v3.0.0")
+        later = self.commit("later")
+        self.git("tag", "-a", "-m", "release", "v2.0.0", later)
+        self.git("tag", "-a", "-m", "nested", "v2.0.1", "refs/tags/v2.0.0")
+        # The older Git this stands for reads the outer tag of a nested release as pointing at a tag.
+        listing = ["git", "-C", str(self.root), "for-each-ref", "--format=%(*objecttype) %(refname)", "refs/tags/"]
+        self.assertIn("tag refs/tags/v1.0.2", one_level_git(listing, 60).stdout.splitlines())
+        for client in (GitClient(one_level_git), GitClient()):
+            with self.subTest(client=client.runner.__name__):
+                self.assertEqual(["v1.0.0", "v1.0.1", "v1.0.2"], releases_naming(client, self.root, commit))
+                self.assertEqual(["v2.0.0", "v2.0.1"], releases_naming(client, self.root, later))
+
+    def broken_tag(self, name: str) -> None:
+        """An annotated tag whose target the repository has lost, which git reads as `fatal: bad tag`."""
+        (self.root / "gone.txt").write_text("gone", encoding="utf-8")
+        target = self.git("hash-object", "-w", "gone.txt")
+        self.git("tag", "-a", "-m", "broken", name, target)
+        loose = self.root / ".git" / "objects" / target[:2] / target[2:]
+        loose.chmod(stat.S_IWRITE | stat.S_IREAD)  # git writes its objects read-only, which Windows will not remove
+        loose.unlink()
+
+    def test_a_broken_tag_of_another_name_leaves_the_releases_naming_the_commit_listed(self) -> None:
+        commit = self.commit("released")
+        self.git("tag", "-a", "-m", "release", "v1.0.0", commit)
+        self.broken_tag("nightly")
+        for client in (GitClient(one_level_git), GitClient()):
+            with self.subTest(client=client.runner.__name__):
+                self.assertEqual(["v1.0.0"], releases_naming(client, self.root, commit))
+
+    def test_a_broken_release_tag_fails_closed_never_reads_as_no_release(self) -> None:
+        # Which commit a release tag whose target is lost names is unknown, so its pin's owner is never guessed.
+        commit = self.commit("released")
+        self.git("tag", "-a", "-m", "release", "v1.0.0", commit)
+        self.broken_tag("v1.0.1")
+        with self.assertRaises(GitError):
+            releases_naming(GitClient(), self.root, commit)
+
+    def test_a_tag_listing_that_is_not_its_fields_raises_never_reads_as_no_release(self) -> None:
+        with self.assertRaises(GitError):
+            releases_naming(answering(f"{'1' * 40} refs/tags/v1.0.0\n", ""), self.root, "HEAD")
+
+    def test_a_peel_that_answers_another_count_of_names_raises_never_reads_as_no_release(self) -> None:
+        nested = "\0".join(("2" * 40, "3" * 40, "tag", "refs/tags/v1.0.0"))
+        with self.assertRaises(GitError):
+            releases_naming(answering(f"{nested}\n", ""), self.root, "HEAD")
+        self.assertEqual(["v1.0.0"], releases_naming(answering(f"{nested}\n", "1" * 40 + "\n"), self.root, "HEAD"))
 
 
 @pytest.mark.parametrize(
