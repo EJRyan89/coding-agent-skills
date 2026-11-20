@@ -1,14 +1,15 @@
-"""Ask GitHub whether each issue the malformed-input known failures or PENDING name is an open issue.
+"""Ask GitHub whether each issue the malformed-input known failures, PENDING, or a refusal gap names is an open issue.
 
 Usage: python -B tests/known_failure_issues.py
 
 This is the one part of validation that reads GitHub, so it is a program of its own: it asks, through gh, whether each
-issue tests/malformed_input/known_failures.json or PENDING in tests/malformed_input/readers.py names is an open issue,
-prints a FAILED line for each that is not, is a pull request, or gh cannot answer about; it asks nothing while both
-are empty. A list it cannot read, or a git that cannot read the checkout's origin, is
-a FAILED line too, never an empty list. Its last line is `Known-failure issues: <count> not shown open.` after a
+issue tests/malformed_input/known_failures.json, PENDING in tests/malformed_input/readers.py, or a fault driver's
+refusal_gaps in tests/malformed_input/faults_*.py, read from its source without running it, names is an open issue,
+prints a FAILED line for each that is not, is a pull request, or gh cannot answer about; it asks nothing while none
+names one. A list it cannot read, or a git that cannot read the checkout's origin, is a FAILED line too, never an
+empty list. Its last line is `Known-failure issues: <count> not shown open.` after a
 FAILED line, `Known-failure issues: all <count> named shown open.` when every issue named is open, and
-`Known-failure issues: none named, so GitHub was not asked.` when neither list names one. It imports
+`Known-failure issues: none named, so GitHub was not asked.` when no list names one. It imports
 tests/validation/known_failures.py and what that imports, and none of the policy checks or suites
 tests/run_validation.py runs, so the token validate.yml gives the one step that runs it reaches this program and the
 modules it imports alone; tests/test_known_failure_issues.py pins the set it loads. On a pull request they are the
@@ -39,8 +40,8 @@ from validation_support import REPOSITORY_ROOT
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None) -> int:
-    """Print each issue a known failure or PENDING names that GitHub does not say is open, and return 1 when there is
-    one; any argument is a usage error, exit 2, since it takes none."""
+    """Print each issue a known failure, PENDING, or a refusal gap names that GitHub does not say is open, and return 1
+    when there is one; any argument is a usage error, exit 2, since it takes none."""
     argparse.ArgumentParser(description="Ask GitHub whether each known failure's issue is open.").parse_args(argv)
     out = sys.stdout if out is None else out
     problems = known_failures.open_issue_problems(REPOSITORY_ROOT)

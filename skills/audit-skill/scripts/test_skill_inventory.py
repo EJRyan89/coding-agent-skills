@@ -1937,8 +1937,19 @@ class StatusLineTests(TemporaryTestCase):
             "def done() -> None:\n    raise SystemExit\n\n"
             "def stale() -> None:\n    sys.exit('the plan is stale')\n\n"
             "def refuse() -> None:\n    quit(3)\n\n"
-            "def held() -> None:\n    sys.exit(code=4)\n\n"
+            "def held() -> None:\n    exit(code=4)\n\n"
             "def gone() -> None:\n    os._exit(status=5)\n",
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_an_exit_call_python_refuses_for_its_arguments_exits_1_whatever_code_it_names(self) -> None:
+        # sys.exit takes its code by position alone and SystemExit takes no keyword, so each call below raises
+        # TypeError and exits 1; it was read as exiting 4, an EXIT_MISMATCH against a SKILL.md that named 1 alone.
+        folder = self.skill(
+            "It exits 1 on a refusal.\n",
+            "import sys\n\n"
+            "def held() -> None:\n    sys.exit(code=4)\n\n"
+            "def raised() -> None:\n    raise SystemExit(code=4)\n",
         )
         self.assertEqual([], self.status(folder))
 
@@ -1946,7 +1957,7 @@ class StatusLineTests(TemporaryTestCase):
         folder = self.skill(
             "It exits 3 or exits 4.\n",
             "import sys\n\nOPTIONS = {'code': 4}\n\n"
-            "def refuse(code: str) -> None:\n    sys.exit(code=3)\n    sys.exit(**OPTIONS)\n    sys.exit(*code)\n",
+            "def refuse(code: str) -> None:\n    exit(code=3)\n    exit(**OPTIONS)\n    sys.exit(*code)\n",
         )
         self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 4"], self.status(folder))
 

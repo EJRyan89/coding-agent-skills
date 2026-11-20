@@ -7,22 +7,26 @@ its entry, and an unlisted case that fails, so the list never grows in silence. 
 entry names its reader, its case, and its issue, once, in order. A pull request that closes an issue an entry still
 names is refused, in every form GitHub closes it by, in its title or its body, since the issue would close while its
 case still fails; the pull request that fixes the reader removes the entry with it. tests/malformed_input/readers.py's
-PENDING, each reader no table holds yet with the issue whose pull request adds it, is held to the same two rules.
-`tests/known_failure_issues.py`, a program of its own that runs no policy and no suite, also asks GitHub, through gh,
-that each issue either list names is an open issue, never a pull request, and asks nothing while both are empty; a gh
-that cannot answer fails it.
+PENDING, each reader no table holds yet with the issue whose pull request adds it, and each fault driver's
+refusal_gaps in tests/malformed_input/faults_*.py, each run whose refusal is no refusal line yet with the issue that
+gives it one, are held to the same two rules. `tests/known_failure_issues.py`, a program of its own that runs no
+policy and no suite, also asks GitHub, through gh, that each issue any of them names is an open issue, never a pull
+request, and asks nothing while none names one; a gh that cannot answer fails it.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+import file_presence
 import json_reader
 import python_reader
+import whole_number
 from closing_references import pull_request_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
@@ -36,6 +40,12 @@ ENTRY_KEYS = ("reader", "case", "issue")
 # The table of readers owed a reader-table entry, each with the issue whose pull request adds it, and its name there.
 PENDING_MODULE = Path("tests") / "malformed_input" / "readers.py"
 PENDING = "PENDING"
+# The fault drivers' tables, read without running them, and the driver argument that names a run whose refusal is no
+# refusal line yet, with the open issue that gives it one: `#<issue> <what it lacks>`.
+FAULT_TABLES = Path("tests") / "malformed_input"
+FAULT_TABLE_PATTERN = "faults_*.py"
+REFUSAL_GAPS = "refusal_gaps"
+GAP_REASON = re.compile(r"#(?P<issue>[1-9][0-9]*) \S", re.ASCII)
 # The state gh reports for an open issue, and what a pull request's URL holds where an issue's holds /issues/.
 OPEN = "OPEN"
 PULL_PATH = "/pull/"
@@ -189,6 +199,88 @@ def read_pending(path: Path) -> dict[str, int]:
     return table
 
 
+@dataclass(frozen=True)
+class RefusalGap:
+    """A run a fault driver names in its refusal_gaps: its table, its driver's name, the run, and the open issue."""
+
+    table: str
+    driver: str
+    run: str
+    issue: int
+
+
+def _driver_name(call: ast.Call) -> str:
+    """A driver's name, its entry point and its command, as fault_table's Driver.name gives it, read from the call's
+    literal arguments; KnownFailuresUnreadable when either is not a literal string."""
+    given = dict(zip(("entry", "command"), call.args[:2], strict=False))
+    given |= {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg in ("entry", "command")}
+    parts = [given.get(name) for name in ("entry", "command")]
+    if not all(isinstance(part, ast.Constant) and isinstance(part.value, str) for part in parts):
+        raise KnownFailuresUnreadable(
+            f"line {call.lineno}: a driver with {REFUSAL_GAPS} must name its entry and command"
+        )
+    return " ".join(str(part.value) for part in parts if isinstance(part, ast.Constant)).strip()
+
+
+def read_refusal_gaps(path: Path, table: str) -> list[RefusalGap]:
+    """The refusal gaps a fault table's drivers name, read from the syntax tree, never run: each call given a
+    refusal_gaps keyword, which must be a literal dict of runs to reasons that open with `#<issue> `, beside an entry
+    and a command given as literal strings; KnownFailuresUnreadable otherwise. A gap given another way, such as through
+    a `**` unpacking, is not seen here; test_faults holds what this reads to each driver's own refusal_gaps."""
+    try:
+        tree = parse_python(path)
+    except (OSError, UnreadablePython) as error:
+        raise KnownFailuresUnreadable(f"cannot be read: {error}") from error
+    gaps: list[RefusalGap] = []
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        for keyword in call.keywords:
+            if keyword.arg != REFUSAL_GAPS:
+                continue
+            try:
+                runs = python_reader.literal(keyword.value)
+            except python_reader.CONTENT_ERRORS as error:
+                raise KnownFailuresUnreadable(f"line {call.lineno}: {REFUSAL_GAPS} must be a literal dict") from error
+            if not isinstance(runs, dict) or not all(isinstance(run, str) for run in runs):
+                raise KnownFailuresUnreadable(f"line {call.lineno}: {REFUSAL_GAPS} must map each run to its reason")
+            driver = _driver_name(call)
+            for run, reason in runs.items():
+                match = GAP_REASON.match(reason) if isinstance(reason, str) else None
+                refused = KnownFailuresUnreadable(
+                    f"line {call.lineno}: the refusal gap {run!r} of {driver} must open with the open issue that "
+                    "closes it, as #<number>, then say what the run lacks"
+                )
+                if match is None:
+                    raise refused
+                gaps.append(RefusalGap(table, driver, run, whole_number.read(match.group("issue"), refused)))
+    return gaps
+
+
+def refusal_gaps(root: Path) -> list[RefusalGap]:
+    """Every fault table's refusal gaps, table by table in path order; KnownFailuresUnreadable, naming the table, when
+    one cannot be read."""
+    gaps: list[RefusalGap] = []
+    try:
+        tables = file_presence.matching(root / FAULT_TABLES, FAULT_TABLE_PATTERN)
+    except OSError as error:
+        raise KnownFailuresUnreadable(f"{FAULT_TABLES.as_posix()} cannot be listed: {error}") from error
+    for path in tables:
+        table = path.relative_to(root).as_posix()
+        try:
+            gaps += read_refusal_gaps(path, table)
+        except KnownFailuresUnreadable as error:
+            raise KnownFailuresUnreadable(f"{table} {error}") from error
+    return gaps
+
+
+def refusal_gap_problems(root: Path) -> list[str]:
+    """Why a fault table's refusal gaps cannot be read, or nothing."""
+    try:
+        refusal_gaps(root)
+    except KnownFailuresUnreadable as error:
+        return [str(error)]
+    return []
+
+
 def pending_problems(root: Path) -> list[str]:
     """Why the PENDING table cannot be read, or nothing."""
     try:
@@ -199,18 +291,19 @@ def pending_problems(root: Path) -> list[str]:
 
 
 def unreadable_lists(root: Path) -> list[str]:
-    """Why the known-failure list or the PENDING table cannot be read, or nothing; owed_issues reads either as empty,
-    which a check that asks GitHub about them must not."""
+    """Why the known-failure list, the PENDING table, or a fault table's refusal gaps cannot be read, or nothing;
+    owed_issues reads any of them as empty, which a check that asks GitHub about them must not."""
     try:
         read_known_failures(root / KNOWN_FAILURES)
     except KnownFailuresUnreadable as error:
-        return [f"{KNOWN_FAILURES.as_posix()} {error}", *pending_problems(root)]
-    return pending_problems(root)
+        return [f"{KNOWN_FAILURES.as_posix()} {error}", *pending_problems(root), *refusal_gap_problems(root)]
+    return [*pending_problems(root), *refusal_gap_problems(root)]
 
 
 def owed_issues(root: Path) -> list[OwedIssue]:
-    """Each issue the known-failure list and the PENDING table name, with what each still lists under it; a list that
-    cannot be read adds nothing, since known_failure_problems and pending_problems name it."""
+    """Each issue the known-failure list, the PENDING table, and the fault tables' refusal gaps name, with what each
+    still lists under it; a list that cannot be read adds nothing, since known_failure_problems, pending_problems, and
+    refusal_gap_problems name it."""
     owed: list[OwedIssue] = []
     try:
         entries = read_known_failures(root / KNOWN_FAILURES)
@@ -228,6 +321,11 @@ def owed_issues(root: Path) -> list[OwedIssue]:
         OwedIssue(issue, f"{PENDING_MODULE.as_posix()}'s {PENDING}", f"names {reader} as owed its table entry")
         for reader, issue in sorted(pending.items())
     ]
+    try:
+        gaps = refusal_gaps(root)
+    except KnownFailuresUnreadable:
+        gaps = []
+    owed += [OwedIssue(gap.issue, gap.table, f"names {gap.driver}'s refusal gap {gap.run!r}") for gap in gaps]
     return owed
 
 
@@ -253,7 +351,8 @@ def checkout_repository(root: Path) -> str | None:
 
 def closed_known_failure_problems(root: Path, body: str | None, title: str | None = None) -> list[str]:
     """Each issue the pull request closes, by its title or its body, since the squash commit carries both and GitHub
-    closes an issue either names, that a known failure or a PENDING reader still names, with what is still owed."""
+    closes an issue either names, that a known failure, a PENDING reader, or a fault driver's refusal gap still names,
+    with what is still owed."""
     if body is None and title is None:
         return []
     owed = owed_issues(root)
@@ -269,12 +368,12 @@ def closed_known_failure_problems(root: Path, body: str | None, title: str | Non
 
 
 def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[str]:
-    """Each issue the known-failure list or the PENDING table names that GitHub does not report as an open issue: one
-    in another state, or a pull request, which gh's `issue view` answers for as well, and whose URL holds /pull/; none
-    while both are empty, which asks GitHub nothing. A list that cannot be read, a git that cannot read the checkout's
-    origin, a gh that cannot answer, or a checkout whose origin names no GitHub repository, is a problem, never an
-    empty list or an open issue. Only `tests/known_failure_issues.py` runs it, so the token gh reads reaches no policy
-    and no suite."""
+    """Each issue the known-failure list, the PENDING table, or a fault table's refusal gaps name that GitHub does not
+    report as an open issue: one in another state, or a pull request, which gh's `issue view` answers for as well, and
+    whose URL holds /pull/; none while none names one, which asks GitHub nothing. A list that cannot be read, a git
+    that cannot read the checkout's origin, a gh that cannot answer, or a checkout whose origin names no GitHub
+    repository, is a problem, never an empty list or an open issue. Only `tests/known_failure_issues.py` runs it, so
+    the token gh reads reaches no policy and no suite."""
     unreadable = unreadable_lists(root)
     if unreadable:
         cannot = "so the known-failure check cannot ask whether its issues are open"
@@ -322,6 +421,9 @@ class KnownFailurePolicies(unittest.TestCase):
 
     def test_the_pending_table_is_a_literal_this_module_reads(self) -> None:
         self.assertEqual([], pending_problems(REPOSITORY_ROOT))
+
+    def test_each_fault_table_s_refusal_gaps_are_literals_this_module_reads(self) -> None:
+        self.assertEqual([], refusal_gap_problems(REPOSITORY_ROOT))
 
 
 class KnownFailurePullRequestPolicies(PullRequestChecks):

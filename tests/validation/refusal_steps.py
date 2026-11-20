@@ -2,12 +2,16 @@
 beside the code.
 
 A refusal's lines unpacked from elsewhere are followed to where they are written (`_Refusals.ending`): a list or tuple
-display, a name its function or its module binds once to one and never changes in place, or a caught refusal's own
-lines, and a refusal whose followed lines are one is refused like a refusal written with one. Lines unpacked from
-anything else, such as a parameter, a call's result, or a list grown by append, are known only when the deployer runs,
-so a refusal whose step could be among them is refused too, with its own message, unless its module states why in
-STEP_ALLOWED: end it with a literal step after them, or write the step before them, as `DeployError(error, step,
-*more)` does, whose lines are two at the least.
+display, a name its function or its module binds once to one and never changes in place, through the name or a list
+it hands on, or a caught refusal's own lines, and a refusal whose followed lines are one is refused like a refusal
+written with one. Lines unpacked from anything else, such as a parameter, a call's result, a list grown by append, or
+a list handed to another name or a call, are known only when the deployer runs, and so are a caught refusal's lines
+when it may be one whose step its callers add: a cancellation, or a refusal from a function its module's STEP_ALLOWED
+excuses, such as the configuration's parse. A refusal whose step could be among such lines is refused too, with its
+own message, unless its module states why in STEP_ALLOWED: end it with a literal step after them, or write the step
+before them, as `DeployError(error, step, *more)` does, whose lines are two at the least. A refusal raised on
+unchanged, by a bare `raise` or no handler at all, is no refusal this policy reads: it is its own function's, whose
+allowance's reason says which callers add the step.
 """
 
 from __future__ import annotations
@@ -94,16 +98,32 @@ STEP, ONE_LINE, COVERED, UNFOLLOWED = "step", "one line", "covered", "unfollowed
 LIST_MUTATORS = frozenset({"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"})
 # The definitions whose bodies an `except` clause around them does not reach.
 DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+# What a read of a list's name may be without handing the list on to a name or a call that could change it: the value
+# a `*` unpacks, a subscript or an attribute read on it, a comparison, or what a loop iterates over.
+# The scopes that hold a name's bindings.
+HOLDERS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
+LIST_READS = (ast.Starred, ast.Subscript, ast.Attribute, ast.Compare, ast.For, ast.AsyncFor, ast.comprehension)
+
+
+def excused_callees(trees: list[tuple[str, ast.Module]]) -> frozenset[str]:
+    """Each function a module's STEP_ALLOWED excuses, by its dotted name, such as deployer.config.parse: its refusals
+    end without a step for its callers to add one."""
+    return frozenset(
+        f"{_module_name(name)}.{scope}"
+        for name, tree in trees
+        for scope in module_allowance(tree, STEP_ALLOWANCE) or {}
+    )
 
 
 class _Refusals:
     """How one module's refusal calls are read: which class a name stands for, and where an unpacked argument's lines
     come from."""
 
-    def __init__(self, tree: ast.Module, name: str, refusals: set[str]) -> None:
+    def __init__(self, tree: ast.Module, name: str, refusals: set[str], excused: frozenset[str] = frozenset()) -> None:
         self.aliases = _aliases(tree, name)
         self.module = _module_name(name)
         self.refusals = refusals
+        self.excused = excused
         self.parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
 
     def called(self, node: ast.expr) -> str | None:
@@ -117,10 +137,12 @@ class _Refusals:
         The last positional argument is the refusal's last line, and a step when another argument comes before it to
         give the ERROR line. An unpacked last argument is followed to its lines: a list or tuple display is read
         element by element, and so is a name its function binds once to such a display, or, when the function neither
-        binds nor changes it, one the module binds once to one, and that nothing changes in place. `*exc.lines` in an
-        `except` clause that catches only refusals is COVERED: that refusal was built where this policy reads it, so
-        its lines already end with a step, or its module states why they need none. Anything else unpacked, such as a
-        parameter, a call's result, or a list grown by append, cannot be read: the refusal is STEP when the arguments
+        binds nor changes it, one the module binds once to one, and that nothing changes in place, and a list display's
+        name the holder hands on to nothing that could: no other name, call, return, or container. `*exc.lines` in an
+        `except` clause that catches only refusals, none of them a cancellation, around code that calls no function a
+        STEP_ALLOWED excuses and builds no cancellation, is COVERED: that refusal was built where this policy reads it
+        and ends with a step. Anything else unpacked, such as a parameter, a call's result, a list grown by append or
+        handed on, or a caught refusal that may lack its step, cannot be read: the refusal is STEP when the arguments
         before it are two lines at the least, an ERROR line and a step, and UNFOLLOWED otherwise, since its lines are
         known only when the deployer runs and this policy cannot tell whether they end with a step.
         """
@@ -145,15 +167,41 @@ class _Refusals:
         if not isinstance(value, ast.Name) or value.id in followed:
             return None
         followed.add(value.id)
-        holder = self._enclosing(call, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module))
+        holder = self._enclosing(call, HOLDERS)
         bindings = self._bindings(holder, value.id)
         if bindings == [] and not isinstance(holder, ast.Module):
             # A name the function neither binds nor changes is the module's, such as a remedy held in a constant.
             bindings = self._bindings(self._enclosing(holder, (ast.Module,)), value.id)
-        statement = self.parents.get(bindings[0]) if bindings and len(bindings) == 1 else None
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and isinstance(statement.value, (ast.List, ast.Tuple)):
-            return list(statement.value.elts)
-        return None
+        binding = bindings[0] if bindings and len(bindings) == 1 else None
+        statement = self.parents.get(binding) if binding is not None else None
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or not isinstance(
+            statement.value, (ast.List, ast.Tuple)
+        ):
+            return None
+        if isinstance(statement.value, ast.List) and self._handed_on(self._enclosing(statement, HOLDERS), value.id):
+            return None
+        return list(statement.value.elts)
+
+    def _handed_on(self, holder: ast.AST, name: str) -> bool:
+        """Whether the holder reads the name anywhere but as LIST_READS reads it, handing the list it holds to another
+        name or a call, either of which may change it in place, as `alias = lines; alias.pop()` or `trim(lines)` do."""
+        return any(
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, ast.Load)
+            and not self._read_in_place(node)
+            for node in ast.walk(holder)
+        )
+
+    def _read_in_place(self, node: ast.Name) -> bool:
+        """Whether a read of a name only reads the list it holds, as LIST_READS reads it: a loop or a comprehension
+        reads it only as what it iterates over."""
+        parent = self.parents.get(node)
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return parent.iter is node
+        if isinstance(parent, (ast.Subscript, ast.Attribute)):
+            return parent.value is node
+        return isinstance(parent, LIST_READS)
 
     @staticmethod
     def _bindings(holder: ast.AST, name: str) -> list[ast.Name] | None:
@@ -169,7 +217,8 @@ class _Refusals:
 
     def _caught_lines(self, value: ast.expr, call: ast.Call) -> bool:
         """Whether the value is `<name>.lines` of the innermost `except` clause holding the call that binds the name,
-        when that clause catches only refusals and does not bind the name again."""
+        when that clause catches only refusals, none of them a cancellation, does not bind the name again, and guards
+        code that may raise no refusal without its step (`_guards_stepless`)."""
         if not (isinstance(value, ast.Attribute) and value.attr == "lines" and isinstance(value.value, ast.Name)):
             return False
         bound = value.value.id
@@ -183,9 +232,28 @@ class _Refusals:
                     for statement in node.body
                     for child in ast.walk(statement)
                 )
-                return not rebound and all(self.called(expression) in self.refusals for expression in caught)
+                return (
+                    not rebound
+                    and all(
+                        self.called(expression) in self.refusals and self.called(expression) not in STEPLESS
+                        for expression in caught
+                    )
+                    and not self._guards_stepless(node)
+                )
             node = self.parents.get(node)
         return False
+
+    def _guards_stepless(self, handler: ast.ExceptHandler) -> bool:
+        """Whether the `try` body an `except` clause guards may raise a refusal that ends without its step: it calls a
+        function a STEP_ALLOWED excuses, whose callers add the step, or builds a cancellation, which needs none."""
+        guarded = self.parents.get(handler)
+        body = guarded.body if isinstance(guarded, (ast.Try, ast.TryStar)) else []
+        return any(
+            isinstance(node, ast.Call)
+            and (self.called(node.func) in self.excused or self.called(node.func) in STEPLESS)
+            for statement in body
+            for node in ast.walk(statement)
+        )
 
     def _enclosing(self, node: ast.AST, kinds: tuple[type[ast.AST], ...]) -> ast.AST:
         """The innermost ancestor of one of the kinds; the module holds every node."""
@@ -206,10 +274,13 @@ def _changes_in_place(node: ast.AST, name: str) -> bool:
     return isinstance(node, ast.arg) and node.arg == name
 
 
-def stepless_refusals(tree: ast.Module, name: str, refusals: set[str]) -> list[tuple[int, str, str, str]]:
+def stepless_refusals(
+    tree: ast.Module, name: str, refusals: set[str], excused: frozenset[str] = frozenset()
+) -> list[tuple[int, str, str, str]]:
     """Each refusal a module builds from one line, written or followed, or from lines this policy cannot follow, as
-    (line, scope, class, ending), where the ending is ONE_LINE or UNFOLLOWED, ignoring its allowance."""
-    reader = _Refusals(tree, name, refusals)
+    (line, scope, class, ending), where the ending is ONE_LINE or UNFOLLOWED, ignoring its allowance; `excused` is
+    each function a STEP_ALLOWED excuses, by its dotted name, whose caught refusals may lack their step."""
+    reader = _Refusals(tree, name, refusals, excused)
     statements = [
         statement
         for statement in tree.body
@@ -261,13 +332,14 @@ def refusal_step_problems(root: Path) -> list[str]:
             "the policy checked nothing"
         )
     refusals = refusal_classes(trees)
+    excused = excused_callees(trees)
     found: list[str] = []
     for name, tree in trees:
         allowed = module_allowance(tree, STEP_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {STEP_ALLOWANCE} must map each scope to the reason its refusals need no step")
             allowed = {}
-        findings = stepless_refusals(tree, name, refusals)
+        findings = stepless_refusals(tree, name, refusals, excused)
         found += [
             _finding(name, line, scope, called, ending)
             for line, scope, called, ending in findings

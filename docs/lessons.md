@@ -1206,7 +1206,12 @@ removed fails validation until its pattern follows it.
   non-test module ruff checks, each part it leaves out stated with its reason, as
   `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them;
   `powershell_startup:startup_command`, the one reading of PowerShell's start-up parameters, through which the
-  commands policy reads the script pwsh or Windows PowerShell is started to run as it reads a shell's -c script.
+  commands policy reads the script pwsh or Windows PowerShell is started to run as it reads a shell's -c script;
+  `exit_calls:call_code`, the one reading of the code an exit call exits with as Python reads its arguments, which the
+  exit tables, the script-results policy, and audit-skill's inventory all read;
+  `tests.validation.skill_scripts:parser_names`, the one reader of a module's argument-parser bindings, which the
+  script-results policy and the exit tables both read; and
+  `tests.validation.validation_support:relative_import_aliases`, the one reader of what a relative import binds.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_name_is_looked_up_dynamically`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_owner_only_names_are_referenced_only_by_their_owners`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_policed_calls_take_literal_arguments`,
@@ -1220,7 +1225,9 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer`,
-  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_python_git_call_names_its_subcommand`
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_python_git_call_names_its_subcommand`,
+  `skills/ejryan89-skill-core/scripts/test_exit_calls.py::ExitCallTests::test_a_call_python_refuses_for_its_arguments_exits_1_and_any_other_reads_its_code_argument`,
+  `tests/validation/test_skill_scripts.py::test_script_contract_policy_reads_each_report_through_the_module_s_names`
 - **Search for:** a reader that records a placeholder for a value it cannot read and then drops it by the word's
   truth, as `if subcommand := ...` drops an empty one; a policy fix that adds one more spelling of a lookup, a binding, or an unpacking to a reader, where
   an indirection policy could refuse the construct instead; a `*_ALLOWED` entry in `INDIRECTION_ALLOWED`,
@@ -1233,9 +1240,13 @@ removed fails validation until its pattern follows it.
   a policy that reads one shell, or a shell's `-c` script but not PowerShell's `-Command`; a fixture suite whose violating inputs cover one of the forms the rule names; a
   policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
   past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
-  is held to, which compares a list with itself.
+  is held to, which compares a list with itself; a second reader of a fact another module already reads, such as a
+  module's own reader of relative imports, parser bindings, or exit calls beside the shared one, which drift apart;
+  a `continue-on-error`, or another way to go on after an error, checked at a job but not at its steps; a reader of
+  an exit call's code that takes a keyword the call refuses.
 - **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, #1884, which adds the check that holds a policy's scope
-  to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, #2388, and #2730
+  to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, #2388, #2730, and
+  #2699
 
 ### A check pins the form it accepts when the forms it refuses are open
 

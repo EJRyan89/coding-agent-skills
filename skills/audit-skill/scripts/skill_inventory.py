@@ -2319,22 +2319,13 @@ def string_facts(facts: ScriptFacts, node: ast.Constant, value: str, parents: di
             facts.lines.setdefault(match.group(1), node.lineno)
 
 
-def exit_argument(call: ast.Call, function: str) -> ast.expr | None:
-    """The argument that gives an exit call, `function` by its dotted name, its code, by position or by its keyword,
-    or None when the call gives none; a `**` unpacking, which may hold the keyword, comes back as what it unpacks,
-    which reads as no literal."""
-    if call.args:
-        return call.args[0]
-    keyword = exit_calls.code_keyword(function)
-    return next((given.value for given in call.keywords if given.arg in (keyword, None)), None)
-
-
 def exit_codes(tree: ast.Module) -> set[int]:
     """The literal codes a script exits with: what a function annotated to return an int returns, and what an exit
     call or SystemExit takes, read by ejryan89-skill-core's exit_calls as validation's exit tables read it: no code,
-    or a SystemExit raised as the class, exits 0, a message exits 1, and otherwise a number or a module-level name
-    bound to one. A call is an exit call by the dotted name the module's imports resolve it to, so `from sys import
-    exit as leave` is one and a method such as `smtp.quit()` or `parser.exit()` is not."""
+    or a SystemExit raised as the class, exits 0, a message exits 1, a call Python refuses for its arguments, such as
+    `sys.exit(code=4)`, exits 1, and otherwise a number or a module-level name bound to one. A call is an exit call by
+    the dotted name the module's imports resolve it to, so `from sys import exit as leave` is one and a method such as
+    `smtp.quit()` or `parser.exit()` is not."""
     aliases = import_aliases(tree)
     constants = {
         target.id: node.value.value
@@ -2361,11 +2352,10 @@ def exit_codes(tree: ast.Module) -> set[int]:
             raised = qualified_name(node.exc, aliases)
             codes.update([exit_calls.NO_CODE] if raised == exit_calls.SYSTEM_EXIT else [])
         elif isinstance(node, ast.Call) and (function := qualified_name(node.func, aliases)) in exit_calls.EXIT_CALLS:
-            argument = exit_argument(node, function)
-            fixed = exit_calls.fixed_code(argument)
+            fixed = exit_calls.call_code(node, function)
             if fixed is not None:
                 codes.add(fixed)
-            elif argument is not None:
+            elif (argument := exit_calls.exit_argument(node, function)) is not None:
                 codes.update(literal(argument))
     return codes
 
