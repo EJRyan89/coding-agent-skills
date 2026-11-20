@@ -710,7 +710,9 @@ def test_an_output_that_is_or_lies_below_a_link_to_nothing_is_refused_and_its_ta
     requested = link / below if below else link
     with pytest.raises(plugin_build.BuildError) as raised:
         plugin_build.output_directory(requested, tmp_path / "source")
-    assert str(raised.value) == f"--output {requested} goes through {link}, a link to nothing; remove it or name another"
+    assert (
+        str(raised.value) == f"--output {requested} goes through {link}, a link to nothing; remove it or name another"
+    )
     assert not os.path.lexists(tmp_path / "nowhere")
 
 

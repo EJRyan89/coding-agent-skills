@@ -677,6 +677,21 @@ def prepare_fixture(
         )
 
 
+def _given_run(run_directory: Path) -> Path:
+    """A run directory the caller names, resolved: refused when it is, or lies below, a link to nothing, which resolves
+    to the place the link leads to that making the run would create, and when it is a folder that is not empty."""
+    linked = file_presence.link_to_nothing_on(run_directory)
+    if linked is not None:
+        raise PipelineError(
+            f"Run directory {run_directory} goes through {linked}, a link to nothing, which prepare would follow; "
+            "remove the link or name another directory"
+        )
+    run = resolved_path(run_directory)
+    if file_presence.is_directory(run) and any(run.iterdir()):
+        raise PipelineError(f"Run directory must be empty: {run}")
+    return run
+
+
 def _prepare_run(
     review: _Review,
     *,
@@ -702,22 +717,13 @@ def _prepare_run(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    # A given run directory that is, or lies below, a link to nothing resolves to the place the link leads to, which
-    # the mkdir below would create, so it is refused; and the mkdir makes the path as given.
-    linked = None if run_directory is None else file_presence.link_to_nothing_on(run_directory)
-    if linked is not None:
-        raise PipelineError(
-            f"Run directory {run_directory} goes through {linked}, a link to nothing, which prepare would follow; "
-            "remove the link or name another directory"
-        )
-    run = resolved_path(
-        Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))
+    run = (
+        resolved_path(Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory())))
         if run_directory is None
-        else run_directory
+        else _given_run(run_directory)
     )
-    if file_presence.is_directory(run) and any(run.iterdir()):
-        raise PipelineError(f"Run directory must be empty: {run}")
     try:
+        # A given run directory is made by the path as given, which never creates a folder through a link.
         (run if run_directory is None else run_directory).mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
         parsed, changed, gaps, patches, comments, fallback = review.read_diff(diff_path)
