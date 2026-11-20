@@ -38,6 +38,7 @@ import copy
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +117,7 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
           nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
         }
         reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
-          nodes { id state commit { oid } }
+          nodes { id state submittedAt commit { oid } }
         }
         decidingReviews: reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
           nodes { state }
@@ -259,14 +260,16 @@ def tracker_item(
 ) -> dict[str, Any]:
     """One tracker input item from a GraphQL pull-request node and the archive's reviewed head. For a review record,
     it also counts the open findings `flags` name and what moved since the user's last review, read from the ledger
-    the record stores or, for one written before ledgers, the ledger the earlier records compute, using `ancestry` to
-    place that review's commit among the review versions' heads."""
+    the record stores or, for one written before ledgers, the ledger the earlier records compute, placing that review
+    among the review versions by when it was submitted and, using `ancestry`, by its commit."""
     flags = list(flags)
     try:
         number = node["number"]
         author = node["author"] or {"login": GHOST_LOGIN}
         name = author.get("name")
         latest = node["reviews"]["nodes"][-1] if node["reviews"]["nodes"] else None
+        # When GitHub says that review was submitted, which places it among review versions written at its commit.
+        submitted_at = latest["submittedAt"] if latest else None
         # The tip of the base branch as GitHub holds it now, which the tracker record keeps as the base a user review
         # first seen now is compared from; none when the branch is gone or GitHub names no commit for it.
         base_sha = ((node["baseRef"] or {}).get("target") or {}).get("oid")
@@ -312,20 +315,36 @@ def tracker_item(
         ledger = ledger_history(records)[reviewed["version"]]
         opened = {ledger_id(entry["version"], entry["id"]) for entry in ledger if entry["state"] == "open"}
         item["ai_review"]["flagged"] = len(opened & set(flagged_entries(ledger, flags, repository, number)))
-        baseline = _baseline(records, item["user_review_sha"], repository, ancestry)
+        baseline = _baseline(records, item["user_review_sha"], submitted_at, repository, ancestry)
         item["ai_review"]["since_review"] = None if baseline is None else _since_review(ledger, baseline)
     return item
 
 
 def _baseline(
-    records: list[ReviewRecord], user_review_sha: str | None, repository: str, ancestry: Ancestry
+    records: list[ReviewRecord],
+    user_review_sha: str | None,
+    submitted_at: Any,
+    repository: str,
+    ancestry: Ancestry,
 ) -> int | None:
-    """The latest review version whose head is at or before the user's last review commit, 0 when every one is after
-    it, or None when the user has not reviewed or GitHub cannot compare the commits. An exact head match needs no
-    comparison."""
+    """The baseline among the review versions written before the user's last review was submitted: the latest whose
+    head is that review's commit, else the latest whose head is before it, else 0 when none was written before the
+    review or every one's head is after its commit. None when the user has not reviewed, either time cannot be read,
+    or GitHub cannot compare the commits. A version written in the same instant as the review, or after it, as a
+    re-review on a new base at the same head is, is never the baseline: GitHub states the time to the second, so a
+    tie cannot say the user saw it. An exact head match needs no comparison."""
     if user_review_sha is None:
         return None
-    heads = {record["review"]["version"]: record["pull_request"]["head_sha"] for record in records}
+    submitted = _moment(submitted_at)
+    if submitted is None:
+        return None
+    heads: dict[int, str] = {}
+    for record in records:
+        written = _moment(record["review"].get("reviewed_at"))
+        if written is None:
+            return None
+        if written < submitted:
+            heads[record["review"]["version"]] = record["pull_request"]["head_sha"]
     exact = [version for version, head in heads.items() if head == user_review_sha]
     if exact:
         return max(exact)
@@ -336,6 +355,18 @@ def _baseline(
         if before:
             return version
     return 0
+
+
+def _moment(value: Any) -> datetime | None:
+    """An ISO 8601 time as a UTC moment, reading one without an offset as UTC as a review's report does, or None when
+    it is not a string or not a time."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
 
 
 def _since_review(ledger: list[LedgerEntry], baseline: int) -> dict[str, int]:
