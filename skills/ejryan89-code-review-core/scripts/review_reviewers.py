@@ -16,7 +16,9 @@ The repository files a skill names are its references. A Markdown link's destina
 Code resolve it, through ejryan89-skill-core's link_targets: from the skill file's folder, `./` included, so
 `[rules](references/rules.md)` in `.claude/skills/review/SKILL.md` names `.claude/skills/review/references/rules.md`,
 and from the repository root when it starts with `/`. A path written bare in prose or in a code span has no folder of
-its own and is read from the repository root the reviewer works in, a leading `./` read as that root.
+its own and is read from the repository root the reviewer works in, a leading `./` read as that root. A link is read
+only through its destination: a path its text repeats, as in `[docs/rules.md](docs/rules.md)`, is not read again as
+prose.
 
 A reviewer file's frontmatter is read by ejryan89-skill-core's strict frontmatter reader. A block it cannot read is a
 contract fault that fails the review, never a grant guessed from a lenient parse.
@@ -36,7 +38,7 @@ import frontmatter
 from flat_text import flat_text
 from git_client import Runner, subprocess_runner
 from link_destinations import link_destinations
-from link_targets import link_target
+from link_targets import link_span, link_target
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -61,8 +63,9 @@ DELEGATION_PHRASE = re.compile(
 AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
-# A path named in a code span or written bare in prose, read from the repository root; a link's destination is read
-# through link_destinations and resolved from the skill's folder through link_targets, never as a bare path.
+# A path named in a code span or written bare in prose, read from the repository root; a link is read only through its
+# destination, by link_destinations, resolved from the skill's folder through link_targets, and neither its text nor its
+# destination is a bare path.
 PATH_TOKEN = re.compile(r"`([^`\s]+)`|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
 # One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
 TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
@@ -161,13 +164,13 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
     evidence: list[tuple[int, str]] = []
     body = text_lines(text)[body_start - 1 :]
     # A link's destination as CommonMark reads it, outside code: percent-decoded, its escapes read, and `<…>` opened,
-    # then resolved from the skill's folder; its columns are no bare path.
+    # then resolved from the skill's folder; the link, its text and title included, is no bare path.
     destinations = link_destinations(body)
     linked = [link_target(skill, link.posix_path) for link in destinations if not link.is_url]
     references = {path for path in linked if path is not None and path in repository_files and path != skill}
     taken: dict[int, list[tuple[int, int]]] = {}
     for link in destinations:
-        taken.setdefault(link.line + body_start - 1, []).append((link.start, link.end))
+        taken.setdefault(link.line + body_start - 1, []).append(link_span(body[link.line - 1], link))
     for number, line in enumerate(body, start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:

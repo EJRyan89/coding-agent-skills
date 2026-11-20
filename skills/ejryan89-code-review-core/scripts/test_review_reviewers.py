@@ -134,6 +134,19 @@ class InspectionTests(unittest.TestCase):
             "a link out of the repository, or to its root, names no file",
         )
 
+    def test_a_link_is_read_only_through_its_destination_never_its_text(self) -> None:
+        # A path the link's text repeats was read again as a bare path from the root, giving the reviewer the root
+        # `docs/rules.md` and `references/rules.md` beside the files the destinations lead to.
+        files = {SKILL, ".claude/skills/review/references/rules.md", "references/rules.md", "docs/rules.md"}
+        text = (
+            "Apply [references/rules.md](references/rules.md) and [docs/rules.md](docs/rules.md).\n"
+            "See [`docs/rules.md`](references/rules.md 'docs/rules.md').\n"
+            "[docs/rules.md]: references/rules.md\n"
+        )
+        self.assertEqual(
+            [".claude/skills/review/references/rules.md"], inspect_skill(SKILL, text, COMMIT, files).references
+        )
+
     def test_an_entrypoint_carries_what_the_skill_names_and_needs_no_delegation(self) -> None:
         result = inspect("---\ntools: Read\n---\nApply `docs/rules.md`.\n")
         manifest = entrypoint_manifest("solo", result)

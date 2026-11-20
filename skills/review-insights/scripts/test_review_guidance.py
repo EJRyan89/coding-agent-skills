@@ -201,9 +201,9 @@ class RuleTests(unittest.TestCase):
                 self.assertEqual(expected, rg._statements(text))
 
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
-        self.assertEqual({1: ["docs/x.md"]}, rg._markdown_links(["see [x]( docs/x.md#part\t)"]))
-        self.assertEqual({1: [f"{chr(0xA0)}docs/x.md"]}, rg._markdown_links([f"see [x]({chr(0xA0)}docs/x.md)"]))
-        self.assertEqual({}, rg._markdown_links(["see [x](docs/a b.md)"]))
+        self.assertEqual({1: ["docs/x.md"]}, rg._markdown_links(["see [x]( docs/x.md#part\t)"])[0])
+        self.assertEqual({1: [f"{chr(0xA0)}docs/x.md"]}, rg._markdown_links([f"see [x]({chr(0xA0)}docs/x.md)"])[0])
+        self.assertEqual({}, rg._markdown_links(["see [x](docs/a b.md)"])[0])
 
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]
@@ -982,6 +982,14 @@ class LinkDestinationTests(unittest.TestCase):
             [(2, "docs/y.md"), (3, "dir/z.md"), (4, "w.md")],
             [(item["line"], item["reference"]) for item in found],
         )
+
+    def test_a_code_path_s_leading_dot_slash_is_the_root_and_a_link_s_text_is_not_a_code_path(self) -> None:
+        # `./x.md` in code was compared as written, so it was unsupplied to a reviewer given `x.md` while `x.md` and
+        # `/x.md` were not; and a path in a link's text was read again as a code path, here the unsupplied `docs/y.md`.
+        lines = ["Read `./x.md`.", "[`docs/y.md`](y.md '`docs/y.md`')", "[r]: <y.md> `docs/y.md`", "`./q.md`"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h", "x.md": "h", "dir/y.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual([(4, "q.md")], [(item["line"], item["reference"]) for item in found])
 
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,

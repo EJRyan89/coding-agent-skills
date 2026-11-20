@@ -42,7 +42,7 @@ import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_destinations import link_destinations
-from link_targets import link_target
+from link_targets import link_span, link_target
 from markdown_sections import PROSE_BLOCKS, blocks
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
@@ -469,22 +469,36 @@ def _overlap_rank(item: dict[str, Any]) -> tuple[Any, ...]:
     return item["relation"] != "conflict", -item["similarity"], item["repository"], item["paths"], item["lines"]
 
 
-def _markdown_links(lines: list[str]) -> dict[int, list[str]]:
-    """The Markdown files the lines link to, by line number, each as a path in the repository: read through
+def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, list[tuple[int, int]]]]:
+    """The Markdown files the lines link to, by line number, each as its destination's path: read through
     ejryan89-skill-core's link_destinations as CommonMark reads a destination, so a percent-encoded, escaped, or `<…>`
-    path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here."""
+    path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here; and the
+    columns each link takes, its text and title included, by line number, which are no code reference."""
     linked: dict[int, list[str]] = {}
+    spans: dict[int, list[tuple[int, int]]] = {}
     for destination in link_destinations(lines):
+        spans.setdefault(destination.line, []).append(link_span(lines[destination.line - 1], destination))
         if not destination.is_url and destination.posix_path.endswith(".md"):
             linked.setdefault(destination.line, []).append(destination.posix_path)
-    return linked
+    return linked, spans
+
+
+def _code_references(line: str, spans: list[tuple[int, int]]) -> list[str]:
+    """The Markdown paths a line names in code outside its links, each with a leading `./` dropped, as a path from the
+    repository root reads it."""
+    return [
+        match.group(1).removeprefix("./")
+        for match in CODE_REFERENCE.finditer(line)
+        if not any(start < match.end() and match.start() < end for start, end in spans)
+    ]
 
 
 def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
     was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
-    or from the repository root when it starts with `/`; a path named in code counts as given when the reviewer was
-    given it as written, from the root, or from the guidance file's folder."""
+    or from the repository root when it starts with `/`; a path named in code outside a link counts as given when the
+    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. A link is read only
+    through its destination, so a path its text names in code is not read again."""
     found: list[dict[str, Any]] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
@@ -493,10 +507,12 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
             if text is None:
                 continue
             lines = text_lines(text)
-            linked = _markdown_links(lines)
+            linked, spans = _markdown_links(lines)
             for number, line in enumerate(lines, start=1):
                 links = [link_target(path, target) for target in linked.get(number, [])]
-                named = [(target, link_target(path, target)) for target in CODE_REFERENCE.findall(line)]
+                named = [
+                    (target, link_target(path, target)) for target in _code_references(line, spans.get(number, []))
+                ]
                 candidates = [link for link in links if link is not None and link not in given]
                 candidates += [target for target, near in named if target not in given and near not in given]
                 found += [
