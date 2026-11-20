@@ -4157,9 +4157,37 @@ def test_a_link_destination_is_read_once_and_a_path_in_prose_still_counts(tmp_pa
         # The tail of a URL, a glob, a placeholder, or a word is no absolute path.
         ("See https://example.com/a/b.md, <home>/c.md, `skills/*/SKILL.md`, and e/f.md.\n", ["e/f.md"]),
         ("**g.md**, ${CLAUDE_SKILL_DIR}/h.md, and ./../i.md.\n", ["g.md", "${CLAUDE_SKILL_DIR}/h.md", "./../i.md"]),
+        # A path holding `+`, `@`, or `~` was read from after that character; it is read whole.
+        ("Read refs/v+2/a.md.\n", ["refs/v+2/a.md"]),
+        ("Read /home/a@b/x.md.\n", ["/home/a@b/x.md"]),
+        ("Read `C:\\PROGRA~1\\notes\\a.md`.\n", ["C:\\PROGRA~1\\notes\\a.md"]),
+        # A path after `,` or `:` was read by its tail; none is read.
+        ("Read refs/a,b/x.md, C:z.md, and mailto:a@b.md.\n", []),
+        ("Read x!y.md.\n", []),
     ],
 )
 def test_a_path_in_prose_or_code_is_read_whole_or_not_at_all(text: str, references: list[str], tmp_path: Path) -> None:
+    assert [reference for _, reference, _ in skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)] == (
+        references
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "references"),
+    [
+        # Prose separates words with spaces, so a path holding one is read from after its last space.
+        ("`/opt/my notes/a.md`\n", ["notes/a.md"]),
+        ("`C:\\Program Files\\x\\a.md`\n", ["Files\\x\\a.md"]),
+        # An absolute path after `=`, `:`, `*`, or `|` is not read.
+        ("Run --doc=/abs/a.md, key:/abs/b.md, |/abs/c.md|, and */abs/e.md.\n", []),
+        # Nor is a UNC path, a home or variable path, or a backslash after ${CLAUDE_SKILL_DIR}.
+        ("Read \\\\server\\share\\a.md, ~/b.md, $HOME/c.md, ${VAR}/d.md, and ${CLAUDE_SKILL_DIR}\\..\\e.md.\n", []),
+        # A Markdown backslash escape in prose stays in the name.
+        ("Read a\\_b.md.\n", ["a\\_b.md"]),
+    ],
+)
+def test_a_prose_path_is_read_within_its_stated_limits(text: str, references: list[str], tmp_path: Path) -> None:
+    # The limits skill_inventory's docstring states, each pinned so a change to them is seen.
     assert [reference for _, reference, _ in skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)] == (
         references
     )

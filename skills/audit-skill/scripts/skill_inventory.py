@@ -47,10 +47,15 @@ link to a folder, is an outside read, OUTSIDE_READ or OUTSIDE_MISSING, unless it
 an absolute one. A link's destination is read as CommonMark reads it, through ejryan89-skill-core's link_destinations:
 percent-decoded, between < and > with spaces, or with a backslash, read as the platform reads a path: a separator on
 Windows, part of the name elsewhere. A Markdown path named in prose or a code span is read whole and as written, or
-not at all, never by its tail: its `%` is part of the name, its backslash read as a link's is, and an absolute one,
-which starts a line or follows a blank, a quote, a backtick, or an opening bracket, is an outside read. Limits: a
-prose path holding a space is not read, nor is a Markdown backslash escape in prose taken out of the name. The
-measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this one way.
+not at all: its `%`, `+`, `@`, and `~` are part of the name, its backslash is read as a link's is, and an absolute one,
+which starts a line or follows a blank, a quote, a backtick, or an opening bracket, is an outside read. A relative one
+never starts after a character a path holds or one that joins words, `!`, `,`, or `:`, so no path is read by its
+tail, except across a space: prose separates words with spaces, so a path holding one, such as `/opt/my notes/a.md`,
+is read from after its last space. Limits, which no Markdown in this source writes: an absolute path after `=`, `:`,
+`*`, or `|`, as in `--doc=/abs/a.md`, is not read, nor is a UNC path such as `\\\\server\\share\\a.md`, a path that
+starts with `~`, `$HOME`, or `${VAR}`, or `${CLAUDE_SKILL_DIR}\\..\\a.md`; and a Markdown backslash escape in prose
+is not taken out of the name. The measure, NESTED_REFERENCE, and the outside reads all read the paths a file names this
+one way.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -700,16 +705,17 @@ EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # A Markdown path named in prose or code, outside every link's destination, which ejryan89-skill-core's
 # `link_destinations` reads instead: `references/a.md`, `.venv/a.md` in a hidden folder, `../shared/a.md`, one after
-# ${CLAUDE_SKILL_DIR}/, or an absolute one, `/opt/a.md` or `C:\a.md`, each whole or not at all. A relative one starts
-# after no path character, so it is never the tail of a longer path or word; an absolute one starts a line or follows
-# a blank, a quote, a backtick, or an opening bracket, so it is never the tail of a URL, a glob such as
-# `skills/*/SKILL.md`, or a placeholder such as `<home>/a.md`. It holds `%` as written, as prose is not
-# percent-encoded, and `\`, which `markdown_links` reads as the platform reads a path: a separator on Windows, part of
-# the name elsewhere; and it ends at `.md` that no other path character or extension follows. `markdown_links` resolves
-# where it leads.
+# ${CLAUDE_SKILL_DIR}/, or an absolute one, `/opt/a.md` or `C:\a.md`, each whole or not at all. A relative one never
+# starts after a character a path holds, `$`, `}`, or one that joins words, `!`, `,`, or `:`, so it is never the tail
+# of a longer path, a word, `C:z.md`, or `mailto:a@b.md`, though it may be what follows a space in a path that holds
+# one; an absolute one starts a line or follows a blank, a quote, a backtick, or an opening bracket, so it is never the
+# tail of a URL, a glob such as `skills/*/SKILL.md`, or a placeholder such as `<home>/a.md`. It holds `%` as written,
+# as prose is not percent-encoded, `+`, `@`, and `~` after its first character, as in `C:\PROGRA~1\a.md`, and `\`,
+# which `markdown_links` reads as the platform reads a path: a separator on Windows, part of the name elsewhere; and it
+# ends at `.md` that no other path character or extension follows. `markdown_links` resolves where it leads.
 PROSE_REFERENCE = re.compile(
-    r"(?:(?<![^\s`'\"(\[<])|(?<![\w./\\%$}-])(?![A-Za-z]:[/\\]|[/\\]))(\$\{CLAUDE_SKILL_DIR\}/)?"
-    r"((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w./\\%-]*\.md)(?!\.?[\w/\\%-])"
+    r"(?:(?<![^\s`'\"(\[<])|(?<![\w./\\%+@~$}!,:-])(?![A-Za-z]:[/\\]|[/\\]))(\$\{CLAUDE_SKILL_DIR\}/)?"
+    r"((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w./\\%+@~-]*\.md)(?!\.?[\w/\\%+@~-])"
 )
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
