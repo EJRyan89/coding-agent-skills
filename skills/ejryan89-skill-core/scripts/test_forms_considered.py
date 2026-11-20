@@ -82,7 +82,8 @@ def test_a_comment_opener_code_shows_hides_nothing(forms: str) -> None:
         # A comment block inside a quote holds its fence-like lines too.
         ("> <!-- x\n> ```\n> -->\n<!-- y -->", "> \n"),
         # A fence-like line inside a comment within a line is a fence, as GitHub reads the blocks before the comments,
-        # so the fence shows the `<!--` after it; the comment within the line still goes, a stated limit.
+        # so the fence shows the `<!--` after it; the comment inside the line, whose `-->` falls past the fence-like
+        # line that ends its paragraph, still goes, as the stated limit on such a comment says.
         ("a <!-- b\n```\n--> <!-- c -->", "a  <!-- c -->"),
         ("<!-->x<!--->y", "xy"),
     ],
@@ -98,7 +99,9 @@ def test_a_comment_is_hidden_only_where_it_opens_outside_code(text: str, expecte
         pytest.param("a <!-- b\n\nc", "a ", id="an unclosed opener inside a line hides the rest"),
         pytest.param("``a`<!-- x -->` z", "``a`` z", id="backtick runs of unequal length pair as a span"),
         pytest.param("\\`<!-- x -->\\` z", "\\`<!-- x -->\\` z", id="an escaped backtick opens a span"),
-        pytest.param("`a\n<!-- x --> b` z", "`a\n b` z", id="a span is read within one line"),
+        pytest.param(
+            "`foo\nbar <!-- x --> baz` VISIBLE", "`foo\nbar  baz` VISIBLE", id="a span is read within one line"
+        ),
     ],
 )
 def test_a_comment_is_read_within_the_module_s_stated_limits(text: str, expected: str) -> None:
@@ -113,6 +116,8 @@ SCALING = {
     "openers a fence shows": ("```\n", "<!--\n", "```\n"),
     "comments inside lines": ("", "x <!-- c --> y\n", ""),
     "comments holding a fence-like line": ("", "<!--\n```\n-->\n", ""),
+    # A run of quote markers a comment block's start once backtracked through in time exponential in its length.
+    "nested quote markers": ("<!-- c -->\n", "> " * 40 + "x\n", ""),
 }
 
 
@@ -124,6 +129,16 @@ def repeated(head: str, unit: str, tail: str) -> str:
 def test_a_body_at_github_s_limit_is_read_in_time_in_proportion_to_it(head: str, unit: str, tail: str) -> None:
     started = time.perf_counter()
     forms_section(repeated(head, unit, tail))
+    assert time.perf_counter() - started < 1.0
+
+
+def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
+    # A line of backtick runs once made every body's code-span search take time growing with their square.
+    text = "`" * 32_768 + "a" * 32_728 + "\n\n## Forms considered\n\nText.\n"
+    started = time.perf_counter()
+    # The run opens a fence, as GitHub reads a line of backticks whose text after them holds none, so the fence holds
+    # the heading.
+    assert forms_section(text) is None
     assert time.perf_counter() - started < 1.0
 
 
