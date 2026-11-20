@@ -3,6 +3,7 @@
   "mode": "trigger",
   "requests": [
     "Review the auto-memory for this project and tell me which memories are stale.",
+    "Find which of the memories saved for this repository are out of date.",
     "Tidy up my Claude memories for this repo; some of them repeat each other.",
     "Prune the project memories that no longer apply."
   ],

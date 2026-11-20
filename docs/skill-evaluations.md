@@ -139,9 +139,9 @@ session model and the judged one. A skill with no row has not been run since its
 | audit-skill | haiku | claude-haiku-5-5 | none | none | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | sonnet | claude-sonnet-5-5 | none | none | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | opus | claude-opus-5-5 | none | none | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 5/6 | 1 | description 5/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
@@ -190,7 +190,7 @@ fails while a committed row is still `unread`, so the reading travels with the r
 <!-- skill-evals-samples:begin -->
 | Skill | Scenario | Model | Run | Date | Transcript |
 | --- | --- | --- | --- | --- | --- |
-| curate-agent-memory | description | sonnet | 1 | 2026-11-20 | agrees |
+| curate-agent-memory | description | opus | 1 | 2026-11-20 | agrees |
 | review-document | committed-edit | opus | 1 | 2026-11-10 | agrees |
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | clean-change | sonnet | 1 | 2026-11-10 | agrees |
