@@ -260,7 +260,7 @@ removed fails validation until its pattern follows it.
   that changes nothing.
 - **Use:** `deployer.errors:see_recovery`, `deployer.errors:DEBUG_HINT`, `deployer.source:COMPLETE_CHECKOUT`,
   `deployer.source:SOURCE_JSON_REMEDY`, `deployer.errors:SourceRefusal`, `deployer.source_ref:exported_refusals`,
-  `deployer.lock:REFUSED_STEP`
+  `file_lock:refusal_step`
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
   `tests/deployer/test_remedies.py::RefusalStepTests`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit`,
