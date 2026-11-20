@@ -145,3 +145,14 @@ class Cancelled(DeployError):
 
     def __init__(self, *lines: str) -> None:
         super().__init__(*lines, exit_code=130)
+
+
+class SourceRefusal(DeployError):
+    """A refusal of what the source tree holds, such as a skill's frontmatter, its metadata, source.json, or a rendered
+    file's check, whose last line is the step a checkout's author takes. Under --at the tree is a commit's, which no
+    change to the checkout reaches, so source_ref.exported_refusals ends it with a step naming the commit instead."""
+
+    @property
+    def problem(self) -> tuple[str, ...]:
+        """The lines before the step: what is wrong, and any finding that says where."""
+        return self.lines[:-1]

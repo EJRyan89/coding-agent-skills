@@ -242,14 +242,16 @@ def _deploy(
     selection_module.print_selection(src, selection, selected)
     selection_module.warn_missing_tools(src, selection)
     selection_module.require_variables(context, selected)
-    staged_shared = plan.shared_to_stage(context, selected, plan.validate_shared_assets(context, selected))
-    agents = source.agent_closure(src, selected)
-    wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
-    plan.check_forced_items(options.force_items, wanted)
-    plan.check_ownership(context, wanted)
-    staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
-    render.reject_unexpanded_tokens(staged)
-    render.validate_executables(staged)
+    # Under --at, a refusal of what the source holds names the commit; any other refusal here passes as it is.
+    with source_ref.exported_refusals(pin):
+        staged_shared = plan.shared_to_stage(context, selected, plan.validate_shared_assets(context, selected))
+        agents = source.agent_closure(src, selected)
+        wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
+        plan.check_forced_items(options.force_items, wanted)
+        plan.check_ownership(context, wanted)
+        staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
+        render.reject_unexpanded_tokens(staged)
+        render.validate_executables(staged)
     print("")
     if run_id is None:
         print("Rendered and validated in memory (dry run).")
@@ -459,7 +461,8 @@ def _prepare(
         if options.canary_home
         else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
     )
-    src = source.discover(paths, source_id)
+    with source_ref.exported_refusals(pin):
+        src = source.discover(paths, source_id)
     selection_module.check_includes(src, options.include)
     plan.check_source_forced_items(src, options.force_items)
     return paths, source_id, options, values, src
