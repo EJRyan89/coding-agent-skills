@@ -100,9 +100,12 @@ CONTAINER_MARKERS = rf"[ \t]*(?:(?:>|{LIST_MARKER}[ \t])[ \t]*)*"
 # A line whose `<!--` may open an HTML block, after the markers that may hold it; whether it does is the block walk's to
 # say, from what the line is read as.
 BLOCK_COMMENT = re.compile(rf"{CONTAINER_MARKERS}<!--")
-# A line that ends at a list marker or a run of `#` with nothing after them: an item that opens empty, or an empty ATX
-# heading, which the block walk reads once a space follows.
-BARE_END = re.compile(rf"{CONTAINER_MARKERS}(?:{LIST_MARKER}|#{{1,6}})")
+# A line that ends at a list marker with nothing after it: an item that opens empty, which the block walk reads once a
+# space follows.
+BARE_MARKER = re.compile(rf"{CONTAINER_MARKERS}{LIST_MARKER}")
+# A line that ends at a run of `#` with nothing but spaces and tabs after it: an empty ATX heading, which the block
+# walk, reading a heading's text with the spaces around it stripped, reads once a `#` of text follows.
+EMPTY_HEADING = re.compile(rf"{CONTAINER_MARKERS}#{{1,6}}[ \t]*")
 # An HTML h1 or h2 block's start, indented up to three spaces. CommonMark starts an HTML block only where the tag name
 # is followed by a space, a tab, the line's end, `>`, or `/>`, so any other Unicode space leaves the line text.
 HTML_HEADING = re.compile(r" {0,3}<h[12](?:[ \t>]|/>|$)", re.IGNORECASE)
@@ -297,9 +300,14 @@ def _reading(text: str) -> _Reading:
 
 
 def _with_bare_end(line: str) -> str:
-    """The line as the block walk reads it: one that ends at a list marker or a run of `#` gets a space after them, so
-    the walk reads the item that opens empty, or the empty heading, CommonMark reads there."""
-    return line + " " if BARE_END.fullmatch(line) else line
+    """The line as the block walk reads it: one that ends at a list marker gets a space after it, and one that ends at
+    a run of `#` a `#` of text, so the walk reads the item that opens empty, or the empty heading, CommonMark reads
+    there."""
+    if BARE_MARKER.fullmatch(line):
+        return line + " "
+    if EMPTY_HEADING.fullmatch(line):
+        return line.rstrip(" \t") + " #"
+    return line
 
 
 def _spanning_blocks(

@@ -6,6 +6,7 @@ body check that reads it here; these show the reader's own answers.
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 from pathlib import Path
@@ -126,7 +127,6 @@ def test_a_comment_is_read_within_the_module_s_stated_limits(text: str, expected
     assert without_hidden_comments(text) == expected
 
 
-GITHUB_BODY_LIMIT = 65_536
 # Bodies of one form repeated to GitHub's limit, each of which once took seconds to minutes to read, or would read in
 # time growing with the square of the body if a comment block's walk started again from the body's start.
 SCALING = {
@@ -151,15 +151,37 @@ SCALING = {
 WALKS_PER_LINE = 8
 
 
-def repeated(head: str, unit: str, tail: str) -> str:
-    return head + unit * ((GITHUB_BODY_LIMIT - len(head) - len(tail)) // len(unit)) + tail
+# A body of SCALE times the units is read against the smaller one, each the fastest of RUNS readings with the garbage
+# collector off, so a slow or loaded runner slows both alike. A linear reading takes about SCALE times as long and a
+# quadratic one about SCALE squared, so the ratio of the larger's time to SCALE times the smaller's is bounded between.
+SCALE = 8
+RUNS = 5
+SCALE_BOUND = 3.0
+SMALL_BODY = 2_000
+
+
+def fastest_pair(small: str, large: str) -> tuple[float, float]:
+    """The fastest of RUNS readings of each body, taken in turn so a change in the runner's load meets both."""
+    times: tuple[list[float], list[float]] = ([], [])
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(RUNS):
+            for text, kept in zip((small, large), times, strict=True):
+                started = time.perf_counter()
+                forms_section(text)
+                kept.append(time.perf_counter() - started)
+    finally:
+        if collecting:
+            gc.enable()
+    return min(times[0]), min(times[1])
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
-def test_a_body_at_github_s_limit_is_read_in_time_in_proportion_to_it(head: str, unit: str, tail: str) -> None:
-    started = time.perf_counter()
-    forms_section(repeated(head, unit, tail))
-    assert time.perf_counter() - started < 1.0
+def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
+    repeats = max(1, SMALL_BODY // len(unit))
+    small, large = fastest_pair(head + unit * repeats + tail, head + unit * repeats * SCALE + tail)
+    assert large / (SCALE * small) < SCALE_BOUND
 
 
 def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
@@ -253,6 +275,12 @@ GITHUB_SECTIONS = {
     # An HTML heading opens a block that runs to the blank line under it, so the lines it holds are neither a fence nor
     # a heading.
     "a heading an HTML heading's block holds": ("<h2>Y</h2>\n- ```\n## Forms considered\n---\n\ntext", None),
+    # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
+    # it are the item's.
+    "a comment under an item that opens empty": (
+        "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
+        "\n-\n  \n  ## not a section\n\nafter",
+    ),
 }
 
 
@@ -276,6 +304,15 @@ SETEXT_AND_HTML_ENDS = {
     "underline after a list": ("- a\n\ntext\n===", False),
     "underline under a paragraph": ("text\n---", False),
     "HTML heading": ("<h2>x</h2>", False),
+    # A table's rows run on to the underline, which is then a rule, so no heading ends the section there, while a
+    # paragraph after the table is a heading's text.
+    "underline under a table's rows": ("| a |\n| - |\n| b |\n---", True),
+    "underline under a paragraph after a table": ("| a |\n| - |\n| b |\n\ntext\n---", False),
+    # An ATX heading with no text, a run of `#` alone, is a heading too.
+    "empty heading": ("text\n\n##", False),
+    "empty heading with trailing spaces": ("text\n#  ", False),
+    "empty heading in a quote": ("> ##", True),
+    "empty heading in an item": ("- ##", True),
 }
 
 
@@ -291,3 +328,9 @@ def test_a_setext_heading_is_held_within_the_module_s_stated_limit() -> None:
     # the blank line is read as the bullet's, where GitHub ends the section at it.
     section = forms_section("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter")
     assert section == "\n- a\n2. b\n\n  Text\n  ---\nafter"
+
+
+@pytest.mark.parametrize("text", ["## Forms considered", "## Forms considered\n## Next\n\ntext"])
+def test_a_heading_with_no_line_before_the_next_holds_an_empty_section(text: str) -> None:
+    assert forms_section(text) == ""
+    assert forms_fault(text, TEMPLATE) is FormsFault.EMPTY
