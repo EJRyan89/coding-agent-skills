@@ -476,14 +476,68 @@ def test_a_block_is_read_as_github_renders_it(document: str, expected: list[tupl
         pytest.param("a | b\n---|---\nc | d\n", [(0, "paragraph")], id="table-without-leading-pipes"),
         # A list marker with nothing after it opens no item, so it and the lines after it are a paragraph.
         pytest.param("-\n  a\n- b\n", [(0, "paragraph"), (2, "item")], id="bare-marker"),
-        # A marker past MAX_BLOCK_INDENT columns beyond the content of an item it leaves opens an item.
-        pytest.param(
-            "- a\n  -    b\n      - c\n", [(0, "item"), (1, "item"), (2, "item")], id="deep-marker-leaving-an-item"
-        ),
     ],
 )
 def test_a_block_is_read_within_the_walker_s_stated_limits(document: str, expected: list[tuple[int, str]]) -> None:
     assert [(block.start, block.kind) for block in blocks(document.split("\n"))] == expected
+
+
+@pytest.mark.parametrize(
+    ("document", "expected", "code", "headings"),
+    [
+        # A `2.` marker that leaves an item opens the next list's item, even after the item's paragraph, so the line
+        # indented short of its content is the document's heading, and one indented as far is the item's paragraph.
+        pytest.param(
+            "- a\n2. b\n  # H\n", [(0, "item"), (1, "item"), (2, "heading")], [], ["H"], id="ordered-leaving-a-bullet"
+        ),
+        pytest.param(
+            "- a\n\n  p\n10. b\n\n      x\n",
+            [(0, "item"), (2, "paragraph"), (3, "item"), (5, "paragraph")],
+            [],
+            [],
+            id="item-ten-after-an-item-s-paragraph",
+        ),
+        # A marker more than MAX_BLOCK_INDENT columns past the content of the item it leaves opens none: it lazily
+        # continues the nested item's paragraph.
+        pytest.param(
+            "- a\n  -    b\n      - c\n", [(0, "item"), (1, "item")], [], [], id="deep-marker-leaving-an-item"
+        ),
+        # A marker whose text opens indented code opens its item, which holds the lines indented as far as its
+        # content, so a `2.` line after the item's paragraph opens the list's next item, and a heading is the item's.
+        pytest.param(
+            "-     code\n\n  text\n2. next\n",
+            [(0, "code"), (2, "paragraph"), (3, "item")],
+            [0],
+            [],
+            id="item-opening-code-holds-a-paragraph",
+        ),
+        pytest.param(
+            "-     code\n\n  # H\n", [(0, "code"), (2, "heading")], [0], [], id="item-opening-code-holds-a-heading"
+        ),
+        # A quote-shaped line inside a fence is the fence's text, so the item holding the fence stays open after it.
+        pytest.param(
+            "- a\n\n  ```\n  > x\n  ```\n  # H\n",
+            [(0, "item"), (3, "code"), (5, "heading")],
+            [2, 3, 4],
+            [],
+            id="quote-shaped-line-in-a-fenced-item",
+        ),
+    ],
+)
+def test_every_reader_holds_a_line_in_the_list_item_github_renders_it_in(
+    document: str, expected: list[tuple[int, str]], code: list[int], headings: list[str]
+) -> None:
+    # `blocks`, `code_block_lines`, and `document_headings` read one walk's item stack, so none of them reads a line in
+    # an item another leaves it out of.
+    lines = document.split("\n")
+    assert [(block.start, block.kind) for block in blocks(lines)] == expected
+    assert sorted(code_block_lines(lines)) == code
+    assert [heading.group("text") for _, heading in document_headings(lines)] == headings
+
+
+def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:
+    (item,) = blocks(["- ", "  text"])
+    assert (item.kind, item.lines) == ("item", ("- ", "  text"))
 
 
 def test_a_block_s_lines_are_kept_as_written_and_its_text_may_leave_a_list_item_s_marker_out() -> None:

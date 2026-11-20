@@ -226,8 +226,9 @@ def code_block_lines(lines: list[str]) -> set[int]:
     An indented code block is a run of lines each indented at least CODE_INDENT columns past the content of the list
     items that hold it, with the blank lines between them, starting where no paragraph is open: an indented line after
     a paragraph's text continues the paragraph, while one after a heading or a thematic break opens code. How list
-    items, blockquotes, and paragraphs hold a line, and the limits of that reading, are `_read_blocks`'."""
-    return _read_blocks(lines)[0]
+    items, blockquotes, and paragraphs hold a line, and the limits of that reading, are `_walk`'s, the one walk
+    `blocks` and `document_headings` read too."""
+    return _walk(lines).code
 
 
 def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
@@ -238,111 +239,8 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
     section at the next heading reads past them. A list item holds a heading indented as far as its content, written
     on the item's lines or after a lazy continuation of its paragraph; one indented less, or after a blank line that
     ends the list, is the document's. How list items and blockquotes hold a line, and the limits of that reading, are
-    `_read_blocks`'."""
-    return _read_blocks(lines)[1]
-
-
-def _read_blocks(lines: list[str]) -> tuple[set[int], list[tuple[int, re.Match[str]]]]:
-    """The lines of every code block, and each ATX heading no list item or blockquote holds, read in one pass.
-
-    A list item holds the lines indented as far as its content, which starts after its marker and the one to four
-    spaces that follow it, or one space when more follow, since the text then opens with indented code on the item's
-    own line. A line indented less leaves the item after a blank line or any block but a paragraph, and so does a
-    heading, a thematic break, a fence, or a list item that interrupts the paragraph, while any other line lazily
-    continues it. A block marker is read at most MAX_BLOCK_INDENT columns past the content of the items that hold it,
-    and a fence's opener that opens a list item, as `- ```` does, holds the lines after it in that item.
-    Blockquote markers are taken off a line first, and a change in how many hold it starts a new container, but for a
-    line that lazily continues a quoted paragraph: one that holds text and starts no block. The limits: the partial tab
-    a blockquote or list marker consumes is counted as a whole one; a fence's opener opens one list item at most; an
-    HTML block or a setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a
-    heading; a blockquote inside a list item closes the item for the lines after it, so a heading or indented line
-    that CommonMark keeps in the item is read at the document's level; a list marker with nothing after it on its
-    line opens no item, so the line after it is read as the document's; and an ordered marker not numbered 1, or a
-    bare marker, right after a quoted line is read as the quoted paragraph's lazy continuation, where CommonMark's
-    reference parsers end the quote and open a list."""
-    fences = find_fences(lines)
-    openers = {fence.opener for fence in fences}
-    fenced = {index for fence in fences for index in fence.lines()}
-    blocks = _Blocks()
-    for index, quoted in enumerate(lines):
-        line, quotes = _unquoted(quoted)
-        if quotes != blocks.depth:
-            if blocks.paragraph and quotes < blocks.depth and _continues(line, opener=index in openers):
-                continue  # a lazy continuation of the quoted paragraph
-            blocks.items, blocks.depth, blocks.paragraph, blocks.run = [], quotes, False, []
-        if index in fenced:
-            blocks.fence_line(line, opener=index in openers)
-        elif is_blank(line):
-            blocks.paragraph = False
-            if blocks.run:
-                blocks.run.append(index)
-        elif not blocks.code_line(index, line):
-            blocks.block_line(index, line)
-    return fenced | blocks.code, blocks.headings
-
-
-@dataclass
-class _Blocks:
-    """What `_read_blocks` has read so far: the column each open list item's content starts at, whether a paragraph is
-    open, the indented code run and the blank lines after it, how many blockquotes hold the line, the code lines, and
-    the document's headings."""
-
-    items: list[int] = field(default_factory=list)
-    paragraph: bool = False
-    run: list[int] = field(default_factory=list)
-    depth: int = 0
-    code: set[int] = field(default_factory=set)
-    headings: list[tuple[int, re.Match[str]]] = field(default_factory=list)
-
-    def fence_line(self, line: str, *, opener: bool) -> None:
-        """A fence's line: its opener ends the items indented past it, and opens one when a list marker holds it."""
-        if opener:
-            width = indentation(line)
-            del self.items[items_holding(self.items, width) :]
-            item = _item_content(line, interrupting=False, relative=width - (self.items[-1] if self.items else 0))
-            if item is not None:
-                self.items.append(item[0])
-        self.paragraph, self.run = False, []
-
-    def code_line(self, index: int, line: str) -> bool:
-        """Whether a line that continues no paragraph is indented code, read after the items it leaves are closed."""
-        if self.paragraph:
-            return False
-        width = indentation(line)
-        del self.items[items_holding(self.items, width) :]
-        if width < (self.items[-1] if self.items else 0) + CODE_INDENT:
-            return False
-        self.code.update(self.run)
-        self.code.add(index)
-        self.run = [index]
-        return True
-
-    def block_line(self, index: int, line: str) -> None:
-        """A line that is no code: a thematic break, a list item, or a heading, each ending the items indented past
-        it, or a paragraph's text."""
-        self.run = []
-        width = indentation(line)
-        held = items_holding(self.items, width)
-        relative = width - (self.items[held - 1] if held else 0)
-        block = line.strip(LINE_END) if relative <= MAX_BLOCK_INDENT else ""
-        item = _item_content(line, interrupting=self.paragraph, relative=relative)
-        heading = ATX_HEADING.fullmatch(block)
-        if THEMATIC_BREAK.fullmatch(block) or item is not None or heading is not None:
-            del self.items[held:]
-            self.paragraph = False
-        else:
-            self.paragraph = True
-        if THEMATIC_BREAK.fullmatch(block):
-            return
-        if item is not None:
-            content, text, opens_code = item
-            self.items.append(content)
-            self.paragraph = not (opens_code or is_blank(text))
-            if opens_code:
-                self.code.add(index)
-                self.run = [index]
-        elif heading is not None and not self.items and not self.depth:
-            self.headings.append((index, heading))
+    `_walk`'s, the one walk `blocks` and `code_block_lines` read too."""
+    return _walk(lines).headings
 
 
 def _continues(line: str, *, opener: bool) -> bool:
@@ -390,7 +288,7 @@ def _unquoted(line: str) -> tuple[str, int]:
 
 
 def list_item_content(line: str) -> int | None:
-    """The column the content of the list item a line opens starts at, as `_read_blocks` reads it, or None when the
+    """The column the content of the list item a line opens starts at, as `_walk` reads it, or None when the
     line opens no list item. Whether the item may interrupt a paragraph there is `list_item`'s."""
     item = _item_content(line, interrupting=False, relative=0)
     return None if item is None else item[0]
@@ -453,107 +351,210 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     are none. Each reader of a document's blocks walks them here and chooses after the walk what it keeps and how it
     reads a block's lines, so no two readers split a document apart.
 
-    A list item stays open across blank lines for the lines indented as far as its content, as `_read_blocks` reads
-    it, and each line is read at the column of the content of the items that hold it. A line after a paragraph's text
-    continues it unless `starts_block` reads it, at that column, as a block of its own: a heading, a thematic break,
-    a blockquote, or a list item, which starts a list inside the paragraph's item, or the document, only at a bullet
-    or `1.`, while a marker that leaves an open item opens that list's next item, whatever its number. A table row is
-    a block of its own read the same way. A list item's further lines, indented or lazy, join it, and a blockquote's
-    quoted and lazy lines join it. A heading or a table row is one line; `#` opens a heading only as `starts_heading`
-    reads one, so `#hashtag` is text. Code, fenced or indented, is read through `find_fences` and `code_block_lines`.
+    The blocks come from `_walk`, the one walk `code_block_lines` and `document_headings` read too, so a line each
+    reader holds in a list item, or reads as code, is held and read alike here. A line after a paragraph's text
+    continues it unless it starts a block of its own at the column of the content of the items that hold it: a heading,
+    a thematic break, a blockquote, or a list item, which starts a list inside the paragraph's item, or the document,
+    only at a bullet or `1.`, while a marker that leaves an open item opens that list's next item, whatever its number,
+    and a marker more than MAX_BLOCK_INDENT columns past that content opens none. A table row is a block of its own
+    read the same way. A list item's further lines, indented or lazy, join it, and so does the first line it holds
+    when its marker has only spaces after it; a blockquote's quoted and lazy lines join it. A heading or a table row is
+    one line; `#` opens a heading only as `starts_heading` reads one, so `#hashtag` is text.
 
-    The limits: a setext heading is read as a paragraph, so the text above a `---` underline is a paragraph the
-    thematic break ends and an `=` underline joins the text above it; an HTML block is read as a paragraph, so its
-    lines are paragraph text until one that starts a block, such as a heading-shaped or list line, which is read as
-    that block; a line that starts with `|` is a table row even where it follows a paragraph's text, a line right
-    after a table's rows is read as a paragraph, where GitHub reads it as another row, and a table with no leading
-    pipe is read as a paragraph; an ordered marker not numbered 1, or a bare marker, right after a quoted line
-    continues the quote, where CommonMark ends the quote and opens a list; a list marker with nothing after it on its
-    line opens no item, so it and the lines after it are read as a paragraph; a list marker more than
-    MAX_BLOCK_INDENT columns past the content of an item it leaves opens an item, where CommonMark continues that
-    item's paragraph; and a quote's own lines are not split into the blocks it holds."""
+    The limits, beside `_walk`'s: a setext heading is read as a paragraph, so the text above a `---` underline is a
+    paragraph the thematic break ends and an `=` underline joins the text above it; an HTML block is read as a
+    paragraph, so its lines are paragraph text until one that starts a block, such as a heading-shaped or list line,
+    which is read as that block; a line that starts with `|` is a table row even where it follows a paragraph's text,
+    a line right after a table's rows is read as a paragraph, where GitHub reads it as another row, and a table with no
+    leading pipe is read as a paragraph; a list marker with nothing after it on its line opens no item, so it and the
+    lines after it are read as a paragraph; and a quote's own lines are not split into the blocks it holds, though a
+    code block inside it is its own block and ends the quote's."""
+    yield from _walk(lines).blocks
+
+
+def _walk(lines: list[str]) -> _Walker:
+    """The document read in one pass, holding one stack of open list items: its blocks, the lines of its code blocks,
+    and each heading no list item or blockquote holds.
+
+    A list item holds the lines indented as far as its content, which starts after its marker and the one to four
+    spaces that follow it, or one space when more follow, since the text then opens with indented code on the item's
+    own line, and that item holds the lines after it as any other does. A line indented less leaves the item after a
+    blank line or any block but a paragraph, and so does a heading, a thematic break, a fence, or a list item, while
+    any other line lazily continues the paragraph. A block marker is read at most MAX_BLOCK_INDENT columns past the
+    content of the items that hold it, and a list item interrupts a paragraph that the line's items hold only at a
+    bullet or `1.`; a list item that leaves the paragraph's item opens whatever its number, as CommonMark reads it. A
+    fence's opener that opens a list item, as `- ```` does, holds the lines after it in that item.
+    Blockquote markers are taken off a line first, and a change in how many hold it starts a new container, but for a
+    line that lazily continues a quoted paragraph: one that holds text and starts no block.
+
+    The limits: the partial tab a blockquote or list marker consumes is counted as a whole one; a fence's opener opens
+    one list item at most; an HTML block or a setext heading is read as a paragraph, so a heading-shaped line inside an
+    HTML comment is read as a heading; a blockquote inside a list item closes the item for the lines after it, so a
+    heading or indented line that CommonMark keeps in the item is read at the document's level; a list marker with
+    nothing after it on its line opens no item, so the line after it is read as the document's; and an ordered marker
+    not numbered 1, or a bare marker, right after a quoted line is read as the quoted paragraph's lazy continuation,
+    where CommonMark's reference parsers end the quote and open a list."""
     fences = {fence.opener: fence for fence in find_fences(lines)}
-    code = code_block_lines(lines)
-    walk = _Walk()
+    walker = _Walker(lines)
     index = 0
     while index < len(lines):
         fence = fences.get(index)
-        if fence is not None or index in code:
-            yield from walk.close()
-            if fence is not None:
-                walk.fence(lines[index])
-            stop = fence.lines().stop if fence is not None else _code_run_end(lines, index, code, fences)
-            body = [fence.text(lines[inside]) for inside in fence.body()] if fence is not None else lines[index:stop]
-            yield Block(fence.opener + 1 if fence is not None else index, CODE, tuple(body))
-            index = stop
-            continue
-        yield from walk.line(index, lines[index])
-        index += 1
-    yield from walk.close()
-
-
-def _code_run_end(lines: list[str], start: int, code: set[int], fences: dict[int, Fence]) -> int:
-    """The index past an indented code block that starts at `start`: past its last line, short of a fence."""
-    stop = start + 1
-    while stop < len(lines) and stop in code and stop not in fences:
-        stop += 1
-    return stop
+        line = walker.unquoted(index, opener=fence is not None)
+        if line is None:
+            index += 1
+        elif fence is not None:
+            walker.fence(fence, line)
+            index = fence.lines().stop
+        else:
+            walker.line(index, line)
+            index += 1
+    walker.close()
+    return walker
 
 
 @dataclass
-class _Walk:
-    """What `blocks` has read of the lines no code holds: the open block's first line, kind, and lines, and the column
-    each open list item's content starts at, outermost first."""
+class _Walker:
+    """What `_walk` has read so far. The structure: the column each open list item's content starts at, outermost
+    first, how many blockquotes hold the line, whether a paragraph's text is open, whether a table row is, and whether
+    the last list item opened with nothing after its marker. What it yields: the blocks, the code lines, and the
+    document's headings. The open block: its first line, kind, and lines, and the blank lines after an open indented
+    code block, which join it only when more code follows."""
 
+    lines: list[str]
+    items: list[int] = field(default_factory=list)
+    depth: int = 0
+    paragraph: bool = False
+    row: bool = False
+    bare: bool = False
+    blocks: list[Block] = field(default_factory=list)
+    code: set[int] = field(default_factory=set)
+    headings: list[tuple[int, re.Match[str]]] = field(default_factory=list)
     start: int = 0
     kind: str = ""
     open: list[str] = field(default_factory=list)
-    items: list[int] = field(default_factory=list)
+    pending: list[int] = field(default_factory=list)
 
-    def close(self) -> Iterator[Block]:
-        """The open block, if any, which ends here; the list items that hold it stay open."""
+    def close(self) -> None:
+        """The open block, if any, ends here; the list items that hold it stay open."""
         if self.open:
-            yield Block(self.start, self.kind, tuple(self.open))
-        self.open = []
+            self.blocks.append(Block(self.start, self.kind, tuple(self.open)))
+        self.kind, self.open, self.pending = "", [], []
 
-    def fence(self, line: str) -> None:
-        """A fence's opener: it ends the items indented past it, and opens one when a list marker holds it."""
+    def begin(self, index: int, kind: str) -> None:
+        """The line opens a block of the kind, ending the open one."""
+        self.close()
+        self.start, self.kind, self.open = index, kind, [self.lines[index]]
+
+    def unquoted(self, index: int, *, opener: bool) -> str | None:
+        """The line without its blockquote markers, a change in how many hold it closing every container; None for a
+        line that lazily continues a quoted paragraph, which joins the open block."""
+        line, quotes = _unquoted(self.lines[index])
+        if quotes == self.depth:
+            return line
+        if (self.paragraph or self.row) and quotes < self.depth and _continues(line, opener=opener):
+            if self.open:
+                self.open.append(self.lines[index])
+            else:
+                self.begin(index, PARAGRAPH)
+            return None
+        if not (quotes and self.depth and self.kind == QUOTE):
+            self.close()
+        self.items, self.depth, self.paragraph, self.row, self.bare = [], quotes, False, False, False
+        return line
+
+    def fence(self, fence: Fence, line: str) -> None:
+        """A fence: its opener ends the items indented past it, and opens one when a list marker holds it."""
+        self.close()
         width = indentation(line)
         del self.items[items_holding(self.items, width) :]
         item = _item_content(line, interrupting=False, relative=width - (self.items[-1] if self.items else 0))
         if item is not None:
             self.items.append(item[0])
+        self.paragraph, self.row, self.bare = False, False, False
+        self.code.update(fence.lines())
+        self.blocks.append(Block(fence.opener + 1, CODE, tuple(fence.text(self.lines[i]) for i in fence.body())))
 
-    def line(self, index: int, line: str) -> Iterator[Block]:
-        """A line no code holds: one that ends the open block, opens one, or continues it."""
-        stripped = line.strip(MARKDOWN_SPACE)
-        if not stripped:
-            yield from self.close()
+    def line(self, index: int, line: str) -> None:
+        """A line no fence holds, its blockquote markers taken off: blank, indented code, or a block's line."""
+        if is_blank(line):
+            self.paragraph, self.row, self.bare = False, False, False
+            if self.kind == CODE:
+                self.pending.append(index)
+            elif self.depth and not is_blank(self.lines[index]):
+                self.quoted(index)
+            else:
+                self.close()
             return
         width = indentation(line)
         held = items_holding(self.items, width)
         relative = width - (self.items[held - 1] if held else 0)
-        # The line as the content that holds it reads it: indented only past that content's column.
-        at = " " * relative + line.lstrip(MARKDOWN_SPACE)
-        continued, quoted = bool(self.open), self.kind == QUOTE
-        single = not continued or relative <= MAX_BLOCK_INDENT
-        item = _item_content(line, interrupting=continued and held == len(self.items), relative=relative)
-        if THEMATIC_BREAK.fullmatch(at):
-            yield from self.close()
+        inside = held == len(self.items)
+        if not (self.paragraph or self.row):
+            # No paragraph is open for the line to continue lazily, so it leaves each item it is indented short of.
             del self.items[held:]
-        elif single and (starts_heading(stripped) or stripped.startswith("|")):
-            yield from self.close()
+            if relative >= CODE_INDENT:
+                self.code_line(index)
+                return
+        block = line.strip(LINE_END) if relative <= MAX_BLOCK_INDENT else ""
+        item = _item_content(line, interrupting=self.paragraph and inside, relative=relative) if block else None
+        if THEMATIC_BREAK.fullmatch(block) or starts_heading(block) or block.startswith("|"):
             del self.items[held:]
-            yield Block(index, HEADING if starts_heading(stripped) else TABLE_ROW, (line,))
-        elif item is not None or not continued or (starts_block(at, opener=False) and not quoted):
-            yield from self.close()
+            heading = starts_heading(block)
+            self.paragraph, self.row, self.bare = False, block.startswith("|"), False
+            match = ATX_HEADING.fullmatch(block)
+            if match is not None and not self.items and not self.depth:
+                self.headings.append((index, match))
+            self.single(index, HEADING if heading else TABLE_ROW if self.row else "")
+        elif item is not None:
+            content, text, opens_code = item
             del self.items[held:]
-            if item is not None:
-                self.items.append(item[0])
-            self.start, self.open = index, [line]
-            self.kind = LIST_ITEM_BLOCK if item is not None else QUOTE if stripped.startswith(">") else PARAGRAPH
+            self.items.append(content)
+            self.paragraph, self.row, self.bare = not (opens_code or is_blank(text)), False, is_blank(text)
+            if opens_code:
+                self.code_line(index)
+            elif self.depth:
+                self.quoted(index)
+            else:
+                self.begin(index, LIST_ITEM_BLOCK)
         else:
-            self.open.append(line)
+            quote = block.startswith(">")
+            joins = (self.paragraph and not (quote and self.kind != QUOTE)) or (self.bare and inside)
+            if quote and not joins:
+                del self.items[held:]
+            self.paragraph, self.row, self.bare = True, False, False
+            if self.depth:
+                self.quoted(index)
+            elif joins and self.open and self.kind != CODE:
+                self.open.append(self.lines[index])
+            else:
+                self.begin(index, QUOTE if quote else PARAGRAPH)
+
+    def code_line(self, index: int) -> None:
+        """A line of an indented code block, which joins the open one with the blank lines before it, or opens one."""
+        if self.kind == CODE:
+            self.code.update(self.pending)
+            self.open.extend(self.lines[blank] for blank in self.pending)
+            self.open.append(self.lines[index])
+            self.pending = []
+        else:
+            self.begin(index, CODE)
+        self.code.add(index)
+
+    def single(self, index: int, kind: str) -> None:
+        """A heading, a table row, or, with no kind, a thematic break: a line of its own that ends the open block."""
+        if self.depth:
+            self.quoted(index)
+            return
+        self.close()
+        if kind:
+            self.blocks.append(Block(index, kind, (self.lines[index],)))
+
+    def quoted(self, index: int) -> None:
+        """A quoted line that is no code: it joins the open quote, or opens one."""
+        if self.kind == QUOTE:
+            self.open.append(self.lines[index])
+        else:
+            self.begin(index, QUOTE)
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:

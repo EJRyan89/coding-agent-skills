@@ -61,14 +61,14 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
 from markdown_sections import (
+    HEADING,
     HTML_COMMENT,
+    LIST_ITEM_BLOCK,
     MARKDOWN_SPACE,
+    PARAGRAPH,
+    blocks,
     find_fences,
-    indentation,
-    list_item,
-    list_item_content,
     markdown_section,
-    starts_block,
 )
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
@@ -83,9 +83,8 @@ VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*")
 # A line outside every fence that starts an entry, or a heading above one that ends it.
 NOTES_ENTRY_START = re.compile(r"#{1,3} ")
-# A table row, which starts a line of its own that no wrapped line continues; markdown_sections' `starts_block` reads
-# every other block start. Only spaces and tabs are Markdown's whitespace, as markdown_sections reads it.
-TABLE_ROW_START = re.compile(r"[ \t]*\|")
+# The blocks whose lines a hard wrap may split, which unwrapped joins back into one line.
+JOINED_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK})
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
 # and cuts a message at, so no message text can end a field early.
@@ -140,34 +139,25 @@ class Commit:
 def unwrapped(block: str) -> list[str]:
     """The block's lines with each hard-wrapped heading, list item, or paragraph joined back into one line.
 
-    A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so a line that starts no block
-    of its own continues the line above it, unless that line is blank or the two are inside a code fence. A heading, a
-    quote, a thematic break, and a list item start a line of their own where markdown_sections' `starts_block` reads
-    one, so a list starts below other text only at a bullet or an item numbered 1, and a line indented past
-    MAX_BLOCK_INDENT columns continues the line above it. Below a list item any item starts its own line, and a line
-    indented as far as the item's content is read from that column, as the item holds it. A table row always starts
-    its own line. The limit: a setext heading's `=` underline joins the line above it, as no upgrade note writes one.
+    A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so the lines are read as
+    markdown_sections' `blocks` reads them, and the lines of one paragraph or one list item are joined, while every
+    other line, a blank one, a code block's, a table row, a quote's, or a thematic break, stays its own. A paragraph that
+    starts on the line right below a heading joins the heading, since a wrapped heading's words run on there. What
+    starts a block, and which list item holds a line, is `blocks`' reading; its limits are this reading's, such as a
+    setext heading's `=` underline joining the line above it, as no upgrade note writes one.
     """
     raw = [line.rstrip(MARKDOWN_SPACE) for line in LINE_BREAK.split(block.strip(MARKDOWN_SPACE + "\r\n"))]
-    fenced = {index for fence in find_fences(raw) for index in fence.lines()}
-    lines: list[str] = []
-    for index, line in enumerate(raw):
-        previous = lines[-1] if lines else ""
-        content = list_item_content(previous)
-        width = indentation(line)
-        held = content is not None and width >= content
-        # The line as the list item above holds it: indented only past the item's content.
-        at = " " * (width - content) + line.lstrip(MARKDOWN_SPACE) if held and content is not None else line
-        starts = (
-            starts_block(at, opener=False)
-            or TABLE_ROW_START.match(line) is not None
-            or list_item(line, interrupting=content is None) is not None
-        )
-        if previous and line and not {index - 1, index} & fenced and not starts:
-            lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"
-        else:
-            lines.append(line)
-    return lines
+    lines: list[str | None] = list(raw)
+    heading: int | None = None
+    for read in blocks(raw):
+        start, stop = read.start, read.start + len(read.lines)
+        if read.kind == PARAGRAPH and heading == start - 1:
+            start = heading
+        if read.kind in JOINED_BLOCKS or start != read.start:
+            lines[start] = " ".join([raw[start], *(line.strip(MARKDOWN_SPACE) for line in raw[start + 1 : stop])])
+            lines[start + 1 : stop] = [None] * (stop - start - 1)
+        heading = read.start if read.kind == HEADING else None
+    return [line for line in lines if line is not None]
 
 
 def notes_blocks(text: str) -> list[str]:
