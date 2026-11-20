@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from link_destinations import Destination, link_destinations
+from link_destinations import Destination, link_destinations, written_destination
 
 
 def urls(*lines: str) -> list[str]:
@@ -120,3 +120,38 @@ def test_a_fragment_alone_leads_to_the_document_and_is_decoded() -> None:
     [destination] = link_destinations(["[a](#a%20step)"])
     assert (destination.path, destination.fragment) == ("", "a step")
     assert urls("[a](b.md)", "[c](d.md#e)") == ["b.md", "d.md#e"]
+
+
+@pytest.mark.parametrize(
+    ("line", "posix_path"),
+    [
+        ("[a](./docs/rules.md#step)", "docs/rules.md"),
+        ("[a](docs/my%20rules.md)", "docs/my rules.md"),
+        ("[a](#step)", ""),
+        # A backslash is read as the platform reads one in a path: a separator on Windows, part of the name elsewhere.
+        ("[a](docs\\rules.md)", Path("docs\\rules.md").as_posix()),
+    ],
+)
+def test_a_posix_path_names_the_file_as_a_repository_does(line: str, posix_path: str) -> None:
+    [destination] = link_destinations([line])
+    assert destination.posix_path == posix_path
+
+
+@pytest.mark.parametrize(
+    ("path", "written"),
+    [
+        ("notes.md", "notes.md"),
+        ("decision(cache).md", "decision\\(cache\\).md"),
+        ("my notes.md", "<my notes.md>"),
+        ("my (notes).md", "<my \\(notes\\).md>"),
+        ("100%#1?.md", "100%25%231%3F.md"),
+        ("a\\b<c>&amp;.md", "a\\\\b\\<c\\>\\&amp;.md"),
+        ("<lead.md", "\\<lead.md"),
+        ("tab\tbell\x07.md", "tab%09bell%07.md"),
+        ("ünïcode\u00a0name.md", "ünïcode\u00a0name.md"),
+    ],
+)
+def test_a_written_destination_reads_back_as_its_path(path: str, written: str) -> None:
+    assert written_destination(path) == written
+    [destination] = link_destinations([f"- [Title]({written}) — hook"])
+    assert (destination.path, destination.written) == (path, written)

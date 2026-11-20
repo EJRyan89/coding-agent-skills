@@ -44,8 +44,11 @@ naming the variable: every command reads the home and refuses such a one first, 
 reads the configuration directory refuses such a CLAUDE_CONFIG_DIR, and nothing is read from it.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
-`- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
-or changes a memory file. Existing lines keep their place: other lines (headings, notes) stay
+`- [Title](file.md) — hook`. An entry's file is read as CommonMark reads a link's destination,
+through ejryan89-skill-core's link_destinations, and a new entry's is written so that it reads
+back as the file's name; an entry in code is none, and neither is one whose link has a title.
+It writes only MEMORY.md, only with --write, and never deletes or changes a memory file.
+Existing lines keep their place: other lines (headings, notes) stay
 as written, an entry is dropped when its file is gone or it repeats an earlier entry, and
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
@@ -103,7 +106,6 @@ import itertools
 import os
 import re
 import stat
-import string
 import sys
 import tempfile
 import time
@@ -125,6 +127,7 @@ from executable_locator import RelativeEnvironmentPath, absolute_home, environme
 from file_presence import is_directory, is_present, matching, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
+from link_destinations import link_destinations, written_destination
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import ATX_HEADING, CODE, CODE_SPAN, EMPTY_ATX_HEADING, HEADING, blocks
 from path_containment import resolved_path, within
@@ -355,46 +358,39 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return {}, text
 
 
-def parse_target(line: str, start: int) -> tuple[str, int] | None:
-    """Decode a Markdown destination, stopping at its unescaped, balanced closing delimiter."""
-    target: list[str] = []
-    depth = 1
-    position = start
-    while position < len(line):
-        character = line[position]
-        if character == "\\" and position + 1 < len(line) and line[position + 1] in string.punctuation:
-            position += 1
-            target.append(line[position])
-        elif character == "(":
-            depth += 1
-            target.append(character)
-        elif character == ")":
-            depth -= 1
-            if depth == 0:
-                return ("".join(target), position) if target else None
-            target.append(character)
-        else:
-            target.append(character)
-        position += 1
-    return None
+def index_entries(lines: list[str]) -> dict[int, dict[str, str]]:
+    """The index's entries, `- [Title](target) hook`, by the index of their line in `lines`, from 0.
+
+    The target is read through ejryan89-skill-core's link_destinations, as CommonMark reads a link's destination:
+    `file` is the destination as written, `<` and `>` included, and `target` the path it leads to, its escapes read and
+    its percent-encoding decoded, without a fragment or query. A line in code is no entry, and neither is one whose
+    destination a title follows, as in `- [Title](file.md "title")`, or that holds no destination CommonMark reads.
+    """
+    destinations = {(destination.line - 1, destination.start): destination for destination in link_destinations(lines)}
+    entries: dict[int, dict[str, str]] = {}
+    for index, line in enumerate(lines):
+        match = INDEX_ENTRY.match(line)
+        destination = destinations.get((index, _after_blanks(line, match.end()))) if match else None
+        if match is None or destination is None:
+            continue
+        close = _after_blanks(line, destination.end)
+        if not line.startswith(")", close):
+            continue
+        hook = INDEX_HOOK.match(line[close + 1 :])
+        entries[index] = {
+            "title": match.group("title"),
+            "file": destination.written,
+            "target": destination.path,
+            "hook": hook.group("hook") if hook else "",
+            "text": line,
+        }
+    return entries
 
 
-def parse_index_entry(line: str) -> dict[str, str] | None:
-    match = INDEX_ENTRY.match(line)
-    if not match:
-        return None
-    parsed = parse_target(line, match.end())
-    if parsed is None:
-        return None
-    target, end = parsed
-    hook = INDEX_HOOK.match(line[end + 1 :])
-    return {
-        "title": match.group("title"),
-        "file": line[match.end() : end],
-        "target": target,
-        "hook": hook.group("hook") if hook else "",
-        "text": line,
-    }
+def _after_blanks(line: str, position: int) -> int:
+    """The position after the spaces and tabs at `position`, which CommonMark allows around a link's destination."""
+    rest = line[position:]
+    return position + len(rest) - len(rest.lstrip(" \t"))
 
 
 def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
@@ -403,11 +399,7 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     if not is_present(path):
         return [], []
     lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
-    entries = []
-    for number, line in enumerate(lines, start=1):
-        entry = parse_index_entry(line)
-        if entry is not None:
-            entries.append({"line": str(number), **entry})
+    entries = [{"line": str(index + 1), **entry} for index, entry in sorted(index_entries(lines).items())]
     return entries, lines
 
 
@@ -694,7 +686,7 @@ def one_line(text: str, limit: int = HOOK_LIMIT) -> str:
 
 
 def index_line(title: str, file: str, hook: str, *, original_target: str | None = None) -> str:
-    target = original_target if original_target is not None else re.sub(r"([\\()])", r"\\\1", file)
+    target = original_target if original_target is not None else written_destination(file)
     return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
@@ -722,8 +714,10 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
     seen: set[str] = set()
     dropped: list[tuple[str, str]] = []
     unreadable: list[tuple[str, str]] = []
-    for line in text_lines(current):
-        entry = parse_index_entry(line)
+    current_lines = text_lines(current)
+    found = index_entries(current_lines)
+    for index, line in enumerate(current_lines):
+        entry = found.get(index)
         if entry is None:
             lines.append(line)
             continue

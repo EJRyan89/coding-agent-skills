@@ -13,7 +13,9 @@ neither is anything inside a code span or a code block, fenced or indented, whic
 as a link.
 
 The `url` this gives is the destination after its escapes and references, which CommonMark percent-encodes into the
-rendered `href`; `path` and `fragment` are what a reader opening the destination as a URL reaches, each percent-decoded.
+rendered `href`; `path` and `fragment` are what a reader opening the destination as a URL reaches, each percent-decoded,
+and `posix_path` is the path as a repository names a file, with `/` between its parts. `written_destination` is the
+other direction: the text to write as a link's destination so that this reader reads back a given path.
 
 Limits: a destination is read on the line its `](` or its definition's `]:` is on, so a link whose destination
 starts on the next line, or whose `)` or title follows on the next line, is not read; a `](` is read as a link's
@@ -27,7 +29,8 @@ import html
 import re
 import string
 from dataclasses import dataclass
-from urllib.parse import unquote
+from pathlib import PurePath
+from urllib.parse import quote, unquote
 
 from markdown_sections import COMMONMARK_CODE_SPAN, code_block_lines
 
@@ -45,6 +48,12 @@ URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{1,31}:|//")
 # What may open the title after a destination and the spaces or tabs before it; an inline link may instead close with
 # its `)`, and a definition end its line.
 TITLE_OPENERS = frozenset("\"'(")
+# What written_destination percent-encodes in a path, beside the control characters: `%`, which the path decodes, and
+# `#` and `?`, which would end it.
+PERCENT_ENCODED = frozenset("%#?")
+# What written_destination escapes with a backslash: the backslash itself, the parentheses that would end or unbalance
+# a bare destination, the `<` and `>` that open and close the other form, and the `&` that would open a reference.
+BACKSLASH_ESCAPED = frozenset("\\()<>&")
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,31 @@ class Destination:
     def fragment(self) -> str:
         """The fragment after the destination's first `#`, percent-decoded, or "" when it has none."""
         return unquote(self.url.partition("#")[2])
+
+    @property
+    def posix_path(self) -> str:
+        """The path as a repository names a file, with `/` between its parts and no `.` part: a backslash is read as
+        the platform reads one in a path, a separator on Windows and part of the name elsewhere, so the file this
+        names is the one a reader on this platform opens. "" for a destination that is only a fragment."""
+        return PurePath(self.path).as_posix() if self.path else ""
+
+
+def written_destination(path: str) -> str:
+    """The destination text that `link_destinations` reads back as `path`, as `Destination.path` gives it.
+
+    A control character, `%`, `#`, and `?` are percent-encoded, and a backslash, a parenthesis, `<`, `>`, and `&` are
+    escaped with a backslash; a path holding a space is written between `<` and `>`, where a space needs no encoding.
+    Any other character is written as it is, so a plain name such as `notes.md` is written unchanged. `path` is not
+    empty, since an empty destination is none.
+    """
+    text = "".join(_written_character(character) for character in path)
+    return f"<{text}>" if " " in path else text
+
+
+def _written_character(character: str) -> str:
+    if character in PERCENT_ENCODED or ord(character) < 0x20 or ord(character) == 0x7F:
+        return quote(character, safe="")
+    return f"\\{character}" if character in BACKSLASH_ESCAPED else character
 
 
 def link_destinations(lines: list[str]) -> list[Destination]:

@@ -1236,7 +1236,7 @@ class ReindexTests(unittest.TestCase):
             ("decision(cache(inner)).md", r"decision\(cache\(inner\)\).md"),
             ("decision(cache.md", r"decision\(cache.md"),
             ("decision)cache.md", r"decision\)cache.md"),
-            ("decision (cache).md", r"decision \(cache\).md"),
+            ("decision (cache).md", r"<decision \(cache\).md>"),
         ):
             with self.subTest(file=file):
                 path = write(self.memory_dir / file, "---\nname: Chosen title\n---\n\nBody hook.\n")
@@ -1254,6 +1254,47 @@ class ReindexTests(unittest.TestCase):
                 self.assertEqual([f"INDEX_LINE {target}", "UNCHANGED"], self.reindex("--write"))
                 self.assertEqual(before, self.snapshot(), "memory files must never change")
                 path.unlink()
+
+    def test_an_entry_is_read_as_commonmark_reads_a_link_destination(self) -> None:
+        # Before link_destinations the target kept its `%20` and its `<` and `>`, so neither entry named its memory, an
+        # entry in a code block was read as one, and a title was read into the target, which dropped the entry.
+        for name in ("my rule.md", "pointed rule.md", "fenced.md", "titled.md"):
+            write(self.memory_dir / name, "Body.\n")
+        original = (
+            "- [Encoded](my%20rule.md) — encoded hook\n"
+            "- [Pointed](<pointed rule.md>) — pointed hook\n"
+            "```text\n"
+            "- [Fenced](fenced.md) — in code\n"
+            "```\n"
+            '- [Titled](titled.md "A title") — titled hook\n'
+        )
+        write(self.index, original)
+        entries, _ = memory_audit.parse_index(self.index)
+        self.assertEqual(
+            [("1", "my%20rule.md", "my rule.md"), ("2", "<pointed rule.md>", "pointed rule.md")],
+            [(entry["line"], entry["file"], entry["target"]) for entry in entries],
+        )
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(["fenced.md", "titled.md"], report["unindexed_files"])
+        self.assertEqual([], report["index"]["missing_files"])
+        self.assertEqual(
+            original + "- [fenced](fenced.md) — Body.\n- [titled](titled.md) — Body.\n",
+            memory_audit.reindex(self.memory_dir)["content"],
+        )
+
+    def test_a_new_entry_reads_back_as_its_memory_however_the_name_is_spelled(self) -> None:
+        # The old writer escaped only a backslash and parentheses, so a space, `%`, `#`, or `&` read back as another
+        # name, or as no link at all.
+        for name in ("100% sure.md", "a#b.md", "tab&amp;.md"):
+            write(self.memory_dir / name, "Body.\n")
+        self.reindex("--write")
+        self.assertEqual(
+            "- [100% sure](<100%25 sure.md>) — Body.\n- [a#b](a%23b.md) — Body.\n- [tab&amp;](tab\\&amp;.md) — Body.\n",
+            self.index.read_text(encoding="utf-8"),
+        )
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual(([], []), (report["unindexed_files"], report["index"]["missing_files"]))
+        self.assertEqual("UNCHANGED", self.reindex("--write")[-1])
 
     def test_target_escape_parity_and_incomplete_links_are_not_misparsed(self) -> None:
         for target, decoded in (
@@ -1361,7 +1402,7 @@ class ReindexTests(unittest.TestCase):
         with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
             result = memory_audit.reindex(self.memory_dir)
         self.assertEqual(
-            f"- [Use (café) (設計) {'x' * 151}](bracket.md) — Body.\n- [stem (title)](stem [title].md) — Body.\n",
+            f"- [Use (café) (設計) {'x' * 151}](bracket.md) — Body.\n- [stem (title)](<stem [title].md>) — Body.\n",
             result["content"],
         )
         flatten.assert_any_call(title.strip().replace("[", "(").replace("]", ")"))
@@ -1478,20 +1519,20 @@ class ReindexTests(unittest.TestCase):
 
     def test_printed_file_names_are_flattened_and_entries_keep_the_exact_target(self) -> None:
         write(self.memory_dir / "two  spaces.md", memory("two  spaces", "Body."))
-        write(self.index, "- [Gone](gone  twice.md) — missing\n")
+        write(self.index, "- [Gone](<gone  twice.md>) — missing\n")
         code, output, error = run_main("reindex", "--memory-dir", str(self.memory_dir), "--write")
         self.assertEqual((0, ""), (code, error))
         self.assertEqual(
             [
                 "INDEX_LINE two spaces.md",
                 "ADDED two spaces.md",
-                "DROPPED missing gone twice.md",
+                "DROPPED missing <gone twice.md>",
                 f"WROTE {self.index.as_posix()}",
             ],
             one_fact_per_line(self, output, ("INDEX_LINE ", "ADDED ", "DROPPED ", "WROTE ")),
         )
         self.assertEqual(
-            "- [two spaces](two  spaces.md) — two spaces description\n", self.index.read_text(encoding="utf-8")
+            "- [two spaces](<two  spaces.md>) — two spaces description\n", self.index.read_text(encoding="utf-8")
         )
 
 

@@ -201,9 +201,9 @@ class RuleTests(unittest.TestCase):
                 self.assertEqual(expected, rg._statements(text))
 
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
-        self.assertEqual(["docs/x.md"], rg.LINK.findall("see [x]( docs/x.md#part\t)"))
-        self.assertEqual([f"{chr(0xA0)}docs/x.md"], rg.LINK.findall(f"see [x]({chr(0xA0)}docs/x.md)"))
-        self.assertEqual([], rg.LINK.findall("see [x](docs/a b.md)"))
+        self.assertEqual({1: ["docs/x.md"]}, rg._markdown_links(["see [x]( docs/x.md#part\t)"]))
+        self.assertEqual({1: [f"{chr(0xA0)}docs/x.md"]}, rg._markdown_links([f"see [x]({chr(0xA0)}docs/x.md)"]))
+        self.assertEqual({}, rg._markdown_links(["see [x](docs/a b.md)"]))
 
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]
@@ -969,3 +969,34 @@ class SeparatorTests(unittest.TestCase):
                     ],
                     rg.unsupplied("r", texts, sources),
                 )
+
+
+class LinkDestinationTests(unittest.TestCase):
+    def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
+        # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
+        # read a link in a code span, and took `mailto:` for a file beside the guidance.
+        lines = [
+            "[a](my%20rules.md)",
+            "[b](<my notes.md>)",
+            "[c](a\\(1\\).md)",
+            "[d]: <the defs.md>",
+            "[^1]: <a footnote.md>",
+            "[Note]: see [e](b%2Dc.md)",
+            "[x]: two.md words",
+            "[f](mailto:mail.md) `[g](in-code.md)`",
+            "[h](rules\\win.md#step)",
+        ]
+        sources = {"security": rg.Source("2026-01-01", None, {"docs/a.md": "h"})}
+        found = rg.unsupplied("r", {("docs/a.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual(
+            [
+                (1, "docs/my rules.md"),
+                (2, "docs/my notes.md"),
+                (3, "docs/a(1).md"),
+                (4, "docs/the defs.md"),
+                (6, "docs/b-c.md"),
+                # A backslash is read as the platform reads one in a path: a separator on Windows only.
+                (9, "docs/" + Path("rules\\win.md").as_posix()),
+            ],
+            [(item["line"], item["reference"]) for item in found],
+        )
