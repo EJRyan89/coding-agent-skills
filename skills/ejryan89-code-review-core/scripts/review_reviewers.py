@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import frontmatter
 from flat_text import flat_text
 from git_client import Runner, subprocess_runner
+from link_destinations import link_destinations
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -53,7 +54,8 @@ DELEGATION_PHRASE = re.compile(
 AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
-PATH_TOKEN = re.compile(r"`([^`\s]+)`|\]\(([^)\s]+)\)|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
+# A path named in a code span or written bare in prose; a link's destination is read through link_destinations.
+PATH_TOKEN = re.compile(r"`([^`\s]+)`|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
 # One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
 TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")
@@ -149,8 +151,11 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
         if path.startswith(AGENT_DIRECTORIES) and path.endswith(".md") and PurePosixPath(path) != own:
             agents.setdefault(PurePosixPath(path).stem, []).append(path)
     evidence: list[tuple[int, str]] = []
-    references: set[str] = set()
-    for number, line in enumerate(text_lines(text)[body_start - 1 :], start=body_start):
+    body = text_lines(text)[body_start - 1 :]
+    # A link's destination as CommonMark reads it, outside code: percent-decoded, its escapes read, and `<…>` opened.
+    linked = [link.posix_path for link in link_destinations(body) if not link.is_url]
+    references = {path for path in linked if path in repository_files and path != skill}
+    for number, line in enumerate(body, start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, flat_text(line)[:160]))
