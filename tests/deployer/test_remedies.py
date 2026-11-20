@@ -788,7 +788,7 @@ class BackupRemedyTests(RemedyTestCase):
         remedy = "Replace it with a real directory after verifying its contents, then retry."
         # Refused before the first change, so the home is unchanged and nothing reaches the link's target.
         result = self.deploy_fails("--all", "--force-item", "alpha", pattern="Backup path contains a symlink")
-        self.assert_lines(result.output, reason, remedy)
+        self.assert_refusal(result.output, reason, remedy)
         self.assertNotIn("unsafe permanent backup destination", result.output)
         self.assertEqual([], list(outside.iterdir()))
 
@@ -910,7 +910,8 @@ class LockRemedyTests(RemedyTestCase):
 
         with failing_lock_metadata_write():
             result = self.deploy_fails("--all", pattern="Failed to initialize deployment lock")
-        self.assert_lines(result.output, "Retry the deployment.")
+        failed = "ERROR: Failed to initialize deployment lock: synthetic metadata write failure"
+        self.assert_refusal(result.output, failed, "Retry the deployment.")
 
         def failing_remove(path: Path) -> None:
             if path == self.lock_dir:
@@ -921,8 +922,9 @@ class LockRemedyTests(RemedyTestCase):
             result = self.deploy_fails(
                 "--all", pattern="Failed to initialize deployment lock", changes_home=TAKES_THE_LOCK
             )
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            failed,
             f"Remove {forward(self.lock_dir)} after confirming no deployment is running.",
             SEE_LOCK,
         )
