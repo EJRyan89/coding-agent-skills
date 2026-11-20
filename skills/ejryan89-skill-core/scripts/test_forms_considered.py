@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import forms_considered
-from forms_considered import FormsFault, forms_fault, forms_section, is_fix_title, without_hidden_comments
+from forms_considered import FENCE_WINDOW, FormsFault, forms_fault, forms_section, is_fix_title, without_hidden_comments
+from markdown_sections import code_block_lines
 
 TEMPLATE = (
     "## Changes\n\n-\n\n## Forms considered\n\n"
@@ -129,9 +129,34 @@ def test_a_body_at_github_s_limit_is_read_in_time_in_proportion_to_it(head: str,
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
 def test_the_code_blocks_are_read_once_however_many_comments_the_text_holds(head: str, unit: str, tail: str) -> None:
-    with mock.patch.object(forms_considered, "code_block_lines", wraps=forms_considered.code_block_lines) as reading:
+    with mock.patch("forms_considered.code_block_lines", wraps=code_block_lines) as reading:
         without_hidden_comments(head + unit * 200 + tail)
     assert reading.call_count == 1
+
+
+# Fences whose closer, or whose end, falls before, at, and past each width the window doubles through, so every
+# window the fence's reading takes reads it alike.
+FENCE_LENGTHS = sorted(
+    {length for width in (FENCE_WINDOW, FENCE_WINDOW * 2, FENCE_WINDOW * 4) for length in (width - 2, width - 1, width)}
+)
+
+
+@pytest.mark.parametrize("length", FENCE_LENGTHS)
+def test_a_fence_longer_than_a_window_shows_its_openers_and_ends_where_it_closes(length: int) -> None:
+    fence = "```\n" + "<!-- shown\n" * length + "```\n"
+    assert without_hidden_comments(f"{fence}a <!-- b --> c") == f"{fence}a  c"
+
+
+@pytest.mark.parametrize("length", FENCE_LENGTHS)
+def test_an_unclosed_fence_longer_than_a_window_shows_every_opener_to_the_end(length: int) -> None:
+    text = "```\n" + "<!-- shown\n" * length + "<!-- also shown -->"
+    assert without_hidden_comments(text) == text
+
+
+@pytest.mark.parametrize("length", FENCE_LENGTHS)
+def test_a_quoted_fence_longer_than_a_window_ends_with_its_quote(length: int) -> None:
+    fence = "> ```\n" + "> <!-- shown\n" * length
+    assert without_hidden_comments(f"{fence}\n<!-- hidden -->after") == f"{fence}\nafter"
 
 
 def test_the_section_ends_at_the_next_second_level_heading() -> None:
