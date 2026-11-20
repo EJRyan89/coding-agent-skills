@@ -123,9 +123,10 @@ def refuse_other_spellings(folder: Path, name: str, what: str, declared: frozens
             )
 
 
-def _load_source_document(paths: Paths) -> dict[str, object]:
-    """source.json's object, refused by its fault: a read that fails as unreadable, and content that is not UTF-8 or
-    not a JSON object the deployer reads, such as one that repeats a key or holds NaN, as malformed."""
+def _load_source_document(paths: Paths, remedy: str = SOURCE_JSON_REMEDY) -> dict[str, object]:
+    """source.json's object, refused by its fault, with `remedy` as the step: a read that fails as unreadable, and
+    content that is not UTF-8 or not a JSON object the deployer reads, such as one that repeats a key or holds NaN, as
+    malformed."""
     shown = platform_support.normalize(paths.source_file)
     document: object
     try:
@@ -133,33 +134,31 @@ def _load_source_document(paths: Paths) -> dict[str, object]:
     except OSError as exc:
         raise os_error(exc, "read source.json") from exc
     except UnicodeError:
-        raise DeployError(f"ERROR: source.json is malformed: {shown} is not UTF-8 text.", SOURCE_JSON_REMEDY) from None
+        raise DeployError(f"ERROR: source.json is malformed: {shown} is not UTF-8 text.", remedy) from None
     # The JSON json_reader refuses, which is the case below
     except ValueError:
         document = None
     if not isinstance(document, dict):
-        raise DeployError(
-            f"ERROR: source.json is malformed: {shown} is not a JSON object the deployer reads.", SOURCE_JSON_REMEDY
-        )
+        raise DeployError(f"ERROR: source.json is malformed: {shown} is not a JSON object the deployer reads.", remedy)
     return document
 
 
-def load_source_id(paths: Paths) -> str:
+def load_source_id(paths: Paths, remedy: str = SOURCE_JSON_REMEDY) -> str:
+    """The source ID the tree's source.json declares, refused with `remedy` as the step when it cannot be read or is
+    not a valid ID: the checkout's own copy to put back, unless the tree is a commit --at exported."""
     try:
         refuse_other_spellings(paths.tree, SOURCE_JSON, "The source file")
     except OSError as exc:
         raise os_error(exc, "read the source's folder") from exc
-    if not state_files.is_present(paths.source_file, "source.json", SOURCE_JSON_REMEDY):
-        raise DeployError(
-            f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}", SOURCE_JSON_REMEDY
-        )
-    document = _load_source_document(paths)
+    if not state_files.is_present(paths.source_file, "source.json", remedy):
+        raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}", remedy)
+    document = _load_source_document(paths, remedy)
     source_id = document.get("id")
     shown = source_id if isinstance(source_id, str) else "null"
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
-        raise DeployError(f"ERROR: Invalid source ID format: {shown}", SOURCE_JSON_REMEDY)
+        raise DeployError(f"ERROR: Invalid source ID format: {shown}", remedy)
     if len(source_id) > SOURCE_ID_MAX_LENGTH:
-        raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters", SOURCE_JSON_REMEDY)
+        raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters", remedy)
     return source_id
 
 
@@ -213,7 +212,7 @@ def reject_linked_worktree(paths: Paths) -> None:
     if is_linked_worktree(paths.source_dir):
         raise DeployError(
             f"ERROR: {platform_support.normalize(paths.source_dir)} is a linked git worktree.",
-            "Deploy from the main checkout on main instead; --dry-run is allowed here. See docs/parallel-sessions.md.",
+            "Deploy from the main checkout on main instead. See docs/parallel-sessions.md.",
         )
 
 
