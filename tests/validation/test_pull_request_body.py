@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request_body
+from forms_considered import FILLERS, forms_section, placeholder_forms
 from markdown_sections import HTML_COMMENT
-from pull_request_body import FILLERS, forms_problems, forms_section, is_fix, placeholder_forms
+from pull_request_body import forms_problems, is_fix
 from validation_support import REPOSITORY_ROOT, PullRequest
 
 from tools.release_notes import ReleaseNotesError

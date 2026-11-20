@@ -1308,7 +1308,7 @@ removed fails validation until its pattern follows it.
   same fact.
 - **Why:** A check that derives the set itself agrees with its own copy and passes what the consumer reads otherwise.
 - **Use:** `deployer.render:shipped_files`, `suite_names:is_suite_name`,
-  `runtime_support:carried_needs`, `runtime_support:python_git_subcommands`
+  `runtime_support:carried_needs`, `runtime_support:python_git_subcommands`, `forms_considered:forms_fault`
 - **Guard:** `tests/validation/test_suite_discovery.py::test_a_parametrized_test_is_never_recorded_since_the_sharded_run_collects_only_its_cases`
 - **Search for:** `rglob("*")` in `tests/validation/` where `shipped_files` is meant; a `["claude"`, `["codex"`, or
   `["copilot"` command line in `tools/` built outside the function real runs use; a policy that reads test names from

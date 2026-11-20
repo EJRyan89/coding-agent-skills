@@ -272,7 +272,9 @@ entry also named in the contract's or policy's limits; the other callers of the 
 skills, shells, or modules holding the same construct; the lessons pattern and what its **Search for** found; and the
 regression test that fails with the fix reverted. A fix that closes the spellings its issue showed leaves the
 equivalent ones open, and the section is where the author shows the whole family was weighed. Any other type keeps the
-template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, holds the section's shape,
+template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, reads the section through
+ejryan89-skill-core's `forms_considered.py`, the reader `implement-change`'s `pull_request.py check` shares, so a fix
+body its check passes is one this check passes; it holds the section's shape,
 never its judgment: it refuses a body whose title is a `fix`, or with no title, whose branch is a `fix/<name>` one, when
 the section is missing, empty, a filler such as `None` or `TBD`, or still the template's placeholder, and reads nothing
 else in it. It reads the section as GitHub renders it: the heading is `## Forms considered` written with hashes, so a
