@@ -50,8 +50,9 @@ as written, an entry is dropped when its file is gone or it repeats an earlier e
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
 all of a `>` or `|` block scalar's lines, else the existing entry's hook, kept as written, else
-the first line of the body; a description or a body line is collapsed to one line of at most 150
-characters, because Claude Code loads the index into every session and stops at its load limit.
+the first line of the body, an ATX heading's text without its marks; a description or a body
+line is collapsed to one line of at most 150 characters, because Claude Code loads the index
+into every session and stops at its load limit.
 It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
 `UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding.
@@ -125,7 +126,19 @@ from file_presence import is_directory, is_present, matching, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
-from markdown_sections import CODE_SPAN
+from markdown_sections import (
+    ATX_HEADING,
+    CODE_SPAN,
+    EMPTY_ATX_HEADING,
+    MARKDOWN_SPACE,
+    MAX_BLOCK_INDENT,
+    THEMATIC_BREAK,
+    code_block_lines,
+    list_item,
+    starts_block,
+    starts_heading,
+)
+from markdown_sections import indentation as markdown_indentation
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
@@ -531,28 +544,47 @@ def cited_presence(places: list[Path]) -> tuple[bool | None, str | None]:
 
 
 def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]]:
-    """Split destination documents into paragraphs and list items for overlap scoring. A document that cannot be read
+    """Split destination documents into passages for overlap scoring (`passages`). A document that cannot be read
     raises its OSError, which fails the audit, rather than silently losing its overlaps."""
     blocks: list[tuple[str, int, str, set[str]]] = []
     for path in files:
-        lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
-        current: list[str] = []
-        start = 1
-        for number, line in enumerate([*lines, ""], start=1):
-            boundary = not line.strip() or line.lstrip().startswith(("- ", "* ", "#", "|"))
-            if boundary and current:
-                text = " ".join(current)
-                blocks.append((str(path), start, text, words(text)))
-                current = []
-            if line.strip() and not line.lstrip().startswith("#"):
-                if not current:
-                    start = number
-                current.append(line.strip())
-                if line.lstrip().startswith(("- ", "* ", "|")):
-                    text = " ".join(current)
-                    blocks.append((str(path), start, text, words(text)))
-                    current = []
+        for start, text in passages(text_lines(path.read_text(encoding="utf-8", errors="replace"))):
+            blocks.append((str(path), start, text, words(text)))
     return blocks
+
+
+def passages(lines: list[str]) -> list[tuple[int, str]]:
+    """Each paragraph, list item, blockquote, and table row of Markdown, with the line it starts on, its lines joined.
+
+    Lines are read as markdown_sections reads Markdown's blocks, as GitHub renders them: only spaces and tabs are its
+    whitespace, a list item interrupts a paragraph only where CommonMark lets it (a bullet or `1.`), and any other line
+    after a paragraph's text continues it unless markdown_sections' `starts_block` reads it as a block of its own. A
+    list item's further lines, and a blockquote's quoted and lazy lines, join it. Headings and thematic breaks end a
+    passage and are left out, and `#` starts a heading only before a space or the line's end, so `#hashtag` is text.
+    Code, fenced or indented, is left out as markdown_sections' `code_block_lines` reads it: a memory is compared with
+    the prose that states a rule, and a code block's identifiers and flags would match a memory's words by
+    coincidence, while the prose around the block still carries the overlap. A table row is a passage of its own. The
+    limits: a setext heading's text is read as a paragraph, and an HTML block as paragraph text."""
+    found: list[tuple[int, str]] = []
+    continued = in_item = in_quote = False
+    code = code_block_lines(lines)
+    for index, raw in enumerate(lines):
+        stripped = raw.strip(MARKDOWN_SPACE)
+        item = list_item(raw, interrupting=continued and not in_item)
+        heading = starts_heading(stripped) and (
+            not continued or in_item or markdown_indentation(raw) <= MAX_BLOCK_INDENT
+        )
+        if index in code or not stripped or heading or THEMATIC_BREAK.fullmatch(raw):
+            continued = in_item = in_quote = False
+        elif stripped.startswith("|"):
+            found.append((index + 1, stripped))
+            continued = in_item = in_quote = False
+        elif item is not None or not continued or (starts_block(raw, opener=False) and not in_quote):
+            found.append((index + 1, stripped))
+            continued, in_item, in_quote = True, item is not None, item is None and stripped.startswith(">")
+        else:
+            found[-1] = (found[-1][0], f"{found[-1][1]} {stripped}")
+    return found
 
 
 def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> tuple[list[Overlap], int]:
@@ -703,6 +735,14 @@ def index_line(title: str, file: str, hook: str, *, original_target: str | None 
     return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
+def derived_hook(body: str) -> str:
+    """A memory's hook from its body: the first line, or its heading's text when it is an ATX heading, which
+    markdown_sections reads, so `#hashtag` keeps its `#`."""
+    first = next((line.strip() for line in text_lines(body) if line.strip()), "")
+    heading = ATX_HEADING.fullmatch(first)
+    return one_line(heading.group("text") if heading else "" if EMPTY_ATX_HEADING.fullmatch(first) else first)
+
+
 def reindex(memory_dir: Path) -> dict[str, Any]:
     """Rebuild MEMORY.md in memory without writing it; see the module docstring for the rules."""
     index_path = memory_dir / INDEX_NAME
@@ -710,10 +750,6 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
 
     def frontmatter(file: str) -> tuple[dict[str, str], str]:
         return parse_frontmatter((memory_dir / file).read_text(encoding="utf-8", errors="replace"))
-
-    def derived_hook(body: str) -> str:
-        first = next((line.strip().lstrip("#").strip() for line in text_lines(body) if line.strip()), "")
-        return one_line(first)
 
     def derived_title(meta: dict[str, str], file: str) -> str:
         return flat_text((meta.get("name") or Path(file).stem).replace("[", "(").replace("]", ")"))
