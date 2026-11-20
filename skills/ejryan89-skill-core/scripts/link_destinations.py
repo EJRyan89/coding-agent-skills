@@ -1,0 +1,157 @@
+"""The one reader of Markdown link destinations, as CommonMark reads them.
+
+A destination is the target of an inline link or image, `[text](destination "title")`, or of a link reference
+definition, `[label]: destination "title"`, at the start of a line with at most three spaces before it. CommonMark
+writes one in either of two forms: between `<` and `>`, where it may hold spaces but no line ending, `<`, or `>`
+unescaped; or bare, a run with no space or control character whose parentheses balance unless escaped. In both a
+backslash before an ASCII punctuation character escapes it, and a backslash before anything else is itself, so
+`references\\win.md` keeps its backslash, which a Windows path reads as a separator; an entity or numeric character
+reference, such as `&amp;` or `&#32;`, stands for its character. A link's text is not read, and neither is anything
+inside a code span or a code block, fenced or indented, which CommonMark reads as code rather than as a link.
+
+The `url` this gives is the destination after its escapes and references, which CommonMark percent-encodes into the
+rendered `href`; `path` and `fragment` are what a reader opening the destination as a URL reaches, each percent-decoded.
+
+Limits: a destination is read on the line its `](` or its definition's `]:` is on, so a link whose destination
+starts on the next line, or whose `)` or title follows on the next line, is not read; a `](` is read as a link's
+without matching the `[` that opens its text, and a definition wherever a line starts with one, even where it would
+continue a paragraph.
+"""
+
+from __future__ import annotations
+
+import html
+import re
+import string
+from dataclasses import dataclass
+from urllib.parse import unquote
+
+from markdown_sections import COMMONMARK_CODE_SPAN, code_block_lines
+
+# What opens an inline link's destination: the `](` after its text, and the spaces or tabs CommonMark allows before it.
+INLINE_OPENER = re.compile(r"\]\([ \t]*")
+# A link reference definition's label and colon, at the start of a line, and the spaces or tabs before its destination.
+DEFINITION_OPENER = re.compile(r" {0,3}\[(?:[^\\\[\]]|\\.)*[^\s\\\[\]](?:[^\\\[\]]|\\.)*\]:[ \t]*")
+# An entity or numeric character reference CommonMark replaces with its character; one with no `;` is text.
+CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
+# A URL scheme, as a CommonMark autolink reads one: two to 32 characters, so a Windows drive letter such as `C:` is
+# none; or `//`, a network path, which names a host rather than a file.
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{1,31}:|//")
+# What may open the title after a destination and the spaces or tabs before it; an inline link may instead close with
+# its `)`, and a definition end its line.
+TITLE_OPENERS = frozenset("\"'(")
+
+
+@dataclass(frozen=True)
+class Destination:
+    """One link destination: its line number, from 1, the columns of its text as written, `<` and `>` included, and
+    its `url` after escapes and character references."""
+
+    line: int
+    start: int
+    end: int
+    written: str
+    url: str
+
+    @property
+    def is_url(self) -> bool:
+        """Whether the destination names a scheme or a host, so it is no path in the document's own tree."""
+        return URL_SCHEME.match(self.url) is not None
+
+    @property
+    def path(self) -> str:
+        """The destination as a path, percent-decoded, without its fragment or query: "" for one that is only a
+        fragment, which leads to the document that holds it."""
+        location = self.url.partition("#")[0].partition("?")[0]
+        return unquote(location)
+
+    @property
+    def fragment(self) -> str:
+        """The fragment after the destination's first `#`, percent-decoded, or "" when it has none."""
+        return unquote(self.url.partition("#")[2])
+
+
+def link_destinations(lines: list[str]) -> list[Destination]:
+    """Every link destination the lines hold outside code, in the order they are written. An empty destination, as in
+    `[text]()`, is none."""
+    code = code_block_lines(lines)
+    found: list[Destination] = []
+    for index, line in enumerate(lines):
+        if index in code:
+            continue
+        text = COMMONMARK_CODE_SPAN.sub(lambda span: " " * len(span.group(0)), line)
+        definition = DEFINITION_OPENER.match(text)
+        if definition:
+            parsed = _destination(text, definition.end(), inline=False)
+            if parsed is not None:
+                found.append(_found(index, line, definition.end(), *parsed))
+            continue
+        for opener in INLINE_OPENER.finditer(text):
+            parsed = _destination(text, opener.end(), inline=True)
+            if parsed is not None:
+                found.append(_found(index, line, opener.end(), *parsed))
+    return found
+
+
+def _found(index: int, line: str, start: int, end: int, url: str) -> Destination:
+    return Destination(index + 1, start, end, line[start:end], url)
+
+
+def _destination(text: str, start: int, *, inline: bool) -> tuple[int, str] | None:
+    """The end column and url of the destination that starts at `start`, or None when CommonMark reads none there."""
+    read = _pointed(text, start + 1) if text.startswith("<", start) else _bare(text, start)
+    if read is None:
+        return None
+    end, url = read
+    rest = text[end:]
+    after = rest.lstrip(" \t")
+    titled = after != rest and after[:1] in TITLE_OPENERS
+    closes = after.startswith(")") if inline else not after
+    return (end, url) if (closes or titled) and url else None
+
+
+def _pointed(text: str, position: int) -> tuple[int, str] | None:
+    """A destination between `<` and `>`, read from just after its `<`: its end after the `>`, and its url."""
+    url: list[str] = []
+    while position < len(text):
+        character = text[position]
+        if character == ">":
+            return position + 1, "".join(url)
+        if character == "<":
+            return None
+        position = _read_character(text, position, url)
+    return None
+
+
+def _bare(text: str, position: int) -> tuple[int, str] | None:
+    """A destination with no `<`: a run with no space or control character whose parentheses balance."""
+    url: list[str] = []
+    depth = 0
+    while position < len(text):
+        character = text[position]
+        if character in " \t" or ord(character) < 0x20 or ord(character) == 0x7F:
+            break
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        position = _read_character(text, position, url)
+    return (position, "".join(url)) if depth == 0 else None
+
+
+def _read_character(text: str, position: int, url: list[str]) -> int:
+    """Append the character at `position` to `url` as CommonMark reads it, an escape or a reference as the character
+    it stands for, and return the position after it."""
+    character = text[position]
+    if character == "\\" and position + 1 < len(text) and text[position + 1] in string.punctuation:
+        url.append(text[position + 1])
+        return position + 2
+    if character == "&":
+        reference = CHARACTER_REFERENCE.match(text, position)
+        if reference:
+            url.append(html.unescape(reference.group(0)))
+            return reference.end()
+    url.append(character)
+    return position + 1
