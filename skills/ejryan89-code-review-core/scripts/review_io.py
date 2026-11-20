@@ -263,16 +263,10 @@ def atomic_write_json(
 # killed, or a file torn outside the lock's protocol, leaves one that long.
 OWNER_GRACE_SECONDS = 60.0
 OWNER_MAXIMUM_BYTES = 64 * 1024
-# The step after the file system refuses a review lock: one that offers no lock at all needs the folder elsewhere, while
-# any other refusal, such as of a lock table that is full or a lock service that does not answer, may pass.
-LOCK_UNSUPPORTED_STEP = (
-    "a review lock needs a folder on a file system that supports file locks, which some network and synced folders "
-    "do not"
-)
-LOCK_REFUSED_STEP = (
-    "a file system may refuse a lock this way for a moment, as when its lock table is full or its lock service does "
-    "not answer; retry in a moment, and if it keeps refusing, keep the review state on a local disk"
-)
+# What the step after the file system refuses a review lock names: the lock that needs a file system with file locks,
+# and what to keep on a local disk; file_lock.refusal_step holds the step itself, which the deployment lock shares.
+LOCK_SUBJECT = "a review lock"
+LOCK_PLACE = "the review state"
 
 
 @dataclass(frozen=True)
@@ -370,7 +364,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 # refusal may come while a holder runs, whose file this one must not delete.
                 with contextlib.suppress(OSError):
                     self.file_lock_path.unlink()
-            step = LOCK_UNSUPPORTED_STEP if exc.unsupported else LOCK_REFUSED_STEP
+            step = file_lock.refusal_step(exc, LOCK_SUBJECT, LOCK_PLACE)
             raise PersistenceError(f"Cannot lock {self.file_lock_path}: {exc.strerror or exc}; {step}") from exc
         except OSError as exc:
             raise PersistenceError(f"Cannot open lock {self.file_lock_path}: {exc}") from exc

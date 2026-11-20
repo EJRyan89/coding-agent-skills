@@ -591,14 +591,16 @@ class ResourceFileLockTests(unittest.TestCase):
         refused = OSError(errno.ENOTSUP, "No locks available")
         with (
             mock.patch.object(file_lock, "_lock", side_effect=refused),
-            self.assertRaisesRegex(
-                PersistenceError,
-                f"^Cannot lock {re.escape(str(self.folder / 'resource.lock.held'))}: No locks available; a review lock "
-                "needs a folder on a file system that supports file locks, which some network and synced folders do "
-                "not$",
-            ),
+            self.assertRaises(PersistenceError) as raised,
         ):
             ResourceLock(self.path).__enter__()
+        # Pinned against a literal: the step file_lock.refusal_step shares with the deployment lock, naming this lock.
+        self.assertEqual(
+            f"Cannot lock {self.folder / 'resource.lock.held'}: No locks available; a review lock needs a folder on a "
+            "file system that supports file locks, which some network and synced folders do not; keep the review "
+            "state on a local disk",
+            str(raised.exception),
+        )
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file(self) -> None:
