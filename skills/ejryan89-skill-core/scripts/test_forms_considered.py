@@ -116,6 +116,7 @@ def test_a_comment_is_hidden_only_where_it_opens_outside_code(text: str, expecte
         ),
         pytest.param("- <!-- a\nb\n-->\nc", "- \nc", id="a block comment its item stops holding ends at its closer"),
         pytest.param("<div>\n```\n</div>\n\n<!-- a -->", "<div>\n```\n</div>\n\n<!-- a -->", id="a div is a paragraph"),
+        pytest.param("<h1>a\n    <!-- b\n\nc", "<h1>a\n    <!-- b\n\nc", id="an indented opener an h1 holds is code"),
         pytest.param("``a`<!-- x -->` z", "``a`` z", id="backtick runs of unequal length pair as a span"),
         pytest.param("\\`<!-- x -->\\` z", "\\`<!-- x -->\\` z", id="an escaped backtick opens a span"),
         pytest.param(
@@ -143,12 +144,16 @@ SCALING = {
     "comments in an item in a quote": ("> - a\n", ">   <!--\n>   ```\n>   -->\n", ""),
     "comments their item stops holding": ("", "- <!--\nx\n-->\n", ""),
     "HTML headings holding a fence-like line": ("", "<h2>x</h2>\n```\ntext\n\n", ""),
+    # Comments left unclosed in list items, each of which once made every walk read to the end of the body.
+    "unclosed comments that open list items": ("", "- <!--\n", ""),
+    "unclosed comments in list items": ("", "- a\n  <!--\n", ""),
+    "unclosed comments in items above a fence-like line": ("", "1. <!--\n- ```\n", ""),
     "nested list items": ("", "".join("  " * depth + "- <!--\n" + "  " * depth + "  -->\n" for depth in range(60)), ""),
     # A run of quote markers a comment block's start once backtracked through in time exponential in its length.
     "nested quote markers": ("<!-- c -->\n", "> " * 40 + "x\n", ""),
 }
 # How many times over the block walks may read a body's lines, whatever its comments.
-WALKS_PER_LINE = 8
+WALKS_PER_LINE = 24
 
 
 # A body of SCALE times the units is read against the smaller one, each the fastest of RUNS readings with the garbage
@@ -277,6 +282,21 @@ GITHUB_SECTIONS = {
     "a heading an HTML heading's block holds": ("<h2>Y</h2>\n- ```\n## Forms considered\n---\n\ntext", None),
     # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
     # it are the item's.
+    # A heading or an underline a comment hides, opened in a quote or a list item and closed past it, ends nothing.
+    "a heading inside a comment a quote opens": (
+        "## Forms considered\n\nw1\n\n> <!-- c\n\n## w5\n> <!-- d -->\n\nw9\n",
+        "\nw1\n\n> \n\nw9\n",
+    ),
+    "an underline inside a comment a list item opens": (
+        "## Forms considered\n\nw1\n\n- <!-- c\n\nw5\n---\n<!-- d -->\n\nw9\n",
+        "\nw1\n\n- \n\nw9\n",
+    ),
+    # An item that holds only a comment is empty once GitHub hides it, so the text under it is no lazy line of the item
+    # and the underline makes it a heading.
+    "an underline under an item that holds only a comment": (
+        "## Forms considered\n\nw1\n\n- <!-- w2 -->\nw3\n---\nw4\n",
+        "\nw1\n\n- ",
+    ),
     "a comment under an item that opens empty": (
         "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
         "\n-\n  \n  ## not a section\n\nafter",

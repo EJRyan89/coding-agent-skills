@@ -31,10 +31,14 @@ The limits:
 - inside a quote, a `<!--` after a list marker that cannot interrupt the quote's paragraph, as `> 2. <!--` under quoted
   text, is read as opening a block, where GitHub shows it as text;
 - a comment block that a quote or list item stops holding before its `-->`, or a `<!--` after a block comment's `-->`
-  on its closing line, ends at that `-->`, where GitHub hides the rest of the body; and a block's lines that an inner
-  container stops holding while an outer one holds them, or that the walk reads as indented code, stay the block's;
+  on its closing line, ends at that `-->`, and a heading it holds is hidden, while GitHub hides the rest of the body,
+  or, where a later comment passes a `-->` on as HTML, hides up to it and shows what follows inside the quote or list
+  item, so a heading after it is the container's; and a block's lines that an inner container stops holding while an
+  outer one holds them, or that the walk reads as indented code, stay the block's;
 - an HTML block other than a comment's or an `<h1>` or `<h2>`, such as a `<div>`, is read as a paragraph, so a
   fence-like line or a heading it holds is read as one, and an `<h1>` or `<h2>` inside a container is read as one line;
+- a `<!--` four or more columns into a line an HTML `<h1>` or `<h2>` block holds is read as indented code, and so is
+  text, where GitHub passes the line on as HTML and hides the rest of the body;
 - a setext heading is held by a list item as this module's own item reading holds it, which tracks the outermost item
   alone and reads a numbered line under an item's text as a lazy line of it, so after `- a\n2. b` and a blank line, an
   underlined line indented two columns is read as the first item's, where GitHub ends the section at it, since
@@ -241,6 +245,40 @@ class _Reading:
     stand_ins: frozenset[int]
     hidden: list[tuple[int, int]]
 
+    def hides(self, index: int) -> bool:
+        """Whether a hidden comment holds the first character of the line at `index` that is no space or tab."""
+        line = self.lines[index]
+        position = self.starts[index] + len(line) - len(line.lstrip(" \t"))
+        span = bisect_right(self.hidden, (position, len(self.text) + 1)) - 1
+        return span >= 0 and self.hidden[span][0] <= position < self.hidden[span][1]
+
+    def visible_lines(self) -> tuple[list[str], list[int]]:
+        """The body's lines once its hidden comments go, as GitHub reads them after it hides them, and for each of
+        the body's own lines, the index of the visible line its first visible character falls on, or of the visible
+        line a hidden comment that holds all of it ends on."""
+        kept: list[tuple[int, int]] = []
+        position = 0
+        for first, past in self.hidden:
+            kept.append((position, first))
+            position = past
+        kept.append((position, len(self.text)))
+        text = "".join(self.text[first:past] for first, past in kept)
+        lines = LINE_BREAK.split(text)
+        line_starts = [0, *(match.end() for match in LINE_BREAK.finditer(text))]
+        # Where each kept stretch of the body starts in the visible text.
+        offsets: list[int] = []
+        total = 0
+        for first, past in kept:
+            offsets.append(total)
+            total += past - first
+        owners: list[int] = []
+        for start in self.starts:
+            stretch = max(bisect_right(kept, (start, len(self.text) + 1)) - 1, 0)
+            first, past = kept[stretch]
+            visible = offsets[stretch] + min(max(start - first, 0), past - first)
+            owners.append(bisect_right(line_starts, visible) - 1)
+        return lines, owners
+
     def visible(self, start: int, stop: int) -> str:
         """The body from index `start` to `stop` without the hidden comments in it."""
         kept: list[str] = []
@@ -341,8 +379,10 @@ def _spanning_blocks(
 
 class _Blocks:
     """The spanning HTML blocks `_spanning_blocks` reads: for each, its last line, whether `read` reads it as a block,
-    and whether a container holds it; how many are settled, and the last line of the settled blocks, which a later
-    stand-in at or above is inside."""
+    whether a container holds it, and the last of its lines `read` reads as the block's so far, which grow with the
+    walk's window, so a block that runs on past where its container stops holding it costs only the lines read up to
+    there; how many are settled, and the last line of the settled blocks, which a later stand-in at or above is
+    inside."""
 
     def __init__(self, lines: list[str], read: list[str], spanning: list[tuple[int, int, bool]]) -> None:
         self.lines, self.read, self.initial, self.spanning = lines, read, list(read), spanning
@@ -350,17 +390,20 @@ class _Blocks:
         self.applied = [False] * len(spanning)
         # Whether each block read as one has its lines read as a container's, which the walk may not confirm.
         self.filled_contained = [False] * len(spanning)
+        self.filled = [index for index, _, _ in spanning]
         self.settled = 0
         self.cover = -1
 
     def reach(self) -> int:
-        """The line a walk reads up to at least: past the first unsettled block's first line, and past its last when
-        it is read as one, so the walk shows whether its container holds every line of it."""
-        index = self.spanning[self.settled][0]
-        return self.lasts[self.settled] + 1 if self.applied[self.settled] else index + 1
+        """The line a walk reads up to at least: past the first unsettled block's first line."""
+        return self.spanning[self.settled][0] + 1
 
     def found(self) -> dict[int, tuple[int, bool]]:
-        """Each block read as one, by its first line: its last line, and whether it is an HTML heading's."""
+        """Each block read as one, by its first line: its last line, and whether it is an HTML heading's, with every
+        one of its lines read as the block's."""
+        for entry in range(len(self.spanning)):
+            if self.applied[entry]:
+                self._fill(entry, self.lasts[entry])
         return {
             index: (self.lasts[entry], heading)
             for entry, (index, _, heading) in enumerate(self.spanning)
@@ -373,61 +416,76 @@ class _Blocks:
         index, _, heading = self.spanning[entry]
         return _opens_block(walked, index, self.read[index]) and (not heading or index in walked.headings)
 
-    def apply(self, entry: int, block: bool, walked: _Walked, cover: int = -1) -> None:
-        """Read the block's lines after its first as the block's, or as they are, but for those up to `cover`, the last
-        line of an earlier block read as one, which are that block's."""
-        index, _, heading = self.spanning[entry]
+    def apply(self, entry: int, block: bool, walked: _Walked, upto: int, cover: int = -1) -> None:
+        """Read the block's lines after its first as the block's, up to the line `upto`, or as they are, but for those
+        up to `cover`, the last line of an earlier block read as one, which are that block's."""
+        index = self.spanning[entry][0]
+        filled = self.filled[entry]
+        self.read[max(index, cover) + 1 : filled + 1] = self.initial[max(index, cover) + 1 : filled + 1]
+        self.filled[entry] = index
         self.applied[entry] = block
-        contained = index not in walked.headings
-        self.filled_contained[entry] = block and contained
-        for later in range(max(index, cover) + 1 if not block else index + 1, self.lasts[entry] + 1):
-            if not block:
-                self.read[later] = self.initial[later]
-                continue
+        self.filled_contained[entry] = block and index not in walked.headings
+        if block:
+            self._fill(entry, upto)
+
+    def _fill(self, entry: int, upto: int) -> None:
+        """Read the block's lines up to `upto`, past those read so far, as the block's."""
+        heading = self.spanning[entry][2]
+        for later in range(self.filled[entry] + 1, min(upto, self.lasts[entry]) + 1):
             quotes = QUOTE_PREFIX.match(self.lines[later])
             held = "" if quotes is None else quotes.group()
             rest = self.lines[later][len(held) :]
             indent = rest[: len(rest) - len(rest.lstrip(" \t"))]
             if heading:
                 self.read[later] = held + indent + HTML_TEXT
-            elif contained and not is_blank(rest):
+            elif self.filled_contained[entry] and not is_blank(rest):
                 self.read[later] = held + indent + HEADING_STAND_IN
             else:
                 self.read[later] = held
+        self.filled[entry] = max(self.filled[entry], min(upto, self.lasts[entry]))
 
     def settle(self, walked: _Walked, stop: int) -> tuple[bool, int]:
         """Settle the blocks the walk confirms, in order, then correct the first it does not and read each later one
         in the window as the walk judged it. Returns whether it corrected one, and the furthest line a later walk may
         start from, or -1 when none."""
         cover, restart = self.cover, -1
+        headings = sorted(walked.headings)
         for entry in range(self.settled, len(self.spanning)):
             index = self.spanning[entry][0]
             if index >= stop:
                 break
             block = index > cover and self.judge(walked, entry)
-            if block and self.applied[entry] and self._contained(walked, entry) and self.lasts[entry] >= stop:
-                # The walk stops before the block's last line, so the next walk, which reaches it, judges the block.
-                break
-            left = self._left(walked, entry) if block and self.applied[entry] else None
+            applied = block and self.applied[entry]
             # A block read as one whose lines were read for another place than the walk shows is read again.
-            refill = block and self.applied[entry] and self.filled_contained[entry] != (index not in walked.headings)
+            refill = applied and self.filled_contained[entry] != (index not in walked.headings)
+            left = self._left(walked, entry, stop) if applied and not refill else None
+            if applied and not refill and left is None and self.filled[entry] < min(self.lasts[entry], stop - 1):
+                # The walk read lines of the block past those read as its own, so a later walk reads them as its.
+                self._fill(entry, 2 * stop - index)
+                return True, restart
+            if applied and not refill and left is None and self._contained(walked, entry) and self.lasts[entry] >= stop:
+                # The walk stops before the block's last line with its container holding every line it read, so a
+                # later walk, its window doubled, judges the block.
+                break
             if block == self.applied[entry] and left is None and not refill:
-                restart = max(restart, self._settle(walked, entry))
+                restart = max(restart, self._settle(walked, entry, headings))
                 cover = self.cover
                 continue
             if left is not None:
                 # The container stopped holding the comment's lines, which ends its HTML block, as CommonMark ends it,
                 # and no container holds the line it stopped at, so a later walk may start there.
-                self.read[left : self.lasts[entry] + 1] = self.initial[left : self.lasts[entry] + 1]
+                filled = self.filled[entry]
+                self.read[left : filled + 1] = self.initial[left : filled + 1]
                 self.lasts[entry] = left - 1
+                self.filled[entry] = min(filled, left - 1)
                 restart = max(restart, left)
             else:
-                self.apply(entry, block, walked)
+                self.apply(entry, block, walked, stop - 1)
             if block and left is None and self._contained(walked, entry):
                 # The next walk shows whether the container holds the block's lines, so it stays unsettled.
                 self._guess(walked, entry, stop)
                 return True, restart
-            restart = max(restart, self._settle(walked, entry))
+            restart = max(restart, self._settle(walked, entry, headings))
             self._guess(walked, entry, stop)
             return True, restart
         return False, restart
@@ -449,7 +507,7 @@ class _Blocks:
                 self.judge(walked, later) or (index in runs and extent[0] < runs[index] <= extent[1])
             )
             if guess != self.applied[later]:
-                self.apply(later, guess, walked, cover)
+                self.apply(later, guess, walked, stop - 1, cover)
             if guess:
                 cover = max(cover, self.lasts[later])
                 extent = (index, self.lasts[later])
@@ -458,25 +516,28 @@ class _Blocks:
         """Whether the block is a comment's that a container holds, whose lines the container may stop holding."""
         return not self.spanning[entry][2] and self.spanning[entry][0] not in walked.headings
 
-    def _left(self, walked: _Walked, entry: int) -> int | None:
-        """The first line of a comment's block, read as one inside a container, that the container no longer holds."""
+    def _left(self, walked: _Walked, entry: int, stop: int) -> int | None:
+        """The first line of a comment's block, read as one inside a container, that the container no longer holds,
+        among the lines the walk read."""
         index = self.spanning[entry][0]
         if not self._contained(walked, entry):
             return None
-        return next((line for line in range(index + 1, self.lasts[entry] + 1) if line in walked.headings), None)
+        last = min(self.lasts[entry], self.filled[entry], stop - 1)
+        return next((line for line in range(index + 1, last + 1) if line in walked.headings), None)
 
-    def _settle(self, walked: _Walked, entry: int) -> int:
+    def _settle(self, walked: _Walked, entry: int, headings: list[int]) -> int:
         """Settle the block; the line a later walk may start from, where the walk's reading of the lines above
         changes nothing below, or -1: past a block read as one that no container holds, or that only blockquotes hold,
         whose lines below reopen them by their own markers, or else past the last heading no container holds above
-        it."""
+        it, `headings` holding the walk's in order."""
         self.settled = entry + 1
         index = self.spanning[entry][0]
         if self.applied[entry]:
             self.cover = max(self.cover, self.lasts[entry])
             if index in walked.headings or QUOTED_OPENER.fullmatch(self.read[index]):
                 return self.lasts[entry] + 1
-        return max((line + 1 for line in walked.headings if line < index), default=-1)
+        above = bisect_left(headings, index)
+        return headings[above - 1] + 1 if above else -1
 
 
 def _closers(text: str) -> list[int]:
@@ -566,7 +627,12 @@ def forms_section(body: str) -> str | None:
     level, with hidden comments removed; None when the body has no such heading. A heading inside a hidden comment, a
     code block, a list item, or a quote is not the section's, and none ends it."""
     reading = _reading(body)
-    headings = {index: level for index, level in reading.walked.headings.items() if index not in reading.stand_ins}
+    # A heading a hidden comment holds, as one opened in a quote or a list item whose `-->` falls past it, is hidden.
+    headings = {
+        index: level
+        for index, level in reading.walked.headings.items()
+        if index not in reading.stand_ins and not reading.hides(index)
+    }
     start = next(
         (
             index + 1
@@ -696,12 +762,15 @@ def _setext_headings(reading: _Reading, start: int) -> list[int]:
     container and code block. A table's rows are no paragraph."""
     walked = reading.walked
     # Which lines a container holds: a quote's, as the walk reads them, and a list item's, by this module's own item
-    # reading until markdown_sections offers one.
-    contained = in_list_items(reading.read, set(walked.code)) | {
+    # reading over the body with its hidden comments gone, as GitHub reads it then, until markdown_sections offers a
+    # reader of the lines its containers hold.
+    visible, owners = reading.visible_lines()
+    in_items = in_list_items(visible, code_block_lines(visible))
+    contained = {line for line, owner in enumerate(owners) if owner in in_items} | {
         line for line, (kind, _) in walked.held.items() if kind == QUOTE
     }
     for underline in range(start + 1, len(reading.lines)):
-        if underline in walked.code or underline in contained:
+        if underline in walked.code or underline in contained or reading.hides(underline):
             continue
         if not SETEXT_UNDERLINE.fullmatch(reading.lines[underline]):
             continue
