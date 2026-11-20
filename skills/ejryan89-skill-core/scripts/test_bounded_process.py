@@ -121,9 +121,9 @@ UNREAD_BYTES = 1024 * 1024
 # Run as its own process, with this folder as its first argument and its case as the second, so a close or a write
 # that waits on stdin with no limit hangs that process, which the test's outer limit ends, never the suite. It starts a
 # command that never reads stdin, keeps a write to it blocked as the case says, and closes the session, then prints, as
-# JSON, how long the close took, the error the write raised, and the command's exit status once closed. The `session`
-# case gives the session half a second and the idle limit thirty, so the session ends first; the others give the idle
-# limit half a second and the session none.
+# JSON, how long the write and the close took, the error the write raised, and the command's exit status once closed.
+# The `session` case gives the session half a second and the idle limit thirty, so the session ends first; the others
+# give the idle limit half a second and the session none.
 STDIN_HOLD_PROGRAM = """
 import json, subprocess, sys, threading, time
 sys.path.insert(0, sys.argv[1])
@@ -131,6 +131,7 @@ import bounded_process
 never_reads = [sys.executable, "-c", "import time; time.sleep(30)"]
 limits = {"idle_timeout": 30, "timeout": 0.5} if sys.argv[2] == "session" else {"idle_timeout": 0.5}
 raised = None
+wrote = None
 with bounded_process.streaming(never_reads, exit_wait=0.5, **limits) as running:
     if sys.argv[2] == "thread":
         def fill():
@@ -142,13 +143,15 @@ with bounded_process.streaming(never_reads, exit_wait=0.5, **limits) as running:
         threading.Thread(target=fill, daemon=True).start()
         time.sleep(1.0)
     else:
+        writing = time.monotonic()
         try:
             running.write(b"x" * (1024 * 1024))
         except subprocess.TimeoutExpired as error:
             raised = f"TimeoutExpired {error.timeout:g}"
+        wrote = time.monotonic() - writing
     closing = time.monotonic()
 closed = time.monotonic() - closing
-print(json.dumps({"closed": closed, "raised": raised, "status": running._process.poll()}))
+print(json.dumps({"wrote": wrote, "closed": closed, "raised": raised, "status": running._process.poll()}))
 """
 # How long the process running STDIN_HOLD_PROGRAM may take before the test ends it as hung.
 STDIN_HOLD_LIMIT_SECONDS = 60.0
@@ -674,6 +677,7 @@ class StreamingTests(unittest.TestCase):
     def test_a_write_the_session_ends_before_the_idle_limit_raises_the_sessions_limit(self) -> None:
         report = self.stdin_hold("session")
         self.assertEqual("TimeoutExpired 0.5", report["raised"])  # the session's half second, not the idle thirty
+        self.assertLess(report["wrote"], IDLE_MARGIN_SECONDS, "the write waited past the session")
         self.assertLess(report["closed"], EXIT_SECONDS + IDLE_MARGIN_SECONDS)
         self.assertIsNotNone(report["status"], "the command was killed, not left running")
 

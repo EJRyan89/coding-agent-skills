@@ -56,7 +56,8 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ("eval git fetch", {"fetch"}),
         ("bash -lc 'cd x && git pull'", {"pull"}),
         # A shell given no -c script runs a script file, or reads its script from stdin, so the words after it are that
-        # file's arguments or the shell's options, never a command.
+        # file's arguments or the shell's options, never a command. Bash looks a script-file operand up on PATH too, so
+        # `bash git push` runs git only where git is itself a shell script, which this reader does not follow.
         ("bash git push", set()),
         ("bash run.sh git push", set()),
         ("bash -e", set()),
