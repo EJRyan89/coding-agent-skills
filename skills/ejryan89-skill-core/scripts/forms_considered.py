@@ -35,7 +35,8 @@ The limits:
   ``` ``a`<!-- x -->` ``` hides a comment GitHub shows in code, and whose search, on a line that holds a `<!--`, takes
   time that grows with the square of the line's backtick runs;
 - a backslash-escaped backtick is read as opening a span, so ``\`<!-- x -->\` `` keeps a comment GitHub hides;
-- a span is read within one line, so a span that crosses a line break shields no `<!--` on its second line;
+- a span is read within one line, so a span that crosses a line break shields no `<!--` on its second line, and its
+  closing backtick opens a span on that line, so `` `a\nb` <!-- x --> `c` `` keeps a comment GitHub hides;
 - `placeholder_forms` reads the template's guidance from every comment its section holds, with no code test, so a
   template whose section shows `<!--` in code yields guidance that is no comment.
 
