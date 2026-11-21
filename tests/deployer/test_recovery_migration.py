@@ -34,6 +34,7 @@ from harness import (
     install_entry,
     journal_line,
     make_directory_link,
+    manual_steps,
     tree_state,
 )
 
@@ -63,16 +64,6 @@ LINES_APART_ALLOWED = {
         "ERROR line, never a refusal's step; assert_unreconciled holds the run's refusal with its steps"
     ),
 }
-
-
-def manual_steps(run: Path, committed: bool) -> list[str]:
-    """The steps recovery gives for a run it stopped at, whose staging folder is run."""
-    keep = "keep the copies it installed" if committed else "put back the copies it replaced"
-    return [
-        f"  Run {run.name} was {'' if committed else 'not '}committed to the manifest, so {keep}. A replaced copy sits "
-        f"beside its item as <name>.deploying-bak; a retained backup is under .backups/{run.name}/ in the same root.",
-        f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
-    ]
 
 
 class Killed(BaseException):
@@ -990,13 +981,10 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assert_lines(
             output,
             f"Recovering committed run {self.HELD} (completing finalization)...",
-            f"  Run {self.HELD} was committed to the manifest, so keep the copies it installed. A replaced copy sits "
-            f"beside its item as <name>.deploying-bak; a retained backup is under .backups/{self.HELD}/ in the same "
-            "root.",
-            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
             f"Recovering uncommitted run {self.NEXT} (rolling back)...",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
+        self.assert_unreconciled(output, run / "journal.jsonl", committed=True)
+        self.assert_recovery_stopped(output)
         self.assertNotIn(RECOVERY_STOPPED, output)
         self.assertNotIn("Unexpected", output)
         self.assertNotIn("Traceback", output)
@@ -2842,12 +2830,14 @@ class ManifestStateTests(RecoveryTestCase):
         ):
             recovered = journal.recover_incomplete(self.paths)
         self.assertFalse(recovered, captured.getvalue())
-        self.assert_lines(
+        self.assert_refusal(
             captured.getvalue(),
+            f"  ERROR: Recovery of run {run} failed at {forward(journal_file)}: Access is denied",
             f"  Whether run {run} was committed cannot be told, since the manifest is missing or cannot be read: put "
             "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
             "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
             f"<name>.deploying-bak; a retained backup is under .backups/{run}/ in the same root.",
+            manual_steps(journal_file.parent, committed=False)[1],
         )
         self.assertNotIn("was not committed", captured.getvalue())
 

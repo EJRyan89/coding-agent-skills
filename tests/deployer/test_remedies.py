@@ -30,6 +30,7 @@ from harness import (
     install_entry,
     journal_line,
     make_directory_link,
+    manual_steps,
     probe_returning,
 )
 
@@ -575,8 +576,9 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_skill("alpha", "Alpha")
         self.make_config("new/source")
         result = self.deploy_fails("--migrate-from", "old/source", pattern="without an existing manifest")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            "ERROR: Cannot migrate without an existing manifest.",
             "Nothing is deployed in this home, so there is nothing to take over: deploy without --migrate-from.",
         )
         self.deploy_ok("--all")
@@ -647,8 +649,10 @@ class RecoveryRemedyTests(RemedyTestCase):
         run = self.staging_run("20260101-000000-gone")
         self.write(run / "journal.jsonl", journal_line(backup_entry("alpha", ZERO_HASH)))
         result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(run / 'journal.jsonl')}",
+            # Pinned against a literal: the first step a user reads.
             "  Run 20260101-000000-gone was not committed to the manifest, so put back the copies it replaced. "
             "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
             ".backups/20260101-000000-gone/ in the same root.",
@@ -669,11 +673,14 @@ class RecoveryRemedyTests(RemedyTestCase):
         run = self.staging_run("20260101-000000-done")
         self.write(run / "journal.jsonl", journal_line(install_entry("ghost", ZERO_HASH)))
         result = self.deploy_fails("--all", pattern="Installed destination missing for ghost")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(run / 'journal.jsonl')}",
+            # Pinned against a literal: the first step a user reads.
             "  Run 20260101-000000-done was committed to the manifest, so keep the copies it installed. "
             "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
             ".backups/20260101-000000-done/ in the same root.",
+            manual_steps(run, committed=True)[1],
         )
 
     def test_malformed_journal_gives_the_same_steps(self) -> None:
@@ -682,9 +689,10 @@ class RecoveryRemedyTests(RemedyTestCase):
         run = self.staging_run("20260101-000000-bad1")
         self.write(run / "journal.jsonl", '{"op":"backup"\n')
         result = self.deploy_fails("--all", pattern="Malformed journal entry")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
-            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
+            f"  ERROR: Journal validation failed. Retaining {forward(run / 'journal.jsonl')} for manual inspection.",
+            *manual_steps(run, committed=False),
         )
 
     def test_failed_immediate_recovery_says_the_next_run_retries(self) -> None:
@@ -694,8 +702,9 @@ class RecoveryRemedyTests(RemedyTestCase):
             mock.patch("deployer.journal.recover_incomplete", side_effect=[True, False]),
         ):
             result = self.deploy_fails("--all", pattern="Immediate recovery failed", changes_home=FAILS_PARTWAY)
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            "ERROR: Immediate recovery failed; deployment evidence and the lock's record were retained.",
             "The next run removes the record and retries recovery. If that fails too, reconcile the run by hand. "
             f"{SEE_RECOVERY_FAILED}",
         )

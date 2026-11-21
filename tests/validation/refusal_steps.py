@@ -33,8 +33,9 @@ a refusal's are: each positional argument after the output, the elements of an u
 in a name bound once to one, and the text a string, an f-string, a literal template's `.format` or `%`, a `+`, or a
 name bound once to one of them starts with, as far as it settles whether the line is an ERROR line. It fails closed on
 what it cannot read: a line whose text it cannot settle, such as a loop's name, a parameter, a call's result, or a
-field that opens the line, counts as an ERROR line when another line follows it, and lines unpacked from anything but
-a display, such as a call or a parameter, wherever they come, count as an ERROR line and its step.
+field that opens the line, or a template that does not parse, counts as an ERROR line when another line follows it,
+and lines unpacked from anything but a display, such as a call or a parameter, count as an ERROR line and its step
+wherever they come, in the output's place too, where they may hold the output and every line after it.
 
 Stated limits of that policy:
 - A call through a name bound otherwise than by an import, such as `check = self.assert_lines`, or through `getattr` or
@@ -617,8 +618,10 @@ class _AssertedLines:
     def holds_lines_apart(self, call: ast.Call) -> bool:
         """Whether the call passes an ERROR line, or a line it cannot read, with another line right after it, or
         unpacks lines it cannot follow anywhere, which may hold an ERROR line and its step."""
-        lines = self.lines(list(call.args))[self._output_arguments(call) :]
-        return None in lines or any(line is not None and self._may_be_error(line) for line in lines[:-1])
+        arguments = self.lines(list(call.args))
+        # Unread lines are refused in the output's place too, where they may hold the output and the lines after it.
+        lines = arguments[self._output_arguments(call) :]
+        return None in arguments or any(line is not None and self._may_be_error(line) for line in lines[:-1])
 
     def _may_be_error(self, line: ast.expr) -> bool:
         """Whether a line is an ERROR line, or one whose text this policy cannot read."""
