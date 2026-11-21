@@ -34,7 +34,8 @@ which moves an issue by that link, never sees the close; this repository's histo
 from a code span, never linked to its pull request. GitHub's renderer links the line everywhere else it stands alone: in
 a paragraph, under a setext underline, and inside an HTML `<details>` or `<div>` block. hidden_comments reads where a
 comment hides it and where a code block holds it, and its stated limits are this reading's. It also does not see a line
-inside an HTML `<pre>` block, which GitHub shows as preformatted text and links nothing in.
+inside an HTML `<pre>`, `<code>`, or `<a>` block, which GitHub links nothing in, and it refuses as hidden a line in a
+`math` fence or in a footnote definition's continuation indented four spaces, both of which GitHub links.
 """
 
 from __future__ import annotations
