@@ -13,6 +13,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from itertools import pairwise
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -101,37 +102,13 @@ DOCUMENT_FOLDER = "document"
 BY_NAME_FOLDER = "drafts"
 HIDDEN_DECOY = ".drafts-old"
 CHECKOUT_DECOY = "old-checkout"
-# What the `resolved` kind reads in the session's own tool calls: the search tools, the programs that list or search for
-# files or their text, review-document's script, and, since no reader here parses PowerShell as pwsh does, a
-# PowerShell command's search program at a command's start, an assignment's right side included, and the script's
-# `resolve` and `build` commands in its text. A Bash command is read through audit-skill's `bash_programs`, the one
-# Bash grammar, which finds every program Bash runs, past assignments, wrappers, and shell scripts.
+# What the `resolved` kind reads in the session's own tool calls: the search tools, the programs `_search_programs`
+# names, review-document's script, and, since no reader here parses PowerShell as pwsh does, a PowerShell command's
+# search program at a command's start, an assignment's right side included, and the script's `resolve` and `build`
+# commands in its text. A Bash command is read through audit-skill's `bash_programs`, the one Bash grammar, which finds
+# every program Bash runs, past assignments, wrappers, and shell scripts.
 SEARCH_TOOLS = frozenset({"Glob", "Grep"})
-SEARCH_PROGRAMS = frozenset(
-    {
-        "find",
-        "ls",
-        "dir",
-        "tree",
-        "fd",
-        "fdfind",
-        "rg",
-        "grep",
-        "egrep",
-        "fgrep",
-        "locate",
-        "mdfind",
-        "gci",
-        "Get-ChildItem",
-    }
-)
 DOCUMENT_SCRIPT_NAME = "review_document.py"
-POWERSHELL_SEARCH = re.compile(
-    r"(?:^|[;|&{(\n]|\$\(|\$[\w:]+\s*=)\s*(?:[\w.~:-]*[/\\])*("
-    + "|".join(sorted(SEARCH_PROGRAMS, key=len, reverse=True))
-    + r")(?:\.exe)?(?=\s|$|[;|&(){}])",
-    re.IGNORECASE,
-)
 DOCUMENT_SCRIPT = r"review_document\.py[\"']?\s+"
 # A repository reviewer's scenario: the skill that runs a reviewer manifest on a fixture, where this repository's own
 # skills are, and the folders of a reviewer whose files are placed, besides its SKILL.md and what its manifest declares.
@@ -401,25 +378,60 @@ def repeats_expectation(spec: Mapping[str, object]) -> Expectation:
     return Expectation(f"repeats {_where(path, lines)} {spec['entry']}", check)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Step:
     """One thing a call of the session's does, as the `resolved` kind reads it: the tool or program it searches with,
     whether it runs `resolve` with the document's name, whether it builds the staged copy (True), another file
     (False), or nothing (None), and whether it is a Bash command the grammar refuses, whose programs are unread."""
 
-    search: str | None = None
-    resolves: bool = False
-    built: bool | None = None
-    unread: bool = False
+    search: str | None
+    resolves: bool
+    built: bool | None
+    unread: bool
+
+
+def _search_programs() -> frozenset[str]:
+    """The programs that list files or search for them or their text, which the `resolved` kind fails before
+    `resolve`: each by its file name as Bash finds it, matched as written, and PowerShell's gci and Get-ChildItem, which
+    the PowerShell reading matches in any case, as PowerShell does."""
+    return frozenset(
+        {
+            "find",
+            "ls",
+            "dir",
+            "tree",
+            "fd",
+            "fdfind",
+            "rg",
+            "grep",
+            "egrep",
+            "fgrep",
+            "locate",
+            "mdfind",
+            "gci",
+            "Get-ChildItem",
+        }
+    )
+
+
+def _powershell_search(text: str) -> str | None:
+    """The first program of `_search_programs` a PowerShell text runs at a command's start, an assignment's right side
+    included, by a path or none and with or without .exe, as the text writes it, or None."""
+    found = re.search(
+        r"(?:^|[;|&{(\n]|\$\(|\$[\w:]+\s*=)\s*(?:[\w.~:-]*[/\\])*("
+        + "|".join(_search_programs())
+        + r")(?:\.exe)?(?=\s|$|[;|&(){}])",
+        text,
+        re.IGNORECASE,
+    )
+    return found[1] if found else None
 
 
 def _document_command(words: Sequence[str], command: str) -> list[str] | None:
-    """The words after review_document.py's `command` in one program's words, or None when it runs no such command."""
-    for index, word in enumerate(words[:-1]):
-        if (
-            command_wrappers.bash_program(word.replace("\\", "/")) == DOCUMENT_SCRIPT_NAME
-            and words[index + 1] == command
-        ):
+    """The words after review_document.py's `command` in one program's words, or None when it runs no such command.
+    The script is named by its file name, after a path in either separator."""
+    for index, (word, following) in enumerate(pairwise(words)):
+        if following == command and command_wrappers.bash_program(word.rpartition("\\")[2]) == DOCUMENT_SCRIPT_NAME:
             return list(words[index + 2 :])
     return None
 
@@ -434,16 +446,17 @@ def _bash_steps(command: str, name: str) -> list[Step]:
     try:
         programs = skill_inventory.bash_programs(command)
     except BashSyntaxError:
-        return [Step(unread=True)]
+        return [Step(search=None, resolves=False, built=None, unread=True)]
     steps = []
     for _, words in programs:
         program = command_wrappers.bash_program(words[0])
         built = _document_command(words, "build")
         steps.append(
             Step(
-                search=program if program in SEARCH_PROGRAMS else None,
+                search=program if program in _search_programs() else None,
                 resolves=_document_command(words, "resolve") == [name],
                 built=None if built is None else _builds_staged(built, name),
+                unread=False,
             )
         )
     return steps
@@ -454,12 +467,15 @@ def _powershell_steps(command: str, name: str) -> list[Step]:
     then `resolve` with the name, quoted or not, then `build` and whether it names the staged copy."""
     end = r"(?=[\s\"';&|)]|$)"
     ran = re.search(DOCUMENT_SCRIPT + r"resolve\s+([\"']?)" + re.escape(name) + r"\1" + end, command)
-    searched = POWERSHELL_SEARCH.search(command[: ran.start()] if ran else command)
+    searched = _powershell_search(command[: ran.start()] if ran else command)
     built = re.search(DOCUMENT_SCRIPT + r"build\b", command)
     staged = re.compile(r"(?:^|[\s\"'/\\])" + re.escape(BY_NAME_FOLDER) + r"[/\\]" + re.escape(name) + end)
-    steps = [Step(search=searched[1])] if searched else []
-    steps += [Step(resolves=True)] if ran else []
-    steps += [Step(built=staged.search(command, built.end()) is not None)] if built else []
+    steps = [Step(search=searched, resolves=False, built=None, unread=False)] if searched else []
+    steps += [Step(search=None, resolves=True, built=None, unread=False)] if ran else []
+    if built:
+        steps.append(
+            Step(search=None, resolves=False, built=staged.search(command, built.end()) is not None, unread=False)
+        )
     return steps
 
 
@@ -467,7 +483,7 @@ def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
     """What one of the session's calls does, as the `resolved` kind reads it."""
     command = call["input"].get("command")
     if call["name"] in SEARCH_TOOLS:
-        return [Step(search=str(call["name"]))]
+        return [Step(search=str(call["name"]), resolves=False, built=None, unread=False)]
     if not isinstance(command, str) or call["name"] not in skill_inventory.SHELL_TOOLS:
         return []
     return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)

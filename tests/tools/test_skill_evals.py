@@ -5158,6 +5158,8 @@ COMMITTED_TRIGGERS = sorted(
 def test_every_committed_trigger_scenario_loads_and_judges_a_stub_record_each_way(folder: Path) -> None:
     skill = folder.parent.name
     scenario = skill_evals_scenarios.load_scenario(skill, folder)
+    # A trigger scenario names no document, so it is no by-name one, run one at a time and judged on its transcript.
+    assert not scenario.by_name
     # A request that leaves the skill's name out is started by the description alone.
     assert any(skill not in request for request in scenario.requests), scenario.requests
 
@@ -6160,6 +6162,10 @@ def test_a_resolved_expectation_needs_a_by_name_document_scenario(tmp_path: Path
         skill_evals_scenarios.expectation({"kind": "resolved", "name": "draft.md"}, "initial", "draft.md")
 
 
+# The reason a by-name run whose session stream holds what the reading does not read counts for nothing, as written.
+UNREAD_CALLS = "the session's stream holds a message or a tool call in a shape the evaluation does not read"
+
+
 def resolved(*calls: dict[str, Any], name: str = "draft.md") -> str | None:
     """The resolved expectation's verdict on a record carrying these session calls."""
     item = skill_evals_scenarios.expectation({"kind": "resolved"}, "initial", name)
@@ -6177,6 +6183,10 @@ BUILD = shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "/home/a b/drafts/draft.md"
         [RESOLVE, shell(f"python3 -B {DOCUMENT_SCRIPT} build drafts/draft.md")],
         [RESOLVE, shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "C:\\h\\drafts\\draft.md"')],
         [
+            shell('python3 -B "C:\\h\\review-document\\scripts\\review_document.py" resolve "draft.md"'),
+            shell('python3 -B "C:\\h\\review-document\\scripts\\review_document.py" build "drafts/draft.md"'),
+        ],
+        [
             shell(f"python3 -B '{DOCUMENT_SCRIPT}' resolve 'draft.md'", "PowerShell"),
             shell(f'& py "{DOCUMENT_SCRIPT}" build "C:\\h\\drafts\\draft.md"', "PowerShell"),
         ],
@@ -6190,7 +6200,7 @@ BUILD = shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "/home/a b/drafts/draft.md"
         [RESOLVE, shell("ls drafts"), {"name": "Glob", "input": {"pattern": "**/draft.md"}}, BUILD],
         [{"name": "Read", "input": {"file_path": "/home/SKILL.md"}}, RESOLVE, BUILD],
     ],
-    ids=["skill", "bare", "windows-path", "powershell", "one-command", "search-after", "read-first"],
+    ids=["skill", "bare", "windows-path", "windows-script", "powershell", "one-command", "search-after", "read-first"],
 )
 def test_resolved_passes_a_session_that_runs_resolve_first_and_builds_the_copy_it_finds(
     calls: list[dict[str, Any]],
@@ -6264,20 +6274,27 @@ def test_resolved_fails_a_session_that_searches_first_never_resolves_or_builds_a
 
 def test_resolved_fails_a_record_that_carries_no_session_calls() -> None:
     item = skill_evals_scenarios.expectation({"kind": "resolved"}, "initial", "draft.md")
-    with pytest.raises(RecordError, match="the record carries no tool calls of the session"):
+    with pytest.raises(RecordError, match=r"^the record carries no tool calls of the session$"):
         item.check(record())
 
 
 def test_the_session_s_tool_calls_are_its_own_in_order_and_a_shape_it_cannot_read_is_unread() -> None:
     session = assistant("claude-opus-5-5", calls=[RESOLVE, BUILD])
     subagent = assistant("claude-haiku-5-5", subagent=True, calls=[shell("find . -name draft.md")])
-    assert skill_evals_runs.session_tool_calls("\n".join([session, subagent])) == [RESOLVE, BUILD]
+    # A subagent's message, or another event, before the session's does not end the reading.
+    other = json.dumps({"type": "system", "subtype": "init"})
+    assert skill_evals_runs.session_tool_calls("\n".join([other, subagent, session])) == [RESOLVE, BUILD]
+    spoken = {"type": "text", "text": "Resolving the name first."}
+    content = [spoken, {"type": "tool_use", "name": "Bash", "input": RESOLVE["input"]}, spoken]
+    spoke = json.dumps({"type": "assistant", "message": {"model": "claude-opus-5-5", "content": content}})
+    assert skill_evals_runs.session_tool_calls("\n".join([spoke, session])) == [RESOLVE, RESOLVE, BUILD]
     for message in (
+        "text",
         {"model": "claude-opus-5-5", "content": "text"},
         {"model": "claude-opus-5-5", "content": [{"type": "tool_use", "name": "Bash", "input": "ls"}]},
         {"model": "claude-opus-5-5", "content": [{"type": "tool_use", "name": None, "input": {}}]},
     ):
-        with pytest.raises(skill_evals_runs.StreamShapeError, match=skill_evals_runs.UNREAD_CALLS):
+        with pytest.raises(skill_evals_runs.StreamShapeError, match=f"^{UNREAD_CALLS}$"):
             skill_evals_runs.session_tool_calls(json.dumps({"type": "assistant", "message": message}))
 
 
@@ -6333,6 +6350,11 @@ def test_records_judge_a_by_name_run_on_the_session_s_transcript_beside_its_reco
     with pytest.raises(RecordError, match="no transcript at") as missing:
         source(scenario, "haiku", None)
     assert missing.value.kind == skill_evals_records.RUN
+    (records / "haiku.jsonl").mkdir()
+    with pytest.raises(RecordError, match=r"^cannot read ") as unreadable:
+        source(scenario, "haiku", None)
+    assert unreadable.value.kind == skill_evals_records.RUN
+    (records / "haiku.jsonl").rmdir()
     searched = [shell("find . -name draft.md"), RESOLVE, BUILD]
     for calls, verdicts in (
         ([RESOLVE, BUILD], [None, None]),
@@ -6343,7 +6365,7 @@ def test_records_judge_a_by_name_run_on_the_session_s_transcript_beside_its_reco
         assert [outcome.failure for outcome in outcomes] == verdicts
     (records / "haiku-2.json").write_text(json.dumps(contract_record()), encoding="utf-8")
     (records / "haiku-2.jsonl").write_text(json.dumps({"type": "assistant", "message": {"content": 1}}), "utf-8")
-    with pytest.raises(RecordError, match=skill_evals_runs.UNREAD_CALLS) as unread:
+    with pytest.raises(RecordError, match=f"{UNREAD_CALLS}$") as unread:
         source(scenario, "haiku", 2)
     assert unread.value.kind == skill_evals_records.RECORD
 
@@ -6468,14 +6490,37 @@ def test_resolved_fails_a_bash_search_wherever_bash_runs_it(command: str, progra
 
 
 @pytest.mark.parametrize(
+    "program", ["dir", "tree", "fd", "fdfind", "grep", "egrep", "fgrep", "locate", "mdfind", "/usr/bin/locate"]
+)
+def test_resolved_fails_each_listing_or_search_program_bash_runs_by_its_name(program: str) -> None:
+    named = program.rpartition("/")[2]
+    assert resolved(shell(f"{program} draft.md"), RESOLVE, BUILD) == (
+        f"the session searched with {named} before it ran resolve"
+    )
+
+
+@pytest.mark.parametrize(
     ("command", "program"),
     [
         ("$f = Get-ChildItem -Recurse -Filter draft.md", "Get-ChildItem"),
+        ("GCI -Recurse draft.md", "GCI"),
+        ("get-childitem -Recurse draft.md", "get-childitem"),
+        ("& rg.exe --files", "rg"),
+        ("C:\\tools\\fd.exe draft.md", "fd"),
         ("$found=gci -r draft.md; $found", "gci"),
         ("Set-Location ~; & rg --files", "rg"),
         (f"ls drafts; & py '{DOCUMENT_SCRIPT}' resolve 'draft.md'", "ls"),
     ],
-    ids=["assignment", "assignment-alias", "call-operator", "before-resolve-in-one-command"],
+    ids=[
+        "assignment",
+        "upper-case-alias",
+        "lower-case",
+        "exe",
+        "exe-by-path",
+        "assignment-alias",
+        "call-operator",
+        "before-resolve-in-one-command",
+    ],
 )
 def test_resolved_fails_a_powershell_search_at_a_command_s_start(command: str, program: str) -> None:
     calls = [shell(command, "PowerShell"), RESOLVE, BUILD]
@@ -6519,12 +6564,45 @@ def test_a_by_name_run_whose_session_stream_is_unread_counts_for_nothing_as_a_re
         ["--jobs", "1", "--model", "haiku"], case.seams(claude), "review-document", ["by-name"]
     )
     assert status == 1, lines
-    reason = skill_evals_scenarios.quote(skill_evals_runs.UNREAD_CALLS)
+    reason = skill_evals_scenarios.quote(UNREAD_CALLS)
     assert [line for line in lines if line.startswith("NOT_COUNTED ")] == [f"NOT_COUNTED by-name haiku record {reason}"]
     failed = [line for line in lines if line.startswith("FAIL ")]
     assert len(failed) == 3
     assert all(line.endswith(f" record {reason}") for line in failed)
     assert not any(line.startswith("PASS ") for line in lines)
+
+
+def test_a_by_name_run_that_recorded_no_review_counts_for_nothing_as_a_run(evaluation: EvaluateTests) -> None:
+    case = evaluation
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"],
+        case.seams(StubClaude(case, review=False)),
+        "review-document",
+        ["by-name"],
+    )
+    assert status == 1, lines
+    assert [line for line in lines if line.startswith("NOT_COUNTED ")] == [
+        'NOT_COUNTED by-name haiku run "the run recorded no review"'
+    ]
+
+
+def test_a_path_document_run_never_reads_the_session_s_tool_calls(evaluation: EvaluateTests) -> None:
+    # A session message in a shape the by-name reading refuses does not touch a run that names its document's path.
+    case = evaluation
+    claude = StubClaude(case)
+    unread = json.dumps({"type": "assistant", "message": {"model": "claude-opus-5-5", "content": "text"}})
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = claude(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"]:
+            return completed
+        return dataclasses.replace(completed, stdout=f"{completed.stdout}\n{unread}")
+
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(runner), "review-document", ["design-final"]
+    )
+    assert status == 0, lines
+    assert not [line for line in lines if line.startswith(("NOT_COUNTED ", "FAIL "))], lines
 
 
 POWERSHELL_RESOLVE = f"& py '{DOCUMENT_SCRIPT}' resolve 'draft.md'"

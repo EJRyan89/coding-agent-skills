@@ -156,7 +156,7 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
   {"kind": "resolved"}     by-name document scenario only
       the session's own tool calls, in order, run review_document.py `resolve` with the document's file name, quoted
       or not, before any search, and then a `build` naming drafts/<document>, the one copy `resolve` finds. A search is
-      a Glob or Grep call, or a program SEARCH_PROGRAMS names (find, ls, grep, rg, and the other listing and search
+      a Glob or Grep call, or a program `_search_programs` names (find, ls, grep, rg, and the other listing and search
       programs) that a Bash or PowerShell command runs. A Bash command is read through audit-skill's `bash_programs`,
       the one Bash grammar, so a search inside a compound command, a subshell, a substitution, past an assignment, or
       behind a wrapper or a shell's -c is seen, and quoted text or a here-document is not taken for one; a Bash
