@@ -11,7 +11,9 @@ The template is `pull_request_template.md`, in any case, in `.github/`, the top 
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
 issue, and an empty list item; every closing reference GitHub reads, through ejryan89-skill-core's closing_references,
 that is not a `Closes #<n>` line of its own, in prose, a list, a quote, with a colon, or inside a comment the author
-wrote alike, since the squash commit carries the body as written; a template heading the body dropped; and, for a
+wrote alike, since the squash commit carries the body as written; a `Closes #<n>` line of its own that the rendered
+body does not show, inside a comment the author wrote or a code block, which closes its issue on merge without GitHub
+linking it; a template heading the body dropped; and, for a
 title of type `fix` and a template holding a `## Forms considered` section, that section missing, empty, or still the
 template's placeholder, read by ejryan89-skill-core's forms_considered, the reader validation's body check holds a fix
 body to. A comment is one GitHub hides, read by ejryan89-skill-core's hidden_comments, so a `<!--` that a code span or
@@ -32,6 +34,7 @@ Every line is one fact:
     TITLE_CLOSES <title>           the title holds a closing reference
     PLACEHOLDER <line> <what>      a placeholder the template left in the body, at its line
     CLOSES_LINE <line> <text>      a line holding a closing reference that is not `Closes #<n>` alone
+    CLOSES_HIDDEN <line> <text>    a `Closes #<n>` line in a comment or a code block, which GitHub never links
     HEADING_MISSING <heading>      a template heading the body does not keep
     FORMS_CONSIDERED <fault>       a fix's `## Forms considered` section is missing, placeholder, or empty
     BEHIND <base> <sha>            the branch does not hold the base's tip: bring it up to date
@@ -186,13 +189,14 @@ def body_problems(body: str, template: str) -> list[str]:
         problems.append((number, f"PLACEHOLDER {number} a template comment"))
     # closing_references numbers a line as text_lines splits the body, which blanking characters but never a CR or an
     # LF leaves where it was.
-    stray = dict(stray_closing_lines(body, template))
+    stray = {line.number: line for line in stray_closing_lines(body, template)}
     for number, line in enumerate(text_lines(blank_comments(body)), start=1):
         text = line.strip()
         if BARE_CLOSING_LINE.fullmatch(text):
             problems.append((number, f"PLACEHOLDER {number} a Closes line with no issue"))
         elif number in stray:
-            problems.append((number, f"CLOSES_LINE {number} {flat_text(stray[number])}"))
+            kind = "CLOSES_HIDDEN" if stray[number].hidden else "CLOSES_LINE"
+            problems.append((number, f"{kind} {number} {flat_text(stray[number].text)}"))
         elif EMPTY_LIST_ITEM.fullmatch(line):
             problems.append((number, f"PLACEHOLDER {number} an empty list item"))
     lines = [problem for _, problem in sorted(problems, key=lambda problem: problem[0])]

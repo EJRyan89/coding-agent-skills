@@ -203,32 +203,73 @@ TEMPLATE = "<!-- Name each issue in a\n     Closes #N line of its own. -->\nClos
     [
         (
             "Closes #1\n\nTwo examples, such as `Closes #12`, read wrong.\n",
-            [(3, "Two examples, such as `Closes #12`, read wrong.")],
+            [(3, "Two examples, such as `Closes #12`, read wrong.", False)],
         ),
-        ("```text\nCloses #12 when it merges\n```\n", [(2, "Closes #12 when it merges")]),
-        ("<!-- fixes #12 -->\n", [(1, "<!-- fixes #12 -->")]),
-        ("Closes #1, #12\n", [(1, "Closes #1, #12")]),
-        ("- Closes #12\n", [(1, "- Closes #12")]),
-        ("closes #12\n", [(1, "closes #12")]),
-        ("Closes: #12\n", [(1, "Closes: #12")]),
-        ("Closes #0\n", [(1, "Closes #0")]),
-        ("Closes #012\n", [(1, "Closes #012")]),
-        ("Closes #abc\n", [(1, "Closes #abc")]),
-        ("Resolves GH-12\n", [(1, "Resolves GH-12")]),
-        ("  Fixed https://github.com/owner/repo/issues/12  \n", [(1, "Fixed https://github.com/owner/repo/issues/12")]),
-        ("Closes #1\r\n\r\nSee `fixes #12`.\r\n", [(3, "See `fixes #12`.")]),
-        ("Closes #1\r\rSee `fixes #12`.\r", [(3, "See `fixes #12`.")]),
-        ("And\tfixes   #13 too.\n", [(1, "And\tfixes   #13 too.")]),
+        ("```text\nCloses #12 when it merges\n```\n", [(2, "Closes #12 when it merges", False)]),
+        ("<!-- fixes #12 -->\n", [(1, "<!-- fixes #12 -->", False)]),
+        ("Closes #1, #12\n", [(1, "Closes #1, #12", False)]),
+        ("- Closes #12\n", [(1, "- Closes #12", False)]),
+        ("closes #12\n", [(1, "closes #12", False)]),
+        ("Closes: #12\n", [(1, "Closes: #12", False)]),
+        ("Closes #0\n", [(1, "Closes #0", False)]),
+        ("Closes #012\n", [(1, "Closes #012", False)]),
+        ("Closes #abc\n", [(1, "Closes #abc", False)]),
+        ("Resolves GH-12\n", [(1, "Resolves GH-12", False)]),
+        (
+            "  Fixed https://github.com/owner/repo/issues/12  \n",
+            [(1, "Fixed https://github.com/owner/repo/issues/12", False)],
+        ),
+        ("Closes #1\r\n\r\nSee `fixes #12`.\r\n", [(3, "See `fixes #12`.", False)]),
+        ("Closes #1\r\rSee `fixes #12`.\r", [(3, "See `fixes #12`.", False)]),
+        ("And\tfixes   #13 too.\n", [(1, "And\tfixes   #13 too.", False)]),
         ("  Closes #12 \t\n", []),
         ("Closes #\n", []),
         ("This fixes the crash and fixes GH-hosted runners.\n", []),
         ("This closes #abc.\n", []),
         (TEMPLATE, []),
-        (TEMPLATE.replace("Closes #N", "Closes #12"), [(2, "Closes #12 line of its own. -->")]),
+        (TEMPLATE.replace("Closes #N", "Closes #12"), [(2, "Closes #12 line of its own. -->", False)]),
     ],
 )
-def test_stray_closing_lines_names_each_line_outside_a_closes_line(body: str, expected: list[tuple[int, str]]) -> None:
+def test_stray_closing_lines_names_each_line_outside_a_closes_line(
+    body: str, expected: list[tuple[int, str, bool]]
+) -> None:
     assert stray_closing_lines(body, TEMPLATE) == expected
+
+
+# Each `Closes #<n>` line of its own the rendered body does not show, which closes its issue on merge without GitHub
+# linking it, and each GitHub's renderer links, as `gh api markdown` rendered them: hidden in a comment the author
+# wrote, in a fenced code block, closed or left open, and in indented code, at the top or inside a list item; shown
+# after a paragraph's text, as a list item's paragraph, under a template comment, inside an HTML block, and after a
+# fence that shows a `<!--` as code, which opens no comment.
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Closes #1\n<!--\nCloses #12\n-->\n", [(3, "Closes #12", True)]),
+        ("Closes #1\n\n<!-- Notes:\n   Closes #12\n-->\n", [(4, "Closes #12", True)]),
+        ("Why.\n\n```\nCloses #12\n```\n", [(4, "Closes #12", True)]),
+        ("~~~\nCloses #12\n", [(2, "Closes #12", True)]),
+        ("Why.\n\n    Closes #12\n", [(3, "Closes #12", True)]),
+        ("- a\n\n      Closes #12\n", [(3, "Closes #12", True)]),
+        ("Text\n    Closes #12\n", []),
+        ("- a\n\n  Closes #12\n", []),
+        ("<!-- Why. -->\nCloses #12\n", []),
+        ("<!-- Why. -->Closes #12\n", []),
+        ("<details>\nCloses #12\n</details>\n", []),
+        ("```\nx\n<!--\n```\nCloses #12\n-->\n", []),
+        ("Closes #12\n---\n", []),
+        ("Closes #1\n<!--\nfixes #12\n-->\n", [(3, "fixes #12", False)]),
+    ],
+)
+def test_a_closes_line_the_rendered_body_does_not_show_is_named_hidden(
+    body: str, expected: list[tuple[int, str, bool]]
+) -> None:
+    assert stray_closing_lines(body, TEMPLATE) == expected
+
+
+def test_a_hidden_closes_line_is_read_where_the_template_comments_are_blanked() -> None:
+    # The template's own comments stay unread, and a line the author hid below them is found on its own line number.
+    body = TEMPLATE.replace("Closes #\n", "Closes #1\n<!--\nCloses #12\n-->\n", 1)
+    assert stray_closing_lines(body, TEMPLATE) == [(5, "Closes #12", True)]
 
 
 # Each title and whether it holds a closing reference, as `pull_request.py check` printed `TITLE_CLOSES` for it before
