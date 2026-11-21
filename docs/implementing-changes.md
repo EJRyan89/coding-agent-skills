@@ -174,9 +174,14 @@ of a pull request's run, fetched with `git fetch origin '<head>'`), since its su
 `python -B tools/mutation_gate.py --minutes <cap> unrun '<folder>'` on the platform of each leg that left mutants
 without a verdict, on a machine with nothing else heavy running, since a timeout it records is taken as confirmed. It
 runs those mutants alone, keeps every outcome CI gave the others, refuses any other HEAD and a module whose text is not
-the one the mutants were made from, writes its outcomes to `local-<leg>.json` beside the leg's, and prints the join's
-summary, naming the
+the one the mutants were made from, writes its outcomes to `local-<leg>.json` beside the leg's as it goes, and prints
+the join's summary, naming the
 local run beside the leg, which the pull request's "Mutation survivors" comment then rules on as it would a CI run's.
+Stopped partway, by Ctrl-C or by the machine, it keeps the outcomes it reached: its suites start in process groups of
+their own, so the interrupt reaches the gate alone and the mutants it was running end as they would have. Run it again
+and it resumes, running only what the stopped run left without a verdict, not run or errored, and its survivors and
+unreached mutants while it judged them without a suite, and keeping the rest; a run that ended stops it, a local file
+from another commit stops it and the join, and removing the file runs the leg's mutants anew.
 A CI leg's timeout judges nothing until such a run confirms it: a runner's load can stretch a suite past its limit as
 surely as a mutant that makes a loop endless, so a run with one is unfinished, its summary counts confirmed and
 unconfirmed timeouts apart, and `unrun` runs each again, counting it as timed out only when it times out there too.
@@ -196,8 +201,8 @@ which never runs mutmut, for each module whose behavior differs on Windows: `dep
 the ejryan89-skill-core seam modules `CLAUDE.md` names, each module that imports one, each that holds a
 `PLATFORM_ALLOWED` table, and each whose own code reads the platform in any expression, through a token of any kind
 the platform policy's `PLATFORM_TOKENS` catalogues, such as `sys.platform`, `msvcrt`, or `creationflags`, or a
-separator or the null device, such as `os.altsep`. Each process of a suite's run may hold at most the gate's `MEMORY_BOUND` of data on Linux, so a mutant that allocates
-without end fails with a MemoryError, and a nonzero exit whose output shows one raised kills the mutant. Any other suite
+separator or the null device, such as `os.altsep`. Each process of a suite's run may hold at most the gate's `MEMORY_BOUND` of data on Linux, and commit at most as much
+on Windows, through its job object, so a mutant that allocates without end fails with a MemoryError, and a nonzero exit whose output shows one raised kills the mutant. Any other suite
 run that ends with neither a pass nor a test failure judges
 nothing, so its mutant is errored, which leaves the run unfinished like a mutant not run. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its

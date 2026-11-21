@@ -78,6 +78,42 @@ QUICK_LAUNCHER = (
     "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
     "open(sys.argv[1], 'w').write(str(child.pid))\n"
 )
+# Allocates the bytes its first argument gives and says whether Windows let it.
+ALLOCATOR = (
+    "import sys\n"
+    "try:\n"
+    "    held = bytearray(int(sys.argv[1]))\n"
+    "except MemoryError:\n"
+    "    print('refused')\n"
+    "else:\n"
+    "    print('allocated')\n"
+)
+# Run in a console of its own, so no other process shares it: with Ctrl-C processed here and in what it starts,
+# whatever it inherited, and ignored by this process's own handler, which nothing inherits, it starts a command that
+# says it is ready and then sleeps, under a job tree without and then with a process group of its own, sends Ctrl-C to
+# every process of its console once the command is ready, and prints for each how the command ended and what it
+# printed last. Its first argument is the folder job_tree is imported from.
+CONSOLE_INTERRUPT = (
+    "import ctypes, signal, subprocess, sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from job_tree import JobTree\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "kernel32.SetConsoleCtrlHandler(None, False)\n"
+    "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+    "command = \"import time\\nprint('ready', flush=True)\\ntime.sleep(5)\\nprint('finished', flush=True)\\n\"\n"
+    "for own_group in (False, True):\n"
+    "    tree = JobTree(own_group=own_group)\n"
+    "    process = subprocess.Popen(\n"
+    "        [sys.executable, '-c', command], stdout=subprocess.PIPE, text=True, encoding='utf-8',\n"
+    "        **tree.start_options()\n"
+    "    )\n"
+    "    with tree.hold(process):\n"
+    "        process.stdout.readline()\n"
+    "        kernel32.GenerateConsoleCtrlEvent(0, 0)\n"
+    "        output, _ = process.communicate(timeout=60)\n"
+    "    lines = output.split()\n"
+    "    print(own_group, process.returncode, lines[-1] if lines else '-', flush=True)\n"
+)
 # The longest PausedTree waits before it holds the command: long enough for a command that runs meanwhile to start its
 # program and exit.
 PAUSE_SECONDS = 2.0
@@ -527,6 +563,37 @@ if sys.platform == "win32":
                 entered = True
             self.assertTrue(entered)
 
+        def test_a_job_asked_to_bound_its_processes_memory_refuses_an_allocation_past_it_and_no_other_does(
+            self,
+        ) -> None:
+            allocation = str(256 << 20)
+            for tree, said in ((JobTree(memory_limit=128 << 20), "refused"), (JobTree(), "allocated")):
+                with self.subTest(memory_limit=tree.memory_limit):
+                    finished = run_bounded([sys.executable, "-c", ALLOCATOR, allocation], STARTUP_SECONDS, tree=tree)
+                    self.assertEqual((0, said), (finished.returncode, finished.stdout.decode().strip()))
+
+        def test_a_ctrl_c_at_the_console_reaches_a_command_only_when_it_has_no_process_group_of_its_own(self) -> None:
+            startup = subprocess.STARTUPINFO()  # type: ignore[attr-defined, unused-ignore]  # Windows only
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined, unused-ignore]  # Windows only
+            startup.wShowWindow = 0  # SW_HIDE
+            finished = subprocess.run(
+                [sys.executable, "-c", CONSOLE_INTERRUPT, str(Path(job_tree.__file__).parent)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=STARTUP_SECONDS,
+                check=False,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,  # type: ignore[attr-defined, unused-ignore]  # Windows only
+                startupinfo=startup,
+            )
+            self.assertEqual(0, finished.returncode, finished.stderr)
+            interrupted, shielded = finished.stdout.splitlines()
+            self.assertTrue(interrupted.startswith("False "), interrupted)
+            self.assertFalse(
+                interrupted.endswith(" finished"), "the command without a group of its own was interrupted"
+            )
+            self.assertEqual("True 0 finished", shielded)
+
         def test_a_job_that_cannot_be_made_names_the_call_and_the_windows_error(self) -> None:
             kernel32 = mock.Mock()
             kernel32.CreateJobObjectW.return_value = None
@@ -557,6 +624,43 @@ class ProcessTreeTests(unittest.TestCase):
     def test_a_job_tree_starts_the_command_suspended_and_hides_its_window_when_asked(self) -> None:
         self.assertEqual({"creationflags": 0x00000004}, JobTree().start_options())
         self.assertEqual({"creationflags": 0x08000004}, JobTree(hidden_window=True).start_options())
+
+    def test_a_job_tree_starts_the_command_in_a_process_group_of_its_own_only_when_asked(self) -> None:
+        self.assertEqual({"creationflags": 0x00000204}, JobTree(own_group=True).start_options())
+        self.assertEqual({"creationflags": 0x08000204}, JobTree(hidden_window=True, own_group=True).start_options())
+        self.assertEqual({"creationflags": 0x00000004}, JobTree(memory_limit=1 << 20).start_options())
+
+    def test_a_job_bounds_its_processes_memory_only_when_asked(self) -> None:
+        limits: list[tuple[int, int]] = []
+
+        def set_information(job: int, kind: int, information: Any, size: int) -> int:
+            asked = information._obj
+            self.assertEqual((11, 9, ctypes.sizeof(asked)), (job, kind, size))
+            limits.append((asked.BasicLimitInformation.LimitFlags, asked.ProcessMemoryLimit))
+            return 1
+
+        kernel32 = mock.Mock()
+        kernel32.CreateJobObjectW.return_value = 11
+        kernel32.SetInformationJobObject.side_effect = set_information
+        kernel32.OpenProcess.return_value = 22
+        kernel32.AssignProcessToJobObject.return_value = 1
+        with mock.patch.object(job_tree, "_kernel32", return_value=kernel32):
+            self.assertEqual(11, job_tree.job_holding(1))
+            self.assertEqual(11, job_tree.job_holding(1, 5 << 20))
+        self.assertEqual([(0x2000, 0), (0x2100, 5 << 20)], limits)
+
+    def test_a_job_tree_asks_its_job_for_the_memory_limit_it_was_given_and_none_otherwise(self) -> None:
+        process = mock.Mock(pid=4242)
+        for tree, limit in ((JobTree(), None), (JobTree(hidden_window=True), None), (JobTree(memory_limit=7), 7)):
+            with (
+                self.subTest(memory_limit=limit),
+                mock.patch.object(job_tree, "job_holding", return_value=11) as holding,
+                mock.patch.object(job_tree, "resume"),
+                mock.patch.object(job_tree, "_end_job") as end_job,
+                tree.hold(process),
+            ):
+                holding.assert_called_once_with(4242, limit)
+            end_job.assert_called_once_with(11)
 
     def test_a_group_tree_starts_the_command_as_the_leader_of_a_session_and_hides_nothing(self) -> None:
         for hidden in (False, True):
@@ -630,14 +734,29 @@ class ProcessTreeTests(unittest.TestCase):
     def test_the_windows_job_values(self) -> None:
         # Pinned against the values winnt.h and the job object documentation give, not the module's own names.
         self.assertEqual(
-            (0x0001, 0x0100, 9, 0x00002000, 0x08000000, 0x00000004, 0x0002, 0x00000004, 18, 0xFFFFFFFF),
+            (
+                0x0001,
+                0x0100,
+                9,
+                0x00002000,
+                0x00000100,
+                0x08000000,
+                0x00000004,
+                0x00000200,
+                0x0002,
+                0x00000004,
+                18,
+                0xFFFFFFFF,
+            ),
             (
                 job_tree.PROCESS_TERMINATE,
                 job_tree.PROCESS_SET_QUOTA,
                 job_tree.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                 job_tree.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                job_tree.JOB_OBJECT_LIMIT_PROCESS_MEMORY,
                 job_tree.CREATE_NO_WINDOW,
                 job_tree.CREATE_SUSPENDED,
+                job_tree.CREATE_NEW_PROCESS_GROUP,
                 job_tree.THREAD_SUSPEND_RESUME,
                 job_tree.TH32CS_SNAPTHREAD,
                 job_tree.ERROR_NO_MORE_FILES,
@@ -801,3 +920,7 @@ def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_
         tree = job_tree.process_tree(hidden_window=True)
         assert kind is type(tree)
         assert tree.hidden_window
+        # Every caller's tree bounds no memory and shares its caller's process group, as it did before either was
+        # offered.
+        if isinstance(tree, JobTree):
+            assert (tree.memory_limit, tree.own_group) == (None, False)
