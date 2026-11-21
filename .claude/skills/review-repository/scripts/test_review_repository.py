@@ -107,6 +107,8 @@ TRUST_BOUNDARY_SCRIPTS = (
     # the checkout's fixtures signed in as the user.
     "tools/checkout_trust.py",
     "tools/skill_evals.py",
+    # The skill evaluation's runs, which give each session the reviewer agent with its guard hook on the home's guard.
+    "tools/skill_evals_runs.py",
     # The canaries, which deploy or build the checkout's skills and run them signed in as the user, refusing a foreign
     # checkout through checkout_trust.py first.
     "tools/plugin_canary.py",
