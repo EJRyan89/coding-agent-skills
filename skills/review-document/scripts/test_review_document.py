@@ -2353,6 +2353,65 @@ class ResolveTests(unittest.TestCase):
         )
         self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
 
+    def test_a_hidden_folder_is_never_listed(self) -> None:
+        self.write(".pytest_cache/v/design.md", "docs/.archive/old/design.md", ".github/design.md", "docs/design.md")
+        listing = os.scandir
+        listed: list[Path] = []
+
+        def scandir(path: str | os.PathLike[str]) -> Any:
+            folder = Path(path)
+            hidden = [part for part in folder.relative_to(self.top).parts if part.startswith(".")]
+            self.assertEqual([], hidden, f"resolve listed the hidden folder {folder}")
+            listed.append(folder)
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            lines = self.resolve()
+        self.assertEqual([f"FOUND {Path('docs/design.md')}"], lines)
+        self.assertEqual([self.top, self.top / "docs"], listed)
+
+    def test_past_its_bound_the_search_names_where_it_stopped_and_a_single_match_is_a_candidate(self) -> None:
+        self.write("docs/design.md", "notes/design.md", "zeta/other.md")
+        reason = folder_walk.bounded_reason(2)
+        expected = [f"UNSEARCHED notes {reason}", f"CANDIDATE {Path('docs/design.md')}"]
+        with (
+            mock.patch.object(review_document, "RESOLVE_FOLDER_LIMIT", 2),
+            mock.patch.object(Path, "cwd", return_value=self.top),
+        ):
+            self.assertEqual((1, expected), run_main("resolve", "design.md"))
+            self.assertEqual((1, [f"UNSEARCHED notes {reason}", "NOT_FOUND notes.md"]), run_main("resolve", "notes.md"))
+        with (
+            mock.patch.object(review_document, "RESOLVE_FOLDER_LIMIT", 4),
+            mock.patch.object(Path, "cwd", return_value=self.top),
+        ):
+            expected = [f"CANDIDATE {Path(relative)}" for relative in ("docs/design.md", "notes/design.md")]
+            self.assertEqual((0, expected), run_main("resolve", "design.md"))
+
+    def test_the_bound_is_a_pinned_contract_value_and_the_module_and_skill_state_it(self) -> None:
+        # A pinned contract value: the bound step 1 of SKILL.md and the module docstring promise the user.
+        self.assertEqual(10000, review_document.RESOLVE_FOLDER_LIMIT)
+        stated = f"{review_document.RESOLVE_FOLDER_LIMIT} folders"
+        self.assertIn(stated, " ".join((review_document.__doc__ or "").split()))
+        self.assertIn(
+            stated, " ".join((SKILLS_ROOT / "review-document" / "SKILL.md").read_text(encoding="utf-8").split())
+        )
+
+    def test_an_unexamined_hidden_entry_is_passed_over_unless_it_bears_the_name(self) -> None:
+        self.write("docs/design.md", ".cache/x.md", "notes/.design.md")
+        real = folder_walk.is_folder_link
+
+        def is_folder_link(entry: os.DirEntry[str]) -> bool:
+            if entry.name.startswith("."):
+                raise PermissionError(13, "Permission denied")
+            return real(entry)
+
+        with mock.patch.object(folder_walk, "is_folder_link", is_folder_link):
+            self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
+            self.assertEqual(
+                [f"UNSEARCHED {Path('notes/.design.md')} the entry cannot be examined: Permission denied", "NOT_FOUND .design.md"],
+                self.resolve(".design.md"),
+            )
+
     def test_a_copy_in_another_checkout_below_the_working_directory_is_not_searched(self) -> None:
         self.write("docs/design.md", "vendor/clone/docs/design.md")
         (self.top / "vendor" / "clone" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
