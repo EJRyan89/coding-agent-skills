@@ -153,12 +153,15 @@ outcomes it reached, which the join reads, naming the local run as stopped befor
 was written whole at its end. read_local holds each place to one the leg's own outcome left without a verdict, and each
 local outcome to the local run's suites. It then reports as the join does, and exits as the join does. A local run's
 record beside the leg's that ended stops it, and so does a leg of another platform. One that did not end is resumed:
-the step runs again only the places that run left not run, and, while it left a suite's reach unmeasured, those it
-left surviving or unreached, which that suite might have killed, and keeps every other outcome it reached, which the
-record names as kept, since a suite the resumed run lists as failed or unmeasured may have judged one of them. The
-record it writes as it goes, and at its end, joins both runs: their caps, seconds, and runs summed, the most workers
-either used, the resumed run's unmeasured suites, since every outcome a suite left unmeasured could still change is
-the resumed run's, and the suites either run lists as failed unmutated, but one the resumed run judged a mutant with.
+the step runs again only the places that run left without a verdict, not run or errored, and, while it listed a suite
+as failed unmutated or left its reach unmeasured, those it left surviving or unreached, which that suite might have
+killed, and keeps every other outcome it reached, which the record names as kept, since a suite the resumed run lists
+as failed or unmeasured may have judged one of them. The record it writes as it goes, and at its end, joins both runs:
+their caps, seconds, and runs summed, the most workers either used, the resumed run's unmeasured suites, since every
+outcome a suite left unmeasured could still change is the resumed run's, and the suites either run lists as failed
+unmutated, but one the resumed run judged a mutant with. Each record names the commit it ran at, and the join refuses
+one of another commit than the selection's; a record written before records named one reads as before, but one that
+did not end is not resumed.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -520,7 +523,8 @@ class LocalRun:
     the places, and whether it reached its end, which a record it writes as it goes does not, so the mutants it had not
     reached are not run. The CI leg's own outcomes stay as the leg wrote them. A run that resumed one that stopped
     before its end, as resumed_run joins them, counts its `runs`, and names in `kept` each module's places whose
-    outcome an earlier run reached, which its own failed and unmeasured suites did not judge."""
+    outcome an earlier run reached, which its own failed and unmeasured suites did not judge. `head` is the commit it
+    ran at, as the selection records it, or empty in a record written before the step recorded one."""
 
     minutes: int
     seconds: float
@@ -532,6 +536,7 @@ class LocalRun:
     ended: bool = True
     kept: dict[str, list[int]] = field(default_factory=dict)
     runs: int = 1
+    head: str = ""
 
 
 @dataclass
@@ -2400,6 +2405,7 @@ def local_record(leg: str, local: LocalRun) -> dict[str, Any]:
         },
         "kept": local.kept,
         "runs": local.runs,
+        "head": local.head,
     }
 
 
@@ -2547,11 +2553,12 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
     does not let a local run replace, a count of outcomes that is not the count of places, or an outcome naming a
     suite the local run judged nothing with stops the join, so a local outcome stands only where the CI leg left no
     verdict. A record that names no end was written whole at its end, as the step wrote every record before it wrote
-    one as it went, so it reads as ended; one that names no runs or kept places ran once. A kept place must be one of
-    its module's places, named once, and the outcome there an earlier run's, which the record's own suites do not
-    judge."""
+    one as it went, so it reads as ended; one that names no runs or kept places ran once, and one that names no head
+    was written before the step recorded the commit it ran at, which read_run then cannot hold it to. A kept place
+    must be one of its module's places, named once, and the outcome there an earlier run's, which the record's own
+    suites do not judge."""
     fields = ("leg", "minutes", "seconds", "workers", "mutants", "failed_suites", "unmeasured_suites", "outcomes")
-    found = READ.json_object(value, where, required=fields, optional=("ended", "kept", "runs"))
+    found = READ.json_object(value, where, required=fields, optional=("ended", "kept", "runs", "head"))
     name = READ.one_of(found["leg"], f"{where}.leg", LEGS)
     if name != leg.name:
         raise RecordError(f"{where} holds a local run of the {name} leg, not of the {leg.name} leg")
@@ -2600,6 +2607,7 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
         READ.boolean(found.get("ended", True), f"{where}.ended"),
         kept,
         READ.integer(found.get("runs", 1), f"{where}.runs", minimum=1),
+        "" if found.get("head", "") == "" else READ.hex_digest(found["head"], f"{where}.head", 40, 64),
     )
     refuse_unjudged_suites(
         where,
@@ -2874,6 +2882,11 @@ class Gate:
             raise RuntimeError(
                 f"{local_name(name)} already completes the {name} leg: remove it to run the leg's mutants anew"
             )
+        if earlier is not None and not earlier.head:
+            raise RuntimeError(
+                f"{local_name(name)} holds a local run of the {name} leg that stopped before its end and names no "
+                "commit it ran at, so it cannot be resumed: remove it to run the leg's mutants anew"
+            )
         if not selected.head:
             raise RuntimeError(f"{MUTANTS_FILE} records no commit the run tested, so its suites cannot be matched")
         head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
@@ -2902,7 +2915,7 @@ class Gate:
             return leg if earlier is None else replace(leg, local=replace(earlier, ended=True))
 
         def local(run: LegRun, ended: bool) -> LocalRun:
-            ran = self.local_run(run, places, ended)
+            ran = self.local_run(run, places, selected.head, ended)
             return ran if earlier is None else resumed_run(earlier, ran)
 
         started = self.clock()
@@ -2925,8 +2938,9 @@ class Gate:
             )
         return replace(leg, local=local(ran, True))
 
-    def local_run(self, ran: LegRun, places: dict[str, list[int]], ended: bool = True) -> LocalRun:
-        """The local run of a leg's mutants at `places` from the leg run that ran them, under this gate's cap."""
+    def local_run(self, ran: LegRun, places: dict[str, list[int]], head: str, ended: bool = True) -> LocalRun:
+        """The local run of a leg's mutants at `places` from the leg run that ran them at the commit `head`, under this
+        gate's cap."""
         return LocalRun(
             self.minutes,
             ran.seconds,
@@ -2936,6 +2950,7 @@ class Gate:
             ran.unmeasured_suites,
             ran.outcomes,
             ended,
+            head=head,
         )
 
 
@@ -2958,9 +2973,14 @@ def unjudged(report: Report, leg: LegRun) -> dict[str, list[int]]:
 
 def resumable_places(local: LocalRun) -> dict[str, list[int]]:
     """The places of each module's mutants a run resuming `local`, which stopped before its end, runs again: each it
-    left not run, and, while it left a suite's reach unmeasured, each it left surviving or unreached, which that suite
-    might have killed. Every other outcome it reached stands."""
-    statuses = {NOT_RUN, *((SURVIVED, NOT_REACHED) if local.unmeasured_suites else ())}
+    left without a verdict, not run or errored, and, while it listed a suite as failed unmutated or left its reach
+    unmeasured, each it left surviving or unreached, which that suite might have killed. Every other outcome it reached
+    stands: a kill or a timeout, or a survivor or an unreached mutant every reaching suite judged."""
+    statuses = {
+        NOT_RUN,
+        ERRORED,
+        *((SURVIVED, NOT_REACHED) if local.unmeasured_suites or local.failed_suites else ()),
+    }
     found = {}
     for module, places in local.mutants.items():
         again = [
@@ -2977,7 +2997,8 @@ def resumed_run(earlier: LocalRun, ran: LocalRun) -> LocalRun:
     summed and the most workers either used; the resumed run's unmeasured suites, since each outcome they might change,
     a survivor or an unreached mutant, is its own, as resumable_places runs again those of a run that left one; the
     suites either lists as failed unmutated, the resumed run's reason first, but those the resumed run judged a mutant
-    with; and whether the resumed run ended."""
+    with, which no kept outcome they might change is left beside, since resumable_places runs again every survivor and
+    unreached mutant of a run that listed one; and the resumed run's commit and whether it ended."""
     outcomes: dict[str, list[Outcome]] = {}
     kept: dict[str, list[int]] = {}
     for module, places in earlier.mutants.items():
@@ -3000,6 +3021,7 @@ def resumed_run(earlier: LocalRun, ran: LocalRun) -> LocalRun:
         ran.ended,
         kept,
         earlier.runs + ran.runs,
+        ran.head,
     )
 
 
@@ -3072,7 +3094,7 @@ def read_run(folder: Path) -> tuple[Selected, list[LegRun]]:
     directly inside it, and the local run that completed a leg, if one did. A missing file, the selection's or a
     leg's that had mutants to run, stops it, since that leg's mutants then have no verdict, and so does a leg's file
     that read_leg refuses, such as one naming another leg or leaving out a module, and a local run's of a leg that ran
-    no mutant."""
+    no mutant, or of another commit than the selection's, whose outcomes this run's suites did not judge."""
     files = run_files(folder)
     if MUTANTS_FILE not in files:
         raise RuntimeError(f"the select job wrote no {MUTANTS_FILE}, so no leg ran: read that job's log")
@@ -3084,6 +3106,11 @@ def read_run(folder: Path) -> tuple[Selected, list[LegRun]]:
         local = files.get(local_name(name))
         if local:
             leg.local = read_local(read_record(local), local.name, leg)
+            if leg.local.head and leg.local.head != selected.head:
+                raise RecordError(
+                    f"{local.name} holds a local run at {leg.local.head}, not at {selected.head or 'no commit'}, the "
+                    "commit this run tested: remove it to run the leg's mutants anew"
+                )
         legs.append(leg)
     stray = sorted(found for found in files if found.startswith("local-") and found not in map(local_name, needed))
     if stray:

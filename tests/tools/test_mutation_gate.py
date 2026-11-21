@@ -3989,6 +3989,7 @@ class UnrunFixtures(unittest.TestCase):
             (True, {"tools/calc.py": [0, 1]}, {"tools/calc.py": [0]}, 2, 10),
             (written["ended"], written["mutants"], written["kept"], written["runs"], written["minutes"]),
         )
+        self.assertEqual(read_selection(self.folder / "mutants.json").head, written["head"])
         self.assertEqual(stopped["outcomes"]["tools/calc.py"][0], written["outcomes"]["tools/calc.py"][0])
         self.assertEqual([SURVIVED, SURVIVED], [outcome["status"] for outcome in written["outcomes"]["tools/calc.py"]])
         result = mutation_gate.join(self.folder)
@@ -4056,6 +4057,65 @@ class UnrunFixtures(unittest.TestCase):
             ),
         )
         self.assertTrue(mutation_gate.join(self.folder).finished)
+
+    def stopped_record(self, statuses: Sequence[str], head: str | None = None) -> None:
+        """A local run of both of calc.py's mutants, stopped before its end with `statuses`, at `head`, the selection's
+        unless given."""
+        (chosen,) = read_selection(self.folder / "mutants.json").modules
+        outcomes = [
+            Outcome(mutant, status, () if status == NOT_RUN else ("tests/tools/test_calc.py",))
+            for mutant, status in zip(chosen.mutants, statuses, strict=True)
+        ]
+        tested = read_selection(self.folder / "mutants.json").head
+        local = mutation_gate.LocalRun(
+            5, 30.0, 2, {"tools/calc.py": [0, 1]}, {}, [], {"tools/calc.py": outcomes}, False, head=head or tested
+        )
+        (self.folder / "local-linux.json").write_text(json.dumps(local_record(LINUX_LEG, local)), encoding="utf-8")
+
+    def test_a_resumed_run_runs_again_an_errored_mutant_and_finishes(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([ERRORED, NOT_RUN])
+        self.unrun_step(self.gate())
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        written = self.local()
+        self.assertEqual((True, {}), (written["ended"], written["kept"]))
+        self.assertTrue(mutation_gate.join(self.folder).finished)
+
+    def test_a_local_run_of_another_commit_than_the_selections_stops_the_join_and_is_not_resumed(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        tested = read_selection(self.folder / "mutants.json").head
+        other = "f" * 40
+        self.assertNotEqual(tested, other)
+        refusal = (
+            rf"^local-linux.json holds a local run at {other}, not at {tested}, the commit this run tested: remove it "
+            r"to run the leg's mutants anew$"
+        )
+        for ended in (False, True):
+            with self.subTest(ended=ended):
+                self.stopped_record([KILLED, NOT_RUN], head=other)
+                record = {**self.local(), "ended": ended}
+                (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaisesRegex(RecordError, refusal):
+                    self.unrun()
+                with self.assertRaisesRegex(RecordError, refusal):
+                    mutation_gate.join(self.folder)
+        self.assertEqual([], self.seen)
+
+    def test_a_local_record_that_names_no_commit_is_joined_as_before_and_not_resumed(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([KILLED, NOT_RUN])
+        unnamed = {key: value for key, value in self.local().items() if key not in ("head", "kept", "runs")}
+        (self.folder / "local-linux.json").write_text(json.dumps(unnamed), encoding="utf-8")
+        self.assertFalse(mutation_gate.join(self.folder).finished)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"^local-linux.json holds a local run of the Linux leg that stopped before its end and names no commit it "
+            r"ran at, so it cannot be resumed: remove it to run the leg's mutants anew$",
+        ):
+            self.unrun()
+        self.assertEqual([], self.seen)
+        (self.folder / "local-linux.json").write_text(json.dumps({**unnamed, "ended": True}), encoding="utf-8")
+        self.assertIn("a local run on Linux then ran the 2 mutants", mutation_gate.join(self.folder).text)
 
     def test_a_stopped_run_that_had_reached_every_mutant_is_written_as_ended_and_runs_nothing(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
@@ -4506,22 +4566,35 @@ def test_a_local_record_that_names_no_kept_place_or_runs_ran_once_and_keeps_noth
     local = read_local_file(LOCAL_RECORD).local
     assert local is not None
     assert (local.kept, local.runs) == ({}, 1)
-    assert mutation_gate.local_record(WINDOWS_LEG, local) == {**LOCAL_RECORD, "ended": True, "kept": {}, "runs": 1}
+    assert mutation_gate.local_record(WINDOWS_LEG, local) == {
+        **LOCAL_RECORD,
+        "ended": True,
+        "kept": {},
+        "runs": 1,
+        "head": "",
+    }
 
 
 def resume_mutant(line: int) -> Mutant:
     return Mutant(PATH_MODULE, line, "a", "b", "b\n", False)
 
 
-def test_a_resumed_run_runs_again_what_the_stopped_one_left_not_run_and_open_while_a_reach_went_unmeasured() -> None:
-    mutants = [resume_mutant(line) for line in range(5)]
-    statuses = (KILLED, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED)
+def test_a_resumed_run_runs_again_what_the_stopped_one_left_without_a_verdict_and_open_beside_an_unjudged_suite() -> (
+    None
+):
+    mutants = [resume_mutant(line) for line in range(6)]
+    statuses = (KILLED, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED, TIMED_OUT)
     outcomes = {PATH_MODULE: [Outcome(mutant, status) for mutant, status in zip(mutants, statuses, strict=True)]}
-    stopped = mutation_gate.LocalRun(5, 60.0, 2, {PATH_MODULE: [7, 3, 9, 1, 4]}, {}, [], outcomes, False)
-    assert mutation_gate.resumable_places(stopped) == {PATH_MODULE: [1]}
-    unmeasured = replace(stopped, unmeasured_suites=["tests/u.py"])
-    assert mutation_gate.resumable_places(unmeasured) == {PATH_MODULE: [3, 9, 1]}
-    assert mutation_gate.resumable_places(replace(stopped, outcomes={PATH_MODULE: outcomes[PATH_MODULE][:1] * 5})) == {}
+    stopped = mutation_gate.LocalRun(5, 60.0, 2, {PATH_MODULE: [7, 3, 9, 1, 4, 0]}, {}, [], outcomes, False)
+    # Not run and errored mutants have no verdict; a survivor and an unreached mutant every reaching suite judged do.
+    assert mutation_gate.resumable_places(stopped) == {PATH_MODULE: [1, 4]}
+    # A suite the stopped run judged nothing with, unmeasured or failed unmutated, might have killed either.
+    for judged_without in (
+        replace(stopped, unmeasured_suites=["tests/u.py"]),
+        replace(stopped, failed_suites={"tests/f.py": "failed unmutated with exit code 1"}),
+    ):
+        assert mutation_gate.resumable_places(judged_without) == {PATH_MODULE: [3, 9, 1, 4]}
+    assert mutation_gate.resumable_places(replace(stopped, outcomes={PATH_MODULE: outcomes[PATH_MODULE][:1] * 6})) == {}
 
 
 def test_a_resumed_run_joins_the_stopped_ones_outcomes_kept_with_its_own_its_suites_and_their_time() -> None:
