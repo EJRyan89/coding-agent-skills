@@ -58,10 +58,10 @@ COMMENTS = [
     # is text, and the single runs after it make a span that shows the comment. The pattern this read before
     # closed a span on the double run's last backtick and hid the comment, giving "``a`` z".
     ("``a`<!-- x -->` z", "``a`<!-- x -->` z"),
-    # Past a hidden comment, the line's runs pair from its end, as GitHub renders these: the backtick inside the first
-    # comment pairs with none after it, so the second comment is hidden, and the span after a comment shows the one
-    # it holds.
-    ("<!-- `x --> <!-- z --> `", "  `"),
+    # Past a hidden comment within a paragraph, the line's runs pair from its end, as GitHub renders these: the
+    # backtick inside the first comment pairs with none after it, so the second comment is hidden, and the span after
+    # a comment shows the one it holds. A line opening with `<!--` would open an HTML block and never be read so.
+    ("p <!-- `x --> <!-- z --> `", "p   `"),
     ("p <!-- ` --> `a <!-- b --> c`", "p  `a <!-- b --> c`"),
 ]
 

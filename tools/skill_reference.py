@@ -36,7 +36,7 @@ import json_writer
 import runtime_support
 import skill_menu
 from console import run_main
-from markdown_sections import find_fences, markdown_section
+from markdown_sections import code_spans, find_fences, markdown_section
 from text_lines import LINE_BREAK, text_lines
 
 from deployer import source as deploy_source
@@ -330,10 +330,10 @@ def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[st
         return [f"{README.as_posix()}: no 'Included skills' section"]
     # A row is named by the first code span in its first cell; the header and separator rows have none.
     rows = [
-        found.group(1)
+        found[0].text
         for line in text_lines(section)
         if line.startswith("|")
-        if (found := re.search(r"`([^`]+)`", line.split("|")[1]))
+        if (found := code_spans(line.split("|")[1]))
     ]
     problems = [f"{README.as_posix()}: 'Included skills' has no row for `{root}`" for root in roots if root not in rows]
     problems += [

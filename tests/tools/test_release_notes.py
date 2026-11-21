@@ -57,6 +57,20 @@ class BodyEntriesTests(unittest.TestCase):
         )
         self.assertEqual({"skills/beta"}, entries[0].contract_items)
 
+    def test_a_contract_item_is_a_code_span_that_pairs_whole_backtick_runs(self) -> None:
+        # The contract line of the revert declaration's upgrade note in docs/upgrade-notes.md. changed: the
+        # single-backtick pattern this read before split the double-backtick span at its inner backticks, read the
+        # prose between it and the next span as an item, and missed `docs/implementing-changes.md`.
+        body = (
+            "## Upgrade note\n\n### A revert is declared\n\n- Level: patch.\n"
+            "- Contract: the revert declaration, ``Reverts `<path>` to its state before <commit>``, as "
+            '"Pull requests" in `docs/implementing-changes.md` states.\n- User action: none.\n'
+        )
+        [entry] = release_notes.body_entries(body)
+        self.assertEqual(
+            {"Reverts `<path>` to its state before <commit>", "docs/implementing-changes.md"}, entry.contract_items
+        )
+
     def test_an_entry_a_comment_holds_and_a_comment_in_a_heading_are_not_read(self) -> None:
         body = (
             "## Upgrade note\n\n<!--\n### Hidden\n\n- Level: patch\n-->\n### Shown <!-- note --> here\n\n"

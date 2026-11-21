@@ -492,7 +492,10 @@ def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, C
 def _code_references(line: str, links: Cover) -> list[str]:
     """The Markdown paths a line names in code outside its links, each with a leading `./` dropped, as a path from the
     repository root reads it. A code span is read through markdown_sections' code_spans, which pairs whole backtick
-    runs, so a path written with two backticks is read and one between two spans is prose."""
+    runs, so a path written with two backticks is read and one between two spans is prose.
+
+    Limit: a span's text is matched as written, without the space CommonMark strips from each side, so a path
+    written with a space inside each backtick, as `` ` d.md ` ``, is no path, where GitHub renders it as code."""
     return [
         span.text.removeprefix("./")
         for span in code_spans(line)

@@ -333,6 +333,17 @@ class SkillReferenceTestCase(unittest.TestCase):
             skill_reference.problems(self.root),
         )
 
+    def test_a_readme_row_is_named_by_its_first_code_span_read_whole(self) -> None:
+        # changed: the single-backtick pattern this read before named the second row `a`, from inside its span.
+        readme = (
+            "## Included skills\n\n| Skill | What |\n|---|---|\n| `alpha` | x |\n| ``a`b`` | y |\n"
+            "| ``beta`` | z |\n\nSee [Skills](docs/skills.md) and [R](docs/skills.md#runtime-support).\n"
+        )
+        self.assertEqual(
+            ["README.md: 'Included skills' row `a`b` names no selectable skill or bundle; remove it"],
+            skill_reference.readme_problems(readme, ["alpha", "beta"], ["alpha", "beta"]),
+        )
+
     def test_a_readme_link_to_a_missing_reference_section_is_reported(self) -> None:
         self.written_and_explained()
         readme = self.root / "README.md"

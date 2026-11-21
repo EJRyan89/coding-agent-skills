@@ -1696,6 +1696,9 @@ def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separ
             True,
             id="item-after-an-item-s-paragraph",
         ),
+        # changed: the single-backtick pattern this read before read ` the skill ` and ` is ` from between the spans,
+        # so the sentence named no skill and was no statement.
+        pytest.param("Under ``a`` the skill `fetcher` is `none`.\n", True, id="a-span-written-with-two-backticks"),
     ],
 )
 def test_a_runtime_page_statement_is_a_sentence_of_one_block(page: str, read: bool, tmp_path: Path) -> None:

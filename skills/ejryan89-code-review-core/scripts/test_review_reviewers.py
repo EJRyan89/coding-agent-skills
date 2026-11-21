@@ -124,6 +124,18 @@ class InspectionTests(unittest.TestCase):
         result = inspect("---\nname: x\n---\nSee ``x`` review ``y``.\n", ".claude/skills/x/SKILL.md")
         self.assertEqual(("no", []), (result.delegates, result.evidence))
 
+    def test_a_code_path_is_a_code_span_read_whole_and_a_bare_path_is_read_outside_one(self) -> None:
+        files = {"README.md", "docs/rules.md", "src/A.cs"}
+        for line, expected in [
+            ("Read `README.md` here.", ["README.md"]),
+            # changed: the single-backtick pattern this read before took `README.md` between the closing backtick of
+            # ``x`` and the opening one of `y` for a code span.
+            ("see ``x``README.md`y` now", []),
+            ("Run `python src/A.cs` now, then ``docs/rules.md``.", ["docs/rules.md", "src/A.cs"]),
+        ]:
+            with self.subTest(line=line):
+                self.assertEqual(expected, inspect_skill(SKILL, f"{line}\n", COMMIT, files).references)
+
     def test_references_come_from_code_spans_links_and_bare_paths_that_exist(self) -> None:
         result = inspect("Read [the rules](../../docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)

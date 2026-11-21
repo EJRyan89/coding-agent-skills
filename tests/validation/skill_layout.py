@@ -334,9 +334,9 @@ def runtime_page_problems(root: Path) -> list[str]:
     """Report a runtime's support page that states a skill's support on that runtime otherwise than its metadata.
 
     A statement is a sentence of a block outside code, as markdown_sections' `blocks` walks them, that names one skill
-    and one level, each in backticks (`full`, `partial`, or `none`); its level must be the one the skill's deploy-meta
-    declares for the page's runtime, and the capabilities it names in backticks exactly those the declaration needs. A
-    sentence naming several skills or levels is no statement this reads.
+    and one level, each a code span as code_spans pairs it (`full`, `partial`, or `none`); its level must be the one
+    the skill's deploy-meta declares for the page's runtime, and the capabilities it names in code spans exactly those
+    the declaration needs. A sentence naming several skills or levels is no statement this reads.
     """
     import runtime_support
 
@@ -354,7 +354,7 @@ def runtime_page_problems(root: Path) -> list[str]:
         prose = (block for block in blocks(text_lines(path.read_text(encoding="utf-8"))) if block.kind != CODE)
         for block in prose:
             for sentence in re.split(r"(?<=[.!?])\s+", " ".join(block.text().split())):
-                spans = set(re.findall(r"`([^`]+)`", sentence))
+                spans = {span.text for span in code_spans(sentence)}
                 skills, stated = spans & declared.keys(), spans & levels
                 if len(skills) != 1 or len(stated) != 1:
                     continue
@@ -997,6 +997,15 @@ def unsupported_script_problems(root: Path) -> list[str]:
     return problems
 
 
+# A file extension a code span names, matched against the span's whole text.
+EXTENSION = re.compile(r"\.[a-z0-9]+")
+
+
+def _extensions(text: str) -> set[str]:
+    """The extensions the code spans of `text` name, each span read through code_spans."""
+    return {span.text for span in code_spans(text) if EXTENSION.fullmatch(span.text)}
+
+
 def script_language_problems(root: Path, standard_commands: set[str]) -> list[str]:
     """Report where the skill guide or the tool catalogue disagrees with the runner on a skill's script languages."""
     found = [
@@ -1011,7 +1020,7 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
     if line is None:
         return [*found, f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"]
     supported, _, unsupported = line.partition("JavaScript and TypeScript")
-    named = set(re.findall(r"`(\.[a-z0-9]+)`", supported))
+    named = _extensions(supported)
     found += [
         f"{SKILL_GUIDE} names `{extension}` as an executable extension"
         for extension in sorted(named - EXECUTABLE_SCRIPT_EXTENSIONS)
@@ -1020,7 +1029,7 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
         f"{SKILL_GUIDE} does not name `{extension}` as executable"
         for extension in sorted(EXECUTABLE_SCRIPT_EXTENSIONS - named)
     ]
-    rejected = set(re.findall(r"`(\.[a-z0-9]+)`", unsupported))
+    rejected = _extensions(unsupported)
     found += [
         f"{SKILL_GUIDE} does not name `{extension}` as unsupported"
         for extension in sorted(UNSUPPORTED_SCRIPT_EXTENSIONS - rejected)
