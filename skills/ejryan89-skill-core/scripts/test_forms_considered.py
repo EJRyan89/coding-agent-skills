@@ -15,8 +15,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from forms_considered import FENCE_WINDOW, FormsFault, forms_fault, forms_section, is_fix_title, without_hidden_comments
-from markdown_sections import code_block_lines
+import forms_considered
+from forms_considered import (
+    WALK_WINDOW,
+    FormsFault,
+    forms_fault,
+    forms_section,
+    is_fix_title,
+    is_placeholder,
+    placeholder_forms,
+    without_hidden_comments,
+)
+from markdown_sections import blocks
 
 TEMPLATE = (
     "## Changes\n\n-\n\n## Forms considered\n\n"
@@ -82,9 +92,21 @@ def test_a_comment_opener_code_shows_hides_nothing(forms: str) -> None:
         # A comment block inside a quote holds its fence-like lines too.
         ("> <!-- x\n> ```\n> -->\n<!-- y -->", "> \n"),
         # A fence-like line inside a comment within a line is a fence, as GitHub reads the blocks before the comments,
-        # so the fence shows the `<!--` after it; the comment inside the line, whose `-->` falls past the fence-like
-        # line that ends its paragraph, still goes, as the stated limit on such a comment says.
-        ("a <!-- b\n```\n--> <!-- c -->", "a  <!-- c -->"),
+        # so the fence shows the `<!--` after it, and the comment inside the line, whose paragraph the fence ends before
+        # any `-->`, is text.
+        ("a <!-- b\n```\n--> <!-- c -->", "a <!-- b\n```\n--> <!-- c -->"),
+        # A `<!--` inside a paragraph, a list item's text, or a heading that its block ends before any `-->` is text,
+        # while one that opens an HTML block, at a line's start or a list item's or a quote's content, hides the rest.
+        ("a <!-- b\n\nc", "a <!-- b\n\nc"),
+        ("- the construct <!-- with no closer\n- VISIBLE", "- the construct <!-- with no closer\n- VISIBLE"),
+        ("text <!-- a\n## H\n-->", "text <!-- a\n## H\n-->"),
+        ("text <!-- a\nb --> c", "text  c"),
+        ("<!-- a\n\nb", ""),
+        ("- <!-- a\n- b", "- "),
+        ("> <!-- a\n\nb", "> "),
+        ("- a\n      <!-- b\n\nc", "- a\n      <!-- b\n\nc"),
+        # A comment on a line GitHub passes on as HTML, after a comment block's `-->` on its line, runs to the end.
+        ("<!-- a --> b <!-- c\n\nd", " b "),
         ("<!-->x<!--->y", "xy"),
     ],
 )
@@ -96,7 +118,13 @@ def test_a_comment_is_hidden_only_where_it_opens_outside_code(text: str, expecte
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param("a <!-- b\n\nc", "a ", id="an unclosed opener inside a line hides the rest"),
+        pytest.param("> a <!-- b\n>\n> c -->\nd", "> a \nd", id="a comment in a quote ends anywhere in the quote"),
+        pytest.param(
+            "q\n> a\n> 2. <!-- b\n\nc", "q\n> a\n> 2. ", id="a quoted marker that cannot interrupt opens a block"
+        ),
+        pytest.param("- <!-- a\nb\n-->\nc", "- \nc", id="a block comment its item stops holding ends at its closer"),
+        pytest.param("<div>\n```\n</div>\n\n<!-- a -->", "<div>\n```\n</div>\n\n<!-- a -->", id="a div is a paragraph"),
+        pytest.param("<h1>a\n    <!-- b\n\nc", "<h1>a\n    <!-- b\n\nc", id="an indented opener an h1 holds is code"),
         pytest.param("``a`<!-- x -->` z", "``a`` z", id="backtick runs of unequal length pair as a span"),
         pytest.param("\\`<!-- x -->\\` z", "\\`<!-- x -->\\` z", id="an escaped backtick opens a span"),
         pytest.param(
@@ -108,28 +136,80 @@ def test_a_comment_is_read_within_the_module_s_stated_limits(text: str, expected
     assert without_hidden_comments(text) == expected
 
 
-GITHUB_BODY_LIMIT = 65_536
-# Bodies of one comment form repeated to GitHub's limit, each of which once took seconds to minutes to read.
+# Bodies of one form repeated to GitHub's limit, each of which once took seconds to minutes to read, or would read in
+# time growing with the square of the body if a comment block's walk started again from the body's start.
 SCALING = {
     "closed comments": ("", "<!-- c -->\n", ""),
     "empty comments": ("", "<!-->\n", ""),
     "openers a fence shows": ("```\n", "<!--\n", "```\n"),
     "comments inside lines": ("", "x <!-- c --> y\n", ""),
+    "unclosed comments inside lines": ("", "x <!-- y\n", ""),
     "comments holding a fence-like line": ("", "<!--\n```\n-->\n", ""),
+    "fences showing an opener closed after them": ("", "```\n<!--\n```\n-->\n", ""),
+    "quoted comments holding a fence-like line": ("", "> <!--\n> ```\n> -->\n", ""),
+    "comments in a list item": ("- a\n", "  <!--\n  x\n  -->\n", ""),
+    "comments in a list item holding a fence-like line": ("- a\n", "  <!--\n  ```\n  -->\n", ""),
+    "comments in an item in a quote": ("> - a\n", ">   <!--\n>   ```\n>   -->\n", ""),
+    "comments their item stops holding": ("", "- <!--\nx\n-->\n", ""),
+    "HTML headings holding a fence-like line": ("", "<h2>x</h2>\n```\ntext\n\n", ""),
+    # Comments left unclosed in list items, each of which once made every walk read to the end of the body.
+    "unclosed comments that open list items": ("", "- <!--\n", ""),
+    "unclosed comments in list items": ("", "- a\n  <!--\n", ""),
+    "unclosed comments in items above a fence-like line": ("", "1. <!--\n- ```\n", ""),
+    "nested list items": ("", "".join("  " * depth + "- <!--\n" + "  " * depth + "  -->\n" for depth in range(60)), ""),
     # A run of quote markers a comment block's start once backtracked through in time exponential in its length.
     "nested quote markers": ("<!-- c -->\n", "> " * 40 + "x\n", ""),
 }
-
-
-def repeated(head: str, unit: str, tail: str) -> str:
-    return head + unit * ((GITHUB_BODY_LIMIT - len(head) - len(tail)) // len(unit)) + tail
+# How many times over the block walks may read a body's lines, whatever its comments.
+WALKS_PER_LINE = 24
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
-def test_a_body_at_github_s_limit_is_read_in_time_in_proportion_to_it(head: str, unit: str, tail: str) -> None:
-    started = time.perf_counter()
-    forms_section(repeated(head, unit, tail))
-    assert time.perf_counter() - started < 1.0
+def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str, tail: str) -> None:
+    # Counting the lines the walks read, at two sizes, holds the reading linear without timing it.
+    for repeats in (100, 400):
+        text = head + unit * repeats + tail
+        with mock.patch("forms_considered.blocks", wraps=blocks) as walk:
+            forms_considered.forms_section(text)
+        read = sum(len(call.args[0]) for call in walk.call_args_list)
+        assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
+
+
+# A body of SCALE times the units is read against the smaller one by the processor time the process spends, as
+# test_markdown_sections times its walk, since a runner that shares its processors between more suites than it has
+# stretches a reading's wall-clock time unevenly. Each reading repeats until the smaller takes LEAST_TIMED_SECONDS; the
+# smaller keeps the least of TIMINGS timings, and the larger passes at its first timing under the bound. A linear
+# reading takes about SCALE times as long and a quadratic one SCALE squared, so the bound sits halfway between in log
+# space. The walk count above, which runs first, fails a reading that walks too far before this one times it.
+SCALE = 8
+SCALE_BOUND = SCALE**1.5
+LEAST_TIMED_SECONDS = 0.1
+TIMINGS = 3
+SMALL_BODY = 2_000
+
+
+def processor_seconds(text: str, repeats: int) -> float:
+    """The processor time the process spends reading the body `repeats` times."""
+    started = time.process_time()
+    for _ in range(repeats):
+        forms_section(text)
+    return time.process_time() - started
+
+
+@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
+def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
+    repeats = max(1, SMALL_BODY // len(unit))
+    small, large = head + unit * repeats + tail, head + unit * repeats * SCALE + tail
+    readings = 1
+    while (elapsed := processor_seconds(small, readings)) < LEAST_TIMED_SECONDS:
+        readings *= 2
+    least = min([elapsed, *(processor_seconds(small, readings) for _ in range(TIMINGS - 1))])
+    timed: list[float] = []
+    for _ in range(TIMINGS):
+        timed.append(processor_seconds(large, readings))
+        if timed[-1] < SCALE_BOUND * least:
+            return
+    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {SCALE_BOUND:.1f} times")
 
 
 def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
@@ -142,17 +222,10 @@ def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() ->
     assert time.perf_counter() - started < 1.0
 
 
-@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
-def test_the_code_blocks_are_read_once_however_many_comments_the_text_holds(head: str, unit: str, tail: str) -> None:
-    with mock.patch("forms_considered.code_block_lines", wraps=code_block_lines) as reading:
-        without_hidden_comments(head + unit * 200 + tail)
-    assert reading.call_count == 1
-
-
 # Fences whose closer, or whose end, falls before, at, and past each width the window doubles through, so every
 # window the fence's reading takes reads it alike.
 FENCE_LENGTHS = sorted(
-    {length for width in (FENCE_WINDOW, FENCE_WINDOW * 2, FENCE_WINDOW * 4) for length in (width - 2, width - 1, width)}
+    {length for width in (WALK_WINDOW, WALK_WINDOW * 2, WALK_WINDOW * 4) for length in (width - 2, width - 1, width)}
 )
 
 
@@ -190,3 +263,278 @@ def test_a_fix_title_is_read_as_a_fix(title: str) -> None:
 )
 def test_any_other_title_is_not_a_fix(title: str) -> None:
     assert not is_fix_title(title)
+
+
+# Each issue's body, with the section GitHub renders for it, by `gh api markdown`.
+GITHUB_SECTIONS = {
+    # A numbered line under a bullet's text opens an item of its own, so a heading indented less than its text is the
+    # document's and ends the section.
+    "a heading after a numbered item that left a bullet": (
+        "## Forms considered\n\n- a\n2. b\n  ## Not the end\n\ntext",
+        "\n- a\n2. b",
+    ),
+    # A `<!--` within a list item's text, with no `-->` in it, is text, so the section after it shows.
+    "an opener prose shows in an earlier section": (
+        "## Summary\n\n- `forms_considered.py`: a <!-- that prose shows no longer hides the rest.\n\n"
+        "## Forms considered\n\nFilled.",
+        "\nFilled.",
+    ),
+    "an unclosed opener inside a paragraph": (
+        "## Forms considered\n\ntext <!-- a\n\nVISIBLE",
+        "\ntext <!-- a\n\nVISIBLE",
+    ),
+    # A fence its list item stops holding ends there, so the comment under it opens a block that holds the fence-like
+    # line, and the heading after its `-->` is the section's.
+    "a comment after a fence its item ends": (
+        "## Summary\n\n- a\n  ```\n<!--\n```\n-->\n## Forms considered\n\nOnly this one.\n\n```\n```",
+        "\nOnly this one.\n\n```\n```",
+    ),
+    # An HTML heading opens a block that runs to the blank line under it, so the lines it holds are neither a fence nor
+    # a heading.
+    "a heading an HTML heading's block holds": ("<h2>Y</h2>\n- ```\n## Forms considered\n---\n\ntext", None),
+    # A heading or an underline a comment hides, opened in a quote or a list item and closed past it, ends nothing.
+    "a heading inside a comment a quote opens": (
+        "## Forms considered\n\nw1\n\n> <!-- c\n\n## w5\n> <!-- d -->\n\nw9\n",
+        "\nw1\n\n> \n\nw9\n",
+    ),
+    "an underline inside a comment a list item opens": (
+        "## Forms considered\n\nw1\n\n- <!-- c\n\nw5\n---\n<!-- d -->\n\nw9\n",
+        "\nw1\n\n- \n\nw9\n",
+    ),
+    # An item that holds only a comment is empty once GitHub hides it, so the text under it is no lazy line of the item
+    # and the underline makes it a heading.
+    "an underline under an item that holds only a comment": (
+        "## Forms considered\n\nw1\n\n- <!-- w2 -->\nw3\n---\nw4\n",
+        "\nw1\n\n- ",
+    ),
+    # A line an HTML heading's block holds is passed on as HTML, where no backtick opens a code span, so its `<!--`
+    # opens a comment that hides the rest of the body.
+    "a backticked opener an HTML heading's block holds": ("<h2>x</h2>\n`<!--` y\n\n## Forms considered\n\nw1", None),
+    # The lines an HTML heading's block holds are no fence, so the paragraph after the list is no item's text and the
+    # underline under it makes it a heading.
+    "an underline after a fence-like line an HTML heading's block holds": (
+        "<h2>x</h2>\n```\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n---\n\nw4",
+        "\nw1\n\n- w2\n",
+    ),
+    "an underline after a tilde line an HTML heading's block holds": (
+        "<h2>x</h2>\n~~~\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n===\n\nw4",
+        "\nw1\n\n- w2\n",
+    ),
+    # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
+    # it are the item's.
+    "a comment under an item that opens empty": (
+        "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
+        "\n-\n  \n  ## not a section\n\nafter",
+    ),
+}
+
+
+@pytest.mark.parametrize(("text", "section"), GITHUB_SECTIONS.values(), ids=GITHUB_SECTIONS.keys())
+def test_the_section_is_the_one_github_renders(text: str, section: str | None) -> None:
+    assert forms_section(text) == section
+
+
+# Generated bodies, each read as GitHub renders it (`gh api markdown`), that the mutation gate's surviving mutants
+# read otherwise: each changes the section of one of them or fails on it.
+GENERATED_SECTIONS = [
+    (
+        "## Forms considered\n\n- a\n  ##\n\nafter\n\n## End\n",
+        "\n- a\n  ##\n\nafter\n",
+    ),
+    (
+        "   w1 lazy\n\n<h1>w2\nw3 -->\n<h1>w4\n## Forms considered\n",
+        None,
+    ),
+    (
+        "w1 <!-- w2\n<h2>\nw3\n~~~\n\n- w4\n  ```\n## Forms considered\n\n",
+        "\n",
+    ),
+    (
+        "- w1\n  ```\n\n## Forms considered\n\n<!-- w2 -->\n<h2>w3</h2>",
+        "\n",
+    ),
+    (
+        "-\n  <h2>Y</h2>\n> q\n## Forms considered\n  - b\n    code\n\n## End\ntail",
+        "  - b\n    code\n",
+    ),
+    (
+        "-->\n\nw1\n===\nw2 -->\n## Forms considered\n\n> ## w3\n\nw4 -->\n    <!-- w5\n",
+        "\n> ## w3\n\nw4 -->\n    <!-- w5\n",
+    ),
+    (
+        "  - b\n   - deep\n> ---\n## Forms considered\n| - |\n---\nlazy\n\n## End\ntail",
+        "",
+    ),
+    (
+        "> - w1\n\n## Forms considered\n\n> w2 <!-- w3\n> <!-- w4\n  ## w5\n- <!-- w6\n",
+        "\n> w2 <!-- w3\n> ",
+    ),
+    (
+        "  text\n\t- t\n- the <!-- no closer\n## Forms considered\n- <!-- x\n\n-\n- \n\n## End\ntail",
+        "- ",
+    ),
+    (
+        "  <!-- w1\n\n# w2\n<h2>\nw3\n\n  w4 indented\n2. w5\n\nw6 -->\n<h1>w7\n## Forms considered\n\n",
+        None,
+    ),
+    (
+        (
+            "-->\n<!--\n1. c\n## Forms considered\na -->\n- a\n  <h2>Y</h2>\n2. b\n      text\n<!-- c -->\n"
+            "\n## End\ntail"
+        ),
+        None,
+    ),
+    (
+        (
+            "w1\n===\n## Forms considered\n\n- w2\n  ```\n\n> <!-- w3\nw4 -->\n- \n\n- w5 <!-- w6\n\n~~~\n"
+            "> - w7\n\n- <!-- w8\n\n"
+        ),
+        "\n- w2\n  ```\n\n> ",
+    ),
+    (
+        (
+            "> - w1\n> w2 <!-- w3\n> <!-- w4 -->\n## Forms considered\n\nw5 <!-- w6 --> w7\n  w8 indented\n"
+            "- w9\n  ```\n`<!--` w10\n- "
+        ),
+        "\nw5  w7\n  w8 indented\n- w9\n  ```",
+    ),
+    (
+        (
+            "---\n> - w1\n## Forms considered\n\n- a\n2. w2\n- a\n2. w3\n\n> <!-- w4\n- <!-- w5\n\n"
+            "> ## Forms considered\n>\n\nw6\n---\nw7 -->\n---\n> w8\n\n"
+        ),
+        "\n- a\n2. w2\n- a\n2. w3\n\n> ",
+    ),
+    (
+        (
+            "- w1\n  ```\n  w2\n#\n2. w3\n\n- ## Forms considered\n\n- w4\n<!-- w5 -->\n\n#\n\n> w6\n"
+            "    <!-- w7\n\n   w8 lazy\n## Forms considered\n\nw9\n---\n#\n\n"
+        ),
+        "",
+    ),
+    (
+        (
+            "<h2>w1</h2>\nw2 <!-- w3\nw4 <!-- w5 --> w6\n`<!--` w7\n~~~\n\nw8 <!-- w9\n\n"
+            "## Forms considered\n\n>\n\n```\n<!--\n```\n-->\n- w10\n  ---\n\n### w11\n\n"
+        ),
+        None,
+    ),
+    (
+        (
+            "<!--\n```\n-->\n## Forms considered\n-\n- w1\n  ```\n\nw2\n---\n\n-->\n### w3\n"
+            "> ## Forms considered\nw4 text\n\n- w5\n  ---\n- a\n2. w6\n<h2>w7</h2>\n\n# w8\n\n"
+            "- w9 <!-- w10\n\n"
+        ),
+        "-\n- w1\n  ```\n",
+    ),
+    (
+        (
+            "- w1\n  ```\n<h1>w2\n> - w3\n\nw4\n---\n- w5\n  ---\n\n<!--\n```\n-->\nw6 -->\n\n#\n\n"
+            "  ## w7\n\n## Forms considered\n\n<!--\n```\n-->\n- <h2>w8</h2>\n\n- w9\n  ```\n  w10\n  ```\n"
+            "    <!-- w11\n  w12 indented\n"
+        ),
+        "\n\n- <h2>w8</h2>\n\n- w9\n  ```\n  w10\n  ```\n    ",
+    ),
+    (
+        (
+            "- w1\n  ```\n  - w2\n<!--\nw3\n-->\n\n<!--\n```\n-->\n\n- w4 <!-- w5\n\nw6\n===\n<!--\n#\n"
+            "| w7 |\n| --- |\n| w8 |\nw9 -->\n\n## Forms considered\n\nw10\n===\nw11 <!-- w12 --> w13\n"
+            "  w14 indented\n\n- ## w15\n\n"
+        ),
+        "",
+    ),
+    (
+        (
+            "w1 <!-- w2 --> w3\n\n## Forms considered\n\n| w4 |\n| --- |\n| w5 |\n- w6\n\n"
+            "w7 <!-- w8 --> w9\n\nw10 text\nw11 <!-- w12 --> w13\n- <!-- w14\n<!--\nw15\n-->\n-\n"
+            "- w16 <!-- w17\n\n> <h1>w18</h1>\n\n<!-- w19\n"
+        ),
+        (
+            "\n| w4 |\n| --- |\n| w5 |\n- w6\n\nw7  w9\n\nw10 text\nw11  w13\n- \n-\n- w16 <!-- w17\n\n"
+            "> <h1>w18</h1>\n\n"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("text", "section"), GENERATED_SECTIONS)
+def test_a_generated_body_is_read_as_github_renders_it(text: str, section: str | None) -> None:
+    assert forms_section(text) == section
+
+
+# Where a setext or HTML heading ends the section, read here by the module's own item reading and the walk's quotes as
+# it was before the walk read the rest of the body, each pinned to GitHub's rendering: an underline or an HTML heading
+# a list item or a quote holds is inside the section, and one no container holds ends it.
+SETEXT_AND_HTML_ENDS = {
+    "underline in an item's later paragraph": ("- a\n\n  text\n  ---", True),
+    "underline in a quote": ("> text\n> ---", True),
+    "underline below a lazy line of an item": ("- a\ntext\n---", True),
+    "equals underline in a numbered item": ("1. a\n   b\n   ===", True),
+    "underline in a nested item": ("- a\n  - b\n\n    text\n    ---", True),
+    "underline in a quote in an item": ("- a\n  > text\n  > ---", True),
+    "HTML heading in an item": ("- a\n  <h2>x</h2>", True),
+    "HTML heading in a quote": ("> <h2>x</h2>", True),
+    "underline after a list": ("- a\n\ntext\n===", False),
+    "underline under a paragraph": ("text\n---", False),
+    "HTML heading": ("<h2>x</h2>", False),
+    # A table's rows run on to the underline, which is then a rule, so no heading ends the section there, while a
+    # paragraph after the table is a heading's text.
+    "underline under a table's rows": ("| a |\n| - |\n| b |\n---", True),
+    "underline under a paragraph after a table": ("| a |\n| - |\n| b |\n\ntext\n---", False),
+    # An ATX heading with no text, a run of `#` alone, is a heading too.
+    "empty heading": ("text\n\n##", False),
+    "empty heading with trailing spaces": ("text\n#  ", False),
+    "empty heading in a quote": ("> ##", True),
+    "empty heading in an item": ("- ##", True),
+}
+
+
+@pytest.mark.parametrize(("forms", "inside"), SETEXT_AND_HTML_ENDS.values(), ids=SETEXT_AND_HTML_ENDS.keys())
+def test_a_setext_or_html_heading_ends_the_section_only_outside_every_container(forms: str, inside: bool) -> None:
+    section = forms_section(f"## Forms considered\n\n{forms}\n\nafter\n\n## End\n")
+    assert section is not None
+    assert ("after" in section) is inside, section
+
+
+@pytest.mark.parametrize(
+    ("text", "section"),
+    [
+        # The module's own item reading holds a numbered line under a bullet's text as lazy, so the underlined line
+        # after the blank line is read as the bullet's, where GitHub ends the section at it.
+        ("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter", "\n- a\n2. b\n\n  Text\n  ---\nafter"),
+        # An item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt
+        # it, so the underline makes the paragraph a heading, where GitHub reads the next line as the item's.
+        ("## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4", "\nw1\n- "),
+    ],
+)
+def test_a_setext_heading_is_held_within_the_module_s_stated_limit(text: str, section: str) -> None:
+    assert forms_section(text) == section
+
+
+@pytest.mark.parametrize("text", ["## Forms considered", "## Forms considered\n## Next\n\ntext"])
+def test_a_heading_with_no_line_before_the_next_holds_an_empty_section(text: str) -> None:
+    assert forms_section(text) == ""
+    assert forms_fault(text, TEMPLATE) is FormsFault.EMPTY
+
+
+def test_the_template_s_guidance_is_the_comments_github_hides_never_one_code_shows() -> None:
+    # A template that shows a comment in code, in a fence or an inline span, holds no guidance there, as GitHub shows.
+    template = (
+        "## Forms considered\n\n```\n<!-- shown in a fence -->\n```\n\n`<!-- shown in a span -->` text.\n\n"
+        "<!-- The guidance. -->\n\nNone\n"
+    )
+    visible, guidance = placeholder_forms(template)
+    assert guidance == {"the guidance"}
+    assert "shown in a fence" in visible
+    assert "shown in a span" in visible
+
+
+def test_an_empty_comment_in_the_template_is_no_guidance() -> None:
+    # An empty comment's words are none, so it is no guidance that would match any section.
+    template = "## Forms considered\n\n<!-- -->\n<!-- Weigh the forms. -->\n\nNone\n"
+    assert placeholder_forms(template)[1] == {"weigh the forms"}
+    assert is_placeholder("weigh the forms", template)
+
+
+def test_the_template_s_visible_text_is_read_from_its_first_character() -> None:
+    assert placeholder_forms("## Forms considered\nNone\n")[0] == "none"
