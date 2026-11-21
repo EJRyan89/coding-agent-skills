@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -112,8 +114,61 @@ class InspectionTests(unittest.TestCase):
         self.assertNotIn(".claude/agents/review.md", result.references, "the skill never references itself")
 
     def test_references_come_from_code_spans_links_and_bare_paths_that_exist(self) -> None:
-        result = inspect("Read [the rules](docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
+        result = inspect("Read [the rules](../../docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)
+
+    def test_a_link_resolves_from_the_skills_folder_and_a_slash_from_the_root(self) -> None:
+        # A link's destination was read from the repository root, so the sibling reference file of the usual skill
+        # layout was never given to the entrypoint reviewer, and a root path written as a link was given instead.
+        files = {SKILL, ".claude/skills/review/references/rules.md", "references/rules.md", "docs/rules.md", "x.md"}
+        text = "Apply [the rules](references/rules.md) and [the style](docs/rules.md).\nSee [x](/x.md).\n"
+        inspection = inspect_skill(SKILL, text, COMMIT, files)
+        self.assertEqual([".claude/skills/review/references/rules.md", "x.md"], inspection.references)
+        self.assertEqual(inspection.references, entrypoint_manifest("solo", inspection)["resources"])
+        self.assertEqual(
+            ["docs/rules.md"],
+            inspect_skill(SKILL, "Apply `docs/rules.md` and docs/rules.md.\n", COMMIT, files).references,
+            "a path in a code span or bare in prose is read from the repository root",
+        )
+        self.assertEqual(
+            [],
+            inspect_skill(SKILL, "[out](../../../../outside.md) [root](../../../)\n", COMMIT, files).references,
+            "a link out of the repository, or to its root, names no file",
+        )
+
+    def test_a_link_is_read_only_through_its_destination_never_its_text(self) -> None:
+        # A path the link's text repeats was read again as a bare path from the root, giving the reviewer the root
+        # `docs/rules.md` and `references/rules.md` beside the files the destinations lead to.
+        files = {SKILL, ".claude/skills/review/references/rules.md", "references/rules.md", "docs/rules.md"}
+        text = (
+            "Apply [references/rules.md](references/rules.md) and [docs/rules.md](docs/rules.md).\n"
+            "See [`docs/rules.md`](references/rules.md 'docs/rules.md').\n"
+            "[docs/rules.md]: references/rules.md\n"
+        )
+        self.assertEqual(
+            [".claude/skills/review/references/rules.md"], inspect_skill(SKILL, text, COMMIT, files).references
+        )
+        # A link that does not close hides nothing: a path after its destination is still read, from the root.
+        for broken in (
+            '[a](references/rules.md "never closed docs/rules.md',
+            '[a](references/rules.md "t" docs/rules.md',
+        ):
+            with self.subTest(broken=broken):
+                self.assertEqual(
+                    [".claude/skills/review/references/rules.md", "docs/rules.md"],
+                    inspect_skill(SKILL, broken + "\n", COMMIT, files).references,
+                )
+        # Below frontmatter, the link's text is still passed over on the line the body holds it.
+        self.assertEqual(
+            [".claude/skills/review/references/rules.md"],
+            inspect_skill(
+                SKILL, "---\nname: review\ntools: Read\n---\n[docs/rules.md](references/rules.md)\n", COMMIT, files
+            ).references,
+        )
+        # The stated limit: a reference link's text has no span, so its path is still read as prose from the root.
+        for reference in ("See [docs/rules.md][r].", "See [docs/rules.md][].", "See [docs/rules.md]."):
+            with self.subTest(reference=reference):
+                self.assertEqual(["docs/rules.md"], inspect_skill(SKILL, reference + "\n", COMMIT, files).references)
 
     def test_an_entrypoint_carries_what_the_skill_names_and_needs_no_delegation(self) -> None:
         result = inspect("---\ntools: Read\n---\nApply `docs/rules.md`.\n")
@@ -328,8 +383,13 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual({"['.claude/agents/db-review.md', '.github/agents/db-review.md']"}, seen)
 
     def test_reference_paths_are_normalized_and_must_be_repository_files(self) -> None:
+        # A link's leading `./` is the skill's folder, as GitHub reads it, and a code span's the repository root.
         result = inspect("[a](./docs/rules.md#x) `./src/A.cs` /src/A.cs rules.md `.claude/agents/review.md`\n")
-        self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)
+        self.assertEqual(["src/A.cs"], result.references)
+        nearby = inspect_skill(
+            ".claude/agents/review.md", "[a](./x/rules.md#x)\n", COMMIT, FILES | {".claude/agents/x/rules.md"}
+        )
+        self.assertEqual([".claude/agents/x/rules.md"], nearby.references)
         self.assertEqual(
             [],
             inspect("Read /src/A.cs and rules.md.\n").references,
@@ -361,7 +421,8 @@ class InspectionTests(unittest.TestCase):
             "[f](docs\\rules.md)\n"
             "[g](<docs/my doc.md>) and [h](docs/b(2).md)\n"
         )
-        result = inspect_skill(".claude/agents/review.md", text, COMMIT, files)
+        # A skill at the root, so each destination resolves from the root.
+        result = inspect_skill("review.md", text, COMMIT, files)
         # A backslash is read as the platform reads one in a path: a separator on Windows, part of the name elsewhere.
         expected = {"docs/my rules.md", "docs/a(1).md", "docs/the defs.md", "docs/b-c.md", backslash}
         expected |= {"docs/my doc.md", "docs/b(2).md"}
@@ -636,3 +697,48 @@ class SeparatorTests(unittest.TestCase):
             with self.subTest(separator=f"U+{ord(separator):04X}"):
                 result = inspect(f"---\nname: x\n---\nIntro{separator}Ask db-review.\n")
                 self.assertEqual([(4, "Intro Ask db-review.")], result.evidence)
+
+
+# The scaling test reads the same characters as eight lines and as one line eight times as long, each line a run of
+# links whose text holds a code path. A reader whose time grows with the text's length takes about as long either way,
+# a ratio near 1; one that checks each path against every link on its line takes eight times as long on the long line.
+# The bound is the two ratios' geometric midpoint, each side does the same work with garbage collection off, and a long
+# run far past the bound fails without timing it again.
+SCALING_LINES = 8
+SCALING_LINKS = 1000
+SCALING_RUNS = 7
+SCALING_BOUND = SCALING_LINES**0.5
+FAR_PAST = 3
+
+
+def _scaling_ratio_holds(read: Callable[[str], object], unit: str) -> tuple[float, float]:
+    """The fastest of the long line's runs and the bound it is held under, from the fastest of the short lines'."""
+    short = "\n".join([unit * SCALING_LINKS] * SCALING_LINES) + "\n"
+    long = unit * SCALING_LINKS * SCALING_LINES + "\n"
+
+    def seconds(text: str) -> float:
+        start = time.perf_counter()
+        read(text)
+        return time.perf_counter() - start
+
+    gc.disable()
+    try:
+        eight = min(seconds(short) for _ in range(SCALING_RUNS))
+        one: list[float] = []
+        for _ in range(SCALING_RUNS):
+            one.append(seconds(long))
+            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
+                break
+    finally:
+        gc.enable()
+    return min(one), SCALING_BOUND * eight
+
+
+def test_inspecting_a_skill_takes_time_in_proportion_to_a_line_of_links_with_paths_in_their_text() -> None:
+    # Each path was checked against every link on its line, so a line of 8000 links whose text held one took about 8
+    # times as long as eight lines of 1000.
+    files = {SKILL, "docs/a.md"}
+    one, bound = _scaling_ratio_holds(
+        lambda text: inspect_skill(SKILL, text, COMMIT, files), "[`docs/a.md` docs/a.md](d/b.md) "
+    )
+    assert one < bound
