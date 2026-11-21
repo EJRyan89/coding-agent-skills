@@ -3924,6 +3924,55 @@ class UnrunFixtures(unittest.TestCase):
             self.unrun()
         self.assertEqual(2, len(self.seen))
 
+    def test_an_unrun_step_stopped_partway_keeps_the_outcomes_it_reached_and_the_join_names_its_stop(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        calls = itertools.count()
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            if next(calls):
+                raise Stopped
+            return self.run_suite(tree, suite, timeout, tests)
+
+        # One worker, so the first mutant's run ends before the second's starts, which stops the step.
+        gate = Gate(self.root, "main", 5, 1, GitClient(), stub_generator, stub_reach, run, measure=measured)
+        with (
+            mock.patch.object(mutation_gate, "Gate", return_value=gate),
+            mock.patch("sys.stdout", io.StringIO()),
+            self.assertRaises(Stopped),
+        ):
+            mutation_gate.main(["unrun", str(self.folder)], {})
+        self.assertEqual(["return a - b"], self.seen)
+        written = json.loads((self.folder / "local-linux.json").read_text(encoding="utf-8"))
+        self.assertEqual(False, written["ended"])
+        self.assertEqual({"tools/calc.py": [0, 1]}, written["mutants"])
+        self.assertEqual([SURVIVED, NOT_RUN], [outcome["status"] for outcome in written["outcomes"]["tools/calc.py"]])
+        result = mutation_gate.join(self.folder)
+        self.assertFalse(result.finished)
+        self.assertTrue(
+            result.text.startswith(
+                "**Unfinished, so not a verdict:** the local run on Linux stopped before its end, so the mutants it "
+                "had not reached did not run: 1 of the 2 mutants of `tools/calc.py` did not run on Linux. Read its "
+                "output, then remove `local-linux.json` and run the `unrun` step again.\n"
+            ),
+            result.text,
+        )
+        self.assertIn(
+            "a local run on Linux then ran the 2 mutants it left without a verdict, 1 workers for 0 of its 5 minutes, "
+            "stopping before its end;",
+            result.text,
+        )
+        self.assertIn(
+            "\n\nA local run that stopped before its end cut `tools/calc.py` short on Linux: 1 mutants did not run.\n",
+            result.text,
+        )
+        self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0% (0 of 1) |", result.text)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"^local-linux.json holds a local run of the Linux leg that stopped before its end: remove it to run the "
+            r"leg's mutants anew$",
+        ):
+            self.unrun()
+
     def test_a_run_whose_selection_holds_no_mutant_names_no_leg(self) -> None:
         self.folder.mkdir()
         (self.folder / "mutants.json").write_text(
@@ -3987,7 +4036,8 @@ class UnrunFixtures(unittest.TestCase):
             mock.patch("sys.stdout", io.StringIO()) as printed,
         ):
             code = mutation_gate.main(["unrun", str(self.folder)], {"GITHUB_STEP_SUMMARY": str(summary_file)})
-        unrun.assert_called_once_with(self.folder)
+        unrun.assert_called_once()
+        self.assertEqual(self.folder, unrun.call_args.args[0])
         self.assertEqual(1, code)
         # The local run is written beside the leg's record, which stays as the leg wrote it.
         self.assertEqual(
@@ -4183,6 +4233,20 @@ def test_a_local_run_of_another_kind_is_refused_by_its_path(local: object, messa
     with pytest.raises(RecordFieldError) as refused:
         read_local_file(local)
     assert str(refused.value).startswith(message)
+
+
+def test_a_local_record_that_names_no_end_was_written_at_its_end_and_one_of_another_kind_is_refused() -> None:
+    assert "ended" not in LOCAL_RECORD
+    unnamed, ended, stopped = (
+        read_local_file(record).local
+        for record in (LOCAL_RECORD, {**LOCAL_RECORD, "ended": True}, {**LOCAL_RECORD, "ended": False})
+    )
+    assert unnamed is not None
+    assert stopped is not None
+    assert (unnamed == ended, unnamed.ended, stopped.ended) == (True, True, False)
+    with pytest.raises(RecordFieldError) as refused:
+        read_local_file({**LOCAL_RECORD, "ended": "no"})
+    assert str(refused.value).startswith("local-windows.json.ended must be")
 
 
 def test_a_local_run_of_another_leg_is_refused() -> None:
@@ -4495,9 +4559,8 @@ def test_a_shard_that_left_no_record_leaves_its_mutants_not_run_beside_the_other
         f"**Unfinished, so not a verdict:** {lead}: {left} of the 45 mutants of `{module}` did not run on Linux. Read "
         f"{'its' if written else 'their'} log, and rerun the gate.\n"
     )
-    assert (
-        f"A leg step that stopped before its end, or the cap, cut `{module}` short on Linux: {left} mutants did not "
-        "run." in result.text
+    assert f"A leg step that stopped before its end cut `{module}` short on Linux: {left} mutants did not run." in (
+        result.text
     )
     assert (
         "2 shards of 4 workers in all" if written else "On Linux, which left no record of its mutants;"
@@ -4531,6 +4594,52 @@ def test_a_shard_record_written_as_it_went_joins_the_outcomes_it_reached_and_nam
     )
     assert "of each one's 40 minutes, shard 2 of the Linux leg stopping before its end;" in result.text
     assert f"| `{module}` | Linux | 45 | 45 | 22 | 0 | 0 | 10 | 0 | 13 | 0 | 69% (22 of 32) |" in result.text
+
+
+def test_a_stopped_shard_and_a_shard_its_cap_cut_short_each_lead_the_summary_with_their_own_sentence() -> None:
+    capped = shard_run(1, lambda found: NOT_RUN if found.line > 36 else KILLED)
+    stopped = shard_run(2, lambda found: NOT_RUN if found.line > 20 else SURVIVED, stopped=(2,))
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, capped, stopped)
+        _, (leg,) = mutation_gate.read_run(folder)
+        result = mutation_gate.join(folder)
+    (module,) = leg.outcomes
+    first = set(mutation_gate.shard_places(LINUX_LEG, SHARDED, 1)[module])
+    assert leg.dealt == {module: [1 if place in first else 2 for place in range(45)]}
+    assert [found.status for found in leg.outcomes[module]] == [
+        (KILLED if line <= 36 else NOT_RUN) if line - 1 in first else (SURVIVED if line <= 20 else NOT_RUN)
+        for line in range(1, 46)
+    ]
+    assert not result.finished
+    assert result.text.startswith(
+        "**Unfinished, so not a verdict:** shard 2 of the Linux leg stopped before its end, so the mutants it had not "
+        f"reached did not run: 13 of the 45 mutants of `{module}` did not run on Linux. Read its log, and rerun the "
+        f"gate. A leg's cap cut the run short: 4 of the 45 mutants of `{module}` did not run on Linux. Split the pull "
+        "request, or move its module-level tables into the functions that use them, until it finishes.\n"
+    ), result.text
+    assert (
+        f"\n\nA leg step that stopped before its end cut `{module}` short on Linux: 13 mutants did not run.\n\n"
+        f"The cap cut `{module}` short on Linux: 4 mutants did not run.\n"
+    ) in result.text
+
+
+def test_a_mutant_two_legs_left_not_run_for_two_causes_is_named_under_each_on_its_own_leg() -> None:
+    linux = LegRun(LINUX_LEG, 40, 60.0, 4, {PATH_MODULE: [Outcome(READ_MUTANT, NOT_RUN)]}, {}, [], stopped=(0,))
+    windows = LegRun(WINDOWS_LEG, 40, 2400.0, 2, {PATH_MODULE: [Outcome(READ_MUTANT, NOT_RUN)]}, {}, [])
+    report = joined(READ_SELECTED, [linux, windows])
+    line = mutation_gate.unfinished_line(report)
+    assert line == (
+        "**Unfinished, so not a verdict:** the Linux leg stopped before its end, so the mutants it had not reached did "
+        f"not run: 1 of the 1 mutants of `{PATH_MODULE}` did not run on Linux. Read its log, and rerun the gate. A "
+        f"leg's cap cut the run short: 1 of the 1 mutants of `{PATH_MODULE}` did not run on Windows. Split the pull "
+        "request, or move its module-level tables into the functions that use them, until it finishes."
+    )
+    text = mutation_gate.summary(report)
+    assert (
+        f"\n\nA leg step that stopped before its end cut `{PATH_MODULE}` short on Linux: 1 mutants did not run.\n\n"
+        f"The cap cut `{PATH_MODULE}` short on Windows: 1 mutants did not run.\n"
+    ) in text
 
 
 class LegStopFixtures(unittest.TestCase):
