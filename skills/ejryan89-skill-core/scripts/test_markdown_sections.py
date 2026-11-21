@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
+import itertools
 import math
 import sys
 import time
@@ -1129,6 +1131,70 @@ def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T
         if timed[-1] < bound * least:
             return
     pytest.fail(f"{min(timed):.4f}s is over {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
+
+
+# The step of Windows' processor-time clock.
+WINDOWS_TICK = 0.015625
+
+
+def test_the_clock_tick_is_the_step_process_time_advances_by(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A clock that counts whole ticks, as Windows' does, read three times in each tick.
+    readings = itertools.count()
+    monkeypatch.setattr(time, "process_time", lambda: next(readings) // 3 * WINDOWS_TICK)
+    assert _clock_tick.__wrapped__() == WINDOWS_TICK
+
+
+@pytest.mark.parametrize(
+    ("tick", "outcome"),
+    [
+        pytest.param(WINDOWS_TICK, contextlib.nullcontext(), id="a-tick-added"),
+        pytest.param(0.0, pytest.raises(pytest.fail.Exception, match=r"at least 32\.0 times"), id="none-added"),
+    ],
+)
+def test_a_shorter_timing_read_a_tick_short_raises_no_ratio_over_the_bound(
+    monkeypatch: pytest.MonkeyPatch, tick: float, outcome: contextlib.AbstractContextManager[object]
+) -> None:
+    # The shorter reading takes almost eight ticks and every timing of it reads seven, while the longer one takes 240:
+    # 30 times the shorter one's own time, under the bound of 32, but over 32 times the seven ticks read. Counted one
+    # tick longer, the shorter reading is never read short, so only a helper that adds no tick fails it.
+    clock = [0.0]
+    ticks = {"shorter": 7, "longer": 240}
+
+    def read(value: str) -> None:
+        clock[0] += ticks[value] * WINDOWS_TICK
+
+    monkeypatch.setattr(time, "process_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_clock_tick", lambda: tick)
+    with outcome:
+        assert_time_in_proportion(read, "shorter", "longer", 32)
+
+
+def test_the_collector_is_off_while_a_reading_is_timed_and_on_after_it_ends_stops_or_raises() -> None:
+    collecting: list[bool] = []
+
+    def read(value: str) -> None:
+        collecting.append(gc.isenabled())
+        if value == "raise":
+            raise ValueError(value)
+
+    _seconds(read, "read", 2)
+    assert gc.isenabled()
+    # A limit every reading passes stops the timing after its first.
+    _seconds(read, "stop", 3, limit=-1.0)
+    assert gc.isenabled()
+    with pytest.raises(ValueError, match="raise"):
+        _seconds(read, "raise", 1)
+    assert gc.isenabled()
+    assert collecting == [False, False, False, False]
+
+
+def test_a_collector_off_before_a_timing_stays_off_after_it() -> None:
+    gc.disable()
+    try:
+        _seconds(lambda value: None, "read", 1)
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
 
 
 def _walked(lines: list[str]) -> object:
