@@ -24,6 +24,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import conditions
 import doc_passages
+import module_closure
 import review_specialists
 import untested_functions
 from git_client import GitClient
@@ -360,23 +361,30 @@ def trust_boundary_modules() -> list[str]:
 # The modules that hold the reviewer guard's run contract: the guard, and the run whose RUN_FILE a staging script
 # writes.
 RUN_CONTRACT = frozenset({"review_guard", "review_run"})
+# The files a script names when it does what the guard holds a reviewer to, each a whole string constant or the last
+# part of a path one is: the guard's own script, which a hook runs and so the script writing the reviewer agent's guard
+# hook names, and the run's settings file the guard reads, which only a script writing or reading a guarded run names.
+GUARD_FILES = frozenset({"review_guard.py", "run.json"})
+
+
+def guarded_run_staging(source: str, staging: frozenset[str] = RUN_CONTRACT) -> set[str]:
+    """What a module does that takes part in the reviewer guard's run contract, each as `imports <module>` or `names
+    <file>`: it imports one of `staging`, the run contract's modules unless given the pipeline modules that stage a run,
+    by an import statement or by an import call given the module's name, as module_closure reads one; or it names one of
+    GUARD_FILES. A string equal to a module's name that reaches no import call, such as a dictionary key, is no import,
+    and a sentence that mentions a file, such as a docstring's, names none. Limit: a module name an import call reaches
+    through a variable, and a guard file named only by joining strings, are not read; no script imports or names one
+    so."""
+    found = {f"imports {name}" for name in module_closure.imported_names(source) & staging}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            found |= {f"names {name}" for name in GUARD_FILES if node.value.rsplit("/", 1)[-1] == name}
+    return found
 
 
 def stages_a_guarded_run(source: str, staging: frozenset[str] = RUN_CONTRACT) -> bool:
-    """Whether a module takes part in the reviewer guard's run contract: it imports one of `staging`, the run
-    contract's modules unless given the pipeline modules that stage a run, by an import statement or by the module
-    name as a string, as importlib does, or names a run's `run.json`, which only a script that writes or reads a
-    guarded run does."""
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import) and any(alias.name.split(".")[0] in staging for alias in node.names):
-            return True
-        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] in staging:
-            return True
-        if isinstance(node, ast.Constant) and (node.value in staging or node.value == "run.json"):
-            return True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.endswith("/run.json"):
-            return True
-    return False
+    """Whether a module takes part in the reviewer guard's run contract, as `guarded_run_staging` reads it."""
+    return bool(guarded_run_staging(source, staging))
 
 
 def staging_modules() -> frozenset[str]:
@@ -612,10 +620,11 @@ class ManifestTests(unittest.TestCase):
 
     def test_every_script_that_stages_a_guarded_run_reaches_the_trust_boundary_reviewer(self) -> None:
         # A script that imports the guard's run contract or writes a run.json writes what the guard holds a reviewer
-        # to, and the prompt that run names, which carries author text, as review_synthesis.py's does. Each is one the
-        # trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route lists by name.
-        # A script reaching the run file through review_run's RUN_FILE, or staging through a pipeline module that
-        # does, as review-document's does through review_runtime, is found as one importing the guard is.
+        # to, and the prompt that run names, which carries author text, as review_synthesis.py's does; one that names
+        # the guard's script writes the hook that runs it, as skill_evals_runs.py's reviewer agent definition does.
+        # Each is one the trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route
+        # lists by name. A script reaching the run file through review_run's RUN_FILE, or staging through a pipeline
+        # module that does, as review-document's does through review_runtime, is found as one importing the guard is.
         modules = staging_modules()
         self.assertTrue({"review_run", "review_dispatch", "review_pipeline", "review_runtime"} <= modules, modules)
         staging = [
@@ -630,6 +639,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIn(f"{PIPELINE_SCRIPTS}/review_guard.py", staging)
         self.assertIn("skills/review-document/scripts/review_document.py", staging)
         self.assertIn("tools/plugin_canary.py", staging)
+        self.assertIn("tools/skill_evals_runs.py", staging)
         self.assertEqual(
             [],
             [
@@ -1767,16 +1777,37 @@ def test_the_guidance_names_no_release(name: str) -> None:
         ("import review_guard\n", True),
         ("import review_guard as guard\n", True),
         ('import importlib\nguard = importlib.import_module("review_guard")\n', True),
+        ('guard = __import__("review_guard")\n', True),
         ('RUN = "run.json"\n', True),
         ('path = folder / "code-review-run-x" / "run.json"\n', True),
         ('path = "runs/a/run.json"\n', True),
+        # A module building the reviewer agent's guard hook names the guard's script, though it imports no contract
+        # module, as tools/skill_evals_runs.py does.
+        (
+            'GUARD = home / ".claude" / "skills" / "core" / "scripts" / "review_guard.py"\nhook = {"command": GUARD}\n',
+            True,
+        ),
+        ('GUARD = "~/.claude/skills/core/scripts/review_guard.py"\n', True),
         ("import review_guidance\n", False),
         ('# writes run.json\nNAME = "runs.json"\n', False),
         ('"""Reads the run.json a guarded run holds."""\n', False),
+        ('"""Runs review_guard.py on each call."""\n', False),
+        # A string equal to a contract module's name that reaches no import call is no import: a dictionary key, as a
+        # function named review_run is keyed in CONTENT_ERRORS_ALLOWED, a constant, or a call that imports nothing.
+        ('CONTENT_ERRORS_ALLOWED = {"review_run": "why the function refuses no content"}\n', False),
+        ('MODULE = "review_guard"\n', False),
+        ('print("review_guard")\n', False),
     ],
 )
-def test_a_module_stages_a_guarded_run_when_it_imports_the_guard_or_names_run_json(source: str, staging: bool) -> None:
+def test_a_module_stages_a_guarded_run_by_what_it_does_with_the_guard(source: str, staging: bool) -> None:
     assert stages_a_guarded_run(source) is staging
+
+
+def test_the_evaluation_runs_stage_a_guarded_run_by_the_guard_hook_they_write() -> None:
+    # tools/skill_evals_runs.py imports no contract module and names no run.json: what puts it on the trust-boundary
+    # route is the reviewer agent's guard hook it builds, never a string that happens to equal a module's name.
+    source = (REPOSITORY / "tools" / "skill_evals_runs.py").read_text(encoding="utf-8")
+    assert "names review_guard.py" in guarded_run_staging(source, staging_modules())
 
 
 @pytest.mark.parametrize(
