@@ -9,6 +9,8 @@ with the reason, so each caller decides what a folder it could not search costs 
   `.nox`, `__pycache__`), build output (`bin`, `obj`), and Visual Studio's own state (`.vs`). Such a folder is not
   reported: the set is the statement. A caller passes another set when its search needs one, as the .NET skills add
   NuGet's `packages` (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`).
+- Pruned: a folder whose path the caller's `prune` accepts, such as a hidden folder, one whose name starts with a dot,
+  is neither entered nor reported either, so the walk lists nothing inside it. `top` is never pruned.
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
   The `.git` entry is the one the folder gives for `.git`, as `path_keys.opens_as` asks it, so `.GIT` marks a checkout
@@ -20,7 +22,10 @@ with the reason, so each caller decides what a folder it could not search costs 
   searched as given, link or not; a link to a file or a device is an entry the caller judges.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
   `UNEXAMINED`, each by path with the reason and the error, and the walk goes on; an error never ends it.
-- Bounds: none by depth or count. No caller bounds its search, and the walk enters no folder twice along one path.
+- Bounds: none by depth, and none by count unless the caller gives `limit`, the most folders the walk lists, `top`
+  included. Past it the walk stops and reports the next folder it would have listed as `BOUNDED`, so a caller can say
+  where its search stopped; that folder and every folder after it in the walk's order are not searched. Without a
+  limit the walk still ends, since it enters no folder twice along one path.
 """
 
 from __future__ import annotations
@@ -41,12 +46,13 @@ SKIPPED_FOLDERS = frozenset(
 CHECKOUT_MARKER = ".git"
 
 # Why the walk did not enter a folder or an entry, as the contract above names each kind.
-NotEnteredKind = Literal["linked", "loop", "nested-checkout", "unlistable", "unexamined"]
+NotEnteredKind = Literal["linked", "loop", "nested-checkout", "unlistable", "unexamined", "bounded"]
 LINKED: Final = "linked"
 LOOP: Final = "loop"
 NESTED_CHECKOUT: Final = "nested-checkout"
 UNLISTABLE: Final = "unlistable"
 UNEXAMINED: Final = "unexamined"
+BOUNDED: Final = "bounded"
 
 LINKED_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
 LOOP_REASON = "the folder is a link back into a folder the search is inside, which it does not enter again"
@@ -101,6 +107,11 @@ def folder_identity(path: Path) -> tuple[int, int]:
     return status.st_dev, status.st_ino
 
 
+def bounded_reason(limit: int) -> str:
+    """Why a walk with `limit` did not enter the folder it reports as `BOUNDED`."""
+    return f"the search stopped at its bound of {limit} folders, before this folder and the folders after it"
+
+
 def unlistable(path: Path, error: OSError) -> NotEntered:
     return NotEntered(path, UNLISTABLE, f"the folder cannot be listed: {error.strerror or error}", error)
 
@@ -113,21 +124,32 @@ def walk_files(
     wanted: Callable[[str], bool],
     *,
     skipped: frozenset[str] = SKIPPED_FOLDERS,
+    prune: Callable[[Path], bool] | None = None,
     follow: Callable[[Path], bool] | None = None,
+    limit: int | None = None,
 ) -> Walk:
     """Every file below `top` whose name `wanted` accepts, and every folder not entered, as the module states."""
     walk = Walk()
     folded = frozenset(name.casefold() for name in skipped)
+
+    def excluded(path: Path) -> bool:
+        return path.name.casefold() in folded or (prune is not None and prune(path))
+
     try:
         inside: Identities = frozenset({folder_identity(top)}) if follow is not None else frozenset()
     except OSError as error:
         walk.not_entered.append(unlistable(top, error))
         return walk
     pending: list[tuple[Path, Identities]] = [(top, inside)]
+    listed = 0
     while pending:
         folder, inside = pending.pop()
+        if limit is not None and listed >= limit:
+            walk.not_entered.append(NotEntered(folder, BOUNDED, bounded_reason(limit)))
+            break
+        listed += 1
         entered = []
-        for path, linked in search_folder(walk, folder, top, wanted, folded):
+        for path, linked in search_folder(walk, folder, top, wanted, excluded):
             identities = enter(walk, path, linked, inside, follow)
             if identities is not None:
                 entered.append((path, identities))
@@ -163,10 +185,11 @@ def is_checkout_marker(name: str, folder: Path) -> bool:
 
 
 def search_folder(
-    walk: Walk, folder: Path, top: Path, wanted: Callable[[str], bool], skipped: frozenset[str]
+    walk: Walk, folder: Path, top: Path, wanted: Callable[[str], bool], excluded: Callable[[Path], bool]
 ) -> list[tuple[Path, bool]]:
     """Add the wanted files directly in `folder` to `walk`, and give its subfolders to search, in name order, each
-    with whether it is a link; a folder that cannot be listed or is a nested checkout is reported and gives none."""
+    with whether it is a link, but those `excluded` skips or prunes; a folder that cannot be listed or is a nested
+    checkout is reported and gives none."""
     try:
         with os.scandir(folder) as listing:
             entries = sorted(listing, key=lambda entry: entry.name)
@@ -181,10 +204,10 @@ def search_folder(
         path = Path(entry.path)
         try:
             if is_folder_link(entry):
-                if entry.name.casefold() not in skipped:
+                if not excluded(path):
                     subfolders.append((path, True))
             elif entry.is_dir(follow_symlinks=False):
-                if entry.name.casefold() not in skipped:
+                if not excluded(path):
                     subfolders.append((path, False))
             elif wanted(entry.name):
                 walk.files.append(path)
