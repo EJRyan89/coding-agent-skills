@@ -1,6 +1,6 @@
 ---
 name: review-document
-description: "Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, or the documents a pull request changes, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document, a Word or PDF draft, another text file, or a pull request's documents rather than its code."
+description: "Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, or the documents a pull request changes, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a document by its path or file name, before finding, reading, or diffing it yourself: a design document, a Word or PDF draft, my uncommitted edits or changes to a document, or another text file; or only the documents a pull request changes, not its code."
 argument-hint: "<path> | owner/repo#number [--document PATH] [--base none|committed] [--stage draft|review|final] [--output DIR]"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/review_document.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/review_document.py\" *)", "Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py\" *)", "Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_source.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_source.py\" *)", "Agent", "Read"]
 ---
@@ -17,7 +17,7 @@ Every step is one command, run exactly as shown, in the turn that invoked the sk
 
 **Which model.** A Markdown, plain-text, Word, or PDF document (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.docx`, or `.pdf`) goes to the design-review specialist; any other text file goes to the generic code reviewer. The reviewer runs on this session's model. Design review needs Sonnet or stronger: a smaller model over-reported on a clean design document in evaluation. If this session runs on a smaller model, say so before starting and let the user switch.
 
-1. **Build** the fixture from the path, or the pull request in place of it, adding `--document "<path>"`, `--base`, `--stage`, and `--output "<directory>"` only when the user gave them:
+1. **Build** the fixture from the path, or the pull request in place of it. When the user names the document by its file name alone and no file of that name is in the working directory, find it under the working directory and build the one path found; when none or several match, ask the user which file they mean. Add `--document "<path>"`, `--base`, `--stage`, and `--output "<directory>"` only when the user gave them:
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_document.py" build "<path>"
    ```
