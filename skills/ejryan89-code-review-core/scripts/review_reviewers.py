@@ -43,6 +43,7 @@ from flat_text import flat_text
 from git_client import Runner, subprocess_runner
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
+from markdown_sections import code_spans
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -65,12 +66,14 @@ DELEGATION_PHRASE = re.compile(
     r"\bdelegat(?:e|es|ed|ing|ion)\b|\b(?:start|launch|run|dispatch|invoke)\w*\b.*\bagents?\b", re.IGNORECASE
 )
 AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
-CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
 # A path named in a code span or written bare in prose, read from the repository root; an inline link or a definition is
 # read only through its destination, by link_destinations, resolved from the skill's folder through link_targets, and
-# neither its text nor its destination is a bare path, within the limits the module docstring states.
-PATH_TOKEN = re.compile(r"`([^`\s]+)`|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
+# neither its text nor its destination is a bare path, within the limits the module docstring states. A code span, as
+# markdown_sections' code_spans pairs whole backtick runs, names a path when its whole text has no space or backtick;
+# a bare path is read anywhere outside such a span, inside a span that holds a space included.
+CODE_PATH = re.compile(r"[^`\s]+")
+BARE_PATH = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.\w+")
 # One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
 TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")
@@ -148,10 +151,23 @@ def _names_agent(stem: str, line: str) -> bool:
     if not PLAIN_WORD.fullmatch(stem):
         return True
     return (
-        any(word.search(span) for span in CODE_SPAN.findall(line))
+        any(word.search(span.text) for span in code_spans(line))
         or any(AGENT_WORD.match(line, match.end()) for match in word.finditer(line))
         or bool(DELEGATION_TEXT.search(line) or DELEGATION_PHRASE.search(line))
     )
+
+
+def _path_tokens(line: str) -> list[tuple[int, int, str]]:
+    """Each path a line names, as the column it starts at, the column past its end, and its text: a code span whose
+    whole text is one, and a bare path outside such spans."""
+    spans = [(span.start, span.end, span.text) for span in code_spans(line) if CODE_PATH.fullmatch(span.text)]
+    code = Cover.of([(start, end) for start, end, _ in spans])
+    bare = [
+        (match.start(), match.end(), match.group())
+        for match in BARE_PATH.finditer(line)
+        if not code.overlaps(match.start(), match.end())
+    ]
+    return sorted(spans + bare)
 
 
 def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]) -> Inspection:
@@ -181,11 +197,10 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, flat_text(line)[:160]))
-        for match in PATH_TOKEN.finditer(line):
-            if taken.get(number, nothing).overlaps(match.start(), match.end()):
+        for start, end, written in _path_tokens(line):
+            if taken.get(number, nothing).overlaps(start, end):
                 continue
-            token = next(group for group in match.groups() if group).split("#", 1)[0]
-            token = token.removeprefix("./")
+            token = written.split("#", 1)[0].removeprefix("./")
             if token in repository_files and token != skill:
                 references.add(token)
         references.update(path for stem in named for path in agents[stem])

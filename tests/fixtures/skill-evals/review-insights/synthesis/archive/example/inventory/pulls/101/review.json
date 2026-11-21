@@ -1,0 +1,80 @@
+{
+  "artifacts": {
+    "markdown_sha256": "a67ef65a8a81596b3843777e401fece37ea87a7b65409ce1863ea65086464026",
+    "payload_sha256": "3a1db536c047a27f2350b3eee8e77af49bdf5e5274fd6f995386959a07ae6c00"
+  },
+  "findings": [
+    {
+      "body": "StockImport.Run is public and has no XML documentation comment, which the review guide requires.",
+      "candidate_key": "tools/StockImport.cs:12:Documentation",
+      "category": "Documentation",
+      "evidence": "tools/StockImport.cs line 12.",
+      "id": "F001",
+      "line": 12,
+      "path": "tools/StockImport.cs",
+      "severity": "SHOULD_FIX",
+      "source": "inventory-review",
+      "title": "Public method in tools/ lacks an XML documentation comment"
+    }
+  ],
+  "ledger": [
+    {
+      "category": "Documentation",
+      "dispositions": [],
+      "id": "F001",
+      "judged_in": 1,
+      "repeats": [],
+      "severity": "SHOULD_FIX",
+      "state": "open",
+      "version": 1
+    }
+  ],
+  "prior_dispositions": [],
+  "pull_request": {
+    "base_ref": "main",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa65",
+    "number": 101,
+    "title": "Inventory change 101",
+    "url": "https://github.com/example/inventory/pull/101"
+  },
+  "repository": "example/inventory",
+  "review": {
+    "adapter": {
+      "name": "inventory-review",
+      "protocol_version": 1,
+      "reviewer": "inventory-review",
+      "scope": "repository",
+      "source": "trusted-ref",
+      "source_commit": "1111111111111111111111111111111111111111",
+      "source_hashes": {
+        "docs/error-handling.md": "479fc265ed0a27c9488ca2bae8271d18ff0eca254b2fa1199d25e153b5473d2d",
+        "docs/review-guide.md": "42c5f20e8a3c3b59b9fbaeb2b2c4658c01ef8e4d5e82734706b2e15f892f8795"
+      },
+      "status": "complete",
+      "usage": null
+    },
+    "counts": {
+      "MUST_FIX": 0,
+      "SHOULD_FIX": 1,
+      "SUGGESTION": 0
+    },
+    "mode": "initial",
+    "reviewed_at": "2026-01-05T12:00:00+00:00",
+    "reviewers": [
+      {
+        "category": "Repository",
+        "dispositions_only": false,
+        "files": 3,
+        "findings": 1,
+        "id": "inventory-review",
+        "model": "claude-sonnet-5-5",
+        "retries": 0
+      }
+    ],
+    "summary": "Review of inventory change 101.",
+    "verdict": "APPROVED",
+    "version": 1
+  },
+  "schema_version": 2
+}

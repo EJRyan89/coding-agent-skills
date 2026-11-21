@@ -5136,3 +5136,78 @@ def test_a_path_in_a_quoted_argument_is_placed_on_the_line_it_stands_on(tmp_path
         "OUTSIDE_MISSING SKILL.md:7 ../second.md",
         "TOTAL outside 0 0 0",
     ]
+
+
+# Each reader of a line's code spans reads them through markdown_sections' code_spans, which pairs whole backtick runs
+# as CommonMark does. A span written with single backticks reads as the single-backtick pattern it replaced read it;
+# a case marked "changed" read otherwise before, and the comment beside it says how.
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Run `git status` here with `Read`", ["Read"]),
+        # changed: the pattern read `a`, then ``b`` with `` as a span, and missed `Read`.
+        ("Use the ``a`b`` with `Read`", ["Read"]),
+        # changed: the pattern read the text between the double runs, ` and `, as a span, and missed `Bash x`.
+        ("see ``Read`` and `Bash x`", ["Read", "Bash"]),
+        ("``a`Read x``", []),
+    ],
+)
+def test_a_line_s_tool_references_read_its_code_spans_whole(line: str, expected: list[str]) -> None:
+    assert skill_inventory.line_references(line, None, ["Read", "Bash"], []) == expected
+
+
+def test_a_code_span_loses_only_its_quotes_and_a_fence_s_line_has_no_code_spans() -> None:
+    assert skill_inventory.line_references('Run `"Read"` and `XBash`', None, ["Read", "Bash"], []) == ["Read"]
+    assert skill_inventory.line_references("`Read` here", "text", ["Read", "Bash"], []) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Do not run `a. b` now. Then go.", [(6, 22)]),
+        # changed: the pattern blanked only `a`, so the dot in ``. b`` ended the clause at column 11.
+        ("Never ``a`. b`` here. Go.", [(5, 21)]),
+        ("Don't `x` ``. y``. Fine.", [(5, 18)]),
+    ],
+)
+def test_a_dot_in_a_code_span_of_any_run_ends_no_negated_clause(line: str, expected: list[tuple[int, int]]) -> None:
+    assert skill_inventory.negated_ranges(line) == expected
+
+
+def test_a_code_span_written_with_two_backticks_is_read_as_generated_code() -> None:
+    assert skill_inventory.generated_code("a ``b`python -c 'x'`` c", False)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("It prints `GONE` when done.", ["UNPRINTED SKILL.md 1 GONE"]),
+        # changed: the pattern's span opened on the second backtick, so the example lead "such as" ended in a backtick.
+        ("It prints a line such as ``GONE x``.", []),
+        # changed: the pattern read ` and ` between the double runs as a span, and missed `GONE x`.
+        ("It prints ``WENT`` and `GONE x`.", ["UNPRINTED SKILL.md 1 WENT", "UNPRINTED SKILL.md 1 GONE"]),
+        ("It prints ``a`GONE``.", []),
+    ],
+)
+def test_a_stated_line_reads_each_code_span_whole(line: str, expected: list[str]) -> None:
+    assert skill_inventory.stated_lines(Path(), Path("SKILL.md"), [line], set(), set()) == expected
+
+
+def test_the_shell_file_cue_reads_each_code_span_whole(tmp_path: Path) -> None:
+    # changed: line 5's pattern read `cat y ` between the double run and `z` as a span, and cued the line.
+    skill = write(tmp_path / "SKILL.md", "# S\n\nUse `cat x` now.\nUse ``cat `x` y`` now.\nUse ``x``cat y `z` now.\n")
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 4]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("`helper` and ``helper``", ["helper", "helper"]),
+        # changed: the pattern read `x`, then ` and ` as a span, and missed `y`.
+        ("see ``x`` and `y`", ["x", "y"]),
+        ("``a`b``", []),
+        ("`` `x` ``", []),
+    ],
+)
+def test_a_line_s_agents_are_its_code_spans_read_whole(line: str, expected: list[str]) -> None:
+    assert skill_inventory.line_agents(line, {"helper", "x", "y"}) == expected

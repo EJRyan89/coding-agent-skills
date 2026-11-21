@@ -1,13 +1,12 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
 reader, the fenced code block reader, the block walker, the labels of a fence in an executable language, the inline
-code span patterns and reader, the HTML comment pattern, and the block rules every reader of Markdown's structure reads
+code span reader, the HTML comment pattern, and the block rules every reader of Markdown's structure reads
 as CommonMark does: the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
 import bisect
 import re
-from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 
@@ -49,16 +48,8 @@ ATX_HEADING = re.compile(r" {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+
 # An ATX heading with no text: up to three spaces of indentation and one to six `#`, with nothing after them but spaces
 # or tabs. It ends a paragraph as any heading does, though ATX_HEADING, which reads a heading's text, matches none.
 EMPTY_ATX_HEADING = re.compile(r" {0,3}#{1,6}[ \t]*")
-# An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
-CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # A run of backticks, which opens or closes an inline code span only whole.
 BACKTICK_RUN = re.compile(r"`+")
-# An inline code span read by a regular expression: a run of backticks, its text, and a run of the same backticks, with
-# the run as the first group and the text as the second. It closes a span on part of a longer run and opens one on the
-# end of a run that no other matches, where CommonMark reads text, and its search takes time growing with the square of
-# a line's backtick run. It is kept only for hidden_comments' search between positions; every other reader of
-# CommonMark's code spans reads them through code_spans.
-COMMONMARK_CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 # An HTML comment, which Markdown renders as nothing, across lines.
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # A fence's opening line: the blockquote and list item markers that hold it, any indentation, a run of three or more
@@ -812,8 +803,8 @@ def code_spans(line: str) -> list[CodeSpan]:
     does not follow: a run of more than 80 backticks opens no span there, and after a run that no later run matches,
     GitHub may read a later span on the line as text, where CommonMark, and this reader, read it as code.
 
-    Each run is read once as an opener and passed over once as a candidate closer, so the time is linear in the
-    line's length, however its runs are written."""
+    Each run's closer, the next run of its length, is found in one pass from the line's end, and the spans are read in
+    one pass from its start, so the time is linear in the line's length, however its runs are written."""
     spans: list[CodeSpan] = []
     offset = 0
     for segment in line.split("\n"):
@@ -824,26 +815,40 @@ def code_spans(line: str) -> list[CodeSpan]:
 
 def _segment_code_spans(segment: str, offset: int) -> list[CodeSpan]:
     """The code spans of a text with no line break, each column moved by `offset`."""
-    runs = [(run.start(), run.end()) for run in BACKTICK_RUN.finditer(segment)]
-    # The indexes of the runs of each length, in order; a run behind the one read is dropped once from its front.
-    by_length: dict[int, deque[int]] = {}
-    for index, (start, end) in enumerate(runs):
-        by_length.setdefault(end - start, deque()).append(index)
-    spans: list[CodeSpan] = []
-    index = 0
-    while index < len(runs):
-        start, end = runs[index]
-        same = by_length[end - start]
-        while same and same[0] <= index:
-            same.popleft()
-        if not same:
-            index += 1
-            continue
-        closer = same.popleft()
-        close_start, close_end = runs[closer]
-        spans.append(CodeSpan(offset + start, offset + close_end, end - start, segment[end:close_start]))
-        index = closer + 1
-    return spans
+    return [replace(span, start=span.start + offset, end=span.end + offset) for span in CodeSpanReader(segment).spans()]
+
+
+class CodeSpanReader:
+    """The code spans of one line with no line break, read from any column on, as code_spans reads them from the
+    line's start: a reader that sets part of the line aside, such as an HTML comment it hides, reads the spans after
+    that part as CommonMark pairs them there. The line's runs are paired once, so a reading from each of several
+    columns, each past the last, takes time linear in the line's length, however many columns it starts from."""
+
+    def __init__(self, line: str) -> None:
+        self.line = line
+        self.runs = [(run.start(), run.end()) for run in BACKTICK_RUN.finditer(line)]
+        # The index of the next run of each run's length, or -1 where no later run has it: the run that closes the
+        # span the run opens.
+        self.closers = [-1] * len(self.runs)
+        following: dict[int, int] = {}
+        for index in range(len(self.runs) - 1, -1, -1):
+            start, end = self.runs[index]
+            self.closers[index] = following.get(end - start, -1)
+            following[end - start] = index
+
+    def spans(self, column: int = 0) -> Iterator[CodeSpan]:
+        """Each code span of the line, left to right, read as if the line started at `column`: a run that starts
+        before it opens and closes no span."""
+        index = bisect.bisect_left(self.runs, (column,))
+        while index < len(self.runs):
+            closer = self.closers[index]
+            if closer < 0:
+                index += 1
+                continue
+            start, end = self.runs[index]
+            close_start, close_end = self.runs[closer]
+            yield CodeSpan(start, close_end, end - start, self.line[end:close_start])
+            index = closer + 1
 
 
 def without_code_spans(line: str, fill: str = "") -> str:
@@ -861,9 +866,7 @@ def without_code_spans(line: str, fill: str = "") -> str:
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:
     """Each inline code span outside every fence, as its line's index and its text."""
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-    return [
-        (index, span) for index, line in enumerate(lines) if index not in fenced for span in CODE_SPAN.findall(line)
-    ]
+    return [(index, span.text) for index, line in enumerate(lines) if index not in fenced for span in code_spans(line)]
 
 
 def markdown_section(text: str, heading: str) -> str | None:

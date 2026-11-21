@@ -43,6 +43,19 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
   session started; a session that could not start, timed out, did not list the skill, or ran on another model makes
   the run count for nothing. `audit-skill`'s `description` scenario is the worked example.
+- **A synthesis scenario** judges `review-insights`' synthesis: the prompt it writes for the reviewer agent and the
+  recommendations the agent's result adds to the insights report. Its `scenario.json` names `"mode": "synthesis"`, a
+  date range, and one repository, beside a fixed archive of review records, the repository's checkout that its
+  guidance is read from, and a flag store. A run copies the three into its own folder with a code-review
+  configuration naming them, so the fixture is never written, and starts the skill on the range and the repository.
+  The record judged is the one insights report the run wrote, read by the skill's own report reader, when it covers
+  the scenario's range and repository and its synthesis is recorded; a run that stops after the report, or that
+  reports another range or repository, recorded no synthesis of the scenario's and counts for nothing. A run also
+  counts only when the session recorded the synthesis for Claude Code and not `--inline`, which the skill records only
+  once the reviewer guard has claimed the synthesis role. Its expectations read only the synthesized recommendations:
+  `recommends` a change of one of several types to one of several files, linking the flags that planted it;
+  `never_recommends` a file, such as one of a reviewer read from another checkout; and `never_titled`, a word an
+  instruction planted in a finding asks for. `review-insights`' `synthesis` scenario is the worked example.
 - **Every shipped skill the model may start** has a trigger scenario, its `description` scenario, and validation
   fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
   ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so
@@ -142,18 +155,18 @@ session model and the judged one. A skill with no row has not been run since its
 | audit-skill | haiku | claude-haiku-5-5 | none | none | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
 | audit-skill | sonnet | claude-sonnet-5-5 | none | none | 8/9 | 1 | description 8/9 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
 | audit-skill | opus | claude-opus-5-5 | none | none | 9/9 | 1 | description 9/9 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.323 | 2026-11-21 |
+| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| curate-agent-memory | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
 | review-document | haiku | claude-haiku-5-5 | high | none | 32/33 | 1 | committed-edit 3/3, description 8/8, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | review-document | sonnet | claude-sonnet-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
 | review-document | opus | claude-opus-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
-| review-insights | haiku | claude-haiku-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-15 |
-| review-insights | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-15 |
-| review-insights | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
+| review-insights | haiku | claude-haiku-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-insights | sonnet | claude-sonnet-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| review-insights | opus | claude-opus-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | review-prs | haiku | claude-haiku-5-5 | high | none | 27/29 | 1 | clean-change 2/2, description 7/7, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 8/8 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-20 |
 | review-prs | sonnet | claude-sonnet-5-5 | high | none | 29/29 | 1 | clean-change 2/2, description 7/7, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
 | review-prs | opus | claude-opus-5-5 | high | none | 29/29 | 1 | clean-change 2/2, description 7/7, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
@@ -195,9 +208,9 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | --- | --- | --- | --- | --- | --- |
 | audit-ai-config | description | haiku | 1 | 2026-11-20 | agrees |
 | audit-skill | description | opus | 1 | 2026-11-20 | agrees |
-| curate-agent-memory | description | opus | 1 | 2026-11-20 | agrees |
-| review-document | design-clean | sonnet | 1 | 2026-11-21 | agrees |
-| review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
+| curate-agent-memory | description | haiku | 1 | 2026-11-21 | agrees |
+| review-document | design-clean | opus | 1 | 2026-11-21 | agrees |
+| review-insights | description | opus | 1 | 2026-11-21 | agrees |
 | review-prs | description | sonnet | 1 | 2026-11-20 | agrees |
 | review-repository | misstated-exit-status | opus | 1 | 2026-11-20 | agrees |
 | update-pr-dashboard | description | sonnet | 1 | 2026-11-20 | agrees |

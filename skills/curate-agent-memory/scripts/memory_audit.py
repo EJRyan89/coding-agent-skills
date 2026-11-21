@@ -132,7 +132,7 @@ from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_destinations import link_destinations, written_destination
 from link_probe import is_link_or_junction, is_plain_file
-from markdown_sections import ATX_HEADING, CODE, CODE_SPAN, EMPTY_ATX_HEADING, HEADING, blocks
+from markdown_sections import ATX_HEADING, CODE, EMPTY_ATX_HEADING, HEADING, blocks, code_spans
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
@@ -492,8 +492,8 @@ def words(text: str) -> set[str]:
 def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
     cited: list[CitedPath] = []
     seen: set[str] = set()
-    for match in CODE_SPAN.finditer(body):
-        candidate = match.group(1).strip()
+    for span in code_spans(body):
+        candidate = span.text.strip()
         candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
         if (
             candidate in seen

@@ -35,7 +35,7 @@ The first line is `HOME "<dir>"`, then a `DEPLOYED <model> <source>` line for ea
 A `NOT_COUNTED` line names each run whose record counts for nothing, and every `FAIL` line names its kind before its reason. Explain each before anyone changes the skill:
 
 - **`judgment`**: the evaluation's result for that model. With `--runs`, read the scenario's `RUNS` line before calling it anything: `all` is a steady pass, `none` a steady failure, and `some` an inconsistent result, neither a regression nor a pass, which you report as such. After a single run, one failure is one sample: rerun that scenario on that model with `--runs 3` before calling it a regression.
-- **`run`** or **`record`**: the run recorded no review, or its record does not show the model judged, so it is not a judgment of the model. Say what the reason shows went wrong.
+- **`run`** or **`record`**: the run recorded no review, or for a synthesis scenario no synthesis, or its record does not show the model judged, as when a synthesis was recorded inline or for another host, so no reviewer guard held it; either way it is not a judgment of the model. Say what the reason shows went wrong.
 
 For a trigger scenario, a `starts` failure means the description did not lead that model to the skill, and a `does_not_start` failure that it took a near miss: a neighbour's request, or one no skill serves, which means it takes whatever comes. Say which words of the description the request or near miss shares.
 
@@ -47,7 +47,7 @@ When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream
 
 ## 5. Read the sampled transcript
 
-A script grader that passes a wrong run fails nothing, so every run with `--write` samples one passing run for you to read: its `SAMPLE <scenario> <model>` line, before `WROTE`, names it, with ` run=<run>` after the model when `--runs` is above 1, and the next recorded run samples the next scenario and model. `SAMPLE none` means no run passed, and there is nothing to read. Otherwise, for each `PASS` line of that run, search its `TRANSCRIPT` for what the expectation claims, such as the finding at its line, the verdict, or the Skill tool call that started the skill, and check that the transcript shows it. Then record the reading, which writes `docs/skill-evaluations.md` again and prints `WROTE <file>`; commit that edit with the run's rows:
+A script grader that passes a wrong run fails nothing, so every run with `--write` samples one passing run for you to read: its `SAMPLE <scenario> <model>` line, before `WROTE`, names it, with ` run=<run>` after the model when `--runs` is above 1, and the next recorded run samples the next scenario and model. `SAMPLE none` means no run passed, and there is nothing to read. Otherwise, for each `PASS` line of that run, search its `TRANSCRIPT` for what the expectation claims, such as the finding at its line, the verdict, or the Skill tool call that started the skill, and check that the transcript shows it. For a synthesis scenario, read the output of the session's command that recorded the synthesis: for `recommends`, a `SYNTHESIZED` line of one of its types whose `TARGET` line names one of its files and whose flags include its flags; for `never_recommends`, no `TARGET` line naming one of its files; and for `never_titled`, no `TITLE` line holding its text. Then record the reading, which writes `docs/skill-evaluations.md` again and prints `WROTE <file>`; commit that edit with the run's rows:
 
 ```bash
 python -B tools/skill_evals.py review-prs --sample-read agrees

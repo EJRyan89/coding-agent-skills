@@ -530,6 +530,28 @@ class SkillLayoutFixtures(unittest.TestCase):
                 skill_path_problems(root),
             )
 
+    def test_a_bare_own_path_is_read_from_each_code_span_whole(self) -> None:
+        # changed: the single-backtick pattern this read before named ` and scripts/b.py ` from between the
+        # double runs on line 2, and missed nothing else here.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "agents").mkdir()
+            (root / "deploy-meta" / "alpha.json").write_text("{}", encoding="utf-8")
+            (root / "skills" / "alpha").mkdir(parents=True)
+            (root / "skills" / "alpha" / "SKILL.md").write_text(
+                "Run `scripts/a.py`.\nsee ``x`` and scripts/b.py `y`\n``a`scripts/c.py``\nsee ``scripts/d.py``\n",
+                encoding="utf-8",
+            )
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:1 names `scripts/a.py` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:4 names `scripts/d.py` by a bare relative path; see {doc}",
+                ],
+                skill_path_problems(root),
+            )
+
     def test_an_install_path_is_refused_under_every_spelling_of_the_home(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1674,6 +1696,9 @@ def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separ
             True,
             id="item-after-an-item-s-paragraph",
         ),
+        # changed: the single-backtick pattern this read before read ` the skill ` and ` is ` from between the spans,
+        # so the sentence named no skill and was no statement.
+        pytest.param("Under ``a`` the skill `fetcher` is `none`.\n", True, id="a-span-written-with-two-backticks"),
     ],
 )
 def test_a_runtime_page_statement_is_a_sentence_of_one_block(page: str, read: bool, tmp_path: Path) -> None:
@@ -1713,6 +1738,42 @@ def test_an_output_placeholder_is_placed_on_the_line_commonmark_breaks(separator
         f"skills/demo/SKILL.md:2 leaves --output to the agent; let the script choose and print the path; "
         f"see {WORKING_FILES_DOC}"
     ]
+
+
+@pytest.mark.parametrize(
+    ("supported", "expected"),
+    [
+        # An extension written alone in a span of two backticks is named. The single-backtick pattern this read
+        # before named it too, from the single-backtick pair inside the double runs.
+        pytest.param("`.bash`, `.sh`, ``.py``, and `.ps1` files", [], id="a-span-of-two-backticks"),
+        # changed: the pattern read `.x` from inside the span ``.x`.py``, a false executable extension the policy
+        # reported.
+        pytest.param(
+            "`.bash`, `.sh`, ``.x`.py``, `.py`, and `.ps1` files",
+            [],
+            id="a-backtick-inside-a-span-of-two",
+        ),
+        # changed: the pattern paired a stray backtick with the first of a double run and reported `.q`, which
+        # CommonMark reads as text, since no later single backtick closes it.
+        pytest.param(
+            "`.bash`, `.sh`, `.py`, and `.ps1` files, not a stray `.q``x`` run",
+            [],
+            id="a-stray-backtick-before-a-double-run",
+        ),
+    ],
+)
+def test_the_script_languages_are_the_code_spans_commonmark_pairs(
+    supported: str, expected: list[str], tmp_path: Path
+) -> None:
+    python = platform_support.PYTHON
+    write_fixture_tree(
+        tmp_path,
+        {
+            SKILL_GUIDE: f"A skill's executable files are Bash, Python, and PowerShell: {supported}. JavaScript and "
+            "TypeScript are not: `.js`, `.mjs`, `.cjs`, `.ts`, `.psm1`, `.cmd`, and `.bat` files are rejected.\n"
+        },
+    )
+    assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == expected
 
 
 @SEPARATOR

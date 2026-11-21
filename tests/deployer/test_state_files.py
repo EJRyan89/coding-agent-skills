@@ -119,15 +119,16 @@ class StateFileTests(DeployerTestCase):
 
     def test_a_manifest_the_deployer_cannot_read_is_refused_by_name_with_the_step_to_take(self) -> None:
         self.deploy_ok("--all")
+        refusal = f"ERROR: Manifest is malformed: {platform_support.normalize(self.manifest_file)}"
         for case, text in UNREADABLE.items():
             with self.subTest(case=case):
                 self.write(self.manifest_file, text)
                 for arguments in (("--all",), ("--all", "--dry-run")):
-                    result = self.deploy_fails(*arguments, pattern=re.escape("ERROR: Manifest is malformed: "))
-                    self.assert_lines(result.output, *MANIFEST_REMEDY)
+                    result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                    self.assert_refusal(result.output, refusal, *MANIFEST_REMEDY)
                     self.assertNotIn("FAILED", result.output)
                 checked = self.run_cli("check")
-                self.assertIn("ERROR: Manifest is malformed: ", checked.output)
+                self.assertIn(refusal, checked.output)
 
     def test_a_manifest_an_earlier_release_wrote_with_a_lone_surrogate_is_refused_as_that_with_the_step_to_take(
         self,
@@ -178,28 +179,27 @@ class StateFileTests(DeployerTestCase):
 
     def test_a_directory_in_place_of_the_manifest_is_refused_before_a_dry_run_promises_a_fresh_install(self) -> None:
         self.manifest_file.mkdir(parents=True)
-        refusal = f"ERROR: The manifest at {shown(self.manifest_file)} is not a file."
+        refusal = f"ERROR: The manifest at {platform_support.normalize(self.manifest_file)} is not a file."
         for arguments in (("--all", "--dry-run"), ("--all",)):
             with self.subTest(arguments=arguments):
-                result = self.deploy_fails(*arguments, pattern=refusal)
+                result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
                 self.assertNotIn("FRESH INSTALL", result.output)
                 self.assertNotIn("INSTALLED", result.output)
-                self.assert_lines(result.output, *MANIFEST_REMEDY)
+                self.assert_refusal(result.output, refusal, *MANIFEST_REMEDY)
 
     def test_a_directory_in_place_of_the_configuration_is_refused_by_deployment_and_configure(self) -> None:
         config_file = self.config_file()
         config_file.unlink()
         config_file.mkdir()
-        refusal = f"ERROR: The configuration at {shown(config_file)} is not a file."
-        result = self.deploy_fails("--all", "--dry-run", pattern=refusal)
+        refusal = f"ERROR: The configuration at {platform_support.normalize(config_file)} is not a file."
+        result = self.deploy_fails("--all", "--dry-run", pattern=re.escape(refusal))
         self.assertNotIn("No config found", result.output)
-        self.assert_lines(result.output, *CONFIGURATION_REMEDY)
+        self.assert_refusal(result.output, refusal, *CONFIGURATION_REMEDY)
         for arguments in ((), ("--reset",)):
             with self.subTest(arguments=arguments):
                 configured = self.configure(*arguments, stdin=f"{self.repos}\n")
                 self.assertEqual(1, configured.code, configured.output)
-                self.assertRegex(configured.output, refusal)
-                self.assert_lines(configured.output, *CONFIGURATION_REMEDY)
+                self.assert_refusal(configured.output, refusal, *CONFIGURATION_REMEDY)
                 self.assertNotIn("REPOS_ROOT", configured.output)
 
     def test_a_journal_line_the_deployer_cannot_read_stops_recovery_and_keeps_the_run(self) -> None:

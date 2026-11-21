@@ -363,6 +363,20 @@ class MemoryAuditTests(unittest.TestCase):
         }
         self.assertEqual({"docs/guide.md": (True, None), "docs/removed.md": (False, None)}, cited)
 
+    def test_a_cited_path_is_a_code_span_of_any_backtick_run(self) -> None:
+        # changed: the single-backtick pattern this read before cited `and docs/guide.md` from between the
+        # double runs on the second line, and missed the span written with two backticks on the third.
+        write(self.repo / "docs" / "guide.md", "Guide.\n")
+        write(
+            self.memory_dir / "paths.md",
+            memory("paths", "See `docs/guide.md` here.\nSee ``x`` and docs/gone.md `y`.\nSee ``docs/two.md`` too.\n"),
+        )
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"docs/guide.md": (True, None), "docs/two.md": (False, None)}, cited)
+
     def test_a_cited_home_path_is_checked_under_the_absolute_home(self) -> None:
         home = self.root / "home"
         write(home / "notes" / "rule.md", "Rule.\n")

@@ -19,7 +19,7 @@ import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
 from bash_syntax import BashSyntaxError
-from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, markdown_section
+from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, code_spans, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
@@ -27,7 +27,6 @@ from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
 from suite_names import is_suite_name
 from text_lines import lines_and_breaks, text_lines
 from validation_support import (
-    CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -335,9 +334,9 @@ def runtime_page_problems(root: Path) -> list[str]:
     """Report a runtime's support page that states a skill's support on that runtime otherwise than its metadata.
 
     A statement is a sentence of a block outside code, as markdown_sections' `blocks` walks them, that names one skill
-    and one level, each in backticks (`full`, `partial`, or `none`); its level must be the one the skill's deploy-meta
-    declares for the page's runtime, and the capabilities it names in backticks exactly those the declaration needs. A
-    sentence naming several skills or levels is no statement this reads.
+    and one level, each a code span as code_spans pairs it (`full`, `partial`, or `none`); its level must be the one
+    the skill's deploy-meta declares for the page's runtime, and the capabilities it names in code spans exactly those
+    the declaration needs. A sentence naming several skills or levels is no statement this reads.
     """
     import runtime_support
 
@@ -355,7 +354,7 @@ def runtime_page_problems(root: Path) -> list[str]:
         prose = (block for block in blocks(text_lines(path.read_text(encoding="utf-8"))) if block.kind != CODE)
         for block in prose:
             for sentence in re.split(r"(?<=[.!?])\s+", " ".join(block.text().split())):
-                spans = set(re.findall(r"`([^`]+)`", sentence))
+                spans = {span.text for span in code_spans(sentence)}
                 skills, stated = spans & declared.keys(), spans & levels
                 if len(skills) != 1 or len(stated) != 1:
                     continue
@@ -425,7 +424,7 @@ SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
 # In SKILL.md prose, a code span that names the skill's own scripts/ or references/ by a relative path. Claude Code
 # resolves it against the working directory, and Codex and Copilot against the adapter, which has neither folder.
-# A code span is read with ejryan89-skill-core's CODE_SPAN, which validation_support re-exports.
+# A code span is read with ejryan89-skill-core's code_spans, as CommonMark pairs backtick runs.
 BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
 # audit-skill recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
 BARE_OWN_PATH_EXEMPT = frozenset({("skills/audit-skill/SKILL.md", "scripts/")})
@@ -477,9 +476,9 @@ def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None
 def _prose_path_problems(name: str, number: int, line: str) -> list[str]:
     """Code spans in SKILL.md prose that name the skill's own scripts/ or references/ by a relative path."""
     return [
-        f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
-        for span in CODE_SPAN.findall(line)
-        if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT
+        f"{name}:{number} names `{span.text}` by a bare relative path; see {SKILL_PATHS_DOC}"
+        for span in code_spans(line)
+        if BARE_OWN_PATH.search(span.text) and (name, span.text) not in BARE_OWN_PATH_EXEMPT
     ]
 
 
@@ -998,6 +997,15 @@ def unsupported_script_problems(root: Path) -> list[str]:
     return problems
 
 
+# A file extension a code span names, matched against the span's whole text.
+EXTENSION = re.compile(r"\.[a-z0-9]+")
+
+
+def _extensions(text: str) -> set[str]:
+    """The extensions the code spans of `text` name, each span read through code_spans."""
+    return {span.text for span in code_spans(text) if EXTENSION.fullmatch(span.text)}
+
+
 def script_language_problems(root: Path, standard_commands: set[str]) -> list[str]:
     """Report where the skill guide or the tool catalogue disagrees with the runner on a skill's script languages."""
     found = [
@@ -1012,7 +1020,7 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
     if line is None:
         return [*found, f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"]
     supported, _, unsupported = line.partition("JavaScript and TypeScript")
-    named = set(re.findall(r"`(\.[a-z0-9]+)`", supported))
+    named = _extensions(supported)
     found += [
         f"{SKILL_GUIDE} names `{extension}` as an executable extension"
         for extension in sorted(named - EXECUTABLE_SCRIPT_EXTENSIONS)
@@ -1021,7 +1029,7 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
         f"{SKILL_GUIDE} does not name `{extension}` as executable"
         for extension in sorted(EXECUTABLE_SCRIPT_EXTENSIONS - named)
     ]
-    rejected = set(re.findall(r"`(\.[a-z0-9]+)`", unsupported))
+    rejected = _extensions(unsupported)
     found += [
         f"{SKILL_GUIDE} does not name `{extension}` as unsupported"
         for extension in sorted(UNSUPPORTED_SCRIPT_EXTENSIONS - rejected)

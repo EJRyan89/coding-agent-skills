@@ -129,6 +129,21 @@ def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_i
     assert runtime_support.invoked_skills(text, names) == {"review-prs", "flag-review-finding", "review-insights"}
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("invoke `a`", {"a"}),
+        # changed: the single-backtick pattern read `x`, then ` and ` as a span, and missed `y`.
+        ("invoke ``x`` and `y`", {"x", "y"}),
+        # changed: the pattern read `a` from inside the double-backtick span, whose first word is a`b.
+        ("invoke ``a`b``", set()),
+        ("invoke `` `y` ``", set()),
+    ],
+)
+def test_an_invoked_skill_is_read_from_code_spans_that_pair_whole_backtick_runs(line: str, expected: set[str]) -> None:
+    assert runtime_support.invoked_skills(line, {"a", "x", "y"}) == expected
+
+
 @pytest.mark.parametrize("separator", ["\x0c", "\x85", "\u2028", "\u2029"])
 def test_a_line_ends_where_commonmark_ends_one_so_a_separator_keeps_the_span_on_the_invoke_line(separator: str) -> None:
     assert runtime_support.invoked_skills(f"Then invoke{separator}`review-prs`\n", {"review-prs"}) == {"review-prs"}
