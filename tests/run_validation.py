@@ -172,8 +172,9 @@ DOCUMENTATION_FILES = {
     ".github/pull_request_template.md",
 }
 
-# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, forms-considered,
-# silent-revert, and known-failure closing checks, which a run given only --pr-title or --pr-body limits itself to.
+# The policy checks that judge the pull request, each policy module's own: the title, closing-line, upgrade-note,
+# forms-considered, silent-revert, and known-failure closing checks, which a run given only --pr-title or --pr-body
+# limits itself to.
 PULL_REQUEST_POLICIES = tuple(
     check
     for module in POLICY_MODULES

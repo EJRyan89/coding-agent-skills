@@ -12,7 +12,8 @@ refusal the author can rewrite, while one left unread would let an issue close u
 What it does not see: a keyword and its reference on different lines, a reference after the first in a list that
 names its keyword once (`Closes #<n>, #<m>`; GitHub's pages ask for the keyword before each), `_` or `~` emphasis, a
 backslash-escaped `\\#<n>`, a keyword in another language, and a reference GitHub resolves through a repository's custom
-autolink prefix.
+autolink prefix. `stray_closing_lines` also does not see a closing reference inside a comment copied character for
+character from the pull request template, which the squash commit still carries.
 
 A pull request is squash-merged with its title as the commit's title and its body, as written, HTML comments included,
 as the message, so `pull_request_references` reads the title and the body together and reads inside comments. Every
