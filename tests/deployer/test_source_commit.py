@@ -161,7 +161,7 @@ class SourceCommitTests(DeployerTestCase):
         output = self.refuses_keeping_the_recorded_commit(
             find_program=lambda name: None if name == "git" else real(name)
         )
-        self.assert_lines(
+        self.assert_refusal(
             output,
             self.cannot("Git was not found."),
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
@@ -178,7 +178,7 @@ class SourceCommitTests(DeployerTestCase):
             return real(arguments, environment, **options)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
-        self.assert_lines(
+        self.assert_refusal(
             output,
             self.cannot("fatal: detected dubious ownership in the checkout"),
             "Put right what Git reports in the checkout, then retry.",
@@ -195,7 +195,7 @@ class SourceCommitTests(DeployerTestCase):
             return real(arguments, environment, **options)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
-        self.assert_lines(output, self.cannot("Access is denied"), "Check that Git runs, then retry.")
+        self.assert_refusal(output, self.cannot("Access is denied"), "Check that Git runs, then retry.")
 
     def test_a_git_that_names_no_commit_or_exits_with_nothing_said_refuses(self) -> None:
         for result, reason in (

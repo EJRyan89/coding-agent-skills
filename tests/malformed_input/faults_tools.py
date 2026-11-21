@@ -336,10 +336,12 @@ NOT_RUN: dict[str, str] = {
     ),
     "tools/deployable_report.py pin": (
         "reads no file and runs no git or gh through the clients: it starts the program --program names for its "
-        "--version through platform_support.run_tool, which the harness stops for any program but git"
+        "--version through platform_support.run_tool, which the harness stops for any program but git and the "
+        "process probe /bin/ps"
     ),
     "tools/deployable_report.py bash": (
         "reads no file and runs no git or gh through the clients: it starts the Bash platform_support.find_bash finds "
-        "for its --version through platform_support.run_tool, which the harness stops for any program but git"
+        "for its --version through platform_support.run_tool, which the harness stops for any program but git and the "
+        "process probe /bin/ps"
     ),
 }

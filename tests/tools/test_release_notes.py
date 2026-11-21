@@ -105,6 +105,21 @@ class BodyEntriesTests(unittest.TestCase):
             release_notes.unwrapped("Text\n```\nx\ny\n```\n| a |\n| b |\n> q\n> r"),
         )
 
+    def test_a_fence_closes_only_at_a_fence_line_markdown_reads_as_its_close(self) -> None:
+        # A shorter fence line or one of the other character is the fence's text, and the fence stays open past it.
+        for opener, inner in (("````", "```"), ("~~~", "```"), ("```", "~~~")):
+            with self.subTest(opener=opener, inner=inner):
+                self.assertEqual(
+                    ["Text", opener, "x", inner, "y", opener, "more"],
+                    release_notes.unwrapped(f"Text\n{opener}\nx\n{inner}\ny\n{opener}\nmore"),
+                )
+        # A line right after a closing fence, a longer one among them, starts a paragraph of its own.
+        for closer in ("```", "`````"):
+            with self.subTest(closer=closer):
+                self.assertEqual(
+                    ["```", "x", closer, "more words"], release_notes.unwrapped(f"```\nx\n{closer}\nmore\nwords")
+                )
+
     def test_a_heading_keeps_any_unicode_space_markdown_keeps_and_a_number_is_ascii(self) -> None:
         nbsp = chr(0xA0)
         entries = release_notes.body_entries(f"## Upgrade note\n\n### Changed{nbsp} \t\n\n- Level: patch.\n")

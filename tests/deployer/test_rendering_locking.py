@@ -1151,6 +1151,32 @@ class LockTests(DeployerTestCase):
         self.assertFalse(self.lock_dir.exists())
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
+    def test_the_next_deployment_names_a_stale_record_left_aside_under_a_token_and_leaves_it(self) -> None:
+        # This deployer moves a stale record aside under the reclaiming run's token, not a PID as one from before the
+        # file lock did; the next deployment names that folder too, and neither judges nor deletes it.
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        real_remove = fsops.remove
+
+        def aside_stays(path: Path) -> None:
+            if path.name.startswith(".deploy.lock.stale."):
+                raise OSError(13, "synthetic remove failure")
+            real_remove(path)
+
+        with mock.patch("deployer.fsops.remove", aside_stays):
+            self.deploy_ok("--all", probe=probe_returning(False, None))
+        (aside,) = self.lock_dir.parent.glob(".deploy.lock.stale.*")
+        self.assertRegex(aside.name, r"^\.deploy\.lock\.stale\.\d+-\d+-[0-9a-f]+$")
+        warning = (
+            f"WARNING: An earlier deployment left a lock moved aside at {forward(aside)}. "
+            "Delete it once no deployment is running.\n"
+        )
+        self.assertIn(warning, self.deploy_ok("--all", "--dry-run").output)
+        self.assertIn(warning, self.deploy_ok("--all").output)
+        self.assertEqual("stale-token", (aside / "token").read_text(encoding="utf-8"))
+        self.assertFalse(self.lock_dir.exists())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
     def test_a_run_arriving_at_any_step_of_another_s_acquire_never_holds_the_lock_beside_it(self) -> None:
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
         steps = ("make_directories", "open_lock_file", "move", "remove", "make_directory", "write_atomic")

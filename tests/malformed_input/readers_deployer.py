@@ -335,7 +335,8 @@ READERS = [
         filename="home/.claude/deployer/.deploy.lock.d/info.json",
         accepts={
             "wrong_type:start_time": "the holder is not running, so its start time is never read",
-            "wrong_type:token": "judging a record never reads its token; only its holder compares it with its own",
+            "wrong_type:token": "judging a record carries its token unread, and removing the record judged stale only "
+            "compares it for equality with the token of the record moved aside, which a value of any type supports",
         },
     ),
     Reader(

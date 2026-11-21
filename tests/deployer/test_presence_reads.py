@@ -655,11 +655,11 @@ class DeployerPresenceTests(DeployerTestCase):
                 pattern="Could not read the source's folder",
                 unreadable={tree: "the test denies the source folder's listing to the deployment"},
             )
-        self.assert_lines(result.output, *expected)
+        self.assert_refusal(result.output, *expected)
         self.assertNotIn("Traceback", result.output)
         with stat_failing_at(tree):
             result = self.deploy_fails("--all", pattern="Could not read the source's folder")
-        self.assert_lines(result.output, *expected)
+        self.assert_refusal(result.output, *expected)
         self.assertNotIn("Traceback", result.output)
 
     def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
