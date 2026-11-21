@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 import unittest
@@ -22,9 +23,11 @@ from markdown_sections import (
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
+    CodeSpan,
     block_fences,
     blocks,
     code_block_lines,
+    code_spans,
     document_headings,
     find_fences,
     is_blank,
@@ -34,6 +37,7 @@ from markdown_sections import (
     markdown_section,
     prose_code_spans,
     starts_block,
+    without_code_spans,
 )
 
 NBSP = chr(0xA0)
@@ -213,6 +217,89 @@ class CodeSpanTests(unittest.TestCase):
         )
         self.assertEqual("see  and [x](y)", COMMONMARK_CODE_SPAN.sub("", "see ``[a](b)`` and [x](y)"))
         self.assertEqual([], COMMONMARK_CODE_SPAN.findall("``open\nclose``"))
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        pytest.param(
+            "`a` and ``b ` c`` and ```d```",
+            [CodeSpan(0, 3, 1, "a"), CodeSpan(8, 17, 2, "b ` c"), CodeSpan(22, 29, 3, "d")],
+            id="each run closes on the next run of its length and a span may hold a shorter run",
+        ),
+        # The issue's line: CommonMark reads the double run, which no other matches, as text, and pairs the single
+        # backticks after it into a span over the link. The old pattern opened a span on the double run's last backtick.
+        pytest.param("``a` [x](y.md) `", [CodeSpan(3, 16, 1, " [x](y.md) ")], id="an unmatched run is text"),
+        # The old pattern closed a single run's span on the first backtick of the double run.
+        pytest.param("`a``", [], id="a span never closes on part of a longer run"),
+        pytest.param("`` [x](y.md) ```", [], id="a double run never closes on part of a triple run"),
+        pytest.param("a``b`` ```c``", [CodeSpan(1, 6, 2, "b")], id="runs after a span pair only with their own length"),
+        pytest.param("````", [], id="one run is no span"),
+        pytest.param("``open\nclose``", [], id="a line break ends a run's search"),
+        pytest.param("x\n`b`", [CodeSpan(2, 5, 1, "b")], id="a span after a line break keeps its column"),
+        pytest.param("a\nbb\n`c`", [CodeSpan(5, 8, 1, "c")], id="a span after two line breaks keeps its column"),
+    ],
+)
+def test_a_code_span_pairs_whole_backtick_runs_as_commonmark_does(line: str, expected: list[CodeSpan]) -> None:
+    assert code_spans(line) == expected
+
+
+def test_a_span_s_text_starts_past_its_opening_run() -> None:
+    line = "see ``a ` b`` here"
+    [span] = code_spans(line)
+    assert (span.text_start, line[span.text_start : span.end - span.run]) == (6, "a ` b")
+
+
+@pytest.mark.parametrize(
+    ("fill", "expected"),
+    [("", "see  and [x](y) ``"), (" ", "see " + " " * 10 + " and [x](y) ``")],
+    ids=["removed", "blanked"],
+)
+def test_a_line_without_its_code_spans_keeps_an_unmatched_run(fill: str, expected: str) -> None:
+    assert without_code_spans("see ``[a](b)`` and [x](y) ``", fill) == expected
+
+
+def test_a_line_without_its_code_spans_drops_them_by_default() -> None:
+    assert without_code_spans("a `b` c") == "a  c"
+
+
+# Lines sixteen times as long as others: a linear reading takes about sixteen times as long, a reading that searches
+# the rest of the line from each run that no other matches, as the old pattern did, about 64 times, and a quadratic
+# one about 256 times. The bound sits halfway between linear and the former in log space.
+SPAN_FACTOR = 16
+SPAN_BOUND = SPAN_FACTOR**1.25
+# Each shape at a size and at SPAN_FACTOR times it, and the slower reading it catches: one long run that no other
+# matches, which the old pattern, `(`+)(.+?)\1`, searched from each backtick of the run to the line's end; a run of
+# every length up to about the line's square root, none matched, which a pattern that pairs whole runs, such as
+# ``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``, searches from each run to the line's end; many spans of one run length,
+# which a reader that looked for a closer among every run of the length, not only those past the opener, reads in
+# time growing with their square; and unmatched runs of every length up to about the square root of the spans after
+# them, which a reader that scanned the later runs one by one for each opener's closer reads in time growing with
+# the spans times that root.
+SPAN_SCALING = {
+    "one long unmatched run": (lambda size: "`" * size + "a" * size, 256, 256 * SPAN_FACTOR),
+    "unmatched runs of every length": (
+        lambda size: "".join("`" * length + "a" for length in range(1, size + 1)),
+        64,
+        257,
+    ),
+    "many spans": (lambda size: "`a` " * size, 256, 256 * SPAN_FACTOR),
+    "unmatched runs before many spans": (
+        lambda size: "".join("`" * length + "a" for length in range(2, math.isqrt(size) + 2)) + "`a` " * size,
+        1024,
+        1024 * SPAN_FACTOR,
+    ),
+}
+
+
+@pytest.mark.parametrize(("shape", "small", "large"), SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
+def test_a_line_s_code_spans_are_read_in_time_in_proportion_to_it(
+    shape: Callable[[int], str], small: int, large: int
+) -> None:
+    # The runs of every length grow as the square of their count, so four times the lengths is about sixteen times
+    # the line.
+    assert round(len(shape(large)) / len(shape(small))) == SPAN_FACTOR
+    assert_time_in_proportion(code_spans, shape(small), shape(large), SPAN_BOUND)
 
 
 class HtmlCommentTests(unittest.TestCase):
@@ -971,14 +1058,17 @@ LEAST_TIMED_SECONDS = 0.1
 TIMINGS = 3
 
 
-def _seconds[T](read: Callable[[T], object], value: T, repeats: int) -> float:
-    """The processor time the process spends reading `value` `repeats` times. A runner whose pool runs more suites
-    than it has processors shares each processor between them, so a reading long enough to span several of the
-    scheduler's slices takes about twice its own time on the wall clock, while a short one may run in one slice
-    alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
+def _seconds[T](read: Callable[[T], object], value: T, repeats: int, limit: float = math.inf) -> float:
+    """The processor time the process spends reading `value` `repeats` times, or, once that passes `limit`, the time
+    so far, so a reading far slower than the bound fails in about the bound's time rather than the reading's. A runner
+    whose pool runs more suites than it has processors shares each processor between them, so a reading long enough to
+    span several of the scheduler's slices takes about twice its own time on the wall clock, while a short one may run
+    in one slice alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
     started = time.process_time()
     for _ in range(repeats):
         read(value)
+        if (elapsed := time.process_time() - started) > limit:
+            return elapsed
     return time.process_time() - started
 
 
@@ -987,17 +1077,17 @@ def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T
     reading repeats until the smaller takes LEAST_TIMED_SECONDS; the smaller keeps the least of TIMINGS timings, and
     the larger passes at its first timing under the bound, so only a reading slower on every try fails. The bound
     sits between the ratio a linear reading gives and the one the slower reading the test guards against gives, with
-    a margin of at least two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
+    a margin of about two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
     repeats = 1
     while (elapsed := _seconds(read, small, repeats)) < LEAST_TIMED_SECONDS:
         repeats *= 2
     least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))])
     timed: list[float] = []
     for _ in range(TIMINGS):
-        timed.append(_seconds(read, large, repeats))
+        timed.append(_seconds(read, large, repeats, bound * least))
         if timed[-1] < bound * least:
             return
-    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
+    pytest.fail(f"{min(timed):.4f}s is over {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
 
 
 def _walked(lines: list[str]) -> object:
