@@ -54,8 +54,8 @@ which runs it anyway:
    take seconds over the whole tree, and the type check of each root a changed file sits in, as in
    `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
 4. Once the title and the body are written, the checks that read them, and only those. Given without `-k`,
-   `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, upgrade-note,
-   forms-considered, silent-revert, and known-failure closing checks, start no suite, and say so:
+   `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, closing-line,
+   upgrade-note, forms-considered, silent-revert, and known-failure closing checks, start no suite, and say so:
 
 ```powershell
 python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
@@ -253,10 +253,21 @@ The type agrees with the worktree's branch kind when the kind is one of them, so
 on a `<type>/<name>` branch; on a branch a runtime named, such as `claude/<name>`, the author alone holds it. A title carries no `!` and the body no
 breaking-change footer: the Level under `## Upgrade note` is the one statement of a release level. Validation's title
 check, in `tests/validation/pull_request_title.py`, reads the title from `--pr-title <file>` locally and from the pull
-request in continuous integration.
+request in continuous integration. It also refuses a title holding a closing keyword before the start of an issue
+reference, since the squash commit carries the title and GitHub closes the issue it names.
 
 The body names every issue the change resolves, each in its own `Closes #<number>` line. The project board moves an
-issue by that line, and an issue a change resolved without one stays open.
+issue by that line, and an issue a change resolved without one stays open. GitHub closes an issue a closing reference
+names anywhere in the body, so the closing-line check, in `tests/validation/pull_request_body.py`, refuses every other
+line that holds one: in prose, in a code span or a code block, in a comment the author wrote, as a list item, or beside
+a second reference or other text, and a line that opens with a closing keyword before a reference that names no issue,
+such as `Closes #abc`. A `Closes #<number>` line of its own passes wherever it stands, a code block included, as does
+the template's bare `Closes #` and the template's own comments, which are its guidance, not the author's. The check
+and the title check read through ejryan89-skill-core's `closing_references`, the reader `implement-change`'s
+`pull_request.py check` shares, so a title and a body its check passes are ones these checks pass, and that module's
+docstring names the spellings none of them sees. Reword an example that is not meant to close its issue without the
+keyword. The check reads the body from `--pr-body <file>` locally and the pull request in continuous integration, and
+passes without one.
 
 A change a user who updates meets, every [contract change](#contract-files) included, states it under
 `## Upgrade note` in the body, in the shape [upgrade-notes.md](upgrade-notes.md) gives, and never in that file: the

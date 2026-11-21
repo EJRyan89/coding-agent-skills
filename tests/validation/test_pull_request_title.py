@@ -186,3 +186,36 @@ class HeadBranch(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "cannot read the checkout's branch"):
             check.test_the_pull_request_title_opens_with_a_known_type()
+
+
+# Each title that closes an issue, or opens a reference after a closing keyword: the squash commit carries the title,
+# and GitHub closes an issue a commit message on the default branch names after a closing keyword, so the issue belongs
+# in a `Closes #<n>` line of the body.
+CLOSING_TITLES = (
+    "fix: refuse a bad name, closes #12",
+    "fix(deployer): refuse a bad name (fixes #12)",
+    "fix: Resolves GH-12",
+    "fix: refuse a bad name, closes owner/repo#12",
+    "fix: refuse a bad name, fixed https://github.com/owner/repo/issues/12",
+    "fix: refuse a bad name, `closes #12`",
+    "fix: close #abc",
+)
+
+
+@pytest.mark.parametrize("title", CLOSING_TITLES)
+def test_a_title_holding_a_closing_reference_fails(title: str) -> None:
+    problems = title_problems(title, None)
+    assert len(problems) == 1, problems
+    assert "Closes #<number>" in problems[0]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "fix: close the file a failed read opened",
+        "fix: refuse issue #12's spelling",
+        "ci: run on GH-hosted runners",
+    ],
+)
+def test_a_title_with_a_keyword_or_a_number_alone_passes(title: str) -> None:
+    assert title_problems(title, None) == []

@@ -1,8 +1,17 @@
-"""The fix body guard: a pull request titled `fix` fills its body's `## Forms considered` section.
+"""The pull request body guards: the body names each issue it closes in a `Closes #<n>` line of its own, and a pull
+request titled `fix` fills its body's `## Forms considered` section.
 
-The check holds the section's shape, never its judgment, as ejryan89-skill-core's `forms_considered` reads it, the
-reader the `implement-change` repository skill's body check shares: a fix body has the heading, and under it text of
-the author's own, not nothing and not the template's guidance left as it was.
+The closing-line check reads the body through ejryan89-skill-core's `closing_references`, the reader the
+`implement-change` repository skill's body check shares, so a body its check passes is one this check passes: every
+closing reference GitHub reads, on every line, code spans, code blocks, and comments the author wrote included, since
+the squash commit carries the body into main as written and GitHub closes an issue a commit message on the default
+branch names anywhere in it, and a line that opens with a closing keyword before the start of a reference that names
+no issue, such as `Closes #abc`. A comment copied from the pull request template is the template's text, not the
+author's, and is not read.
+
+The forms-considered check holds the section's shape, never its judgment, as ejryan89-skill-core's `forms_considered`
+reads it, the reader the `implement-change` repository skill's body check shares: a fix body has the heading, and
+under it text of the author's own, not nothing and not the template's guidance left as it was.
 """
 
 from __future__ import annotations
@@ -14,6 +23,8 @@ from pathlib import Path
 # module states the path itself.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from closing_references import stray_closing_lines
+from flat_text import flat_text
 from forms_considered import FIX_TYPE, FORMS_HEADING, FormsFault, forms_fault, is_fix_title, placeholder_forms
 from pull_request_title import head_branch
 from upgrade_notes import PROFILE_DOC
@@ -60,7 +71,27 @@ def forms_problems(body: str, fix: bool, template: str) -> list[str]:
     return []
 
 
+def closing_line_problems(body: str, template: str) -> list[str]:
+    """Each line of the body that closes an issue outside a `Closes #<n>` line of its own, as closing_references
+    reads one."""
+    return [
+        f"line {number} of the pull request body closes an issue outside a `Closes #<number>` line of its own: "
+        f"{flat_text(text)!r}; GitHub reads a closing reference anywhere in the body, code and comments included, so "
+        "name each issue the change resolves on a line of its own and reword any other reference without a closing "
+        f'keyword ("Pull requests" in {PROFILE_DOC})'
+        for number, text in stray_closing_lines(body, template)
+    ]
+
+
 class PullRequestBodyPolicies(PullRequestChecks):
+    def test_the_body_names_each_issue_it_closes_in_a_closes_line_of_its_own(self) -> None:
+        # Without a body there is nothing to judge, so a local run passes, as the title check does without a title.
+        body = self.pull_request.body_text()
+        if body is None:
+            return
+        template = (REPOSITORY_ROOT / TEMPLATE).read_text(encoding="utf-8")
+        self.assertEqual([], closing_line_problems(body, template))
+
     def test_a_fix_body_fills_its_forms_considered_section(self) -> None:
         # Without a body there is nothing to judge, so a local run passes, as the title check does without a title.
         body = self.pull_request.body_text()

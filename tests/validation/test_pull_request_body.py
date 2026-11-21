@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import pull_request_body
 from forms_considered import FILLERS, forms_section, placeholder_forms
 from markdown_sections import HTML_COMMENT
-from pull_request_body import forms_problems, is_fix
+from pull_request_body import closing_line_problems, forms_problems, is_fix
 from validation_support import REPOSITORY_ROOT, PullRequest
 
 from tools.release_notes import ReleaseNotesError
@@ -399,3 +399,99 @@ class PolicyCheck(unittest.TestCase):
         pull_request_body.PullRequestBodyPolicies(
             "test_the_template_and_the_profile_name_the_section"
         ).test_the_template_and_the_profile_name_the_section()
+
+
+# Each body that closes an issue it names in no `Closes #<n>` line of its own: GitHub reads a closing reference anywhere
+# in the body, code spans, code blocks, and comments included, and the squash commit carries the body into main.
+STRAY_CLOSING_LINES = {
+    "a backticked reference in prose": "Closes #1\n\nTwo examples, such as `Closes #12`, read wrong.\n",
+    "a reference in prose": "Closes #1\n\nThis also fixes #12 in passing.\n",
+    "a reference in a code block": "Closes #1\n\n```text\nCloses #12 when it merges\n```\n",
+    "a reference in an indented code block": "Closes #1\n\nWhy.\n\n    resolves #12\n",
+    "a reference in a comment the author wrote": "Closes #1\n\n<!-- Closes #12 -->\n",
+    "a reference in a comment the author wrote over lines": "Closes #1\n\n<!-- later:\nfixes #12\n-->\n",
+    "a second reference on a closing line": "Closes #1, #12\n",
+    "a second keyword on a closing line": "Closes #1 and closes #12\n",
+    "text after a closing line's reference": "Closes #1 for now\n",
+    "a closing line as a list item": "- Closes #12\n",
+    "a closing line in a quote": "> Closes #12\n",
+    "a closing line in emphasis": "**Closes** #12\n",
+    "a closing line in another case": "closes #12\n",
+    "a closing line with a colon": "Closes: #12\n",
+    "another keyword alone": "Fixes #12\n",
+    "another repository's issue": "Closes owner/repo#12\n",
+    "an autolinked issue": "Resolves GH-12\n",
+    "an issue's URL": "Fixed https://github.com/owner/repo/issues/12\n",
+    "a closing line naming issue zero": "Closes #0\n",
+    "a closing line with a leading zero": "Closes #012\n",
+    "a line that opens a reference naming no issue": "Closes #abc\n",
+    "a reference after a CRLF line break": "Closes #1\r\n\r\nSee `fixes #12`.\r\n",
+    "a reference after a lone CR line break": "Closes #1\r\rSee `fixes #12`.\r",
+}
+
+
+@pytest.mark.parametrize("form", sorted(STRAY_CLOSING_LINES))
+def test_a_closing_reference_outside_a_closes_line_of_its_own_fails(form: str) -> None:
+    problems = closing_line_problems(STRAY_CLOSING_LINES[form], TEMPLATE)
+    assert len(problems) == 1, problems
+    assert "Closes #<number>" in problems[0]
+
+
+# Each body whose closing references are all `Closes #<n>` lines of their own, or that holds none.
+CLOSES_LINES_ONLY = {
+    "one closing line": "Closes #12\n\nWhy.\n",
+    "a closing line per issue": "Closes #12\nCloses #13\n\nWhy.\n",
+    "a closing line between spaces": "  Closes #12 \t\n\nWhy.\n",
+    "no closing line": "Why, with no issue to close.\n",
+    "a keyword before no reference": "This fixes the crash and closes the file.\n",
+    "GH- before no digit": "This fixes GH-hosted runners.\n",
+    "a keyword inside another word": "Disclosed #12 earlier; prefixes #12 too.\n",
+    "the template's closing line left with no issue": "Closes #\n\nWhy.\n",
+    "a closing line alone in a code block, which GitHub closes by too": "Why.\n\n```\nCloses #12\n```\n",
+}
+
+
+@pytest.mark.parametrize("form", sorted(CLOSES_LINES_ONLY))
+def test_a_body_naming_issues_only_in_closes_lines_passes(form: str) -> None:
+    assert closing_line_problems(CLOSES_LINES_ONLY[form], TEMPLATE) == []
+
+
+def test_the_template_left_as_it_was_passes_its_comments_unread() -> None:
+    # The template's first comment names "a Closes #N line of its own": the template's text, not the author's.
+    assert "Closes #N" in TEMPLATE
+    assert closing_line_problems(TEMPLATE, TEMPLATE) == []
+    assert closing_line_problems(TEMPLATE.replace("Closes #\n", "Closes #12\n", 1), TEMPLATE) == []
+
+
+def test_a_template_comment_the_author_changed_is_theirs_and_read() -> None:
+    changed = TEMPLATE.replace("Closes #N line of its own", "Closes #12 line of its own", 1)
+    assert changed != TEMPLATE
+    assert len(closing_line_problems(changed, TEMPLATE)) == 1
+
+
+def test_each_problem_names_its_line_and_text() -> None:
+    problems = closing_line_problems("Closes #1\n\nSee `fixes #12`.\n\nAnd\tfixes   #13 too.\n", TEMPLATE)
+    assert len(problems) == 2
+    assert "line 3 " in problems[0]
+    assert "'See `fixes #12`.'" in problems[0]
+    assert "line 5 " in problems[1]
+    assert "'And fixes #13 too.'" in problems[1]
+
+
+class ClosingLinePolicyCheck(unittest.TestCase):
+    def check(self, pull_request: PullRequest) -> None:
+        pull_request_body.PullRequestBodyPolicies(
+            "test_the_body_names_each_issue_it_closes_in_a_closes_line_of_its_own", pull_request
+        ).test_the_body_names_each_issue_it_closes_in_a_closes_line_of_its_own()
+
+    def test_a_stray_reference_fails_and_closes_lines_alone_pass_whatever_the_title(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            stray = write(Path(folder), "stray.md", STRAY_CLOSING_LINES["a backticked reference in prose"])
+            for title in (None, write(Path(folder), "title.txt", "docs: say why\n")):
+                with self.subTest(title=title), self.assertRaises(AssertionError) as raised:
+                    self.check(PullRequest(stray, title))
+                self.assertIn("line 3", str(raised.exception))
+            self.check(PullRequest(write(Path(folder), "body.md", TEMPLATE), None))
+
+    def test_without_a_body_nothing_is_judged(self) -> None:
+        self.check(PullRequest(None, None))

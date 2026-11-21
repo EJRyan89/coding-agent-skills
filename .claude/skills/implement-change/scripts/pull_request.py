@@ -65,13 +65,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import private_folder
 import whole_number
 from closing_references import (
-    CLOSING_KEYWORDS,
-    CLOSING_PREFIX,
+    BARE_CLOSING_LINE,
     CLOSING_REFERENCE,
-    REFERENCE_START,
+    blank_spans,
     pull_request_references,
     pull_request_text,
     reference_digits,
+    stray_closing_lines,
+    template_comment_spans,
+    title_holds_closing_reference,
 )
 from console import run_main
 from file_presence import NotADirectory, is_directory, is_present
@@ -87,13 +89,6 @@ from typed_text import read_typed
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
 TEMPLATE_FOLDERS = (".github", "", "docs")
-# A closing keyword and the start of an issue reference, `#`, `<owner>/<repo>#`, `GH-`, or a URL, which is refused,
-# as a line that opens with it or anywhere in a title, unless it is `Closes #<n>` even where what follows is no
-# reference CLOSING_REFERENCE reads.
-CLOSING_START = re.compile(rf"(?i){CLOSING_PREFIX}{REFERENCE_START}")
-CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_PREFIX}{REFERENCE_START}")
-BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
-CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 # A list item with no text: its marker, as markdown_sections reads one, alone between spaces and tabs.
 EMPTY_LIST_ITEM = re.compile(rf"[{MARKDOWN_SPACE}]*{LIST_MARKER}[{LINE_END}]*")
 HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*")
@@ -122,25 +117,7 @@ def base_argument(value: str) -> Base:
 def blank_comments(text: str) -> str:
     """`text` with the characters of every comment GitHub hides, but its line breaks, CR and LF, made spaces, so each
     line keeps its number; a `<!--` that code shows is text, as hidden_comments reads it."""
-    return blanked(text, hidden_spans(text))
-
-
-def blanked(text: str, spans: Sequence[tuple[int, int]]) -> str:
-    """`text` with the characters of each span, in order, but its line breaks, CR and LF, made spaces."""
-    kept: list[str] = []
-    position = 0
-    for first, past in spans:
-        kept.extend((text[position:first], re.sub(r"[^\r\n]", " ", text[first:past])))
-        position = past
-    kept.append(text[position:])
-    return "".join(kept)
-
-
-def template_comment_spans(body: str, template: str) -> list[tuple[int, int]]:
-    """The span of each comment GitHub hides in `body` that is, character for character, one GitHub hides in
-    `template`: a placeholder the template left."""
-    comments = {template[first:past] for first, past in hidden_spans(template)}
-    return [(first, past) for first, past in hidden_spans(body) if body[first:past] in comments]
+    return blank_spans(text, hidden_spans(text))
 
 
 def find_template(top: Path) -> Path | None:
@@ -191,12 +168,6 @@ def closed_issues(body: str, title: str | None = None) -> list[int]:
     return list(dict.fromkeys(reference.number for reference in pull_request_references(title, body)))
 
 
-def blank_template_comments(body: str, template: str) -> str:
-    """`body` with each comment copied from `template` blanked as blank_comments blanks one, and every other comment
-    kept, since the squash commit carries the comments the author wrote."""
-    return blanked(body, template_comment_spans(body, template))
-
-
 def headings(text: str) -> list[str]:
     """Each heading outside comments, as its hashes, a space, and its text."""
     # Each line is read whole where CommonMark ends one, at CR, LF, and CRLF.
@@ -213,17 +184,15 @@ def body_problems(body: str, template: str) -> list[str]:
     for first, _ in template_comment_spans(body, template):
         number = bisect_right(starts, first)
         problems.append((number, f"PLACEHOLDER {number} a template comment"))
-    # Both views blank characters but never a CR or an LF, so split where CommonMark ends a line they hold the same
-    # lines.
-    read = text_lines(blank_template_comments(body, template))
-    for number, (line, written) in enumerate(zip(text_lines(blank_comments(body)), read, strict=True), start=1):
+    # closing_references numbers a line as text_lines splits the body, which blanking characters but never a CR or an
+    # LF leaves where it was.
+    stray = dict(stray_closing_lines(body, template))
+    for number, line in enumerate(text_lines(blank_comments(body)), start=1):
         text = line.strip()
         if BARE_CLOSING_LINE.fullmatch(text):
             problems.append((number, f"PLACEHOLDER {number} a Closes line with no issue"))
-        elif (CLOSING_REFERENCE.search(written) or CLOSING_LINE.match(written)) and not (
-            CLOSES_ONE.fullmatch(written.strip()) or BARE_CLOSING_LINE.fullmatch(written.strip())
-        ):
-            problems.append((number, f"CLOSES_LINE {number} {flat_text(written.strip())}"))
+        elif number in stray:
+            problems.append((number, f"CLOSES_LINE {number} {flat_text(stray[number])}"))
         elif EMPTY_LIST_ITEM.fullmatch(line):
             problems.append((number, f"PLACEHOLDER {number} an empty list item"))
     lines = [problem for _, problem in sorted(problems, key=lambda problem: problem[0])]
@@ -248,7 +217,7 @@ def read_title(text: str) -> tuple[str, list[str]]:
         return "", ["TITLE_EMPTY"]
     count = len(text_lines(title))
     problems = [f"TITLE_LINES {count}"] if count > 1 else []
-    if CLOSING_REFERENCE.search(title) or CLOSING_START.search(title):
+    if title_holds_closing_reference(title):
         problems.append(f"TITLE_CLOSES {flat_text(title)}")
     return title, problems
 
