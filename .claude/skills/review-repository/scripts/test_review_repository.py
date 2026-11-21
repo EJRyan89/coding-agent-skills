@@ -218,7 +218,10 @@ OUTSIDE_THE_BOUNDARY = {
 TOOLS_OUTSIDE_THE_BOUNDARY = {
     "tools/runtime_command_lines.py": "builds each runtime's command line from review_hosts and starts it signed out",
     "tools/runtime_prompts.py": "renders each reviewer prompt from fixtures into its committed sample, staging no run",
-    "tools/skill_evals_scenarios.py": "reads the fixed scenarios under tests/fixtures/skill-evals, staging no run",
+    "tools/skill_evals_scenarios.py": (
+        "reads the fixed scenarios under tests/fixtures/skill-evals and stages their documents and fixture copies for "
+        "a run to review, writing no guard hook, run.json, or reviewer agent"
+    ),
 }
 # Each profile, by its file's stem, with every trusted file it names as TRUSTED_ROOT/<path> and the sections of that
 # file it tells its reviewer to read, each as the profile writes it: a heading's text, or the heading line itself.
@@ -651,6 +654,22 @@ class ManifestTests(unittest.TestCase):
         # Each tool named outside the boundary still stages through the run contract, and none of them is routed.
         self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if path not in staging])
         self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if "trust-boundary" in reached([path])[path]])
+        # Each stages only through a pipeline module it imports, never by writing the guard hook or a run.json itself,
+        # so a tool that starts writing either leaves this list for the route.
+        self.assertEqual(
+            {},
+            {
+                path: sorted(found)
+                for path in TOOLS_OUTSIDE_THE_BOUNDARY
+                if (
+                    found := {
+                        reason
+                        for reason in guarded_run_staging((REPOSITORY / path).read_text(encoding="utf-8"), modules)
+                        if not reason.startswith("imports ")
+                    }
+                )
+            },
+        )
 
     def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
