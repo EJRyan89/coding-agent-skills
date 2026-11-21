@@ -208,7 +208,7 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | audit-ai-config | description | haiku | 1 | 2026-11-20 | agrees |
 | audit-skill | description | opus | 1 | 2026-11-20 | agrees |
 | curate-agent-memory | description | opus | 1 | 2026-11-20 | agrees |
-| review-document | design-clean | sonnet | 1 | 2026-11-21 | agrees |
+| review-document | design-clean | opus | 1 | 2026-11-21 | agrees |
 | review-insights | description | opus | 1 | 2026-11-21 | agrees |
 | review-prs | description | sonnet | 1 | 2026-11-20 | agrees |
 | review-repository | misstated-exit-status | opus | 1 | 2026-11-20 | agrees |

@@ -13,7 +13,8 @@ Every command prints one fact per line:
   resolve Finds the document a user named by its file name alone, under the working directory, by the rule below, and
           prints FOUND <path> for the one file found, CANDIDATE <path> for each of several, or for the one found when a
           folder could not be searched, NOT_FOUND <name> for none, and before them UNSEARCHED <path> <reason> for each
-          folder or entry that could not be searched. Each path is relative to the working directory. It exits 1 when
+          folder or entry that could not be searched, and for the folder its bound stopped it at. Each path is
+          relative to the working directory. It exits 1 when
           it printed an UNSEARCHED line, since what it found may not be all there is.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
@@ -60,14 +61,19 @@ searched, through ejryan89-skill-core's `folder_walk`, so its rule is the walk's
 `.hg`, `.svn`), a dependency folder or its cache (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`), build
 output (`bin`, `obj`), Visual Studio's `.vs`, another checkout below the working directory (a clone, submodule, or
 worktree), and a linked folder are not searched; nor is a hidden folder, one whose name starts with a dot, which holds a
-tool's state or cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name. A matching entry
-that is a link, not a plain file, is passed over, since it may lead out of the tree, and one whose own metadata cannot
-be read is printed as UNSEARCHED, never taken for no file there. Names are compared as the folder holding each file
-compares them, so `Design.md` is found for `design.md` only where that folder folds case. A `.gitignore` is not read: a
-folder it ignores is searched unless the rule above skips it, so a draft kept in an ignored folder is still found. A
-folder or entry the walk could not list or examine, and a folder whose name holds a line break or a control character,
-which no line could name, is printed as UNSEARCHED, and a single match found beside one is printed as a CANDIDATE, since
-the folder not searched may hold another.
+tool's state or cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name: the walk prunes
+it, so nothing inside it is listed. A matching entry that is a link, not a plain file, is passed over, since it may lead
+out of the tree, and one whose own metadata cannot be read is printed as UNSEARCHED, never taken for no file there.
+Names are compared as the folder holding each file compares them, so `Design.md` is found for `design.md` only where
+that folder folds case. A `.gitignore` is not read: a folder it ignores is searched unless the rule above skips it, so a
+draft kept in an ignored folder is still found. A folder or entry the walk could not list or examine, and a folder whose
+name holds a line break or a control character, which no line could name, is printed as UNSEARCHED, and a single match
+found beside one is printed as a CANDIDATE, since the folder not searched may hold another.
+
+The walk is bounded: it lists at most 10000 folders (RESOLVE_FOLDER_LIMIT), the working directory included, so a search
+started in a large folder, such as a home folder, ends. Past the bound it stops and prints UNSEARCHED for the next
+folder it would have listed, which, with every folder after it in the walk's order, was not searched, and a single match
+found before it is printed as a CANDIDATE.
 """
 
 from __future__ import annotations
@@ -96,7 +102,7 @@ import json_writer
 import private_folder
 from console import run_main
 from flat_text import LINE_UNSAFE, flat_text, single_line
-from folder_walk import UNEXAMINED, UNLISTABLE, Walk, walk_files
+from folder_walk import BOUNDED, UNEXAMINED, UNLISTABLE, Walk, walk_files
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from link_probe import is_plain_file
@@ -132,6 +138,8 @@ FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-q
 # The fixture's repository for a file outside a checkout, under the local owner review_config owns.
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
+# The most folders `resolve` lists, the working directory included, before it stops and says where.
+RESOLVE_FOLDER_LIMIT = 10_000
 # What a double-quoted argument does not keep as it is in Bash or PowerShell, so an output directory whose path holds
 # one cannot be named in the PREPARE_ARGUMENTS line.
 UNQUOTABLE = frozenset('"$`\\')
@@ -893,23 +901,27 @@ def first_folder(folders: tuple[str, ...], matches: Callable[[str], bool]) -> Pa
     return None
 
 
-def hidden(name: str) -> bool:
-    return name.startswith(".")
+def hidden(folder: Path) -> bool:
+    """Whether a folder is hidden, its name starting with a dot, which `resolve`'s walk prunes."""
+    return folder.name.startswith(".")
 
 
 def unprintable(name: str) -> bool:
     return LINE_UNSAFE.search(name) is not None
 
 
-def unsearched_lines(walk: Walk, top: Path) -> list[str]:
-    """An UNSEARCHED line for each folder or entry outside a hidden folder that the walk could not list or examine."""
+def unsearched_lines(walk: Walk, top: Path, wanted: Callable[[str], bool]) -> list[str]:
+    """An UNSEARCHED line for each folder or entry the walk could not list or examine, and for the folder its bound
+    stopped it at. An entry it could not examine whose name is hidden and not the one searched for is passed over,
+    since as a folder the walk would have pruned it, and as a file it is not the document."""
     lines = []
     for skipped in walk.not_entered:
-        if skipped.kind not in {UNLISTABLE, UNEXAMINED}:
+        if skipped.kind not in {UNLISTABLE, UNEXAMINED, BOUNDED}:
+            continue
+        if skipped.kind == UNEXAMINED and hidden(skipped.path) and not wanted(skipped.path.name):
             continue
         relative = skipped.path.relative_to(top)
-        if first_folder(relative.parts, hidden) is None:
-            lines.append(f"UNSEARCHED {flat_text(str(relative))} {flat_text(skipped.reason)}")
+        lines.append(f"UNSEARCHED {flat_text(str(relative))} {flat_text(skipped.reason)}")
     return lines
 
 
@@ -918,13 +930,17 @@ def resolve(name: str, top: Path) -> list[str]:
     refuse_name(name)
     if is_plain_file(top / name):
         return [f"FOUND {name}"]
-    wanted = name_key(name)
-    walk = walk_files(top, lambda entry: name_key(entry) == wanted)
-    unsearched = unsearched_lines(walk, top)
+    key = name_key(name)
+
+    def wanted(entry: str) -> bool:
+        return name_key(entry) == key
+
+    walk = walk_files(top, wanted, prune=hidden, limit=RESOLVE_FOLDER_LIMIT)
+    unsearched = unsearched_lines(walk, top, wanted)
     found: list[Path] = []
     for path in walk.files:
         relative = path.relative_to(top)
-        if first_folder(relative.parts[:-1], hidden) is not None or not opens_as(path, name):
+        if not opens_as(path, name):
             continue
         try:
             metadata = os.lstat(path)
