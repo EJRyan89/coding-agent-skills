@@ -1084,6 +1084,19 @@ DRIVERS: list[Driver] = [
     ),
     Driver(
         DOCUMENT,
+        "resolve",
+        ("resolve", "design.md"),
+        prepare=document_checkout,
+        inputs=(DESIGN,),
+        not_run={
+            MISSING: "resolve searches for the file and never reads it, so a file removed is its NOT_FOUND answer",
+            DIRECTORY: "a folder in the file's place is no document, so resolve's NOT_FOUND is its answer",
+            LINK_TO_NOTHING: "resolve passes over a link, which may lead out of the tree, so NOT_FOUND is its answer",
+            UNREADABLE: "resolve finds the file by its stat and never reads it, so build, which reads it, refuses it",
+        },
+    ),
+    Driver(
+        DOCUMENT,
         "report",
         ("report", "--fixture", f"{OUTPUT}/fixture", "--report", RECORDED),
         prepare=recorded_report,
