@@ -7,6 +7,7 @@ import functools
 import gc
 import itertools
 import math
+import random
 import sys
 import time
 import unittest
@@ -27,7 +28,6 @@ from markdown_sections import (
     SHELL_FENCES,
     CodeSpan,
     CodeSpanReader,
-    block_fences,
     blocks,
     code_block_lines,
     code_spans,
@@ -160,8 +160,10 @@ def test_a_nested_item_is_read_at_any_indentation_where_it_interrupts_nothing() 
     assert list_item("\t\t2. nested") == "nested"
 
 
-def test_a_fence_closes_only_on_a_run_indented_with_spaces_and_tabs() -> None:
-    assert find_fences(["```", "body", f"{EM_SPACE}```", f"{NBSP}```", " \t```", "after"])[0].lines() == range(5)
+def test_a_fence_closes_only_on_a_run_indented_at_most_three_columns_with_spaces_and_tabs() -> None:
+    # Another Unicode space is text, and a space and a tab reach the fourth column, so none of them closes the fence.
+    lines = ["```", "body", f"{EM_SPACE}```", f"{NBSP}```", " \t```", "   ```", "after"]
+    assert find_fences(lines)[0].lines() == range(6)
     assert find_fences(["```", "body", "```\r", "after"])[0].lines() == range(3)
 
 
@@ -337,9 +339,13 @@ class HtmlCommentTests(unittest.TestCase):
         self.assertEqual("a  b  c", HTML_COMMENT.sub("", "a <!-- one\ntwo --> b <!-- three --> c"))
         self.assertEqual("a <!-- open", HTML_COMMENT.sub("", "a <!-- open"))
 
-    def test_prose_spans_skip_every_fence_form_and_keep_the_line_index(self) -> None:
+    def test_prose_spans_skip_every_code_block_and_keep_the_line_index(self) -> None:
         text = "Run `a`.\n```bash\n`b`\n```\n> ~~~sh\n> `c`\n> ~~~\n    ```\n    `d`\n    ```\nthen `e`"
         self.assertEqual([(0, "a"), (10, "e")], prose_code_spans(text.split("\n")))
+
+    def test_prose_spans_skip_an_indented_code_block_s_backticks(self) -> None:
+        # GitHub renders a backtick run inside indented code as the block's text, never a code span.
+        self.assertEqual([(2, "y")], prose_code_spans(["# H", "    run `x`", "then `y`"]))
 
     def test_prose_spans_pair_whole_backtick_runs(self) -> None:
         # The single-backtick pattern prose_code_spans read before read these lines as ["a"], ["x", " and "], and
@@ -377,7 +383,6 @@ def fences(text: str) -> list[tuple[int, int | None, str, int, list[str]]]:
     [
         pytest.param("```bash\necho\n```", [(0, 2, "bash", 2, ["echo"])], id="top level"),
         pytest.param("~~~zsh\necho\n~~~", [(0, 2, "zsh", 2, ["echo"])], id="tildes"),
-        pytest.param("    ```bash\n    echo\n    ```", [(0, 2, "bash", 2, ["    echo"])], id="indented four spaces"),
         pytest.param("1. ```sh\n   echo\n   ```", [(0, 2, "sh", 2, ["   echo"])], id="on a list item's marker line"),
         pytest.param("> ```bash\n> echo\n>```", [(0, 2, "bash", 2, ["echo"])], id="in a blockquote"),
         pytest.param(
@@ -446,15 +451,15 @@ def test_an_atx_heading_is_read_as_commonmark_reads_one(line: str, expected: tup
     ("lines", "content"),
     [
         # A list item's fence: up to the item's indentation comes off each line. A line indented less, as "  y",
-        # ends the item under CommonMark, which find_fences does not track, so it is read as the fence's.
-        (["1. Step:", "", "   ```bash", "   EOF", "     x", "  y", "   ```"], ["EOF", "  x", "y"]),
+        # ends the item, and the fence with it, as CommonMark reads it.
+        (["1. Step:", "", "   ```bash", "   EOF", "     x", "  y", "   ```"], ["EOF", "  x"]),
         # A fence indented on its own takes up to its indentation off each line.
         (["  ```", "    a", " b", "c", "  ```"], ["  a", "b", "c"]),
         # A blockquote's markers come off first, then the indentation inside it.
         (["> - ```sh", ">   EOF", "> ```"], ["EOF"]),
         # A tab counts to the next multiple of four, and one that runs past the indentation gives its columns past
         # it as spaces, as CommonMark gives a partly consumed tab.
-        (["\t```", "\tEOF", "  \tx", "\t```"], ["EOF", "x"]),
+        (["- a", "", "\t```", "\tEOF", "  \tx", "\t```"], ["EOF", "x"]),
         (["  ```", "\tx", "  ```"], ["  x"]),
         (["- ```", "\t\tx", "```"], ["  \tx"]),
     ],
@@ -1279,17 +1284,121 @@ def test_blank_lines_under_a_deep_item_take_time_in_proportion_to_them(shape: Ca
         pytest.param("> 1. a\n>    ~~~\n>      y\n>    ~~~\n", ("     y",), ["  y"], id="in-a-quoted-list-item"),
     ],
 )
-def test_the_block_readers_fence_is_the_one_fence_detector_s(
+def test_a_fence_s_code_block_holds_its_body_as_written_and_its_content_without_its_containers(
     document: str, body: tuple[str, ...], content: list[str]
 ) -> None:
-    # Where the two readers read a fence alike, the walk records its language, blockquotes, and indentation as
-    # find_fences does, so its body reads the same content.
+    # The walk records a fence's language, blockquotes, and indentation, so its code block and its content agree.
     lines = document.split("\n")
-    (fence,) = block_fences(lines)
-    assert [fence] == find_fences(lines)
+    (fence,) = find_fences(lines)
     (code,) = [block for block in blocks(lines) if block.kind == "code"]
     assert code.lines == body
     assert [fence.content(lines[index]) for index in fence.body()] == content
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Each case was checked against `gh api markdown`: GitHub ends or keeps each fence where it is read here.
+        pytest.param(
+            "1. Run:\n   ```bash\ncmd\n   ```",
+            [(1, None, "bash", 2, []), (3, None, "", 4, [])],
+            id="body-leaving-its-item",
+        ),
+        pytest.param("- ```\n  x\n```", [(0, None, "", 2, ["x"]), (2, None, "", 3, [])], id="closer-leaving-its-item"),
+        pytest.param(
+            "1. Step:\n\n   ```bash\n   EOF\n     x\n  y\n   ```",
+            [(2, None, "bash", 5, ["EOF", "  x"]), (6, None, "", 7, [])],
+            id="body-line-indented-less-than-its-item",
+        ),
+        pytest.param("    ```bash\n    echo\n    ```", [], id="opener-indented-four"),
+        pytest.param("```\nx\n    ```\ny\n```", [(0, 4, "", 4, ["x", "    ```", "y"])], id="closer-indented-four"),
+        pytest.param(
+            "- a\n  ```\n      ```\n  # H", [(1, None, "", 4, ["    ```", "# H"])], id="closer-indented-four-in-an-item"
+        ),
+        pytest.param("+ p\n      ```\n```", [(2, None, "", 3, [])], id="opener-indented-four-in-an-item"),
+        pytest.param(
+            "> - ```\n>   x\n> y\n> ```",
+            [(0, None, "", 2, ["x"]), (3, None, "", 4, [])],
+            id="quoted-item-fence-leaving-the-item",
+        ),
+        pytest.param("- ```\n  x\n     ```\n  y", [(0, 2, "", 2, ["x"])], id="closer-three-columns-into-an-item"),
+    ],
+)
+def test_a_fence_ends_with_the_containers_that_hold_it_and_opens_or_closes_only_three_columns_into_them(
+    text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
+) -> None:
+    lines = text.split("\n")
+    found = [
+        (fence.opener, fence.closer, fence.language, fence.stop, [fence.content(lines[i]) for i in fence.body()])
+        for fence in find_fences(lines)
+    ]
+    assert found == expected
+
+
+# The lines a random document is drawn from: fence runs of each character, length, and indentation, with and without
+# an info string; the list item and blockquote markers that may hold them, nested; text, headings, and blank lines.
+FENCE_VOCABULARY = [
+    "```",
+    "````",
+    "~~~",
+    "```bash",
+    "~~~ sh x",
+    "```a`b",
+    "  ```",
+    "   ```",
+    "    ```",
+    "\t```",
+    "- ```",
+    "1. ```bash",
+    "  - ```",
+    "> ```",
+    ">```",
+    "> - ```",
+    "> > ```",
+    "- > ```",
+    "  > ```",
+    "- a",
+    "2. b",
+    "  text",
+    "   text",
+    "    code",
+    "text",
+    "# H",
+    "  # H",
+    "> text",
+    "> ",
+    ">",
+    "---",
+    "| a |",
+    "",
+    "",
+]
+FUZZ_SEED = 2979
+FUZZ_DOCUMENTS = 3000
+
+
+def test_every_reader_reads_the_fences_find_fences_reads_on_any_document() -> None:
+    # One detector decides every fence: on documents drawn at random, each fence find_fences gives is a code block of
+    # `blocks` holding its body, every line of it is code for code_block_lines, and none of its lines is a document
+    # heading; fences come in order, none overlapping, and each closer is a run of backticks or tildes alone.
+    draw = random.Random(FUZZ_SEED)  # noqa: S311 - a seeded draw of test documents, never a secret
+    for _ in range(FUZZ_DOCUMENTS):
+        lines = [draw.choice(FENCE_VOCABULARY) for _ in range(draw.randint(1, 12))]
+        fences = find_fences(lines)
+        code = code_block_lines(lines)
+        code_blocks = [(block.start, block.lines) for block in blocks(lines) if block.kind == "code"]
+        headings = {index for index, _ in document_headings(lines)}
+        previous = 0
+        for fence in fences:
+            assert previous <= fence.opener < fence.lines().stop <= len(lines), lines
+            assert set(fence.lines()) <= code, lines
+            assert not set(fence.lines()) & headings, lines
+            assert (fence.opener + 1, tuple(fence.text(lines[i]) for i in fence.body())) in code_blocks, lines
+            if fence.closer is not None:
+                closing = set(fence.text(lines[fence.closer]).strip(" \t"))
+                assert fence.closer == fence.stop, lines
+                assert closing in ({"`"}, {"~"}), lines
+            previous = fence.lines().stop
 
 
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:
