@@ -2656,8 +2656,9 @@ class Gate:
         progress: Callable[[LegRun], None] | None = None,
     ) -> LegRun:
         """Measure the reach of the suites that reach a module with a mutant, then test the mutants from one queue
-        until the cap, handing `progress` the run so far before the reach pass, after it, and after each mutant, every
-        mutant not yet reached counted as not run, so a leg stopped before its end leaves what it reached."""
+        until the cap, handing `progress` the run so far once the measurement canary passes, before the reach pass,
+        after it, and after each mutant, every mutant not yet reached counted as not run, so a leg stopped before its
+        end leaves what it reached, and one the canary refused, which ran nothing, leaves no record."""
         deadline = run_deadline(started, self.minutes)
         workers = Workers(trees, self.clock)
         mutated = [chosen.module for chosen in modules if chosen.mutants]
@@ -2691,11 +2692,13 @@ class Gate:
                     )
                 )
 
-        hand_on()
         if mutated:
             problem = self.measure(self.reach)
             if problem:
                 raise RuntimeError(problem)
+        # The first record waits for the measurement canary, so a run it refuses, which ran nothing, leaves none.
+        hand_on()
+        if mutated:
             suites = reaching_suites(self.root, mutated)
             reach, failed, unmeasured = measure_reach(
                 workers, suites, mutated, reach_deadline(started, deadline), self.reach
@@ -2731,9 +2734,9 @@ class Gate:
     def leg(self, selected: Selected, shard: int = 0, record: Callable[[LegRun], None] | None = None) -> LegRun:
         """The leg step: this platform's leg of the mutants the select step made, or the share of them that shard
         `shard`, from 1, runs when it names one, run in worktrees of HEAD, which must be the commit the select step's
-        checkout held, as every job of the workflow checks out the same one. Once its mutants start, `record` is
-        handed the run so far, marked as stopped before its end, before the reach pass, after it, and after each
-        mutant, so a step stopped before its end leaves what it reached for its caller to have written."""
+        checkout held, as every job of the workflow checks out the same one. Once the measurement canary passes,
+        `record` is handed the run so far, marked as stopped before its end, before the reach pass, after it, and after
+        each mutant, so a step stopped before its end leaves what it reached for its caller to have written."""
         name = platform_support.PLATFORM_NAME
         count = leg_shards(name, selected)
         if shard > count:
@@ -2807,9 +2810,9 @@ class Gate:
         of HEAD, which must be the commit the run tested, as must each module's text be the one the mutants were made
         from. The leg's own outcomes stay as it wrote them, and the local run's are kept beside them, which the report
         reads in place of the leg's at the places it ran, so a mutant this run leaves untested is still not run. Once
-        its mutants start, `record` is handed the local run so far, marked as not ended, before the reach pass, after
-        it, and after each mutant, so a run stopped before its end leaves what it reached for its caller to have
-        written."""
+        the measurement canary passes, `record` is handed the local run so far, marked as not ended, before the reach
+        pass, after it, and after each mutant, so a run stopped before its end leaves what it reached for its caller to
+        have written, and one the canary refused leaves nothing for a later run to stop at."""
         selected, legs = read_run(folder)
         name = platform_support.PLATFORM_NAME
         leg = next((found for found in legs if found.name == name), None)

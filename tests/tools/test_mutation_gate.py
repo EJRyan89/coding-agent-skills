@@ -3973,6 +3973,25 @@ class UnrunFixtures(unittest.TestCase):
         ):
             self.unrun()
 
+    def test_an_unrun_step_its_measurement_canary_refuses_leaves_no_record_and_the_next_one_runs(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+
+        def refused(reach: object) -> str:
+            return "coverage.py measured no process the suite started"
+
+        broken = Gate(self.root, "main", 5, 1, GitClient(), stub_generator, stub_reach, self.run_suite, measure=refused)
+        with (
+            mock.patch.object(mutation_gate, "Gate", return_value=broken),
+            mock.patch("sys.stdout", io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, r"^coverage.py measured no process the suite started$"),
+        ):
+            mutation_gate.main(["unrun", str(self.folder)], {})
+        self.assertFalse((self.folder / "local-linux.json").exists())
+        self.assertEqual([], self.seen)
+        completed = self.unrun()
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        self.assertTrue(completed.local is not None and completed.local.ended)
+
     def test_a_run_whose_selection_holds_no_mutant_names_no_leg(self) -> None:
         self.folder.mkdir()
         (self.folder / "mutants.json").write_text(
@@ -4640,6 +4659,42 @@ def test_a_mutant_two_legs_left_not_run_for_two_causes_is_named_under_each_on_it
         f"\n\nA leg step that stopped before its end cut `{PATH_MODULE}` short on Linux: 1 mutants did not run.\n\n"
         f"The cap cut `{PATH_MODULE}` short on Windows: 1 mutants did not run.\n"
     ) in text
+
+
+def local_leg(leg: str, ended: bool, stopped: tuple[int, ...] = ()) -> LegRun:
+    """A CI leg that left READ_MUTANT not run, completed by a local run that left it not run too, ended or not."""
+    local = mutation_gate.LocalRun(
+        5, 60.0, 1, {PATH_MODULE: [0]}, {}, [], {PATH_MODULE: [Outcome(READ_MUTANT, NOT_RUN)]}, ended
+    )
+    return LegRun(
+        leg, 40, 60.0, 2, {PATH_MODULE: [Outcome(READ_MUTANT, NOT_RUN)]}, {}, [], local=local, stopped=stopped
+    )
+
+
+def test_a_mutant_a_local_run_that_ended_left_not_run_is_put_down_to_the_cap_whatever_stopped_the_ci_leg() -> None:
+    report = joined(READ_SELECTED, [local_leg(LINUX_LEG, ended=True, stopped=(0,))])
+    assert mutation_gate.unfinished_line(report) == (
+        f"**Unfinished, so not a verdict:** a leg's cap cut the run short: 1 of the 1 mutants of `{PATH_MODULE}` did "
+        "not run on Linux. Split the pull request, or move its module-level tables into the functions that use them, "
+        "until it finishes."
+    )
+    text = mutation_gate.summary(report)
+    assert f"\n\nThe cap cut `{PATH_MODULE}` short on Linux: 1 mutants did not run.\n" in text
+    assert "stopped before" not in text
+
+
+def test_local_runs_stopped_on_both_legs_are_named_in_one_sentence_with_each_ones_file() -> None:
+    report = joined(READ_SELECTED, [local_leg(LINUX_LEG, ended=False), local_leg(WINDOWS_LEG, ended=False)])
+    assert mutation_gate.unfinished_line(report) == (
+        "**Unfinished, so not a verdict:** the local run on Linux and the local run on Windows stopped before their "
+        f"end, so the mutants they had not reached did not run: 1 of the 1 mutants of `{PATH_MODULE}` did not run on "
+        "Linux and Windows. Read their output, then remove `local-linux.json` and `local-windows.json` and run the "
+        "`unrun` step again."
+    )
+    assert (
+        f"\n\nA local run that stopped before its end cut `{PATH_MODULE}` short on Linux and Windows: 1 mutants did "
+        "not run.\n"
+    ) in mutation_gate.summary(report)
 
 
 class LegStopFixtures(unittest.TestCase):
