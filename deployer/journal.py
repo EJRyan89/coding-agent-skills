@@ -939,6 +939,12 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             f"not replayed: {platform_support.normalize(run_dir)}",
             file=sys.stderr,
         )
+        # The deployer never makes a link here, so what it points to is the user's to judge, never recovery's.
+        print(
+            "  Check what the link points to, remove the link, and reconcile the run by hand if what it pointed to "
+            f"held a journal. {see_recovery('When recovery fails')}",
+            file=sys.stderr,
+        )
         return False
     journal_file = run_dir / JOURNAL_FILE
     # A journal whose stat fails raises here, failing the run, so a run is never deleted with a journal it could not
@@ -954,6 +960,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             "committed.",
             file=sys.stderr,
         )
+        _print_manual_steps(run_dir, run_id, committed)
         return False
     try:
         is_journal = file_presence.is_present(journal_file)

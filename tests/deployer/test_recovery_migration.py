@@ -53,12 +53,28 @@ MANIFEST_UNDECIDED = (
 # The refusal that ends a deployment whose recovery stopped, and its step, written out here for the same reason.
 RECOVERY_FAILED = "ERROR: Recovery failed, so this deployment stopped before deploying anything."
 RECONCILE_BY_HAND = f"Reconcile the run named above by hand, then rerun with --dry-run. {SEE_RECOVERY_FAILED}"
+# The step after an exception the deployer has no message for, written out here for the same reason.
+DEBUG_HINT = "Rerun with --debug to see the traceback."
+# The step after a staging run that is a link, which recovery does not replay, written out here for the same reason.
+LINKED_RUN_STEP = (
+    "  Check what the link points to, remove the link, and reconcile the run by hand if what it pointed to held a "
+    f"journal. {SEE_RECOVERY_FAILED}"
+)
+
+
+def undecided_steps(run: Path) -> list[str]:
+    """The steps recovery gives for a run whose commit it cannot tell, beside a manifest missing or unreadable."""
+    return [
+        f"  Whether run {run.name} was committed cannot be told, since the manifest is missing or cannot be read: put "
+        "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
+        "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
+        f"<name>.deploying-bak; a retained backup is under .backups/{run.name}/ in the same root.",
+        manual_steps(run, committed=False)[1],
+    ]
+
+
 # The tests that check an ERROR line, or lines a caller passes, apart from the lines after them, each for its reason.
 LINES_APART_ALLOWED = {
-    "RecoveryBranchTests.test_an_unexpected_exception_is_named_and_the_run_rolled_back": (
-        "an unexpected exception's ERROR line names a defect and has no step of its own; the lines after it are "
-        "recovery's"
-    ),
     "RecoveryBranchTests.assert_rollback_stopped": (
         "each line a caller passes is one recovery reports on its way through the run, a warning or a failed step's "
         "ERROR line, never a refusal's step; assert_unreconciled holds the run's refusal with its steps"
@@ -1589,9 +1605,11 @@ class RecoveryBranchTests(RecoveryTestCase):
         link = staging / self.RUN
         make_directory_link(link, outside)
         result = self.deploy_fails("--all", pattern="was not replayed")
-        # The line naming the link is no refusal of its own: the deployment's refusal after it gives the step.
-        self.assert_lines(
-            result.output, f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}"
+        # On stderr, both of them, where every refusal and its step go.
+        self.assert_refusal(
+            result.stderr,
+            f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}",
+            LINKED_RUN_STEP,
         )
         self.assert_recovery_stopped(result.output)
         self.assertNotIn(f"Recovering committed run {self.RUN}", result.output)
@@ -1751,13 +1769,17 @@ class RecoveryBranchTests(RecoveryTestCase):
 
         with mock.patch("deployer.fsops.move", side_effect=failing_move):
             result = self.deploy_fails("--all", pattern="Unexpected")
-        self.assertEqual(1, result.code)
-        self.assert_lines(
-            result.output,
-            "ERROR: Unexpected RuntimeError: synthetic defect",
-            "Deployment failed; reconciling the current journal before exit...",
-            "  Recovery complete.",
-        )
+            debugged = self.deploy_fails("--all", "--debug", pattern="Unexpected")
+        for run in (result, debugged):
+            self.assertEqual(1, run.code)
+            self.assert_refusal(run.output, "ERROR: Unexpected RuntimeError: synthetic defect", DEBUG_HINT)
+            self.assert_lines(
+                run.output, "Deployment failed; reconciling the current journal before exit...", "  Recovery complete."
+            )
+        # The traceback --debug prints is the defect's own, the cause of the refusal that names it.
+        self.assertNotIn("Traceback", result.output)
+        self.assertIn('raise RuntimeError("synthetic defect")', debugged.output)
+        self.assertIn("The above exception was the direct cause of the following exception:", debugged.output)
         self.assertIn("Original alpha", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
@@ -2779,7 +2801,11 @@ class ManifestStateTests(RecoveryTestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             recovered = journal.recover_incomplete(self.paths)
         self.assertFalse(recovered, captured.getvalue())
-        self.assert_lines(captured.getvalue(), MANIFEST_UNDECIDED.format(run_id="20260101-000000-fake"))
+        self.assert_refusal(
+            captured.getvalue(),
+            MANIFEST_UNDECIDED.format(run_id="20260101-000000-fake"),
+            *undecided_steps(self.staging_run("20260101-000000-fake")),
+        )
         self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir(), "an unreadable manifest decides nothing")
         self.assertTrue((self.staging_run("20260101-000000-fake") / "journal.jsonl").is_file())
 
@@ -2801,7 +2827,11 @@ class ManifestStateTests(RecoveryTestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             recovered = journal.recover_incomplete(self.paths)
         self.assertFalse(recovered, captured.getvalue())
-        self.assert_lines(captured.getvalue(), MANIFEST_UNDECIDED.format(run_id="20260101-000000-kept"))
+        self.assert_refusal(
+            captured.getvalue(),
+            MANIFEST_UNDECIDED.format(run_id="20260101-000000-kept"),
+            *undecided_steps(self.staging_run("20260101-000000-kept")),
+        )
         self.assertNotIn("rolling back", captured.getvalue())
         self.assertEqual(installed, hashing.hash_path(self.skills_dir / "alpha"))
         self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
@@ -2833,11 +2863,7 @@ class ManifestStateTests(RecoveryTestCase):
         self.assert_refusal(
             captured.getvalue(),
             f"  ERROR: Recovery of run {run} failed at {forward(journal_file)}: Access is denied",
-            f"  Whether run {run} was committed cannot be told, since the manifest is missing or cannot be read: put "
-            "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
-            "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
-            f"<name>.deploying-bak; a retained backup is under .backups/{run}/ in the same root.",
-            manual_steps(journal_file.parent, committed=False)[1],
+            *undecided_steps(journal_file.parent),
         )
         self.assertNotIn("was not committed", captured.getvalue())
 

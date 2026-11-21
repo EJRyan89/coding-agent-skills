@@ -284,6 +284,9 @@ def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str,
         pytest.param("- a\n2. b\n- c\n", ("a", "c"), id="numbered-item-leaving-a-bullet"),
         # A marker with nothing after it cannot interrupt the bullet's paragraph, so it is that paragraph's text.
         pytest.param("- s\n  * \n", ("s *",), id="empty-marker-under-a-bullet-s-text"),
+        # A fence left open in a bullet ends where the bullet does, as GitHub renders it, so a line at the margin
+        # leaves the entry and the next bullets are entries of their own.
+        pytest.param("- a\n  ```\n  x\nfoo\n- b\n- c\n", ("a ``` x", "b", "c"), id="open-fence-ending-with-its-bullet"),
         # A heading with no text ends the entry as any heading does.
         pytest.param("- one\n#\ntext\n", ("one",), id="empty-heading"),
     ],

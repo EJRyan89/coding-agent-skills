@@ -223,12 +223,14 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertTrue(entries[0].text.endswith("```text\n## not a heading\n```"), entries[0].text)
 
     def test_a_field_line_in_a_fence_is_the_fences_text_and_no_field(self) -> None:
-        for opener, closer in (("```markdown", "```"), ("~~~~", "~~~~"), ("- ```text", "  ```")):
+        # A fence on a list item's line holds the lines indented as far as the item's content; one written at the
+        # margin leaves the item and ends the fence, as GitHub renders it.
+        for opener, indent, closer in (("```markdown", "", "```"), ("~~~~", "", "~~~~"), ("- ```text", "  ", "  ```")):
             with self.subTest(opener=opener):
                 body = (
                     "## Upgrade note\n\n### X\n\n- Level: patch, a documentation fix.\n- Contract: none.\n"
-                    f"- User action: none. Example:\n\n{opener}\n- Level: major, an example.\n"
-                    f"- Pull request: #99\n{closer}\n\n## Validation\n"
+                    f"- User action: none. Example:\n\n{opener}\n{indent}- Level: major, an example.\n"
+                    f"{indent}- Pull request: #99\n{closer}\n\n## Validation\n"
                 )
                 [entry] = release_notes.body_entries(body)
                 self.assertEqual(
