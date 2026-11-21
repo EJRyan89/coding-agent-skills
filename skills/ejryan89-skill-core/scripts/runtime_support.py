@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import git_client
 import python_reader
+from markdown_sections import code_spans
 from powershell_commands import UNREAD_WORD
 from text_lines import text_lines
 
@@ -338,13 +339,12 @@ def invoked_skills(text: str, names: Collection[str]) -> set[str]:
     says "invoke", such as `review-prs` in "invoke `review-prs --re-review`". A line ends where CommonMark ends one,
     at CR, LF, or CRLF, so a line separator before the span keeps it on the line that says "invoke".
     tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
-    span = re.compile(r"`([^`]+)`")
     return {
         words[0]
         for line in text_lines(text)
         if "invoke" in line
-        for found in span.findall(line)
-        if (words := found.split()) and words[0] in names
+        for span in code_spans(line)
+        if (words := span.text.split()) and words[0] in names
     }
 
 

@@ -15,9 +15,11 @@ in proportion to the body.
 The comments are read left to right: one inside a code block is text GitHub shows, and so is one inside an inline code
 span but on a line GitHub passes on as HTML, where no backtick opens a span; one that opens an HTML block, and one on a
 line GitHub passes on as HTML, runs to its `-->`, or to the end of the body; and one inside a block's text runs to its
-`-->` when that falls within the block, and is otherwise text. `hidden_spans` gives where each hidden comment starts
-and ends, so a reader that numbers lines can blank a comment in place, and `without_hidden_comments` the text without
-them.
+`-->` when that falls within the block, and is otherwise text. An inline code span is read as markdown_sections'
+code_spans reads one, pairing whole backtick runs, and, past a comment hidden on its line, as the line's runs pair from
+that comment's end, as CommonMark reads them; a line's spans are read in time in proportion to it. `hidden_spans` gives
+where each hidden comment starts and ends, so a reader that numbers lines can blank a comment in place, and
+`without_hidden_comments` the text without them.
 
 The limits:
 - inside a quote, a comment within a line runs to a `-->` anywhere in the quote, past the paragraph it opens in, where
@@ -33,9 +35,7 @@ The limits:
   fence-like line or a heading it holds is read as one, and an `<h1>` or `<h2>` inside a container is read as one line;
 - a `<!--` four or more columns into a line an HTML `<h1>` or `<h2>` block holds is read as indented code, and so is
   text, where GitHub passes the line on as HTML and hides the rest of the body;
-- a code span is read by markdown_sections' `COMMONMARK_CODE_SPAN`, which may pair backtick runs of unequal length, so
-  ``` ``a`<!-- x -->` ``` hides a comment GitHub shows in code, and whose search, on a line that holds a `<!--`, takes
-  time that grows with the square of the line's backtick runs;
+- a comment whose text ends with `-`, as `<!-- a--->`, is hidden, where GitHub shows it as text;
 - a backslash-escaped backtick is read as opening a span, so ``\`<!-- x -->\` `` keeps a comment GitHub hides;
 - a span is read within one line, so a span that crosses a line break shields no `<!--` on its second line, and its
   closing backtick opens a span on that line, so `` `a\nb` <!-- x --> `c` `` keeps a comment GitHub hides.
@@ -45,16 +45,18 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left, bisect_right
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from markdown_sections import (
     CODE,
-    COMMONMARK_CODE_SPAN,
     LIST_ITEM_BLOCK,
     LIST_MARKER,
     MAX_BLOCK_INDENT,
     PARAGRAPH,
     QUOTE,
+    CodeSpan,
+    CodeSpanReader,
     blocks,
     code_block_lines,
     document_headings,
@@ -488,22 +490,28 @@ def _hidden_comments(
     end of the body."""
     hidden: list[tuple[int, int]] = []
     position = 0
-    # The next code span on the line the last `<!--` was on, read up to that line's end, which `searched` holds.
-    span: re.Match[str] | None = None
-    searched = -1
+    # The code spans of the line the last `<!--` was on, which `read` holds, read from the column the line's reading
+    # last started at, and the next of them, its columns counted from the body's start.
+    reader = CodeSpanReader("")
+    spans: Iterator[CodeSpan] = iter(())
+    span: tuple[int, int] | None = None
+    read = -1
     ends = _block_ends(walked, len(lines))
     while (opener := text.find(COMMENT_OPENER, position)) != -1:
         line = bisect_right(starts, opener) - 1
-        line_end = starts[line] + len(lines[line])
-        if searched != line_end or (span is not None and span.start() < position):
-            span = COMMONMARK_CODE_SPAN.search(text, max(position, starts[line]), line_end)
-            searched = line_end
-        while span is not None and span.end() <= opener:
-            span = COMMONMARK_CODE_SPAN.search(text, span.end(), line_end)
-        if span is not None and span.start() < opener and line not in raw:
+        if read != line or (span is not None and span[0] < position):
+            # A comment hidden past the next span's start sets the line's backticks before its end aside, so the spans
+            # after it pair as CommonMark pairs them from there.
+            if read != line:
+                reader, read = CodeSpanReader(lines[line]), line
+            spans = reader.spans(max(position, starts[line]) - starts[line])
+            span = _next_span(spans, starts[line])
+        while span is not None and span[1] <= opener:
+            span = _next_span(spans, starts[line])
+        if span is not None and span[0] < opener and line not in raw:
             # A code span that holds the `<!--` shows it, and every character up to the span's end, but on a line GitHub
             # passes on as HTML, where no backtick opens a span.
-            position = span.end()
+            position = span[1]
             continue
         end = _comment_end(text, closers, opener)
         last = ends[line]
@@ -516,6 +524,13 @@ def _hidden_comments(
         hidden.append((opener, end))
         position = end
     return hidden
+
+
+def _next_span(spans: Iterator[CodeSpan], line_start: int) -> tuple[int, int] | None:
+    """The next of a line's code spans, as the columns in the body where it starts and just past where it ends, or
+    None past the last."""
+    span = next(spans, None)
+    return None if span is None else (line_start + span.start, line_start + span.end)
 
 
 def _block_ends(walked: Walked, count: int) -> list[int]:

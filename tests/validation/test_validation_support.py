@@ -26,7 +26,6 @@ import skill_scripts
 import validation_support
 from validation_support import (
     BASH_CONTINUATION,
-    CODE_SPAN,
     COMPUTED_NAME,
     MODULE_SCOPE,
     POWERSHELL_CONTINUATION,
@@ -519,9 +518,8 @@ class SharedReaderFixtures(unittest.TestCase):
         import markdown_sections
         import skill_layout
 
-        self.assertIs(markdown_sections.CODE_SPAN, CODE_SPAN)
-        # skill_layout and markdown_links import these and export none, so each module's own binding is read.
-        self.assertIs(CODE_SPAN, vars(skill_layout)["CODE_SPAN"])
+        # skill_layout and markdown_links import code_spans and export none, so each module's own binding is read.
+        self.assertIs(markdown_sections.code_spans, vars(skill_layout)["code_spans"])
         self.assertIs(markdown_sections.code_spans, vars(markdown_links)["code_spans"])
 
     def test_a_fence_body_line_excludes_the_opener_and_the_closer(self) -> None:

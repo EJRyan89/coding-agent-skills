@@ -43,6 +43,7 @@ from flat_text import flat_text
 from git_client import Runner, subprocess_runner
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
+from markdown_sections import code_spans
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -65,7 +66,6 @@ DELEGATION_PHRASE = re.compile(
     r"\bdelegat(?:e|es|ed|ing|ion)\b|\b(?:start|launch|run|dispatch|invoke)\w*\b.*\bagents?\b", re.IGNORECASE
 )
 AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
-CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
 # A path named in a code span or written bare in prose, read from the repository root; an inline link or a definition is
 # read only through its destination, by link_destinations, resolved from the skill's folder through link_targets, and
@@ -148,7 +148,7 @@ def _names_agent(stem: str, line: str) -> bool:
     if not PLAIN_WORD.fullmatch(stem):
         return True
     return (
-        any(word.search(span) for span in CODE_SPAN.findall(line))
+        any(word.search(span.text) for span in code_spans(line))
         or any(AGENT_WORD.match(line, match.end()) for match in word.finditer(line))
         or bool(DELEGATION_TEXT.search(line) or DELEGATION_PHRASE.search(line))
     )

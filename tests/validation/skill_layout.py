@@ -19,7 +19,7 @@ import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
 from bash_syntax import BashSyntaxError
-from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, markdown_section
+from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, code_spans, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
@@ -27,7 +27,6 @@ from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
 from suite_names import is_suite_name
 from text_lines import lines_and_breaks, text_lines
 from validation_support import (
-    CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -425,7 +424,7 @@ SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
 # In SKILL.md prose, a code span that names the skill's own scripts/ or references/ by a relative path. Claude Code
 # resolves it against the working directory, and Codex and Copilot against the adapter, which has neither folder.
-# A code span is read with ejryan89-skill-core's CODE_SPAN, which validation_support re-exports.
+# A code span is read with ejryan89-skill-core's code_spans, as CommonMark pairs backtick runs.
 BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
 # audit-skill recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
 BARE_OWN_PATH_EXEMPT = frozenset({("skills/audit-skill/SKILL.md", "scripts/")})
@@ -477,9 +476,9 @@ def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None
 def _prose_path_problems(name: str, number: int, line: str) -> list[str]:
     """Code spans in SKILL.md prose that name the skill's own scripts/ or references/ by a relative path."""
     return [
-        f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
-        for span in CODE_SPAN.findall(line)
-        if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT
+        f"{name}:{number} names `{span.text}` by a bare relative path; see {SKILL_PATHS_DOC}"
+        for span in code_spans(line)
+        if BARE_OWN_PATH.search(span.text) and (name, span.text) not in BARE_OWN_PATH_EXEMPT
     ]
 
 

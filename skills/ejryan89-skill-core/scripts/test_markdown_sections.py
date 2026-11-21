@@ -19,8 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_sections import (
     ATX_HEADING,
-    CODE_SPAN,
-    COMMONMARK_CODE_SPAN,
     EXECUTABLE_FENCES,
     FENCE_LANGUAGES,
     FENCE_OPENER,
@@ -28,6 +26,7 @@ from markdown_sections import (
     POWERSHELL_FENCES,
     SHELL_FENCES,
     CodeSpan,
+    CodeSpanReader,
     block_fences,
     blocks,
     code_block_lines,
@@ -208,19 +207,14 @@ class MarkdownSectionTests(unittest.TestCase):
 
 
 class CodeSpanTests(unittest.TestCase):
-    def test_a_code_span_is_one_backtick_pair_on_one_line_with_its_text_as_the_group(self) -> None:
-        self.assertEqual(["git status", " a.py "], CODE_SPAN.findall("Run `git status`, then ` a.py `."))
+    # What the single-backtick pattern code_spans replaced read from these lines, which code_spans reads too.
+    def test_a_code_span_is_one_backtick_pair_on_one_line_with_its_text_kept(self) -> None:
+        self.assertEqual(
+            ["git status", " a.py "], [span.text for span in code_spans("Run `git status`, then ` a.py `.")]
+        )
 
     def test_a_span_does_not_cross_a_line_or_match_an_unclosed_backtick(self) -> None:
-        self.assertEqual([], CODE_SPAN.findall("`open\nclose and `unclosed"))
-
-    def test_a_commonmark_span_closes_on_a_run_of_its_opener_s_length_and_may_hold_a_backtick(self) -> None:
-        self.assertEqual(
-            [("`", "a"), ("``", "b ` c"), ("```", "d")],
-            COMMONMARK_CODE_SPAN.findall("`a` and ``b ` c`` and ```d```"),
-        )
-        self.assertEqual("see  and [x](y)", COMMONMARK_CODE_SPAN.sub("", "see ``[a](b)`` and [x](y)"))
-        self.assertEqual([], COMMONMARK_CODE_SPAN.findall("``open\nclose``"))
+        self.assertEqual([], code_spans("`open\nclose and `unclosed"))
 
 
 @pytest.mark.parametrize(
@@ -246,6 +240,25 @@ class CodeSpanTests(unittest.TestCase):
 )
 def test_a_code_span_pairs_whole_backtick_runs_as_commonmark_does(line: str, expected: list[CodeSpan]) -> None:
     assert code_spans(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        pytest.param(0, [CodeSpan(0, 3, 1, "a"), CodeSpan(8, 13, 1, " c "), CodeSpan(14, 17, 1, "e")], id="the start"),
+        pytest.param(3, [CodeSpan(8, 13, 1, " c "), CodeSpan(14, 17, 1, "e")], id="past a span"),
+        # From inside ` c `, its closing backtick opens a span the next run closes, and the last run is text.
+        pytest.param(9, [CodeSpan(12, 15, 1, " ")], id="inside a span"),
+        pytest.param(17, [], id="the end"),
+    ],
+)
+def test_a_line_s_spans_are_read_as_if_the_line_started_at_the_column(column: int, expected: list[CodeSpan]) -> None:
+    assert list(CodeSpanReader("`a` and ` c ` `e`").spans(column)) == expected
+
+
+def test_a_run_that_starts_before_the_column_opens_no_span() -> None:
+    # From the start, the two double runs pair into `a`; from column 1, the second has no partner and is text.
+    assert list(CodeSpanReader("``a`` `b`").spans(1)) == [CodeSpan(6, 9, 1, "b")]
 
 
 def test_a_span_s_text_starts_past_its_opening_run() -> None:
@@ -321,6 +334,12 @@ class HtmlCommentTests(unittest.TestCase):
     def test_prose_spans_skip_every_fence_form_and_keep_the_line_index(self) -> None:
         text = "Run `a`.\n```bash\n`b`\n```\n> ~~~sh\n> `c`\n> ~~~\n    ```\n    `d`\n    ```\nthen `e`"
         self.assertEqual([(0, "a"), (10, "e")], prose_code_spans(text.split("\n")))
+
+    def test_prose_spans_pair_whole_backtick_runs(self) -> None:
+        # The single-backtick pattern prose_code_spans read before read these lines as ["a"], ["x", " and "], and
+        # [" ", " "]: a single backtick inside or beside a double run paired with another.
+        lines = ["``a`b``", "see ``x`` and `y`", "`` `x` ``"]
+        self.assertEqual([(0, "a`b"), (1, "x"), (1, "y"), (2, " `x` ")], prose_code_spans(lines))
 
 
 class FenceLanguageTests(unittest.TestCase):

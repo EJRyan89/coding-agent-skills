@@ -530,6 +530,28 @@ class SkillLayoutFixtures(unittest.TestCase):
                 skill_path_problems(root),
             )
 
+    def test_a_bare_own_path_is_read_from_each_code_span_whole(self) -> None:
+        # changed: the single-backtick pattern this read before named ` and scripts/b.py ` from between the
+        # double runs on line 2, and missed nothing else here.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "agents").mkdir()
+            (root / "deploy-meta" / "alpha.json").write_text("{}", encoding="utf-8")
+            (root / "skills" / "alpha").mkdir(parents=True)
+            (root / "skills" / "alpha" / "SKILL.md").write_text(
+                "Run `scripts/a.py`.\nsee ``x`` and scripts/b.py `y`\n``a`scripts/c.py``\nsee ``scripts/d.py``\n",
+                encoding="utf-8",
+            )
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:1 names `scripts/a.py` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:4 names `scripts/d.py` by a bare relative path; see {doc}",
+                ],
+                skill_path_problems(root),
+            )
+
     def test_an_install_path_is_refused_under_every_spelling_of_the_home(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

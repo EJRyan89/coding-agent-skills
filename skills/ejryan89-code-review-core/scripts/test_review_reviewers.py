@@ -113,6 +113,17 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual([".claude/agents/db-review.md", "docs/rules.md"], result.references)
         self.assertNotIn(".claude/agents/review.md", result.references, "the skill never references itself")
 
+    def test_a_plain_agent_name_in_a_code_span_of_any_run_is_one_reference(self) -> None:
+        # changed: the code span pattern this read before read two empty spans from ``review``, so the name
+        # in it was prose and the line named no agent.
+        for line in ("Hand it to `review` now.", "Hand it to ``review`` now."):
+            with self.subTest(line=line):
+                result = inspect(f"---\nname: x\n---\n{line}\n", ".claude/skills/x/SKILL.md")
+                self.assertEqual(("yes", [(4, line)]), (result.delegates, result.evidence))
+                self.assertEqual([".claude/agents/review.md"], result.references)
+        result = inspect("---\nname: x\n---\nSee ``x`` review ``y``.\n", ".claude/skills/x/SKILL.md")
+        self.assertEqual(("no", []), (result.delegates, result.evidence))
+
     def test_references_come_from_code_spans_links_and_bare_paths_that_exist(self) -> None:
         result = inspect("Read [the rules](../../docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)

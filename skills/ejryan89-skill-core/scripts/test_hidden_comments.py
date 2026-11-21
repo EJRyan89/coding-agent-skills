@@ -7,6 +7,7 @@ body check, show their own answers in their own suites; these show the reading's
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -53,6 +54,15 @@ COMMENTS = [
     # A comment on a line GitHub passes on as HTML, after a comment block's `-->` on its line, runs to the end.
     ("<!-- a --> b <!-- c\n\nd", " b "),
     ("<!-->x<!--->y", "xy"),
+    # Code spans pair whole backtick runs, as GitHub (`gh api markdown`) renders them: the double run no other matches
+    # is text, and the single runs after it make a span that shows the comment. The pattern this read before
+    # closed a span on the double run's last backtick and hid the comment, giving "``a`` z".
+    ("``a`<!-- x -->` z", "``a`<!-- x -->` z"),
+    # Past a hidden comment, the line's runs pair from its end, as GitHub renders these: the backtick inside the first
+    # comment pairs with none after it, so the second comment is hidden, and the span after a comment shows the one
+    # it holds.
+    ("<!-- `x --> <!-- z --> `", "  `"),
+    ("p <!-- ` --> `a <!-- b --> c`", "p  `a <!-- b --> c`"),
 ]
 
 
@@ -68,7 +78,7 @@ LIMITS = [
     pytest.param("- <!-- a\nb\n-->\nc", "- \nc", id="a block comment its item stops holding ends at its closer"),
     pytest.param("<div>\n```\n</div>\n\n<!-- a -->", "<div>\n```\n</div>\n\n<!-- a -->", id="a div is a paragraph"),
     pytest.param("<h1>a\n    <!-- b\n\nc", "<h1>a\n    <!-- b\n\nc", id="an indented opener an h1 holds is code"),
-    pytest.param("``a`<!-- x -->` z", "``a`` z", id="backtick runs of unequal length pair as a span"),
+    pytest.param("a <!-- b---> c", "a  c", id="a comment whose text ends with a dash is hidden"),
     pytest.param("\\`<!-- x -->\\` z", "\\`<!-- x -->\\` z", id="an escaped backtick opens a span"),
     pytest.param("`foo\nbar <!-- x --> baz` VISIBLE", "`foo\nbar  baz` VISIBLE", id="a span is read within one line"),
 ]
@@ -174,6 +184,27 @@ def test_the_reading_walks_each_line_a_bounded_number_of_times(head: str, unit: 
 SCALE = 8
 SCALE_BOUND = SCALE**1.5
 SMALL_BODY = 2_000
+
+
+# A line of one backtick run that no other matches, before a `<!--`, at a size and at sixteen times it. A linear
+# reading takes about sixteen times as long, and the pattern this read before, which tried each length of the
+# run from each of its backticks, about 4,096 times, taking minutes over the longer line; the bound sits halfway
+# between linear and quadratic in log space. The longer line is also read in under a second of processor time.
+RUN_FACTOR = 16
+RUN_BOUND = RUN_FACTOR**1.5
+LONG_RUN = 32_768
+
+
+def _run_before_a_comment(length: int) -> str:
+    return "a " + "`" * length + " <!-- x -->"
+
+
+def test_a_long_backtick_run_before_a_comment_is_read_in_time_in_proportion_to_it() -> None:
+    long = _run_before_a_comment(LONG_RUN)
+    started = time.process_time()
+    assert without_hidden_comments(long) == "a " + "`" * LONG_RUN + " "
+    assert time.process_time() - started < 1
+    assert_time_in_proportion(hidden_spans, _run_before_a_comment(LONG_RUN // RUN_FACTOR), long, RUN_BOUND)
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
