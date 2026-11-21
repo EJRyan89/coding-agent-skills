@@ -1118,10 +1118,13 @@ class RecoveryFailureTests(RecoveryTestCase):
         staging = self.home / ".claude" / "deployer" / "staging"
         with path_method_failing_at("iterdir", staging):
             result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"  ERROR: Cannot list the staging runs in {forward(staging)}: Access is denied",
             f"  {SEE_RECOVERY_FAILED}",
+        )
+        self.assert_lines(
+            result.output,
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
         self.assertNotIn("Traceback", result.output)
@@ -1344,7 +1347,7 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
                 "Deployment cancelled; reconciling the current journal before exit...",
             ],
         }[deployment_failure]
-        self.assert_lines(result.stderr, *opening)
+        self.assert_refusal(result.stderr, *opening)
         self.assertNotIn(f"Unexpected {deployment_failure}", result.stderr)
         runs = list(self.paths.staging_root.iterdir())
         self.assertEqual(1, len(runs))
@@ -1541,12 +1544,15 @@ class RecoveryBranchTests(RecoveryTestCase):
         link = self.skills_dir / "alpha" / "linked"
         make_directory_link(link, outside)
         result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
-            f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  ERROR: Refusing to hash content containing a symlink or junction: {forward(link)}",
             # Pinned against a literal: the step a user reads.
             "  Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run.",
+        )
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
             f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
@@ -1793,11 +1799,14 @@ class RecoveryBranchTests(RecoveryTestCase):
                 changes_home=FAILS_PARTWAY,
             )
         run_id = self.manifest()["last_run_id"]
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: Could not finish the deployment: synthetic staging removal failure",
             "Check that the path exists and that you can read it, then retry.",
             "Rerun with --debug to see the traceback.",
+        )
+        self.assert_lines(
+            result.output,
             "",
             "Deployment failed; reconciling the current journal before exit...",
             f"Recovering committed run {run_id} (completing finalization)...",

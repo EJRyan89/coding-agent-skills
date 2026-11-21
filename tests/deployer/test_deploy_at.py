@@ -1067,7 +1067,7 @@ class DeployAtTests(DeployerTestCase):
             mock.patch.object(platform_support, "run_tool") as run_tool,
         ):
             result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Git")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
@@ -1225,7 +1225,7 @@ class DeployAtTests(DeployerTestCase):
             result = self.deploy_fails("--all", "--at", ref, pattern=r"ERROR: The tree of [0-9a-f]{40} sets ")
         commit = git(self.source, "rev-parse", ref)
         done = source_ref.ARCHIVE_ONLY_ATTRIBUTES[attribute]
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
             f"ERROR: The tree of {commit} sets {attribute} on {path!r}{more}; git archive would {done}, so the "
             "exported tree would not be the commit's.",
