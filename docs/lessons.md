@@ -281,8 +281,10 @@ removed fails validation until its pattern follows it.
   `exported_refusals`), and a lasting fix such as moving the home for an
   `OSError` or `FileLockError` that may pass on a retry; and a test under `tests/deployer/` that checks a refusal's
   `ERROR:` line and its step with `assert_lines`, which finds each line anywhere, rather than `assert_refusal`, which
-  holds the step right after its `ERROR:` line, or a `LINES_APART_ALLOWED` entry whose test no longer needs it.
-- **Examples:** #2545, #2563, #2696, #2700, #2933
+  holds the step right after its `ERROR:` line, or a `LINES_APART_ALLOWED` entry whose test no longer needs it; and
+  an `ERROR:` line the deployer prints itself, with `print` or `sys.stderr.write`, with no step printed after it,
+  which the guard does not read, since it reads `DeployError` constructions only.
+- **Examples:** #2545, #2563, #2696, #2700, #2933, #3016
 
 ### A report of a change names the change the write made
 

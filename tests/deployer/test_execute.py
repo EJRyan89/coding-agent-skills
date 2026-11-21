@@ -133,7 +133,6 @@ class ExecuteTests(unittest.TestCase):
             (journal, "recover_incomplete"): True,
             # A list outcome is a sequence of returns, so the one return, a list of runs, is wrapped.
             (journal, "journaled_runs"): [[]],
-            (pipeline, "print_traceback"): None,
             (errors, "print_traceback"): None,
         }
         with contextlib.ExitStack() as stack:
@@ -543,13 +542,14 @@ class ExecuteTests(unittest.TestCase):
                 ["print_traceback(DeployError('ERROR: apply failed'))", *recovered],
                 ["", "ERROR: apply failed", "", RECONCILING, ""],
             ),
-            (boom, False, 1, recovered, ["ERROR: Unexpected RuntimeError: boom", RECONCILING, ""]),
+            # An exception the deployer has no message for ends as a refusal whose step is its traceback.
+            (boom, False, 1, recovered, ["", "ERROR: Unexpected RuntimeError: boom", HINT, "", RECONCILING, ""]),
             (
                 boom,
                 True,
                 1,
-                ["print_traceback(RuntimeError('boom'))", *recovered],
-                ["ERROR: Unexpected RuntimeError: boom", RECONCILING, ""],
+                [f"print_traceback({DeployError('ERROR: Unexpected RuntimeError: boom', HINT)!r})", *recovered],
+                ["", "ERROR: Unexpected RuntimeError: boom", HINT, "", RECONCILING, ""],
             ),
             (
                 KeyboardInterrupt(),
