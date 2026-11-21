@@ -12,7 +12,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from closing_references import REPOSITORY, ClosingReference, closing_references, pull_request_references
+from closing_references import (
+    REPOSITORY,
+    ClosingReference,
+    closing_references,
+    pull_request_references,
+    stray_closing_lines,
+    title_holds_closing_reference,
+)
 
 
 # Each form GitHub closes an issue by, after each keyword form, in any case, with or without a colon.
@@ -182,3 +189,62 @@ def test_a_pull_request_closes_what_its_title_or_its_body_names_comments_include
 
 def test_a_title_ending_in_a_keyword_never_reaches_a_body_starting_with_a_reference() -> None:
     assert pull_request_references("fix: what this closes", "#5 was the cause.\n") == []
+
+
+# A template as the pull request checks read one: a comment naming the closing line, which no issue number follows, and
+# the closing line left with no issue.
+TEMPLATE = "<!-- Name each issue in a\n     Closes #N line of its own. -->\nCloses #\n\n<!-- Why. -->\n"
+
+
+# Each body and the lines it closes an issue on outside a `Closes #<n>` line of its own, as implement-change's
+# `pull_request.py check` printed them as `CLOSES_LINE <line> <text>` before it read them here.
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "Closes #1\n\nTwo examples, such as `Closes #12`, read wrong.\n",
+            [(3, "Two examples, such as `Closes #12`, read wrong.")],
+        ),
+        ("```text\nCloses #12 when it merges\n```\n", [(2, "Closes #12 when it merges")]),
+        ("<!-- fixes #12 -->\n", [(1, "<!-- fixes #12 -->")]),
+        ("Closes #1, #12\n", [(1, "Closes #1, #12")]),
+        ("- Closes #12\n", [(1, "- Closes #12")]),
+        ("closes #12\n", [(1, "closes #12")]),
+        ("Closes: #12\n", [(1, "Closes: #12")]),
+        ("Closes #0\n", [(1, "Closes #0")]),
+        ("Closes #012\n", [(1, "Closes #012")]),
+        ("Closes #abc\n", [(1, "Closes #abc")]),
+        ("Resolves GH-12\n", [(1, "Resolves GH-12")]),
+        ("  Fixed https://github.com/owner/repo/issues/12  \n", [(1, "Fixed https://github.com/owner/repo/issues/12")]),
+        ("Closes #1\r\n\r\nSee `fixes #12`.\r\n", [(3, "See `fixes #12`.")]),
+        ("Closes #1\r\rSee `fixes #12`.\r", [(3, "See `fixes #12`.")]),
+        ("And\tfixes   #13 too.\n", [(1, "And\tfixes   #13 too.")]),
+        ("  Closes #12 \t\n", []),
+        ("Closes #\n", []),
+        ("This fixes the crash and fixes GH-hosted runners.\n", []),
+        ("This closes #abc.\n", []),
+        (TEMPLATE, []),
+        (TEMPLATE.replace("Closes #N", "Closes #12"), [(2, "Closes #12 line of its own. -->")]),
+    ],
+)
+def test_stray_closing_lines_names_each_line_outside_a_closes_line(body: str, expected: list[tuple[int, str]]) -> None:
+    assert stray_closing_lines(body, TEMPLATE) == expected
+
+
+# Each title and whether it holds a closing reference, as `pull_request.py check` printed `TITLE_CLOSES` for it before
+# it read it here.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("fix: refuse a bad name, closes #12", True),
+        ("fix: close #abc", True),
+        ("fix: Resolves GH-12", True),
+        ("fix: refuse a bad name, `fixed owner/repo#12`", True),
+        ("fix: close the file", False),
+        ("ci: run on GH-hosted runners", False),
+        ("fix: refuse issue #12's spelling", False),
+        ("fix: closes GH-x", False),
+    ],
+)
+def test_title_holds_closing_reference_reads_a_keyword_before_a_reference_start(title: str, expected: bool) -> None:
+    assert title_holds_closing_reference(title) is expected

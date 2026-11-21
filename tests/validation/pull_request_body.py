@@ -1,13 +1,13 @@
 """The pull request body guards: the body names each issue it closes in a `Closes #<n>` line of its own, and a pull
 request titled `fix` fills its body's `## Forms considered` section.
 
-The closing-line check reads every closing reference GitHub reads, through ejryan89-skill-core's `closing_references`,
-on every line of the body, code spans, code blocks, and comments the author wrote included: the squash commit carries
-the body into main as written, and GitHub closes an issue a commit message on the default branch names anywhere. A
-comment copied from the pull request template, character for character as ejryan89-skill-core's `hidden_comments`
-reads one, is the template's text, not the author's, so it is not read. It refuses only a reference GitHub closes an
-issue by, so a placeholder such as `Closes #` or `Closes #abc` passes here; the `implement-change` repository skill's
-body check refuses those as well.
+The closing-line check reads the body through ejryan89-skill-core's `closing_references`, the reader the
+`implement-change` repository skill's body check shares, so a body its check passes is one this check passes: every
+closing reference GitHub reads, on every line, code spans, code blocks, and comments the author wrote included, since
+the squash commit carries the body into main as written and GitHub closes an issue a commit message on the default
+branch names anywhere in it, and a line that opens with a closing keyword before the start of a reference that names
+no issue, such as `Closes #abc`. A comment copied from the pull request template is the template's text, not the
+author's, and is not read.
 
 The forms-considered check holds the section's shape, never its judgment, as ejryan89-skill-core's `forms_considered`
 reads it, the reader the `implement-change` repository skill's body check shares: a fix body has the heading, and
@@ -16,7 +16,6 @@ under it text of the author's own, not nothing and not the template's guidance l
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -24,12 +23,10 @@ from pathlib import Path
 # module states the path itself.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from closing_references import CLOSING_REFERENCE
+from closing_references import stray_closing_lines
 from flat_text import flat_text
 from forms_considered import FIX_TYPE, FORMS_HEADING, FormsFault, forms_fault, is_fix_title, placeholder_forms
 from pull_request_title import head_branch
-from hidden_comments import hidden_spans
-from text_lines import text_lines
 from upgrade_notes import PROFILE_DOC
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, markdown_section
 
@@ -37,8 +34,6 @@ from tools.release_notes import ReleaseNotesError
 
 TEMPLATE = ".github/pull_request_template.md"
 PROFILE_HEADING = "## Pull requests"
-# The one line the body names an issue it closes on: the keyword, one space, and the number, alone between spaces.
-CLOSES_LINE = re.compile(r"Closes #[1-9][0-9]*")
 
 
 def is_fix(title: str | None, branch: str | None) -> bool:
@@ -76,27 +71,15 @@ def forms_problems(body: str, fix: bool, template: str) -> list[str]:
     return []
 
 
-def without_template_comments(body: str, template: str) -> str:
-    """`body` with each comment GitHub hides that is, character for character, one GitHub hides in `template` made
-    spaces, but its line breaks, CR and LF, so each line keeps its number; every comment the author wrote is kept."""
-    copied = {template[first:past] for first, past in hidden_spans(template)}
-    characters = list(body)
-    for first, past in hidden_spans(body):
-        if body[first:past] in copied:
-            characters[first:past] = re.sub(r"[^\r\n]", " ", body[first:past])
-    return "".join(characters)
-
-
 def closing_line_problems(body: str, template: str) -> list[str]:
-    """Each line of the body, as CommonMark ends one, that holds a closing reference GitHub reads and is not a
-    `Closes #<n>` line of its own."""
+    """Each line of the body that closes an issue outside a `Closes #<n>` line of its own, as closing_references
+    reads one."""
     return [
         f"line {number} of the pull request body closes an issue outside a `Closes #<number>` line of its own: "
-        f"{flat_text(line.strip())!r}; GitHub reads a closing reference anywhere in the body, code and comments "
-        "included, so name each issue the change resolves on a line of its own and reword any other reference "
-        f'without a closing keyword ("Pull requests" in {PROFILE_DOC})'
-        for number, line in enumerate(text_lines(without_template_comments(body, template)), start=1)
-        if CLOSING_REFERENCE.search(line) and not CLOSES_LINE.fullmatch(line.strip())
+        f"{flat_text(text)!r}; GitHub reads a closing reference anywhere in the body, code and comments included, so "
+        "name each issue the change resolves on a line of its own and reword any other reference without a closing "
+        f'keyword ("Pull requests" in {PROFILE_DOC})'
+        for number, text in stray_closing_lines(body, template)
     ]
 
 

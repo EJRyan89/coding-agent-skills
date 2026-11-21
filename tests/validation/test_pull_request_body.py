@@ -424,6 +424,7 @@ STRAY_CLOSING_LINES = {
     "an issue's URL": "Fixed https://github.com/owner/repo/issues/12\n",
     "a closing line naming issue zero": "Closes #0\n",
     "a closing line with a leading zero": "Closes #012\n",
+    "a line that opens a reference naming no issue": "Closes #abc\n",
     "a reference after a CRLF line break": "Closes #1\r\n\r\nSee `fixes #12`.\r\n",
     "a reference after a lone CR line break": "Closes #1\r\rSee `fixes #12`.\r",
 }
@@ -436,7 +437,7 @@ def test_a_closing_reference_outside_a_closes_line_of_its_own_fails(form: str) -
     assert "Closes #<number>" in problems[0]
 
 
-# Each body whose closing references are all `Closes #<n>` lines of their own, or that holds none GitHub reads.
+# Each body whose closing references are all `Closes #<n>` lines of their own, or that holds none.
 CLOSES_LINES_ONLY = {
     "one closing line": "Closes #12\n\nWhy.\n",
     "a closing line per issue": "Closes #12\nCloses #13\n\nWhy.\n",
@@ -446,7 +447,7 @@ CLOSES_LINES_ONLY = {
     "GH- before no digit": "This fixes GH-hosted runners.\n",
     "a keyword inside another word": "Disclosed #12 earlier; prefixes #12 too.\n",
     "the template's closing line left with no issue": "Closes #\n\nWhy.\n",
-    "a keyword before a reference naming no issue": "Closes #abc\n\nWhy.\n",
+    "a closing line alone in a code block, which GitHub closes by too": "Why.\n\n```\nCloses #12\n```\n",
 }
 
 
@@ -455,9 +456,8 @@ def test_a_body_naming_issues_only_in_closes_lines_passes(form: str) -> None:
     assert closing_line_problems(CLOSES_LINES_ONLY[form], TEMPLATE) == []
 
 
-def test_the_template_left_as_it_was_passes_though_its_comment_names_a_closes_line() -> None:
-    # The template's first comment says "a Closes #N line of its own": text the author did not write, so it is not
-    # theirs to rewrite.
+def test_the_template_left_as_it_was_passes_its_comments_unread() -> None:
+    # The template's first comment names "a Closes #N line of its own": the template's text, not the author's.
     assert "Closes #N" in TEMPLATE
     assert closing_line_problems(TEMPLATE, TEMPLATE) == []
     assert closing_line_problems(TEMPLATE.replace("Closes #\n", "Closes #12\n", 1), TEMPLATE) == []

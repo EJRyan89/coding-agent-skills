@@ -17,14 +17,25 @@ autolink prefix.
 A pull request is squash-merged with its title as the commit's title and its body, as written, HTML comments included,
 as the message, so `pull_request_references` reads the title and the body together and reads inside comments. Every
 reader of a closing reference reads it here, so a form one of them knows reaches all of them.
+
+A pull request names each issue it closes in a `Closes #<n>` line of its own, so the closes it states are the closes it
+makes. `title_holds_closing_reference` and `stray_closing_lines` hold that rule for every checker of a title or a body,
+`implement-change`'s `pull_request.py check` and validation's title and body checks alike. A closing keyword before
+the start of a reference counts there even where no issue follows, as in `Closes #abc`, so a placeholder or a misspelt
+reference is refused rather than read as no reference. A body line is read with each comment copied, character for
+character, from the pull request template blanked, since that text is the template's guidance, not the author's; every
+comment the author wrote, and every code span and code block, is read, as GitHub reads them.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import whole_number
+from hidden_comments import hidden_spans
+from text_lines import text_lines
 
 # GitHub's closing keywords, as a pattern a caller may build on.
 CLOSING_KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
@@ -50,6 +61,14 @@ CLOSING_REFERENCE = re.compile(
     rf"|{GITHUB_URL}(?P<linked>{REPOSITORY})/issues/(?P<linked_number>[0-9]+))\b",
     re.IGNORECASE,
 )
+# A closing keyword and the start of an issue reference, which a title may not hold anywhere and a body line may not
+# open with, even where what follows names no issue CLOSING_REFERENCE reads.
+CLOSING_START = re.compile(rf"(?i){CLOSING_PREFIX}{REFERENCE_START}")
+CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_PREFIX}{REFERENCE_START}")
+# The template's closing line with no issue yet, a placeholder, not a closing reference.
+BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
+# The one line a body names an issue it closes on: the keyword, one space, and the number from 1, alone.
+CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 
 
 @dataclass(frozen=True)
@@ -90,3 +109,42 @@ def pull_request_text(title: str | None, body: str | None) -> str:
 def pull_request_references(title: str | None, body: str | None) -> list[ClosingReference]:
     """Each issue a pull request closes when it is squash-merged, by its title or its body, HTML comments included."""
     return closing_references(pull_request_text(title, body))
+
+
+def title_holds_closing_reference(title: str) -> bool:
+    """Whether a pull request title holds a closing keyword before the start of an issue reference, which the squash
+    commit's title would carry, so the issue belongs in a `Closes #<n>` line of the body instead."""
+    return CLOSING_START.search(title) is not None
+
+
+def blank_spans(text: str, spans: Sequence[tuple[int, int]]) -> str:
+    """`text` with the characters of each span, in order, but its line breaks, CR and LF, made spaces, so each line
+    keeps its number."""
+    kept: list[str] = []
+    position = 0
+    for first, past in spans:
+        kept.extend((text[position:first], re.sub(r"[^\r\n]", " ", text[first:past])))
+        position = past
+    kept.append(text[position:])
+    return "".join(kept)
+
+
+def template_comment_spans(body: str, template: str) -> list[tuple[int, int]]:
+    """The span of each comment GitHub hides in `body` that is, character for character, one GitHub hides in
+    `template`: a placeholder the template left."""
+    comments = {template[first:past] for first, past in hidden_spans(template)}
+    return [(first, past) for first, past in hidden_spans(body) if body[first:past] in comments]
+
+
+def stray_closing_lines(body: str, template: str) -> list[tuple[int, str]]:
+    """Each line of `body`, by its number from 1 where CommonMark ends a line, and its text without the spaces around
+    it, that holds a closing reference, or opens with a closing keyword before the start of one, and is neither a
+    `Closes #<n>` line of its own nor the template's closing line with no issue; comments copied from `template` are
+    not read."""
+    read = text_lines(blank_spans(body, template_comment_spans(body, template)))
+    return [
+        (number, line.strip())
+        for number, line in enumerate(read, start=1)
+        if (CLOSING_REFERENCE.search(line) or CLOSING_LINE.match(line))
+        and not (CLOSES_ONE.fullmatch(line.strip()) or BARE_CLOSING_LINE.fullmatch(line.strip()))
+    ]

@@ -2,15 +2,16 @@
 no issue.
 
 The squash commit takes the title as its title, and GitHub closes an issue a commit message on the default branch names
-after a closing keyword, so the title is read for every closing reference ejryan89-skill-core's `closing_references`
-reads, code spans included, and the issue belongs in a `Closes #<n>` line of the body.
+after a closing keyword, so the title is read for a closing keyword before the start of a reference, code spans
+included, through ejryan89-skill-core's `closing_references`, the reader the `implement-change` repository skill's
+title check shares, and the issue belongs in a `Closes #<n>` line of the body.
 """
 
 from __future__ import annotations
 
 import os
 
-from closing_references import CLOSING_REFERENCE
+from closing_references import title_holds_closing_reference
 from forms_considered import TITLE
 from git_client import output_line
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, listed, markdown_section
@@ -51,7 +52,7 @@ def title_problems(title: str, branch: str | None) -> list[str]:
             f"the pull request title {title!r} opens with {kind!r}, which is not a known type: {_either(TITLE_TYPES)}"
         ]
     problems = []
-    if CLOSING_REFERENCE.search(title):
+    if title_holds_closing_reference(title):
         problems.append(
             f"the pull request title {title!r} holds a closing reference, which the squash commit carries; name the "
             "issue in a `Closes #<number>` line of the body instead"
