@@ -722,7 +722,7 @@ class UnencodableNameTests(DeployerTestCase):
             with self.subTest(arguments=arguments):
                 result = self.deploy_fails(*arguments, pattern="Cannot hash alpha")
                 self.assertEqual(1, result.code, result.output)
-                self.assert_lines(result.output, *self.expected())
+                self.assert_refusal(result.output, *self.expected())
                 self.assertNotIn("Unexpected", result.output)
                 self.assertNotIn("Traceback", result.output)
                 self.assertEqual("kept by the user\n", self.unencodable.read_text(encoding="utf-8"))
