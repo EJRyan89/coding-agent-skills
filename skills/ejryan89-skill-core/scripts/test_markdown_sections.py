@@ -1077,7 +1077,7 @@ def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T
     reading repeats until the smaller takes LEAST_TIMED_SECONDS; the smaller keeps the least of TIMINGS timings, and
     the larger passes at its first timing under the bound, so only a reading slower on every try fails. The bound
     sits between the ratio a linear reading gives and the one the slower reading the test guards against gives, with
-    a margin of at least two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
+    a margin of about two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
     repeats = 1
     while (elapsed := _seconds(read, small, repeats)) < LEAST_TIMED_SECONDS:
         repeats *= 2
