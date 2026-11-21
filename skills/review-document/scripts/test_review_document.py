@@ -2370,6 +2370,10 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([f"FOUND {Path('docs/design.md')}"], lines)
         self.assertEqual([self.top, self.top / "docs"], listed)
 
+    def test_a_hidden_file_name_is_found_while_a_hidden_folder_holding_it_is_passed_over(self) -> None:
+        self.write("docs/.notes.md", ".cache/.notes.md")
+        self.assertEqual([f"FOUND {Path('docs/.notes.md')}"], self.resolve(".notes.md"))
+
     def test_past_its_bound_the_search_names_where_it_stopped_and_a_single_match_is_a_candidate(self) -> None:
         self.write("docs/design.md", "notes/design.md", "zeta/other.md")
         reason = folder_walk.bounded_reason(2)
