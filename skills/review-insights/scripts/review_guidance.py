@@ -41,7 +41,8 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from link_destinations import link_destinations
+from link_destinations import Destination, link_destinations
+from link_targets import Cover, link_spans, link_target
 from markdown_sections import PROSE_BLOCKS, blocks
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
@@ -98,6 +99,8 @@ FORCE_WORDS = {
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
 CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
+# The cover of a line that holds no link.
+NO_LINKS = Cover.of([])
 
 
 class GuidanceError(RuntimeError):
@@ -468,34 +471,40 @@ def _overlap_rank(item: dict[str, Any]) -> tuple[Any, ...]:
     return item["relation"] != "conflict", -item["similarity"], item["repository"], item["paths"], item["lines"]
 
 
-def _resolved(base: str, reference: str) -> str | None:
-    """A relative Markdown reference resolved against the directory `base` is in, or None when it leaves the
-    repository."""
-    parts: list[str] = list(PurePosixPath(base).parent.parts) if base else []
-    for part in PurePosixPath(reference).parts:
-        if part == "..":
-            if not parts:
-                return None
-            parts.pop()
-        elif part != ".":
-            parts.append(part)
-    return "/".join(parts) or None
-
-
-def _markdown_links(lines: list[str]) -> dict[int, list[str]]:
-    """The Markdown files the lines link to, by line number, each as a path in the repository: read through
+def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, Cover]]:
+    """The Markdown files the lines link to, by line number, each as its destination's path: read through
     ejryan89-skill-core's link_destinations as CommonMark reads a destination, so a percent-encoded, escaped, or `<…>`
-    path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here."""
+    path names the file it leads to, a link in code is none, and one with a scheme or a host is no file here; and the
+    columns the links take, their text and titles included, by line number, which are no code reference."""
     linked: dict[int, list[str]] = {}
+    by_line: dict[int, list[Destination]] = {}
     for destination in link_destinations(lines):
+        by_line.setdefault(destination.line, []).append(destination)
         if not destination.is_url and destination.posix_path.endswith(".md"):
             linked.setdefault(destination.line, []).append(destination.posix_path)
-    return linked
+    return linked, {line: Cover.of(link_spans(lines[line - 1], found)) for line, found in by_line.items()}
+
+
+def _code_references(line: str, links: Cover) -> list[str]:
+    """The Markdown paths a line names in code outside its links, each with a leading `./` dropped, as a path from the
+    repository root reads it."""
+    return [
+        match.group(1).removeprefix("./")
+        for match in CODE_REFERENCE.finditer(line)
+        if not links.overlaps(match.start(), match.end())
+    ]
 
 
 def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
-    was not given."""
+    was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
+    or from the repository root when it starts with `/`; a path named in code outside a link counts as given when the
+    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. An inline link or
+    a definition is read only through its destination, so a path its text names in code is not read again, within
+    link_targets' limits: a reference link's text, as in `[text][label]`, `[text][]`, or `[label]`, is still read; a
+    definition's line is passed over whole; and an inline link with text after its title is passed over to the next
+    `)`. An inline link that does not close is passed over only at its destination, so a path after it is still
+    read."""
     found: list[dict[str, Any]] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
@@ -504,10 +513,13 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
             if text is None:
                 continue
             lines = text_lines(text)
-            linked = _markdown_links(lines)
+            linked, spans = _markdown_links(lines)
             for number, line in enumerate(lines, start=1):
-                links = [_resolved(path, target) for target in linked.get(number, [])]
-                named = [(target, _resolved(path, target)) for target in CODE_REFERENCE.findall(line)]
+                links = [link_target(path, target) for target in linked.get(number, [])]
+                named = [
+                    (target, link_target(path, target))
+                    for target in _code_references(line, spans.get(number, NO_LINKS))
+                ]
                 candidates = [link for link in links if link is not None and link not in given]
                 candidates += [target for target, near in named if target not in given and near not in given]
                 found += [

@@ -115,13 +115,6 @@ def base_argument(value: str) -> Base:
     return Base(remote, branch)
 
 
-def issue_argument(value: str) -> int:
-    refused = argparse.ArgumentTypeError(f"{value!r} is not an issue number")
-    if not re.fullmatch(r"[1-9][0-9]*", value):
-        raise refused
-    return whole_number.read(value, refused)
-
-
 def blank_comments(text: str) -> str:
     """`text` with every comment's characters but its line breaks, CR and LF, made spaces, so each line keeps its
     number."""
@@ -384,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository", type=Path, default=Path(), help="the checkout (default: here)")
     commands = parser.add_subparsers(dest="command", required=True)
     draft_parser = commands.add_parser("draft", help="write a body from the pull request template")
-    draft_parser.add_argument("--closes", type=issue_argument, action="append", default=[], metavar="ISSUE")
+    draft_parser.add_argument("--closes", type=whole_number.argument(1), action="append", default=[], metavar="ISSUE")
     files = argparse.ArgumentParser(add_help=False)
     files.add_argument("--title-file", type=Path, required=True)
     files.add_argument("--body-file", type=Path, required=True)
