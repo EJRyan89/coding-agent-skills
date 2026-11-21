@@ -17,15 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forms_considered
 from forms_considered import (
-    WALK_WINDOW,
     FormsFault,
     forms_fault,
     forms_section,
     is_fix_title,
     is_placeholder,
     placeholder_forms,
-    without_hidden_comments,
 )
+from hidden_comments import WALK_WINDOW, without_hidden_comments
 from markdown_sections import blocks
 
 TEMPLATE = (
@@ -169,7 +168,7 @@ def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str
     # Counting the lines the walks read, at two sizes, holds the reading linear without timing it.
     for repeats in (100, 400):
         text = head + unit * repeats + tail
-        with mock.patch("forms_considered.blocks", wraps=blocks) as walk:
+        with mock.patch("hidden_comments.blocks", wraps=blocks) as walk:
             forms_considered.forms_section(text)
         read = sum(len(call.args[0]) for call in walk.call_args_list)
         assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
