@@ -593,7 +593,9 @@ removed fails validation until its pattern follows it.
   `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`,
   `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_only_a_call_that_starts_git_names_a_subcommand`,
-  and `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcommand`
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcommand`,
+  and `skills/ejryan89-skill-core/scripts/test_forms_considered.py::test_the_section_is_the_one_github_renders`, which
+  holds the Forms considered reader to the section GitHub renders for each body
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a
@@ -637,11 +639,13 @@ removed fails validation until its pattern follows it.
   worktrees writes the refs the hub's store holds; a reader of Python calls that takes a call's function through a
   call in its receiver, so `git_output(...).split(...)` reads as `git_output`'s call, or by a word of its name alone,
   so an exception class or a helper named for git that starts none counts as a git call, rather than through
-  `runtime_support.starts_git`.
+  `runtime_support.starts_git`; a reader of a Markdown body that runs a `<!--` left unclosed inside a paragraph to the
+  end of the body, where GitHub shows it as text, that reads one body's fences or list items with a walk of its own
+  beside the block walker's, or that removes comments with `HTML_COMMENT` without reading which code shows them.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
   #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820,
-  #2511, #2855
+  #2511, #2855, #2975, #2976, #2980
 
 ### A recursive parser of input has a depth bound
 
