@@ -4093,7 +4093,8 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
         # resolve finds only the staged copy, and all three removed when the run ends.
         case.assertEqual([Path(name)] * len(models), staged)
         runs = {f"{scenario} {model}" for model in models.values()}
-        case.assertEqual({run: [f"FOUND drafts/{name}"] for run in runs}, claude.resolved)
+        # resolve prints the path with the platform's separator.
+        case.assertEqual({run: [f"FOUND {Path('drafts', name)}"] for run in runs}, claude.resolved)
         case.assertEqual({run: [".drafts-old", ".git", "drafts", "old-checkout"] for run in runs}, claude.home_folders)
         for model in models:
             case.assertEqual(
@@ -6174,6 +6175,7 @@ BUILD = shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "/home/a b/drafts/draft.md"
     [
         [{"name": "Skill", "input": {"skill": "review-document"}}, RESOLVE, BUILD],
         [RESOLVE, shell(f"python3 -B {DOCUMENT_SCRIPT} build drafts/draft.md")],
+        [RESOLVE, shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "C:\\h\\drafts\\draft.md"')],
         [
             shell(f"python3 -B '{DOCUMENT_SCRIPT}' resolve 'draft.md'", "PowerShell"),
             shell(f'& py "{DOCUMENT_SCRIPT}" build "C:\\h\\drafts\\draft.md"', "PowerShell"),
@@ -6188,7 +6190,7 @@ BUILD = shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "/home/a b/drafts/draft.md"
         [RESOLVE, shell("ls drafts"), {"name": "Glob", "input": {"pattern": "**/draft.md"}}, BUILD],
         [{"name": "Read", "input": {"file_path": "/home/SKILL.md"}}, RESOLVE, BUILD],
     ],
-    ids=["skill", "bare", "powershell", "one-command", "search-after", "read-first"],
+    ids=["skill", "bare", "windows-path", "powershell", "one-command", "search-after", "read-first"],
 )
 def test_resolved_passes_a_session_that_runs_resolve_first_and_builds_the_copy_it_finds(
     calls: list[dict[str, Any]],
@@ -6296,7 +6298,7 @@ def test_a_by_name_document_is_staged_one_folder_down_in_the_home_beside_decoys_
         for folder in ("drafts", ".drafts-old", "old-checkout"):
             assert (home / folder / "draft.md").read_bytes() == document_of(scenario).read_bytes()
         assert (home / "old-checkout" / ".git").is_dir()
-        assert review_document.resolve("draft.md", home) == ["FOUND drafts/draft.md"]
+        assert review_document.resolve("draft.md", home) == [f"FOUND {Path('drafts', 'draft.md')}"]
     assert sorted(path.name for path in home.iterdir()) == [".git"]
 
 
