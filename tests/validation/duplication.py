@@ -1,6 +1,5 @@
 """No definition is copied between files, and shared code lives in ejryan89-skill-core and is imported from there:
-among it the one containment test of a path in a tree, and the one fence detector, whose fences the block readers
-read alike on every tracked Markdown file.
+among it the one containment test of a path in a tree.
 """
 
 from __future__ import annotations

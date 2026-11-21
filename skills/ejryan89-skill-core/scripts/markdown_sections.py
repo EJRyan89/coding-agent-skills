@@ -185,6 +185,12 @@ def find_fences(lines: list[str]) -> list[Fence]:
     fence is body, and so is one indented with any other Unicode space. A fence left open runs to the first line its
     list items or blockquotes do not hold, as a line indented less than its list item's content, or to the end of the
     document. The info string's first word, the language, is split as commonmark.js splits it, at any whitespace.
+
+    The limits are `_walk`'s, which this inherits. Two of them place a fence apart from GitHub: a list marker with
+    nothing after it opens no item, so under a bare `-` a run indented four columns is indented code, where GitHub reads
+    the item and the fence inside it; and the partial tab a container marker consumes is counted as a whole one, so a
+    tab right after a blockquote's `>` puts the line's content at the margin and leaves the list item the fence is in,
+    where GitHub keeps the line in the fence.
     """
     return _walk(lines).fences
 
