@@ -60,6 +60,7 @@ from review_runtime import (
     DESIGN_REVIEW_PROFILE,
     DOCUMENT_STAGES,
     GENERIC_SPECIALIST,
+    MATERIALIZATION_FILE,
     PULL_REQUEST_BODY_CHARACTERS,
     SNAPSHOT_FETCHABLE,
     RuntimeContractError,
@@ -334,7 +335,7 @@ def patch_fingerprints(diff: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
 def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str]:
     """Return the verified specialist manifest and its source commit from a materialized root."""
     try:
-        metadata = read_json(reviewer_root / "materialization.json")
+        metadata = read_json(reviewer_root / MATERIALIZATION_FILE)
     except (OSError, ValueError, PersistenceError) as exc:
         raise SpecialistError(f"Reviewer materialization metadata is invalid: {exc}") from exc
     materialization = READ.json_object(metadata, "materialization")

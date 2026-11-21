@@ -1,9 +1,11 @@
-"""What the synthesis reads of each repository's reviewer guidance: the files each repository-scoped reviewer was built
-from, the text of its prose files as that reviewer was given it, and the candidate overlaps a script can find in that
-text before any model reads it.
+"""What the synthesis reads of each repository's reviewer guidance: the files of its own each repository-scoped
+reviewer was built from, none for a reviewer read from another checkout, the text of its prose files as that reviewer
+was given it, and the candidate overlaps a script can find in that text before any model reads it.
 
 A reviewer's files are the repository-relative paths in `review.adapter.source_hashes` of the latest record it wrote,
-anywhere in the archive; a profile the suite ships is no file of the repository and is left out. Reviewers whose
+anywhere in the archive; a profile the suite ships is no file of the repository and is left out, and so is every file
+of a record whose reviewer was read from another checkout (`adapter.source` is `reviewer-root`), which the reviewed
+repository neither holds nor can change. Reviewers whose
 records pinned different hashes of one file were given different versions of it, so each version is its own line with
 its own reviewers, and its text is checked against the rules of the files those reviewers were given. A prose file's
 text is read from the repository's configured checkout only when its SHA-256 matches the hash the records pinned: the
@@ -183,7 +185,8 @@ def reviewer_sources(
 def guidance_files(repositories: list[str], records: Mapping[Path, Mapping[str, Any]]) -> dict[str, list[str]]:
     """Each repository's guidance files: the source files of the latest record each repository-scoped reviewer
     wrote. A profile the suite ships is recorded beside them under its `suite:<name>` reference, but it is no file of
-    the repository, which cannot change it, so it is left out."""
+    the repository, which cannot change it, so it is left out, as is every file of a reviewer read from another
+    checkout, so a repository reviewed only by such reviewers has none."""
     return {
         repository: sorted({path for source in by_name.values() for path in source.hashes})
         for repository, by_name in reviewer_sources(repositories, records).items()

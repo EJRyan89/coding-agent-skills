@@ -28,6 +28,7 @@ from review_config import ConfigurationError, dashboard_status_heading, dashboar
 from review_github import GitHubClient
 from typed_fields import FieldError
 from update_pr_dashboard import (
+    SECTION_AWAITING,
     SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
     ComparisonFailures,
@@ -603,6 +604,14 @@ class TrackerTests(unittest.TestCase):
             for value in (state, state.upper(), f" {state.title()} "):
                 with self.subTest(value=value), self.assertRaisesRegex(TrackerError, "computed tracker state"):
                     run([item()], overrides={"owner/repo#1": value})
+
+    def test_the_reviewed_sections_say_status_is_the_latest_deciding_review(self) -> None:
+        # _status shows the user's latest deciding review, so an approval followed by a comment still shows Approved;
+        # the summaries once said "your own latest review", which a reader took to mean the comment.
+        stated = "Status reflects your own latest deciding review, which later comments leave standing."
+        for section in (SECTION_TO_REVIEW, SECTION_AWAITING):
+            with self.subTest(section=section):
+                self.assertTrue(SECTION_SUMMARIES[section].endswith(stated))
 
     def test_an_override_naming_a_rendered_section_is_refused(self) -> None:
         # A pinned section named like a computed one rendered twice, and the computed one lost its own rows.
