@@ -44,6 +44,7 @@ from review_io import (
 )
 from review_process import same_process
 from review_runtime import (
+    MATERIALIZATION_FILE,
     READ,
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
@@ -411,7 +412,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     """The entrypoint of a materialized entrypoint reviewer, once every file its metadata hashes still has that hash
     and nothing else is under the root. The Copilot CLI host checks it when it starts, and check and finalize before
     any result counts, on every runtime."""
-    metadata_path = materialized_root / "materialization.json"
+    metadata_path = materialized_root / MATERIALIZATION_FILE
     try:
         metadata = parse_json(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, *CONTENT_ERRORS) as exc:
@@ -431,11 +432,11 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     source_hashes = READ.json_object(metadata["source_hashes"], "materialization.source_hashes")
     if relative_value not in source_hashes:
         raise RuntimeContractError("Reviewer materialization source hashes are invalid")
-    expected_files = {"materialization.json"}
+    expected_files = {MATERIALIZATION_FILE}
     for declared_path, expected_hash in source_hashes.items():
         normalized = _safe_relative_path(declared_path, "a key of materialization.source_hashes")
         # In any case, since a case-insensitive file system holds the record itself at each spelling.
-        if normalized != declared_path or declared_path.casefold() == "materialization.json":
+        if normalized != declared_path or declared_path.casefold() == MATERIALIZATION_FILE:
             raise RuntimeContractError(f"Reviewer materialization path is invalid: {declared_path!r}")
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
@@ -712,7 +713,7 @@ def _copilot_prompt(
     """The prepared entrypoint's contracts, with the host's staging destination and no shell-based self-check
     or source commands. The caller has verified the reviewer and source snapshot before rendering."""
     request = {**request, "source_snapshot": {**request["source_snapshot"], "root": str(source_resolved)}}
-    metadata = read_json(materialized_resolved / "materialization.json")
+    metadata = read_json(materialized_resolved / MATERIALIZATION_FILE)
     snapshot = read_json(source_resolved / SOURCE_SNAPSHOT_MANIFEST)
     links = symbolic_links(parse_unified_diff(read_diff(Path(request["diff_path"]))), snapshot["excluded_paths"])
     try:

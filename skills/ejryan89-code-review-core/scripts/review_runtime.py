@@ -77,6 +77,8 @@ DUPLICATION_ALLOWED = {
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST = "source-snapshot.json"
+# The record of what prepare wrote under a reviewer root, which lists every other file there.
+MATERIALIZATION_FILE = "materialization.json"
 SOURCE_SNAPSHOT_FIELDS = frozenset({"schema_version", "repository", "source_commit", "source_hashes", "excluded_paths"})
 # A lazy snapshot's manifest also lists, by blob id, each path it can hold that prepare did not write; review_source.py
 # writes one when a reviewer asks for it.
@@ -717,7 +719,7 @@ def _validate_finding_categories(categories: Any) -> None:
 def _refuse_reserved_paths(declared: list[str]) -> None:
     """Refuse a declared file at the path of the materialization record, in any case: on a file system that ignores
     case, the record would replace it after its hash is taken."""
-    if any(path.casefold() == "materialization.json" for path in declared):
+    if any(path.casefold() == MATERIALIZATION_FILE for path in declared):
         raise RuntimeContractError("Adapter declares a reserved path")
 
 
@@ -1250,7 +1252,7 @@ def materialize_reviewer(
                 metadata["local_files"] = sorted(local)
             if suite:
                 metadata["suite_profiles"] = suite
-        atomic_write_json(destination / "materialization.json", metadata)
+        atomic_write_json(destination / MATERIALIZATION_FILE, metadata)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise

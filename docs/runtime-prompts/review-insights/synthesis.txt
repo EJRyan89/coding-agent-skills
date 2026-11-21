@@ -31,8 +31,10 @@ guidance and to the repositories' tooling. This file is your complete task.
 - `flag`: an open flag a person recorded: a false positive, a missed finding, a heuristic to add, or another
   observation. `finding` is the reference of the finding it names, or null when it names none. Flags are the most
   deliberate signal in the input.
-- `guidance`: per repository, the files its reviewers are built from. A recommendation that changes guidance names one
-  of these files, or null when none fits, and then says in its change where the guidance belongs.
+- `guidance`: per repository, the files of its own its reviewers are built from. A generic reviewer, or one read
+  from another checkout, is built from none, so a repository reviewed only by those has none. A recommendation that
+  changes guidance names one of these files, or null when none fits, and then says in its change where the guidance
+  belongs.
 - `guidance-file`: one of those files, its `role` (`prose`, or `code` for a script, manifest, or test, listed by path
   only) and the `reviewers` given it. Reviewers given different versions of one file have a line per version. A prose
   file's `content` is its text as those reviewers were given it when `status` is `included`; otherwise `status` says
