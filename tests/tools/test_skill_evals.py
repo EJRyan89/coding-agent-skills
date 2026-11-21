@@ -35,6 +35,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import file_presence
 import frontmatter
 import review_document
 import review_guard
@@ -5953,7 +5954,7 @@ def test_never_recommends_reads_each_spelling_of_a_path_as_the_same_file(spellin
 
 def test_records_refuse_a_synthesis_record_whose_presence_cannot_be_read(tmp_path: Path) -> None:
     scenario = skill_evals_scenarios.load_scenarios("review-insights", ["synthesis"])[0]
-    with mock.patch.object(skill_evals_judging.file_presence, "is_present", side_effect=OSError("access denied")):
+    with mock.patch.object(file_presence, "is_present", side_effect=OSError("access denied")):
         outcomes = skill_evals_judging.judge([scenario], ["opus"], skill_evals_judging.records_in(tmp_path))
     assert outcomes[0].failure == f"cannot read {tmp_path / 'synthesis' / 'opus.json'}: access denied"
     assert {outcome.kind for outcome in outcomes} == {skill_evals_records.RUN}
