@@ -14,10 +14,9 @@ from pathlib import Path
 
 import file_presence
 from link_destinations import link_destinations
-from markdown_sections import ATX_HEADING
+from markdown_sections import ATX_HEADING, code_spans
 from text_lines import text_lines
 from validation_support import (
-    COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
     fence_holders,
@@ -63,6 +62,11 @@ def markdown_link_problems(root: Path) -> list[str]:
     Links are read through ejryan89-skill-core's `link_destinations`, as every reader of a link destination reads them,
     so code blocks and spans are not links, and a destination is percent-decoded; URLs with a scheme are not checked.
     Files Git ignores, and the session worktrees under .claude/worktrees/, are not read.
+
+    Limit: a destination is resolved on the file system, not within the repository as GitHub resolves it. One that
+    opens with `/` is read from the file system's root, so a link to `/docs/x.md` is reported missing however the
+    repository holds that file, and a `..` that climbs past the repository root leaves it, so a link to a file beside
+    the checkout passes. No document in the repository writes either.
     """
     problems: list[str] = []
     for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):
@@ -211,12 +215,12 @@ def _sentences(line: str) -> Iterator[list[str]]:
     """The code spans of a line's sentences, one list for each sentence that holds one."""
     spans: list[str] = []
     end = 0
-    for match in COMMONMARK_CODE_SPAN.finditer(line):
-        if spans and SENTENCE_END.search(line, end, match.start()):
+    for span in code_spans(line):
+        if spans and SENTENCE_END.search(line, end, span.start):
             yield spans
             spans = []
-        spans.append(match.group(2).strip())
-        end = match.end()
+        spans.append(span.text.strip())
+        end = span.end
     if spans:
         yield spans
 
@@ -403,9 +407,7 @@ def _pattern_fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[
 
 def _spans(lines: list[tuple[int, str]]) -> list[tuple[int, list[str]]]:
     """Each line of a field with the text of the code spans it holds."""
-    return [
-        (number, [match.group(2).strip() for match in COMMONMARK_CODE_SPAN.finditer(text)]) for number, text in lines
-    ]
+    return [(number, [span.text.strip() for span in code_spans(text)]) for number, text in lines]
 
 
 def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]]) -> list[str]:
@@ -496,7 +498,7 @@ def threat_model_test_problems(root: Path) -> list[str]:
         return [f"{THREAT_MODEL_DOC} has no table under {THREAT_MODEL_HEADING!r}"]
     problems: list[str] = []
     for row in rows:
-        cited = [CITED_ID.fullmatch(span.strip()) for _, span in COMMONMARK_CODE_SPAN.findall(row)]
+        cited = [CITED_ID.fullmatch(span.text.strip()) for span in code_spans(row)]
         if all(citation is None or citation.group(1) != THREAT_MODEL_ADVERSARIAL_SUITE for citation in cited):
             problems.append(
                 f"{THREAT_MODEL_DOC}: the threat-model row {row.split('|')[1].strip()!r} names no test in "

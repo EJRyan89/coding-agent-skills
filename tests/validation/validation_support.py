@@ -24,7 +24,6 @@ import file_presence
 import json_reader
 import python_reader
 from markdown_sections import CODE_SPAN as CODE_SPAN
-from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
 from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section

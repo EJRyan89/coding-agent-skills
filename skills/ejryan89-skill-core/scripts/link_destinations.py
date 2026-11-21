@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from urllib.parse import quote, unquote
 
-from markdown_sections import COMMONMARK_CODE_SPAN, code_block_lines
+from markdown_sections import code_block_lines, without_code_spans
 
 # What opens an inline link's destination: the `](` after its text, and the spaces or tabs CommonMark allows before it.
 INLINE_OPENER = re.compile(r"\]\([ \t]*")
@@ -120,7 +120,7 @@ def link_destinations(lines: list[str]) -> list[Destination]:
     for index, line in enumerate(lines):
         if index in code:
             continue
-        text = COMMONMARK_CODE_SPAN.sub(lambda span: " " * len(span.group(0)), line)
+        text = without_code_spans(line, " ")
         definition = DEFINITION_OPENER.match(text)
         if definition and not text.lstrip(" ").startswith(FOOTNOTE_LABEL):
             parsed = _destination(text, definition.end(), inline=False)
