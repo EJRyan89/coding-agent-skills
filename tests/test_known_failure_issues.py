@@ -41,6 +41,7 @@ LOADED = sorted(
                 "git_client",
                 "github_client",
                 "github_remote",
+                "hidden_comments",
                 "job_tree",
                 "json_reader",
                 "link_probe",

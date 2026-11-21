@@ -23,6 +23,7 @@ import executable_locator
 import silent_reverts
 from git_client import MISSING_GIT, GitError, GitResult
 from silent_reverts import Revert, declarations, find_reverts, silent_revert_problems
+from test_markdown_sections import assert_time_in_proportion
 from validation_support import REPOSITORY_ROOT
 
 from tests import run_validation
@@ -312,6 +313,34 @@ class SilentRevertDeclarations(unittest.TestCase):
             "Reverts `f.txt` to its state before 123456.\n"
         )
         self.assertEqual({("a b.txt", "abcdef1"), ("c.txt", "1234567890")}, declarations(body))
+
+    def test_a_declaration_a_comment_holds_across_lines_is_not_read(self) -> None:
+        body = (
+            "Text.\n"
+            "<!--\n"
+            "Reverts `a.txt` to its state before 1234567\n"
+            "-->\n"
+            "Reverts `b.txt` to its state before 7654321\n"
+        )
+        self.assertEqual({("b.txt", "7654321")}, declarations(body))
+
+    def test_a_declaration_between_code_that_shows_comment_markers_is_read(self) -> None:
+        # GitHub (`gh api markdown`) renders each `<!--` and `-->` here inside a fence or an indented code block, as
+        # text, and the declaration between them as a paragraph.
+        declared = "Reverts `a.txt` to its state before 1234567\n"
+        self.assertEqual({("a.txt", "1234567")}, declarations(f"```text\n<!--\n```\n{declared}```text\n-->\n```\n"))
+        self.assertEqual({("a.txt", "1234567")}, declarations(f"    <!-- indented\n{declared}    -->\n"))
+
+    def test_a_declaration_after_an_unclosed_opener_in_its_paragraph_is_read(self) -> None:
+        # GitHub (`gh api markdown`) shows a `<!--` no `-->` follows inside a paragraph as text, at the body's end too.
+        self.assertEqual(
+            {("a.txt", "1234567")}, declarations("Text <!-- x\nReverts `a.txt` to its state before 1234567")
+        )
+
+    def test_a_body_eight_times_as_long_is_read_in_about_eight_times_the_time(self) -> None:
+        # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
+        unit = "Reverts `a.txt` to its state before 1234567 `<!--`\n<!-- c -->\n"
+        assert_time_in_proportion(declarations, unit * 100, unit * 800, 8**1.5)
 
     def test_a_declaration_after_a_lone_cr_is_a_line_of_its_own(self) -> None:
         # Markdown ends a line at a lone CR, so the declaration starts a line.
