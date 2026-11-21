@@ -142,9 +142,9 @@ session model and the judged one. A skill with no row has not been run since its
 | audit-skill | haiku | claude-haiku-5-5 | none | none | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
 | audit-skill | sonnet | claude-sonnet-5-5 | none | none | 8/9 | 1 | description 8/9 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
 | audit-skill | opus | claude-opus-5-5 | none | none | 9/9 | 1 | description 9/9 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
-| curate-agent-memory | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
+| curate-agent-memory | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.323 | 2026-11-21 |
+| curate-agent-memory | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| curate-agent-memory | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
@@ -195,7 +195,7 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | --- | --- | --- | --- | --- | --- |
 | audit-ai-config | description | haiku | 1 | 2026-11-20 | agrees |
 | audit-skill | description | opus | 1 | 2026-11-20 | agrees |
-| curate-agent-memory | description | opus | 1 | 2026-11-20 | agrees |
+| curate-agent-memory | description | haiku | 1 | 2026-11-21 | agrees |
 | review-document | design-clean | opus | 1 | 2026-11-21 | agrees |
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | description | sonnet | 1 | 2026-11-20 | agrees |
