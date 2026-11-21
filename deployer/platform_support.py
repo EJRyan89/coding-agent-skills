@@ -8,7 +8,7 @@ import re
 import signal
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -574,6 +574,29 @@ def process_tree() -> ProcessTree:
     job object on Windows and a process group elsewhere. A caller that starts the command itself starts it with the
     tree's start_options."""
     return job_tree.process_tree()
+
+
+# A program that lowers the data each process of the command after it may hold, RLIMIT_DATA, to the bytes its first
+# argument gives, then becomes that command, keeping its process ID, so every process it starts inherits the bound.
+# RLIMIT_DATA counts a process's heap and each private mapping it can write, and not address space reserved and never
+# written, as .NET's runtime reserves, so pwsh starts under it where RLIMIT_AS ends it.
+MEMORY_LAUNCHER = (
+    "import os, resource, sys; "
+    "limit = int(sys.argv[1]); "
+    "resource.setrlimit(resource.RLIMIT_DATA, (limit, limit)); "
+    "os.execvp(sys.argv[2], sys.argv[2:])"
+)
+
+
+def memory_bounded(command: Sequence[str], limit: int) -> list[str]:
+    """`command`, started so that each of its processes may hold at most `limit` bytes of data where the platform
+    bounds it: on Linux through MEMORY_LAUNCHER, where an allocation past the bound is refused, which Python raises as
+    MemoryError. macOS refuses to lower RLIMIT_DATA and enforces no data limit, and Windows has no limit a process's
+    children inherit without a job object, which ejryan89-skill-core's job_tree holds, so on both the command runs as
+    given, bounded by its caller's time limit alone."""
+    if sys.platform != "linux":
+        return list(command)
+    return [sys.executable, "-I", "-B", "-c", MEMORY_LAUNCHER, str(limit), *command]
 
 
 class ToolTimedOut(DeployError):
