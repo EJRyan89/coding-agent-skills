@@ -262,6 +262,7 @@ removed fails validation until its pattern follows it.
   `deployer.source:SOURCE_JSON_REMEDY`, `deployer.errors:SourceRefusal`, `deployer.source_ref:exported_refusals`,
   `file_lock:refusal_step`
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
+  `tests/validation/refusal_steps.py::RefusalStepPolicies::test_no_deployer_suite_checks_a_refusal_and_its_step_apart`,
   `tests/deployer/test_remedies.py::RefusalStepTests`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_skill_metadata_the_deployer_refuses_is_refused_with_a_step_naming_its_commit`,
@@ -278,8 +279,10 @@ removed fails validation until its pattern follows it.
   option also reaches, the checkout's own file named for a tree `--at` exported (a refusal of the source's content
   raised as a plain `DeployError` rather than a `SourceRefusal`, or a `SourceRefusal` reached outside
   `exported_refusals`), and a lasting fix such as moving the home for an
-  `OSError` or `FileLockError` that may pass on a retry.
-- **Examples:** #2545, #2563, #2696, #2933
+  `OSError` or `FileLockError` that may pass on a retry; and a test under `tests/deployer/` that checks a refusal's
+  `ERROR:` line and its step with `assert_lines`, which finds each line anywhere, rather than `assert_refusal`, which
+  holds the step right after its `ERROR:` line, or a `LINES_APART_ALLOWED` entry whose test no longer needs it.
+- **Examples:** #2545, #2563, #2696, #2700, #2933
 
 ### A report of a change names the change the write made
 
