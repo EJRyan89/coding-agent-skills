@@ -1605,8 +1605,9 @@ class RecoveryBranchTests(RecoveryTestCase):
         link = staging / self.RUN
         make_directory_link(link, outside)
         result = self.deploy_fails("--all", pattern="was not replayed")
+        # On stderr, both of them, where every refusal and its step go.
         self.assert_refusal(
-            result.output,
+            result.stderr,
             f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}",
             LINKED_RUN_STEP,
         )
