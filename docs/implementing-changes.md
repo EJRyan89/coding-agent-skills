@@ -150,7 +150,11 @@ leg's mutants are dealt into shards, each a job of its own: one for each `SHARD_
 each module's mutants kept in as few shards as an even deal allows and spread across them in turn, so a small change
 runs in one job and a large one gets its verdict in a shard's share of the time, with no shard holding a module's slow
 stretch alone. The join reads each shard's outcomes as it would a whole leg's, and a
-shard whose record is missing, names another leg or shard, or holds another share stops it. Within a shard the mutants
+shard whose record names another leg or shard, or holds another share stops it. A leg step rewrites its record after
+each mutant, marked as not ended until its last write, and its upload runs whatever the step did, so a step that failed,
+was cancelled, or ran past its time limit keeps the outcomes it reached; a shard that left no record, as a runner's
+shutdown leaves one, is read as stopped before its first mutant, its mutants not run, and the summary names each
+stopped step. Within a shard the mutants
 run from one queue that takes one from each module in turn, and each shard is capped by `DEFAULT_MINUTES` in the gate.
 A run the cap cuts
 short, leaving a mutant not run, or a suite's reach unmeasured on a leg where a mutant it ran survived or went
@@ -192,7 +196,9 @@ which never runs mutmut, for each module whose behavior differs on Windows: `dep
 the ejryan89-skill-core seam modules `CLAUDE.md` names, each module that imports one, each that holds a
 `PLATFORM_ALLOWED` table, and each whose own code reads the platform in any expression, through a token of any kind
 the platform policy's `PLATFORM_TOKENS` catalogues, such as `sys.platform`, `msvcrt`, or `creationflags`, or a
-separator or the null device, such as `os.altsep`. A suite run that ends with neither a pass nor a test failure judges
+separator or the null device, such as `os.altsep`. Each process of a suite's run may hold at most the gate's `MEMORY_BOUND` of data on Linux, so a mutant that allocates
+without end fails with a MemoryError, and a nonzero exit whose output shows one raised kills the mutant. Any other suite
+run that ends with neither a pass nor a test failure judges
 nothing, so its mutant is errored, which leaves the run unfinished like a mutant not run. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished while it leaves a mutant without a verdict. The gate's docstring in `tools/mutation_gate.py` gives the
