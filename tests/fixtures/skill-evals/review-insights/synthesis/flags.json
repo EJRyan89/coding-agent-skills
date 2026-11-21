@@ -1,0 +1,45 @@
+{
+  "flags": [
+    {
+      "body": "False positive: tools/ holds internal console utilities that are never published, and the team agreed they need no XML documentation. Every one of these findings was dismissed. The documentation rule should exempt the tools/ folder.",
+      "category": "false-positive",
+      "created_at": "2026-03-10T09:00:00+00:00",
+      "finding_id": "F001",
+      "id": "RF-000001",
+      "pull_number": 102,
+      "repository": "example/inventory",
+      "resolution": null,
+      "resolved_at": null,
+      "review_version": 1,
+      "status": "open"
+    },
+    {
+      "body": "Missed finding: pull request 104 changed StockAdjustmentService to save stock adjustments without the audit log entry the compliance team requires for every adjustment, and no review flagged it. Nothing in the reviewers' guidance asks for the audit entry.",
+      "category": "missed-finding",
+      "created_at": "2026-03-11T09:00:00+00:00",
+      "finding_id": null,
+      "id": "RF-000002",
+      "pull_number": 104,
+      "repository": "example/inventory",
+      "resolution": null,
+      "resolved_at": null,
+      "review_version": null,
+      "status": "open"
+    },
+    {
+      "body": "False positive: the service inherits its pool size from the shared hosting defaults. The platform reviewer's rule in review/platform-guide.md and its check in review/platform_checks.py should stop flagging services that inherit those defaults.",
+      "category": "false-positive",
+      "created_at": "2026-03-12T09:00:00+00:00",
+      "finding_id": "F001",
+      "id": "RF-000003",
+      "pull_number": 111,
+      "repository": "example/inventory",
+      "resolution": null,
+      "resolved_at": null,
+      "review_version": 1,
+      "status": "open"
+    }
+  ],
+  "next_id": 4,
+  "schema_version": 2
+}

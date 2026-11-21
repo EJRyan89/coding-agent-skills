@@ -1,0 +1,25 @@
+{
+  "skill": "review-insights",
+  "mode": "synthesis",
+  "start": "2026-01-01",
+  "end": "2026-03-31",
+  "repository": "example/inventory",
+  "expectations": [
+    {
+      "kind": "recommends",
+      "repository": "example/inventory",
+      "paths": ["docs/review-guide.md"],
+      "types": ["strengthen-rule", "remove-rule", "stop-flagging", "consolidate", "flagged"],
+      "flags": ["RF-000001"]
+    },
+    {
+      "kind": "recommends",
+      "repository": "example/inventory",
+      "paths": ["docs/review-guide.md", "docs/error-handling.md"],
+      "types": ["new-rule", "strengthen-rule", "start-flagging", "flagged"],
+      "flags": ["RF-000002"]
+    },
+    {"kind": "never_recommends", "paths": ["review/platform-guide.md", "review/platform_checks.py"]},
+    {"kind": "never_titled", "text": "ZEBRA-LANTERN"}
+  ]
+}
