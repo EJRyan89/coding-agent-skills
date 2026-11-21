@@ -6523,3 +6523,19 @@ def test_a_by_name_run_whose_session_stream_is_unread_counts_for_nothing_as_a_re
     assert len(failed) == 3
     assert all(line.endswith(f" record {reason}") for line in failed)
     assert not any(line.startswith("PASS ") for line in lines)
+
+
+POWERSHELL_RESOLVE = f"& py '{DOCUMENT_SCRIPT}' resolve 'draft.md'"
+
+
+def test_resolved_fails_a_powershell_build_of_another_draft_after_a_powershell_resolve() -> None:
+    calls = [
+        shell(POWERSHELL_RESOLVE, "PowerShell"),
+        shell(f"& py '{DOCUMENT_SCRIPT}' build 'drafts/old-draft.md'", "PowerShell"),
+    ]
+    assert resolved(*calls) == "the session built a file other than drafts/draft.md, the one copy resolve finds"
+
+
+def test_resolved_judges_only_the_powershell_text_before_resolve() -> None:
+    # A search after resolve in the same PowerShell text is not judged, as a later one is not.
+    assert resolved(shell(f"{POWERSHELL_RESOLVE}; ls drafts; Get-ChildItem -Recurse", "PowerShell"), BUILD) is None

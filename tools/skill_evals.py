@@ -168,7 +168,13 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
       by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
       `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
-      PowerShell search that starts its command in a form the text reading above does not name
+      PowerShell search that starts its command in a form the text reading above does not name. Neither form is one
+      any code here writes; each is a limit of the reading: a `resolve` that another program's words name, such as
+      `echo`'s, counts as run; a search whose own arguments run `resolve` in a substitution, as in
+      `ls -l "$(... resolve x.md)"`, is judged before it; PowerShell assignments are read only as `$name =`, so
+      `${x} =` and `$x +=` are not seen, and quoted PowerShell text holding a search program after a parenthesis or a
+      separator is taken for a search; and a search behind a wrapper is seen only for the wrappers command_wrappers'
+      catalogue names, so one behind `parallel`, `watch`, `flock`, or `busybox` is not
 
 An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
 verdict, which an INCOMPLETE review that raised nothing would pass, or a `category` the scenario's manifest does not
