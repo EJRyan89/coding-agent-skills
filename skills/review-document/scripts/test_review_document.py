@@ -2369,10 +2369,13 @@ class ResolveTests(unittest.TestCase):
         expected = [f"FOUND {Path('docs/Design.md')}"] if folds else ["NOT_FOUND design.md"]
         self.assertEqual(expected, self.resolve())
 
-    def test_a_name_the_folder_keeps_apart_is_not_found_though_a_full_case_fold_merges_them(self) -> None:
-        # str.casefold makes ß ss, which no file system's name comparison does.
+    def test_a_name_a_full_case_fold_merges_is_found_only_where_the_folder_opens_it(self) -> None:
+        # str.casefold makes ß ss. APFS folds case as fully and opens one for the other; NTFS and Linux's file
+        # systems keep them apart, so there the walk's loose match alone would find a file no program opens as named.
         self.write("docs/strasse.md")
-        self.assertEqual(["NOT_FOUND straße.md"], self.resolve("straße.md"))
+        opened = (self.top / "docs" / "straße.md").exists()
+        expected = [f"FOUND {Path('docs/strasse.md')}"] if opened else ["NOT_FOUND straße.md"]
+        self.assertEqual(expected, self.resolve("straße.md"))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
     def test_a_linked_folder_and_a_link_to_a_file_are_passed_over(self) -> None:
@@ -2406,6 +2409,25 @@ class ResolveTests(unittest.TestCase):
                 ["UNSEARCHED locked the folder cannot be listed: Access is denied", "NOT_FOUND notes.md"],
                 self.resolve("notes.md"),
             )
+
+    def test_a_match_whose_stat_fails_is_named_unsearched_never_read_as_no_file_and_the_command_exits_1(self) -> None:
+        self.write("docs/design.md", "notes/design.md")
+        denied = self.top / "docs" / "design.md"
+        real = os.lstat
+
+        def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(path) == denied:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *rest, **options)
+
+        expected = [
+            f"UNSEARCHED {Path('docs/design.md')} the file cannot be examined: Permission denied",
+            f"CANDIDATE {Path('notes/design.md')}",
+        ]
+        with mock.patch.object(os, "lstat", lstat), mock.patch.object(Path, "cwd", return_value=self.top):
+            self.assertEqual((1, expected), run_main("resolve", "design.md"))
+            denied.unlink()
+            self.assertEqual((0, [f"FOUND {Path('notes/design.md')}"]), run_main("resolve", "design.md"))
 
     @unittest.skipIf(sys.platform == "win32", "Windows refuses a line break in a folder's name")
     def test_a_match_in_a_folder_whose_name_holds_a_line_break_is_named_unsearched_never_a_path(self) -> None:

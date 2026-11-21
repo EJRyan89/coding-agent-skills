@@ -12,15 +12,16 @@ Every command prints one fact per line:
           ejryan89-code-review-core's prepare takes after --host, passed as printed.
   resolve Finds the document a user named by its file name alone, under the working directory, by the rule below, and
           prints FOUND <path> for the one file found, CANDIDATE <path> for each of several, or for the one found when a
-          folder could not be searched, NOT_FOUND <name> for none, and before them UNSEARCHED <folder> <reason> for each
-          folder or entry that could not be searched. Each path is relative to the working directory.
+          folder could not be searched, NOT_FOUND <name> for none, and before them UNSEARCHED <path> <reason> for each
+          folder or entry that could not be searched. Each path is relative to the working directory. It exits 1 when
+          it printed an UNSEARCHED line, since what it found may not be all there is.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
           beside the original>.
 
 Exit status:
   0  the command printed its facts
-  1  a last line FAILED <reason>
+  1  a last line FAILED <reason>, or, from resolve, an UNSEARCHED line for what it could not search
   2  a usage error
 
 For a path, the head is the file as it is on disk, refused over the MAX_CHANGED_FILE_BYTES the snapshot reads of a
@@ -60,7 +61,8 @@ dependency folder or its cache (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`,
 `obj`), Visual Studio's `.vs`, another checkout below the working directory (a clone, submodule, or worktree), and a
 linked folder are not searched; nor is a hidden folder, one whose name starts with a dot, which holds a tool's state or
 cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name. A matching entry that is a link,
-not a plain file, is passed over, since it may lead out of the tree. Names are compared as the folder holding each file
+not a plain file, is passed over, since it may lead out of the tree, and one whose own metadata cannot be read is
+printed as UNSEARCHED, never taken for no file there. Names are compared as the folder holding each file
 compares them, so `Design.md` is found for `design.md` only where that folder folds case. A `.gitignore` is not read:
 a folder it ignores is searched unless the rule above skips it, so a draft kept in an ignored folder is still found. A
 folder or entry the walk could not list or examine, and a folder whose name holds a line break or a control character,
@@ -72,6 +74,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import re
 import shutil
 import sys
@@ -918,7 +921,15 @@ def resolve(name: str, top: Path) -> list[str]:
     found: list[Path] = []
     for path in walk.files:
         relative = path.relative_to(top)
-        if first_folder(relative.parts[:-1], hidden) is not None or not opens_as(path, name) or not is_plain_file(path):
+        if first_folder(relative.parts[:-1], hidden) is not None or not opens_as(path, name):
+            continue
+        try:
+            metadata = os.lstat(path)
+        except OSError as error:
+            reason = flat_text(str(error.strerror or error))
+            unsearched.append(f"UNSEARCHED {flat_text(str(relative))} the file cannot be examined: {reason}")
+            continue
+        if not is_plain_file(path, metadata):
             continue
         folder = first_folder(relative.parts[:-1], unprintable)
         if folder is None:
@@ -979,7 +990,7 @@ def main(arguments: list[str] | None = None, git: GitClient | None = None, githu
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(single_line(line) for line in lines))
-    return 0
+    return 1 if any(line.startswith("UNSEARCHED ") for line in lines) else 0
 
 
 if __name__ == "__main__":
