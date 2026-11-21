@@ -1,0 +1,80 @@
+{
+  "artifacts": {
+    "markdown_sha256": "0b280c30b6d825cbc910c366ecb070829f7382ac0cf021d334b17a1ac24ea908",
+    "payload_sha256": "a716760542fe8bd85cecf579cb7344baac7f38c5b8d7f50649a03aafd6a68b27"
+  },
+  "findings": [
+    {
+      "body": "Reconcile.Run is public and has no XML documentation comment, which the review guide requires.",
+      "candidate_key": "tools/Reconcile.cs:12:Documentation",
+      "category": "Documentation",
+      "evidence": "tools/Reconcile.cs line 12.",
+      "id": "F001",
+      "line": 12,
+      "path": "tools/Reconcile.cs",
+      "severity": "SHOULD_FIX",
+      "source": "inventory-review",
+      "title": "Public method in tools/ lacks an XML documentation comment"
+    }
+  ],
+  "ledger": [
+    {
+      "category": "Documentation",
+      "dispositions": [],
+      "id": "F001",
+      "judged_in": 1,
+      "repeats": [],
+      "severity": "SHOULD_FIX",
+      "state": "open",
+      "version": 1
+    }
+  ],
+  "prior_dispositions": [],
+  "pull_request": {
+    "base_ref": "main",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa67",
+    "number": 103,
+    "title": "Inventory change 103",
+    "url": "https://github.com/example/inventory/pull/103"
+  },
+  "repository": "example/inventory",
+  "review": {
+    "adapter": {
+      "name": "inventory-review",
+      "protocol_version": 1,
+      "reviewer": "inventory-review",
+      "scope": "repository",
+      "source": "trusted-ref",
+      "source_commit": "1111111111111111111111111111111111111111",
+      "source_hashes": {
+        "docs/error-handling.md": "479fc265ed0a27c9488ca2bae8271d18ff0eca254b2fa1199d25e153b5473d2d",
+        "docs/review-guide.md": "42c5f20e8a3c3b59b9fbaeb2b2c4658c01ef8e4d5e82734706b2e15f892f8795"
+      },
+      "status": "complete",
+      "usage": null
+    },
+    "counts": {
+      "MUST_FIX": 0,
+      "SHOULD_FIX": 1,
+      "SUGGESTION": 0
+    },
+    "mode": "initial",
+    "reviewed_at": "2026-01-11T12:00:00+00:00",
+    "reviewers": [
+      {
+        "category": "Repository",
+        "dispositions_only": false,
+        "files": 3,
+        "findings": 1,
+        "id": "inventory-review",
+        "model": "claude-sonnet-5-5",
+        "retries": 0
+      }
+    ],
+    "summary": "Review of inventory change 103.",
+    "verdict": "APPROVED",
+    "version": 1
+  },
+  "schema_version": 2
+}

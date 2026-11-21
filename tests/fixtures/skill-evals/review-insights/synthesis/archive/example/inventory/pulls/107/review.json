@@ -1,0 +1,80 @@
+{
+  "artifacts": {
+    "markdown_sha256": "507f0bd25d825ffc213e7b9881a38e64a7a93416e097edabf682558b904018be",
+    "payload_sha256": "9d5940e2b2de92dd41114ae3078e6d217d8f02bcd6a0e7598bea17ea39cae733"
+  },
+  "findings": [
+    {
+      "body": "Each reservation is loaded with its own query inside the loop; load them in one query.",
+      "candidate_key": "src/Reservations/ReservationSweeper.cs:40:Performance",
+      "category": "Performance",
+      "evidence": "src/Reservations/ReservationSweeper.cs line 40.",
+      "id": "F001",
+      "line": 40,
+      "path": "src/Reservations/ReservationSweeper.cs",
+      "severity": "SHOULD_FIX",
+      "source": "inventory-review",
+      "title": "Database call inside a loop"
+    }
+  ],
+  "ledger": [
+    {
+      "category": "Performance",
+      "dispositions": [],
+      "id": "F001",
+      "judged_in": 1,
+      "repeats": [],
+      "severity": "SHOULD_FIX",
+      "state": "open",
+      "version": 1
+    }
+  ],
+  "prior_dispositions": [],
+  "pull_request": {
+    "base_ref": "main",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6b",
+    "number": 107,
+    "title": "Inventory change 107",
+    "url": "https://github.com/example/inventory/pull/107"
+  },
+  "repository": "example/inventory",
+  "review": {
+    "adapter": {
+      "name": "inventory-review",
+      "protocol_version": 1,
+      "reviewer": "inventory-review",
+      "scope": "repository",
+      "source": "trusted-ref",
+      "source_commit": "1111111111111111111111111111111111111111",
+      "source_hashes": {
+        "docs/error-handling.md": "479fc265ed0a27c9488ca2bae8271d18ff0eca254b2fa1199d25e153b5473d2d",
+        "docs/review-guide.md": "42c5f20e8a3c3b59b9fbaeb2b2c4658c01ef8e4d5e82734706b2e15f892f8795"
+      },
+      "status": "complete",
+      "usage": null
+    },
+    "counts": {
+      "MUST_FIX": 0,
+      "SHOULD_FIX": 1,
+      "SUGGESTION": 0
+    },
+    "mode": "initial",
+    "reviewed_at": "2026-02-02T12:00:00+00:00",
+    "reviewers": [
+      {
+        "category": "Repository",
+        "dispositions_only": false,
+        "files": 3,
+        "findings": 1,
+        "id": "inventory-review",
+        "model": "claude-sonnet-5-5",
+        "retries": 0
+      }
+    ],
+    "summary": "Review of inventory change 107.",
+    "verdict": "APPROVED",
+    "version": 1
+  },
+  "schema_version": 2
+}
