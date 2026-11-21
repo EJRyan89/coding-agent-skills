@@ -109,6 +109,12 @@ RECORDING = re.compile(r"review_insights\.py\S*\s+synthesize\b")
 GUARDED_HOST = re.compile(r"--host[= ]+[\"']?claude-code\b")
 INLINE = re.compile(r"--inline\b")
 RunKey = tuple[str, str, Index]
+CONTENT_ERRORS_ALLOWED = {
+    "review_run": (
+        "the only content it writes is a synthesis run's configuration, built from the run's own paths and the "
+        "repository the scenario loader checked, which json_writer has nothing to refuse in"
+    ),
+}
 RecordSource = Callable[[Scenario, str, Index], Record]
 
 
@@ -686,7 +692,7 @@ def review_run(scenario: Scenario, model: str, home: Path, session: Session, run
     if scenario.mode == SYNTHESIS:
         try:
             arguments = stage_synthesis(scenario, run)
-        except (OSError, json_writer.JsonWriteRefused) as exc:
+        except OSError as exc:
             transcript.write_text("", encoding="utf-8")
             failure = "the synthesis fixture could not be staged"
             return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure, RUN), transcript
