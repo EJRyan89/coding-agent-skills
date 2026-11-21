@@ -300,6 +300,16 @@ GITHUB_SECTIONS = {
     # A line an HTML heading's block holds is passed on as HTML, where no backtick opens a code span, so its `<!--`
     # opens a comment that hides the rest of the body.
     "a backticked opener an HTML heading's block holds": ("<h2>x</h2>\n`<!--` y\n\n## Forms considered\n\nw1", None),
+    # The lines an HTML heading's block holds are no fence, so the paragraph after the list is no item's text and the
+    # underline under it makes it a heading.
+    "an underline after a fence-like line an HTML heading's block holds": (
+        "<h2>x</h2>\n```\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n---\n\nw4",
+        "\nw1\n\n- w2\n",
+    ),
+    "an underline after a tilde line an HTML heading's block holds": (
+        "<h2>x</h2>\n~~~\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n===\n\nw4",
+        "\nw1\n\n- w2\n",
+    ),
     "a comment under an item that opens empty": (
         "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
         "\n-\n  \n  ## not a section\n\nafter",
@@ -346,11 +356,19 @@ def test_a_setext_or_html_heading_ends_the_section_only_outside_every_container(
     assert ("after" in section) is inside, section
 
 
-def test_a_setext_heading_is_held_within_the_module_s_stated_limit() -> None:
-    # The module's own item reading holds a numbered line under a bullet's text as lazy, so the underlined line after
-    # the blank line is read as the bullet's, where GitHub ends the section at it.
-    section = forms_section("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter")
-    assert section == "\n- a\n2. b\n\n  Text\n  ---\nafter"
+@pytest.mark.parametrize(
+    ("text", "section"),
+    [
+        # The module's own item reading holds a numbered line under a bullet's text as lazy, so the underlined line
+        # after the blank line is read as the bullet's, where GitHub ends the section at it.
+        ("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter", "\n- a\n2. b\n\n  Text\n  ---\nafter"),
+        # An item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt
+        # it, so the underline makes the paragraph a heading, where GitHub reads the next line as the item's.
+        ("## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4", "\nw1\n- "),
+    ],
+)
+def test_a_setext_heading_is_held_within_the_module_s_stated_limit(text: str, section: str) -> None:
+    assert forms_section(text) == section
 
 
 @pytest.mark.parametrize("text", ["## Forms considered", "## Forms considered\n## Next\n\ntext"])

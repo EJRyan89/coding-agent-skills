@@ -41,7 +41,9 @@ The limits:
   text, where GitHub passes the line on as HTML and hides the rest of the body;
 - a setext heading is held by a list item as this module's own item reading holds it, which tracks the outermost item
   alone and reads a numbered line under an item's text as a lazy line of it, so after `- a\n2. b` and a blank line, an
-  underlined line indented two columns is read as the first item's, where GitHub ends the section at it, since
+  underlined line indented two columns is read as the first item's, where GitHub ends the section at it, and a list
+  item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt it, so an
+  underline under the item's next line is read as the paragraph's, where GitHub reads the line as the item's, since
   markdown_sections offers no reader of the lines its containers hold;
 - a code span is read by markdown_sections' `COMMONMARK_CODE_SPAN`, which may pair backtick runs of unequal length, so
   ``` ``a`<!-- x -->` ``` hides a comment GitHub shows in code, and whose search, on a line that holds a `<!--`, takes
@@ -763,10 +765,11 @@ def _setext_headings(reading: _Reading, start: int) -> list[int]:
     container and code block. A table's rows are no paragraph."""
     walked = reading.walked
     # Which lines a container holds: a quote's, as the walk reads them, and a list item's, by this module's own item
-    # reading over the body with its hidden comments gone, as GitHub reads it then, until markdown_sections offers a
-    # reader of the lines its containers hold.
+    # reading over the body with its hidden comments gone, as `main` read it, with the walk's code blocks, so a
+    # fence-like line an HTML heading's block holds opens none, until markdown_sections offers a reader of the lines
+    # its containers hold.
     visible, owners = reading.visible_lines()
-    in_items = in_list_items(visible, code_block_lines(visible))
+    in_items = in_list_items(visible, {owners[line] for line in walked.code})
     contained = {line for line, owner in enumerate(owners) if owner in in_items} | {
         line for line, (kind, _) in walked.held.items() if kind == QUOTE
     }
