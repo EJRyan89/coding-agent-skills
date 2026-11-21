@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -94,12 +93,10 @@ def test_a_double_run_never_closes_on_part_of_a_longer_run_so_the_link_after_it_
     assert urls("`` [x](y.md) ```") == ["y.md"]
 
 
-def test_a_line_with_a_long_unmatched_backtick_run_is_read_in_time_in_proportion_to_it() -> None:
-    # The old code-span pattern searched each start in the run against the rest of the line: about three minutes. The
-    # line opens with text, since one that opens with the run is a fence's opener.
-    started = time.perf_counter()
-    assert urls("See " + "`" * 32_768 + " [x](y.md) " + "a" * 32_768) == ["y.md"]
-    assert time.perf_counter() - started < 1.0
+def test_a_link_after_a_long_unmatched_backtick_run_is_read() -> None:
+    # The line opens with text, since one that opens with the run is a fence's opener. How the time to read such a line
+    # grows is held by test_markdown_sections.py's scaling tests of code_spans, which this reader blanks spans through.
+    assert urls("See " + "`" * 4_096 + " [x](y.md) " + "a" * 4_096) == ["y.md"]
 
 
 def test_a_link_in_a_code_block_is_code() -> None:

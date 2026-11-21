@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 import unittest
@@ -270,17 +271,24 @@ SPAN_BOUND = SPAN_FACTOR**1.25
 # Each shape at a size and at SPAN_FACTOR times it, and the slower reading it catches: one long run that no other
 # matches, which the old pattern, `(`+)(.+?)\1`, searched from each backtick of the run to the line's end; a run of
 # every length up to about the line's square root, none matched, which a pattern that pairs whole runs, such as
-# ``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``, searches from each run to the line's end; and many spans of one run length,
+# ``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``, searches from each run to the line's end; many spans of one run length,
 # which a reader that looked for a closer among every run of the length, not only those past the opener, reads in
-# time growing with their square.
+# time growing with their square; and unmatched runs of every length up to about the square root of the spans after
+# them, which a reader that scanned the later runs one by one for each opener's closer reads in time growing with
+# the spans times that root.
 SPAN_SCALING = {
-    "one long unmatched run": (lambda size: "`" * size + "a" * size, 1024, 1024 * SPAN_FACTOR),
+    "one long unmatched run": (lambda size: "`" * size + "a" * size, 256, 256 * SPAN_FACTOR),
     "unmatched runs of every length": (
         lambda size: "".join("`" * length + "a" for length in range(1, size + 1)),
         64,
         257,
     ),
     "many spans": (lambda size: "`a` " * size, 256, 256 * SPAN_FACTOR),
+    "unmatched runs before many spans": (
+        lambda size: "".join("`" * length + "a" for length in range(2, math.isqrt(size) + 2)) + "`a` " * size,
+        1024,
+        1024 * SPAN_FACTOR,
+    ),
 }
 
 
@@ -1050,14 +1058,17 @@ LEAST_TIMED_SECONDS = 0.1
 TIMINGS = 3
 
 
-def _seconds[T](read: Callable[[T], object], value: T, repeats: int) -> float:
-    """The processor time the process spends reading `value` `repeats` times. A runner whose pool runs more suites
-    than it has processors shares each processor between them, so a reading long enough to span several of the
-    scheduler's slices takes about twice its own time on the wall clock, while a short one may run in one slice
-    alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
+def _seconds[T](read: Callable[[T], object], value: T, repeats: int, limit: float = math.inf) -> float:
+    """The processor time the process spends reading `value` `repeats` times, or, once that passes `limit`, the time
+    so far, so a reading far slower than the bound fails in about the bound's time rather than the reading's. A runner
+    whose pool runs more suites than it has processors shares each processor between them, so a reading long enough to
+    span several of the scheduler's slices takes about twice its own time on the wall clock, while a short one may run
+    in one slice alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
     started = time.process_time()
     for _ in range(repeats):
         read(value)
+        if (elapsed := time.process_time() - started) > limit:
+            return elapsed
     return time.process_time() - started
 
 
@@ -1073,10 +1084,10 @@ def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T
     least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))])
     timed: list[float] = []
     for _ in range(TIMINGS):
-        timed.append(_seconds(read, large, repeats))
+        timed.append(_seconds(read, large, repeats, bound * least))
         if timed[-1] < bound * least:
             return
-    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
+    pytest.fail(f"{min(timed):.4f}s is over {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
 
 
 def _walked(lines: list[str]) -> object:

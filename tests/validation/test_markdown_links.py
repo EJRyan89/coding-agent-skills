@@ -224,6 +224,17 @@ class CitedTestPolicy(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn(f"C{levels}::test_gone", found[0])
 
+    def test_a_name_is_looked_for_only_in_the_files_its_own_sentence_names(self) -> None:
+        # The second sentence's file defines the name, but the first sentence, which cites it, names only another.
+        guide = "The `test_alone` test is in `tests/policy.py`. See `tests/test_a.py`.\n"
+        policy = "def test_policy() -> None:\n    pass\n"
+        self.assertEqual(
+            ["guide.md:1 cites test_alone in tests/policy.py, where no test or test class has that name"],
+            self.problems({"guide.md": guide, "tests/policy.py": policy}),
+        )
+        passing = "The `test_policy` check is in `tests/policy.py`. The `test_alone` test is in `tests/test_a.py`.\n"
+        self.assertEqual([], self.problems({"guide.md": passing, "tests/policy.py": policy}))
+
     def test_a_missing_test_or_test_class_fails(self) -> None:
         guide = (
             "`tests/test_a.py::test_gone` and `tests/test_a.py::GoneTests`.\n"

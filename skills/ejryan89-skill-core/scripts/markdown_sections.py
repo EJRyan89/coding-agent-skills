@@ -807,8 +807,10 @@ def code_spans(line: str) -> list[CodeSpan]:
     ends every run's search. A reader that must not take a span's text for prose, such as a link or a name a document
     cites, reads spans by it, since a span written with two backticks may hold one.
 
-    Limit: a backtick run after a backslash still opens a span, where CommonMark reads its first backtick as escaped
-    text and lets only the rest of the run open one.
+    Limits: a backtick run after a backslash still opens a span, where CommonMark reads its first backtick as escaped
+    text and lets only the rest of the run open one. GitHub's renderer departs from CommonMark in two ways this reader
+    does not follow: a run of more than 80 backticks opens no span there, and after a run that no later run matches, a
+    span whose run length already closed one earlier on the line is read as text.
 
     Each run is read once as an opener and passed over once as a candidate closer, so the time is linear in the
     line's length, however its runs are written."""
