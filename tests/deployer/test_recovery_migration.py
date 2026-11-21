@@ -52,12 +52,15 @@ MANIFEST_UNDECIDED = (
 # The refusal that ends a deployment whose recovery stopped, and its step, written out here for the same reason.
 RECOVERY_FAILED = "ERROR: Recovery failed, so this deployment stopped before deploying anything."
 RECONCILE_BY_HAND = f"Reconcile the run named above by hand, then rerun with --dry-run. {SEE_RECOVERY_FAILED}"
-# An unexpected exception names a defect on a line of its own, with no step, before the run's journal is reconciled,
-# so its test checks that line and recovery's lines apart.
+# The tests that check an ERROR line, or lines a caller passes, apart from the lines after them, each for its reason.
 LINES_APART_ALLOWED = {
     "RecoveryBranchTests.test_an_unexpected_exception_is_named_and_the_run_rolled_back": (
         "an unexpected exception's ERROR line names a defect and has no step of its own; the lines after it are "
         "recovery's"
+    ),
+    "RecoveryBranchTests.assert_rollback_stopped": (
+        "each line a caller passes is one recovery reports on its way through the run, a warning or a failed step's "
+        "ERROR line, never a refusal's step; assert_unreconciled holds the run's refusal with its steps"
     ),
 }
 

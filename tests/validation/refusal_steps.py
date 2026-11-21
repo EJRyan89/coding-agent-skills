@@ -26,24 +26,30 @@ Stated limits, none of which deployer code writes:
 
 The deployer suites check a refusal with the harness's assert_refusal, which holds its ERROR line followed at once by
 each step, and never with assert_lines, which finds each line anywhere in the output, so a step checked that way passes
-wherever it drifts. An assert_lines call, as `self.assert_lines`, through any other attribute, or by a bare name an
-import binds, that passes a line starting with `ERROR:` after its indentation with another line right after it, is
-refused, unless its suite states why beside the code in LINES_APART_ALLOWED. Its lines are read as a refusal's are:
-each positional argument, the elements of an unpacked list or tuple, written or held in a name bound once to one, and
-the text a string, an f-string, a literal's `.format`, `%`, or `+`, or a name bound once to one of them starts with;
-lines unpacked from anything else count as a line after an ERROR line.
+wherever it drifts. An assert_lines call under tests/deployer, as `self.assert_lines`, through any other attribute, or
+by a bare name an import binds, is refused when it passes a line starting with `ERROR:` after its indentation with
+another line right after it, unless its suite states why beside the code in LINES_APART_ALLOWED. Its lines are read as
+a refusal's are: each positional argument after the output, the elements of an unpacked list or tuple, written or held
+in a name bound once to one, and the text a string, an f-string, a literal template's `.format` or `%`, a `+`, or a
+name bound once to one of them starts with, as far as it settles whether the line is an ERROR line. It fails closed on
+what it cannot read: a line whose text it cannot settle, such as a loop's name, a parameter, a call's result, or a
+field that opens the line, counts as an ERROR line when another line follows it, and lines unpacked from anything but
+a display, such as a call or a parameter, wherever they come, count as an ERROR line and its step.
 
-Stated limits of that policy, none of which the deployer suites write:
-- A call through a name bound otherwise than by an import, such as `check = self.assert_lines`, is not read.
-- An ERROR line this policy cannot read as text, such as a parameter, a name bound more than once or by unpacking, a
-  call's result, or an f-string that starts with a replacement field, is not read as one, and an ERROR line among
-  lines unpacked from anything but a display is not found.
-- An ERROR line and its step checked by separate calls, or by assertIn, are not read together.
+Stated limits of that policy:
+- A call through a name bound otherwise than by an import, such as `check = self.assert_lines`, or through `getattr` or
+  `functools.partial`, is not read. No deployer suite calls it so.
+- An ERROR line and its step checked by separate calls are not read together: an ERROR line passed to deploy_fails as
+  its pattern, or checked by assertIn, beside an assert_lines call of its step alone, which reads as a line with no
+  ERROR line before it. The deployer suites check such a step with assert_refusal and the whole ERROR line instead.
+- A suite outside tests/deployer that uses the harness is not read. tests/malformed_input/test_round_trip.py subclasses
+  its test case but calls no assert_lines.
 """
 
 from __future__ import annotations
 
 import ast
+import string
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -518,12 +524,37 @@ def _is_loose_assertion(call: ast.Call, aliases: dict[str, str]) -> bool:
     )
 
 
+def _settled(leading: str, more: bool) -> str | None:
+    """The text a line starts with when it settles whether the line is an ERROR line, or None when more text follows
+    that could make it one, as after an empty or indented lead, or "ERR"."""
+    lead = leading.lstrip()
+    return None if more and not lead.startswith(ERROR_MARK) and ERROR_MARK.startswith(lead) else leading
+
+
+def _template_lead(template: str, method: str) -> tuple[str, bool] | None:
+    """The literal text a `.format` or `%` template starts with, and whether a field follows it, or None when the
+    template does not parse."""
+    if method == "%":
+        # A doubled % is a literal one, so the first field is the first % left in a piece between them.
+        pieces = template.split("%%")
+        for index, piece in enumerate(pieces):
+            if "%" in piece:
+                return "%".join([*pieces[:index], piece.partition("%")[0]]), True
+        return "%".join(pieces), False
+    try:
+        literal, field_name, _, _ = next(iter(string.Formatter().parse(template)), ("", None, None, None))
+    except ValueError:
+        return None
+    return literal, field_name is not None
+
+
 class _AssertedLines:
     """How one suite's assert_lines calls are read: the lines each passes, followed through the names that hold them
     as _Refusals follows a refusal's lines."""
 
-    def __init__(self, tree: ast.Module, name: str) -> None:
+    def __init__(self, tree: ast.Module, name: str, aliases: dict[str, str]) -> None:
         self.reader = _Refusals(tree, name, set())
+        self.aliases = aliases
 
     def lines(self, arguments: list[ast.expr], followed: frozenset[str] = frozenset()) -> list[ast.expr | None]:
         """Each positional argument as the lines it passes: an unpacked list or tuple, written or held in a name bound
@@ -538,9 +569,12 @@ class _AssertedLines:
             found += [None] if elements is None else self.lines(elements, frozenset(seen))
         return found
 
-    def text(self, node: ast.expr, followed: frozenset[str] = frozenset()) -> str:
-        """The literal text a line starts with: a string, an f-string up to its first replacement field, a literal's
-        `.format(...)`, `%`, or `+`, or a name bound once to one of them; empty when it starts with none."""
+    def text(self, node: ast.expr, followed: frozenset[str] = frozenset()) -> str | None:
+        """The literal text a line starts with, as far as it settles whether the line is an ERROR line: a string, an
+        f-string up to its first replacement field, a literal template's `.format(...)` or `%` up to its first field,
+        a `+` whose left side settles it, or a name bound once to one of them; None when it cannot be read, such as a
+        parameter, a loop's name, a call's result, or a field that opens the line. A value that is no string reads as
+        no text."""
         if isinstance(node, ast.Constant):
             return node.value if isinstance(node.value, str) else ""
         if isinstance(node, ast.JoinedStr):
@@ -549,29 +583,54 @@ class _AssertedLines:
                 if not (isinstance(part, ast.Constant) and isinstance(part.value, str)):
                     break
                 leading.append(part.value)
-            return "".join(leading)
+            return _settled("".join(leading), len(leading) < len(node.values))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-            return self.text(node.func.value, followed)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
-            return self.text(node.left, followed)
+            return self._template(node.func.value, "format", followed)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            return self._template(node.left, "%", followed)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self.text(node.left, followed)
+            return None if left is None else _settled(left, True)
         if isinstance(node, ast.Name):
             seen = set(followed)
             statement = self.reader.assignment(node, node, seen)
             if statement is not None and statement.value is not None:
                 return self.text(statement.value, frozenset(seen))
-        return ""
+        return None
+
+    def _template(self, node: ast.expr, method: str, followed: frozenset[str]) -> str | None:
+        """The text a filled template starts with, read from the template's own text up to its first field."""
+        template = self.text(node, followed)
+        lead = None if template is None else _template_lead(template, method)
+        return None if lead is None else _settled(*lead)
+
+    def _output_arguments(self, call: ast.Call) -> int:
+        """How many positional arguments come before the lines: none when the output is passed by keyword or by a
+        mapping, two through the class (`DeployerTestCase.assert_lines(self, output, ...)`), and one otherwise."""
+        if any(keyword.arg in {"output", None} for keyword in call.keywords):
+            return 0
+        root = call.func.value if isinstance(call.func, ast.Attribute) else None
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return 2 if isinstance(root, ast.Name) and root.id in self.aliases else 1
 
     def holds_lines_apart(self, call: ast.Call) -> bool:
-        """Whether the call passes an ERROR line with another line, or lines it cannot read, right after it."""
-        lines = self.lines(list(call.args))
-        return any(line is not None and self.text(line).lstrip().startswith(ERROR_MARK) for line in lines[:-1])
+        """Whether the call passes an ERROR line, or a line it cannot read, with another line right after it, or
+        unpacks lines it cannot follow anywhere, which may hold an ERROR line and its step."""
+        lines = self.lines(list(call.args))[self._output_arguments(call) :]
+        return None in lines or any(line is not None and self._may_be_error(line) for line in lines[:-1])
+
+    def _may_be_error(self, line: ast.expr) -> bool:
+        """Whether a line is an ERROR line, or one whose text this policy cannot read."""
+        text = self.text(line)
+        return text is None or text.lstrip().startswith(ERROR_MARK)
 
 
 def loose_refusal_assertions(tree: ast.Module, name: str) -> list[tuple[int, str]]:
     """Each assert_lines call a suite makes with an ERROR line right before another line, as (line, scope), ignoring
     its allowance."""
     aliases = _aliases(tree, name)
-    reader = _AssertedLines(tree, name)
+    reader = _AssertedLines(tree, name, aliases)
     return [
         (node.lineno, scope)
         for node, scope in scoped_nodes(tree.body)
@@ -612,9 +671,10 @@ def loose_refusal_assertion_problems(root: Path) -> list[str]:
             allowed = {}
         findings = loose_refusal_assertions(tree, name)
         found += [
-            f"{name}:{line} {LOOSE_ASSERTION} in {scope} checks an ERROR line apart from the line after it; check a "
-            f"refusal with {REFUSAL_ASSERTION}, which holds each step right after its ERROR line, or state why the "
-            f"lines are apart in {LINES_APART_ALLOWANCE}"
+            f"{name}:{line} {LOOSE_ASSERTION} in {scope} checks an ERROR line, or a line this policy cannot read, "
+            "apart from the line after it, or unpacks lines it cannot follow; check a refusal with "
+            f"{REFUSAL_ASSERTION}, which holds each step right after its ERROR line, write the lines out, or state "
+            f"why they are apart in {LINES_APART_ALLOWANCE}"
             for line, scope in findings
             if scope not in allowed
         ]

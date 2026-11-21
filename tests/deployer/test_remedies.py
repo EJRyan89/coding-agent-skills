@@ -760,8 +760,10 @@ class BackupRemedyTests(RemedyTestCase):
         self.deploy_ok("--all")
         self.write(self.skills_dir / "alpha.deploying-bak" / "stale.txt", "stale\n")
         result = self.deploy_fails("--all", pattern="transient backup already exists")
-        self.assert_lines(
+        self.assert_refusal(
             result.output,
+            "ERROR: Refusing to deploy 'alpha': transient backup already exists at "
+            f"{forward(self.skills_dir / 'alpha.deploying-bak')}",
             "Resolve or remove the stale backup after verifying its contents, then retry.",
             SEE_BACKUPS,
         )

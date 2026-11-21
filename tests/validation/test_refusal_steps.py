@@ -677,8 +677,9 @@ HARNESS = (
     "        pass\n"
 )
 LOOSE = (
-    " checks an ERROR line apart from the line after it; check a refusal with assert_refusal, which holds each step "
-    "right after its ERROR line, or state why the lines are apart in LINES_APART_ALLOWED"
+    " checks an ERROR line, or a line this policy cannot read, apart from the line after it, or unpacks lines it "
+    "cannot follow; check a refusal with assert_refusal, which holds each step right after its ERROR line, write the "
+    "lines out, or state why they are apart in LINES_APART_ALLOWED"
 )
 NO_HARNESS = (
     "tests/deployer/harness.py defines no assert_lines, so no deployer suite's assertion could be read; the policy "
@@ -787,10 +788,19 @@ class LooseRefusalAssertionFixtures(unittest.TestCase):
                 'self.assert_lines(out, "ERROR: Bad")',
                 'self.assert_lines(out, "Recovering run...", "  ERROR: Bad")',
                 'self.assert_lines(out, "  WARNING: an ERROR: inside", "Fix it.")',
-                'self.assert_lines(out, "Recovering run...", *warnings)',
-                'self.assert_lines(out, f"{prefix}ERROR: Bad", "Fix it.")',
                 'self.assert_lines(out, *["ERROR: Bad"])',
                 'self.assert_lines(out, 1, "Fix it.")',
+                # Lines whose text settles that they are no ERROR line, however much of them is read.
+                'self.assert_lines(out, f"Recovering run {run}...", "Fix it.")',
+                'self.assert_lines(out, "WARNING: " + name, "Fix it.")',
+                'self.assert_lines(out, "{{literal}} {}".format(name), "Fix it.")',
+                'self.assert_lines(out, "100%% done, %s" % name, "Fix it.")',
+                # A line it cannot read passes when it comes last, with nothing after it to be its step.
+                'self.assert_lines(out, "Recovering run...", named)',
+                # The output comes first, or after self through the class, and is no line.
+                "self.assert_lines(result.output, 'Fix it.')",
+                'DeployerTestCase.assert_lines(self, result.output, "Fix it.", "ERROR: Bad")',
+                'self.assert_lines(*["Fix it.", "ERROR: Bad"], output=result.output)',
             ),
             # A function of a suite's own, and one an import from elsewhere binds, are not the harness's assertion.
             "tests/deployer/test_own.py": (
@@ -808,12 +818,103 @@ class LooseRefusalAssertionFixtures(unittest.TestCase):
         }
         self.assertEqual([], self.problems(files))
 
-    def test_a_line_bound_more_than_once_is_not_read_as_an_error_line(self) -> None:
-        # A stated limit: the line's text is known only when the test runs.
-        files = {
-            "tests/deployer/test_rebound.py": suite(
-                'refusal = "ERROR: Bad"', 'refusal = "Fine."', "self.assert_lines(out, refusal, 'Fix it.')"
+    def test_a_line_or_lines_it_cannot_read_fail_before_another_line(self) -> None:
+        # Each may be an ERROR line, or hold one and its step, which only the test's run settles.
+        for label, body in (
+            (
+                "a name bound twice",
+                ['refusal = "ERROR: Bad"', 'refusal = "Fine."', "self.assert_lines(out, refusal, STEP)"],
             ),
+            ("a loop's name", ['for message in ("ERROR: Bad",):', "    self.assert_lines(out, message, STEP)"]),
+            (
+                "a loop's unpacked name",
+                ['for _, message in (("x", "ERROR: Bad"),):', "    self.assert_lines(out, message, STEP)"],
+            ),
+            ("an attribute", ["self.assert_lines(out, self.message, STEP)"]),
+            ("a name bound nowhere", ["self.assert_lines(out, message, STEP)"]),
+            ("a call's result", ['self.assert_lines(out, self.cannot("Git was not found."), STEP)']),
+            ("an f-string that opens with a field", ['self.assert_lines(out, f"{refusal}spelled otherwise.", STEP)']),
+            ("an f-string that opens with indentation and a field", ['self.assert_lines(out, f"  {refusal}", STEP)']),
+            ("a template that opens with a field", ['self.assert_lines(out, "{}: bad".format(refusal), STEP)']),
+            ("a % template that opens with a field", ['self.assert_lines(out, "%s: bad" % refusal, STEP)']),
+            ("a sum that opens with indentation", ['self.assert_lines(out, "  " + refusal, STEP)']),
+            ("lines a call returns, last", ["self.assert_lines(out, *self.expected())"]),
+            ("lines a parameter holds, last", ['self.assert_lines(out, "Recovering run...", *warnings)']),
+            ("lines a subscript picks, last", ["self.assert_lines(out, *{'a': ['ERROR: Bad', STEP]}[case])"]),
+        ):
+            with self.subTest(label):
+                files = {"tests/deployer/test_unread.py": suite(*body)}
+                line = 5 + len(body)
+                self.assertEqual(
+                    [f"tests/deployer/test_unread.py:{line} assert_lines in Tests.test_it" + LOOSE],
+                    self.problems(files),
+                )
+
+    def test_the_suites_shapes_before_they_moved_to_assert_refusal_fail(self) -> None:
+        # The loose forms the deployer suites wrote before they checked each refusal with assert_refusal.
+        files = {
+            "tests/deployer/test_shapes.py": (
+                "from harness import DeployerTestCase\n"  # 1
+                "\n"  # 2
+                "\n"  # 3
+                "class Tests(DeployerTestCase):\n"  # 4
+                "    def test_a_loop_of_messages(self):\n"  # 5
+                '        for answer, message in (("x", "ERROR: Invalid selection \'x\'"),):\n'  # 6
+                "            self.assert_lines(self.deploy_fails(stdin=answer).output, message, step)\n"  # 7
+                "\n"  # 8
+                "    def assert_refused(self, data, message, *remedy):\n"  # 9
+                "        self.assert_lines(result.output, message, *(remedy or (self.PUT_BACK, self.SEE)))\n"  # 10
+                "\n"  # 11
+                "    def test_a_helper_s_refusal(self):\n"  # 12
+                "        self.assert_lines(\n"  # 13
+                '            output, self.cannot("Git was not found."), "Install it, then retry."\n'  # 14
+                "        )\n"  # 15
+                "\n"  # 16
+                "    def test_a_refusal_in_another_case(self):\n"  # 17
+                '        self.assert_lines(result.output, f"{refusal}spelled in another case.", "Rename it.")\n'  # 18
+                "\n"  # 19
+                "    def test_a_name_it_cannot_read(self):\n"  # 20
+                "        self.assert_lines(result.output, *self.expected())\n"  # 21
+                "\n"  # 22
+                "    def test_lines_a_case_picks(self, case):\n"  # 23
+                '        opening = {"OSError": ["ERROR: Could not finish", "Retry."]}[case]\n'  # 24
+                "        self.assert_lines(result.stderr, *opening)\n"  # 25
+            ),
+        }
+        self.assertEqual(
+            [
+                f"tests/deployer/test_shapes.py:{line} assert_lines in Tests.{scope}" + LOOSE
+                for line, scope in (
+                    (7, "test_a_loop_of_messages"),
+                    (10, "assert_refused"),
+                    (13, "test_a_helper_s_refusal"),
+                    (18, "test_a_refusal_in_another_case"),
+                    (21, "test_a_name_it_cannot_read"),
+                    (25, "test_lines_a_case_picks"),
+                )
+            ],
+            self.problems(files),
+        )
+
+    def test_each_stated_limit_passes_unread(self) -> None:
+        files = {
+            "tests/deployer/test_limits.py": suite(
+                # A call through a name bound otherwise than by an import is not read.
+                "check = self.assert_lines",
+                'check(out, "ERROR: Bad", "Fix it.")',
+                # Nor one through getattr or functools.partial.
+                'getattr(self, "assert_lines")(out, "ERROR: Bad", "Fix it.")',
+                'functools.partial(self.assert_lines, out)("ERROR: Bad", "Fix it.")',
+                # An ERROR line and its step checked by separate calls, or by assertIn, are not read together.
+                'result = self.deploy_fails("--all", pattern=re.escape("ERROR: Bad"))',
+                'self.assert_lines(result.output, "Fix it.")',
+                'self.assert_lines(out, "ERROR: Bad")',
+                'self.assertIn("ERROR: Bad", out)',
+                'self.assertIn("Fix it.", out)',
+                head="import functools\nimport re\n\nfrom harness import DeployerTestCase\n",
+            ),
+            # A suite outside tests/deployer that uses the harness is not read.
+            "tests/malformed_input/test_round_trip.py": suite('self.assert_lines(out, "ERROR: Bad", "Fix it.")'),
         }
         self.assertEqual([], self.problems(files))
 
