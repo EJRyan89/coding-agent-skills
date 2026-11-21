@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import gc
 import math
 import sys
@@ -1092,16 +1093,36 @@ def _seconds[T](read: Callable[[T], object], value: T, repeats: int, limit: floa
             gc.enable()
 
 
+@functools.cache
+def _clock_tick() -> float:
+    """The step `time.process_time` advances by, the most of two: 15.625 ms on Windows, where it counts whole ticks of
+    the scheduler's clock, and a microsecond or less on Linux and macOS. Each step read starts on a value the clock
+    shows, so it is a whole step."""
+    steps: list[float] = []
+    for _ in range(2):
+        started = time.process_time()
+        while (now := time.process_time()) == started:
+            pass
+        steps.append(now - started)
+    return max(steps)
+
+
 def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T, bound: float) -> None:
     """Fail when reading `large` takes `bound` times as long as reading `small`, or longer, on every timing. Each
     reading repeats until the smaller takes LEAST_TIMED_SECONDS; the smaller keeps the least of TIMINGS timings, and
     the larger passes at its first timing under the bound, so only a reading slower on every try fails. The bound
     sits between the ratio a linear reading gives and the one the slower reading the test guards against gives, with
-    a margin of about two on each side, so neither a noisy runner nor that reading lands on the wrong side."""
+    a margin of about two on each side, so neither a noisy runner nor that reading lands on the wrong side.
+
+    A timing read off a clock that advances in ticks comes out up to a tick short or long, and the least of several
+    timings is the one most likely short: on Windows, where the smaller reading takes about seven ticks, that raised
+    a ratio by up to a seventh. So the smaller reading's least timing counts one tick more, which no tick's rounding
+    exceeds, and the ratio is never raised by it; the larger reading takes the bound times as many ticks, so its own
+    rounding moves it by less than one part in a hundred."""
     repeats = 1
     while (elapsed := _seconds(read, small, repeats)) < LEAST_TIMED_SECONDS:
         repeats *= 2
-    least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))])
+    least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))]) + _clock_tick()
     timed: list[float] = []
     for _ in range(TIMINGS):
         timed.append(_seconds(read, large, repeats, bound * least))
