@@ -63,6 +63,10 @@ COMMENTS = [
     # a comment shows the one it holds. A line opening with `<!--` would open an HTML block and never be read so.
     ("p <!-- `x --> <!-- z --> `", "p   `"),
     ("p <!-- ` --> `a <!-- b --> c`", "p  `a <!-- b --> c`"),
+    # A span before a comment is passed over and the next span, which shows the later comment, is still read.
+    ("p `a` <!-- b --> `c <!-- d --> e`", "p `a`  `c <!-- d --> e`"),
+    # The body's first `<!--` on a line after its first is read against that line's spans too.
+    ("a\n`<!-- x -->` b", "a\n`<!-- x -->` b"),
 ]
 
 

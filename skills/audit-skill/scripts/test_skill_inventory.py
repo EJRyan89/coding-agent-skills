@@ -5156,6 +5156,11 @@ def test_a_line_s_tool_references_read_its_code_spans_whole(line: str, expected:
     assert skill_inventory.line_references(line, None, ["Read", "Bash"], []) == expected
 
 
+def test_a_code_span_loses_only_its_quotes_and_a_fence_s_line_has_no_code_spans() -> None:
+    assert skill_inventory.line_references('Run `"Read"` and `XBash`', None, ["Read", "Bash"], []) == ["Read"]
+    assert skill_inventory.line_references("`Read` here", "text", ["Read", "Bash"], []) == []
+
+
 @pytest.mark.parametrize(
     ("line", "expected"),
     [

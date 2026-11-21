@@ -261,6 +261,12 @@ def test_a_run_that_starts_before_the_column_opens_no_span() -> None:
     assert list(CodeSpanReader("``a`` `b`").spans(1)) == [CodeSpan(6, 9, 1, "b")]
 
 
+def test_a_run_with_no_partner_is_text_and_the_reading_goes_on_past_it() -> None:
+    # The first single run pairs with the second, past the double run; the last double run has no partner after it, so
+    # it is text, and the first double run, inside the span, opens nothing.
+    assert [span.text for span in CodeSpanReader("`a``b`c``").spans()] == ["a``b"]
+
+
 def test_a_span_s_text_starts_past_its_opening_run() -> None:
     line = "see ``a ` b`` here"
     [span] = code_spans(line)

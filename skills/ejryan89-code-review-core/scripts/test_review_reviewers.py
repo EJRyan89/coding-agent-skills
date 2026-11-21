@@ -132,6 +132,8 @@ class InspectionTests(unittest.TestCase):
             # ``x`` and the opening one of `y` for a code span.
             ("see ``x``README.md`y` now", []),
             ("Run `python src/A.cs` now, then ``docs/rules.md``.", ["docs/rules.md", "src/A.cs"]),
+            # A code path's fragment, from its first `#`, names no file.
+            ("Read `docs/rules.md#a#b` here.", ["docs/rules.md"]),
         ]:
             with self.subTest(line=line):
                 self.assertEqual(expected, inspect_skill(SKILL, f"{line}\n", COMMIT, files).references)

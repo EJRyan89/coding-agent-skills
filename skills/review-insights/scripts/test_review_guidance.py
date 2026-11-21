@@ -997,11 +997,18 @@ class LinkDestinationTests(unittest.TestCase):
         # changed: the single-backtick pattern this read before read `guide.md` from between a double run and `y`,
         # and `b.md` from inside a span written with two backticks. The last line is the stated limit: a span's
         # text is matched as written, so a padded path is no path.
-        lines = ["See `docs/a.md`.", "see ``x``guide.md`y`", "see ``a`b.md``", "see ``docs/c.md`` too", "` d.md `"]
+        lines = [
+            "See `docs/a.md`.",
+            "see ``x``guide.md`y`",
+            "see ``a`b.md``",
+            "see ``docs/c.md`` too",
+            "` d.md `",
+            "See `docs/README.md`.",
+        ]
         sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
         found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
         self.assertEqual(
-            [(1, "docs/a.md"), (4, "docs/c.md")],
+            [(1, "docs/a.md"), (4, "docs/c.md"), (6, "docs/README.md")],
             [(item["line"], item["reference"]) for item in found],
         )
 
