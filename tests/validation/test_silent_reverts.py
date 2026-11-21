@@ -331,6 +331,12 @@ class SilentRevertDeclarations(unittest.TestCase):
         self.assertEqual({("a.txt", "1234567")}, declarations(f"```text\n<!--\n```\n{declared}```text\n-->\n```\n"))
         self.assertEqual({("a.txt", "1234567")}, declarations(f"    <!-- indented\n{declared}    -->\n"))
 
+    def test_a_declaration_after_an_unclosed_opener_in_its_paragraph_is_read(self) -> None:
+        # GitHub (`gh api markdown`) shows a `<!--` no `-->` follows inside a paragraph as text, at the body's end too.
+        self.assertEqual(
+            {("a.txt", "1234567")}, declarations("Text <!-- x\nReverts `a.txt` to its state before 1234567")
+        )
+
     def test_a_body_eight_times_as_long_is_read_in_about_eight_times_the_time(self) -> None:
         # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
         unit = "Reverts `a.txt` to its state before 1234567 `<!--`\n<!-- c -->\n"

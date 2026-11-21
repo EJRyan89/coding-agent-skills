@@ -20,7 +20,11 @@ from test_markdown_sections import assert_time_in_proportion
 
 COMMENTS = [
     ("a <!-- b --> c", "a  c"),
-    ("a <!-- b", "a "),
+    # An unclosed `<!--` within a paragraph is text, as GitHub (`gh api markdown`) renders it, whether or not the body
+    # ends with a line break, while one that opens an HTML block hides the rest.
+    ("a <!-- b", "a <!-- b"),
+    ("a <!-- b\n", "a <!-- b\n"),
+    ("a <!-- b --> c <!-- d", "a  c <!-- d"),
     ("`<!--` a <!-- b --> c", "`<!--` a  c"),
     ("```\n<!--\n```\nx <!-- y -->", "```\n<!--\n```\nx "),
     # A fence-like line a comment holds opens no block, so the comment ends at its own `-->`.
@@ -131,7 +135,8 @@ def test_a_quoted_fence_longer_than_a_window_ends_with_its_quote(length: int) ->
     ("text", "spans"),
     [
         ("no comment", []),
-        ("a <!-- b --> c <!-- d", [(2, 12), (15, 21)]),
+        ("a <!-- b --> c <!-- d", [(2, 12)]),
+        ("<!-- a --> b\n\n<!-- c", [(0, 10), (14, 20)]),
         ("`<!-- shown -->` <!-- hidden -->", [(17, 32)]),
         ("```\n<!-- shown -->\n```\n<!-- hidden -->", [(23, 38)]),
         ("<!-->x<!--->y", [(0, 5), (6, 12)]),

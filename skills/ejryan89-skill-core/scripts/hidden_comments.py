@@ -483,9 +483,9 @@ def _hidden_comments(
     text: str, closers: list[int], lines: list[str], starts: list[int], walked: Walked, raw: set[int]
 ) -> list[tuple[int, int]]:
     """The span of each comment GitHub hides, read left to right: one whose `<!--` opens outside every code block and
-    code span, up to its `-->`. A comment within a block's text ends within that block, or is text; one on a line
-    GitHub passes on as HTML, a comment block's first or last, runs to its `-->` wherever that falls, or to the end of
-    the body."""
+    code span, up to its `-->`. A comment within a block's text ends at a `-->` within that block, or is text; one on
+    a line GitHub passes on as HTML, a comment block's first or last, runs to its `-->` wherever that falls, or to the
+    end of the body."""
     hidden: list[tuple[int, int]] = []
     position = 0
     # The next code span on the line the last `<!--` was on, read up to that line's end, which `searched` holds.
@@ -507,7 +507,10 @@ def _hidden_comments(
             continue
         end = _comment_end(text, closers, opener)
         last = ends[line]
-        if line in walked.code or (line not in raw and end > starts[last] + len(lines[last])):
+        # A comment within a block's text that no `-->` closes is text, even where the block ends with the body, as in
+        # a body with no line break after its last line.
+        within = end <= starts[last] + len(lines[last]) and text.endswith(COMMENT_CLOSER, opener, end)
+        if line in walked.code or (line not in raw and not within):
             position = opener + 1
             continue
         hidden.append((opener, end))

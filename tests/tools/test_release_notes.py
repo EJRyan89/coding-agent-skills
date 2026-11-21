@@ -76,6 +76,12 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual("Sample `<!--` opener", entry.heading)
         self.assertEqual("patch. Reads `-->` too.", entry.fields["Level"])
 
+    def test_an_unclosed_opener_in_the_last_field_is_read_as_text(self) -> None:
+        # GitHub (`gh api markdown`) shows a `<!--` no `-->` follows inside a list item as text, at the body's end too.
+        body = "## Upgrade note\n\n### A fix\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none <!-- x"
+        (entry,) = release_notes.body_entries(body)
+        self.assertEqual("none <!-- x", entry.fields["User action"])
+
     def test_a_body_eight_times_as_long_is_read_in_about_eight_times_the_time(self) -> None:
         # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
         unit = "### Entry `<!--` x\n\n- Level: patch. <!-- c --> `-->`\n- Contract: none\n- User action: none\n\n"

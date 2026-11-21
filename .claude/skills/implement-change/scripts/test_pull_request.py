@@ -149,6 +149,14 @@ class CommentBlankingTests(unittest.TestCase):
         body = FILLED.replace("None\n", f"```text\n{comment}\n```\n\nNone\n")
         self.assertEqual([], pull_request.body_problems(body, TEMPLATE))
 
+    def test_an_unclosed_opener_in_a_paragraph_blanks_nothing(self) -> None:
+        # GitHub (`gh api markdown`) shows a `<!--` no `-->` follows inside a paragraph as text, at the body's end too.
+        self.assertEqual(
+            "Fixes a <!-- in prose\nCloses #5 too", pull_request.blank_comments("Fixes a <!-- in prose\nCloses #5 too")
+        )
+        body = FILLED + "\nFixes a <!-- in prose\nCloses #5 too"
+        self.assertEqual(["CLOSES_LINE 15 Closes #5 too"], pull_request.body_problems(body, TEMPLATE))
+
     def test_a_body_eight_times_as_long_is_blanked_in_about_eight_times_the_time(self) -> None:
         # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
         unit = "Text `<!--` x <!-- c --> y\n- `-->`\n"
