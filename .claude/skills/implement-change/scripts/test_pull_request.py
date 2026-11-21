@@ -25,6 +25,7 @@ import whole_number
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
+from test_markdown_sections import assert_time_in_proportion
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
@@ -131,7 +132,27 @@ class CommentBlankingTests(unittest.TestCase):
     def test_each_character_of_a_hidden_comment_but_its_line_breaks_becomes_a_space(self) -> None:
         self.assertEqual("a       \r\n      d\n", pull_request.blank_comments("a <!-- b\r\nc --> d\n"))
         self.assertEqual("          \nCloses #5\n", pull_request.blank_comments("<!-- x -->\nCloses #5\n"))
-        self.assertEqual("one\r    \n \r       \nthree\n", pull_request.blank_comments("one\r<!--\n-\rtwo -->\nthree\n"))
+        self.assertEqual(
+            "one\r    \n \r       \nthree\n", pull_request.blank_comments("one\r<!--\n-\rtwo -->\nthree\n")
+        )
+
+    def test_a_comment_marker_code_shows_is_read_as_github_renders_it(self) -> None:
+        # GitHub (`gh api markdown`) renders each `<!--` and `-->` here inside a code span or a fence, as text, so the
+        # closing line, the empty list item, and the template's comment shown in a fence are the body's own text.
+        body = FILLED.replace(
+            "Fixes the quoting of a title.", "Fixes `<!--` in one place and\nCloses #5 in `-->` another."
+        )
+        self.assertEqual(["CLOSES_LINE 5 Closes #5 in `-->` another."], pull_request.body_problems(body, TEMPLATE))
+        body = FILLED.replace("- `tool.py`", "```\n<!--\n```\n-\n```\n-->\n```\n- `tool.py`")
+        self.assertEqual(["PLACEHOLDER 11 an empty list item"], pull_request.body_problems(body, TEMPLATE))
+        comment = "<!-- One entry per change.\n\n### What changed\n\n- Level: patch\n-->"
+        body = FILLED.replace("None\n", f"```text\n{comment}\n```\n\nNone\n")
+        self.assertEqual([], pull_request.body_problems(body, TEMPLATE))
+
+    def test_a_body_eight_times_as_long_is_blanked_in_about_eight_times_the_time(self) -> None:
+        # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
+        unit = "Text `<!--` x <!-- c --> y\n- `-->`\n"
+        assert_time_in_proportion(pull_request.blank_comments, unit * 100, unit * 800, 8**1.5)
 
     def test_a_heading_a_hidden_comment_holds_is_not_read(self) -> None:
         self.assertEqual(["## A", "## C"], pull_request.headings("## A\n<!-- ## B -->\n## C\n"))

@@ -60,9 +60,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
+from hidden_comments import without_hidden_comments
 from markdown_sections import (
     HEADING,
-    HTML_COMMENT,
     LIST_ITEM_BLOCK,
     MARKDOWN_SPACE,
     PARAGRAPH,
@@ -193,8 +193,9 @@ def notes_entries(text: str | None) -> list[NotesEntry]:
 
 
 def body_entries(body: str) -> list[NotesEntry]:
-    """The entries under a pull request body's `## Upgrade note` heading; its HTML comments are not read."""
-    text = HTML_COMMENT.sub("", body.replace("\r\n", "\n"))
+    """The entries under a pull request body's `## Upgrade note` heading; the HTML comments GitHub hides are not read,
+    while a `<!--` that code shows is text, as hidden_comments reads them."""
+    text = without_hidden_comments(body.replace("\r\n", "\n"))
     return notes_entries(markdown_section(text, BODY_HEADING))
 
 

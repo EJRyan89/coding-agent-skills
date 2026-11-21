@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import git_client
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
+from test_markdown_sections import assert_time_in_proportion
 
 from tools import release_notes
 
@@ -64,6 +65,22 @@ class BodyEntriesTests(unittest.TestCase):
         (entry,) = release_notes.body_entries(body)
         self.assertEqual("Shown  here", entry.heading)
         self.assertEqual("### Shown  here\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none", entry.text)
+
+    def test_a_comment_code_shows_is_read_as_github_renders_it(self) -> None:
+        # GitHub (`gh api markdown`) renders each `<!--` and `-->` here inside a code span, as text.
+        fields = "- Level: patch. Reads `-->` too.\n- Contract: none\n- User action: none\n"
+        body = f"## Upgrade note\n\n### A reader keeps `<!-- x -->` shown in code\n\n{fields}"
+        (entry,) = release_notes.body_entries(body)
+        self.assertEqual("A reader keeps `<!-- x -->` shown in code", entry.heading)
+        (entry,) = release_notes.body_entries(f"## Upgrade note\n\n### Sample `<!--` opener\n\n{fields}")
+        self.assertEqual("Sample `<!--` opener", entry.heading)
+        self.assertEqual("patch. Reads `-->` too.", entry.fields["Level"])
+
+    def test_a_body_eight_times_as_long_is_read_in_about_eight_times_the_time(self) -> None:
+        # A linear reading takes about eight times as long and a quadratic one about 64 times; the bound sits halfway.
+        unit = "### Entry `<!--` x\n\n- Level: patch. <!-- c --> `-->`\n- Contract: none\n- User action: none\n\n"
+        small, large = f"## Upgrade note\n\n{unit * 40}", f"## Upgrade note\n\n{unit * 320}"
+        assert_time_in_proportion(release_notes.body_entries, small, large, 8**1.5)
 
     def test_a_wrapped_line_starts_a_block_only_where_markdown_reads_one(self) -> None:
         # A list item is read as CommonMark reads one: one to nine ASCII digits, then a space or a tab, and below a

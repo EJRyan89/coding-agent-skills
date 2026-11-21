@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from git_client import GitError, output_line
-from markdown_sections import HTML_COMMENT
+from hidden_comments import without_hidden_comments
 from text_lines import text_lines
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -163,9 +163,10 @@ def find_reverts(root: Path, head: str = "HEAD", main: str = RELEASE_BRANCH) -> 
 
 
 def declarations(text: str) -> set[tuple[str, str]]:
-    """Each (path, commit prefix) the text declares a revert of, outside HTML comments, the commit in lower case."""
+    """Each (path, commit prefix) the text declares a revert of, outside the HTML comments GitHub hides, the commit in
+    lower case; a `<!--` that code shows is text, as hidden_comments reads them."""
     # CommonMark ends a line at CR, LF, and CRLF, so a declaration after a lone CR is read on a line of its own.
-    lines = text_lines(HTML_COMMENT.sub("", text))
+    lines = text_lines(without_hidden_comments(text))
     return {(match["path"], match["commit"].lower()) for line in lines if (match := DECLARATION.match(line))}
 
 

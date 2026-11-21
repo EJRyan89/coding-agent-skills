@@ -14,8 +14,10 @@ that is not a `Closes #<n>` line of its own, in prose, a list, a quote, with a c
 wrote alike, since the squash commit carries the body as written; a template heading the body dropped; and, for a
 title of type `fix` and a template holding a `## Forms considered` section, that section missing, empty, or still the
 template's placeholder, read by ejryan89-skill-core's forms_considered, the reader validation's body check holds a fix
-body to. The title check refuses a title holding a closing reference, which the squash commit carries as its title, so
-every issue the pull request closes is named by a `Closes #<n>` line of the body.
+body to. A comment is one GitHub hides, read by ejryan89-skill-core's hidden_comments, so a `<!--` that a code span or
+a code block shows is the body's text, checked as any other. The title check refuses a title holding a closing
+reference, which the squash commit carries as its title, so every issue the pull request closes is named by a
+`Closes #<n>` line of the body.
 
 Every line is one fact:
 
@@ -76,7 +78,8 @@ from flat_text import flat_text
 from forms_considered import forms_fault, forms_section, is_fix_title
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
-from markdown_sections import HTML_COMMENT, LINE_END, LIST_MARKER, MARKDOWN_SPACE
+from hidden_comments import hidden_spans
+from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
 from text_lines import LINE_BREAK, text_lines
 from typed_text import read_typed
 
@@ -116,9 +119,27 @@ def base_argument(value: str) -> Base:
 
 
 def blank_comments(text: str) -> str:
-    """`text` with every comment's characters but its line breaks, CR and LF, made spaces, so each line keeps its
-    number."""
-    return HTML_COMMENT.sub(lambda match: re.sub(r"[^\r\n]", " ", match.group()), text)
+    """`text` with the characters of every comment GitHub hides, but its line breaks, CR and LF, made spaces, so each
+    line keeps its number; a `<!--` that code shows is text, as hidden_comments reads it."""
+    return blanked(text, hidden_spans(text))
+
+
+def blanked(text: str, spans: Sequence[tuple[int, int]]) -> str:
+    """`text` with the characters of each span, in order, but its line breaks, CR and LF, made spaces."""
+    kept: list[str] = []
+    position = 0
+    for first, past in spans:
+        kept.extend((text[position:first], re.sub(r"[^\r\n]", " ", text[first:past])))
+        position = past
+    kept.append(text[position:])
+    return "".join(kept)
+
+
+def template_comment_spans(body: str, template: str) -> list[tuple[int, int]]:
+    """The span of each comment GitHub hides in `body` that is, character for character, one GitHub hides in
+    `template`: a placeholder the template left."""
+    comments = {template[first:past] for first, past in hidden_spans(template)}
+    return [(first, past) for first, past in hidden_spans(body) if body[first:past] in comments]
 
 
 def find_template(top: Path) -> Path | None:
@@ -172,9 +193,7 @@ def closed_issues(body: str, title: str | None = None) -> list[int]:
 def blank_template_comments(body: str, template: str) -> str:
     """`body` with each comment copied from `template` blanked as blank_comments blanks one, and every other comment
     kept, since the squash commit carries the comments the author wrote."""
-    for comment in {match.group() for match in HTML_COMMENT.finditer(template)}:
-        body = body.replace(comment, re.sub(r"[^\r\n]", " ", comment))
-    return body
+    return blanked(body, template_comment_spans(body, template))
 
 
 def headings(text: str) -> list[str]:
@@ -192,12 +211,9 @@ def line_of(text: str, index: int) -> int:
 def body_problems(body: str, template: str) -> list[str]:
     """One line per placeholder the template left in the body, closing line, and template heading it dropped."""
     problems: list[tuple[int, str]] = []
-    for comment in {match.group() for match in HTML_COMMENT.finditer(template)}:
-        start = body.find(comment)
-        while start != -1:
-            number = line_of(body, start)
-            problems.append((number, f"PLACEHOLDER {number} a template comment"))
-            start = body.find(comment, start + len(comment))
+    for first, _ in template_comment_spans(body, template):
+        number = line_of(body, first)
+        problems.append((number, f"PLACEHOLDER {number} a template comment"))
     # Both views blank characters but never a CR or an LF, so split where CommonMark ends a line they hold the same
     # lines.
     read = text_lines(blank_template_comments(body, template))
