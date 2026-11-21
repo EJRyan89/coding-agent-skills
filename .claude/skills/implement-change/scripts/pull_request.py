@@ -54,6 +54,7 @@ import argparse
 import re
 import sys
 import tempfile
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -203,16 +204,14 @@ def headings(text: str) -> list[str]:
     return [f"{match.group(1)} {match.group(2)}" for line in lines if (match := HEADING.fullmatch(line))]
 
 
-def line_of(text: str, index: int) -> int:
-    """The number of the line `index` is on, its lines ending where CommonMark ends one, at CR, LF, and CRLF."""
-    return len(LINE_BREAK.findall(text, 0, index)) + 1
-
-
 def body_problems(body: str, template: str) -> list[str]:
     """One line per placeholder the template left in the body, closing line, and template heading it dropped."""
     problems: list[tuple[int, str]] = []
+    # Where each line starts, its lines ending where CommonMark ends one, at CR, LF, and CRLF, read once, so each
+    # comment's line is found over them rather than counted from the body's start.
+    starts = [0, *(match.end() for match in LINE_BREAK.finditer(body))]
     for first, _ in template_comment_spans(body, template):
-        number = line_of(body, first)
+        number = bisect_right(starts, first)
         problems.append((number, f"PLACEHOLDER {number} a template comment"))
     # Both views blank characters but never a CR or an LF, so split where CommonMark ends a line they hold the same
     # lines.
