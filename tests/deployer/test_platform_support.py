@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import job_tree
 import path_keys
 from harness import REPOSITORY_ROOT, DeployerTestCase, forward, make_directory_link
 from test_presence_reads import stat_failing_at
@@ -357,6 +358,30 @@ class HiddenWindowTests(unittest.TestCase):
         # CREATE_NO_WINDOW on Windows; elsewhere a program opens no window by starting, so nothing is asked.
         expected = {"creationflags": 0x08000000} if platform_support.WINDOWS else {}
         self.assertEqual(expected, platform_support.hidden_window())
+
+
+class ProcessTreeTests(unittest.TestCase):
+    """The tree a command and every process it starts are held in, which bounds memory and keeps Ctrl-C from the
+    command only on Windows and only when asked."""
+
+    def test_windows_gives_a_job_tree_holding_what_it_was_asked_and_nothing_unasked(self) -> None:
+        with mock.patch.object(sys, "platform", "win32"):
+            plain = platform_support.process_tree()
+            asked = platform_support.process_tree(memory_limit=5 << 20, own_group=True)
+        assert isinstance(plain, job_tree.JobTree)
+        assert isinstance(asked, job_tree.JobTree)
+        self.assertEqual((None, False, False), (plain.memory_limit, plain.own_group, plain.hidden_window))
+        self.assertEqual((5 << 20, True), (asked.memory_limit, asked.own_group))
+
+    def test_every_other_platform_gives_a_process_group_whatever_it_is_asked(self) -> None:
+        for name in ("linux", "darwin"):
+            with self.subTest(name), mock.patch.object(sys, "platform", name):
+                for tree in (
+                    platform_support.process_tree(),
+                    platform_support.process_tree(memory_limit=1, own_group=True),
+                ):
+                    self.assertIs(job_tree.GroupTree, type(tree))
+                    self.assertEqual({"start_new_session": True}, tree.start_options())
 
 
 class LocatorTests(unittest.TestCase):

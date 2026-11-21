@@ -61,8 +61,12 @@ phase records no test of its own; a context naming no collected test of the suit
 collected class holds, which an inherited test method would be, and a suite pytest cannot list run whole as well. The
 mutant is killed, or timed out when a suite runs past three times its unmutated time. Each process a suite's run starts,
 unmutated or mutated, may hold at most MEMORY_BOUND bytes of data on Linux, as platform_support.memory_bounded bounds
-it, so a mutant that allocates without end fails its suite with a MemoryError, which kills it, rather than exhausting
-the runner; macOS and Windows bound no process's data, so there a suite is bounded by its time alone. A timeout on a CI
+it, and commit at most as many on Windows, as the job object of platform_support.process_tree bounds it, so a mutant
+that allocates without end fails its suite with a MemoryError, which kills it, rather than exhausting the runner; macOS
+bounds no process's data, so there a suite is bounded by its time alone. Every command a suite's run or its reach
+starts begins in a process group of its own, so a Ctrl-C that stops a local run reaches the gate alone, and the suites
+it was running end as they would have, their outcomes recorded, while the mutants it had not started stay not run. A
+timeout on a CI
 leg is read as timed out unconfirmed, which judges nothing, since a runner's load can stretch a suite past its limit as
 surely as a mutant that makes a loop endless; only a local run that times out on the mutant too confirms it, under that
 run's own measured limits. A whole run in one process, without a step, runs on this machine, so its own timeouts stand
@@ -148,7 +152,13 @@ the record marked as not ended until its last write, so a run stopped partway, b
 outcomes it reached, which the join reads, naming the local run as stopped before its end; a record that names no end
 was written whole at its end. read_local holds each place to one the leg's own outcome left without a verdict, and each
 local outcome to the local run's suites. It then reports as the join does, and exits as the join does. A local run's
-record already beside the leg's stops it, ended or not, and so does a leg of another platform.
+record beside the leg's that ended stops it, and so does a leg of another platform. One that did not end is resumed:
+the step runs again only the places that run left not run, and, while it left a suite's reach unmeasured, those it
+left surviving or unreached, which that suite might have killed, and keeps every other outcome it reached, which the
+record names as kept, since a suite the resumed run lists as failed or unmeasured may have judged one of them. The
+record it writes as it goes, and at its end, joins both runs: their caps, seconds, and runs summed, the most workers
+either used, the resumed run's unmeasured suites, since every outcome a suite left unmeasured could still change is
+the resumed run's, and the suites either run lists as failed unmutated, but one the resumed run judged a mutant with.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -239,7 +249,8 @@ REACH_SHARE = 0.5
 SUITE_TIME_FACTOR = 3
 MINIMUM_SUITE_SECONDS = 60.0
 # The most data, in bytes, each process of a suite's run may hold where platform_support.memory_bounded bounds it, on
-# Linux, the unmutated reach run's as well as a mutant's, so a suite that needs more fails unmutated and is named. A
+# Linux, and the most it may commit where platform_support.process_tree's job object bounds it, on Windows, the
+# unmutated reach run's as well as a mutant's, so a suite that needs more fails unmutated and is named. A
 # mutant that allocates without end then fails its suite with a MemoryError instead of exhausting the runner, whose
 # memory a leg's workers and every process their suites start share, and stopping the leg with every outcome it held.
 MEMORY_BOUND = 2 << 30
@@ -248,15 +259,18 @@ MEMORY_BOUND = 2 << 30
 # that failed or errored on one, or a traceback's last line, as a process the suite started prints it in the captured
 # output. Each holds the exception's name alone or before its message, so a test whose source or name only mentions
 # MemoryError, which pytest quotes indented or after `>`, is not read as one. A process ended by a signal with no such
-# line still errors: RLIMIT_DATA refuses an allocation rather than sending one, so that is a stated limit, not a form
-# the bound produces. Two more stated limits: the end read back may start mid-line, so a line cut just before the name
-# reads as one that raised it, which turns only an exit that would otherwise error into a kill; and an interpreter that
-# aborts with a fatal error while out of memory prints no such line, so its run reads as errored.
+# line still errors: RLIMIT_DATA, and a Windows job's limit, refuse an allocation rather than sending one, so that is a
+# stated limit, not a form the bound produces; so is a Windows process that cannot commit memory past the job's limit
+# for something other than an allocation Python makes, such as its stack's growth, which ends with a Windows status and
+# no such line, so its run reads as errored. Two more stated limits: the end read back may start mid-line, so a line
+# cut just before the name reads as one that raised it, which turns only an exit that would otherwise error into a
+# kill; and an interpreter that aborts with a fatal error while out of memory prints no such line, so its run reads as
+# errored.
 MEMORY_ERROR = re.compile(rb"^(?:E +|INTERNALERROR> *|(?:FAILED|ERROR) .* - )?MemoryError(?::.*)?\r?$", re.MULTILINE)
 # The reason the log gives for such a kill.
 MEMORY_REASON = (
-    f"a process ran out of memory, as one past the {MEMORY_BOUND >> 30} GiB of data each process of the suite may hold "
-    "on Linux does, so the mutant made it allocate without end"
+    f"a process ran out of memory, as one past the {MEMORY_BOUND >> 30} GiB each process of the suite may hold on "
+    "Linux or commit on Windows does, so the mutant made it allocate without end"
 )
 # How much of a command's output is read back: the start and the end of a mutant's run, the start of a coverage step's,
 # and the end of an unmutated suite's run, each run written to a file so that a long traceback cannot push its summary
@@ -504,7 +518,9 @@ class LocalRun:
     record: its cap, its seconds and workers, the places in each module's list of the mutants it ran, the suites that
     failed unmutated or whose reach its cap left unmeasured there, its outcome of each mutant it ran, in the order of
     the places, and whether it reached its end, which a record it writes as it goes does not, so the mutants it had not
-    reached are not run. The CI leg's own outcomes stay as the leg wrote them."""
+    reached are not run. The CI leg's own outcomes stay as the leg wrote them. A run that resumed one that stopped
+    before its end, as resumed_run joins them, counts its `runs`, and names in `kept` each module's places whose
+    outcome an earlier run reached, which its own failed and unmeasured suites did not judge."""
 
     minutes: int
     seconds: float
@@ -514,6 +530,8 @@ class LocalRun:
     unmeasured_suites: list[str]
     outcomes: dict[str, list[Outcome]] = field(default_factory=dict)
     ended: bool = True
+    kept: dict[str, list[int]] = field(default_factory=dict)
+    runs: int = 1
 
 
 @dataclass
@@ -1006,7 +1024,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
                     stderr=written,
                     cwd=tree,
                     env=suite_environment(),
-                    tree=platform_support.process_tree(),
+                    tree=platform_support.process_tree(memory_limit=MEMORY_BOUND, own_group=True),
                 )
                 size = written.seek(0, os.SEEK_END)
                 written.seek(0)
@@ -1219,7 +1237,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                     stderr=written,
                     cwd=tree,
                     env=measured,
-                    tree=platform_support.process_tree(),
+                    tree=platform_support.process_tree(memory_limit=MEMORY_BOUND, own_group=True),
                 )
                 written.seek(max(0, written.seek(0, os.SEEK_END) - OUTPUT_LIMIT))
                 end = written.read()
@@ -1239,6 +1257,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                     cwd=tree,
                     env=suite_environment(),
                     output_limit=OUTPUT_LIMIT,
+                    tree=platform_support.process_tree(own_group=True),
                 )
             except subprocess.TimeoutExpired:
                 return f"timed out in {code(step)}"
@@ -1278,7 +1297,7 @@ def suite_tests(tree: Path, suite: str, listing: Path) -> list[str]:
                 cwd=tree,
                 env=suite_environment(),
                 output_limit=OUTPUT_LIMIT,
-                tree=platform_support.process_tree(),
+                tree=platform_support.process_tree(own_group=True),
             )
     except subprocess.TimeoutExpired:
         return []
@@ -1764,14 +1783,13 @@ def not_run_sentences(report: Report) -> list[str]:
             stop_sentence(named, parts[STEP_STOPPED], f"Read {pronoun(named, 'its', 'their')} log, and rerun the gate.")
         )
     if parts[LOCAL_STOPPED]:
-        stopped = [leg for leg in report.legs if local_step_name(leg.name) in steps]
-        files = " and ".join(f"`{local_name(leg.name)}`" for leg in stopped)
-        named = [local_step_name(leg.name) for leg in stopped]
+        named = [local_step_name(leg.name) for leg in report.legs if local_step_name(leg.name) in steps]
         sentences.append(
             stop_sentence(
                 named,
                 parts[LOCAL_STOPPED],
-                f"Read {pronoun(named, 'its', 'their')} output, then remove {files} and run the `unrun` step again.",
+                f"Read {pronoun(named, 'its', 'their')} output, then run the `unrun` step again"
+                + pronoun(named, ", which resumes it.", " on each one's platform, which resumes it."),
             )
         )
     if parts[CAPPED]:
@@ -1868,9 +1886,15 @@ def leg_line(leg: LegRun) -> str:
         return line
     local = leg.local
     count = sum(len(places) for places in local.mutants.values())
+    spent = f"{local.seconds / 60:.0f} of {'its' if local.runs == 1 else 'their'} {local.minutes} minutes"
     return (
         f"{line}, and a local run on {leg.name} then ran the {count} {'mutant' if count == 1 else 'mutants'} it left "
-        f"without a verdict, {local.workers} workers for {local.seconds / 60:.0f} of its {local.minutes} minutes"
+        + "without a verdict, "
+        + (
+            f"{local.workers} workers for {spent}"
+            if local.runs == 1
+            else f"in {local.runs} runs of at most {local.workers} workers for {spent}"
+        )
         + ("" if local.ended else ", stopping before its end")
     )
 
@@ -2360,8 +2384,8 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
 
 
 def local_record(leg: str, local: LocalRun) -> dict[str, Any]:
-    """A local run as the unrun step writes it beside the record of the leg it completed, and whether it reached its
-    end, which a record it writes as it goes does not."""
+    """A local run as the unrun step writes it beside the record of the leg it completed, whether it reached its end,
+    which a record it writes as it goes does not, and, for one that resumed a stopped run, the places it kept."""
     return {
         "leg": leg,
         "ended": local.ended,
@@ -2374,6 +2398,8 @@ def local_record(leg: str, local: LocalRun) -> dict[str, Any]:
         "outcomes": {
             module: [outcome_record(outcome) for outcome in found] for module, found in local.outcomes.items()
         },
+        "kept": local.kept,
+        "runs": local.runs,
     }
 
 
@@ -2483,12 +2509,16 @@ def refuse_unjudged_suites(
     outcomes: Mapping[str, Sequence[Outcome]],
     failed: Mapping[str, str],
     unmeasured: Sequence[str],
+    kept: Mapping[str, Collection[int]] | None = None,
 ) -> None:
     """Stop the join at an outcome naming a suite its own run lists as failed unmutated or left unmeasured, which ran
-    against no mutant there."""
+    against no mutant there; an outcome at an index `kept` names for its module is an earlier run's, which the lists do
+    not describe."""
     unjudged = {**dict.fromkeys(failed, "failed_suites"), **dict.fromkeys(unmeasured, "unmeasured_suites")}
     for module, found in outcomes.items():
         for index, outcome in enumerate(found):
+            if kept and index in kept.get(module, ()):
+                continue
             for suite in outcome.suites:
                 if suite in unjudged:
                     raise READ.fail(
@@ -2517,9 +2547,11 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
     does not let a local run replace, a count of outcomes that is not the count of places, or an outcome naming a
     suite the local run judged nothing with stops the join, so a local outcome stands only where the CI leg left no
     verdict. A record that names no end was written whole at its end, as the step wrote every record before it wrote
-    one as it went, so it reads as ended."""
+    one as it went, so it reads as ended; one that names no runs or kept places ran once. A kept place must be one of
+    its module's places, named once, and the outcome there an earlier run's, which the record's own suites do not
+    judge."""
     fields = ("leg", "minutes", "seconds", "workers", "mutants", "failed_suites", "unmeasured_suites", "outcomes")
-    found = READ.json_object(value, where, required=fields, optional=("ended",))
+    found = READ.json_object(value, where, required=fields, optional=("ended", "kept", "runs"))
     name = READ.one_of(found["leg"], f"{where}.leg", LEGS)
     if name != leg.name:
         raise RecordError(f"{where} holds a local run of the {name} leg, not of the {leg.name} leg")
@@ -2551,6 +2583,12 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
             read_outcome(ci[place].mutant, entry, f"{where}.outcomes.{module}[{index}]")
             for index, (place, entry) in enumerate(zip(at, entries, strict=True))
         ]
+    kept: dict[str, list[int]] = {}
+    for module, named in READ.json_object(found.get("kept", {}), f"{where}.kept").items():
+        at = READ.array(named, f"{where}.kept.{module}", at_least(0))
+        if module not in mutants or not set(at) <= set(mutants[module]) or len(set(at)) != len(at):
+            raise RecordError(f"{where}.kept.{module} names {at}, not distinct places among {where}.mutants.{module}")
+        kept[module] = at
     local = LocalRun(
         READ.integer(found["minutes"], f"{where}.minutes", minimum=1),
         READ.number(found["seconds"], f"{where}.seconds"),
@@ -2560,8 +2598,17 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
         READ.array(found["unmeasured_suites"], f"{where}.unmeasured_suites", READ.string),
         outcomes,
         READ.boolean(found.get("ended", True), f"{where}.ended"),
+        kept,
+        READ.integer(found.get("runs", 1), f"{where}.runs", minimum=1),
     )
-    refuse_unjudged_suites(where, "local run", local.outcomes, local.failed_suites, local.unmeasured_suites)
+    refuse_unjudged_suites(
+        where,
+        "local run",
+        local.outcomes,
+        local.failed_suites,
+        local.unmeasured_suites,
+        {module: {mutants[module].index(place) for place in at} for module, at in kept.items()},
+    )
     return local
 
 
@@ -2812,20 +2859,21 @@ class Gate:
         reads in place of the leg's at the places it ran, so a mutant this run leaves untested is still not run. Once
         the measurement canary passes, `record` is handed the local run so far, marked as not ended, before the reach
         pass, after it, and after each mutant, so a run stopped before its end leaves what it reached for its caller to
-        have written, and one the canary refused leaves nothing for a later run to stop at."""
+        have written, and one the canary refused leaves nothing for a later run to stop at.
+
+        A local run beside the leg's record that stopped before its end is resumed, as resumable_places selects what it
+        left and resumed_run joins the two runs, and one that ended stops the step."""
         selected, legs = read_run(folder)
         name = platform_support.PLATFORM_NAME
         leg = next((found for found in legs if found.name == name), None)
         if leg is None:
             others = ", ".join(found.name for found in legs) or "no leg"
             raise RuntimeError(f"the {name} leg ran no mutant of this run, so none is left to run here: {others} did")
-        if leg.local is not None:
-            held = (
-                f"already completes the {name} leg"
-                if leg.local.ended
-                else f"holds a local run of the {name} leg that stopped before its end"
+        earlier = leg.local
+        if earlier is not None and earlier.ended:
+            raise RuntimeError(
+                f"{local_name(name)} already completes the {name} leg: remove it to run the leg's mutants anew"
             )
-            raise RuntimeError(f"{local_name(name)} {held}: remove it to run the leg's mutants anew")
         if not selected.head:
             raise RuntimeError(f"{MUTANTS_FILE} records no commit the run tested, so its suites cannot be matched")
         head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
@@ -2835,7 +2883,7 @@ class Gate:
                 f"mutants: check that commit out, fetching it with `git fetch origin {selected.head}` if this clone "
                 "lacks it, and run the step there"
             )
-        places = unjudged(joined(selected, legs), leg)
+        places = resumable_places(earlier) if earlier else unjudged(joined(selected, legs), leg)
         modules = []
         for chosen in leg_modules(name, selected):
             if chosen.module not in places:
@@ -2846,9 +2894,17 @@ class Gate:
             modules.append(
                 SelectedModule(chosen.module, chosen.lines, mutants, chosen.tables, chosen.windows, chosen.digest)
             )
-        print(f"{sum(map(len, places.values()))} mutants of the {name} leg are left without a verdict", flush=True)
+        left = f"{sum(map(len, places.values()))} mutants of the {name} leg are left without a verdict"
+        print(
+            left + (f", by the local run in {local_name(name)}, which this run resumes" if earlier else ""), flush=True
+        )
         if not modules:
-            return leg
+            return leg if earlier is None else replace(leg, local=replace(earlier, ended=True))
+
+        def local(run: LegRun, ended: bool) -> LocalRun:
+            ran = self.local_run(run, places, ended)
+            return ran if earlier is None else resumed_run(earlier, ran)
+
         started = self.clock()
         with (
             tempfile.TemporaryDirectory(prefix="mutation-gate-", dir=private_folder.temporary_directory()) as temporary,
@@ -2865,9 +2921,9 @@ class Gate:
                 trees,
                 modules,
                 started,
-                None if record is None else lambda run: record(self.local_run(run, places, ended=False)),
+                None if record is None else lambda run: record(local(run, False)),
             )
-        return replace(leg, local=self.local_run(ran, places))
+        return replace(leg, local=local(ran, True))
 
     def local_run(self, ran: LegRun, places: dict[str, list[int]], ended: bool = True) -> LocalRun:
         """The local run of a leg's mutants at `places` from the leg run that ran them, under this gate's cap."""
@@ -2898,6 +2954,53 @@ def unjudged(report: Report, leg: LegRun) -> dict[str, list[int]]:
         if places:
             found[module.module] = places
     return found
+
+
+def resumable_places(local: LocalRun) -> dict[str, list[int]]:
+    """The places of each module's mutants a run resuming `local`, which stopped before its end, runs again: each it
+    left not run, and, while it left a suite's reach unmeasured, each it left surviving or unreached, which that suite
+    might have killed. Every other outcome it reached stands."""
+    statuses = {NOT_RUN, *((SURVIVED, NOT_REACHED) if local.unmeasured_suites else ())}
+    found = {}
+    for module, places in local.mutants.items():
+        again = [
+            place for place, outcome in zip(places, local.outcomes[module], strict=True) if outcome.status in statuses
+        ]
+        if again:
+            found[module] = again
+    return found
+
+
+def resumed_run(earlier: LocalRun, ran: LocalRun) -> LocalRun:
+    """The local run of a leg's mutants that `ran`, resuming `earlier`, makes with it: `earlier`'s places, each with
+    the resumed run's outcome where it ran it and `earlier`'s, kept, elsewhere; both runs' caps, seconds, and runs
+    summed and the most workers either used; the resumed run's unmeasured suites, since each outcome they might change,
+    a survivor or an unreached mutant, is its own, as resumable_places runs again those of a run that left one; the
+    suites either lists as failed unmutated, the resumed run's reason first, but those the resumed run judged a mutant
+    with; and whether the resumed run ended."""
+    outcomes: dict[str, list[Outcome]] = {}
+    kept: dict[str, list[int]] = {}
+    for module, places in earlier.mutants.items():
+        again = dict(zip(ran.mutants.get(module, ()), ran.outcomes.get(module, ()), strict=True))
+        outcomes[module] = [
+            again.get(place, outcome) for place, outcome in zip(places, earlier.outcomes[module], strict=True)
+        ]
+        if left := [place for place in places if place not in again]:
+            kept[module] = left
+    judged = {suite for found in ran.outcomes.values() for outcome in found for suite in outcome.suites}
+    failed = {suite: reason for suite, reason in earlier.failed_suites.items() if suite not in judged}
+    return LocalRun(
+        earlier.minutes + ran.minutes,
+        earlier.seconds + ran.seconds,
+        max(earlier.workers, ran.workers),
+        dict(earlier.mutants),
+        {**failed, **ran.failed_suites},
+        list(ran.unmeasured_suites),
+        outcomes,
+        ran.ended,
+        kept,
+        earlier.runs + ran.runs,
+    )
 
 
 def is_run_file(name: str) -> bool:
