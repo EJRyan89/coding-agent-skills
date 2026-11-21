@@ -156,13 +156,19 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
   {"kind": "resolved"}     by-name document scenario only
       the session's own tool calls, in order, run review_document.py `resolve` with the document's file name, quoted
       or not, before any search, and then a `build` naming drafts/<document>, the one copy `resolve` finds. A search is
-      a Glob or Grep call, or a Bash or PowerShell command with find, ls, dir, tree, fd, fdfind, rg, grep, egrep,
-      fgrep, locate, mdfind, gci, or Get-ChildItem at the start of one of its commands, a path before the program
-      allowed, including in the same command before `resolve`; a run that never runs `resolve`, builds nothing after
-      it, or builds another copy fails it. Its reasons name a tool, a program, or the document's name, never a path
-      of the machine. Only the session's own calls are read, never a subagent's, and a search after `resolve` is not
-      judged. A search written in another language, such as `python -c`, or behind a wrapper such as `xargs` or
-      `timeout`, is not seen; neither is a search for the name with `cat` or another program the list does not name
+      a Glob or Grep call, or a program SEARCH_PROGRAMS names (find, ls, grep, rg, and the other listing and search
+      programs) that a Bash or PowerShell command runs. A Bash command is read through audit-skill's `bash_programs`,
+      the one Bash grammar, so a search inside a compound command, a subshell, a substitution, past an assignment, or
+      behind a wrapper or a shell's -c is seen, and quoted text or a here-document is not taken for one; a Bash
+      command before `resolve` that the grammar refuses fails it as unread. A PowerShell command is read from its
+      text, no reader here parsing it as pwsh does: a search program at a command's start, after a separator, a
+      brace, a parenthesis, the call operator, or an assignment's `=`, before the `resolve` the text holds. A run that
+      never runs `resolve`, builds nothing after it, or builds another copy fails it. Its reasons name a tool, a
+      program, or the document's name, never a path of the machine. Only the session's own calls are read, never a
+      subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
+      by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
+      `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
+      PowerShell search that starts its command in a form the text reading above does not name
 
 An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
 verdict, which an INCOMPLETE review that raised nothing would pass, or a `category` the scenario's manifest does not

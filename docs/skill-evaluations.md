@@ -24,9 +24,10 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   finding's path is then `drafts/<document>`, its path in the home. Its `resolved` expectation reads the session's
   own tool calls from the transcript: it fails a session that searched for files with Glob, Grep, or a listing or
   search program such as `find` or `ls` before it ran `resolve`, that never ran `resolve`, or that built a copy other
-  than the one `resolve` found. It is a judgment of the session, which orchestrates on the strongest model in every
-  row, rather than of the reviewers' model, and it does not see a search written in another language or behind a
-  wrapper such as `xargs`. A model's by-name runs share its home, so they run one at a time, and `--records` reads
+  than the one `resolve` found. Bash is read by the one Bash grammar, so a search inside a compound command or behind
+  a wrapper is seen; PowerShell is read from its text. It is a judgment of the session, which orchestrates on the
+  strongest model in every row, rather than of the reviewers' model, and it does not see a search by a program it
+  does not list, such as `git grep`, `Select-String`, or `findstr`, or one written in another language. A model's by-name runs share its home, so they run one at a time, and `--records` reads
   each by-name run's transcript beside its record. `review-document`'s `by-name` scenario is the worked example.
 - **The checkout is trusted input.** A fixture's reviewer manifest names the condition scripts a review runs, and each
   home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the

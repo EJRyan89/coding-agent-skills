@@ -27,11 +27,13 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
+import command_wrappers
 import file_presence
 import json_reader
 import private_folder
 import skill_inventory
 import whole_number
+from bash_syntax import BashSyntaxError
 from git_client import NO_HOOKS, GitClient
 from path_containment import resolved_path, within
 from review_config import ConfigurationError, validate_repository_identity
@@ -99,14 +101,35 @@ DOCUMENT_FOLDER = "document"
 BY_NAME_FOLDER = "drafts"
 HIDDEN_DECOY = ".drafts-old"
 CHECKOUT_DECOY = "old-checkout"
-# The session's own tool calls a by-name run's record carries for the `resolved` kind, read with audit-skill's shell
-# tools: the search tools, a shell command that searches for files or their text, by its program at a command's
-# start, and review-document's `resolve` and `build` commands.
+# What the `resolved` kind reads in the session's own tool calls: the search tools, the programs that list or search for
+# files or their text, review-document's script, and, since no reader here parses PowerShell as pwsh does, a
+# PowerShell command's search program at a command's start, an assignment's right side included, and the script's
+# `resolve` and `build` commands in its text. A Bash command is read through audit-skill's `bash_programs`, the one
+# Bash grammar, which finds every program Bash runs, past assignments, wrappers, and shell scripts.
 SEARCH_TOOLS = frozenset({"Glob", "Grep"})
-SEARCH_PROGRAM = re.compile(
-    r"(?:^|[;&|(){}`\n]|\$\()\s*(?:[\w.~-]*[/\\])*"
-    r"(find|ls|dir|tree|fd|fdfind|rg|grep|egrep|fgrep|locate|mdfind|gci|Get-ChildItem)(?:\.exe)?"
-    r"(?=\s|$|[;&|(){}`])",
+SEARCH_PROGRAMS = frozenset(
+    {
+        "find",
+        "ls",
+        "dir",
+        "tree",
+        "fd",
+        "fdfind",
+        "rg",
+        "grep",
+        "egrep",
+        "fgrep",
+        "locate",
+        "mdfind",
+        "gci",
+        "Get-ChildItem",
+    }
+)
+DOCUMENT_SCRIPT_NAME = "review_document.py"
+POWERSHELL_SEARCH = re.compile(
+    r"(?:^|[;|&{(\n]|\$\(|\$[\w:]+\s*=)\s*(?:[\w.~:-]*[/\\])*("
+    + "|".join(sorted(SEARCH_PROGRAMS, key=len, reverse=True))
+    + r")(?:\.exe)?(?=\s|$|[;|&(){}])",
     re.IGNORECASE,
 )
 DOCUMENT_SCRIPT = r"review_document\.py[\"']?\s+"
@@ -378,43 +401,93 @@ def repeats_expectation(spec: Mapping[str, object]) -> Expectation:
     return Expectation(f"repeats {_where(path, lines)} {spec['entry']}", check)
 
 
-def _search(call: Mapping[str, Any], command: str) -> str | None:
-    """The tool, or the program at a command's start in `command`, with which one of the session's calls searches for
-    files or their text, or None."""
+@dataclass(frozen=True)
+class Step:
+    """One thing a call of the session's does, as the `resolved` kind reads it: the tool or program it searches with,
+    whether it runs `resolve` with the document's name, whether it builds the staged copy (True), another file
+    (False), or nothing (None), and whether it is a Bash command the grammar refuses, whose programs are unread."""
+
+    search: str | None = None
+    resolves: bool = False
+    built: bool | None = None
+    unread: bool = False
+
+
+def _document_command(words: Sequence[str], command: str) -> list[str] | None:
+    """The words after review_document.py's `command` in one program's words, or None when it runs no such command."""
+    for index, word in enumerate(words[:-1]):
+        if (
+            command_wrappers.bash_program(word.replace("\\", "/")) == DOCUMENT_SCRIPT_NAME
+            and words[index + 1] == command
+        ):
+            return list(words[index + 2 :])
+    return None
+
+
+def _builds_staged(arguments: Sequence[str], name: str) -> bool:
+    """Whether `build`'s arguments name the document's staged copy, BY_NAME_FOLDER/<name>, in either separator."""
+    return any(PurePosixPath(word.replace("\\", "/")).parts[-2:] == (BY_NAME_FOLDER, name) for word in arguments)
+
+
+def _bash_steps(command: str, name: str) -> list[Step]:
+    """The steps of a Bash command, one per program it runs, in the order the grammar reads them."""
+    try:
+        programs = skill_inventory.bash_programs(command)
+    except BashSyntaxError:
+        return [Step(unread=True)]
+    steps = []
+    for _, words in programs:
+        program = command_wrappers.bash_program(words[0])
+        built = _document_command(words, "build")
+        steps.append(
+            Step(
+                search=program if program in SEARCH_PROGRAMS else None,
+                resolves=_document_command(words, "resolve") == [name],
+                built=None if built is None else _builds_staged(built, name),
+            )
+        )
+    return steps
+
+
+def _powershell_steps(command: str, name: str) -> list[Step]:
+    """The steps of a PowerShell command, read from its text: a search program at a command's start before `resolve`,
+    then `resolve` with the name, quoted or not, then `build` and whether it names the staged copy."""
+    end = r"(?=[\s\"';&|)]|$)"
+    ran = re.search(DOCUMENT_SCRIPT + r"resolve\s+([\"']?)" + re.escape(name) + r"\1" + end, command)
+    searched = POWERSHELL_SEARCH.search(command[: ran.start()] if ran else command)
+    built = re.search(DOCUMENT_SCRIPT + r"build\b", command)
+    staged = re.compile(r"(?:^|[\s\"'/\\])" + re.escape(BY_NAME_FOLDER) + r"[/\\]" + re.escape(name) + end)
+    steps = [Step(search=searched[1])] if searched else []
+    steps += [Step(resolves=True)] if ran else []
+    steps += [Step(built=staged.search(command, built.end()) is not None)] if built else []
+    return steps
+
+
+def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
+    """What one of the session's calls does, as the `resolved` kind reads it."""
+    command = call["input"].get("command")
     if call["name"] in SEARCH_TOOLS:
-        return str(call["name"])
-    found = SEARCH_PROGRAM.search(command)
-    return found[1] if found else None
-
-
-def _shell_command(call: Mapping[str, Any]) -> str:
-    """The command a shell call of the session ran, or nothing for another tool's call."""
-    command = call["input"].get("command") if call["name"] in skill_inventory.SHELL_TOOLS else None
-    return command if isinstance(command, str) else ""
+        return [Step(search=str(call["name"]))]
+    if not isinstance(command, str) or call["name"] not in skill_inventory.SHELL_TOOLS:
+        return []
+    return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)
 
 
 def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
     """That the session found the document named by `name` alone through review-document's `resolve`, searching for
     nothing before it, and then built the copy `resolve` finds, the one staged in BY_NAME_FOLDER."""
     _fields(spec, {"kind"})
-    end = r"(?=[\s\"';&|)]|$)"
-    resolve = re.compile(DOCUMENT_SCRIPT + r"resolve\s+([\"']?)" + re.escape(name) + r"\1" + end)
-    build = re.compile(DOCUMENT_SCRIPT + r"build\b")
-    staged = re.compile(r"(?:^|[\s\"'/\\])" + re.escape(BY_NAME_FOLDER) + r"[/\\]" + re.escape(name) + end)
 
     def check(record: Record) -> str | None:
         resolved = False
-        for call in session_calls(record):
-            command = _shell_command(call)
-            ran = resolve.search(command)
-            if not resolved:
-                searched = _search(call, command[: ran.start()] if ran else command)
-                if searched is not None:
-                    return f"the session searched with {searched} before it ran resolve"
-                resolved = ran is not None
-            built = build.search(command)
-            if resolved and built:
-                if staged.search(command, built.end()):
+        for step in (step for call in session_calls(record) for step in _steps(call, name)):
+            if not resolved and step.unread:
+                return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
+            if not resolved and step.search is not None:
+                return f"the session searched with {step.search} before it ran resolve"
+            resolved = resolved or step.resolves
+            if resolved and step.built is not None:
+                if step.built:
                     return None
                 return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
         if resolved:

@@ -6409,3 +6409,117 @@ def test_the_by_name_runs_on_one_model_run_one_at_a_time_so_resolve_never_finds_
     assert most == {case.homes / "haiku": 1}
     assert [line for line in lines if line.startswith("RUNS ")] == ["RUNS by-name haiku 3/3 all"]
     assert len([line for line in lines if line.startswith("TRANSCRIPT by-name haiku run=")]) == 3
+
+
+RESOLVE_COMMAND = f'python3 -B "{DOCUMENT_SCRIPT}" resolve "draft.md"'
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        'echo "${dir}"',
+        "echo 'run; find later'",
+        "cat <<'EOF'\nls is a word\nEOF",
+        'printf "%s\\n" "find . -name draft.md"',
+    ],
+    ids=["expansion", "quoted-separator", "here-document", "quoted-command"],
+)
+def test_resolved_reads_bash_as_bash_does_so_text_that_runs_no_search_is_none(first: str) -> None:
+    assert resolved(shell(first), RESOLVE, BUILD) is None
+
+
+def test_resolved_passes_over_a_search_after_resolve_in_the_same_command() -> None:
+    assert resolved(shell(f"{RESOLVE_COMMAND}; ls drafts && find . -name draft.md"), BUILD) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "program"),
+    [
+        ("if true; then find . -name draft.md; fi", "find"),
+        ("for d in */; do ls $d; done", "ls"),
+        ("LC_ALL=C find . -name draft.md", "find"),
+        ("! find . -name draft.md", "find"),
+        ("command find . -name draft.md", "find"),
+        ("echo . | xargs ls", "ls"),
+        ("timeout 5 find . -name draft.md", "find"),
+        ("bash -c 'find . -name draft.md'", "find"),
+        ("(find . -name draft.md)", "find"),
+        ('echo "$(find . -name draft.md)"', "find"),
+        (f"find . -name draft.md; {RESOLVE_COMMAND}", "find"),
+    ],
+    ids=[
+        "if",
+        "for",
+        "assignment",
+        "negation",
+        "command",
+        "xargs",
+        "timeout",
+        "bash-c",
+        "subshell",
+        "substitution",
+        "before-resolve-in-one-command",
+    ],
+)
+def test_resolved_fails_a_bash_search_wherever_bash_runs_it(command: str, program: str) -> None:
+    assert resolved(shell(command), RESOLVE, BUILD) == f"the session searched with {program} before it ran resolve"
+
+
+@pytest.mark.parametrize(
+    ("command", "program"),
+    [
+        ("$f = Get-ChildItem -Recurse -Filter draft.md", "Get-ChildItem"),
+        ("$found=gci -r draft.md; $found", "gci"),
+        ("Set-Location ~; & rg --files", "rg"),
+        (f"ls drafts; & py '{DOCUMENT_SCRIPT}' resolve 'draft.md'", "ls"),
+    ],
+    ids=["assignment", "assignment-alias", "call-operator", "before-resolve-in-one-command"],
+)
+def test_resolved_fails_a_powershell_search_at_a_command_s_start(command: str, program: str) -> None:
+    calls = [shell(command, "PowerShell"), RESOLVE, BUILD]
+    assert resolved(*calls) == f"the session searched with {program} before it ran resolve"
+
+
+def test_resolved_fails_a_bash_command_before_resolve_that_the_grammar_refuses() -> None:
+    assert resolved(shell("echo ("), RESOLVE, BUILD) == (
+        "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
+    )
+    # After resolve, what such a command ran is not judged.
+    assert resolved(RESOLVE, shell("echo ("), BUILD) is None
+
+
+@pytest.mark.parametrize("named", ["path", "fixture"])
+def test_named_document_refuses_a_scenario_that_is_not_by_name(named: str, tmp_path: Path) -> None:
+    if named == "path":
+        scenario = dataclasses.replace(by_name_scenario(tmp_path), by_name=False)
+    else:
+        scenario = scenario_of("initial")
+    home = staged_home(tmp_path)
+    with (
+        pytest.raises(ValueError, match="is no by-name document scenario"),
+        skill_evals_runs.named_document(scenario, home, GitClient()),
+    ):
+        pass
+    assert sorted(path.name for path in home.iterdir()) == [".git"]
+
+
+def unread_call(_name: str, _found: Path) -> list[dict[str, Any]]:
+    """A session whose Bash call's input is no object, a shape the stream reader does not read."""
+    return [{"name": "Bash", "input": "ls drafts"}]
+
+
+def test_a_by_name_run_whose_session_stream_is_unread_counts_for_nothing_as_a_record(
+    evaluation: EvaluateTests,
+) -> None:
+    case = evaluation
+    claude = StubClaude(case, named=unread_call)
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(claude), "review-document", ["by-name"]
+    )
+    assert status == 1, lines
+    reason = skill_evals_scenarios.quote(skill_evals_runs.UNREAD_CALLS)
+    assert [line for line in lines if line.startswith("NOT_COUNTED ")] == [f"NOT_COUNTED by-name haiku record {reason}"]
+    failed = [line for line in lines if line.startswith("FAIL ")]
+    assert len(failed) == 3
+    assert all(line.endswith(f" record {reason}") for line in failed)
+    assert not any(line.startswith("PASS ") for line in lines)
