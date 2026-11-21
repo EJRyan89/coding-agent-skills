@@ -1,0 +1,80 @@
+{
+  "artifacts": {
+    "markdown_sha256": "8deeea83144c3bdf3efb4ec86e57a07a4c011bd8831f9eabc3a465d39e1a68e4",
+    "payload_sha256": "1d9c699456e97d10f4bc5055839c7df4f58089139f25e59fa387b16ecd4ae248"
+  },
+  "findings": [
+    {
+      "body": "RebuildIndex.Run is public and has no XML documentation comment, which the review guide requires.",
+      "candidate_key": "tools/RebuildIndex.cs:12:Documentation",
+      "category": "Documentation",
+      "evidence": "tools/RebuildIndex.cs line 12.",
+      "id": "F001",
+      "line": 12,
+      "path": "tools/RebuildIndex.cs",
+      "severity": "SHOULD_FIX",
+      "source": "inventory-review",
+      "title": "Public method in tools/ lacks an XML documentation comment"
+    }
+  ],
+  "ledger": [
+    {
+      "category": "Documentation",
+      "dispositions": [],
+      "id": "F001",
+      "judged_in": 1,
+      "repeats": [],
+      "severity": "SHOULD_FIX",
+      "state": "open",
+      "version": 1
+    }
+  ],
+  "prior_dispositions": [],
+  "pull_request": {
+    "base_ref": "main",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6a",
+    "number": 106,
+    "title": "Inventory change 106",
+    "url": "https://github.com/example/inventory/pull/106"
+  },
+  "repository": "example/inventory",
+  "review": {
+    "adapter": {
+      "name": "inventory-review",
+      "protocol_version": 1,
+      "reviewer": "inventory-review",
+      "scope": "repository",
+      "source": "trusted-ref",
+      "source_commit": "1111111111111111111111111111111111111111",
+      "source_hashes": {
+        "docs/error-handling.md": "479fc265ed0a27c9488ca2bae8271d18ff0eca254b2fa1199d25e153b5473d2d",
+        "docs/review-guide.md": "42c5f20e8a3c3b59b9fbaeb2b2c4658c01ef8e4d5e82734706b2e15f892f8795"
+      },
+      "status": "complete",
+      "usage": null
+    },
+    "counts": {
+      "MUST_FIX": 0,
+      "SHOULD_FIX": 1,
+      "SUGGESTION": 0
+    },
+    "mode": "initial",
+    "reviewed_at": "2026-01-20T12:00:00+00:00",
+    "reviewers": [
+      {
+        "category": "Repository",
+        "dispositions_only": false,
+        "files": 3,
+        "findings": 1,
+        "id": "inventory-review",
+        "model": "claude-sonnet-5-5",
+        "retries": 0
+      }
+    ],
+    "summary": "Review of inventory change 106.",
+    "verdict": "APPROVED",
+    "version": 1
+  },
+  "schema_version": 2
+}

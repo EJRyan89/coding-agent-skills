@@ -1,4 +1,4 @@
-"""Run a skill's fixed scenarios, model by model, and judge the review record each run wrote.
+"""Run a skill's fixed scenarios, model by model, and judge the record each run wrote.
 
 Usage:
   python -B tools/skill_evals.py SKILL [--write] [--runs N] [--timeout SECONDS] [--jobs N]
@@ -75,6 +75,44 @@ for nothing when Claude Code could not start, timed out, or did not list the ski
 failures, or when its messages named no model or another one, a `record` failure; its exit code is not read, since
 the turn limit is the evaluation's own. The first such session makes the whole run count for nothing.
 
+A synthesis scenario judges review-insights' synthesis rather than a review: the prompt review_synthesis.py writes for
+the code-review-reviewer agent, and the recommendations its result adds to the insights report. Beside its
+scenario.json it holds a fixed archive of review records in archive/, the reviewed repository's checkout in checkout/,
+from which the guidance text is read, and a flag store, flags.json:
+
+  {"skill": "review-insights", "mode": "synthesis", "start": "<YYYY-MM-DD>", "end": "<YYYY-MM-DD>",
+   "repository": "<owner/name>", "expectations": [<expectation>, ...]}
+
+A run copies the three into its own folder, writes there a code-review configuration naming the copies, the
+repository, and a summaries folder, gives the session that configuration and the copied flag store, and starts
+`/review-insights "<start>" "<end>" "<repository>"`; the fixture itself is never written. The session gets the reviewer
+agent a review run gets, and the synthesis agent's self-check is granted at the deployed review_insights.py's resolved
+path, as the prompt names it, in both shells; no review command is. The record judged is the one insights report the
+run's summaries folder holds, read by review-insights' own report reader, when its synthesis is recorded: a run that
+wrote no report or more than one, or whose synthesis is still pending, as when the session stops after the report,
+recorded no synthesis of its own and fails with that reason. A run counts only when each of the session's own commands
+that recorded the synthesis named claude-code as its host and was not --inline, since `synthesize` records such a
+result only once the reviewer guard claimed the synthesis role. The report keeps no trace of the guard, and the
+synthesis run is removed once its result is recorded, so the session's commands are what shows it: a session that
+recorded the synthesis through a command spelled otherwise, such as from a script file, shows none and counts for
+nothing.
+
+Its expectations are about the synthesized recommendations, never the category and analyzer ones the report computes:
+
+  {"kind": "recommends", "repository": R, "paths": [P, ...], "types": [T, ...], "flags": [F, ...]}
+      a synthesized recommendation of one of the types, on R, whose target's path or a file it merges is one of the
+      paths, ignoring case, and that links every flag, when `flags` is given; each flag is an open flag of the
+      fixture's flags.json, or the load fails, since no run could link it
+  {"kind": "never_recommends", "paths": [P, ...], "repository": R, "types": [T, ...]}
+      no synthesized recommendation, of one of the types and on R when either is given, targets or merges one of the
+      paths, ignoring case, such as a file of a reviewer read from another checkout
+  {"kind": "never_titled", "text": X}
+      no synthesized recommendation's title holds X, ignoring case, such as a word an instruction planted in a
+      finding asks for; only titles are read, so a rationale that reports the instruction passes
+
+A synthesis scenario names at least one recommends expectation, since a synthesis that recommends nothing passes every
+other kind, and a review kind in it, or a synthesis kind in any other scenario, fails the load.
+
 Each expectation is a statement over the record, checked here by script and never by reading the report. Severities
 rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding may be anchored at, any of them:
 
@@ -115,7 +153,9 @@ version of the scenario's mode, a guard that held every reviewer, and every revi
 or the ID of the model its route pins.
 The model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
 record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
-unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run.
+unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run. A synthesis
+scenario's record is the insights report, held to review-insights' report reader and a recorded synthesis; it names
+neither the model nor the guard, so --records checks neither.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, makes it a git
@@ -199,17 +239,19 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
   NOT_COUNTED <scenario> <model> <kind> "<reason>"
                                                   a record that counts for nothing, so each expectation of its
                                                   scenario and model fails with this kind and reason: `run` when the
-                                                  run recorded no review of its own, because the session ended
-                                                  before finalize, timed out, could not start, did not list the
-                                                  skill, had a command denied, or its fixture or document could not
-                                                  be staged, a trigger scenario's session as above or with a stream
-                                                  line that is JSON but no event object, or, with
-                                                  --records, no record file can be read; `record`
+                                                  run recorded no review, or synthesis, of its own, because the
+                                                  session ended before finalize or the synthesis, timed out, could
+                                                  not start, did not list the skill, had a command denied, or its
+                                                  fixture or document could not be staged, a trigger scenario's
+                                                  session as above or with a stream line that is JSON but no event
+                                                  object, or, with --records, no record file can be read; `record`
                                                   when a record does not show the model judged: no reviewer subagent
                                                   ran, reviewers or the session ran on another model, the session's
                                                   stream holds a line that is JSON but no event object, a reviewer no
-                                                  guard held, a record the record contract or the scenario's
-                                                  review version refuses, or a trigger record of another model's
+                                                  guard held, a synthesis recorded inline, for another host, or by no
+                                                  command the session's stream shows, a record the record contract or
+                                                  the scenario's review version refuses, or a trigger record of
+                                                  another model's
   PASS <skill> <scenario> <model> <expectation>
   FAIL <skill> <scenario> <model> <expectation> <kind> "<reason>"
                                                   <kind> is `judgment` for what the record shows, or the `run` or

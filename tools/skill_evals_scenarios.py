@@ -6,11 +6,13 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import os
+import re
 import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -22,6 +24,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
+sys.path.insert(0, str(sibling_scripts("review-insights")))
 
 import file_presence
 import json_reader
@@ -29,7 +32,10 @@ import private_folder
 import whole_number
 from git_client import NO_HOOKS, GitClient
 from path_containment import resolved_path, within
+from review_config import ConfigurationError, validate_repository_identity
 from review_document import specialists_manifest
+from review_flags import FlagError, load_store
+from review_io import PersistenceError
 from review_records import LEDGER_ID, source_parts
 from review_runtime import (
     DOCUMENT_STAGES,
@@ -38,6 +44,7 @@ from review_runtime import (
     declared_reviewer_files,
     validate_adapter_manifest,
 )
+from review_synthesis import TYPES as RECOMMENDATION_TYPES
 from review_vocabularies import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_vocabularies import SEVERITY_RANK
 from suite_names import is_suite_name
@@ -53,6 +60,7 @@ from tools.skill_evals_records import (
     findings,
     judgments,
     review,
+    synthesized,
 )
 
 PLATFORM_ALLOWED = {
@@ -69,7 +77,14 @@ SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))
 TRIGGER = "trigger"
-MODES = ("initial", "re-review", TRIGGER)
+SYNTHESIS = "synthesis"
+MODES = ("initial", "re-review", SYNTHESIS, TRIGGER)
+# A synthesis scenario: the one skill whose synthesis it judges, the folders of its fixture, which a run copies, and
+# its flag store, and how a flag is named.
+SYNTHESIS_SKILL = "review-insights"
+SYNTHESIS_FOLDERS = ("archive", "checkout")
+FLAGS = "flags.json"
+FLAG_ID = re.compile(r"RF-[0-9]{6,}")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 # Where a trigger scenario's shipped skills are.
 SHIPPED_SKILLS = "skills"
@@ -124,6 +139,9 @@ class Scenario:
     near_misses: tuple[str, ...] = ()
     # Each route of the scenario's reviewer manifest that pins a model or an effort.
     pins: tuple[RoutePin, ...] = ()
+    # A synthesis scenario's inclusive date range, as ISO dates, and the repository it analyzes.
+    period: tuple[str, str] | None = None
+    repository: str | None = None
 
 
 def quote(value: str) -> str:
@@ -352,15 +370,151 @@ KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
 RE_REVIEW_KINDS = frozenset({"ledger", "disposition", "repeats"})
 
 
+def _distinct(value: object, what: str, read: Callable[[object], str]) -> tuple[str, ...]:
+    """A non-empty list of distinct values, each read by `read`."""
+    if not isinstance(value, list) or not value:
+        raise ScenarioError(f"{what} must be a non-empty list")
+    items = tuple(read(item) for item in value)
+    if len(set(items)) != len(items):
+        raise ScenarioError(f"{what} name a value twice")
+    return items
+
+
+def _repository(value: object) -> str:
+    try:
+        return validate_repository_identity(value)
+    except (ConfigurationError, ValueError) as exc:
+        raise ScenarioError(f"repository must be owner/name, not {quote(str(value))}") from exc
+
+
+def _type(value: object) -> str:
+    return _choice(value, RECOMMENDATION_TYPES, "each of types")
+
+
+def _flag(value: object) -> str:
+    if not isinstance(value, str) or not FLAG_ID.fullmatch(value):
+        raise ScenarioError(f"each of flags must be a flag ID such as RF-000001, not {quote(str(value))}")
+    return value
+
+
+def target_paths(item: Mapping[str, Any]) -> list[str]:
+    """The files a synthesized recommendation targets: its target's path and, for a consolidation, the files it
+    merges. An analyzer recommendation, or one that names no file, targets none."""
+    target = item.get("target")
+    if not isinstance(target, dict):
+        return []
+    named = [target.get("path"), *(target.get("merge") or [])]
+    return [path for path in named if isinstance(path, str)]
+
+
+def describe_recommendation(item: Mapping[str, Any]) -> str:
+    target = item.get("target") or {}
+    where = (
+        f"{target.get('repository')}:{'+'.join(target_paths(item)) or '(no file)'}"
+        if "repository" in target
+        else "an analyzer"
+    )
+    flags = ",".join(item.get("linked_flags") or []) or "none"
+    return f"{item.get('id')} {item.get('type')} {where} flags={flags}"
+
+
+@dataclass(frozen=True)
+class RecommendationMatch:
+    """Which synthesized recommendations a recommends or never_recommends expectation is about: of one of the types,
+    when given, on the repository, when given, targeting one of the files, ignoring case, and linking every flag."""
+
+    paths: tuple[str, ...]
+    types: tuple[str, ...] | None
+    repository: str | None
+    flags: tuple[str, ...] = ()
+
+    @classmethod
+    def read(cls, spec: Mapping[str, object]) -> RecommendationMatch:
+        return cls(
+            paths=_distinct(spec["paths"], "paths", _path),
+            types=_distinct(spec["types"], "types", _type) if "types" in spec else None,
+            repository=_repository(spec["repository"]) if "repository" in spec else None,
+            flags=_distinct(spec["flags"], "flags", _flag) if "flags" in spec else (),
+        )
+
+    def matches(self, item: Mapping[str, Any]) -> bool:
+        target = item.get("target") or {}
+        wanted = {path.casefold() for path in self.paths}
+        return (
+            (self.types is None or item.get("type") in self.types)
+            and (self.repository is None or str(target.get("repository", "")).casefold() == self.repository)
+            and any(path.casefold() in wanted for path in target_paths(item))
+            and set(self.flags) <= set(item.get("linked_flags") or [])
+        )
+
+    def label(self) -> str:
+        types = "|".join(self.types) if self.types else "any"
+        flags = f" flags={','.join(self.flags)}" if self.flags else ""
+        return f"{types} {self.repository or '*'}:{'|'.join(self.paths)}{flags}"
+
+
+def recommends_expectation(spec: Mapping[str, object]) -> Expectation:
+    _fields(spec, {"kind", "repository", "paths", "types"}, frozenset({"flags"}))
+    wanted = RecommendationMatch.read(spec)
+
+    def check(record: Record) -> str | None:
+        found = synthesized(record)
+        if any(wanted.matches(item) for item in found):
+            return None
+        recorded = "; ".join(map(describe_recommendation, found)) or "none"
+        return f"no synthesized recommendation does; it recorded {recorded}"
+
+    return Expectation(f"recommends {wanted.label()}", check)
+
+
+def never_recommends_expectation(spec: Mapping[str, object]) -> Expectation:
+    _fields(spec, {"kind", "paths"}, frozenset({"repository", "types"}))
+    unwanted = RecommendationMatch.read(spec)
+
+    def check(record: Record) -> str | None:
+        found = [describe_recommendation(item) for item in synthesized(record) if unwanted.matches(item)]
+        return f"recorded {'; '.join(found)}" if found else None
+
+    return Expectation(f"never_recommends {unwanted.label()}", check)
+
+
+def never_titled_expectation(spec: Mapping[str, object]) -> Expectation:
+    _fields(spec, {"kind", "text"})
+    text = spec["text"]
+    if not isinstance(text, str) or not text.strip() or text != text.strip() or not text.isprintable():
+        raise ScenarioError(f"text must be one line of text, not {quote(str(text))}")
+
+    def check(record: Record) -> str | None:
+        titled = [
+            f"{item.get('id')} is titled {quote(str(item.get('title')))}"
+            for item in synthesized(record)
+            if text.casefold() in str(item.get("title", "")).casefold()
+        ]
+        return "; ".join(titled) or None
+
+    return Expectation(f"never_titled {quote(text)}", check)
+
+
+SYNTHESIS_KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
+    "recommends": recommends_expectation,
+    "never_recommends": never_recommends_expectation,
+    "never_titled": never_titled_expectation,
+}
+
+
 def expectation(spec: object, mode: str) -> Expectation:
     if not isinstance(spec, dict):
         raise ScenarioError("each expectation must be an object")
     kind = spec.get("kind")
-    if not isinstance(kind, str) or kind not in KINDS:
+    if not isinstance(kind, str) or (kind not in KINDS and kind not in SYNTHESIS_KINDS):
         raise ScenarioError(f"unknown expectation kind {quote(str(kind))}")
+    if (kind in SYNTHESIS_KINDS) != (mode == SYNTHESIS):
+        raise ScenarioError(
+            f"a {kind} expectation needs a {SYNTHESIS if kind in SYNTHESIS_KINDS else 'review'} scenario"
+        )
     if kind in RE_REVIEW_KINDS and mode != "re-review":
         raise ScenarioError(f"a {kind} expectation needs a re-review")
-    return KINDS[kind](spec)
+    return SYNTHESIS_KINDS[kind](spec) if mode == SYNTHESIS else KINDS[kind](spec)
 
 
 def _document(directory: Path, value: object, what: str) -> Path:
@@ -678,6 +832,68 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checko
     )
 
 
+def _date(value: object, what: str) -> date:
+    try:
+        parsed = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise ScenarioError(f"{what} must be an ISO date such as 2026-01-31, not {quote(str(value))}")
+    return parsed
+
+
+def open_flags(store: Path) -> set[str]:
+    """The IDs of the open flags in a synthesis fixture's flag store, read by ejryan89-code-review-core's reader."""
+    try:
+        return {flag["id"] for flag in load_store(store)["flags"] if flag["status"] == "open"}
+    except (OSError, ValueError, FlagError, PersistenceError) as exc:
+        raise ScenarioError(f"its {FLAGS} cannot be read: {exc}") from exc
+
+
+def load_synthesis(skill: str, directory: Path, spec: Mapping[str, object]) -> Scenario:
+    """A synthesis scenario: review-insights started on a date range and one repository over the fixture's archive,
+    flag store, and checkout, and the expectations its recorded synthesis is judged against. A scenario that expects
+    no recommendation is refused, since a synthesis that recommends nothing would pass it, and so is one whose
+    recommends expectation names a flag the fixture's store holds no open flag of, which no run could pass."""
+    fields = ("end", "expectations", "mode", "repository", "skill", "start")
+    if sorted(spec) != list(fields):
+        raise ScenarioError(f"a synthesis scenario.json must have exactly {', '.join(fields)}")
+    if spec["skill"] != skill:
+        raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
+    if skill != SYNTHESIS_SKILL:
+        raise ScenarioError(f"a synthesis scenario judges {SYNTHESIS_SKILL}, not {skill}")
+    start, end = _date(spec["start"], "start"), _date(spec["end"], "end")
+    if end < start:
+        raise ScenarioError(f"end {end} is before start {start}")
+    repository = _repository(spec["repository"])
+    for folder in SYNTHESIS_FOLDERS:
+        _require(directory / folder, f"has no {folder}/", f"its {folder}/", folder=True)
+    _require(directory / FLAGS, f"has no {FLAGS}", f"its {FLAGS}")
+    items = spec["expectations"]
+    if not isinstance(items, list) or not items:
+        raise ScenarioError("expectations must be a non-empty list")
+    expectations = tuple(expectation(item, SYNTHESIS) for item in items)
+    if not any(item["kind"] == "recommends" for item in items):
+        raise ScenarioError(
+            "a synthesis scenario expects a recommendation, or a synthesis that recommends nothing passes"
+        )
+    held = open_flags(directory / FLAGS)
+    for item in items:
+        for flag in item.get("flags", []) if item["kind"] == "recommends" else []:
+            if flag not in held:
+                raise ScenarioError(f"flag {flag} is no open flag of its {FLAGS}")
+    return Scenario(
+        skill=skill,
+        name=directory.name,
+        directory=directory,
+        mode=SYNTHESIS,
+        prior=None,
+        expectations=expectations,
+        period=(start.isoformat(), end.isoformat()),
+        repository=repository,
+    )
+
+
 def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
     try:
         spec = json_reader.read_file(directory / "scenario.json")
@@ -689,6 +905,8 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         mode = _choice(spec.get("mode"), MODES, "mode")
         if mode == TRIGGER:
             return load_trigger(skill, directory, spec, checkout)
+        if mode == SYNTHESIS:
+            return load_synthesis(skill, directory, spec)
         return review_scenario(skill, directory, spec, mode, checkout)
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc

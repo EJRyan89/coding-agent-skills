@@ -25,13 +25,14 @@ from tools.skill_evals_records import (
     Index,
     Record,
     RecordError,
+    insights_report,
     names_model,
     record_name,
     unguarded,
     unreported_model,
 )
 from tools.skill_evals_runs import RECORD_VERSION, RecordSource, indexes, run_token
-from tools.skill_evals_scenarios import TRIGGER, Scenario, quote
+from tools.skill_evals_scenarios import SYNTHESIS, TRIGGER, Scenario, quote
 
 
 @dataclass(frozen=True)
@@ -71,12 +72,18 @@ def trigger_record_problem(record: object, scenario: Scenario, model: str) -> st
 
 def records_in(directory: Path) -> RecordSource:
     """A record source reading DIR/<scenario>/<model>.json, or DIR/<scenario>/<model>-<run>.json for each of several
-    runs, holding each record to what a run's is held to: for a trigger scenario, trigger_record_problem; for any
-    other, the record contract, the scenario's review version, a guard that held every reviewer, and each reviewer's
-    reported model, the one its route pins or else the judged one."""
+    runs, holding each record to what a run's is held to: for a trigger scenario, trigger_record_problem; for a
+    synthesis scenario, review-insights' report reader and a recorded synthesis; for any other, the record contract,
+    the scenario's review version, a guard that held every reviewer, and each reviewer's reported model, the one its
+    route pins or else the judged one. A synthesis record is the insights report, which names neither the model nor
+    the guard, so neither is checked here."""
 
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
+        if scenario.mode == SYNTHESIS:
+            if not path.is_file():
+                raise RecordError(f"no record at {path}")
+            return insights_report(path)
         try:
             record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:

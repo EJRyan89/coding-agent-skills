@@ -43,6 +43,18 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
   session started; a session that could not start, timed out, did not list the skill, or ran on another model makes
   the run count for nothing. `audit-skill`'s `description` scenario is the worked example.
+- **A synthesis scenario** judges `review-insights`' synthesis: the prompt it writes for the reviewer agent and the
+  recommendations the agent's result adds to the insights report. Its `scenario.json` names `"mode": "synthesis"`, a
+  date range, and one repository, beside a fixed archive of review records, the repository's checkout that its
+  guidance is read from, and a flag store. A run copies the three into its own folder with a code-review
+  configuration naming them, so the fixture is never written, and starts the skill on the range and the repository.
+  The record judged is the one insights report the run wrote, read by the skill's own report reader, when its
+  synthesis is recorded; a run that stops after the report recorded no synthesis and counts for nothing. A run also
+  counts only when the session recorded the synthesis for Claude Code and not `--inline`, which the skill records only
+  once the reviewer guard has claimed the synthesis role. Its expectations read only the synthesized recommendations:
+  `recommends` a change of one of several types to one of several files, linking the flags that planted it;
+  `never_recommends` a file, such as one of a reviewer read from another checkout; and `never_titled`, a word an
+  instruction planted in a finding asks for. `review-insights`' `synthesis` scenario is the worked example.
 - **Every shipped skill the model may start** has a trigger scenario, its `description` scenario, and validation
   fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
   ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so

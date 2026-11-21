@@ -8,6 +8,7 @@ import contextlib
 import itertools
 import os
 import re
+import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from tools import claude_stream, runtime_canary
 from tools.runtime_canary import Completed, Runner
 from tools.skill_evals_records import (
     MODELS,
+    NO_SYNTHESIS,
     RECORD,
     REVIEWER_EFFORT,
     RUN,
@@ -44,13 +46,18 @@ from tools.skill_evals_records import (
     Record,
     RecordError,
     RoutePin,
+    insights_report,
     names_model,
     pinned_models,
     review,
     unguarded,
 )
 from tools.skill_evals_scenarios import (
+    FLAGS,
     REPOSITORY_ROOT,
+    SYNTHESIS,
+    SYNTHESIS_FOLDERS,
+    SYNTHESIS_SKILL,
     TRIGGER,
     Scenario,
     document_place,
@@ -90,6 +97,19 @@ NO_REVIEW = "the run recorded no review"
 # all that is judged.
 TRIGGER_RECORD = "trigger.json"
 TRIGGER_TURNS = 2
+# A synthesis run's script, which writes the synthesis's self-check with its resolved path, its own code-review
+# configuration, written in its folder, and the reports its summaries folder may hold, one per repository set and
+# period, of which the run's own is the only one.
+SYNTHESIS_SCRIPT = Path("scripts") / "review_insights.py"
+SYNTHESIS_CONFIG = "config.json"
+SUMMARIES = "summaries"
+REPORT_PATTERN = f"{SUMMARIES}/*/*/insights.json"
+# The session's own command that records a synthesis, as review-insights' step 2 gives it, which a run counts only
+# when it names Claude Code as the host and is not --inline, so `synthesize` recorded the result only once the reviewer
+# guard had claimed its role.
+RECORDING = re.compile(r"review_insights\.py\S*\s+synthesize\b")
+GUARDED_HOST = re.compile(r"--host[= ]+[\"']?claude-code\b")
+INLINE = re.compile(r"--inline\b")
 RunKey = tuple[str, str, Index]
 RecordSource = Callable[[Scenario, str, Index], Record]
 
@@ -140,6 +160,74 @@ def review_config(directory: Path) -> dict[str, Any]:
     }
 
 
+def synthesis_config(run: Path, repository: str) -> dict[str, Any]:
+    """A synthesis run's own code-review configuration: the run's copy of the fixture's archive and checkout, its
+    summaries in the run's folder, and the one repository, reviewed by the generic reviewer, since the records name
+    the reviewers that wrote them and the configured one is never read."""
+    generic = review_config(run)["repositories"]["example/unrelated"]["reviewer"]
+    return {
+        **review_config(run),
+        "repository_sets": {"evaluations": [repository]},
+        "repositories": {repository: {"reviewer": generic, "checkout_path": str(run / "checkout")}},
+        "archive_root": str(run / "archive"),
+        "summary_root": str(run / SUMMARIES),
+    }
+
+
+def stage_synthesis(scenario: Scenario, run: Path) -> list[str]:
+    """Copy a synthesis scenario's archive, checkout, and flag store into the run's folder, the store where the run's
+    environment names it, write the run's configuration there, and return what the skill is started with: the date
+    range and the repository. The fixture itself is never written."""
+    if scenario.period is None or scenario.repository is None:
+        raise ValueError(f"{scenario.name} is no synthesis scenario")
+    for folder in SYNTHESIS_FOLDERS:
+        shutil.copytree(scenario.directory / folder, run / folder)
+    shutil.copyfile(scenario.directory / FLAGS, run / FLAGS)
+    json_writer.write(run / SYNTHESIS_CONFIG, synthesis_config(run, scenario.repository), indent=2)
+    return [*scenario.period, scenario.repository]
+
+
+def find_synthesis(run: Path) -> Record:
+    """The insights report a synthesis run wrote in its summaries folder, when its synthesis is recorded. Raise
+    RecordError when it wrote none or more than one, or its synthesis is not recorded."""
+    reports = sorted(file_presence.matching(run, REPORT_PATTERN))
+    if len(reports) != 1:
+        found = "none" if not reports else f"{len(reports)}, so which is its own is unknown"
+        raise RecordError(f"{NO_SYNTHESIS}: it wrote {found} insights report")
+    return insights_report(reports[0])
+
+
+def recording_commands(output: str) -> list[str]:
+    """The session's own Bash or PowerShell commands that record a synthesis, `synthesize` without `--check`; a
+    subagent's self-check is not one."""
+    commands = []
+    for event in claude_stream.events(output):
+        if event.get("type") != "assistant" or event.get("parent_tool_use_id"):
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            tool_input = block.get("input") if isinstance(block, dict) and block.get("type") == "tool_use" else None
+            command = tool_input.get("command") if isinstance(tool_input, dict) else None
+            if isinstance(command, str) and RECORDING.search(command) and "--check" not in command:
+                commands.append(command)
+    return commands
+
+
+def synthesis_unguarded(output: str) -> str | None:
+    """Why a recorded synthesis was not one the reviewer guard held, or None: the session recorded it with a command
+    naming Claude Code as its host and without --inline, which `synthesize` records only once the guard claimed the
+    synthesis role, and with no other kind. The report keeps no trace of the guard, and its run is removed once the
+    result is recorded, so the session's commands are what shows it."""
+    commands = recording_commands(output)
+    if not commands:
+        return "the session ran no command that records the synthesis, so no reviewer guard is shown holding it"
+    # A fixed phrase, which names no path of the machine, since the results file records it as it is.
+    if any(INLINE.search(command) or not GUARDED_HOST.search(command) for command in commands):
+        return "the synthesis was recorded inline or for another host, which no reviewer guard held"
+    return None
+
+
 def prompt(skill: str, arguments: Sequence[str]) -> str:
     """The skill started by name with its arguments, each path quoted."""
     return " ".join([f"/{skill}", *(item if item.startswith("--") else f'"{item}"' for item in arguments)])
@@ -159,8 +247,14 @@ def reviewer_grants(home: Path, skill: str) -> list[str]:
     scripts: its self-check, which review_pipeline.py writes as python -B "<script>" validate-result --run "<run>"
     --role "<role>", and a lazy snapshot's two source commands, which review_source.py writes as python -B "<script>"
     source-file --run "<run>" --role "<role>" --path="<path>", and the same with source-search and --pattern. Each
-    names its script by its quoted path, so no other file matches; validation holds them to the skill grant rules."""
+    names its script by its quoted path, so no other file matches; validation holds them to the skill grant rules.
+    review-insights' synthesis runs only its self-check, granted at the deployed script's resolved path."""
     grants: list[str] = []
+    if skill == SYNTHESIS_SKILL:
+        # The synthesis's one command, its self-check, which review_synthesis.py writes as python -B "<script>"
+        # synthesize --report "<report>" --result "<result>" --check, naming the deployed script's resolved path.
+        script = home / SKILLS / skill / SYNTHESIS_SCRIPT
+        return [f'{shell}({PYTHON} -B "{script}" synthesize --report *)' for shell in ("Bash", "PowerShell")]
     for folder in reviewer_script_folders(home, skill):
         grants += [
             f'Bash({PYTHON} -B "{folder}review_pipeline.py" validate-result --run *)',
@@ -442,15 +536,17 @@ def run_failure(
     missing: str | None,
     recorded: bool = False,
     pins: Sequence[RoutePin] = (),
+    absent: str = NO_REVIEW,
 ) -> str | None:
     """Why a run counts for nothing, or None when it recorded a review on the model it was given, its reviewers on that
     model or on a model a route of the scenario's manifest pins, which the pipeline starts that route's reviewer on.
     With `recorded`, the reason as the results file records it: why the record is missing, why Claude Code could not
-    start, and each denied command, which may name the machine's paths, are each a fixed phrase."""
+    start, and each denied command, which may name the machine's paths, are each a fixed phrase; `absent` is the
+    phrase for a missing record, NO_REVIEW or a synthesis run's NO_SYNTHESIS."""
     listed, denials = runtime_canary.claude_stream(completed.stdout)
     session, reviewers = stream_models(completed.stdout)
     if missing is not None:
-        reasons = [NO_REVIEW if recorded else missing]
+        reasons = [absent if recorded else missing]
         if completed.error:
             reasons.append("Claude Code could not start" if recorded else completed.error)
         elif completed.timed_out:
@@ -570,8 +666,16 @@ def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, ru
 
 
 def review_run(scenario: Scenario, model: str, home: Path, session: Session, run: Path) -> tuple[Run, Path]:
-    """Run a review scenario once in its run's folder; return what it gave and its transcript."""
+    """Run a review or synthesis scenario once in its run's folder; return what it gave and its transcript."""
     transcript = run / "transcript.jsonl"
+    if scenario.mode == SYNTHESIS:
+        try:
+            arguments = stage_synthesis(scenario, run)
+        except OSError as exc:
+            transcript.write_text("", encoding="utf-8")
+            failure = "the synthesis fixture could not be staged"
+            return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure, RUN), transcript
+        return _session_run(scenario, model, home, session, arguments, transcript)
     with contextlib.ExitStack() as copies:
         try:
             fixture = copies.enter_context(reviewed_fixture(scenario))
@@ -591,7 +695,9 @@ def _session_run(
     """Start the session on the skill with its arguments in the model's home, keep its transcript, and find the
     record the run wrote."""
     run = transcript.parent
-    environment = run_environment(session.base, run, home / STATE / "config.json")
+    synthesis = scenario.mode == SYNTHESIS
+    config = run / SYNTHESIS_CONFIG if synthesis else home / STATE / "config.json"
+    environment = run_environment(session.base, run, config)
     command = claude_command(session.executable, prompt(scenario.skill, arguments), home, scenario.skill)
     completed = session.runner(command, home, environment, session.timeout)
     transcript.write_text(completed.stdout, encoding="utf-8")
@@ -600,21 +706,22 @@ def _session_run(
     record: Record | None = None
     missing = None
     try:
-        record = find_record(run / "tmp", RECORD_VERSION[scenario.mode])
+        record = find_synthesis(run) if synthesis else find_record(run / "tmp", RECORD_VERSION[scenario.mode])
     except RecordError as exc:
         missing = str(exc)
     try:
+        absent = NO_SYNTHESIS if synthesis else NO_REVIEW
         failure = run_failure(model, completed, session.timeout, scenario.skill, missing, pins=scenario.pins)
-        recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins)
+        recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins, absent)
         orchestrators, reviewers = stream_models(completed.stdout)
     except claude_stream.StreamError as exc:
         # A stream in a shape this does not read shows neither the models nor the skills, so the run shows nothing.
         if missing is None:
             return Run(None, str(exc), frozenset(), frozenset(), str(exc), RECORD), transcript
-        unread, written = f"{missing}; {exc}", f"{NO_REVIEW}; {exc}"
+        unread, written = f"{missing}; {exc}", f"{NO_SYNTHESIS if synthesis else NO_REVIEW}; {exc}"
         return Run(None, unread, frozenset(), frozenset(), written, RUN), transcript
     if failure is None and record is not None:
-        failure = recorded = unguarded(record)
+        failure = recorded = synthesis_unguarded(completed.stdout) if synthesis else unguarded(record)
     kind = None if failure is None else RUN if missing is not None else RECORD
     return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
 

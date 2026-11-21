@@ -1,0 +1,81 @@
+{
+  "artifacts": {
+    "markdown_sha256": "882a47e3af161201fb00ebaacfb713382d2e19581e550e17a5ca7daa8f30c740",
+    "payload_sha256": "040754f5b8d2da74f4310017e3d655779f23a1fa69ae109720531568cc113c15"
+  },
+  "findings": [
+    {
+      "body": "The connection string sets no MaxPoolSize, which the platform guide requires of every service.",
+      "candidate_key": "src/appsettings.json:10:Configuration",
+      "category": "Configuration",
+      "evidence": "src/appsettings.json line 10.",
+      "id": "F001",
+      "line": 10,
+      "path": "src/appsettings.json",
+      "severity": "SHOULD_FIX",
+      "source": "platform-review",
+      "title": "Database connection pool size is not configured"
+    }
+  ],
+  "ledger": [
+    {
+      "category": "Configuration",
+      "dispositions": [],
+      "id": "F001",
+      "judged_in": 1,
+      "repeats": [],
+      "severity": "SHOULD_FIX",
+      "state": "open",
+      "version": 1
+    }
+  ],
+  "prior_dispositions": [],
+  "pull_request": {
+    "base_ref": "main",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70",
+    "number": 112,
+    "title": "Inventory change 112",
+    "url": "https://github.com/example/inventory/pull/112"
+  },
+  "repository": "example/inventory",
+  "review": {
+    "adapter": {
+      "name": "platform-review",
+      "protocol_version": 1,
+      "reviewer": "platform-review",
+      "scope": "repository",
+      "source": "reviewer-root",
+      "source_commit": "2222222222222222222222222222222222222222",
+      "source_hashes": {
+        "review/platform-guide.md": "91d7a8917c9cd6663499fed1fcf071c0137927772b8f832d5892eebf3903e447",
+        "review/platform_checks.py": "ef28cebf16debd7e47ba23d5db5e8a1852b1eaa50033ccd3a42e5b07d19313d6"
+      },
+      "source_root": "/src/platform-review",
+      "status": "complete",
+      "usage": null
+    },
+    "counts": {
+      "MUST_FIX": 0,
+      "SHOULD_FIX": 1,
+      "SUGGESTION": 0
+    },
+    "mode": "initial",
+    "reviewed_at": "2026-02-22T12:00:00+00:00",
+    "reviewers": [
+      {
+        "category": "Repository",
+        "dispositions_only": false,
+        "files": 3,
+        "findings": 1,
+        "id": "platform-review",
+        "model": "claude-sonnet-5-5",
+        "retries": 0
+      }
+    ],
+    "summary": "Review of inventory change 112.",
+    "verdict": "APPROVED",
+    "version": 1
+  },
+  "schema_version": 2
+}
