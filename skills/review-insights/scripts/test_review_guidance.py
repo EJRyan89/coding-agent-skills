@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import gc
 import hashlib
 import json
 import os
@@ -8,9 +9,10 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -201,9 +203,9 @@ class RuleTests(unittest.TestCase):
                 self.assertEqual(expected, rg._statements(text))
 
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
-        self.assertEqual({1: ["docs/x.md"]}, rg._markdown_links(["see [x]( docs/x.md#part\t)"]))
-        self.assertEqual({1: [f"{chr(0xA0)}docs/x.md"]}, rg._markdown_links([f"see [x]({chr(0xA0)}docs/x.md)"]))
-        self.assertEqual({}, rg._markdown_links(["see [x](docs/a b.md)"]))
+        self.assertEqual({1: ["docs/x.md"]}, rg._markdown_links(["see [x]( docs/x.md#part\t)"])[0])
+        self.assertEqual({1: [f"{chr(0xA0)}docs/x.md"]}, rg._markdown_links([f"see [x]({chr(0xA0)}docs/x.md)"])[0])
+        self.assertEqual({}, rg._markdown_links(["see [x](docs/a b.md)"])[0])
 
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]
@@ -972,6 +974,25 @@ class SeparatorTests(unittest.TestCase):
 
 
 class LinkDestinationTests(unittest.TestCase):
+    def test_a_link_resolves_from_the_guidance_files_folder_or_from_the_root_after_a_slash(self) -> None:
+        # `_resolved` kept a root-absolute destination's `/`, so `[a](/x.md)` in `dir/g.md` was the unsupplied
+        # `dir///x.md` even for a reviewer given `x.md`.
+        lines = ["[a](/x.md)", "[b](/docs/y.md)", "[c](./z.md)", "[d](../w.md)", "[e](/../out.md)", "`/x.md`"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h", "x.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual(
+            [(2, "docs/y.md"), (3, "dir/z.md"), (4, "w.md")],
+            [(item["line"], item["reference"]) for item in found],
+        )
+
+    def test_a_code_path_s_leading_dot_slash_is_the_root_and_a_link_s_text_is_not_a_code_path(self) -> None:
+        # `./x.md` in code was compared as written, so it was unsupplied to a reviewer given `x.md` while `x.md` and
+        # `/x.md` were not; and a path in a link's text was read again as a code path, here the unsupplied `docs/y.md`.
+        lines = ["Read `./x.md`.", "[`docs/y.md`](y.md '`docs/y.md`')", "[r]: <y.md> `docs/y.md`", "`./q.md`"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h", "x.md": "h", "dir/y.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual([(4, "q.md")], [(item["line"], item["reference"]) for item in found])
+
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
         # read a link in a code span, and took `mailto:` for a file beside the guidance.
@@ -1000,3 +1021,48 @@ class LinkDestinationTests(unittest.TestCase):
             ],
             [(item["line"], item["reference"]) for item in found],
         )
+
+
+# The scaling test reads the same characters as eight lines and as one line eight times as long, each line a run of
+# links whose text holds a code path. A reader whose time grows with the text's length takes about as long either way,
+# a ratio near 1; one that checks each path against every link on its line takes eight times as long on the long line.
+# The bound is the two ratios' geometric midpoint, each side does the same work with garbage collection off, and a long
+# run far past the bound fails without timing it again.
+SCALING_LINES = 8
+SCALING_LINKS = 1000
+SCALING_RUNS = 7
+SCALING_BOUND = SCALING_LINES**0.5
+FAR_PAST = 3
+
+
+def _scaling_ratio_holds(read: Callable[[str], object], unit: str) -> tuple[float, float]:
+    """The fastest of the long line's runs and the bound it is held under, from the fastest of the short lines'."""
+    short = "\n".join([unit * SCALING_LINKS] * SCALING_LINES) + "\n"
+    long = unit * SCALING_LINKS * SCALING_LINES + "\n"
+
+    def seconds(text: str) -> float:
+        start = time.perf_counter()
+        read(text)
+        return time.perf_counter() - start
+
+    gc.disable()
+    try:
+        eight = min(seconds(short) for _ in range(SCALING_RUNS))
+        one: list[float] = []
+        for _ in range(SCALING_RUNS):
+            one.append(seconds(long))
+            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
+                break
+    finally:
+        gc.enable()
+    return min(one), SCALING_BOUND * eight
+
+
+def test_unsupplied_takes_time_in_proportion_to_a_line_of_links_with_code_in_their_text() -> None:
+    # Each code path was checked against every link on its line, so a line of 8000 links whose text held one took
+    # about 8 times as long as eight lines of 1000.
+    sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+    one, bound = _scaling_ratio_holds(
+        lambda text: rg.unsupplied("r", {("dir/g.md", "h"): text}, sources), "[`docs/a.md`](d/b.md) "
+    )
+    assert one < bound
