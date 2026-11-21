@@ -3354,6 +3354,95 @@ class ProjectSearchTests(Fixture):
             rows[-1][0].endswith("not searched: the folder cannot be listed: Access is denied"), rows[-1][0]
         )
 
+    def test_a_hidden_folder_is_never_listed_and_its_projects_are_not_found(self) -> None:
+        # A hidden folder holds a tool's state or cache, not the directory's projects, so the search prunes it:
+        # listing one at any depth fails this test, and a project inside one is neither found nor reported.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        for folder in (".tools/Tool", ".idea", "App/.cache/Deep", ".hidden/Nested/More"):
+            self.write(f"search/{folder}/Sample.csproj", LIB_PROJECT.replace("Lib.Pkg", "Other.Pkg"))
+        listed: list[Path] = []
+        scanning, listing = os.scandir, os.listdir
+
+        def scandir(path: str | os.PathLike[str]) -> object:
+            listed.append(Path(path))
+            return scanning(path)
+
+        def listdir(path: str | os.PathLike[str]) -> list[str]:
+            listed.append(Path(path))
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir), mock.patch.object(os, "listdir", listdir):
+            code, rows = self.run_main("why", "Lib.Pkg", "Other.Pkg", "--root", str(search))
+        hidden = [
+            path
+            for path in listed
+            if path.is_relative_to(search) and any(part.startswith(".") for part in path.relative_to(search).parts)
+        ]
+        self.assertEqual([], hidden)
+        self.assertIn(search, listed)
+        self.assertEqual([], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([["App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([["Other.Pkg"]], self.lines(rows, "MISSING"))
+        self.assertEqual(0, code)
+
+    def test_the_search_stops_at_its_bound_and_names_the_folder_it_stopped_at(self) -> None:
+        # Started in a large folder holding no solution, such as a home folder, the search lists at most its bound of
+        # folders, the directory included, and reports the next folder it would have listed; with no project found
+        # before it, the run fails naming that folder.
+        search = self.root / "search"
+        for name in ("A", "B", "C", "D"):
+            self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 3):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search))
+        reason = "the search stopped at its bound of 3 folders, before this folder and the folders after it"
+        self.assertEqual((1, [["C", reason]]), (code, self.lines(rows, "UNREADABLE")))
+        self.assertEqual(
+            [["A/A.csproj", "sdk", "direct", "listed"], ["B/B.csproj", "sdk", "direct", "listed"]],
+            self.lines(rows, "PROJECT"),
+        )
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 1):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            f"FAILED no solution or .csproj found under {search}; {search / 'A'} not searched: the search stopped at "
+            "its bound of 1 folders, before this folder and the folders after it",
+            rows[-1][0],
+        )
+
+    def test_the_search_is_bounded_at_ten_thousand_folders(self) -> None:
+        # The bound the skill and the module docstring state; a home folder holds far more folders than a solution.
+        self.assertEqual(10_000, dependency_graph.PROJECT_SEARCH_FOLDER_LIMIT)
+        self.assertIn("at most 10000 folders (PROJECT_SEARCH_FOLDER_LIMIT)", dependency_graph.__doc__ or "")
+        skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("the search stops after 10000 folders", skill)
+
+    def test_a_root_holding_a_solution_is_read_as_it_lists_its_projects_with_no_search(self) -> None:
+        # The bound and the pruning belong to the search alone: a solution's projects are read wherever it lists
+        # them, a hidden folder included, and no folder walk runs.
+        self.write("App/App.csproj", LIB_PROJECT)
+        self.write(".build/Tool/Tool.csproj", LIB_PROJECT)
+        self.write("Listed.sln", solution("App\\App.csproj", ".build\\Tool\\Tool.csproj"))
+
+        def walk_files(*arguments: object, **options: object) -> object:
+            raise AssertionError("a root holding a solution is never searched")
+
+        with (
+            mock.patch.object(dependency_graph, "walk_files", walk_files),
+            mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 0),
+        ):
+            for root in (self.root, self.root / "Listed.sln"):
+                with self.subTest(root=root.name):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(root))
+                    self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+                    self.assertEqual(
+                        [
+                            [".build/Tool/Tool.csproj", "sdk", "direct", "listed"],
+                            ["App/App.csproj", "sdk", "direct", "listed"],
+                        ],
+                        self.lines(rows, "PROJECT"),
+                    )
+
 
 class MSBuildEvaluationTests(Fixture):
     """What MSBuild evaluates, read through the script's lines: each case is a shape an earlier reading got wrong."""
