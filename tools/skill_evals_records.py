@@ -37,6 +37,9 @@ JUDGMENT, RUN, RECORD = "judgment", "run", "record"
 # holds, read through review, findings, and ledger_entries as that record's shapes, a review-insights report whose
 # synthesis is recorded, read through synthesized, or a trigger record.
 Record = Mapping[str, Any]
+# The key a by-name document scenario's record carries the session's own tool calls under, read from its transcript,
+# beside the review record's own keys, which judge only the review.
+SESSION_CALLS = "session_calls"
 # A synthesis run that recorded no synthesis of its own, as a NOT_COUNTED line and the results file say it.
 NO_SYNTHESIS = "the run recorded no synthesis"
 
@@ -115,6 +118,15 @@ def judgments(record: Record) -> dict[tuple[int, str], str]:
     return judged
 
 
+def session_calls(record: Record) -> list[dict[str, Any]]:
+    """The session's own tool calls a by-name run's record carries, each its tool's name and input, in order. Raise
+    RecordError for a record that carries none, which no by-name run's record is."""
+    calls: list[dict[str, Any]] | None = record.get(SESSION_CALLS)
+    if calls is None:
+        raise RecordError("the record carries no tool calls of the session")
+    return calls
+
+
 def synthesized(record: Record) -> list[dict[str, Any]]:
     """The recommendations an insights report's recorded synthesis added, in the order it recorded them."""
     return [item for item in record["recommendations"] if item.get("kind") == "synthesized"]
@@ -143,6 +155,11 @@ def insights_report(path: Path, period: tuple[str, str], repository: str) -> Rec
 def record_name(model: str, index: Index) -> str:
     """A record's file name under --records: the model's, and with several runs, the run's number after it."""
     return f"{model}.json" if index is None else f"{model}-{index}.json"
+
+
+def transcript_name(model: str, index: Index) -> str:
+    """The file name under --records of a by-name run's session transcript, beside its record's."""
+    return f"{record_name(model, index).removesuffix('.json')}.jsonl"
 
 
 def names_model(name: str, model_id: str) -> bool:

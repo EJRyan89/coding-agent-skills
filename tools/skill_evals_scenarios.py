@@ -25,11 +25,15 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
+import command_wrappers
 import file_presence
 import json_reader
 import private_folder
+import skill_inventory
 import whole_number
+from bash_syntax import BashSyntaxError
 from git_client import NO_HOOKS, GitClient
 from path_containment import resolved_path, within
 from review_config import ConfigurationError, validate_repository_identity
@@ -60,6 +64,7 @@ from tools.skill_evals_records import (
     findings,
     judgments,
     review,
+    session_calls,
     synthesized,
 )
 
@@ -90,6 +95,44 @@ SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 SHIPPED_SKILLS = "skills"
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
 DOCUMENT_FOLDER = "document"
+# A by-name document scenario's folders in the model's home: the one the document is staged in, one folder down from
+# the session's working directory, and the two decoys review-document's `resolve` passes over, a hidden folder and
+# another checkout, each holding a copy under the same name.
+BY_NAME_FOLDER = "drafts"
+HIDDEN_DECOY = ".drafts-old"
+CHECKOUT_DECOY = "old-checkout"
+# What the `resolved` kind reads in the session's own tool calls: the search tools, the programs that list or search for
+# files or their text, review-document's script, and, since no reader here parses PowerShell as pwsh does, a
+# PowerShell command's search program at a command's start, an assignment's right side included, and the script's
+# `resolve` and `build` commands in its text. A Bash command is read through audit-skill's `bash_programs`, the one
+# Bash grammar, which finds every program Bash runs, past assignments, wrappers, and shell scripts.
+SEARCH_TOOLS = frozenset({"Glob", "Grep"})
+SEARCH_PROGRAMS = frozenset(
+    {
+        "find",
+        "ls",
+        "dir",
+        "tree",
+        "fd",
+        "fdfind",
+        "rg",
+        "grep",
+        "egrep",
+        "fgrep",
+        "locate",
+        "mdfind",
+        "gci",
+        "Get-ChildItem",
+    }
+)
+DOCUMENT_SCRIPT_NAME = "review_document.py"
+POWERSHELL_SEARCH = re.compile(
+    r"(?:^|[;|&{(\n]|\$\(|\$[\w:]+\s*=)\s*(?:[\w.~:-]*[/\\])*("
+    + "|".join(sorted(SEARCH_PROGRAMS, key=len, reverse=True))
+    + r")(?:\.exe)?(?=\s|$|[;|&(){}])",
+    re.IGNORECASE,
+)
+DOCUMENT_SCRIPT = r"review_document\.py[\"']?\s+"
 # A repository reviewer's scenario: the skill that runs a reviewer manifest on a fixture, where this repository's own
 # skills are, and the folders of a reviewer whose files are placed, besides its SKILL.md and what its manifest declares.
 REVIEWER_SKILL = "review-prs"
@@ -131,6 +174,8 @@ class Scenario:
     placed: tuple[str, ...] = ()
     # The document stage a document scenario starts the skill at, or None for the skill's default.
     stage: str | None = None
+    # Whether a document scenario starts the skill with its document's file name alone, staged in the model's home.
+    by_name: bool = False
     # A repository reviewer's fixture's held files, each by its path in the fixture, which the copy restores.
     held: tuple[str, ...] = ()
     # A trigger scenario's requests that should start its skill, and its near misses, which should not: its
@@ -356,6 +401,102 @@ def repeats_expectation(spec: Mapping[str, object]) -> Expectation:
     return Expectation(f"repeats {_where(path, lines)} {spec['entry']}", check)
 
 
+@dataclass(frozen=True)
+class Step:
+    """One thing a call of the session's does, as the `resolved` kind reads it: the tool or program it searches with,
+    whether it runs `resolve` with the document's name, whether it builds the staged copy (True), another file
+    (False), or nothing (None), and whether it is a Bash command the grammar refuses, whose programs are unread."""
+
+    search: str | None = None
+    resolves: bool = False
+    built: bool | None = None
+    unread: bool = False
+
+
+def _document_command(words: Sequence[str], command: str) -> list[str] | None:
+    """The words after review_document.py's `command` in one program's words, or None when it runs no such command."""
+    for index, word in enumerate(words[:-1]):
+        if (
+            command_wrappers.bash_program(word.replace("\\", "/")) == DOCUMENT_SCRIPT_NAME
+            and words[index + 1] == command
+        ):
+            return list(words[index + 2 :])
+    return None
+
+
+def _builds_staged(arguments: Sequence[str], name: str) -> bool:
+    """Whether `build`'s arguments name the document's staged copy, BY_NAME_FOLDER/<name>, in either separator."""
+    return any(PurePosixPath(word.replace("\\", "/")).parts[-2:] == (BY_NAME_FOLDER, name) for word in arguments)
+
+
+def _bash_steps(command: str, name: str) -> list[Step]:
+    """The steps of a Bash command, one per program it runs, in the order the grammar reads them."""
+    try:
+        programs = skill_inventory.bash_programs(command)
+    except BashSyntaxError:
+        return [Step(unread=True)]
+    steps = []
+    for _, words in programs:
+        program = command_wrappers.bash_program(words[0])
+        built = _document_command(words, "build")
+        steps.append(
+            Step(
+                search=program if program in SEARCH_PROGRAMS else None,
+                resolves=_document_command(words, "resolve") == [name],
+                built=None if built is None else _builds_staged(built, name),
+            )
+        )
+    return steps
+
+
+def _powershell_steps(command: str, name: str) -> list[Step]:
+    """The steps of a PowerShell command, read from its text: a search program at a command's start before `resolve`,
+    then `resolve` with the name, quoted or not, then `build` and whether it names the staged copy."""
+    end = r"(?=[\s\"';&|)]|$)"
+    ran = re.search(DOCUMENT_SCRIPT + r"resolve\s+([\"']?)" + re.escape(name) + r"\1" + end, command)
+    searched = POWERSHELL_SEARCH.search(command[: ran.start()] if ran else command)
+    built = re.search(DOCUMENT_SCRIPT + r"build\b", command)
+    staged = re.compile(r"(?:^|[\s\"'/\\])" + re.escape(BY_NAME_FOLDER) + r"[/\\]" + re.escape(name) + end)
+    steps = [Step(search=searched[1])] if searched else []
+    steps += [Step(resolves=True)] if ran else []
+    steps += [Step(built=staged.search(command, built.end()) is not None)] if built else []
+    return steps
+
+
+def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
+    """What one of the session's calls does, as the `resolved` kind reads it."""
+    command = call["input"].get("command")
+    if call["name"] in SEARCH_TOOLS:
+        return [Step(search=str(call["name"]))]
+    if not isinstance(command, str) or call["name"] not in skill_inventory.SHELL_TOOLS:
+        return []
+    return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)
+
+
+def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
+    """That the session found the document named by `name` alone through review-document's `resolve`, searching for
+    nothing before it, and then built the copy `resolve` finds, the one staged in BY_NAME_FOLDER."""
+    _fields(spec, {"kind"})
+
+    def check(record: Record) -> str | None:
+        resolved = False
+        for step in (step for call in session_calls(record) for step in _steps(call, name)):
+            if not resolved and step.unread:
+                return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
+            if not resolved and step.search is not None:
+                return f"the session searched with {step.search} before it ran resolve"
+            resolved = resolved or step.resolves
+            if resolved and step.built is not None:
+                if step.built:
+                    return None
+                return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
+        if resolved:
+            return "the session built nothing after it ran resolve"
+        return f"the session never ran review_document.py resolve {quote(name)}"
+
+    return Expectation(f"resolved {quote(name)}", check)
+
+
 KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
     "finding": finding_expectation,
     "no_finding_above": no_finding_above_expectation,
@@ -368,6 +509,8 @@ KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
 
 
 RE_REVIEW_KINDS = frozenset({"ledger", "disposition", "repeats"})
+# The kind judged from the session's own tool calls, which only a by-name document scenario's record carries.
+RESOLVED = "resolved"
 
 
 def _distinct(value: object, what: str, read: Callable[[object], str]) -> tuple[str, ...]:
@@ -508,12 +651,17 @@ SYNTHESIS_KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
 }
 
 
-def expectation(spec: object, mode: str) -> Expectation:
+def expectation(spec: object, mode: str, by_name: str | None = None) -> Expectation:
+    """An expectation of a scenario of this mode; `by_name` is a by-name document scenario's document's file name."""
     if not isinstance(spec, dict):
         raise ScenarioError("each expectation must be an object")
     kind = spec.get("kind")
-    if not isinstance(kind, str) or (kind not in KINDS and kind not in SYNTHESIS_KINDS):
+    if not isinstance(kind, str) or (kind not in KINDS and kind not in SYNTHESIS_KINDS and kind != RESOLVED):
         raise ScenarioError(f"unknown expectation kind {quote(str(kind))}")
+    if kind == RESOLVED:
+        if by_name is None:
+            raise ScenarioError(f"a {RESOLVED} expectation needs a by_name document scenario")
+        return resolved_expectation(spec, by_name)
     if (kind in SYNTHESIS_KINDS) != (mode == SYNTHESIS):
         raise ScenarioError(
             f"a {kind} expectation needs a {SYNTHESIS if kind in SYNTHESIS_KINDS else 'review'} scenario"
@@ -918,11 +1066,24 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         raise ScenarioError(f"{directory.name}: {exc}") from exc
 
 
+def _by_name(spec: Mapping[str, object]) -> bool:
+    """Whether a document scenario starts the skill with its document's file name alone: `by_name` is true or left
+    out, and a by-name document stands alone, since a base needs a checkout of its own, which `resolve` passes over."""
+    if "by_name" not in spec:
+        return False
+    if spec["by_name"] is not True:
+        raise ScenarioError(f"by_name must be true; leave it out for a path, not {quote(str(spec['by_name']))}")
+    if "base" in spec:
+        raise ScenarioError("a by_name document has no base: resolve passes over the checkout a base is committed in")
+    return True
+
+
 def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mode: str, checkout: Path) -> Scenario:
     """A scenario of a review: a fixture, a document, or a repository reviewer's fixture, and its expectations."""
     allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
     if "document" in spec:
         allowed |= {"document"} | ({"base"} if "base" in spec else set()) | ({"stage"} if "stage" in spec else set())
+        allowed |= {"by_name"} if "by_name" in spec else set()
     if "reviewer" in spec:
         allowed |= {"reviewer"}
     if set(spec) != allowed:
@@ -937,12 +1098,14 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
     document: Path | None = None
     base: Path | None = None
     stage: str | None = None
+    by_name = False
     if "document" in spec:
         if mode != "initial":
             raise ScenarioError("a document scenario is an initial review: its mode is initial")
         document = _document(directory, spec["document"], "document")
         base = _document(directory, spec["base"], "base") if "base" in spec else None
         stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
+        by_name = _by_name(spec)
     elif reviewer is None:
         _fixture_in_place(directory)  # a reviewer's scenario had its fixture checked in _reviewer
     prior = None
@@ -951,7 +1114,8 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
         _require(prior, f"prior record {spec['prior']} is missing", f"prior record {spec['prior']}")
     if not isinstance(spec["expectations"], list) or not spec["expectations"]:
         raise ScenarioError("expectations must be a non-empty list")
-    expectations = tuple(expectation(item, mode) for item in spec["expectations"])
+    named = document.name if by_name and document is not None else None
+    expectations = tuple(expectation(item, mode, named) for item in spec["expectations"])
     _clean_verdict(spec["expectations"], mode)
     _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     _listed_sources(spec["expectations"], finding_sources(spec, directory, checkout))
@@ -968,6 +1132,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
         checkout=checkout if reviewer else None,
         placed=placed,
         stage=stage,
+        by_name=by_name,
         held=held,
         pins=route_pins(spec, directory, checkout),
     )
@@ -1054,8 +1219,15 @@ def skill_arguments(scenario: Scenario, place: Path, git: GitClient, fixture: Pa
     stage, if it names one."""
     if scenario.document is None:
         return prepare_arguments(scenario, fixture)
-    staged = str(stage_document(scenario, place / DOCUMENT_FOLDER, git))
-    return [staged] if scenario.stage is None else [staged, "--stage", scenario.stage]
+    if scenario.by_name:
+        raise ScenarioError(f"{scenario.name} starts the skill by its document's name, staged in the model's home")
+    return document_arguments(scenario, str(stage_document(scenario, place / DOCUMENT_FOLDER, git)))
+
+
+def document_arguments(scenario: Scenario, document: str) -> list[str]:
+    """What a document scenario starts the skill with: the document, by its staged path or, for a by-name scenario,
+    its file name alone, and its stage, if it names one."""
+    return [document] if scenario.stage is None else [document, "--stage", scenario.stage]
 
 
 def load_scenarios(

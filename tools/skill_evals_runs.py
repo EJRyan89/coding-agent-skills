@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,13 +26,13 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import frontmatter
 import json_writer
 import whole_number
-from git_client import GitClient, GitError
+from git_client import NO_HOOKS, GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
 from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
 from text_lines import LINE_BREAK, text_lines
 
-from deployer import tools
+from deployer import fsops, tools
 from deployer.platform_support import PYTHON
 from tools import claude_stream, runtime_canary
 from tools.runtime_canary import Completed, Runner
@@ -42,6 +42,7 @@ from tools.skill_evals_records import (
     RECORD,
     REVIEWER_EFFORT,
     RUN,
+    SESSION_CALLS,
     Index,
     Record,
     RecordError,
@@ -53,13 +54,17 @@ from tools.skill_evals_records import (
     unguarded,
 )
 from tools.skill_evals_scenarios import (
+    BY_NAME_FOLDER,
+    CHECKOUT_DECOY,
     FLAGS,
+    HIDDEN_DECOY,
     REPOSITORY_ROOT,
     SYNTHESIS,
     SYNTHESIS_FOLDERS,
     SYNTHESIS_SKILL,
     TRIGGER,
     Scenario,
+    document_arguments,
     document_place,
     quote,
     reviewed_fixture,
@@ -109,6 +114,8 @@ RECORDING = re.compile(r"review_insights\.py\S*\s+synthesize\b")
 GUARDED_HOST = re.compile(r"--host[= ]+[\"']?claude-code\b")
 INLINE = re.compile(r"--inline\b")
 RunKey = tuple[str, str, Index]
+# A run waiting for its turn: its scenario, its model, the model's home, and which run it is.
+Queued = tuple[Scenario, str, Path, Index]
 CONTENT_ERRORS_ALLOWED = {
     "review_run": (
         "the only content it writes is a synthesis run's configuration, built from the run's own paths and the "
@@ -238,6 +245,56 @@ def synthesis_unguarded(output: str) -> str | None:
     if any(INLINE.search(command) or not GUARDED_HOST.search(command) for command in commands):
         return "the synthesis was recorded inline or for another host, which no reviewer guard held"
     return None
+
+
+# A session's own message, or a tool call in it, in a shape the evaluation does not read, whose calls cannot then be
+# judged: reading it as no call would pass a session that searched for its document.
+UNREAD_CALLS = "the session's stream holds a message or a tool call in a shape the evaluation does not read"
+
+
+def session_tool_calls(output: str) -> list[dict[str, Any]]:
+    """The tool calls the session's own messages made, each its tool's name and input, in order; a subagent's call is
+    not the session's. A message of the session's whose content is not a list of blocks, or a call whose name is not
+    text or whose input is not an object, raises StreamShapeError."""
+    calls: list[dict[str, Any]] = []
+    for event in claude_stream.events(output):
+        if event.get("type") != "assistant" or event.get("parent_tool_use_id"):
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list) or not all(isinstance(block, dict) for block in content):
+            raise StreamShapeError(UNREAD_CALLS)
+        for block in content:
+            if block.get("type") != "tool_use":
+                continue
+            if not isinstance(block.get("name"), str) or not isinstance(block.get("input"), dict):
+                raise StreamShapeError(UNREAD_CALLS)
+            calls.append({"name": block["name"], "input": block["input"]})
+    return calls
+
+
+@contextlib.contextmanager
+def named_document(scenario: Scenario, home: Path, git: GitClient) -> Iterator[list[str]]:
+    """Stage a by-name document scenario's document in the model's home, the session's working directory, one folder
+    down in BY_NAME_FOLDER, with a copy under the same name in each decoy `resolve` passes over: HIDDEN_DECOY, a hidden
+    folder, and CHECKOUT_DECOY, a new git checkout of its own. Yield what the skill is started with, the document's file
+    name alone and its stage, if it names one, and remove the three folders when the block ends, however it ends. A
+    folder already there is refused, never reused, since another run's copy in it would be a second match."""
+    if scenario.document is None or not scenario.by_name:
+        raise ValueError(f"{scenario.name} is no by-name document scenario")
+    made: list[Path] = []
+    try:
+        for name in (BY_NAME_FOLDER, HIDDEN_DECOY, CHECKOUT_DECOY):
+            folder = home / name
+            folder.mkdir()
+            made.append(folder)
+            folder.joinpath(scenario.document.name).write_bytes(scenario.document.read_bytes())
+        # Hooks read from the null device, which holds none, so neither the user's nor a template's run.
+        git.output(["-c", f"core.hooksPath={NO_HOOKS}", "init", "--quiet"], directory=home / CHECKOUT_DECOY)
+        yield document_arguments(scenario, scenario.document.name)
+    finally:
+        for folder in made:
+            fsops.remove(folder)
 
 
 def prompt(skill: str, arguments: Sequence[str]) -> str:
@@ -699,9 +756,12 @@ def review_run(scenario: Scenario, model: str, home: Path, session: Session, run
         return _session_run(scenario, model, home, session, arguments, transcript)
     with contextlib.ExitStack() as copies:
         try:
-            fixture = copies.enter_context(reviewed_fixture(scenario))
-            place = copies.enter_context(document_place(scenario, run))
-            arguments = skill_arguments(scenario, place, session.git, fixture)
+            if scenario.by_name:
+                arguments = copies.enter_context(named_document(scenario, home, session.git))
+            else:
+                fixture = copies.enter_context(reviewed_fixture(scenario))
+                place = copies.enter_context(document_place(scenario, run))
+                arguments = skill_arguments(scenario, place, session.git, fixture)
         except (GitError, OSError) as exc:
             transcript.write_text("", encoding="utf-8")
             staged = "fixture" if scenario.document is None else "document"
@@ -735,6 +795,7 @@ def _session_run(
         failure = run_failure(model, completed, session.timeout, scenario.skill, missing, pins=scenario.pins)
         recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins, absent)
         orchestrators, reviewers = stream_models(completed.stdout)
+        calls = session_tool_calls(completed.stdout) if scenario.by_name else None
     except claude_stream.StreamError as exc:
         # A stream in a shape this does not read shows neither the models nor the skills, so the run shows nothing.
         if missing is None:
@@ -743,6 +804,8 @@ def _session_run(
         return Run(None, unread, frozenset(), frozenset(), written, RUN), transcript
     if failure is None and record is not None:
         failure = recorded = synthesis_unguarded(completed.stdout) if synthesis else unguarded(record)
+    if record is not None and calls is not None:
+        record = {**record, SESSION_CALLS: calls}
     kind = None if failure is None else RUN if missing is not None else RECORD
     return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
 
@@ -815,7 +878,9 @@ def run_all(
 ) -> dict[RunKey, Run]:
     """Every scenario on every model with a home, `runs` times, up to `jobs` at once, printing each transcript as its
     run ends. Each round of every scenario on every model is queued before the next. One job runs in this thread, in
-    order."""
+    order. The by-name runs on one model, which stage their document in that model's home, run one at a time as one
+    job, queued where the first of them is, so no run's `resolve` finds another's copy; each prints its transcript as
+    the job ends."""
     results: dict[RunKey, Run] = {}
     queued = [
         (scenario, model, home, index)
@@ -823,6 +888,15 @@ def run_all(
         for scenario in scenarios
         for model, home in homes.items()
     ]
+    chains: dict[str, list[Queued]] = {}
+    batches: list[list[Queued]] = []
+    for item in queued:
+        if not item[0].by_name:
+            batches.append([item])
+        elif item[1] in chains:
+            chains[item[1]].append(item)
+        else:
+            batches.append(chains.setdefault(item[1], [item]))
 
     def ended(scenario: Scenario, model: str, index: Index, result: tuple[Run, list[Path]]) -> None:
         results[(scenario.name, model, index)] = result[0]
@@ -830,17 +904,18 @@ def run_all(
             path = quote(runtime_canary.forward(transcript))
             print(f"TRANSCRIPT {scenario.name} {model}{run_token(index)} {path}", flush=True)
 
+    def run_batch(batch: Sequence[Queued]) -> list[tuple[Queued, tuple[Run, list[Path]]]]:
+        return [(item, run_scenario(item[0], item[1], item[2], session, item[3])) for item in batch]
+
     if jobs == 1:
         for scenario, model, home, index in queued:
             ended(scenario, model, index, run_scenario(scenario, model, home, session, index))
         return results
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        pending = {
-            pool.submit(run_scenario, scenario, model, home, session, index): (scenario, model, index)
-            for scenario, model, home, index in queued
-        }
+        pending = [pool.submit(run_batch, batch) for batch in batches]
         for future in concurrent.futures.as_completed(pending):
-            ended(*pending[future], future.result())
+            for item, result in future.result():
+                ended(item[0], item[1], item[3], result)
     return results
 
 

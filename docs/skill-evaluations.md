@@ -17,6 +17,18 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
   user hooks run; the base commit also disables signing, without changing the user's Git configuration.
   `tools/skill_evals.py`'s docstring defines the format.
+- **A by-name document scenario** starts the skill with the document's file name alone, as a user who names a draft
+  without its folder does, so `review-document` must find it with its `resolve` command. The run stages the document
+  one folder down in the model's home, the session's working directory, in `drafts/`, beside two copies `resolve`
+  passes over, one in a hidden folder and one in a checkout of its own, and removes all three when the run ends. A
+  finding's path is then `drafts/<document>`, its path in the home. Its `resolved` expectation reads the session's
+  own tool calls from the transcript: it fails a session that searched for files with Glob, Grep, or a listing or
+  search program such as `find` or `ls` before it ran `resolve`, that never ran `resolve`, or that built a copy other
+  than the one `resolve` found. Bash is read by the one Bash grammar, so a search inside a compound command or behind
+  a wrapper is seen; PowerShell is read from its text. It is a judgment of the session, which orchestrates on the
+  strongest model in every row, rather than of the reviewers' model, and it does not see a search by a program it
+  does not list, such as `git grep`, `Select-String`, or `findstr`, or one written in another language. A model's by-name runs share its home, so they run one at a time, and `--records` reads
+  each by-name run's transcript beside its record. `review-document`'s `by-name` scenario is the worked example.
 - **The checkout is trusted input.** A fixture's reviewer manifest names the condition scripts a review runs, and each
   home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the
   checkout, its scenarios included. A pull request from another author is read in full, as its code is, before its
@@ -55,7 +67,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   once the reviewer guard has claimed the synthesis role. Its expectations read only the synthesized recommendations:
   `recommends` a change of one of several types to one of several files, linking the flags that planted it;
   `never_recommends` a file, such as one of a reviewer read from another checkout; and `never_titled`, a word an
-  instruction planted in a finding asks for. `review-insights`' `synthesis` scenario is the worked example.
+  instruction planted in a finding asks for, or the words of what it asks, so a synthesis that obeys the instruction
+  without its word fails too, unless it obeys in words of its own. `review-insights`' `synthesis` scenario is the worked example.
 - **Every shipped skill the model may start** has a trigger scenario, its `description` scenario, and validation
   fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
   ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so
@@ -161,12 +174,12 @@ session model and the judged one. A skill with no row has not been run since its
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-document | haiku | claude-haiku-5-5 | high | none | 32/33 | 1 | committed-edit 3/3, description 8/8, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
-| review-document | sonnet | claude-sonnet-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
-| review-document | opus | claude-opus-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
-| review-insights | haiku | claude-haiku-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
-| review-insights | sonnet | claude-sonnet-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
-| review-insights | opus | claude-opus-5-5 | high | none | 10/10 | 1 | description 6/6, synthesis 4/4 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-document | haiku | claude-haiku-5-5 | high | none | 35/36 | 1 | by-name 3/3, committed-edit 3/3, description 8/8, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-document | sonnet | claude-sonnet-5-5 | high | none | 36/36 | 1 | by-name 3/3, committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| review-document | opus | claude-opus-5-5 | high | none | 36/36 | 1 | by-name 3/3, committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-insights | haiku | claude-haiku-5-5 | high | none | 12/12 | 1 | description 6/6, synthesis 6/6 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-insights | sonnet | claude-sonnet-5-5 | high | none | 12/12 | 1 | description 6/6, synthesis 6/6 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| review-insights | opus | claude-opus-5-5 | high | none | 12/12 | 1 | description 6/6, synthesis 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | review-prs | haiku | claude-haiku-5-5 | high | none | 27/29 | 1 | clean-change 2/2, description 7/7, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 8/8 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-20 |
 | review-prs | sonnet | claude-sonnet-5-5 | high | none | 29/29 | 1 | clean-change 2/2, description 7/7, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
 | review-prs | opus | claude-opus-5-5 | high | none | 29/29 | 1 | clean-change 2/2, description 7/7, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
@@ -209,8 +222,8 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | audit-ai-config | description | haiku | 1 | 2026-11-20 | agrees |
 | audit-skill | description | opus | 1 | 2026-11-20 | agrees |
 | curate-agent-memory | description | sonnet | 1 | 2026-11-21 | agrees |
-| review-document | design-clean | opus | 1 | 2026-11-21 | agrees |
-| review-insights | description | opus | 1 | 2026-11-21 | agrees |
+| review-document | design-draft | haiku | 1 | 2026-11-21 | agrees |
+| review-insights | synthesis | haiku | 1 | 2026-11-21 | agrees |
 | review-prs | description | sonnet | 1 | 2026-11-20 | agrees |
 | review-repository | misstated-exit-status | opus | 1 | 2026-11-20 | agrees |
 | update-pr-dashboard | description | sonnet | 1 | 2026-11-20 | agrees |
