@@ -72,14 +72,23 @@ def forms_problems(body: str, fix: bool, template: str) -> list[str]:
 
 
 def closing_line_problems(body: str, template: str) -> list[str]:
-    """Each line of the body that closes an issue outside a `Closes #<n>` line of its own, as closing_references
-    reads one."""
+    """Each line of the body that closes an issue outside a `Closes #<n>` line of its own, and each such line the
+    rendered body does not show, as closing_references reads them."""
     return [
-        f"line {number} of the pull request body closes an issue outside a `Closes #<number>` line of its own: "
-        f"{flat_text(text)!r}; GitHub reads a closing reference anywhere in the body, code and comments included, so "
-        "name each issue the change resolves on a line of its own and reword any other reference without a closing "
-        f'keyword ("Pull requests" in {PROFILE_DOC})'
-        for number, text in stray_closing_lines(body, template)
+        (
+            f"line {line.number} of the pull request body is a `Closes #<number>` line hidden from the rendered body, "
+            f"in a comment or a code block: {flat_text(line.text)!r}; it will close its issue on merge without GitHub "
+            "linking it, so the project board never sees the close; move it where the body shows it, or delete it "
+            f'("Pull requests" in {PROFILE_DOC})'
+        )
+        if line.hidden
+        else (
+            f"line {line.number} of the pull request body closes an issue outside a `Closes #<number>` line of its "
+            f"own: {flat_text(line.text)!r}; GitHub reads a closing reference anywhere in the body, code and comments "
+            "included, so name each issue the change resolves on a line of its own and reword any other reference "
+            f'without a closing keyword ("Pull requests" in {PROFILE_DOC})'
+        )
+        for line in stray_closing_lines(body, template)
     ]
 
 

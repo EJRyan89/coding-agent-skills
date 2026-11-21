@@ -34,7 +34,7 @@ from . import (
 from . import selection as selection_module
 from .arguments import PROG, USAGE_ERROR, command_given, parse_command, usage_error
 from .context import Context, Options
-from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
+from .errors import Cancelled, DeployError, debug_requested, fail, print_error, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
 from .manifest import ItemEntry, source_entry
 from .names import JOURNAL_FILE
@@ -565,13 +565,13 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
     if isinstance(exc, (OSError, KeyboardInterrupt)):
         exc = errors.converted(exc, "finish the deployment", errors.DEPLOYMENT_CANCELLED)
     if isinstance(exc, DeployError):
-        print_error(exc, debug)
-        code = exc.exit_code
+        error = exc
     else:
-        print(errors.named(exc, "finish the deployment"), file=sys.stderr)
-        if debug:
-            print_traceback(exc)
-        code = 1
+        # An exception the deployer has no message for is a defect, whose step is to read its traceback.
+        error = DeployError(errors.named(exc, "finish the deployment"), errors.DEBUG_HINT)
+        error.__cause__ = exc
+    print_error(error, debug)
+    code = error.exit_code
     print(f"Deployment {outcome}; reconciling the current journal before exit...", file=sys.stderr)
     try:
         recovered = journal.recover_incomplete(paths)
