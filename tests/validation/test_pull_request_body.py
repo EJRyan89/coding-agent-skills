@@ -447,13 +447,30 @@ CLOSES_LINES_ONLY = {
     "GH- before no digit": "This fixes GH-hosted runners.\n",
     "a keyword inside another word": "Disclosed #12 earlier; prefixes #12 too.\n",
     "the template's closing line left with no issue": "Closes #\n\nWhy.\n",
-    "a closing line alone in a code block, which GitHub closes by too": "Why.\n\n```\nCloses #12\n```\n",
+    "a closing line in an HTML block, which GitHub renders and links": "<details>\nCloses #12\n</details>\n",
 }
 
 
 @pytest.mark.parametrize("form", sorted(CLOSES_LINES_ONLY))
 def test_a_body_naming_issues_only_in_closes_lines_passes(form: str) -> None:
     assert closing_line_problems(CLOSES_LINES_ONLY[form], TEMPLATE) == []
+
+
+# Each `Closes #<n>` line the rendered body does not show, which closes its issue on merge without GitHub linking it.
+HIDDEN_CLOSING_LINES = {
+    "in a comment the author wrote": ("Closes #1\n<!--\nCloses #12\n-->\n", 3),
+    "in a fenced code block": ("Closes #1\n\n```\nCloses #12\n```\n", 4),
+    "in an indented code block": ("Closes #1\n\n    Closes #12\n", 3),
+}
+
+
+@pytest.mark.parametrize("form", sorted(HIDDEN_CLOSING_LINES))
+def test_a_closes_line_the_rendered_body_does_not_show_fails_as_hidden(form: str) -> None:
+    body, line = HIDDEN_CLOSING_LINES[form]
+    [problem] = closing_line_problems(body, TEMPLATE)
+    assert problem.startswith(f"line {line} of the pull request body is a `Closes #<number>` line hidden from the ")
+    assert "'Closes #12'" in problem
+    assert "close its issue on merge without GitHub linking it" in problem
 
 
 def test_the_template_left_as_it_was_passes_its_comments_unread() -> None:
