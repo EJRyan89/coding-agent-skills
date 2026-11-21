@@ -45,7 +45,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
-from markdown_sections import PROSE_BLOCKS, blocks
+from markdown_sections import PROSE_BLOCKS, blocks, code_spans
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
 from review_records import is_suite_profile
@@ -100,7 +100,8 @@ FORCE_WORDS = {
 }
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
-CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
+# A Markdown path a code span names, matched against the span's whole text as written.
+CODE_PATH = re.compile(r"[A-Za-z0-9_./-]+\.md")
 # The cover of a line that holds no link.
 NO_LINKS = Cover.of([])
 
@@ -490,11 +491,12 @@ def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, C
 
 def _code_references(line: str, links: Cover) -> list[str]:
     """The Markdown paths a line names in code outside its links, each with a leading `./` dropped, as a path from the
-    repository root reads it."""
+    repository root reads it. A code span is read through markdown_sections' code_spans, which pairs whole backtick
+    runs, so a path written with two backticks is read and one between two spans is prose."""
     return [
-        match.group(1).removeprefix("./")
-        for match in CODE_REFERENCE.finditer(line)
-        if not links.overlaps(match.start(), match.end())
+        span.text.removeprefix("./")
+        for span in code_spans(line)
+        if CODE_PATH.fullmatch(span.text) and not links.overlaps(span.start, span.end)
     ]
 
 

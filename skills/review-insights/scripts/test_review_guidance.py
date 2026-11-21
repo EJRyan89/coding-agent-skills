@@ -993,6 +993,17 @@ class LinkDestinationTests(unittest.TestCase):
         found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
         self.assertEqual([(4, "q.md")], [(item["line"], item["reference"]) for item in found])
 
+    def test_a_code_path_is_a_code_span_that_pairs_whole_backtick_runs(self) -> None:
+        # changed: the single-backtick pattern this read before read `guide.md` from between a double run and `y`,
+        # and `b.md` from inside a span written with two backticks; a span whose text has spaces was never a path.
+        lines = ["See `docs/a.md`.", "see ``x``guide.md`y`", "see ``a`b.md``", "see ``docs/c.md`` too", "` d.md `"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual(
+            [(1, "docs/a.md"), (4, "docs/c.md")],
+            [(item["line"], item["reference"]) for item in found],
+        )
+
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
         # read a link in a code span, and took `mailto:` for a file beside the guidance.
