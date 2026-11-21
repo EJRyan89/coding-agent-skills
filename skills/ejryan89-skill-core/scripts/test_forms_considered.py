@@ -333,6 +333,134 @@ def test_the_section_is_the_one_github_renders(text: str, section: str | None) -
     assert forms_section(text) == section
 
 
+# Generated bodies, each read as GitHub renders it (`gh api markdown`), that the mutation gate's surviving mutants
+# read otherwise: each changes the section of one of them or fails on it.
+GENERATED_SECTIONS = [
+    (
+        "## Forms considered\n\n- a\n  ##\n\nafter\n\n## End\n",
+        "\n- a\n  ##\n\nafter\n",
+    ),
+    (
+        "   w1 lazy\n\n<h1>w2\nw3 -->\n<h1>w4\n## Forms considered\n",
+        None,
+    ),
+    (
+        "w1 <!-- w2\n<h2>\nw3\n~~~\n\n- w4\n  ```\n## Forms considered\n\n",
+        "\n",
+    ),
+    (
+        "- w1\n  ```\n\n## Forms considered\n\n<!-- w2 -->\n<h2>w3</h2>",
+        "\n",
+    ),
+    (
+        "-\n  <h2>Y</h2>\n> q\n## Forms considered\n  - b\n    code\n\n## End\ntail",
+        "  - b\n    code\n",
+    ),
+    (
+        "-->\n\nw1\n===\nw2 -->\n## Forms considered\n\n> ## w3\n\nw4 -->\n    <!-- w5\n",
+        "\n> ## w3\n\nw4 -->\n    <!-- w5\n",
+    ),
+    (
+        "  - b\n   - deep\n> ---\n## Forms considered\n| - |\n---\nlazy\n\n## End\ntail",
+        "",
+    ),
+    (
+        "> - w1\n\n## Forms considered\n\n> w2 <!-- w3\n> <!-- w4\n  ## w5\n- <!-- w6\n",
+        "\n> w2 <!-- w3\n> ",
+    ),
+    (
+        "  text\n\t- t\n- the <!-- no closer\n## Forms considered\n- <!-- x\n\n-\n- \n\n## End\ntail",
+        "- ",
+    ),
+    (
+        "  <!-- w1\n\n# w2\n<h2>\nw3\n\n  w4 indented\n2. w5\n\nw6 -->\n<h1>w7\n## Forms considered\n\n",
+        None,
+    ),
+    (
+        (
+            "-->\n<!--\n1. c\n## Forms considered\na -->\n- a\n  <h2>Y</h2>\n2. b\n      text\n<!-- c -->\n"
+            "\n## End\ntail"
+        ),
+        None,
+    ),
+    (
+        (
+            "w1\n===\n## Forms considered\n\n- w2\n  ```\n\n> <!-- w3\nw4 -->\n- \n\n- w5 <!-- w6\n\n~~~\n"
+            "> - w7\n\n- <!-- w8\n\n"
+        ),
+        "\n- w2\n  ```\n\n> ",
+    ),
+    (
+        (
+            "> - w1\n> w2 <!-- w3\n> <!-- w4 -->\n## Forms considered\n\nw5 <!-- w6 --> w7\n  w8 indented\n"
+            "- w9\n  ```\n`<!--` w10\n- "
+        ),
+        "\nw5  w7\n  w8 indented\n- w9\n  ```",
+    ),
+    (
+        (
+            "---\n> - w1\n## Forms considered\n\n- a\n2. w2\n- a\n2. w3\n\n> <!-- w4\n- <!-- w5\n\n"
+            "> ## Forms considered\n>\n\nw6\n---\nw7 -->\n---\n> w8\n\n"
+        ),
+        "\n- a\n2. w2\n- a\n2. w3\n\n> ",
+    ),
+    (
+        (
+            "- w1\n  ```\n  w2\n#\n2. w3\n\n- ## Forms considered\n\n- w4\n<!-- w5 -->\n\n#\n\n> w6\n"
+            "    <!-- w7\n\n   w8 lazy\n## Forms considered\n\nw9\n---\n#\n\n"
+        ),
+        "",
+    ),
+    (
+        (
+            "<h2>w1</h2>\nw2 <!-- w3\nw4 <!-- w5 --> w6\n`<!--` w7\n~~~\n\nw8 <!-- w9\n\n"
+            "## Forms considered\n\n>\n\n```\n<!--\n```\n-->\n- w10\n  ---\n\n### w11\n\n"
+        ),
+        None,
+    ),
+    (
+        (
+            "<!--\n```\n-->\n## Forms considered\n-\n- w1\n  ```\n\nw2\n---\n\n-->\n### w3\n"
+            "> ## Forms considered\nw4 text\n\n- w5\n  ---\n- a\n2. w6\n<h2>w7</h2>\n\n# w8\n\n"
+            "- w9 <!-- w10\n\n"
+        ),
+        "-\n- w1\n  ```\n",
+    ),
+    (
+        (
+            "- w1\n  ```\n<h1>w2\n> - w3\n\nw4\n---\n- w5\n  ---\n\n<!--\n```\n-->\nw6 -->\n\n#\n\n"
+            "  ## w7\n\n## Forms considered\n\n<!--\n```\n-->\n- <h2>w8</h2>\n\n- w9\n  ```\n  w10\n  ```\n"
+            "    <!-- w11\n  w12 indented\n"
+        ),
+        "\n\n- <h2>w8</h2>\n\n- w9\n  ```\n  w10\n  ```\n    ",
+    ),
+    (
+        (
+            "- w1\n  ```\n  - w2\n<!--\nw3\n-->\n\n<!--\n```\n-->\n\n- w4 <!-- w5\n\nw6\n===\n<!--\n#\n"
+            "| w7 |\n| --- |\n| w8 |\nw9 -->\n\n## Forms considered\n\nw10\n===\nw11 <!-- w12 --> w13\n"
+            "  w14 indented\n\n- ## w15\n\n"
+        ),
+        "",
+    ),
+    (
+        (
+            "w1 <!-- w2 --> w3\n\n## Forms considered\n\n| w4 |\n| --- |\n| w5 |\n- w6\n\n"
+            "w7 <!-- w8 --> w9\n\nw10 text\nw11 <!-- w12 --> w13\n- <!-- w14\n<!--\nw15\n-->\n-\n"
+            "- w16 <!-- w17\n\n> <h1>w18</h1>\n\n<!-- w19\n"
+        ),
+        (
+            "\n| w4 |\n| --- |\n| w5 |\n- w6\n\nw7  w9\n\nw10 text\nw11  w13\n- \n-\n- w16 <!-- w17\n\n"
+            "> <h1>w18</h1>\n\n"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("text", "section"), GENERATED_SECTIONS)
+def test_a_generated_body_is_read_as_github_renders_it(text: str, section: str | None) -> None:
+    assert forms_section(text) == section
+
+
 # Where a setext or HTML heading ends the section, read here by the module's own item reading and the walk's quotes as
 # it was before the walk read the rest of the body, each pinned to GitHub's rendering: an underline or an HTML heading
 # a list item or a quote holds is inside the section, and one no container holds ends it.
