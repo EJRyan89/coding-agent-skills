@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from unittest import mock
 from urllib.parse import unquote
@@ -2441,10 +2441,31 @@ class ResolveTests(unittest.TestCase):
         )
 
     def test_a_name_that_is_not_one_file_name_is_refused(self) -> None:
-        for name in ("", ".", "..", "docs/design.md", "docs\\design.md", "a\nb.md", "a\u2028b.md", " design.md"):
+        for name in (
+            "",
+            ".",
+            "..",
+            "docs/design.md",
+            "docs\\design.md",
+            "a\nb.md",
+            "a\u2028b.md",
+            " design.md",
+            "D:design.md",
+            "design.md:notes",
+        ):
             with self.subTest(name=name), self.assertRaises(review_document.DocumentError) as raised:
                 self.resolve(name)
             self.assertIn("is not a file name alone", str(raised.exception))
+
+    def test_a_drive_relative_name_would_leave_the_working_directory_on_windows_so_it_is_refused_everywhere(
+        self,
+    ) -> None:
+        # Joined to the working directory, a name with a drive replaces it: on Windows the stat would read drive D's
+        # current folder, so resolve refuses the colon on every platform before any join.
+        self.assertEqual(PureWindowsPath("D:design.md"), PureWindowsPath("C:/work tree") / "D:design.md")
+        self.assertEqual("design.md", PureWindowsPath("D:design.md").name)
+        with self.assertRaises(review_document.DocumentError):
+            self.resolve("D:design.md")
 
     def test_the_command_resolves_against_the_working_directory_and_fails_on_one_line(self) -> None:
         self.write("docs/design.md")
@@ -2455,7 +2476,7 @@ class ResolveTests(unittest.TestCase):
                 1,
                 [
                     "FAILED 'docs/design.md' is not a file name alone; give the document's path, or a "
-                    "name with no folder, line break, control character, or space at either end"
+                    "name with no folder, drive, colon, line break, control character, or space at either end"
                 ],
             ),
         ):

@@ -54,20 +54,20 @@ reviewer, and a stage given for one is refused. The default output is a new temp
 written to a checkout unless `--output` names a folder inside one; `--output` must name a new or empty directory, so
 nothing already there is mixed with the review's files or replaced.
 
-`resolve` takes a file name alone, with no folder in it, and finds the files a program opens under that name: a file
-of that name in the working directory itself is the one found, and only otherwise is the tree below it searched, through
-ejryan89-skill-core's `folder_walk`, so its rule is the walk's. A version-control folder (`.git`, `.hg`, `.svn`), a
-dependency folder or its cache (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`), build output (`bin`,
-`obj`), Visual Studio's `.vs`, another checkout below the working directory (a clone, submodule, or worktree), and a
-linked folder are not searched; nor is a hidden folder, one whose name starts with a dot, which holds a tool's state or
-cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name. A matching entry that is a link,
-not a plain file, is passed over, since it may lead out of the tree, and one whose own metadata cannot be read is
-printed as UNSEARCHED, never taken for no file there. Names are compared as the folder holding each file
-compares them, so `Design.md` is found for `design.md` only where that folder folds case. A `.gitignore` is not read:
-a folder it ignores is searched unless the rule above skips it, so a draft kept in an ignored folder is still found. A
+`resolve` takes a file name alone, with no folder, drive, or colon in it, and finds the files a program opens under that
+name: a file of that name in the working directory itself is the one found, and only otherwise is the tree below it
+searched, through ejryan89-skill-core's `folder_walk`, so its rule is the walk's. A version-control folder (`.git`,
+`.hg`, `.svn`), a dependency folder or its cache (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`), build
+output (`bin`, `obj`), Visual Studio's `.vs`, another checkout below the working directory (a clone, submodule, or
+worktree), and a linked folder are not searched; nor is a hidden folder, one whose name starts with a dot, which holds a
+tool's state or cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name. A matching entry
+that is a link, not a plain file, is passed over, since it may lead out of the tree, and one whose own metadata cannot
+be read is printed as UNSEARCHED, never taken for no file there. Names are compared as the folder holding each file
+compares them, so `Design.md` is found for `design.md` only where that folder folds case. A `.gitignore` is not read: a
+folder it ignores is searched unless the rule above skips it, so a draft kept in an ignored folder is still found. A
 folder or entry the walk could not list or examine, and a folder whose name holds a line break or a control character,
-which no line could name, is printed as UNSEARCHED, and a single match found beside one is printed as a CANDIDATE,
-since the folder not searched may hold another.
+which no line could name, is printed as UNSEARCHED, and a single match found beside one is printed as a CANDIDATE, since
+the folder not searched may hold another.
 """
 
 from __future__ import annotations
@@ -868,17 +868,20 @@ def report(fixture: Path, recorded: Path) -> list[str]:
 
 
 def refuse_name(name: str) -> None:
-    """Refuse a `name` that is not one file name a line can print as it is."""
+    """Refuse a `name` that is not one file name in the working directory a line can print as it is. A colon is
+    refused on every platform, since on Windows it makes `D:design.md` a path in drive D's current folder, outside
+    the working directory, and `design.md:notes` a stream of `design.md`. With no separator and no colon, a name is
+    its own last part as either platform parses it."""
     if (
         not name
         or name in {".", ".."}
-        or any(separator in name for separator in "/\\")
+        or any(separator in name for separator in "/\\:")
         or LINE_UNSAFE.search(name)
         or name != name.strip()
     ):
         raise DocumentError(
-            f"{name!r} is not a file name alone; give the document's path, or a name with no folder, line break, "
-            "control character, or space at either end"
+            f"{name!r} is not a file name alone; give the document's path, or a name with no folder, drive, colon, "
+            "line break, control character, or space at either end"
         )
 
 
