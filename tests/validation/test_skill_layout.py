@@ -1740,6 +1740,42 @@ def test_an_output_placeholder_is_placed_on_the_line_commonmark_breaks(separator
     ]
 
 
+@pytest.mark.parametrize(
+    ("supported", "expected"),
+    [
+        # An extension written alone in a span of two backticks is named. The single-backtick pattern this read
+        # before named it too, from the single-backtick pair inside the double runs.
+        pytest.param("`.bash`, `.sh`, ``.py``, and `.ps1` files", [], id="a-span-of-two-backticks"),
+        # changed: the pattern read `.x` from inside the span ``.x`.py``, a false executable extension the policy
+        # reported.
+        pytest.param(
+            "`.bash`, `.sh`, ``.x`.py``, `.py`, and `.ps1` files",
+            [],
+            id="a-backtick-inside-a-span-of-two",
+        ),
+        # changed: the pattern paired a stray backtick with the first of a double run and reported `.q`, which
+        # CommonMark reads as text, since no later single backtick closes it.
+        pytest.param(
+            "`.bash`, `.sh`, `.py`, and `.ps1` files, not a stray `.q``x`` run",
+            [],
+            id="a-stray-backtick-before-a-double-run",
+        ),
+    ],
+)
+def test_the_script_languages_are_the_code_spans_commonmark_pairs(
+    supported: str, expected: list[str], tmp_path: Path
+) -> None:
+    python = platform_support.PYTHON
+    write_fixture_tree(
+        tmp_path,
+        {
+            SKILL_GUIDE: f"A skill's executable files are Bash, Python, and PowerShell: {supported}. JavaScript and "
+            "TypeScript are not: `.js`, `.mjs`, `.cjs`, `.ts`, `.psm1`, `.cmd`, and `.bat` files are rejected.\n"
+        },
+    )
+    assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == expected
+
+
 @SEPARATOR
 def test_the_script_language_statement_is_one_line_as_commonmark_breaks_it(separator: str, tmp_path: Path) -> None:
     python = platform_support.PYTHON
