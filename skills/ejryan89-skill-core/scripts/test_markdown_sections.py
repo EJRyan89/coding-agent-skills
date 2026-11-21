@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import math
 import sys
 import time
@@ -263,43 +264,50 @@ def test_a_line_without_its_code_spans_drops_them_by_default() -> None:
     assert without_code_spans("a `b` c") == "a  c"
 
 
-# Lines sixteen times as long as others: a linear reading takes about sixteen times as long, a reading that searches
-# the rest of the line from each run that no other matches, as the old pattern did, about 64 times, and a quadratic
-# one about 256 times. The bound sits halfway between linear and the former in log space.
+# Lines sixteen times as long as others: a linear reading takes about sixteen times as long; a reading that searches
+# the rest of the line from each run that no other matches, as the old pattern did, about 64 times; and a quadratic
+# one about 256 times. Each line's bound sits halfway in log space between linear and the slower reading it catches:
+# SPAN_BOUND below a reading 64 times as long, and SPAN_QUADRATIC_BOUND below a quadratic one, which leaves a linear
+# reading a margin of about four rather than two.
 SPAN_FACTOR = 16
 SPAN_BOUND = SPAN_FACTOR**1.25
-# Each shape at a size and at SPAN_FACTOR times it, and the slower reading it catches: one long run that no other
-# matches, which the old pattern, `(`+)(.+?)\1`, searched from each backtick of the run to the line's end; a run of
-# every length up to about the line's square root, none matched, which a pattern that pairs whole runs, such as
+SPAN_QUADRATIC_BOUND = SPAN_FACTOR**1.5
+# Each shape at a size and at SPAN_FACTOR times it, its bound, and the slower reading it catches: one long run that no
+# other matches, which the old pattern, `(`+)(.+?)\1`, searched from each backtick of the run to the line's end; a run
+# of every length up to about the line's square root, none matched, which a pattern that pairs whole runs, such as
 # ``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``, searches from each run to the line's end; many spans of one run length,
 # which a reader that looked for a closer among every run of the length, not only those past the opener, reads in
-# time growing with their square; and unmatched runs of every length up to about the square root of the spans after
-# them, which a reader that scanned the later runs one by one for each opener's closer reads in time growing with
-# the spans times that root.
+# time growing with their square; and unmatched runs of every length up to four times the square root of the spans
+# after them, which a reader that scanned the later runs one by one for each opener's closer reads in time growing
+# with the spans times that root. Four times the root makes that scan most of the slower reading's time on the
+# shorter line too, so it takes close to 64 times as long on the longer one, as far above the bound as a linear
+# reading is below it.
 SPAN_SCALING = {
-    "one long unmatched run": (lambda size: "`" * size + "a" * size, 256, 256 * SPAN_FACTOR),
+    "one long unmatched run": (lambda size: "`" * size + "a" * size, 256, 256 * SPAN_FACTOR, SPAN_BOUND),
     "unmatched runs of every length": (
         lambda size: "".join("`" * length + "a" for length in range(1, size + 1)),
         64,
         257,
+        SPAN_BOUND,
     ),
-    "many spans": (lambda size: "`a` " * size, 256, 256 * SPAN_FACTOR),
+    "many spans": (lambda size: "`a` " * size, 256, 256 * SPAN_FACTOR, SPAN_QUADRATIC_BOUND),
     "unmatched runs before many spans": (
-        lambda size: "".join("`" * length + "a" for length in range(2, math.isqrt(size) + 2)) + "`a` " * size,
+        lambda size: "".join("`" * length + "a" for length in range(2, 4 * math.isqrt(size) + 2)) + "`a` " * size,
         1024,
         1024 * SPAN_FACTOR,
+        SPAN_BOUND,
     ),
 }
 
 
-@pytest.mark.parametrize(("shape", "small", "large"), SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
+@pytest.mark.parametrize(("shape", "small", "large", "bound"), SPAN_SCALING.values(), ids=SPAN_SCALING.keys())
 def test_a_line_s_code_spans_are_read_in_time_in_proportion_to_it(
-    shape: Callable[[int], str], small: int, large: int
+    shape: Callable[[int], str], small: int, large: int, bound: float
 ) -> None:
     # The runs of every length grow as the square of their count, so four times the lengths is about sixteen times
     # the line.
     assert round(len(shape(large)) / len(shape(small))) == SPAN_FACTOR
-    assert_time_in_proportion(code_spans, shape(small), shape(large), SPAN_BOUND)
+    assert_time_in_proportion(code_spans, shape(small), shape(large), bound)
 
 
 class HtmlCommentTests(unittest.TestCase):
@@ -1063,13 +1071,25 @@ def _seconds[T](read: Callable[[T], object], value: T, repeats: int, limit: floa
     so far, so a reading far slower than the bound fails in about the bound's time rather than the reading's. A runner
     whose pool runs more suites than it has processors shares each processor between them, so a reading long enough to
     span several of the scheduler's slices takes about twice its own time on the wall clock, while a short one may run
-    in one slice alone: timed by the wall clock, a linear reading measured about twice its ratio there."""
-    started = time.process_time()
-    for _ in range(repeats):
-        read(value)
-        if (elapsed := time.process_time() - started) > limit:
-            return elapsed
-    return time.process_time() - started
+    in one slice alone: timed by the wall clock, a linear reading measured about twice its ratio there.
+
+    The cyclic garbage collector is off while it times, as `timeit` turns it off. A collection of the older generations
+    walks every object the process holds, and a reading that keeps more of its objects alive at once, as on a longer
+    input, moves more of them into those generations, so the collector's share grows faster than the input, and faster
+    again the more objects the process holds: a linear reading measured about 1.5 times its ratio with it on in a
+    process holding two million objects."""
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        started = time.process_time()
+        for _ in range(repeats):
+            read(value)
+            if (elapsed := time.process_time() - started) > limit:
+                return elapsed
+        return time.process_time() - started
+    finally:
+        if collecting:
+            gc.enable()
 
 
 def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T, bound: float) -> None:
