@@ -195,6 +195,13 @@ class BodyCheckTests(unittest.TestCase):
         body = FILLED.replace("\n", "\r").replace("None\r", f"{comment}\rNone\r")
         self.assertEqual(["PLACEHOLDER 12 a template comment"], pull_request.body_problems(body, TEMPLATE))
 
+    def test_a_body_of_template_comments_eight_times_as_long_is_checked_in_about_eight_times_the_time(self) -> None:
+        # A linear check takes about eight times as long. Numbering each comment's line from the body's start is
+        # quadratic, and beside the check's linear work took about 38 times as long; the bound, about 23, sits between.
+        unit = "<!-- The problem, in a paragraph. -->\n"
+        check = partial(pull_request.body_problems, template=TEMPLATE)
+        assert_time_in_proportion(check, unit * 800, unit * 6400, 8**1.5)
+
     def test_a_template_comment_holding_a_lone_cr_keeps_the_body_s_lines(self) -> None:
         template = "<!-- one\rtwo -->\nCloses #\n## Changes\n"
         body = "<!-- one\rtwo -->\nCloses #5\n## Changes\n"
