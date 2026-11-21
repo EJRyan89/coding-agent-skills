@@ -50,9 +50,7 @@ The limits:
   time that grows with the square of the line's backtick runs;
 - a backslash-escaped backtick is read as opening a span, so ``\`<!-- x -->\` `` keeps a comment GitHub hides;
 - a span is read within one line, so a span that crosses a line break shields no `<!--` on its second line, and its
-  closing backtick opens a span on that line, so `` `a\nb` <!-- x --> `c` `` keeps a comment GitHub hides;
-- `placeholder_forms` reads the template's guidance from every comment its section holds, with no code test, so a
-  template whose section shows `<!--` in code yields guidance that is no comment.
+  closing backtick opens a span on that line, so `` `a\nb` <!-- x --> `c` `` keeps a comment GitHub hides.
 
 A title is a fix's when it opens with the type `fix`, in any case, an optional scope, an optional `!`, a colon, and a
 space, by the grammar `TITLE` reads every pull request title with.
@@ -673,11 +671,13 @@ def _words(text: str) -> str:
 
 
 def placeholder_forms(template: str) -> tuple[str, set[str]]:
-    """The template section's visible text, and the text of each of its comments, which an author may have kept with
-    the comment markers dropped, each as _words gives it."""
+    """The template section's visible text, and the text of each comment GitHub hides in it, read as a body's are,
+    which an author may have kept with the comment markers dropped, each as _words gives it."""
     section = markdown_section(template.replace("\r\n", "\n"), FORMS_HEADING) or ""
-    guidance = {_words(comment.removeprefix("<!--").removesuffix("-->")) for comment in HIDDEN_COMMENT.findall(section)}
-    return _words(without_hidden_comments(section)), guidance - {""}
+    reading = _reading(section)
+    comments = (section[first:past] for first, past in reading.hidden)
+    guidance = {_words(comment.removeprefix(COMMENT_OPENER).removesuffix(COMMENT_CLOSER)) for comment in comments}
+    return _words(reading.visible(0, len(section))), guidance - {""}
 
 
 def is_placeholder(words: str, template: str) -> bool:

@@ -6,7 +6,6 @@ body check that reads it here; these show the reader's own answers.
 
 from __future__ import annotations
 
-import gc
 import sys
 import time
 from pathlib import Path
@@ -17,7 +16,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forms_considered
-from forms_considered import WALK_WINDOW, FormsFault, forms_fault, forms_section, is_fix_title, without_hidden_comments
+from forms_considered import (
+    WALK_WINDOW,
+    FormsFault,
+    forms_fault,
+    forms_section,
+    is_fix_title,
+    placeholder_forms,
+    without_hidden_comments,
+)
 from markdown_sections import blocks
 
 TEMPLATE = (
@@ -167,43 +174,41 @@ def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str
         assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
 
 
-# A body of SCALE times the units is read against the smaller one, each the fastest of up to RUNS readings with the
-# garbage collector off, so a slow or loaded runner slows both alike. A linear reading takes about SCALE times as long
-# and a quadratic one about SCALE squared, so the ratio of the larger's time to SCALE times the smaller's is bounded
-# between. The readings stop at the first round whose fastest times meet the bound, so a passing run reads each body
-# about once; the walk count above, which runs first, fails a reading that walks too far before this one times it.
+# A body of SCALE times the units is read against the smaller one by the processor time the process spends, as
+# test_markdown_sections times its walk, since a runner that shares its processors between more suites than it has
+# stretches a reading's wall-clock time unevenly. Each reading repeats until the smaller takes LEAST_TIMED_SECONDS; the
+# smaller keeps the least of TIMINGS timings, and the larger passes at its first timing under the bound. A linear
+# reading takes about SCALE times as long and a quadratic one SCALE squared, so the bound sits halfway between in log
+# space. The walk count above, which runs first, fails a reading that walks too far before this one times it.
 SCALE = 8
-RUNS = 5
-SCALE_BOUND = 3.0
+SCALE_BOUND = SCALE**1.5
+LEAST_TIMED_SECONDS = 0.1
+TIMINGS = 3
 SMALL_BODY = 2_000
 
 
-def read_time(text: str) -> float:
-    """How long one reading of the body takes."""
-    started = time.perf_counter()
-    forms_section(text)
-    return time.perf_counter() - started
+def processor_seconds(text: str, repeats: int) -> float:
+    """The processor time the process spends reading the body `repeats` times."""
+    started = time.process_time()
+    for _ in range(repeats):
+        forms_section(text)
+    return time.process_time() - started
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
 def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
     repeats = max(1, SMALL_BODY // len(unit))
     small, large = head + unit * repeats + tail, head + unit * repeats * SCALE + tail
-    ratios: list[float] = []
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        fastest = [float("inf"), float("inf")]
-        for _ in range(RUNS):
-            # Taken in turn, so a change in the runner's load meets both.
-            fastest = [min(fastest[0], read_time(small)), min(fastest[1], read_time(large))]
-            ratios.append(fastest[1] / (SCALE * fastest[0]))
-            if ratios[-1] < SCALE_BOUND:
-                break
-    finally:
-        if collecting:
-            gc.enable()
-    assert ratios[-1] < SCALE_BOUND, ratios
+    readings = 1
+    while (elapsed := processor_seconds(small, readings)) < LEAST_TIMED_SECONDS:
+        readings *= 2
+    least = min([elapsed, *(processor_seconds(small, readings) for _ in range(TIMINGS - 1))])
+    timed: list[float] = []
+    for _ in range(TIMINGS):
+        timed.append(processor_seconds(large, readings))
+        if timed[-1] < SCALE_BOUND * least:
+            return
+    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {SCALE_BOUND:.1f} times")
 
 
 def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
@@ -286,8 +291,6 @@ GITHUB_SECTIONS = {
     # An HTML heading opens a block that runs to the blank line under it, so the lines it holds are neither a fence nor
     # a heading.
     "a heading an HTML heading's block holds": ("<h2>Y</h2>\n- ```\n## Forms considered\n---\n\ntext", None),
-    # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
-    # it are the item's.
     # A heading or an underline a comment hides, opened in a quote or a list item and closed past it, ends nothing.
     "a heading inside a comment a quote opens": (
         "## Forms considered\n\nw1\n\n> <!-- c\n\n## w5\n> <!-- d -->\n\nw9\n",
@@ -316,6 +319,8 @@ GITHUB_SECTIONS = {
         "<h2>x</h2>\n~~~\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n===\n\nw4",
         "\nw1\n\n- w2\n",
     ),
+    # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
+    # it are the item's.
     "a comment under an item that opens empty": (
         "## Forms considered\n\n-\n  <!-- a\n  -->\n  ## not a section\n\nafter",
         "\n-\n  \n  ## not a section\n\nafter",
@@ -381,3 +386,15 @@ def test_a_setext_heading_is_held_within_the_module_s_stated_limit(text: str, se
 def test_a_heading_with_no_line_before_the_next_holds_an_empty_section(text: str) -> None:
     assert forms_section(text) == ""
     assert forms_fault(text, TEMPLATE) is FormsFault.EMPTY
+
+
+def test_the_template_s_guidance_is_the_comments_github_hides_never_one_code_shows() -> None:
+    # A template that shows a comment in code, in a fence or an inline span, holds no guidance there, as GitHub shows.
+    template = (
+        "## Forms considered\n\n```\n<!-- shown in a fence -->\n```\n\n`<!-- shown in a span -->` text.\n\n"
+        "<!-- The guidance. -->\n\nNone\n"
+    )
+    visible, guidance = placeholder_forms(template)
+    assert guidance == {"the guidance"}
+    assert "shown in a fence" in visible
+    assert "shown in a span" in visible
