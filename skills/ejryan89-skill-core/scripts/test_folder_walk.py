@@ -1,4 +1,5 @@
-"""Regression tests for the one folder walk the skills share: its order, the folders it skips, links, and failures."""
+"""Regression tests for the one folder walk the skills share: its order, the folders it skips or prunes, links,
+failures, and its bound."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import get_args
 from unittest import mock
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import folder_walk
 from folder_walk import (
+    BOUNDED,
     LINKED,
     LINKED_REASON,
     LOOP,
@@ -148,6 +151,80 @@ class SkippedFolderTests(WalkTestCase):
             self.assertEqual((["vendor/clone/inner.txt"], []), (self.files(walk), self.not_entered(walk)))
 
 
+def hidden(path: Path) -> bool:
+    return path.name.startswith(".")
+
+
+class PruneTests(WalkTestCase):
+    def listed(self, top: Path, prune: Callable[[Path], bool] | None = None) -> tuple[folder_walk.Walk, list[str]]:
+        """The walk, and each folder it listed, relative to the root."""
+        listing = os.scandir
+        folders: list[str] = []
+
+        def scandir(path: str | os.PathLike[str]) -> object:
+            folders.append(Path(path).relative_to(self.root).as_posix())
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            walk = walk_files(top, every_file, prune=prune)
+        return walk, folders
+
+    def test_a_pruned_folder_is_neither_entered_nor_reported(self) -> None:
+        self.write("kept.txt", ".cache/inner/skip.txt", "src/.idea/skip.txt", "src/kept.txt", ".clone/.git/HEAD")
+        walk, folders = self.listed(self.root, prune=hidden)
+        self.assertEqual(["kept.txt", "src/kept.txt"], self.files(walk))
+        self.assertEqual([], walk.not_entered)
+        self.assertEqual([".", "src"], folders)
+
+    def test_prune_is_given_the_folders_path_and_skipped_folders_stay_skipped(self) -> None:
+        self.write("a/drafts/skip.txt", "b/drafts/kept.txt", "bin/skip.txt")
+        seen: list[Path] = []
+
+        def prune(path: Path) -> bool:
+            seen.append(path)
+            return path == self.root / "a" / "drafts"
+
+        walk = walk_files(self.root, every_file, prune=prune)
+        self.assertEqual(["b/drafts/kept.txt"], self.files(walk))
+        self.assertEqual([self.root / "a", self.root / "b", self.root / "a/drafts", self.root / "b/drafts"], seen)
+
+    def test_a_pruned_link_is_not_reported_and_the_top_is_never_pruned(self) -> None:
+        self.write(".top/file.txt")
+        self.link(self.base, ".linked")
+        self.assertEqual([], walk_files(self.root, every_file, prune=hidden).not_entered)
+        walk = walk_files(self.root / ".top", every_file, prune=hidden)
+        self.assertEqual([".top/file.txt"], self.files(walk))
+
+    def test_without_prune_a_hidden_folder_is_entered(self) -> None:
+        self.write(".cache/kept.txt")
+        walk, folders = self.listed(self.root)
+        self.assertEqual([".cache/kept.txt"], self.files(walk))
+        self.assertEqual([".", ".cache"], folders)
+
+
+class BoundTests(WalkTestCase):
+    def test_past_its_limit_the_walk_stops_and_reports_the_next_folder(self) -> None:
+        self.write("top.txt", "a/a.txt", "a/inner/inner.txt", "b/b.txt", "c/c.txt")
+        walk = walk_files(self.root, every_file, limit=3)
+        self.assertEqual(["top.txt", "a/a.txt", "a/inner/inner.txt"], self.files(walk))
+        self.assertEqual([NotEntered(self.root / "b", BOUNDED, folder_walk.bounded_reason(3))], walk.not_entered)
+        self.assertEqual(
+            "the search stopped at its bound of 3 folders, before this folder and the folders after it",
+            folder_walk.bounded_reason(3),
+        )
+
+    def test_the_limit_counts_the_top_and_a_walk_within_it_is_not_bounded(self) -> None:
+        self.write("top.txt", "a/a.txt")
+        self.assertEqual([("a", BOUNDED)], self.not_entered(walk_files(self.root, every_file, limit=1)))
+        walk = walk_files(self.root, every_file, limit=2)
+        self.assertEqual((["top.txt", "a/a.txt"], []), (self.files(walk), walk.not_entered))
+
+    def test_pruned_and_skipped_folders_do_not_count_against_the_limit(self) -> None:
+        self.write(".cache/a/x.txt", "node_modules/x.txt", "src/kept.txt")
+        walk = walk_files(self.root, every_file, prune=hidden, limit=2)
+        self.assertEqual((["src/kept.txt"], []), (self.files(walk), walk.not_entered))
+
+
 class LinkTests(WalkTestCase):
     def test_a_linked_folder_is_reported_and_never_entered_wherever_it_leads(self) -> None:
         outside = self.base / "outside"
@@ -268,6 +345,6 @@ class FailureTests(WalkTestCase):
 
 
 def test_each_kind_the_walk_reports_is_named_once() -> None:
-    kinds = ("linked", "loop", "nested-checkout", "unlistable", "unexamined")
+    kinds = ("linked", "loop", "nested-checkout", "unlistable", "unexamined", "bounded")
     assert get_args(folder_walk.NotEnteredKind) == kinds
-    assert kinds == (LINKED, LOOP, NESTED_CHECKOUT, UNLISTABLE, UNEXAMINED)
+    assert kinds == (LINKED, LOOP, NESTED_CHECKOUT, UNLISTABLE, UNEXAMINED, BOUNDED)
