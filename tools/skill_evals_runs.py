@@ -176,23 +176,31 @@ def stage_synthesis(scenario: Scenario, run: Path) -> list[str]:
     """Copy a synthesis scenario's archive, checkout, and flag store into the run's folder, the store where the run's
     environment names it, write the run's configuration there, and return what the skill is started with: the date
     range and the repository. The fixture itself is never written."""
-    if scenario.period is None or scenario.repository is None:
-        raise ValueError(f"{scenario.name} is no synthesis scenario")
+    period, repository = synthesis_scope(scenario)
     for folder in SYNTHESIS_FOLDERS:
         shutil.copytree(scenario.directory / folder, run / folder)
     shutil.copyfile(scenario.directory / FLAGS, run / FLAGS)
-    json_writer.write(run / SYNTHESIS_CONFIG, synthesis_config(run, scenario.repository), indent=2)
-    return [*scenario.period, scenario.repository]
+    json_writer.write(run / SYNTHESIS_CONFIG, synthesis_config(run, repository), indent=2)
+    return [*period, repository]
 
 
-def find_synthesis(run: Path) -> Record:
-    """The insights report a synthesis run wrote in its summaries folder, when its synthesis is recorded. Raise
-    RecordError when it wrote none or more than one, or its synthesis is not recorded."""
+def find_synthesis(run: Path, scenario: Scenario) -> Record:
+    """The insights report a synthesis run wrote in its summaries folder, when it covers the scenario's period and
+    repository and its synthesis is recorded. Raise RecordError when it wrote none or more than one, or the one it
+    wrote is not the scenario's or its synthesis is not recorded."""
     reports = sorted(file_presence.matching(run, REPORT_PATTERN))
-    if len(reports) != 1:
-        found = "none" if not reports else f"{len(reports)}, so which is its own is unknown"
-        raise RecordError(f"{NO_SYNTHESIS}: it wrote {found} insights report")
-    return insights_report(reports[0])
+    if not reports:
+        raise RecordError(f"{NO_SYNTHESIS}: it wrote no insights report")
+    if len(reports) > 1:
+        raise RecordError(f"{NO_SYNTHESIS}: it wrote {len(reports)} insights reports, so which is its own is unknown")
+    return insights_report(reports[0], *synthesis_scope(scenario))
+
+
+def synthesis_scope(scenario: Scenario) -> tuple[tuple[str, str], str]:
+    """A synthesis scenario's period and repository."""
+    if scenario.period is None or scenario.repository is None:
+        raise ValueError(f"{scenario.name} is no synthesis scenario")
+    return scenario.period, scenario.repository
 
 
 def recording_commands(output: str) -> list[str]:
@@ -713,7 +721,7 @@ def _session_run(
     record: Record | None = None
     missing = None
     try:
-        record = find_synthesis(run) if synthesis else find_record(run / "tmp", RECORD_VERSION[scenario.mode])
+        record = find_synthesis(run, scenario) if synthesis else find_record(run / "tmp", RECORD_VERSION[scenario.mode])
     except RecordError as exc:
         missing = str(exc)
     try:

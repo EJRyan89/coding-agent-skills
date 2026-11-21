@@ -32,7 +32,7 @@ from tools.skill_evals_records import (
     unguarded,
     unreported_model,
 )
-from tools.skill_evals_runs import RECORD_VERSION, RecordSource, indexes, run_token
+from tools.skill_evals_runs import RECORD_VERSION, RecordSource, indexes, run_token, synthesis_scope
 from tools.skill_evals_scenarios import SYNTHESIS, TRIGGER, Scenario, quote
 
 
@@ -88,7 +88,7 @@ def records_in(directory: Path) -> RecordSource:
                 raise RecordError(f"cannot read {path}: {exc}") from exc
             if not present:
                 raise RecordError(f"no record at {path}")
-            return insights_report(path)
+            return insights_report(path, *synthesis_scope(scenario))
         try:
             record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:

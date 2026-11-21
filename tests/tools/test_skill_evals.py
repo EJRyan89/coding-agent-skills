@@ -5857,3 +5857,92 @@ def test_a_synthesis_run_s_unguarded_reason_names_no_path_and_needs_a_recording_
     for loose in (f"{command} --inline", command.replace("claude-code", "codex")):
         reason = skill_evals_runs.synthesis_unguarded(stream(command, loose))
         assert reason == "the synthesis was recorded inline or for another host, which no reviewer guard held"
+
+
+def staged_report(tmp_path: Path, start: str = "2026-01-01", end: str = "2026-03-31") -> tuple[Scenario, Path, Path]:
+    """The committed synthesis scenario, a run's folder with its fixture staged, and the report the real pipeline
+    wrote there for this range, its synthesis pending."""
+    scenario = skill_evals_scenarios.load_scenarios("review-insights", ["synthesis"])[0]
+    run = tmp_path / "run"
+    run.mkdir()
+    skill_evals_runs.stage_synthesis(scenario, run)
+    report = Insights(run).report(dataclasses.replace(scenario, period=(start, end)))
+    return scenario, run, report
+
+
+def test_records_refuse_a_synthesis_scenario_with_no_record_file(tmp_path: Path) -> None:
+    scenario = skill_evals_scenarios.load_scenarios("review-insights", ["synthesis"])[0]
+    outcomes = skill_evals_judging.judge([scenario], ["opus"], skill_evals_judging.records_in(tmp_path))
+    failure = outcomes[0].failure
+    assert failure is not None
+    assert failure.startswith(f"no record at {tmp_path / 'synthesis' / 'opus.json'}")
+    assert {outcome.kind for outcome in outcomes} == {skill_evals_records.RUN}
+
+
+def test_an_insights_report_the_reader_refuses_or_with_no_synthesis_recorded_no_synthesis(tmp_path: Path) -> None:
+    scenario, _, report = staged_report(tmp_path)
+    scope = (scenario.period or ("", ""), scenario.repository or "")
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{", encoding="utf-8")
+    keyless = tmp_path / "keyless.json"
+    keyless.write_text(
+        json.dumps({key: value for key, value in json.loads(report.read_text("utf-8")).items() if key != "synthesis"}),
+        encoding="utf-8",
+    )
+    absent = tmp_path / "absent.json"
+    absent.write_text(json.dumps({**json.loads(report.read_text("utf-8")), "synthesis": None}), encoding="utf-8")
+    for path in (malformed, keyless, absent):
+        with pytest.raises(RecordError, match=f"^{skill_evals_records.NO_SYNTHESIS}") as raised:
+            skill_evals_records.insights_report(path, *scope)
+        assert raised.value.kind == skill_evals_records.RUN
+    with pytest.raises(RecordError, match="its synthesis is absent, not complete"):
+        skill_evals_records.insights_report(absent, *scope)
+
+
+def test_a_synthesis_run_s_record_is_its_one_report_of_the_scenario_s_range_and_repository(tmp_path: Path) -> None:
+    scenario, run, report = staged_report(tmp_path, end="2026-02-28")
+    # The run reported another range than the scenario's, so its synthesis is not the scenario's.
+    with pytest.raises(RecordError, match="its report covers 2026-01-01 to 2026-02-28 of example/inventory"):
+        skill_evals_runs.find_synthesis(run, scenario)
+    shutil.rmtree(report.parent.parent)
+    with pytest.raises(RecordError, match=re.escape("the run recorded no synthesis: it wrote no insights report")):
+        skill_evals_runs.find_synthesis(run, scenario)
+    for name in ("one", "two"):
+        copy = run / "summaries" / name / "2026-01-01--2026-03-31" / "insights.json"
+        copy.parent.mkdir(parents=True)
+        copy.write_text("{}", encoding="utf-8")
+    with pytest.raises(RecordError, match="it wrote 2 insights reports, so which is its own is unknown"):
+        skill_evals_runs.find_synthesis(run, scenario)
+
+
+def test_a_synthesis_fixture_that_cannot_be_staged_counts_for_nothing_and_starts_no_session(
+    evaluation: EvaluateTests,
+) -> None:
+    case = evaluation
+    claude = StubSynthesis()
+    with mock.patch.object(shutil, "copytree", side_effect=OSError("disk full")):
+        status, lines = case.evaluate(["--jobs", "1", "--model", "haiku"], case.seams(claude), "review-insights")
+    assert status == 1, lines
+    told = [line for line in lines if line.startswith("NOT_COUNTED ")]
+    assert told == ['NOT_COUNTED synthesis haiku run "the synthesis fixture could not be staged: disk full"']
+    assert [call[0][1:] for call in claude.calls] == [["--version"]]
+
+
+@pytest.mark.parametrize("text", ["{", '{"flags": "none"}', "[]"], ids=["json", "schema", "array"])
+def test_a_synthesis_fixture_s_flag_store_the_reader_refuses_fails_the_load(text: str, tmp_path: Path) -> None:
+    folder = synthesis_scenario(tmp_path, synthesis_spec())
+    (folder / "flags.json").write_text(text, encoding="utf-8")
+    with pytest.raises(ScenarioError, match=re.escape("synthesis: its flags.json cannot be read")):
+        skill_evals_scenarios.load_scenarios("review-insights", root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "spelling", ["./review/platform_checks.py", "review//platform_checks.py", "review/./platform_checks.py"]
+)
+def test_never_recommends_reads_each_spelling_of_a_path_as_the_same_file(spelling: str) -> None:
+    spec = {"kind": "never_recommends", "paths": [OUTSIDE_CHECKS]}
+    scripted = synthesized_item("REC-006", "move-to-script", spelling, "RF-000003")
+    assert (
+        synthesis_check(spec, scripted)
+        == f"recorded REC-006 move-to-script example/inventory:{spelling} flags=RF-000003"
+    )

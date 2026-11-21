@@ -120,14 +120,19 @@ def synthesized(record: Record) -> list[dict[str, Any]]:
     return [item for item in record["recommendations"] if item.get("kind") == "synthesized"]
 
 
-def insights_report(path: Path) -> Record:
-    """The insights report at `path`, read and validated by review-insights' own reader, when its synthesis is
-    recorded. Raise RecordError, a RUN failure, when it cannot be read or its synthesis is still pending, skipped, or
-    absent: the run recorded no synthesis of its own, so there is nothing of the model to judge."""
+def insights_report(path: Path, period: tuple[str, str], repository: str) -> Record:
+    """The insights report at `path`, read and validated by review-insights' own reader, when it covers the period and
+    the one repository the scenario names and its synthesis is recorded. Raise RecordError, a RUN failure, when it
+    cannot be read, covers another range or other repositories, or its synthesis is still pending, skipped, or absent:
+    the run recorded no synthesis of the scenario's own, so there is nothing of the model to judge."""
     try:
         report = load_report(path)
     except (OSError, InsightError) as exc:
         raise RecordError(f"{NO_SYNTHESIS}: {exc}") from exc
+    covered = (report["start_date"], report["end_date"], report["repositories"])
+    if covered != (*period, [repository]):
+        found = f"{covered[0]} to {covered[1]} of {', '.join(covered[2]) or 'no repository'}"
+        raise RecordError(f"{NO_SYNTHESIS} of {period[0]} to {period[1]} of {repository}: its report covers {found}")
     synthesis = report.get("synthesis")
     status = synthesis.get("status") if isinstance(synthesis, dict) else None
     if status != "complete":

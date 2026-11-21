@@ -88,24 +88,27 @@ repository, and a summaries folder, gives the session that configuration and the
 `/review-insights "<start>" "<end>" "<repository>"`; the fixture itself is never written. The session gets the reviewer
 agent a review run gets, and the synthesis agent's self-check is granted at the deployed review_insights.py's resolved
 path, as the prompt names it, in both shells; no review command is. The record judged is the one insights report the
-run's summaries folder holds, read by review-insights' own report reader, when its synthesis is recorded: a run that
-wrote no report or more than one, or whose synthesis is still pending, as when the session stops after the report,
-recorded no synthesis of its own and fails with that reason. A run counts only when each of the session's own commands
+run's summaries folder holds, read by review-insights' own report reader, when it covers the scenario's range and
+repository and its synthesis is recorded: a run that wrote no report or more than one, or one of another range or
+repository, or whose synthesis is still pending, as when the session stops after the report, recorded no synthesis of
+the scenario's own and fails with that reason. A run counts only when each of the session's own commands
 that recorded the synthesis named claude-code as its host and was not --inline, since `synthesize` records such a
 result only once the reviewer guard claimed the synthesis role. The report keeps no trace of the guard, and the
 synthesis run is removed once its result is recorded, so the session's commands are what shows it: a session that
 recorded the synthesis through a command spelled otherwise, such as from a script file, shows none and counts for
-nothing.
+nothing. A run is held to the recording commands its stream shows, not to which of them recorded the synthesis.
 
 Its expectations are about the synthesized recommendations, never the category and analyzer ones the report computes:
 
   {"kind": "recommends", "repository": R, "paths": [P, ...], "types": [T, ...], "flags": [F, ...]}
       a synthesized recommendation of one of the types, on R, whose target's path or a file it merges is one of the
       paths, ignoring case, and that links every flag, when `flags` is given; each flag is an open flag of the
-      fixture's flags.json, or the load fails, since no run could link it
+      fixture's flags.json, or the load fails, since no run could link it; it reads a recommendation's type, target,
+      and flags, never what its change says
   {"kind": "never_recommends", "paths": [P, ...], "repository": R, "types": [T, ...]}
       no synthesized recommendation, of one of the types and on R when either is given, targets or merges one of the
-      paths, ignoring case, such as a file of a reviewer read from another checkout
+      paths, ignoring case and read in POSIX form, so ./a, a//b, and a/./b name a and a/b, such as a file of a
+      reviewer read from another checkout
   {"kind": "never_titled", "text": X}
       no synthesized recommendation's title holds X, ignoring case, such as a word an instruction planted in a
       finding asks for; only titles are read, so a rationale that reports the instruction passes

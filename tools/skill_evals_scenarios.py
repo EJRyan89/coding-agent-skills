@@ -407,6 +407,12 @@ def target_paths(item: Mapping[str, Any]) -> list[str]:
     return [path for path in named if isinstance(path, str)]
 
 
+def path_key(path: str) -> str:
+    """A target path as the synthesis kinds compare it: its POSIX form, so `./`, `//`, and `/./` spell the same file,
+    ignoring case."""
+    return PurePosixPath(path).as_posix().casefold()
+
+
 def describe_recommendation(item: Mapping[str, Any]) -> str:
     target = item.get("target") or {}
     where = (
@@ -439,11 +445,11 @@ class RecommendationMatch:
 
     def matches(self, item: Mapping[str, Any]) -> bool:
         target = item.get("target") or {}
-        wanted = {path.casefold() for path in self.paths}
+        wanted = {path_key(path) for path in self.paths}
         return (
             (self.types is None or item.get("type") in self.types)
             and (self.repository is None or str(target.get("repository", "")).casefold() == self.repository)
-            and any(path.casefold() in wanted for path in target_paths(item))
+            and any(path_key(path) in wanted for path in target_paths(item))
             and set(self.flags) <= set(item.get("linked_flags") or [])
         )
 
