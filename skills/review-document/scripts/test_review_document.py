@@ -2408,7 +2408,10 @@ class ResolveTests(unittest.TestCase):
         with mock.patch.object(folder_walk, "is_folder_link", is_folder_link):
             self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
             self.assertEqual(
-                [f"UNSEARCHED {Path('notes/.design.md')} the entry cannot be examined: Permission denied", "NOT_FOUND .design.md"],
+                [
+                    f"UNSEARCHED {Path('notes/.design.md')} the entry cannot be examined: Permission denied",
+                    "NOT_FOUND .design.md",
+                ],
                 self.resolve(".design.md"),
             )
 
