@@ -74,7 +74,8 @@ def trigger_record_problem(record: object, scenario: Scenario, model: str) -> st
 def records_in(directory: Path) -> RecordSource:
     """A record source reading DIR/<scenario>/<model>.json, or DIR/<scenario>/<model>-<run>.json for each of several
     runs, holding each record to what a run's is held to: for a trigger scenario, trigger_record_problem; for a
-    synthesis scenario, review-insights' report reader and a recorded synthesis; for any other, the record contract,
+    synthesis scenario, review-insights' report reader, covering the scenario's range and repository, and a recorded
+    synthesis; for any other, the record contract,
     the scenario's review version, a guard that held every reviewer, and each reviewer's reported model, the one its
     route pins or else the judged one. A synthesis record is the insights report, which names neither the model nor
     the guard, so neither is checked here."""

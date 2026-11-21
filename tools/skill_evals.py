@@ -157,8 +157,9 @@ or the ID of the model its route pins.
 The model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
 record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
 unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run. A synthesis
-scenario's record is the insights report, held to review-insights' report reader and a recorded synthesis; it names
-neither the model nor the guard, so --records checks neither.
+scenario's record is the insights report, held to review-insights' report reader, covering the scenario's range and
+repository, and a recorded synthesis, so a report of another range or repository, or one whose synthesis is pending
+or absent, is refused; it names neither the model nor the guard, so --records checks neither.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, makes it a git

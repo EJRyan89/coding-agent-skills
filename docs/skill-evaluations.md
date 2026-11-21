@@ -48,8 +48,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   date range, and one repository, beside a fixed archive of review records, the repository's checkout that its
   guidance is read from, and a flag store. A run copies the three into its own folder with a code-review
   configuration naming them, so the fixture is never written, and starts the skill on the range and the repository.
-  The record judged is the one insights report the run wrote, read by the skill's own report reader, when its
-  synthesis is recorded; a run that stops after the report recorded no synthesis and counts for nothing. A run also
+  The record judged is the one insights report the run wrote, read by the skill's own report reader, when it covers
+  the scenario's range and repository and its synthesis is recorded; a run that stops after the report, or that
+  reports another range or repository, recorded no synthesis of the scenario's and counts for nothing. A run also
   counts only when the session recorded the synthesis for Claude Code and not `--inline`, which the skill records only
   once the reviewer guard has claimed the synthesis role. Its expectations read only the synthesized recommendations:
   `recommends` a change of one of several types to one of several files, linking the flags that planted it;

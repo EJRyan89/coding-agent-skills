@@ -5851,9 +5851,12 @@ def test_a_synthesis_run_s_unguarded_reason_names_no_path_and_needs_a_recording_
         return json.dumps({"type": "assistant", "parent_tool_use_id": parent, "message": {"content": blocks}})
 
     assert skill_evals_runs.synthesis_unguarded(stream(command)) is None
-    # A self-check is the agent's, not a recording, and a subagent's command is not the session's.
-    assert skill_evals_runs.synthesis_unguarded(stream(f"{command} --check")) is not None
-    assert skill_evals_runs.synthesis_unguarded(stream(command, parent="toolu_1")) is not None
+    # No command of the session's records the synthesis: an empty stream, one that only reports, a self-check, which
+    # is the agent's, and a subagent's command, which is not the session's.
+    unshown = "the session ran no command that records the synthesis, so no reviewer guard is shown holding it"
+    reporting = 'python -B "/home/x/review_insights.py" report --start "2026-01-01" --end "2026-03-31"'
+    for output in ("", stream(reporting), stream(f"{command} --check"), stream(command, parent="toolu_1")):
+        assert skill_evals_runs.synthesis_unguarded(output) == unshown
     for loose in (f"{command} --inline", command.replace("claude-code", "codex")):
         reason = skill_evals_runs.synthesis_unguarded(stream(command, loose))
         assert reason == "the synthesis was recorded inline or for another host, which no reviewer guard held"
