@@ -96,9 +96,10 @@ STATUS_OPEN = "Open"
 STATUS_COMMENTED = "Reviewed with Comments"
 SECTION_SUMMARIES = {
     SECTION_TO_REVIEW: "PRs you are asked to review or are reviewing where action is needed — new PR, "
-    "or the author has responded to your feedback. Status reflects your own latest review.",
+    "or the author has responded to your feedback. Status reflects your own latest deciding review, which later "
+    "comments leave standing.",
     SECTION_AWAITING: "PRs where you have left a review; waiting for the author to respond or push changes. Status "
-    "reflects your own latest review.",
+    "reflects your own latest deciding review, which later comments leave standing.",
     SECTION_DRAFTS: "Draft PRs you are asked to review or are reviewing; no action needed until the author "
     "marks them ready.",
     SECTION_MINE: "PRs you authored. Status reflects GitHub's review decision on the PR.",

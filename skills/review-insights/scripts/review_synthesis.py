@@ -21,9 +21,11 @@ result is recorded or a later report stages another. On Claude Code a result fro
 is not recorded (`unclaimed`): the guard's claim starts the role's read log in the run, and a run with none had no
 hook holding its agent.
 
-A repository's guidance files are the files each repository-scoped reviewer was built from (see `review_guidance.py`),
-which a recommendation may name as the file to change. A generic reviewer is built from no repository file, so such a
-repository's recommendations name no file and say in their change where the guidance belongs. A `consolidate`
+A repository's guidance files are the files of its own that each repository-scoped reviewer was built from (see
+`review_guidance.py`), which a recommendation may name as the file to change. A generic reviewer is built from no
+repository file, and a reviewer read from another checkout (`reviewer_root`) from none the repository holds, so a
+repository reviewed only by such reviewers has no guidance files: its recommendations name no file and say in their
+change where the guidance belongs. A `consolidate`
 recommendation names several of them, the one whose wording survives and those it merges, and a `move-to-script` one
 names the script, validator, or test that takes over a rule, which need not exist yet but is no prose file.
 
@@ -736,8 +738,10 @@ guidance and to the repositories' tooling. This file is your complete task.
 - `flag`: an open flag a person recorded: a false positive, a missed finding, a heuristic to add, or another
   observation. `finding` is the reference of the finding it names, or null when it names none. Flags are the most
   deliberate signal in the input.
-- `guidance`: per repository, the files its reviewers are built from. A recommendation that changes guidance names one
-  of these files, or null when none fits, and then says in its change where the guidance belongs.
+- `guidance`: per repository, the files of its own its reviewers are built from. A generic reviewer, or one read
+  from another checkout, is built from none, so a repository reviewed only by those has none. A recommendation that
+  changes guidance names one of these files, or null when none fits, and then says in its change where the guidance
+  belongs.
 - `guidance-file`: one of those files, its `role` (`prose`, or `code` for a script, manifest, or test, listed by path
   only) and the `reviewers` given it. Reviewers given different versions of one file have a line per version. A prose
   file's `content` is its text as those reviewers were given it when `status` is `included`; otherwise `status` says

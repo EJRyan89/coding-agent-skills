@@ -53,7 +53,13 @@ from review_run import (
     run_dispatch,
     verify_seal,
 )
-from review_runtime import GENERIC_SPECIALIST, SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError, _snapshot_files
+from review_runtime import (
+    GENERIC_SPECIALIST,
+    MATERIALIZATION_FILE,
+    SOURCE_SNAPSHOT_MANIFEST,
+    RuntimeContractError,
+    _snapshot_files,
+)
 from review_specialists import (
     GENERIC_INSTRUCTIONS_KEY,
     SpecialistError,
@@ -64,8 +70,6 @@ from review_specialists import (
 )
 from text_lines import program_lines
 
-# The record of what prepare wrote under a reviewer root, which lists every other file there.
-MATERIALIZATION_FILE = "materialization.json"
 # What the reviewer's checks raise when a file is not what prepare materialized, a refusal they word through
 # json_writer, as of a name a lone surrogate holds, included.
 REVIEWER_REFUSALS: tuple[type[Exception], ...] = (
