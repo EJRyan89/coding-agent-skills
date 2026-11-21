@@ -13,9 +13,9 @@ sys.path and its arguments in sys.argv, after it has:
 - made every stat of the fault's path raise, and every presence check of it answer False, as Python's own do, for
   that fault;
 - installed an audit hook that stops the run, past any handler the entry point has, when it starts a program other
-  than git, opens a network connection, or writes, makes, moves, or removes anything outside the folders the run may
-  write in or inside one it may not, so a run never reaches the real home, the source checkout, a model, or the
-  network;
+  than git or the process probe PROBE_PROGRAMS names, macOS's /bin/ps, opens a network connection, or writes, makes,
+  moves, or removes anything outside the folders the run may write in or inside one it may not, so a run never
+  reaches the real home, the source checkout, a model, or the network;
 - noted each time the run opens, lists, or stats the fault's path, or calls the replaced runner, so the suite knows
   the fault was reached.
 

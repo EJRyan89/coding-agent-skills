@@ -145,7 +145,7 @@ class StateFileTests(DeployerTestCase):
         for arguments in (("--all",), ("--all", "--dry-run")):
             with self.subTest(arguments=arguments):
                 result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
-                self.assert_lines(result.output, *MANIFEST_REMEDY)
+                self.assert_refusal(result.output, refusal, *MANIFEST_REMEDY)
                 self.assertNotIn("Manifest is malformed", result.output)
                 self.assertNotIn("FAILED", result.output)
         self.assertIn(refusal, self.run_cli("check").output)
@@ -359,7 +359,7 @@ class StateFileTests(DeployerTestCase):
                     data["last_run_id"] = RUN_ID
                     self.write_manifest(data)
                 result = self.deploy_fails("--all", pattern=re.escape(f"ERROR: Run {RUN_ID}'s journal is not a file."))
-                self.assert_lines(
+                self.assert_refusal(
                     result.stderr,
                     f"  ERROR: Run {RUN_ID}'s journal is not a file. Retaining {shown_run} for manual inspection.",
                     f"  Run {RUN_ID} {state} A replaced copy sits beside its item as <name>.deploying-bak; a retained "

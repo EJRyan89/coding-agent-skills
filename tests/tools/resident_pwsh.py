@@ -10,7 +10,8 @@ checks on the answer.
 
 The resident holds no state from one read to the next: each read runs in a new scope, `$Error` is cleared after it,
 and a read that leaves a global variable or function behind is a malfunction. A malfunction (the resident ended,
-answered with something other than an answer, kept state, or did not answer in time) fails the test that met it when
+answered with something other than an answer, kept state, or did not answer in time) ends the resident, so the next
+read starts a new one rather than comparing against what the broken one left, and fails the test that met it when
 `resident_reads` ends, so no decision passes on a reading the resident broke. The tests that hold the guard's own
 pwsh start (`EndToEndTests`, `PowerShellReaderStartTests`, the hook command tests, `NodeCatalogueTests`) read through
 real starts, and `test_hub_guard_pwsh.py` holds that the resident reads every node sample as a real start does.
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import binascii
 import contextlib
 import queue
 import subprocess
@@ -116,12 +118,19 @@ class ResidentPwsh:
 
     def read(self, payload: bytes, timeout: float, output_limit: int | None) -> Finished:
         """What the reader writes for `payload` on its stdin, kept to `output_limit` bytes a stream as run_bounded
-        keeps them. Raises subprocess.TimeoutExpired, after ending the resident, past `timeout` seconds."""
+        keeps them. Raises subprocess.TimeoutExpired past `timeout` seconds, and Malfunction for any other failure,
+        each after ending the resident, so no later read compares against what a broken one left behind."""
+        try:
+            return self._answer(payload, timeout, output_limit)
+        except (Malfunction, subprocess.TimeoutExpired):
+            self.close()
+            raise
+
+    def _answer(self, payload: bytes, timeout: float, output_limit: int | None) -> Finished:
         self._send(payload)
         try:
             answer = self.answers.get(timeout=timeout)
         except queue.Empty:
-            self.close()
             raise subprocess.TimeoutExpired("resident pwsh", timeout) from None
         if not answer:
             raise Malfunction("the resident pwsh ended")
@@ -131,7 +140,10 @@ class ResidentPwsh:
         streams = rest.split(b" ")
         if kind != b"READ" or len(streams) != 2:
             raise Malfunction(f"the resident pwsh answered {answer[:200]!r}")
-        stdout, stderr = (kept(base64.b64decode(stream), output_limit) for stream in streams)
+        try:
+            stdout, stderr = (kept(base64.b64decode(stream, validate=True), output_limit) for stream in streams)
+        except binascii.Error as exc:
+            raise Malfunction(f"the resident pwsh answered {answer[:200]!r}, which is not base64 ({exc})") from exc
         return Finished(0 if not stderr else 1, stdout, stderr)
 
     def close(self) -> None:
