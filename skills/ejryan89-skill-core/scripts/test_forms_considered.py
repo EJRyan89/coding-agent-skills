@@ -22,6 +22,7 @@ from forms_considered import (
     forms_fault,
     forms_section,
     is_fix_title,
+    is_placeholder,
     placeholder_forms,
     without_hidden_comments,
 )
@@ -526,3 +527,14 @@ def test_the_template_s_guidance_is_the_comments_github_hides_never_one_code_sho
     assert guidance == {"the guidance"}
     assert "shown in a fence" in visible
     assert "shown in a span" in visible
+
+
+def test_an_empty_comment_in_the_template_is_no_guidance() -> None:
+    # An empty comment's words are none, so it is no guidance that would match any section.
+    template = "## Forms considered\n\n<!-- -->\n<!-- Weigh the forms. -->\n\nNone\n"
+    assert placeholder_forms(template)[1] == {"weigh the forms"}
+    assert is_placeholder("weigh the forms", template)
+
+
+def test_the_template_s_visible_text_is_read_from_its_first_character() -> None:
+    assert placeholder_forms("## Forms considered\nNone\n")[0] == "none"
