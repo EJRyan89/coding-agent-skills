@@ -638,7 +638,6 @@ class ProcessArgumentFixtures(unittest.TestCase):
 
     def assert_suite_options(self, options: dict[str, object]) -> None:
         self.assertEqual(mutation_gate.suite_environment(), options["env"])
-        self.assertEqual(mutation_gate.OUTPUT_LIMIT, options["output_limit"])
         self.assertIs(self.tree_sentinel, options["tree"])
         self.assertEqual(Path("tree"), options["cwd"])
 
@@ -648,11 +647,15 @@ class ProcessArgumentFixtures(unittest.TestCase):
             self.assertEqual(PASSED, run_suite(Path("tree"), "tests/x.py", 42.0))
             self.assertEqual(PASSED, run_suite(Path("tree"), "tests/x.py", 42.0, tests))
         (whole, timeout, options, read), (selected, _, selected_options, listed) = self.calls
-        self.assertEqual([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-x", "-q"], whole)
+        self.assertEqual(bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-x", "-q"]), whole)
         self.assertEqual((42.0, []), (timeout, read))
         self.assert_suite_options(options)
-        self.assertEqual([sys.executable, "-B", "-m", "pytest", selected[4], "-x", "-q"], selected)
-        self.assertTrue(selected[4].startswith("@"), selected)
+        # Both streams reach one file, whose start and end are read back.
+        self.assertIsNotNone(options["stdout"])
+        self.assertIs(options["stdout"], options["stderr"])
+        target = selected[-3]
+        self.assertEqual(bounded([sys.executable, "-B", "-m", "pytest", target, "-x", "-q"]), selected)
+        self.assertTrue(target.startswith("@"), selected)
         self.assertEqual(tests, listed)
         self.assert_suite_options(selected_options)
 
@@ -666,6 +669,7 @@ class ProcessArgumentFixtures(unittest.TestCase):
         self.assertEqual(mutation_gate.MINIMUM_SUITE_SECONDS, timeout)
         self.assert_suite_options(options)
         self.assertIn("stdout", options)
+        self.assertEqual(mutation_gate.OUTPUT_LIMIT, options["output_limit"])
 
     def test_a_suite_pytest_fails_to_list_names_no_test(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, self.bounded(b"tests/x.py::test_a\n", returncode=4):
@@ -689,7 +693,7 @@ class ProcessArgumentFixtures(unittest.TestCase):
             result = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
         self.assertEqual("failed in `coverage json`, which wrote no report", result)
         (suite, timeout, options, _), *steps = self.calls
-        self.assertEqual(([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-q"], 42.0), (suite, timeout))
+        self.assertEqual((bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-q"]), 42.0), (suite, timeout))
         environment = environments[0]
         self.assertNotIn("PYTEST_CURRENT_TEST", environment)
         self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
@@ -721,14 +725,28 @@ def test_every_pytest_exit_code_has_a_reading() -> None:
     assert set(EXIT_STATUSES) == set(pytest.ExitCode)
 
 
+def bounded(command: list[str]) -> list[str]:
+    """A suite's command as the gate starts it, bounded to MEMORY_BOUND where this platform bounds it."""
+    return platform_support.memory_bounded(command, mutation_gate.MEMORY_BOUND)
+
+
+def finishing(returncode: int, output: bytes) -> Callable[..., types.SimpleNamespace]:
+    """A bounded runner that writes `output` to the file the gate hands it for both streams, then exits so."""
+
+    def run(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
+        options["stdout"].write(output)
+        return types.SimpleNamespace(returncode=returncode, stdout=b"", stderr=b"")
+
+    return run
+
+
 @pytest.mark.parametrize(("code", "statuses"), [*EXIT_STATUSES.items(), (9, (ERRORED, ERRORED))])
 def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, statuses: tuple[str, str]) -> None:
     collection = b"==== ERRORS ====\n____ ERROR collecting tests/x.py ____\nImportError\n"
     found = []
     for output in (b"!!! KeyboardInterrupt !!!\n", collection):
-        finished = types.SimpleNamespace(returncode=int(code), stdout=output, stderr=b"")
         with (
-            mock.patch.object(mutation_gate, "run_bounded", return_value=finished),
+            mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(int(code), output)),
             mock.patch("deployer.platform_support.process_tree"),
         ):
             found.append(run_suite(Path("tree"), "tests/x.py", 42.0))
@@ -737,9 +755,10 @@ def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, st
 
 def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: pytest.CaptureFixture[str]) -> None:
     stderr = b"ERROR: not found: tests/x.py::test_gone\n(no match in any of [<Module x.py>])\n"
-    finished = types.SimpleNamespace(returncode=4, stdout=b"no tests ran\n" + b"x" * 400, stderr=stderr)
     with (
-        mock.patch.object(mutation_gate, "run_bounded", return_value=finished),
+        mock.patch.object(
+            mutation_gate, "run_bounded", side_effect=finishing(4, stderr + b"no tests ran\n" + b"x" * 400)
+        ),
         mock.patch("deployer.platform_support.process_tree"),
     ):
         assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
@@ -752,11 +771,7 @@ def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: py
     # A pass and a kill log nothing.
     for exit_code in (0, 1):
         with (
-            mock.patch.object(
-                mutation_gate,
-                "run_bounded",
-                return_value=types.SimpleNamespace(returncode=exit_code, stdout=b"", stderr=stderr),
-            ),
+            mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(exit_code, stderr)),
             mock.patch("deployer.platform_support.process_tree"),
         ):
             run_suite(Path("tree"), "tests/x.py", 42.0)
@@ -766,13 +781,71 @@ def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: py
 def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replaced(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    finished = types.SimpleNamespace(returncode=3, stdout=b"INTERNALERROR \xff\xfe in a hook\n", stderr=b"")
     with (
-        mock.patch.object(mutation_gate, "run_bounded", return_value=finished),
+        mock.patch.object(
+            mutation_gate, "run_bounded", side_effect=finishing(3, b"INTERNALERROR \xff\xfe in a hook\n")
+        ),
         mock.patch("deployer.platform_support.process_tree"),
     ):
         assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
     assert capsys.readouterr().out == "errored     tests/x.py: pytest exited 3: INTERNALERROR �� in a hook\n"
+
+
+@pytest.mark.parametrize(
+    ("code", "output", "status", "memory"),
+    [
+        pytest.param(1, b">       raise MemoryError\nE       MemoryError\n", KILLED, True, id="a test's E line"),
+        pytest.param(2, b"E   MemoryError: cannot allocate\r\n", KILLED, True, id="an E line with a message, in CRLF"),
+        pytest.param(
+            3,
+            b"INTERNALERROR> Traceback (most recent call last):\nINTERNALERROR> MemoryError\n",
+            KILLED,
+            True,
+            id="pytest's own process",
+        ),
+        pytest.param(1, b"FAILED tests/x.py::test_x - MemoryError\n", KILLED, True, id="the short summary"),
+        pytest.param(
+            5,
+            b"-- Captured stderr call --\nTraceback (most recent call last):\nMemoryError\n",
+            KILLED,
+            True,
+            id="a started process's traceback",
+        ),
+        pytest.param(4, b"ERROR: not found: tests/x.py::test_MemoryError\n", ERRORED, False, id="a test's name"),
+        pytest.param(
+            2, b">       raise MemoryError\n    if MemoryError: pass\n", ERRORED, False, id="a test's source quoted"
+        ),
+        pytest.param(5, b"no tests ran\nMemoryErrors are counted elsewhere\n", ERRORED, False, id="a longer word"),
+        pytest.param(
+            1,
+            b"E       assert MemoryError is None\nFAILED tests/x.py::test_x - assert MemoryError is None\n",
+            KILLED,
+            False,
+            id="an assertion that names it",
+        ),
+    ],
+)
+def test_only_a_line_showing_a_memory_error_raised_kills_for_memory(
+    code: int, output: bytes, status: str, memory: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, output)),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == status
+    assert (mutation_gate.MEMORY_REASON in capsys.readouterr().out) is memory
+
+
+def test_a_memory_error_line_that_opens_the_end_read_back_kills(capsys: pytest.CaptureFixture[str]) -> None:
+    # Past the start read back, the line begins at the end's first byte, so a window one byte short reads it cut.
+    tail = b"MemoryError\n" + b"b" * (mutation_gate.OUTPUT_LIMIT - len(b"MemoryError\n"))
+    output = b"a" * (2 * mutation_gate.OUTPUT_LIMIT) + b"\n" + tail
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(3, output)),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == KILLED
+    assert mutation_gate.MEMORY_REASON in capsys.readouterr().out
 
 
 class RunSuiteFixtures(unittest.TestCase):
@@ -875,6 +948,70 @@ class RunSuiteFixtures(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(ERRORED, self.run_tree(files, tests))
 
+    def test_a_suite_that_ran_out_of_memory_kills_the_mutant_whatever_pytest_exits_and_logs_why(self) -> None:
+        cases = {
+            # Exit 1: the test failed on the MemoryError, as one past the bound does.
+            "a test": ({"tests/test_x.py": "def test_x():\n    raise MemoryError\n"}, 1),
+            # Exit 3: pytest itself ran out, outside any test, an internal error that would otherwise judge nothing.
+            "a hook": (
+                {
+                    "conftest.py": "def pytest_collection_finish(session):\n    raise MemoryError\n",
+                    "tests/test_x.py": "def test_x():\n    pass\n",
+                },
+                3,
+            ),
+        }
+        for name, (files, exit_code) in cases.items():
+            with self.subTest(name), mock.patch("sys.stdout", io.StringIO()) as printed:
+                self.assertEqual(KILLED, self.run_tree(files))
+            self.assertEqual(
+                f"{KILLED:<11} tests/test_x.py: pytest exited {exit_code}: {mutation_gate.MEMORY_REASON}\n",
+                printed.getvalue(),
+            )
+
+    @unittest.skipUnless(sys.platform == "linux", "only Linux bounds the data a process may hold")
+    def test_a_mutant_that_allocates_without_end_is_stopped_at_the_bound_and_killed(self) -> None:
+        # It stops by itself at four times the bound, so a bound that does not hold fails the test rather than the
+        # runner.
+        runaway = "def test_x():\n    held = []\n    while len(held) < 64:\n        held.append(bytearray(16 << 20))\n"
+        with (
+            mock.patch.object(mutation_gate, "MEMORY_BOUND", 256 << 20),
+            mock.patch("sys.stdout", io.StringIO()) as printed,
+        ):
+            self.assertEqual(KILLED, self.run_tree({"tests/test_x.py": runaway}))
+        self.assertIn(mutation_gate.MEMORY_REASON, printed.getvalue())
+
+
+class MemoryBoundFixtures(unittest.TestCase):
+    """The command the gate starts a suite with, bounded on Linux alone."""
+
+    def test_linux_starts_the_command_through_the_launcher_and_every_other_platform_as_given(self) -> None:
+        command = ["python with spaces", "-m", "pytest", "tests/test x.py"]
+        for name in ("linux", "darwin", "win32"):
+            with self.subTest(name), mock.patch.object(sys, "platform", name):
+                bounded = platform_support.memory_bounded(command, 5 << 20)
+            expected = (
+                [sys.executable, "-I", "-B", "-c", platform_support.MEMORY_LAUNCHER, "5242880", *command]
+                if name == "linux"
+                else command
+            )
+            self.assertEqual(expected, bounded)
+
+    @unittest.skipUnless(sys.platform == "linux", "only Linux bounds the data a process may hold")
+    def test_the_bound_holds_in_the_command_and_every_process_it_starts(self) -> None:
+        probe = "import resource; print(resource.getrlimit(resource.RLIMIT_DATA))"
+        child = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {probe!r}], check=True)"
+        for program in (probe, child):
+            with self.subTest(program):
+                finished = subprocess.run(
+                    platform_support.memory_bounded([sys.executable, "-c", program], 1 << 30),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=True,
+                )
+                self.assertEqual("(1073741824, 1073741824)\n", finished.stdout)
+
 
 class CoverageReachFixtures(unittest.TestCase):
     """The reach of a suite run by the real pytest, its coverage data combined and reported by a stub coverage.py in
@@ -943,6 +1080,14 @@ class CoverageReachFixtures(unittest.TestCase):
         self.assertEqual({"tools/calc.py": frozenset()}, dict(result.lines))
         self.assertIsInstance(result.seconds, float)
         self.assertGreater(result.seconds, 0.0)
+
+    @unittest.skipUnless(sys.platform == "linux", "only Linux bounds the data a process may hold")
+    def test_a_suite_that_needs_more_than_the_bound_unmutated_fails_unmutated(self) -> None:
+        heavy = "def test_it():\n    held = []\n    while len(held) < 64:\n        held.append(bytearray(16 << 20))\n"
+        with mock.patch.object(mutation_gate, "MEMORY_BOUND", 256 << 20):
+            result = self.reach({}, test=heavy)
+        self.assertIsInstance(result, str)
+        self.assertRegex(str(result), r"^failed unmutated with exit code 1: .*MemoryError")
 
     def test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output(self) -> None:
         for actions, expected in (
@@ -3036,7 +3181,9 @@ class SplitRunFixtures(unittest.TestCase):
             self.assertEqual("(a test's generator)", Gate(Path(), "main", 1, 1, git_client, line_generator).version())
         version.assert_called_once_with("mutmut")
 
-    def test_a_missing_selection_or_a_needed_legs_missing_outcomes_stops_the_join(self) -> None:
+    def test_a_missing_selection_stops_the_join_and_a_needed_legs_missing_outcomes_leave_its_mutants_not_run(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             with self.assertRaisesRegex(RuntimeError, "the select job wrote no mutants.json"):
@@ -3047,8 +3194,19 @@ class SplitRunFixtures(unittest.TestCase):
             )
             linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))]}, {}, [])
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "the Windows leg wrote no outcomes-windows.json"):
-                mutation_gate.join(folder)
+            result = mutation_gate.join(folder)
+            self.assertFalse(result.finished)
+            self.assertTrue(
+                result.text.startswith(
+                    "**Unfinished, so not a verdict:** shard 1 of the Windows leg stopped before its end, so the "
+                    "mutants it had not reached did not run: 1 of the 1 mutants "
+                    "of `tools/paths.py` did not run on Windows. Read its log, and rerun the gate.\n"
+                ),
+                result.text,
+            )
+            self.assertIn(
+                "- On Linux, 1 workers ran for 0 of its 40 minutes; on Windows, which left no record", result.text
+            )
             (folder / "mutants.json").write_text(
                 json.dumps(selection_record(Selected("origin/main", "3.8.0", ()))), encoding="utf-8"
             )
@@ -3079,10 +3237,11 @@ class SplitRunFixtures(unittest.TestCase):
             self.assertEqual(selected, read_selection(folder / "mutants.json"))
             with (
                 mock.patch.object(Gate, "leg", return_value=unfinished) as leg,
+                mock.patch.object(platform_support, "PLATFORM_NAME", WINDOWS_LEG),
                 mock.patch("sys.stdout", io.StringIO()),
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder)], {}))
-            leg.assert_called_once_with(selected, 0)
+            leg.assert_called_once_with(selected, 0, mock.ANY)
             self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected, WINDOWS_LEG))
             linux_outcomes = {
                 PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
@@ -4273,19 +4432,6 @@ def test_a_legs_shards_join_into_the_leg_each_mutant_at_its_place() -> None:
     ("runs", "names", "error", "message"),
     [
         (
-            [1],
-            [],
-            RuntimeError,
-            "the Linux leg wrote no outcomes-linux-2.json, so its mutants have no verdict: read its log",
-        ),
-        (
-            [],
-            [],
-            RuntimeError,
-            "the Linux leg wrote no outcomes-linux-1.json or outcomes-linux-2.json, so its mutants have no verdict: "
-            "read its log",
-        ),
-        (
             [1, 2, 2, 2],
             ["outcomes-linux-1.json", "outcomes-linux-2.json", "outcomes-linux-3.json", "outcomes-linux-4.json"],
             RecordError,
@@ -4312,7 +4458,7 @@ def test_a_legs_shards_join_into_the_leg_each_mutant_at_its_place() -> None:
         ),
     ],
 )
-def test_a_missing_misnamed_stray_or_doubled_shard_stops_the_join(
+def test_a_misnamed_stray_or_doubled_shard_stops_the_join(
     runs: Sequence[int], names: Sequence[str], error: type[Exception], message: str
 ) -> None:
     with tempfile.TemporaryDirectory() as temporary:
@@ -4321,6 +4467,177 @@ def test_a_missing_misnamed_stray_or_doubled_shard_stops_the_join(
         with pytest.raises(error) as stopped:
             mutation_gate.join(folder)
     assert str(stopped.value) == message
+
+
+@pytest.mark.parametrize("written", [[1], []], ids=["one shard wrote no record", "no shard wrote one"])
+def test_a_shard_that_left_no_record_leaves_its_mutants_not_run_beside_the_other_shards_outcomes(
+    written: list[int],
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, *(shard_run(shard, lambda found: KILLED) for shard in written))
+        _, (leg,) = mutation_gate.read_run(folder)
+        result = mutation_gate.join(folder)
+    (module,) = leg.outcomes
+    statuses = [found.status for found in leg.outcomes[module]]
+    first = mutation_gate.shard_places(LINUX_LEG, SHARDED, 1)[module]
+    assert statuses == [KILLED if place in first and written else NOT_RUN for place in range(45)]
+    assert leg.stopped == ((2,) if written else (1, 2))
+    assert not result.finished
+    left = 45 - len(first) if written else 45
+    lead = (
+        "shard 2 of the Linux leg stopped before its end, so the mutants it had not reached did not run"
+        if written
+        else "shard 1 of the Linux leg and shard 2 of the Linux leg stopped before their end, so the mutants they "
+        "had not reached did not run"
+    )
+    assert result.text.startswith(
+        f"**Unfinished, so not a verdict:** {lead}: {left} of the 45 mutants of `{module}` did not run on Linux. Read "
+        f"{'its' if written else 'their'} log, and rerun the gate.\n"
+    )
+    assert (
+        f"A leg step that stopped before its end, or the cap, cut `{module}` short on Linux: {left} mutants did not "
+        "run." in result.text
+    )
+    assert (
+        "2 shards of 4 workers in all" if written else "On Linux, which left no record of its mutants;"
+    ) in result.text
+
+
+def test_a_shard_record_written_as_it_went_joins_the_outcomes_it_reached_and_names_its_stop() -> None:
+    complete = shard_run(1, lambda found: KILLED)
+    partial = shard_run(2, lambda found: SURVIVED if found.line < 20 else NOT_RUN, stopped=(2,))
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, complete, partial)
+        written = json.loads((folder / "outcomes-linux-2.json").read_text(encoding="utf-8"))
+        assert (
+            written["ended"],
+            json.loads((folder / "outcomes-linux-1.json").read_text(encoding="utf-8"))["ended"],
+        ) == (False, True)
+        assert read_leg(folder / "outcomes-linux-2.json", SHARDED, LINUX_LEG, 2) == partial
+        _, (leg,) = mutation_gate.read_run(folder)
+        result = mutation_gate.join(folder)
+    (module,) = leg.outcomes
+    assert leg.stopped == (2,)
+    assert [found.status for found in leg.outcomes[module]] == [
+        KILLED if line % 2 == 0 else SURVIVED if line < 20 else NOT_RUN for line in range(1, 46)
+    ]
+    assert not result.finished
+    assert result.text.startswith(
+        "**Unfinished, so not a verdict:** shard 2 of the Linux leg stopped before its end, so the mutants it had "
+        "not reached did not run: "
+        f"13 of the 45 mutants of `{module}` did not run on Linux. Read its log, and rerun the gate.\n"
+    )
+    assert "of each one's 40 minutes, shard 2 of the Linux leg stopping before its end;" in result.text
+    assert f"| `{module}` | Linux | 45 | 45 | 22 | 0 | 0 | 10 | 0 | 13 | 0 | 69% (22 of 32) |" in result.text
+
+
+class LegStopFixtures(unittest.TestCase):
+    """The leg step through `main`, stopped partway as a failed or cancelled step stops it, whose record the upload,
+    which runs whatever the step did, then hands on, with the worktrees, the reach, and
+    the suites replaced, so only what its record holds shows."""
+
+    SELECTED = Selected(
+        "origin/main",
+        "3.8.0",
+        (SelectedModule("tools/calc.py", 5, tuple(mutant(line) for line in range(1, 6)), (), False),),
+        "ef" * 20,
+    )
+
+    def stopped_leg(self, folder: Path, tree: Path, reach: ReachRunner, run: SuiteRunner, shard: int) -> None:
+        git_client = mock.create_autospec(GitClient, instance=True)
+        git_client.output.return_value = self.SELECTED.head + "\n"
+        with (
+            mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
+            mock.patch.object(mutation_gate, "GitClient", return_value=git_client),
+            mock.patch.object(mutation_gate, "Gate", functools.partial(Gate, reach=reach, run=run, measure=measured)),
+            mock.patch.object(mutation_gate, "worktrees", return_value=contextlib.nullcontext([tree])),
+            mock.patch.object(mutation_gate, "reaching_suites", return_value=["tests/test_calc.py"]),
+            mock.patch("sys.stdout", io.StringIO()),
+            self.assertRaises(Stopped),
+        ):
+            mutation_gate.main(["leg", str(folder), *(("--shard", str(shard)) if shard else ())], {})
+
+    def run_stopped(self, reach: ReachRunner, run: SuiteRunner, shard: int = 1) -> tuple[LegRun, mutation_gate.Result]:
+        """The record the leg step left, of shard `shard` or, with 0, of the whole leg, and the join of it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            folder, tree = Path(temporary) / "handed on", Path(temporary) / "tree"
+            folder.mkdir()
+            (tree / "tools").mkdir(parents=True)
+            (tree / "tools" / "calc.py").write_text(CALC, encoding="utf-8")
+            (folder / "mutants.json").write_text(json.dumps(selection_record(self.SELECTED)), encoding="utf-8")
+            self.stopped_leg(folder, tree, reach, run, shard)
+            name = f"outcomes-linux-{shard}.json" if shard else "outcomes-linux.json"
+            return read_leg(folder / name, self.SELECTED, LINUX_LEG, shard), mutation_gate.join(folder)
+
+    def test_a_leg_stopped_after_two_mutants_leaves_their_outcomes_and_the_rest_not_run(self) -> None:
+        verdicts = iter((KILLED, SURVIVED))
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            found = next(verdicts, None)
+            if found is None:
+                raise Stopped
+            return found
+
+        leg, result = self.run_stopped(stub_reach, run)
+        self.assertEqual((1, (1,)), (leg.shard, leg.stopped))
+        self.assertEqual(
+            [KILLED, SURVIVED, NOT_RUN, NOT_RUN, NOT_RUN], [found.status for found in leg.outcomes["tools/calc.py"]]
+        )
+        self.assertEqual({"tools/calc.py": 5.0}, leg.needed)
+        self.assertFalse(result.finished)
+        self.assertTrue(
+            result.text.startswith(
+                "**Unfinished, so not a verdict:** shard 1 of the Linux leg stopped before its end, so the mutants it "
+                "had not reached did not run: 3 of the 5 mutants of "
+                "`tools/calc.py` did not run on Linux. Read its log, and rerun the gate.\n"
+            ),
+            result.text,
+        )
+        self.assertIn("| `tools/calc.py` | Linux | 5 | 5 | 1 | 0 | 0 | 1 | 0 | 3 | 0 | 50% (1 of 2) |", result.text)
+
+    def test_a_whole_leg_stopped_after_a_mutant_is_named_as_the_leg_rather_than_a_shard(self) -> None:
+        # The leg step without --shard, as a local run of the whole leg writes it.
+        verdicts = iter((KILLED,))
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            found = next(verdicts, None)
+            if found is None:
+                raise Stopped
+            return found
+
+        leg, result = self.run_stopped(stub_reach, run, shard=0)
+        self.assertEqual((0, (0,)), (leg.shard, leg.stopped))
+        self.assertEqual([KILLED] + [NOT_RUN] * 4, [found.status for found in leg.outcomes["tools/calc.py"]])
+        self.assertTrue(
+            result.text.startswith(
+                "**Unfinished, so not a verdict:** the Linux leg stopped before its end, so the mutants it had not "
+                "reached did not run: 4 of the 5 mutants of `tools/calc.py` did not run on Linux. Read its log, and "
+                "rerun the gate.\n"
+            ),
+            result.text,
+        )
+        self.assertIn(
+            "- On Linux, 1 workers ran for 0 of its 40 minutes, the Linux leg stopping before its end;", result.text
+        )
+
+    def test_a_leg_stopped_in_its_reach_pass_leaves_every_mutant_not_run(self) -> None:
+        def reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:
+            raise Stopped
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            raise AssertionError("no mutant runs once the reach pass stopped")
+
+        leg, result = self.run_stopped(reach, run)
+        self.assertEqual((1,), leg.stopped)
+        self.assertEqual([NOT_RUN] * 5, [found.status for found in leg.outcomes["tools/calc.py"]])
+        self.assertFalse(result.finished)
+        self.assertIn("5 of the 5 mutants of `tools/calc.py` did not run on Linux", result.text)
+
+
+class Stopped(Exception):
+    """The leg step's end partway, as a failure, a cancellation, or its job's time limit ends it."""
 
 
 def test_a_shard_record_of_the_whole_leg_another_deal_or_another_shards_mutants_stops_the_join() -> None:
@@ -4411,7 +4728,9 @@ class ShardStepFixtures(unittest.TestCase):
         gate = Gate(Path(), "main", 40, 4, git_client)
         handed: list[list[SelectedModule]] = []
 
-        def run_leg(name: str, trees: object, modules: list[SelectedModule], started: float) -> LegRun:
+        def run_leg(
+            name: str, trees: object, modules: list[SelectedModule], started: float, progress: object = None
+        ) -> LegRun:
             handed.append(modules)
             return LegRun(name, 40, 1.0, 4, {}, {}, [])
 
@@ -4447,16 +4766,18 @@ class ShardStepFixtures(unittest.TestCase):
             self.assertIn("The Linux leg runs in 2 shards\n", printed.getvalue())
             with (
                 mock.patch.object(Gate, "leg", return_value=shard) as leg,
+                mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
                 mock.patch("sys.stdout", io.StringIO()),
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder), "--shard", "2"], {}))
-            leg.assert_called_once_with(SHARDED, 2)
+            leg.assert_called_once_with(SHARDED, 2, mock.ANY)
             with (
                 mock.patch.object(Gate, "leg", return_value=shard_run(1, lambda found: KILLED)) as first,
+                mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
                 mock.patch("sys.stdout", io.StringIO()),
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder), "--shard", "1"], {}))
-            first.assert_called_once_with(SHARDED, 1)
+            first.assert_called_once_with(SHARDED, 1, mock.ANY)
             self.assertEqual(shard, read_leg(folder / "outcomes-linux-2.json", SHARDED, LINUX_LEG, 2))
             self.assertFalse((folder / "outcomes-linux.json").exists())
             with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
@@ -4803,7 +5124,9 @@ def test_the_windows_legs_step_runs_its_own_shards_and_the_select_step_names_the
     gate = Gate(Path(), "main", 40, 4, git_client)
     handed: list[list[SelectedModule]] = []
 
-    def run_leg(name: str, trees: object, modules: list[SelectedModule], started: float) -> LegRun:
+    def run_leg(
+        name: str, trees: object, modules: list[SelectedModule], started: float, progress: object = None
+    ) -> LegRun:
         handed.append(modules)
         return LegRun(name, 40, 1.0, 4, {}, {}, [])
 

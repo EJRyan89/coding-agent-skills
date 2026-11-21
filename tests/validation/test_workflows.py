@@ -2082,7 +2082,7 @@ def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
         "          path: mutation\n"
         "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}\n"
-        "      - uses: actions/upload-artifact@abc\n        with:\n"
+        "      - if: always()\n        uses: actions/upload-artifact@abc\n        with:\n"
         f"          name: mutation-{leg.casefold()}-${{{{ matrix.shard }}}}\n"
         f"          path: mutation/outcomes-{leg.casefold()}-${{{{ matrix.shard }}}}.json\n"
         "          if-no-files-found: error\n"
@@ -2234,6 +2234,13 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
         ),
         pytest.param(
             MUTATION.replace("    if: ${{ !cancelled() }}\n", ""), "mutation job's if", id="a join skipped by a leg"
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "      - if: always()\n        uses: actions/upload-artifact", "      - uses: actions/upload-artifact"
+            ),
+            "linux job's artifacts",
+            id="a leg's outcomes left behind when its step stopped",
         ),
         pytest.param(
             MUTATION.replace("outputs.windows != '[]'", "outputs.linux != '[]'"),

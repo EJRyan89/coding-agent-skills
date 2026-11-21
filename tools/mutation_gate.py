@@ -9,28 +9,32 @@ it is not a required check, and it calls no model and reads no secret. Without a
 process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in FOLDER:
 `select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step outputs
 listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each SHARD_MUTANTS of
-them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across
-the shards that hold it, as dealt_shards deals them; `leg`, on
-Linux and on Windows, runs that platform's leg of them, or with --shard that shard's share, never running mutmut, and
-writes its outcomes to outcomes-<platform>.json, or outcomes-<platform>-<shard>.json; and `join` reports them, reading
-each leg's whole record, or each shard the selection deals and no other, joined into the leg's. The Linux leg runs every
-module's mutants, and the Windows leg those of each module whose behavior differs on Windows by design, as
-runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, one importing one of
-PLATFORM_MODULES, or one whose code reads the platform in any expression: a token of any kind the platform policy's
-PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or creationflags, or one of PLATFORM_VALUES, such as
-os.altsep. A mutant either leg killed counts as killed, and the summary names the legs that ran each module and each
-mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged where it shows. It mutates the
-lines the pull request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base
-names another), as `git diff -U0` names them, in each module under deployer/, tools/, a skill's scripts/, or a
-repository skill's scripts/, in each validation policy directly under tests/validation/, whose fixture suite,
-tests/validation/test_<module>.py, reaches it as any suite reaches a module, and in each validation program directly
-under tests/, such as tests/run_validation.py, beside its own suite, leaving out suites, conftest.py, the suites'
-own fixtures elsewhere under tests/, and deleted files. mutmut's operators make the mutants,
-string literals included, each one mutation of the whole module, and mutmut's own line filter (the `covered_lines` of
-its `create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a mutant only when the
-first line it changes is a changed line too, so a mutation anchored on an expression that starts on an unchanged line,
-such as removing an argument from a call that opens above the change, is left out. A changed module whose changed lines
-yield no mutant is named in the summary, never left out of it.
+them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across the
+shards that hold it, as dealt_shards deals them; `leg`, on Linux and on Windows, runs that platform's leg of them, or
+with --shard that shard's share, never running mutmut, and writes its outcomes to outcomes-<platform>.json, or
+outcomes-<platform>-<shard>.json, replacing the file whole before its reach pass, after it, and after each mutant, each
+mutant not yet reached written as not run and the record marked as not ended until its last write, so a step that
+failed, was cancelled, or ran past its job's time limit partway leaves the outcomes it reached for its upload, which
+runs whatever the step did; a runner's shutdown runs no later step, the upload included, so its shard leaves no record;
+and `join` reports them, reading each leg's whole record, or each shard the selection deals and no other, joined into
+the leg's, a record not ended, or a shard that left none, read as a step stopped before its end, whose mutants it had
+not reached did not run. The Linux leg runs every module's mutants, and the Windows leg those of each module whose
+behavior differs on Windows by design, as runs_on_windows selects it: one of PLATFORM_MODULES, one holding a
+PLATFORM_ALLOWED table, one importing one of PLATFORM_MODULES, or one whose code reads the platform in any expression: a
+token of any kind the platform policy's PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or creationflags, or
+one of PLATFORM_VALUES, such as os.altsep. A mutant either leg killed counts as killed, and the summary names the legs
+that ran each module and each mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged
+where it shows. It mutates the lines the pull request's commits add or change since the base
+(`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names another), as `git diff -U0` names them, in each module
+under deployer/, tools/, a skill's scripts/, or a repository skill's scripts/, in each validation policy directly under
+tests/validation/, whose fixture suite, tests/validation/test_<module>.py, reaches it as any suite reaches a module, and
+in each validation program directly under tests/, such as tests/run_validation.py, beside its own suite, leaving out
+suites, conftest.py, the suites' own fixtures elsewhere under tests/, and deleted files. mutmut's operators make the
+mutants, string literals included, each one mutation of the whole module, and mutmut's own line filter (the
+`covered_lines` of its `create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a
+mutant only when the first line it changes is a changed line too, so a mutation anchored on an expression that starts on
+an unchanged line, such as removing an argument from a call that opens above the change, is left out. A changed module
+whose changed lines yield no mutant is named in the summary, never left out of it.
 
 mutmut's own runner is not used: it records which tests reach a function only inside its pytest process and finds a
 mutant by a module name it derives from the file's path, while the suites here reach most modules through the
@@ -41,31 +45,32 @@ process the suite starts imports it.
 
 Which suites run against a mutant is measured, not guessed. The suites that reach the changed modules, as
 `job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py, which records
-the statements of the changed modules each suite executes, in its own process or in one it started with the
-environment passed on, each process starting its measurement from the reach run's configuration file, as
-COVERAGE_PROCESS_START names it; the gate's own coverage steps and suite runs are never measured.
-coverage.py records a statement by its first line, and the lines its report names executed, missing, or excluded are the
-first lines of all the module's statements, so each line up to the next of them belongs to the statement above it, and a
-mutant on a continuation line of a multi-line statement is reached when that statement ran. coverage.py's
-`test_function` dynamic context records, too, which test functions ran each statement, and a process the suite
-started records, as its static context, the PYTEST_CURRENT_TEST pytest gave it: the node id of the test running when it
-started, and the phase. `coverage json --show-contexts` reports them, which the gate matches to the node ids `pytest
---collect-only` lists for the suite. A mutant then runs the suites that executed its statement, fastest first, until
-one fails: of each suite, only the tests that ran the statement, when its own test functions, or processes they started
-while they ran, alone did, and the whole suite when anything else ran it too, since a set-up, a fixture, an import, or a
-process started outside a test's call phase records no test of its own; a context naming no collected test of the
-suite, or a test function name more than one collected class holds, which an inherited test method would be, and a
-suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
-runs past three times its unmutated time. A timeout on a CI leg is read as timed out unconfirmed, which judges nothing,
-since a runner's load can stretch a suite past its limit as surely as a mutant that makes a loop endless; only a local
-run that times out on the mutant too confirms it, under that run's own measured limits. A whole run in one process,
-without a step, runs on this machine, so its own timeouts stand as timed out. Each leg step refuses a HEAD that is not
-the commit the select step recorded. A mutant every one of those
-suites passes survived. A mutant in a statement no
-suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
-json` fails or times out on, or whose report holds no files object, is left out and named with the step and its
-output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python module and are not
-used.
+the statements of the changed modules each suite executes, in its own process or in one it started with the environment
+passed on, each process starting its measurement from the reach run's configuration file, as COVERAGE_PROCESS_START
+names it; the gate's own coverage steps and suite runs are never measured. coverage.py records a statement by its first
+line, and the lines its report names executed, missing, or excluded are the first lines of all the module's statements,
+so each line up to the next of them belongs to the statement above it, and a mutant on a continuation line of a
+multi-line statement is reached when that statement ran. coverage.py's `test_function` dynamic context records, too,
+which test functions ran each statement, and a process the suite started records, as its static context, the
+PYTEST_CURRENT_TEST pytest gave it: the node id of the test running when it started, and the phase. `coverage json
+--show-contexts` reports them, which the gate matches to the node ids `pytest --collect-only` lists for the suite. A
+mutant then runs the suites that executed its statement, fastest first, until one fails: of each suite, only the tests
+that ran the statement, when its own test functions, or processes they started while they ran, alone did, and the whole
+suite when anything else ran it too, since a set-up, a fixture, an import, or a process started outside a test's call
+phase records no test of its own; a context naming no collected test of the suite, or a test function name more than one
+collected class holds, which an inherited test method would be, and a suite pytest cannot list run whole as well. The
+mutant is killed, or timed out when a suite runs past three times its unmutated time. Each process a suite's run starts,
+unmutated or mutated, may hold at most MEMORY_BOUND bytes of data on Linux, as platform_support.memory_bounded bounds
+it, so a mutant that allocates without end fails its suite with a MemoryError, which kills it, rather than exhausting
+the runner; macOS and Windows bound no process's data, so there a suite is bounded by its time alone. A timeout on a CI
+leg is read as timed out unconfirmed, which judges nothing, since a runner's load can stretch a suite past its limit as
+surely as a mutant that makes a loop endless; only a local run that times out on the mutant too confirms it, under that
+run's own measured limits. A whole run in one process, without a step, runs on this machine, so its own timeouts stand
+as timed out. Each leg step refuses a HEAD that is not the commit the select step recorded. A mutant every one of those
+suites passes survived. A mutant in a statement no suite executed is not reached, and a suite that fails unmutated, or
+whose coverage data `coverage combine` or `coverage json` fails or times out on, or whose report holds no files object,
+is left out and named with the step and its output, never read as a suite that reached nothing. The Bash and PowerShell
+suites run no Python module and are not used.
 
 A line outside every function's body runs when the module is imported, which records no test function, so it would run
 every reaching suite whole. A mutant of a module-level assignment, such as a table or a compiled pattern, changes only
@@ -95,7 +100,9 @@ run and how many of them lie on lines that run at import, and each such leg's co
 mutants they leave open, then each module's mutants a CI leg timed out on with no local run to confirm it, which leave
 the run unfinished too. The summary's table counts confirmed and unconfirmed timeouts apart, and each module's kill
 ratio is its killed and confirmed timed-out mutants over every mutant it judged.
-pytest's exit for a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
+Any exit but a pass whose output shows a MemoryError raised, as MEMORY_ERROR reads its lines, kills a mutant, the log
+saying so; otherwise pytest's exit for
+a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
 module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
 named the module's tests by node id. Any other nonzero exit, an interruption, an internal error, a usage error such as
 a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the next suite, and is
@@ -143,8 +150,8 @@ module with no mutant, each surviving mutant by its line, the mutation, and the 
 count of its tests that ran when not all of them did, and each mutant not reached by its line and the mutation, goes to
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
 saying so. A run, or its join, unfinished on any leg ends after its summary and an error annotation repeating its
-first line. A step cannot run when the join finds no selection, no outcomes from a leg or a shard that had mutants
-to run, a run file twice, a leg's whole record beside its shards', a shard the selection does not deal, or a record
+first line, which names each leg step that stopped before its end. A step cannot run when the join finds no selection,
+a run file twice, a leg's whole record beside its shards', a shard the selection does not deal, or a record
 that is not as its step writes it, such as a leg's or a shard's naming another leg or shard, another deal, or leaving
 out a module it had mutants for, or a local run's naming another leg, a leg that ran no mutant, a place outside a
 module's mutants, a module the leg does not run, or a place whose leg outcome was a verdict, the leg step is given a
@@ -225,8 +232,29 @@ REACH_SHARE = 0.5
 # that makes a loop endless is killed rather than waited on.
 SUITE_TIME_FACTOR = 3
 MINIMUM_SUITE_SECONDS = 60.0
-# How much of a command's output is read back: the start of a mutant's run and of a coverage step, and the end of an
-# unmutated suite's run, which is written to a file so that a long traceback cannot push its summary past the limit.
+# The most data, in bytes, each process of a suite's run may hold where platform_support.memory_bounded bounds it, on
+# Linux, the unmutated reach run's as well as a mutant's, so a suite that needs more fails unmutated and is named. A
+# mutant that allocates without end then fails its suite with a MemoryError instead of exhausting the runner, whose
+# memory a leg's workers and every process their suites start share, and stopping the leg with every outcome it held.
+MEMORY_BOUND = 2 << 30
+# A line of a suite's output that shows a MemoryError raised, which Python raises at an allocation the bound refuses:
+# pytest's `E` line of a failed test, its INTERNALERROR line when its own process ran out, its short summary of a test
+# that failed or errored on one, or a traceback's last line, as a process the suite started prints it in the captured
+# output. Each holds the exception's name alone or before its message, so a test whose source or name only mentions
+# MemoryError, which pytest quotes indented or after `>`, is not read as one. A process ended by a signal with no such
+# line still errors: RLIMIT_DATA refuses an allocation rather than sending one, so that is a stated limit, not a form
+# the bound produces. Two more stated limits: the end read back may start mid-line, so a line cut just before the name
+# reads as one that raised it, which turns only an exit that would otherwise error into a kill; and an interpreter that
+# aborts with a fatal error while out of memory prints no such line, so its run reads as errored.
+MEMORY_ERROR = re.compile(rb"^(?:E +|INTERNALERROR> *|(?:FAILED|ERROR) .* - )?MemoryError(?::.*)?\r?$", re.MULTILINE)
+# The reason the log gives for such a kill.
+MEMORY_REASON = (
+    f"a process ran out of memory, as one past the {MEMORY_BOUND >> 30} GiB of data each process of the suite may hold "
+    "on Linux does, so the mutant made it allocate without end"
+)
+# How much of a command's output is read back: the start and the end of a mutant's run, the start of a coverage step's,
+# and the end of an unmutated suite's run, each run written to a file so that a long traceback cannot push its summary
+# or its MemoryError past the limit.
 OUTPUT_LIMIT = 4096
 # How much of a failed coverage step's or unmutated suite's output its reason quotes: the end of it, where coverage.py
 # names its error and pytest gives its summary of the tests that failed.
@@ -251,9 +279,9 @@ PASSED = "passed"
 # pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, or
 # ended in a usage error, either of which kills the mutant only when collecting a test module failed, as a mutant that
 # breaks an import or the syntax does; pytest reports that failure, then exits with the usage error when the run named
-# the module's tests by node id, since it then finds none of them. Every other nonzero exit, an interruption, an
-# internal error, a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges
-# nothing.
+# the module's tests by node id, since it then finds none of them. Any nonzero exit whose output shows a MemoryError
+# raised, as MEMORY_ERROR reads it, kills the mutant too. Every other nonzero exit, an interruption, an internal error,
+# a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges nothing.
 TESTS_FAILED_EXIT = 1
 COLLECTION_EXITS = frozenset({2, 4})
 # What pytest's report heads each module it failed to collect with, at the start of its output.
@@ -477,7 +505,9 @@ class LegRun:
     whose timeouts confirm themselves. Every leg the leg step writes is a CI leg's, and no record holds the flag. A
     shard's run holds the outcomes of its share of the leg's mutants alone, `shard` numbering it from 1 of `shards`; a
     whole leg's, or one joined from its shards, has `shard` 0, and its workers and estimates are its shards' summed,
-    its seconds the longest shard's, and its suites each shard's."""
+    its seconds the longest shard's, and its suites each shard's. `stopped` names each shard, 0 for the whole leg,
+    whose step stopped before its end, leaving a record written as it went or none, so the mutants it had not reached
+    are not run; a leg with no record at all has `minutes` 0."""
 
     name: str
     minutes: int
@@ -492,6 +522,7 @@ class LegRun:
     confirms: bool = False
     shard: int = 0
     shards: int = 1
+    stopped: tuple[int, ...] = ()
 
     @property
     def open_suites(self) -> list[str]:
@@ -927,10 +958,13 @@ def suite_environment() -> dict[str, str]:
 
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
-    process it starts ended after it: passed on pytest's exit 0, killed on its exit for a failed test or for a test
-    module it failed to collect, an interruption or, when the run named tests, a usage error, timed out past
-    `timeout`, and errored on any other exit, which judges nothing and logs pytest's exit and the start of its output.
-    The node ids go to pytest in an argument file, which no command line's length limits."""
+    process it starts ended after it and each bounded to MEMORY_BOUND bytes of data where the platform bounds it:
+    passed on pytest's exit 0, killed on any other exit whose output shows a MemoryError raised, which logs that
+    reason, and
+    on its exit for a failed test or for a test module it failed to collect, an interruption or, when the run named
+    tests, a usage error, timed out past `timeout`, and errored on any other exit, which judges nothing and logs
+    pytest's exit and the start of its output. The node ids go to pytest in an argument file, which no command line's
+    length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-", dir=private_folder.temporary_directory()) as temporary:
         target = suite
         if tests:
@@ -938,23 +972,36 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
             listed.write_text("".join(f"{test}\n" for test in tests), encoding="utf-8")
             target = f"@{listed}"
         try:
-            finished = run_bounded(
-                pytest_command(target, "-x", "-q"),
-                timeout,
-                cwd=tree,
-                env=suite_environment(),
-                output_limit=OUTPUT_LIMIT,
-                tree=platform_support.process_tree(),
-            )
+            # Both streams go to one file in the order pytest wrote them, whose start and end are read back: pytest
+            # names a failed collection and its own error at the start, and a MemoryError that ended it at the end,
+            # however long its traceback.
+            with (Path(temporary) / "suite-output").open("w+b") as written:
+                finished = run_bounded(
+                    platform_support.memory_bounded(pytest_command(target, "-x", "-q"), MEMORY_BOUND),
+                    timeout,
+                    stdout=written,
+                    stderr=written,
+                    cwd=tree,
+                    env=suite_environment(),
+                    tree=platform_support.process_tree(),
+                )
+                size = written.seek(0, os.SEEK_END)
+                written.seek(0)
+                start = written.read(OUTPUT_LIMIT)
+                written.seek(max(0, size - OUTPUT_LIMIT))
+                end = written.read()
         except subprocess.TimeoutExpired:
             return TIMED_OUT
     if finished.returncode == 0:
         return PASSED
-    collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in finished.stdout
+    if MEMORY_ERROR.search(start) or MEMORY_ERROR.search(end):
+        print(f"{KILLED:<11} {suite}: pytest exited {finished.returncode}: {MEMORY_REASON}", flush=True)
+        return KILLED
+    collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in start
     if finished.returncode == TESTS_FAILED_EXIT or collection_failed:
         return KILLED
     # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.
-    output = flat_text((finished.stderr + finished.stdout).decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
+    output = flat_text(start.decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
     print(f"{ERRORED:<11} {suite}: pytest exited {finished.returncode}: {output}", flush=True)
     return ERRORED
 
@@ -1143,7 +1190,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             # gives its summary however long the output before it.
             with (folder / "suite-output").open("w+b") as written:
                 finished = run_bounded(
-                    pytest_command(suite, "-q"),
+                    platform_support.memory_bounded(pytest_command(suite, "-q"), MEMORY_BOUND),
                     timeout,
                     stdout=written,
                     stderr=written,
@@ -1373,9 +1420,15 @@ def queue_order(selected: Iterable[Sequence[Mutant]]) -> list[Mutant]:
 
 
 def try_mutants(
-    workers: Workers, mutants: Sequence[Mutant], reach: Mapping[str, Reach], deadline: float, run: SuiteRunner
+    workers: Workers,
+    mutants: Sequence[Mutant],
+    reach: Mapping[str, Reach],
+    deadline: float,
+    run: SuiteRunner,
+    done: Callable[[int, Outcome], None] | None = None,
 ) -> list[Outcome]:
-    """Each mutant's outcome, those the deadline leaves untested counted as not run."""
+    """Each mutant's outcome, those the deadline leaves untested counted as not run, each handed to `done` with its
+    place in `mutants` as soon as it is known."""
 
     def attempt(tree: Path, index: int) -> Outcome:
         mutant = mutants[index]
@@ -1384,9 +1437,22 @@ def try_mutants(
         outcome = try_mutant(tree, mutant, reach, deadline, run, workers.clock)
         if outcome.suites or outcome.status == NOT_REACHED:
             print(f"{outcome.status:<11} {mutant.module}:{mutant.line} {mutant.before} -> {mutant.after}", flush=True)
+        if done:
+            done(index, outcome)
         return outcome
 
     return workers.map(attempt, len(mutants))
+
+
+def placed_outcomes(
+    order: Sequence[Mutant], reached: Mapping[int, Outcome], modules: Sequence[str]
+) -> dict[str, list[Outcome]]:
+    """Each module's outcomes in the order of its mutants, from the queue `order` and the outcomes `reached` holds by
+    their place in it, a mutant not yet reached counted as not run; the queue keeps each module's mutants in order."""
+    found: dict[str, list[Outcome]] = {module: [] for module in modules}
+    for index, mutant in enumerate(order):
+        found[mutant.module].append(reached.get(index, Outcome(mutant, NOT_RUN)))
+    return found
 
 
 def run_deadline(started: float, minutes: int) -> float:
@@ -1634,7 +1700,15 @@ def unfinished_line(report: Report) -> str | None:
                     + legs_leaving(module, found, status)
                 )
     sentences = []
-    if parts:
+    stopped = stopped_steps(report.legs)
+    if parts and stopped:
+        one = len(stopped) == 1
+        sentences.append(
+            f"{' and '.join(stopped)} stopped before {'its' if one else 'their'} end, so the mutants "
+            f"{'it' if one else 'they'} had not reached did not run: {'; '.join(parts)}. Read "
+            f"{'its' if one else 'their'} log, and rerun the gate."
+        )
+    elif parts:
         sentences.append(
             f"a leg's cap cut the run short: {'; '.join(parts)}. Split the pull request, or move its module-level "
             "tables into the functions that use them, until it finishes."
@@ -1650,6 +1724,16 @@ def unfinished_line(report: Report) -> str | None:
             f"confirms it: {'; '.join(unconfirmed)}. Run the gate's `unrun` step on each such leg's platform."
         )
     return f"**Unfinished, so not a verdict:** {' '.join(sentences)}" if sentences else None
+
+
+def stopped_steps(legs: Iterable[LegRun]) -> list[str]:
+    """Each leg step that stopped before its end, by name: a shard's as shard 7 of the Linux leg, a whole leg's as the
+    Linux leg."""
+    return [
+        f"shard {shard} of the {leg.name} leg" if shard else f"the {leg.name} leg"
+        for leg in legs
+        for shard in leg.stopped
+    ]
 
 
 def left_open(report: Report, leg: LegRun) -> int:
@@ -1674,11 +1758,15 @@ def leg_line(leg: LegRun) -> str:
     """A leg's workers and time, its shards' when it ran in more than one, and those of the local run that completed
     it, if one did."""
     line = (
-        f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
+        f"{leg.name}, which left no record of its mutants"
+        if not leg.minutes
+        else f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
         if leg.shards == 1
         else f"{leg.name}, {leg.shards} shards of {leg.workers} workers in all ran for at most "
         f"{leg.seconds / 60:.0f} of each one's {leg.minutes} minutes"
     )
+    if leg.stopped and leg.minutes:
+        line += f", {' and '.join(stopped_steps([leg]))} stopping before its end"
     if leg.local is None:
         return line
     local = leg.local
@@ -1766,7 +1854,13 @@ def summary(report: Report) -> str:
         if module.cut_short:
             left = [index for index, outcome in enumerate(module.outcomes) if outcome.status == NOT_RUN]
             where = legs_leaving(module, left)
-            lines += ["", f"The cap cut `{module.module}` short on {where}: {len(left)} mutants did not run."]
+            leaving = {leg for index in left for leg, outcome in module.ran(index).items() if outcome.status == NOT_RUN}
+            cut = (
+                "A leg step that stopped before its end, or the cap,"
+                if any(leg.stopped and leg.name in leaving for leg in report.legs)
+                else "The cap"
+            )
+            lines += ["", f"{cut} cut `{module.module}` short on {where}: {len(left)} mutants did not run."]
     for leg in report.legs:
         lines += suite_lines(report, leg)
     for module in report.modules:
@@ -1900,7 +1994,19 @@ def joined_shards(leg: str, selected: Selected, shards: Sequence[LegRun]) -> Leg
         needed,
         sum(run.available for run in shards),
         shards=len(shards),
+        stopped=tuple(shard for run in shards for shard in run.stopped),
     )
+
+
+def unwritten_shard(leg: str, selected: Selected, shard: int) -> LegRun:
+    """The run of a shard, from 1, of a leg whose step left no record, as one stopped before its first: each of its
+    mutants not run, no cap read, and nothing measured. joined_shards counts the shards it joins, so the run names no
+    count of its own."""
+    outcomes = {
+        chosen.module: [Outcome(mutant, NOT_RUN) for mutant in chosen.mutants]
+        for chosen in shard_modules(leg, selected, shard)
+    }
+    return LegRun(leg, 0, 0.0, 0, outcomes, {}, [], shard=shard, stopped=(shard,))
 
 
 def joined(selected: Selected, legs: Sequence[LegRun]) -> Report:
@@ -2140,11 +2246,13 @@ def outcome_record(outcome: Outcome) -> dict[str, Any]:
 
 
 def leg_record(leg: LegRun) -> dict[str, Any]:
-    """A leg's run as the leg step hands it to the join, each outcome by its mutant's place in the selection."""
+    """A leg's run as the leg step hands it to the join, each outcome by its mutant's place in the selection, and
+    whether the step reached its end, which a record it writes as it goes does not."""
     return {
         "leg": leg.name,
         "shard": leg.shard,
         "shards": leg.shards,
+        "ended": not leg.stopped,
         "minutes": leg.minutes,
         "seconds": leg.seconds,
         "workers": leg.workers,
@@ -2228,6 +2336,7 @@ def read_leg(path: Path, selected: Selected, leg: str, shard: int = 0) -> LegRun
         "leg",
         "shard",
         "shards",
+        "ended",
         "minutes",
         "seconds",
         "workers",
@@ -2265,6 +2374,7 @@ def read_leg(path: Path, selected: Selected, leg: str, shard: int = 0) -> LegRun
         READ.number(record["available"], f"{path.name}.available"),
         shard=shard,
         shards=count,
+        stopped=() if READ.boolean(record["ended"], f"{path.name}.ended") else (shard,),
     )
     refuse_unjudged_suites(path.name, "leg", run.outcomes, run.failed_suites, run.unmeasured_suites)
     return run
@@ -2438,15 +2548,51 @@ class Gate:
         ran = self.run_leg(platform_support.PLATFORM_NAME, trees, selected.modules, started)
         return joined(selected, [replace(ran, confirms=True)])
 
-    def run_leg(self, name: str, trees: Sequence[Path], modules: Sequence[SelectedModule], started: float) -> LegRun:
+    def run_leg(
+        self,
+        name: str,
+        trees: Sequence[Path],
+        modules: Sequence[SelectedModule],
+        started: float,
+        progress: Callable[[LegRun], None] | None = None,
+    ) -> LegRun:
         """Measure the reach of the suites that reach a module with a mutant, then test the mutants from one queue
-        until the cap."""
+        until the cap, handing `progress` the run so far before the reach pass, after it, and after each mutant, every
+        mutant not yet reached counted as not run, so a leg stopped before its end leaves what it reached."""
         deadline = run_deadline(started, self.minutes)
         workers = Workers(trees, self.clock)
         mutated = [chosen.module for chosen in modules if chosen.mutants]
+        order = queue_order(chosen.mutants for chosen in modules)
         reach: dict[str, Reach] = {}
         failed: dict[str, str] = {}
         unmeasured: list[str] = []
+        needed: dict[str, float] = {}
+        available = 0.0
+        reached: dict[int, Outcome] = {}
+        # Outcomes arrive from every worker's thread; the lock keeps each record whole and each later than the last.
+        lock = threading.Lock()
+
+        def hand_on(index: int | None = None, outcome: Outcome | None = None) -> None:
+            if progress is None:
+                return
+            with lock:
+                if index is not None and outcome is not None:
+                    reached[index] = outcome
+                progress(
+                    LegRun(
+                        name,
+                        self.minutes,
+                        self.clock() - started,
+                        len(trees),
+                        placed_outcomes(order, reached, mutated),
+                        failed,
+                        unmeasured,
+                        needed,
+                        available,
+                    )
+                )
+
+        hand_on()
         if mutated:
             problem = self.measure(self.reach)
             if problem:
@@ -2465,8 +2611,9 @@ class Gate:
         if too_large:
             # A workflow command, which puts the estimate on the run's annotations while the mutants still run.
             print(f"::warning title=Mutation gate too large::{too_large}", flush=True)
-        outcomes = try_mutants(workers, queue_order(chosen.mutants for chosen in modules), reach, deadline, self.run)
-        found = {module: [outcome for outcome in outcomes if outcome.mutant.module == module] for module in mutated}
+        hand_on()
+        outcomes = try_mutants(workers, order, reach, deadline, self.run, hand_on)
+        found = placed_outcomes(order, dict(enumerate(outcomes)), mutated)
         seconds = self.clock() - started
         return LegRun(name, self.minutes, seconds, len(trees), found, failed, unmeasured, needed, available)
 
@@ -2482,15 +2629,18 @@ class Gate:
         head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
         return replace(self.choose(self.root, modules), head=head)
 
-    def leg(self, selected: Selected, shard: int = 0) -> LegRun:
+    def leg(self, selected: Selected, shard: int = 0, record: Callable[[LegRun], None] | None = None) -> LegRun:
         """The leg step: this platform's leg of the mutants the select step made, or the share of them that shard
         `shard`, from 1, runs when it names one, run in worktrees of HEAD, which must be the commit the select step's
-        checkout held, as every job of the workflow checks out the same one."""
+        checkout held, as every job of the workflow checks out the same one. Once its mutants start, `record` is
+        handed the run so far, marked as stopped before its end, before the reach pass, after it, and after each
+        mutant, so a step stopped before its end leaves what it reached for its caller to have written."""
         name = platform_support.PLATFORM_NAME
         count = leg_shards(name, selected)
         if shard > count:
             raise RuntimeError(f"the selection deals the {name} leg into {count} shards, so it has no shard {shard}")
         modules = shard_modules(name, selected, shard) if shard else leg_modules(name, selected)
+        shards = count if shard else 1
         started = self.clock()
         if not modules:
             return LegRun(name, self.minutes, 0.0, 0, {}, {}, [])
@@ -2506,8 +2656,16 @@ class Gate:
             tempfile.TemporaryDirectory(prefix="mutation-gate-", dir=private_folder.temporary_directory()) as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
-            ran = self.run_leg(name, trees, modules, started)
-        return replace(ran, shard=shard, shards=count if shard else 1)
+            ran = self.run_leg(
+                name,
+                trees,
+                modules,
+                started,
+                None
+                if record is None
+                else lambda run: record(replace(run, shard=shard, shards=shards, stopped=(shard,))),
+            )
+        return replace(ran, shard=shard, shards=shards)
 
     def report(self) -> Result:
         """The summary of one run, one line when no module changed, else every module's mutants tested, and whether
@@ -2660,8 +2818,10 @@ def run_files(folder: Path) -> dict[str, Path]:
 
 def read_leg_files(files: Mapping[str, Path], selected: Selected, name: str) -> LegRun:
     """A needed leg's run: its whole record when the leg ran in one job, else each of its shards' records joined, every
-    shard the selection deals named and no other; a missing record, a whole record beside a shard's, or a shard's
-    record the selection does not deal stops it, since a mutant would then have no verdict, or two."""
+    shard the selection deals named and no other, a shard whose step left no record read as stopped before its first,
+    its mutants not run, as a runner's shutdown leaves one, since it runs no later step; a whole record beside a
+    shard's, or a shard's record the selection does not deal stops it, since a mutant would then have two verdicts, or
+    none of its own."""
     prefix = shard_name(name, 0).removesuffix("0.json")
     shards = sorted(found for found in files if found.startswith(prefix))
     whole = files.get(outcomes_name(name))
@@ -2673,11 +2833,10 @@ def read_leg_files(files: Mapping[str, Path], selected: Selected, name: str) -> 
     stray = sorted(set(shards) - set(dealt))
     if stray:
         raise RecordError(f"{', '.join(stray)} names a shard of the {name} leg its selection does not deal")
-    missing = [found for found in dealt if found not in files]
-    if missing:
-        written = " or ".join(missing) if len(dealt) > 1 else outcomes_name(name)
-        raise RuntimeError(f"the {name} leg wrote no {written}, so its mutants have no verdict: read its log")
-    runs = [read_leg(files[found], selected, name, shard) for shard, found in enumerate(dealt, start=1)]
+    runs = [
+        read_leg(files[found], selected, name, shard) if found in files else unwritten_shard(name, selected, shard)
+        for shard, found in enumerate(dealt, start=1)
+    ]
     return joined_shards(name, selected, runs)
 
 
@@ -2827,9 +2986,15 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.
         select_step(gate, arguments.folder, environment)
         return 0
     if arguments.step == "leg":
-        leg = gate.leg(read_selection(arguments.folder / MUTANTS_FILE), arguments.shard)
-        written = shard_name(leg.name, leg.shard) if leg.shard else outcomes_name(leg.name)
-        json_writer.write(arguments.folder / written, leg_record(leg))
+        # Every write replaces the file whole, so a step stopped between two leaves the last for its upload.
+        name = platform_support.PLATFORM_NAME
+        written = arguments.folder / (shard_name(name, arguments.shard) if arguments.shard else outcomes_name(name))
+        leg = gate.leg(
+            read_selection(arguments.folder / MUTANTS_FILE),
+            arguments.shard,
+            lambda run: json_writer.write(written, leg_record(run)),
+        )
+        json_writer.write(written, leg_record(leg))
         return 0
     if arguments.step == "unrun":
         completed = gate.unrun(arguments.folder)
