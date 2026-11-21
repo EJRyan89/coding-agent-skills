@@ -19,7 +19,7 @@ import whole_number
 from bash_syntax import BashSyntaxError, CommandList, Word, every_command, expanded_words, here_documents, parse
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
-from text_lines import LINE_BREAK, program_lines
+from text_lines import LINE_BREAK, LINE_FEED, line_index, line_starts, program_lines
 from toolchain import (
     VALIDATION_FLOORS,
     bash_syntax_job,
@@ -154,6 +154,8 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
             for marker in TOKEN_MARKER.finditer(document.body):
                 placed.setdefault(_marker_place(marker), (2, True))
     tree = parse(marked)
+    # Bash ends a line at LF alone; each token's line is found over the starts, read once.
+    starts = line_starts(text, LINE_FEED)
     found: list[tuple[int, str, bool | None]] = []
     for index, token in enumerate(TEMPLATE_TOKEN.finditer(text)):
         if index in placed:
@@ -162,7 +164,7 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
             continue
         else:
             quoted = None
-        found.append((text.count("\n", 0, token.start()), token.group(1), quoted))
+        found.append((line_index(starts, token.start()), token.group(1), quoted))
     return found
 
 
@@ -240,7 +242,8 @@ def _powershell_tokens(text: str) -> list[tuple[int, str, bool | None]]:
 
 def _lone_optional_tokens(text: str) -> list[tuple[int, str]]:
     """Each token that may render empty quoted as a word of its own, as (line offset, name)."""
-    return [(text.count("\n", 0, lone.start()), lone.group(2)) for lone in LONE_OPTIONAL_TOKEN.finditer(text)]
+    starts = line_starts(text, LINE_FEED)
+    return [(line_index(starts, lone.start()), lone.group(2)) for lone in LONE_OPTIONAL_TOKEN.finditer(text)]
 
 
 def _called(node: ast.AST) -> str:
@@ -662,8 +665,10 @@ def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
                 if context == "shell"
                 else (SUPPRESS_MESSAGE, "SuppressMessageAttribute")
             )
+            # A unit's lines end at LF alone; each suppression's line is found over the starts, read once.
+            starts = line_starts(text, LINE_FEED)
             found += [
-                f"{name}:{start + text.count(chr(10), 0, match.start())} suppresses a rule with {what}"
+                f"{name}:{start + line_index(starts, match.start())} suppresses a rule with {what}"
                 for match in pattern.finditer(text)
             ]
     return [f"{problem}; fix the cause instead" for problem in found]
