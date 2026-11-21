@@ -12,6 +12,18 @@ explicit signs that it starts subagents, and reports the evidence rather than gu
 such a sign wherever it appears as a whole word, unless the name is a plain word (`review`, `Security`): then it
 counts only where the text names an agent, in a code span, followed by "agent", or on a line that also delegates.
 
+The repository files a skill names are its references. A Markdown link's destination is resolved as GitHub and Claude
+Code resolve it, through ejryan89-skill-core's link_targets: from the skill file's folder, `./` included, so
+`[rules](references/rules.md)` in `.claude/skills/review/SKILL.md` names `.claude/skills/review/references/rules.md`,
+and from the repository root when it starts with `/`. A path written bare in prose or in a code span has no folder of
+its own and is read from the repository root the reviewer works in, a leading `./` read as that root. An inline link
+or a definition is read only through its destination: a path its text repeats, as in `[docs/rules.md](docs/rules.md)`,
+is not read again as prose. An inline link that does not close, its title never closing or no `)` following it, is
+passed over only at its destination, so a path after it is still read. Limits, as link_targets states them: a
+reference link's text, as in `[text][label]`, `[text][]`, or `[label]`, is still read as prose; a definition's line is
+passed over whole, text after its title included; and an inline link with text after its title is passed over to the
+next `)`.
+
 A reviewer file's frontmatter is read by ejryan89-skill-core's strict frontmatter reader. A block it cannot read is a
 contract fault that fails the review, never a grant guessed from a lenient parse.
 """
@@ -29,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import frontmatter
 from flat_text import flat_text
 from git_client import Runner, subprocess_runner
-from link_destinations import link_destinations
+from link_destinations import Destination, link_destinations
+from link_targets import Cover, link_spans, link_target
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -54,7 +67,9 @@ DELEGATION_PHRASE = re.compile(
 AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
-# A path named in a code span or written bare in prose; a link's destination is read through link_destinations.
+# A path named in a code span or written bare in prose, read from the repository root; an inline link or a definition is
+# read only through its destination, by link_destinations, resolved from the skill's folder through link_targets, and
+# neither its text nor its destination is a bare path, within the limits the module docstring states.
 PATH_TOKEN = re.compile(r"`([^`\s]+)`|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
 # One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
 TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
@@ -152,14 +167,23 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
             agents.setdefault(PurePosixPath(path).stem, []).append(path)
     evidence: list[tuple[int, str]] = []
     body = text_lines(text)[body_start - 1 :]
-    # A link's destination as CommonMark reads it, outside code: percent-decoded, its escapes read, and `<…>` opened.
-    linked = [link.posix_path for link in link_destinations(body) if not link.is_url]
-    references = {path for path in linked if path in repository_files and path != skill}
+    # A link's destination as CommonMark reads it, outside code: percent-decoded, its escapes read, and `<…>` opened,
+    # then resolved from the skill's folder; the link, its text and title included, is no bare path.
+    destinations = link_destinations(body)
+    linked = [link_target(skill, link.posix_path) for link in destinations if not link.is_url]
+    references = {path for path in linked if path is not None and path in repository_files and path != skill}
+    by_line: dict[int, list[Destination]] = {}
+    for link in destinations:
+        by_line.setdefault(link.line, []).append(link)
+    taken = {line + body_start - 1: Cover.of(link_spans(body[line - 1], links)) for line, links in by_line.items()}
+    nothing = Cover.of([])
     for number, line in enumerate(body, start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, flat_text(line)[:160]))
         for match in PATH_TOKEN.finditer(line):
+            if taken.get(number, nothing).overlaps(match.start(), match.end()):
+                continue
             token = next(group for group in match.groups() if group).split("#", 1)[0]
             token = token.removeprefix("./")
             if token in repository_files and token != skill:
