@@ -179,9 +179,9 @@ the join's summary, naming the
 local run beside the leg, which the pull request's "Mutation survivors" comment then rules on as it would a CI run's.
 Stopped partway, by Ctrl-C or by the machine, it keeps the outcomes it reached: its suites start in process groups of
 their own, so the interrupt reaches the gate alone and the mutants it was running end as they would have. Run it again
-and it resumes, running only what the stopped run left without a verdict, not run or errored, and its survivors while
-it judged them without a suite, and keeping the rest; a run that ended stops it, a local file from another commit stops
-it and the join, and removing the file runs the leg's mutants anew.
+and it resumes, running only what the stopped run left without a verdict, not run or errored, and its survivors and
+unreached mutants while it judged them without a suite, and keeping the rest; a run that ended stops it, a local file
+from another commit stops it and the join, and removing the file runs the leg's mutants anew.
 A CI leg's timeout judges nothing until such a run confirms it: a runner's load can stretch a suite past its limit as
 surely as a mutant that makes a loop endless, so a run with one is unfinished, its summary counts confirmed and
 unconfirmed timeouts apart, and `unrun` runs each again, counting it as timed out only when it times out there too.
