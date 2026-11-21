@@ -61,6 +61,8 @@ def test_a_destination_is_read_as_commonmark_reads_it(line: str, url: str, path:
         "[a](a.md",
         "`[a](code.md)`",
         "``[a](`code`.md)``",
+        # A run that no other matches is text, so the single backticks after it pair into a span over the link.
+        "``a` [x](y.md) `",
         "    [a]: indented.md",
         "[a]: two.md words",
         "a ](not-a-link.md and more",
@@ -85,6 +87,16 @@ def test_a_line_that_opens_like_a_definition_but_holds_none_is_read_for_its_link
     line: str, expected: list[str]
 ) -> None:
     assert urls(line) == expected
+
+
+def test_a_double_run_never_closes_on_part_of_a_longer_run_so_the_link_after_it_is_read() -> None:
+    assert urls("`` [x](y.md) ```") == ["y.md"]
+
+
+def test_a_link_after_a_long_unmatched_backtick_run_is_read() -> None:
+    # The line opens with text, since one that opens with the run is a fence's opener. How the time to read such a line
+    # grows is held by test_markdown_sections.py's scaling tests of code_spans, which this reader blanks spans through.
+    assert urls("See " + "`" * 4_096 + " [x](y.md) " + "a" * 4_096) == ["y.md"]
 
 
 def test_a_link_in_a_code_block_is_code() -> None:

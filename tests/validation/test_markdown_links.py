@@ -47,6 +47,20 @@ class MarkdownLinkPolicy(unittest.TestCase):
             write_fixture_tree(root, files)
             return markdown_link_problems(root)
 
+    def test_a_root_absolute_destination_is_read_from_the_file_system_root_as_the_policy_states(self) -> None:
+        # The policy's stated limit: GitHub resolves `/docs/target.md` from the repository root, the policy does not.
+        problems = self.problems({"index.md": "See [it](/docs/target.md).\n", "docs/target.md": "# Target\n"})
+        self.assertEqual(["index.md:1 links to /docs/target.md, which does not exist"], problems)
+
+    def test_a_destination_that_climbs_past_the_repository_root_leaves_it_as_the_policy_states(self) -> None:
+        # The policy's stated limit: a file beside the checkout is found, though GitHub links to nothing there.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "checkout"
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"index.md": "See [it](../beside.md).\n"})
+            (Path(temporary) / "beside.md").write_text("# Beside\n", encoding="utf-8")
+            self.assertEqual([], markdown_link_problems(root))
+
     def test_fragments_follow_githubs_heading_slugs(self) -> None:
         # Backticks and punctuation go, underscores and hyphens stay, and a repeated heading is numbered.
         index = (
@@ -209,6 +223,17 @@ class CitedTestPolicy(unittest.TestCase):
             found = self.problems({"docs/guide.md": guide, "tests/test_diamond.py": suite})
         self.assertEqual(1, len(found), found)
         self.assertIn(f"C{levels}::test_gone", found[0])
+
+    def test_a_name_is_looked_for_only_in_the_files_its_own_sentence_names(self) -> None:
+        # The second sentence's file defines the name, but the first sentence, which cites it, names only another.
+        guide = "The `test_alone` test is in `tests/policy.py`. See `tests/test_a.py`.\n"
+        policy = "def test_policy() -> None:\n    pass\n"
+        self.assertEqual(
+            ["guide.md:1 cites test_alone in tests/policy.py, where no test or test class has that name"],
+            self.problems({"guide.md": guide, "tests/policy.py": policy}),
+        )
+        passing = "The `test_policy` check is in `tests/policy.py`. The `test_alone` test is in `tests/test_a.py`.\n"
+        self.assertEqual([], self.problems({"guide.md": passing, "tests/policy.py": policy}))
 
     def test_a_missing_test_or_test_class_fails(self) -> None:
         guide = (
@@ -531,6 +556,19 @@ class ThreatModelPolicy(unittest.TestCase):
             "| Blobs | Exact bytes. | `test_a.py::test_held`, `test_adversarial_inputs.py::Tests::test_in_a_class` |\n"
         )
         self.assertEqual([], self.problems({THREAT_MODEL_DOC: table}))
+
+    def test_a_citation_whose_closing_backtick_is_part_of_a_longer_run_names_no_test(self) -> None:
+        # CommonMark reads a span only between whole runs of one length, so neither run here opens one, and the row
+        # cites nothing in code. The old reader closed the span on the double run's first backtick.
+        table = (
+            "# Contract\n\n## Threat model\n\n"
+            "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
+            "| Runs | Text. | `test_adversarial_inputs.py::test_held`` |\n"
+        )
+        self.assertEqual(
+            [f"{THREAT_MODEL_DOC}: the threat-model row 'Runs' names no test in test_adversarial_inputs.py"],
+            self.problems({THREAT_MODEL_DOC: table}),
+        )
 
     def test_a_contract_without_the_table_fails(self) -> None:
         self.assertEqual(
