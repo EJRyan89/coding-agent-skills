@@ -1575,7 +1575,7 @@ def file_command_paths(text: str) -> list[tuple[int, str]]:
     BashSyntaxError where the grammar refuses the text, or a script eval or a shell's -c runs in it."""
     found: list[tuple[int, str]] = []
     for command in bash_syntax.simple_commands(text):
-        programs = command_programs(command, bash_syntax.command_words(command, git_subcommands.UNREAD_PART))
+        programs = simple_command_programs(command)
         if not any(command_wrappers.bash_program(words[0]) in SHELL_FILE_COMMANDS for _, words in programs):
             continue
         inputs = [redirect.target for redirect in command.redirects if redirect.operator == "<" and redirect.target]
@@ -2348,11 +2348,13 @@ def bash_programs(text: str) -> list[tuple[int, list[str]]]:
     the command that runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script: an eval
     script or trap action the grammar refuses, which Bash refuses only when it runs it, is refused as the script's own
     text would be."""
-    return [
-        found
-        for command in bash_syntax.simple_commands(text)
-        for found in command_programs(command, bash_syntax.command_words(command, git_subcommands.UNREAD_PART))
-    ]
+    return [found for command in bash_syntax.simple_commands(text) for found in simple_command_programs(command)]
+
+
+def simple_command_programs(command: Simple) -> list[tuple[int, list[str]]]:
+    """Each program a simple command runs, as command_programs reads it from the command's words, each part only
+    running settles as git_subcommands' UNREAD_PART."""
+    return command_programs(command, bash_syntax.command_words(command, git_subcommands.UNREAD_PART))
 
 
 def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[str]]]:
