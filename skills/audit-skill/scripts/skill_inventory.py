@@ -280,7 +280,7 @@ from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
 from python_names import import_aliases, qualified_name
 from suite_names import is_suite_name
-from text_lines import text_lines
+from text_lines import LINE_FEED, line_index, line_starts, text_lines
 
 # Where Claude Code keeps the plugins it installs, under the home: each under its marketplace and version, so a plugin
 # root lies PLUGIN_DEPTH folders down, as deep as locate searches any plugin folder.
@@ -738,6 +738,11 @@ SETTING_KEYS = {
 }
 MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
+# A string key and its string value as a JSON file writes them, at every place one starts, overlapping places included,
+# so one pass over the file finds where each setting is first written. No setting's key or value holds a `"`:
+# SETTING_KEYS names none, and MODEL_VALUE and EFFORT_LEVELS take none, so the text between a pair's quotes is the
+# setting's key and value exactly where the file writes them without an escape.
+JSON_STRING_PAIR = re.compile(r'(?="([^"]*)"\s*:\s*"([^"]*)")')
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # A Markdown path named in prose or code, outside every link's destination, which ejryan89-skill-core's
@@ -2259,9 +2264,10 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
             numbers = file_command_lines(text)
         except BashSyntaxError as exc:
             return set(), {0: str(exc)} if lines else {}
-        # Bash counts a script's lines at LF alone, and scan places a line where text_lines breaks it.
-        starts = [0, *(match.end() for match in re.finditer("\n", text))]
-        return {len(text_lines(text[: starts[number - 1]], keepends=True)) for number in numbers}, {}
+        # Bash counts a script's lines at LF alone, and scan places a line where text_lines breaks it: the line of the
+        # place Bash starts a command's line on, read over both line starts once.
+        starts, lines_at = line_starts(text, LINE_FEED), line_starts(text)
+        return {line_index(lines_at, starts[number - 1]) for number in numbers}, {}
     found: set[int] = set()
     unread: dict[int, str] = {}
     for fence in find_fences(lines):
@@ -3196,6 +3202,11 @@ def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     except ValueError:
         return []
     found: list[tuple[str, Path, int, str]] = []
+    # Where each key and value pair is first written, and where each line starts, counted at LF alone, read once.
+    places: dict[tuple[str, str], int] = {}
+    for pair in JSON_STRING_PAIR.finditer(text):
+        places.setdefault((pair.group(1), pair.group(2)), pair.start())
+    starts = line_starts(text, LINE_FEED)
     stack: list[object] = [data]
     while stack:
         node = stack.pop()
@@ -3203,8 +3214,8 @@ def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
         for key, value in items:
             kind = setting_kind(key, value) if isinstance(key, str) else None
             if kind is not None and isinstance(key, str) and isinstance(value, str):
-                where = re.search(rf'"{re.escape(key)}"\s*:\s*"{re.escape(value)}"', text)
-                found.append((kind, path, text.count("\n", 0, where.start()) + 1 if where else 1, value))
+                where = places.get((key, value))
+                found.append((kind, path, line_index(starts, where) + 1 if where is not None else 1, value))
             elif isinstance(value, dict | list):
                 stack.append(value)
     return sorted(found, key=lambda item: item[2])
