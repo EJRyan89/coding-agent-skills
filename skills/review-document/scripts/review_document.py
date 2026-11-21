@@ -10,6 +10,10 @@ Every command prints one fact per line:
           Its last line is PREPARE_ARGUMENTS --canary --fixture "<fixture directory>" ..., one --fixture for each
           fixture in the order of the FIXTURE lines, each path in forward-slash form: the arguments
           ejryan89-code-review-core's prepare takes after --host, passed as printed.
+  resolve Finds the document a user named by its file name alone, under the working directory, by the rule below, and
+          prints FOUND <path> for the one file found, CANDIDATE <path> for each of several, or for the one found when a
+          folder could not be searched, NOT_FOUND <name> for none, and before them UNSEARCHED <folder> <reason> for each
+          folder or entry that could not be searched. Each path is relative to the working directory.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
           beside the original>.
@@ -48,6 +52,20 @@ by default, whose fixed sentence prepare puts in that specialist's prompt; any o
 reviewer, and a stage given for one is refused. The default output is a new temporary directory, so nothing is
 written to a checkout unless `--output` names a folder inside one; `--output` must name a new or empty directory, so
 nothing already there is mixed with the review's files or replaced.
+
+`resolve` takes a file name alone, with no folder in it, and finds the files a program opens under that name: a file
+of that name in the working directory itself is the one found, and only otherwise is the tree below it searched, through
+ejryan89-skill-core's `folder_walk`, so its rule is the walk's. A version-control folder (`.git`, `.hg`, `.svn`), a
+dependency folder or its cache (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`), build output (`bin`,
+`obj`), Visual Studio's `.vs`, another checkout below the working directory (a clone, submodule, or worktree), and a
+linked folder are not searched; nor is a hidden folder, one whose name starts with a dot, which holds a tool's state or
+cache, such as `.pytest_cache` or `.idea`, rather than a draft named by its file name. A matching entry that is a link,
+not a plain file, is passed over, since it may lead out of the tree. Names are compared as the folder holding each file
+compares them, so `Design.md` is found for `design.md` only where that folder folds case. A `.gitignore` is not read:
+a folder it ignores is searched unless the rule above skips it, so a draft kept in an ignored folder is still found. A
+folder or entry the walk could not list or examine, and a folder whose name holds a line break or a control character,
+which no line could name, is printed as UNSEARCHED, and a single match found beside one is printed as a CANDIDATE,
+since the folder not searched may hold another.
 """
 
 from __future__ import annotations
@@ -58,7 +76,7 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -74,11 +92,13 @@ import json_reader
 import json_writer
 import private_folder
 from console import run_main
-from flat_text import flat_text, single_line
+from flat_text import LINE_UNSAFE, flat_text, single_line
+from folder_walk import UNEXAMINED, UNLISTABLE, Walk, walk_files
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
+from link_probe import is_plain_file
 from path_containment import resolved_path, within
-from path_keys import name_key
+from path_keys import name_key, opens_as
 from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
@@ -844,6 +864,76 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     return [f"REPORT {target}", f"RECORD {record}"]
 
 
+def refuse_name(name: str) -> None:
+    """Refuse a `name` that is not one file name a line can print as it is."""
+    if (
+        not name
+        or name in {".", ".."}
+        or any(separator in name for separator in "/\\")
+        or LINE_UNSAFE.search(name)
+        or name != name.strip()
+    ):
+        raise DocumentError(
+            f"{name!r} is not a file name alone; give the document's path, or a name with no folder, line break, "
+            "control character, or space at either end"
+        )
+
+
+def first_folder(folders: tuple[str, ...], matches: Callable[[str], bool]) -> Path | None:
+    """The path of the first of `folders`, the names of nested folders, whose name `matches` accepts, or None."""
+    for depth, folder in enumerate(folders, start=1):
+        if matches(folder):
+            return Path(*folders[:depth])
+    return None
+
+
+def hidden(name: str) -> bool:
+    return name.startswith(".")
+
+
+def unprintable(name: str) -> bool:
+    return LINE_UNSAFE.search(name) is not None
+
+
+def unsearched_lines(walk: Walk, top: Path) -> list[str]:
+    """An UNSEARCHED line for each folder or entry outside a hidden folder that the walk could not list or examine."""
+    lines = []
+    for skipped in walk.not_entered:
+        if skipped.kind not in {UNLISTABLE, UNEXAMINED}:
+            continue
+        relative = skipped.path.relative_to(top)
+        if first_folder(relative.parts, hidden) is None:
+            lines.append(f"UNSEARCHED {flat_text(str(relative))} {flat_text(skipped.reason)}")
+    return lines
+
+
+def resolve(name: str, top: Path) -> list[str]:
+    """The lines naming the files under `top` a program opens as `name`, by the rule the module states."""
+    refuse_name(name)
+    if is_plain_file(top / name):
+        return [f"FOUND {name}"]
+    wanted = name_key(name)
+    walk = walk_files(top, lambda entry: name_key(entry) == wanted)
+    unsearched = unsearched_lines(walk, top)
+    found: list[Path] = []
+    for path in walk.files:
+        relative = path.relative_to(top)
+        if first_folder(relative.parts[:-1], hidden) is not None or not opens_as(path, name) or not is_plain_file(path):
+            continue
+        folder = first_folder(relative.parts[:-1], unprintable)
+        if folder is None:
+            found.append(relative)
+            continue
+        line = f"UNSEARCHED {flat_text(str(folder))} the folder's name holds a line break or a control character"
+        if line not in unsearched:
+            unsearched.append(line)
+    if not found:
+        return [*unsearched, f"NOT_FOUND {name}"]
+    if len(found) == 1 and not unsearched:
+        return [f"FOUND {found[0]}"]
+    return [*unsearched, *(f"CANDIDATE {path}" for path in found)]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -859,6 +949,8 @@ def build_parser() -> argparse.ArgumentParser:
     build_command.add_argument(
         "--output", type=Path, help="the directory for the fixture and the report; a new temporary one by default"
     )
+    resolve_command = commands.add_parser("resolve", help="find a document named by its file name alone")
+    resolve_command.add_argument("name", help="the document's file name, with no folder")
     report_command = commands.add_parser("report", help="copy the recorded report beside the fixture")
     report_command.add_argument("--fixture", type=Path, required=True)
     report_command.add_argument("--report", type=Path, required=True)
@@ -877,7 +969,12 @@ def build_command(args: argparse.Namespace, git: GitClient | None, github: GitHu
 def main(arguments: list[str] | None = None, git: GitClient | None = None, github: GitHubClient | None = None) -> int:
     args = build_parser().parse_args(arguments)
     try:
-        lines = build_command(args, git, github) if args.command == "build" else report(args.fixture, args.report)
+        if args.command == "build":
+            lines = build_command(args, git, github)
+        elif args.command == "resolve":
+            lines = resolve(args.name, Path.cwd())
+        else:
+            lines = report(args.fixture, args.report)
     except (DocumentError, PersistenceError, GitError, GitHubError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1

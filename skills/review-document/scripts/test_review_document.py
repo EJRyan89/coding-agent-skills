@@ -2301,3 +2301,148 @@ def test_a_document_line_holding_a_line_break_prints_on_one_line() -> None:
     lines = ["DOCUMENT docs/a\u2028FIXTURE elsewhere.md", "ROUTE generic"]
     with mock.patch.object(review_document, "build_command", return_value=lines):
         assert run_main("build", "docs/a.md") == (0, ["DOCUMENT docs/a FIXTURE elsewhere.md", "ROUTE generic"])
+
+
+class ResolveTests(unittest.TestCase):
+    """`resolve`: the document a user named by its file name alone, found under the working directory."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="review-document-resolve-", ignore_cleanup_errors=True)
+        self.addCleanup(temporary.cleanup)
+        self.top = Path(temporary.name).resolve() / "work tree"
+        self.top.mkdir()
+
+    def write(self, *relatives: str) -> None:
+        for relative in relatives:
+            path = self.top / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# Design\n", encoding="utf-8")
+
+    def resolve(self, name: str = "design.md") -> list[str]:
+        return review_document.resolve(name, self.top)
+
+    def test_one_match_below_the_working_directory_is_found_by_its_relative_path(self) -> None:
+        self.write("docs/design.md", "docs/other.md")
+        self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
+
+    def test_a_file_in_the_working_directory_itself_is_found_whatever_lies_below(self) -> None:
+        self.write("design.md", "docs/design.md", "docs/old/design.md")
+        self.assertEqual(["FOUND design.md"], self.resolve())
+
+    def test_no_match_is_named_not_found(self) -> None:
+        self.write("docs/other.md")
+        self.assertEqual(["NOT_FOUND design.md"], self.resolve())
+
+    def test_several_matches_and_a_nested_copy_are_each_a_candidate_in_the_walks_order(self) -> None:
+        self.write("notes/design.md", "docs/old/design.md", "docs/design.md")
+        expected = [
+            f"CANDIDATE {Path(relative)}" for relative in ("docs/design.md", "docs/old/design.md", "notes/design.md")
+        ]
+        self.assertEqual(expected, self.resolve())
+
+    def test_hidden_version_control_dependency_and_build_folders_are_not_searched(self) -> None:
+        self.write(
+            ".pytest_cache/design.md",
+            ".git/design.md",
+            ".github/docs/design.md",
+            "node_modules/pkg/design.md",
+            "docs/.archive/design.md",
+            "bin/design.md",
+            "docs/design.md",
+        )
+        self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
+
+    def test_a_copy_in_another_checkout_below_the_working_directory_is_not_searched(self) -> None:
+        self.write("docs/design.md", "vendor/clone/docs/design.md")
+        (self.top / "vendor" / "clone" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
+
+    def test_a_folder_gitignore_ignores_is_still_searched(self) -> None:
+        git(self.top, "init", "--quiet")
+        (self.top / ".gitignore").write_text("drafts/\n", encoding="utf-8")
+        self.write("drafts/design.md")
+        self.assertEqual([f"FOUND {Path('drafts/design.md')}"], self.resolve())
+
+    def test_a_name_is_matched_as_the_folder_holding_it_compares_names(self) -> None:
+        self.write("docs/Design.md")
+        folds = path_keys.folds_case(self.top / "docs")
+        expected = [f"FOUND {Path('docs/Design.md')}"] if folds else ["NOT_FOUND design.md"]
+        self.assertEqual(expected, self.resolve())
+
+    def test_a_name_the_folder_keeps_apart_is_not_found_though_a_full_case_fold_merges_them(self) -> None:
+        # str.casefold makes ß ss, which no file system's name comparison does.
+        self.write("docs/strasse.md")
+        self.assertEqual(["NOT_FOUND straße.md"], self.resolve("straße.md"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_linked_folder_and_a_link_to_a_file_are_passed_over(self) -> None:
+        outside = self.top.parent / "outside"
+        outside.mkdir()
+        (outside / "design.md").write_text("# Elsewhere\n", encoding="utf-8")
+        (self.top / "linked").symlink_to(outside, target_is_directory=True)
+        (self.top / "docs").mkdir()
+        (self.top / "docs" / "design.md").symlink_to(outside / "design.md")
+        self.assertEqual(["NOT_FOUND design.md"], self.resolve())
+        (self.top / "design.md").symlink_to(outside / "design.md")
+        self.assertEqual(["NOT_FOUND design.md"], self.resolve())
+
+    def test_a_folder_that_cannot_be_listed_is_named_and_turns_a_single_match_into_a_candidate(self) -> None:
+        self.write("docs/design.md", "locked/design.md", ".cache/locked/design.md")
+        listing = os.scandir
+
+        def scandir(path: str | os.PathLike[str]) -> Any:
+            if Path(path).name == "locked":
+                raise PermissionError(13, "Access is denied")
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            lines = self.resolve()
+        self.assertEqual(
+            ["UNSEARCHED locked the folder cannot be listed: Access is denied", f"CANDIDATE {Path('docs/design.md')}"],
+            lines,
+        )
+        with mock.patch.object(os, "scandir", scandir):
+            self.assertEqual(
+                ["UNSEARCHED locked the folder cannot be listed: Access is denied", "NOT_FOUND notes.md"],
+                self.resolve("notes.md"),
+            )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows refuses a line break in a folder's name")
+    def test_a_match_in_a_folder_whose_name_holds_a_line_break_is_named_unsearched_never_a_path(self) -> None:
+        self.write("odd\nname/design.md", "odd\nname/deeper/design.md", "docs/design.md")
+        self.assertEqual(
+            [
+                "UNSEARCHED odd name the folder's name holds a line break or a control character",
+                f"CANDIDATE {Path('docs/design.md')}",
+            ],
+            self.resolve(),
+        )
+
+    def test_a_name_that_is_not_one_file_name_is_refused(self) -> None:
+        for name in ("", ".", "..", "docs/design.md", "docs\\design.md", "a\nb.md", "a\u2028b.md", " design.md"):
+            with self.subTest(name=name), self.assertRaises(review_document.DocumentError) as raised:
+                self.resolve(name)
+            self.assertIn("is not a file name alone", str(raised.exception))
+
+    def test_the_command_resolves_against_the_working_directory_and_fails_on_one_line(self) -> None:
+        self.write("docs/design.md")
+        for name, code, expected in (
+            ("design.md", 0, [f"FOUND {Path('docs/design.md')}"]),
+            (
+                "docs/design.md",
+                1,
+                [
+                    "FAILED 'docs/design.md' is not a file name alone; give the document's path, or a "
+                    "name with no folder, line break, control character, or space at either end"
+                ],
+            ),
+        ):
+            result = subprocess.run(
+                [sys.executable, "-B", str(SCRIPT), "resolve", name],
+                cwd=self.top,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual((code, expected), (result.returncode, result.stdout.splitlines()), result.stderr)
