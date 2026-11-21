@@ -16,7 +16,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from refusal_steps import COVERED, REFUSAL, UNFOLLOWED, _Refusals, refusal_step_problems
+from refusal_steps import (
+    COVERED,
+    REFUSAL,
+    UNFOLLOWED,
+    _Refusals,
+    loose_refusal_assertion_problems,
+    refusal_step_problems,
+)
 from validation_support import write_fixture_tree
 
 SUFFIX = " ends at its ERROR line; add the step to take as its next line, or state why it needs none in STEP_ALLOWED"
@@ -652,6 +659,184 @@ class RefusalStepFixtures(unittest.TestCase):
                 "deployer/gone.py: STEP_ALLOWED allows parse, which no longer builds a refusal from one line or from "
                 "lines this policy cannot follow",
                 "deployer/unexplained.py: STEP_ALLOWED must map each scope to the reason its refusals need no step",
+            ],
+            self.problems(files),
+        )
+
+
+HARNESS = (
+    "def assert_refusal(lines, error, *steps):\n"
+    "    pass\n"
+    "\n"
+    "\n"
+    "class DeployerTestCase:\n"
+    "    def assert_lines(self, output, *lines):\n"
+    "        pass\n"
+    "\n"
+    "    def assert_refusal(self, output, error, *steps):\n"
+    "        pass\n"
+)
+LOOSE = (
+    " checks an ERROR line apart from the line after it; check a refusal with assert_refusal, which holds each step "
+    "right after its ERROR line, or state why the lines are apart in LINES_APART_ALLOWED"
+)
+NO_HARNESS = (
+    "tests/deployer/harness.py defines no assert_lines, so no deployer suite's assertion could be read; the policy "
+    "checked nothing"
+)
+
+
+def suite(*body: str, head: str = "from harness import DeployerTestCase\n") -> str:
+    """A deployer suite whose one test holds the body's lines, the first of them on line 6."""
+    return (
+        head
+        + "\n\nclass Tests(DeployerTestCase):\n    def test_it(self):\n"
+        + "".join(f"        {line}\n" for line in body)
+    )
+
+
+class LooseRefusalAssertionFixtures(unittest.TestCase):
+    def problems(self, files: dict[str, str], harness: str | None = HARNESS) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root, {**({"tests/deployer/harness.py": harness} if harness is not None else {}), **files}
+            )
+            return loose_refusal_assertion_problems(root)
+
+    def test_a_tree_without_the_harness_assertion_fails_rather_than_passing_as_checked(self) -> None:
+        loose = {"tests/deployer/test_loose.py": suite('self.assert_lines(out, "ERROR: Bad", "Fix it.")')}
+        for label, files, harness, expected in (
+            ("no deployer suites", {}, None, []),
+            ("no harness", loose, None, ["tests/deployer/test_loose.py:6 assert_lines in Tests.test_it" + LOOSE]),
+            ("the assertion renamed", {}, HARNESS.replace("assert_lines", "assert_each_line"), []),
+            ("the assertion only nested", {}, "def make():\n    def assert_lines(output, *lines):\n        pass\n", []),
+        ):
+            with self.subTest(label):
+                self.assertEqual([*expected, NO_HARNESS], self.problems(files, harness))
+
+    def test_a_file_that_does_not_parse_is_reported_by_name(self) -> None:
+        problems = self.problems({"tests/deployer/test_broken.py": "def broken(:\n"})
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tests/deployer/test_broken.py does not parse: "), problems)
+
+    def test_an_error_line_before_another_line_fails_however_the_call_spells_it(self) -> None:
+        for label, body, head in (
+            ("positional", ['self.assert_lines(out, "ERROR: Bad", "Fix it.")'], None),
+            ("indented", ['self.assert_lines(out, "  ERROR: Bad", "  Fix it.")'], None),
+            ("an f-string", ['self.assert_lines(out, f"ERROR: Bad {name}", f"Fix {name}.")'], None),
+            ("format", ['self.assert_lines(out, "ERROR: Bad {}".format(name), "Fix it.")'], None),
+            ("percent", ['self.assert_lines(out, "ERROR: Bad %s" % name, "Fix it.")'], None),
+            ("plus", ['self.assert_lines(out, "ERROR: Bad " + name, "Fix it.")'], None),
+            ("a tuple", ['self.assert_lines(out, *("ERROR: Bad", "Fix it."))'], None),
+            ("a list", ['self.assert_lines(out, *["ERROR: Bad", "Fix it."])'], None),
+            ("a nested unpacking", ['self.assert_lines(out, *["ERROR: Bad", *("Fix it.",)])'], None),
+            ("output by keyword", ['self.assert_lines(*["ERROR: Bad", "Fix it."], output=out)'], None),
+            ("output by a mapping", ['self.assert_lines(*["ERROR: Bad", "Fix it."], **{"output": out})'], None),
+            ("a named line", ['refusal = "ERROR: Bad"', "self.assert_lines(out, refusal, 'Fix it.')"], None),
+            ("a named list", ['lines = ["ERROR: Bad", "Fix it."]', "self.assert_lines(out, *lines)"], None),
+            ("another error after it", ['self.assert_lines(out, "ERROR: Bad", "ERROR: Worse")'], None),
+            ("unpacked lines after it", ['self.assert_lines(out, "ERROR: Bad", *steps)'], None),
+            ("a call's lines after it", ['self.assert_lines(out, "ERROR: Bad", *steps())'], None),
+            ("through the class", ['DeployerTestCase.assert_lines(self, out, "ERROR: Bad", "Fix it.")'], None),
+            ("through a parameter", ['test.assert_lines(out, "ERROR: Bad", "Fix it.")'], None),
+            ("through super", ['super().assert_lines(out, "ERROR: Bad", "Fix it.")'], None),
+            (
+                "through the module",
+                ['harness.DeployerTestCase.assert_lines(self, out, "ERROR: Bad", "Fix it.")'],
+                "import harness\nfrom harness import DeployerTestCase\n",
+            ),
+            (
+                "a bare import",
+                ['assert_lines(out, "ERROR: Bad", "Fix it.")'],
+                "from harness import DeployerTestCase, assert_lines\n",
+            ),
+            (
+                "a bare import renamed",
+                ['found(out, "ERROR: Bad", "Fix it.")'],
+                "from harness import DeployerTestCase\nfrom harness import assert_lines as found\n",
+            ),
+        ):
+            with self.subTest(label):
+                at = 7 if head and head.count("\n") == 2 else 6
+                files = {"tests/deployer/test_loose.py": suite(*body, **({"head": head} if head else {}))}
+                line = at + len(body) - 1
+                self.assertEqual(
+                    [f"tests/deployer/test_loose.py:{line} assert_lines in Tests.test_it" + LOOSE], self.problems(files)
+                )
+
+    def test_a_constant_the_module_binds_is_followed_into_its_elements(self) -> None:
+        files = {
+            "tests/deployer/test_loose.py": (
+                'REFUSAL = "ERROR: Bad"\n'  # 1
+                'REMEDY = (REFUSAL, "Fix it.")\n'  # 2
+                "from harness import DeployerTestCase\n"  # 3
+                "\n"  # 4
+                "\n"  # 5
+                "class Tests(DeployerTestCase):\n"  # 6
+                "    def test_it(self):\n"  # 7
+                "        self.assert_lines(out, *REMEDY)\n"  # 8
+            ),
+        }
+        self.assertEqual(["tests/deployer/test_loose.py:8 assert_lines in Tests.test_it" + LOOSE], self.problems(files))
+
+    def test_assert_refusal_an_error_line_alone_or_last_or_lines_with_no_error_pass(self) -> None:
+        files = {
+            "tests/deployer/test_conforming.py": suite(
+                'self.assert_refusal(out, "ERROR: Bad", "Fix it.")',
+                'self.assert_lines(out, "ERROR: Bad")',
+                'self.assert_lines(out, "Recovering run...", "  ERROR: Bad")',
+                'self.assert_lines(out, "  WARNING: an ERROR: inside", "Fix it.")',
+                'self.assert_lines(out, "Recovering run...", *warnings)',
+                'self.assert_lines(out, f"{prefix}ERROR: Bad", "Fix it.")',
+                'self.assert_lines(out, *["ERROR: Bad"])',
+                'self.assert_lines(out, 1, "Fix it.")',
+            ),
+            # A function of a suite's own, and one an import from elsewhere binds, are not the harness's assertion.
+            "tests/deployer/test_own.py": (
+                "from checks import lines_found as assert_lines\n"
+                "\n"
+                "\n"
+                "def assert_listed(output, *lines):\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def test_it():\n"
+                '    assert_lines(out, "ERROR: Bad", "Fix it.")\n'
+                '    assert_listed(out, "ERROR: Bad", "Fix it.")\n'
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_a_line_bound_more_than_once_is_not_read_as_an_error_line(self) -> None:
+        # A stated limit: the line's text is known only when the test runs.
+        files = {
+            "tests/deployer/test_rebound.py": suite(
+                'refusal = "ERROR: Bad"', 'refusal = "Fine."', "self.assert_lines(out, refusal, 'Fix it.')"
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_a_stated_reason_passes_and_one_no_longer_needed_or_malformed_fails(self) -> None:
+        apart = suite('self.assert_lines(out, "ERROR: Unexpected defect", "Deployment failed; reconciling...")')
+        files = {
+            "tests/deployer/test_apart.py": (
+                'LINES_APART_ALLOWED = {"Tests.test_it": "a defect\'s line has no step; recovery\'s lines follow"}\n'
+                + apart
+            ),
+            "tests/deployer/test_gone.py": (
+                'LINES_APART_ALLOWED = {"Tests.test_it": "once apart"}\n'
+                + suite('self.assert_refusal(out, "ERROR: Bad", "Fix it.")')
+            ),
+            "tests/deployer/test_unexplained.py": 'LINES_APART_ALLOWED = {"Tests.test_it": ""}\n' + apart,
+        }
+        self.assertEqual(
+            [
+                "tests/deployer/test_unexplained.py:7 assert_lines in Tests.test_it" + LOOSE,
+                "tests/deployer/test_gone.py: LINES_APART_ALLOWED allows Tests.test_it, which no longer checks an "
+                "ERROR line apart from the line after it",
+                "tests/deployer/test_unexplained.py: LINES_APART_ALLOWED must map each scope to the reason its lines "
+                "are apart",
             ],
             self.problems(files),
         )

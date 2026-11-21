@@ -23,6 +23,22 @@ Stated limits, none of which deployer code writes:
   `__init__`, or a decorator's wrapper, is not followed.
 - A call through a local name, a parameter, or a module assignment that shadows a builtin or a module-level function
   is read as that builtin or function.
+
+The deployer suites check a refusal with the harness's assert_refusal, which holds its ERROR line followed at once by
+each step, and never with assert_lines, which finds each line anywhere in the output, so a step checked that way passes
+wherever it drifts. An assert_lines call, as `self.assert_lines`, through any other attribute, or by a bare name an
+import binds, that passes a line starting with `ERROR:` after its indentation with another line right after it, is
+refused, unless its suite states why beside the code in LINES_APART_ALLOWED. Its lines are read as a refusal's are:
+each positional argument, the elements of an unpacked list or tuple, written or held in a name bound once to one, and
+the text a string, an f-string, a literal's `.format`, `%`, or `+`, or a name bound once to one of them starts with;
+lines unpacked from anything else count as a line after an ERROR line.
+
+Stated limits of that policy, none of which the deployer suites write:
+- A call through a name bound otherwise than by an import, such as `check = self.assert_lines`, is not read.
+- An ERROR line this policy cannot read as text, such as a parameter, a name bound more than once or by unpacking, a
+  call's result, or an f-string that starts with a replacement field, is not read as one, and an ERROR line among
+  lines unpacked from anything but a display is not found.
+- An ERROR line and its step checked by separate calls, or by assertIn, are not read together.
 """
 
 from __future__ import annotations
@@ -211,27 +227,34 @@ class _Refusals:
                 return STEP if len(written) > 1 else UNFOLLOWED
         return STEP if len(arguments) > 1 else ONE_LINE
 
-    def _displayed(self, value: ast.expr, call: ast.Call, followed: set[str]) -> list[ast.expr] | None:
+    def _displayed(self, value: ast.expr, call: ast.AST, followed: set[str]) -> list[ast.expr] | None:
         """The elements an unpacked value holds, read from its display, or None when they cannot be read there."""
         if isinstance(value, (ast.List, ast.Tuple)):
             return list(value.elts)
-        if not isinstance(value, ast.Name) or value.id in followed:
+        if not isinstance(value, ast.Name):
             return None
-        followed.add(value.id)
-        holder = self._enclosing(call, HOLDERS)
-        bindings = self._bindings(holder, value.id)
-        if bindings == [] and not isinstance(holder, ast.Module):
-            # A name the function neither binds nor changes is the module's, such as a remedy held in a constant.
-            bindings = self._bindings(self._enclosing(holder, (ast.Module,)), value.id)
-        binding = bindings[0] if bindings and len(bindings) == 1 else None
-        statement = self.parents.get(binding) if binding is not None else None
-        if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or not isinstance(
-            statement.value, (ast.List, ast.Tuple)
-        ):
+        statement = self.assignment(value, call, followed)
+        if statement is None or not isinstance(statement.value, (ast.List, ast.Tuple)):
             return None
         if isinstance(statement.value, ast.List) and self._handed_on(self._enclosing(statement, HOLDERS), value.id):
             return None
         return list(statement.value.elts)
+
+    def assignment(self, name: ast.Name, node: ast.AST, followed: set[str]) -> ast.Assign | ast.AnnAssign | None:
+        """The one assignment that binds a name read at node, in the function holding it or, when that function
+        neither binds nor changes it, in the module, or None when it is bound more than once or otherwise, such as a
+        parameter, changed in place, or already followed."""
+        if name.id in followed:
+            return None
+        followed.add(name.id)
+        holder = self._enclosing(node, HOLDERS)
+        bindings = self._bindings(holder, name.id)
+        if bindings == [] and not isinstance(holder, ast.Module):
+            # A name the function neither binds nor changes is the module's, such as a remedy held in a constant.
+            bindings = self._bindings(self._enclosing(holder, (ast.Module,)), name.id)
+        binding = bindings[0] if bindings and len(bindings) == 1 else None
+        statement = self.parents.get(binding) if binding is not None else None
+        return statement if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
 
     def _handed_on(self, holder: ast.AST, name: str) -> bool:
         """Whether the holder reads the name anywhere but as LIST_READS reads it, handing the list it holds to another
@@ -460,7 +483,154 @@ def refusal_step_problems(root: Path) -> list[str]:
     return found + problems
 
 
+# The deployer suites, whose assertions of a refusal's lines the second policy reads, and the harness module they
+# import, which defines both assertions.
+SUITE_FOLDER = ("tests", "deployer")
+HARNESS_FILE = "tests/deployer/harness.py"
+# The harness's assertion that finds each line anywhere in the output, and the one that holds a refusal's ERROR line
+# followed at once by each of its steps, named in the finding as the form to use.
+LOOSE_ASSERTION = "assert_lines"
+REFUSAL_ASSERTION = "assert_refusal"
+# What a refusal's first line starts with, after the indentation recovery's report gives it.
+ERROR_MARK = "ERROR:"
+# A suite states why it checks an ERROR line with assert_lines apart from the line after it beside the code, as a
+# module-level LINES_APART_ALLOWED = {scope: reason}, where a scope is a function's qualified name, such as
+# "RecoveryTests.assert_recovery_failed": an ERROR line that is no refusal of its own, such as one recovery prints
+# before it goes on, whose next line is not its step.
+LINES_APART_ALLOWANCE = "LINES_APART_ALLOWED"
+
+
+def _suite_files(root: Path) -> list[Path]:
+    """Every Python module under tests/deployer, the harness included."""
+    files = file_presence.matching(root.joinpath(*SUITE_FOLDER), "**/*.py")
+    return [path for path in files if file_presence.is_present(path, other_is_absent=True)]
+
+
+def _is_loose_assertion(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether a call is the harness's assert_lines: an attribute of that name on anything, as `self.assert_lines` or
+    `DeployerTestCase.assert_lines`, or a bare name an import binds to one, as `from harness import assert_lines`."""
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr == LOOSE_ASSERTION
+    return (
+        isinstance(call.func, ast.Name)
+        and call.func.id in aliases
+        and qualified_name(call.func, aliases).rpartition(".")[2] == LOOSE_ASSERTION
+    )
+
+
+class _AssertedLines:
+    """How one suite's assert_lines calls are read: the lines each passes, followed through the names that hold them
+    as _Refusals follows a refusal's lines."""
+
+    def __init__(self, tree: ast.Module, name: str) -> None:
+        self.reader = _Refusals(tree, name, set())
+
+    def lines(self, arguments: list[ast.expr], followed: frozenset[str] = frozenset()) -> list[ast.expr | None]:
+        """Each positional argument as the lines it passes: an unpacked list or tuple, written or held in a name bound
+        once to one, gives its elements, and anything else unpacked is None, lines this policy cannot read."""
+        found: list[ast.expr | None] = []
+        for argument in arguments:
+            if not isinstance(argument, ast.Starred):
+                found.append(argument)
+                continue
+            seen = set(followed)
+            elements = self.reader._displayed(argument.value, argument.value, seen)
+            found += [None] if elements is None else self.lines(elements, frozenset(seen))
+        return found
+
+    def text(self, node: ast.expr, followed: frozenset[str] = frozenset()) -> str:
+        """The literal text a line starts with: a string, an f-string up to its first replacement field, a literal's
+        `.format(...)`, `%`, or `+`, or a name bound once to one of them; empty when it starts with none."""
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else ""
+        if isinstance(node, ast.JoinedStr):
+            leading = []
+            for part in node.values:
+                if not (isinstance(part, ast.Constant) and isinstance(part.value, str)):
+                    break
+                leading.append(part.value)
+            return "".join(leading)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            return self.text(node.func.value, followed)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+            return self.text(node.left, followed)
+        if isinstance(node, ast.Name):
+            seen = set(followed)
+            statement = self.reader.assignment(node, node, seen)
+            if statement is not None and statement.value is not None:
+                return self.text(statement.value, frozenset(seen))
+        return ""
+
+    def holds_lines_apart(self, call: ast.Call) -> bool:
+        """Whether the call passes an ERROR line with another line, or lines it cannot read, right after it."""
+        lines = self.lines(list(call.args))
+        return any(line is not None and self.text(line).lstrip().startswith(ERROR_MARK) for line in lines[:-1])
+
+
+def loose_refusal_assertions(tree: ast.Module, name: str) -> list[tuple[int, str]]:
+    """Each assert_lines call a suite makes with an ERROR line right before another line, as (line, scope), ignoring
+    its allowance."""
+    aliases = _aliases(tree, name)
+    reader = _AssertedLines(tree, name)
+    return [
+        (node.lineno, scope)
+        for node, scope in scoped_nodes(tree.body)
+        if isinstance(node, ast.Call) and _is_loose_assertion(node, aliases) and reader.holds_lines_apart(node)
+    ]
+
+
+def _defines(tree: ast.Module, function: str) -> bool:
+    """Whether a module defines a function or method of the name, at its top level or in a top-level class."""
+    definitions = [*tree.body, *(node for top in tree.body if isinstance(top, ast.ClassDef) for node in top.body)]
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function for node in definitions
+    )
+
+
+def loose_refusal_assertion_problems(root: Path) -> list[str]:
+    """Report each deployer suite's assert_lines call that passes an ERROR line and the line after it, without stating
+    why in its module's LINES_APART_ALLOWED, and each allowance no longer needed.
+
+    assert_lines finds each line anywhere in the output, so a refusal's step checked that way passes wherever it
+    drifts, or under a refusal it does not belong to; assert_refusal holds it right after its ERROR line.
+    """
+    problems: list[str] = []
+    ordered = sorted(_suite_files(root), key=lambda path: path.relative_to(root).as_posix())
+    trees = [(name, tree) for _, name, tree in python_trees(ordered, root, problems)]
+    if not any(name == HARNESS_FILE and _defines(tree, LOOSE_ASSERTION) for name, tree in trees):
+        # Without the harness's assertion the calls this policy reads may be spelled otherwise, so an empty pass would
+        # only mean nothing was looked at.
+        problems.append(
+            f"{HARNESS_FILE} defines no {LOOSE_ASSERTION}, so no deployer suite's assertion could be read; the policy "
+            "checked nothing"
+        )
+    found: list[str] = []
+    for name, tree in trees:
+        allowed = module_allowance(tree, LINES_APART_ALLOWANCE)
+        if allowed is None:
+            problems.append(f"{name}: {LINES_APART_ALLOWANCE} must map each scope to the reason its lines are apart")
+            allowed = {}
+        findings = loose_refusal_assertions(tree, name)
+        found += [
+            f"{name}:{line} {LOOSE_ASSERTION} in {scope} checks an ERROR line apart from the line after it; check a "
+            f"refusal with {REFUSAL_ASSERTION}, which holds each step right after its ERROR line, or state why the "
+            f"lines are apart in {LINES_APART_ALLOWANCE}"
+            for line, scope in findings
+            if scope not in allowed
+        ]
+        problems += [
+            f"{name}: {LINES_APART_ALLOWANCE} allows {scope}, which no longer checks an ERROR line apart from the "
+            "line after it"
+            for scope in sorted(set(allowed) - {scope for _, scope in findings})
+        ]
+    return found + problems
+
+
 class RefusalStepPolicies(unittest.TestCase):
     def test_every_deployer_refusal_ends_with_a_step(self) -> None:
         # A refusal added without the step to take fails here, or its module says why it needs none.
         self.assertEqual([], refusal_step_problems(REPOSITORY_ROOT))
+
+    def test_no_deployer_suite_checks_a_refusal_and_its_step_apart(self) -> None:
+        # A test that checks a refusal's ERROR line and its step with assert_lines fails here, or its suite says why.
+        self.assertEqual([], loose_refusal_assertion_problems(REPOSITORY_ROOT))
