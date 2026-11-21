@@ -125,6 +125,18 @@ class DraftTests(unittest.TestCase):
         self.assertTrue(any("template comment" in line for line in problems))
 
 
+class CommentBlankingTests(unittest.TestCase):
+    """The bytes blank_comments writes, pinned against literals, so a reading that blanks comments another way fails."""
+
+    def test_each_character_of_a_hidden_comment_but_its_line_breaks_becomes_a_space(self) -> None:
+        self.assertEqual("a       \r\n      d\n", pull_request.blank_comments("a <!-- b\r\nc --> d\n"))
+        self.assertEqual("          \nCloses #5\n", pull_request.blank_comments("<!-- x -->\nCloses #5\n"))
+        self.assertEqual("one\r    \n \r       \nthree\n", pull_request.blank_comments("one\r<!--\n-\rtwo -->\nthree\n"))
+
+    def test_a_heading_a_hidden_comment_holds_is_not_read(self) -> None:
+        self.assertEqual(["## A", "## C"], pull_request.headings("## A\n<!-- ## B -->\n## C\n"))
+
+
 class BodyCheckTests(unittest.TestCase):
     def test_a_filled_body_has_no_problem_and_names_its_issues(self) -> None:
         self.assertEqual([], pull_request.body_problems(FILLED, TEMPLATE))

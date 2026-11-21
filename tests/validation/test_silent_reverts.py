@@ -313,6 +313,16 @@ class SilentRevertDeclarations(unittest.TestCase):
         )
         self.assertEqual({("a b.txt", "abcdef1"), ("c.txt", "1234567890")}, declarations(body))
 
+    def test_a_declaration_a_comment_holds_across_lines_is_not_read(self) -> None:
+        body = (
+            "Text.\n"
+            "<!--\n"
+            "Reverts `a.txt` to its state before 1234567\n"
+            "-->\n"
+            "Reverts `b.txt` to its state before 7654321\n"
+        )
+        self.assertEqual({("b.txt", "7654321")}, declarations(body))
+
     def test_a_declaration_after_a_lone_cr_is_a_line_of_its_own(self) -> None:
         # Markdown ends a line at a lone CR, so the declaration starts a line.
         body = "Summary.\rReverts `a/b.py` to its state before abcdef1\r* Reverts `c.py` to its state before 1234567\r"
