@@ -5949,3 +5949,39 @@ def test_never_recommends_reads_each_spelling_of_a_path_as_the_same_file(spellin
         synthesis_check(spec, scripted)
         == f"recorded REC-006 move-to-script example/inventory:{spelling} flags=RF-000003"
     )
+
+
+def test_records_refuse_a_synthesis_record_whose_presence_cannot_be_read(tmp_path: Path) -> None:
+    scenario = skill_evals_scenarios.load_scenarios("review-insights", ["synthesis"])[0]
+    with mock.patch.object(skill_evals_judging.file_presence, "is_present", side_effect=OSError("access denied")):
+        outcomes = skill_evals_judging.judge([scenario], ["opus"], skill_evals_judging.records_in(tmp_path))
+    assert outcomes[0].failure == f"cannot read {tmp_path / 'synthesis' / 'opus.json'}: access denied"
+    assert {outcome.kind for outcome in outcomes} == {skill_evals_records.RUN}
+
+
+def test_a_synthesis_run_with_no_synthesis_and_a_stream_it_cannot_read_records_both_in_its_own_words(
+    evaluation: EvaluateTests,
+) -> None:
+    case = evaluation
+    claude = StubSynthesis(None)
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = claude(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"]:
+            return completed
+        return dataclasses.replace(completed, stdout="[]\n" + completed.stdout)
+
+    status, _ = case.evaluate(["--jobs", "1", "--model", "haiku"], case.seams(runner), "review-insights")
+    assert status == 1
+    stream = "line 1 of the session's stream is a JSON array, not an event object"
+    reason = f"{skill_evals_records.NO_SYNTHESIS}; {stream}"
+    # The citation's line is the reason as the results file records it, which names no path.
+    assert [line for line in case.cited if line.startswith("NOT_COUNTED ")] == [
+        f"NOT_COUNTED synthesis haiku run {json.dumps(reason)}"
+    ]
+
+
+def test_a_synthesis_scope_is_only_a_synthesis_scenario_s() -> None:
+    review = review_scenarios("review-prs")[0]
+    with pytest.raises(ValueError, match=f"^{re.escape(review.name)} is no synthesis scenario$"):
+        skill_evals_runs.synthesis_scope(review)
