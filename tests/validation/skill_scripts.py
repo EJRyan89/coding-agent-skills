@@ -72,7 +72,7 @@ from python_checks import (
     sanctioned_problems,
 )
 from skill_roots import SKILL_CORE
-from text_lines import LINE_BREAK, text_lines
+from text_lines import LINE_BREAK, LINE_FEED, line_index, line_starts, text_lines
 from toolchain import powershell_json
 from validation_support import (
     BASH_CONTINUATION,
@@ -3003,8 +3003,10 @@ class _TemporaryBash:
     def name(self, text: str, line: int | Sequence[int]) -> None:
         """Note the first text naming the temporary directory unjudged on each line a text holds, which starts on
         `line`, or whose characters stand on `line`'s lines."""
+        # A text that starts on `line` counts its lines at LF alone, as Bash does, over its line starts, read once.
+        starts = line_starts(text, LINE_FEED) if not isinstance(line, Sequence) else []
         for found in self.temporary_words(text):
-            at = line[found.start()] if isinstance(line, Sequence) else line + text.count("\n", 0, found.start())
+            at = line[found.start()] if isinstance(line, Sequence) else line + line_index(starts, found.start())
             self.named.setdefault(at, found.group(0))
 
     def judge_mktemp(self, command: Simple) -> None:

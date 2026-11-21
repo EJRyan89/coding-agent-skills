@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from text_lines import lines_and_breaks, program_lines, text_lines
+from text_lines import LINE_FEED, line_index, line_starts, lines_and_breaks, program_lines, text_lines
 
 # Every character str.splitlines breaks at besides CR and LF, written out rather than derived from it.
 KEPT = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -58,6 +58,25 @@ def test_every_other_character_splitlines_breaks_at_is_kept_in_its_line(characte
     assert len(text.splitlines()) == 3  # the premise: str.splitlines breaks here
     assert text_lines(text) == [f"description: a{character}disable-model-invocation: true", "name: x"]
     assert text_lines(text, keepends=True) == [f"description: a{character}disable-model-invocation: true\n", "name: x"]
+
+
+class LineStartsTests(unittest.TestCase):
+    def test_each_line_starts_after_a_crlf_a_cr_or_an_lf(self) -> None:
+        self.assertEqual([0, 3, 5, 7, 8], line_starts("a\r\nb\rc\n\nd"))
+        self.assertEqual([0, 2, 4, 6], line_starts("a\r\r\nb\n"))
+        self.assertEqual([0], line_starts(""))
+
+    def test_line_feed_starts_a_line_after_an_lf_alone(self) -> None:
+        self.assertEqual([0, 3, 7], line_starts("a\r\nb\rc\nd", LINE_FEED))
+        self.assertEqual(["\n"], LINE_FEED.findall("a\r\u2028\x85\n"))
+
+    def test_a_position_s_index_counts_the_breaks_that_end_at_or_before_it(self) -> None:
+        text = "ab\r\ncd\re\n"
+        starts = line_starts(text)
+        # Each character of the text, and its end: a break stands on the line it ends.
+        self.assertEqual(
+            [0, 0, 0, 0, 1, 1, 1, 2, 2, 3], [line_index(starts, position) for position in range(len(text) + 1)]
+        )
 
 
 class ProgramLinesTests(unittest.TestCase):
