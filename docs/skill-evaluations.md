@@ -148,9 +148,9 @@ session model and the judged one. A skill with no row has not been run since its
 | github-activity-report | haiku | claude-haiku-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | none | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-document | haiku | claude-haiku-5-5 | high | none | 32/33 | 1 | committed-edit 3/3, description 8/8, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-20 |
-| review-document | sonnet | claude-sonnet-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-20 |
-| review-document | opus | claude-opus-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.323 | 2026-11-20 |
+| review-document | haiku | claude-haiku-5-5 | high | none | 32/33 | 1 | committed-edit 3/3, description 8/8, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.323 | 2026-11-21 |
+| review-document | sonnet | claude-sonnet-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.323 | 2026-11-21 |
+| review-document | opus | claude-opus-5-5 | high | none | 33/33 | 1 | committed-edit 3/3, description 8/8, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.323 | 2026-11-21 |
 | review-insights | haiku | claude-haiku-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-haiku-5-5 | 2.1.323 | 2026-11-15 |
 | review-insights | sonnet | claude-sonnet-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-sonnet-5-5 | 2.1.323 | 2026-11-15 |
 | review-insights | opus | claude-opus-5-5 | none | none | 6/6 | 1 | description 6/6 | claude-opus-5-5 | 2.1.323 | 2026-11-15 |
@@ -196,7 +196,7 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | audit-ai-config | description | haiku | 1 | 2026-11-20 | agrees |
 | audit-skill | description | opus | 1 | 2026-11-20 | agrees |
 | curate-agent-memory | description | opus | 1 | 2026-11-20 | agrees |
-| review-document | description | opus | 1 | 2026-11-20 | agrees |
+| review-document | design-clean | sonnet | 1 | 2026-11-21 | agrees |
 | review-insights | description | sonnet | 1 | 2026-11-15 | agrees |
 | review-prs | description | sonnet | 1 | 2026-11-20 | agrees |
 | review-repository | misstated-exit-status | opus | 1 | 2026-11-20 | agrees |
