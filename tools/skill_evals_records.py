@@ -15,7 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+from review_insights import InsightError, load_report
 from review_records import Finding, LedgerEntry, Review
 
 # The reviewer subagent models a run is judged on, each by its name and the model ID a run sets and must find in its
@@ -32,8 +34,11 @@ DATED = re.compile(r"-[0-9]{8}")
 # its own, or a record that counts for nothing, since it is not the judged model's or no guard held its reviewers.
 JUDGMENT, RUN, RECORD = "judgment", "run", "record"
 # A record a run wrote, which its source has checked: a review record, which ejryan89-code-review-core's record contract
-# holds, read through review, findings, and ledger_entries as that record's shapes, or a trigger record.
+# holds, read through review, findings, and ledger_entries as that record's shapes, a review-insights report whose
+# synthesis is recorded, read through synthesized, or a trigger record.
 Record = Mapping[str, Any]
+# A synthesis run that recorded no synthesis of its own, as a NOT_COUNTED line and the results file say it.
+NO_SYNTHESIS = "the run recorded no synthesis"
 
 
 class RecordError(Exception):
@@ -108,6 +113,31 @@ def judgments(record: Record) -> dict[tuple[int, str], str]:
             if item.get("version") == version:
                 judged[(entry["version"], entry["id"])] = str(item.get("disposition"))
     return judged
+
+
+def synthesized(record: Record) -> list[dict[str, Any]]:
+    """The recommendations an insights report's recorded synthesis added, in the order it recorded them."""
+    return [item for item in record["recommendations"] if item.get("kind") == "synthesized"]
+
+
+def insights_report(path: Path, period: tuple[str, str], repository: str) -> Record:
+    """The insights report at `path`, read and validated by review-insights' own reader, when it covers the period and
+    the one repository the scenario names and its synthesis is recorded. Raise RecordError, a RUN failure, when it
+    cannot be read, covers another range or other repositories, or its synthesis is still pending, skipped, or absent:
+    the run recorded no synthesis of the scenario's own, so there is nothing of the model to judge."""
+    try:
+        report = load_report(path)
+    except (OSError, InsightError) as exc:
+        raise RecordError(f"{NO_SYNTHESIS}: {exc}") from exc
+    covered = (report["start_date"], report["end_date"], report["repositories"])
+    if covered != (*period, [repository]):
+        found = f"{covered[0]} to {covered[1]} of {', '.join(covered[2]) or 'no repository'}"
+        raise RecordError(f"{NO_SYNTHESIS} of {period[0]} to {period[1]} of {repository}: its report covers {found}")
+    synthesis = report.get("synthesis")
+    status = synthesis.get("status") if isinstance(synthesis, dict) else None
+    if status != "complete":
+        raise RecordError(f"{NO_SYNTHESIS}: its synthesis is {status or 'absent'}, not complete")
+    return report
 
 
 def record_name(model: str, index: Index) -> str:
