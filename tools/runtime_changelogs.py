@@ -452,18 +452,18 @@ def release_number(text: str) -> tuple[int, ...]:
 def bullet_entries(lines: Sequence[str]) -> list[str]:
     """Each bullet of Markdown, with the lines its list item holds joined to it, on one line.
 
-    A list item holds the lines indented as far as its content, a fence among them, and a line that lazily continues
-    its paragraph. A line indented less ends it when it starts a block, a blockquote, a fence, an ATX heading, a
-    thematic break, or a list item, or follows a blank line, as GitHub renders them, and the block it starts is left
-    out, as text no bullet opens is, so its words never count as an entry's. A numbered or `+` item is no entry, but
-    its lines join the bullet that holds it, if one does, and a bullet nested in it is an entry of its own. Block
-    starts and list items are read through ejryan89-skill-core's markdown_sections, and a fenced line is never a
-    bullet. The limits: a lazy line after an indented code block in an item is read as the item's, where CommonMark
-    ends the item; a marker with no text after it, a lone `-` or `*`, is no list item, as markdown_sections'
-    `list_item` reads it, so it continues the paragraph above; a fence left open in an item runs past the item's end,
-    as `find_fences` reads it, so the lines after it join the entry; and an HTML block's start, such as `<details>`,
-    `<div>`, or `<!--`, after a bullet's text joins the entry, since markdown_sections reads an HTML block as a
-    paragraph, and a fence line inside an HTML block is read as a fence."""
+    A list item holds the lines indented as far as its content, a fence among them, and a line that lazily continues its
+    paragraph. A line indented less ends it when it starts a block, a blockquote, a fence, an ATX heading, a thematic
+    break, or a list item, or follows a blank line, as GitHub renders them, and the block it starts is left out, as text
+    no bullet opens is, so its words never count as an entry's. A fence left open in an item ends where the item does,
+    as `find_fences` reads it, so the lines after the item never join the entry. A numbered or `+` item is no entry, but
+    its lines join the bullet that holds it, if one does, and a bullet nested in it is an entry of its own. Block starts
+    and list items are read through ejryan89-skill-core's markdown_sections, and a fenced line is never a bullet. The
+    limits: a lazy line after an indented code block in an item is read as the item's, where CommonMark ends the item; a
+    marker with no text after it, a lone `-` or `*`, is no list item, as markdown_sections' `list_item` reads it, so it
+    continues the paragraph above; and an HTML block's start, such as `<details>`, `<div>`, or `<!--`, after a bullet's
+    text joins the entry, since markdown_sections reads an HTML block as a paragraph, and a fence line inside an HTML
+    block is read as a fence."""
     fences = {fence.opener: fence for fence in find_fences(list(lines))}
     entries: list[list[str]] = []
     # The column each open list item's content starts at, outermost first, and the entry each one's lines join: the

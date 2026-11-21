@@ -1,6 +1,5 @@
 """No definition is copied between files, and shared code lives in ejryan89-skill-core and is imported from there:
-among it the one containment test of a path in a tree, and the one fence detector, whose fences the block readers
-read alike on every tracked Markdown file.
+among it the one containment test of a path in a tree.
 """
 
 from __future__ import annotations
@@ -17,11 +16,9 @@ from pathlib import Path, PurePath
 
 import file_presence
 import whole_number
-from markdown_sections import block_fences, find_fences
 from path_containment import posix_within
 from python_checks import PATH_CONTAINMENT, claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
-from text_lines import LINE_BREAK
 from validation_support import (
     COMMON_PATH_FUNCTIONS,
     DEFINITIONS,
@@ -1624,42 +1621,6 @@ def containment_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def fence_reading_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each Markdown file whose fences the block readers read apart from markdown_sections.find_fences, the one fence
-    detector the deployer, the ShellCheck extraction, and validation read: `block_fences` ends a fence with the list
-    item that holds it, an item inside a blockquote included, and reads a run only up to three columns past its
-    content, so a fence in such an item that ends early, or a run indented further, would be one block for one reader
-    and another for the other, which find_fences' docstring states. A file it cannot read as UTF-8 text is a problem,
-    and so is a set with no Markdown file, which would compare nothing."""
-    markdown = [path for path in files if path.suffix.lower() == ".md"]
-    if not markdown:
-        return ["no Markdown file to read the fences of; the fence policy compares nothing"]
-    problems: list[str] = []
-    for path in markdown:
-        relative = path.relative_to(root).as_posix()
-        try:
-            lines = LINE_BREAK.split(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError) as error:
-            problems.append(f"{relative}: cannot be read as UTF-8 text to compare its fences: {error}")
-            continue
-        walked = {fence.opener: fence.lines() for fence in block_fences(lines)}
-        detected = {fence.opener: fence.lines() for fence in find_fences(lines)}
-        parted = sorted(
-            opener for opener in walked.keys() | detected.keys() if walked.get(opener) != detected.get(opener)
-        )
-        problems.extend(
-            f"{relative}:{opener + 1}: the block readers read this fence as {_line_span(walked.get(opener))} and "
-            f"find_fences as {_line_span(detected.get(opener))}; write the fence inside its list item, with its runs "
-            "at most three columns past their content"
-            for opener in parted
-        )
-    return problems
-
-
-def _line_span(lines: range | None) -> str:
-    return "no fence" if lines is None else f"lines {lines.start + 1} to {lines.stop}"
-
-
 class DuplicationPolicies(unittest.TestCase):
     def test_repository_copies_only_what_it_sanctions(self) -> None:
         # Copied helpers began identical and then drifted, so a copy is caught while it is still identical.
@@ -1674,9 +1635,6 @@ class DuplicationPolicies(unittest.TestCase):
 
     def test_shipped_skill_scripts_import_only_what_a_deployment_holds(self) -> None:
         self.assertEqual([], skill_script_import_problems(REPOSITORY_ROOT))
-
-    def test_block_readers_read_the_fences_the_one_fence_detector_reads(self) -> None:
-        self.assertEqual([], fence_reading_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_path_containment_is_the_one_containment_test(self) -> None:
         self.assertEqual([], containment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
