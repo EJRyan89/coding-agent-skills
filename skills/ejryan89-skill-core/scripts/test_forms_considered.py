@@ -156,37 +156,54 @@ SCALING = {
 WALKS_PER_LINE = 24
 
 
-# A body of SCALE times the units is read against the smaller one, each the fastest of RUNS readings with the garbage
-# collector off, so a slow or loaded runner slows both alike. A linear reading takes about SCALE times as long and a
-# quadratic one about SCALE squared, so the ratio of the larger's time to SCALE times the smaller's is bounded between.
+@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
+def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str, tail: str) -> None:
+    # Counting the lines the walks read, at two sizes, holds the reading linear without timing it.
+    for repeats in (100, 400):
+        text = head + unit * repeats + tail
+        with mock.patch("forms_considered.blocks", wraps=blocks) as walk:
+            forms_considered.forms_section(text)
+        read = sum(len(call.args[0]) for call in walk.call_args_list)
+        assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
+
+
+# A body of SCALE times the units is read against the smaller one, each the fastest of up to RUNS readings with the
+# garbage collector off, so a slow or loaded runner slows both alike. A linear reading takes about SCALE times as long
+# and a quadratic one about SCALE squared, so the ratio of the larger's time to SCALE times the smaller's is bounded
+# between. The readings stop at the first round whose fastest times meet the bound, so a passing run reads each body
+# about once; the walk count above, which runs first, fails a reading that walks too far before this one times it.
 SCALE = 8
 RUNS = 5
 SCALE_BOUND = 3.0
 SMALL_BODY = 2_000
 
 
-def fastest_pair(small: str, large: str) -> tuple[float, float]:
-    """The fastest of RUNS readings of each body, taken in turn so a change in the runner's load meets both."""
-    times: tuple[list[float], list[float]] = ([], [])
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        for _ in range(RUNS):
-            for text, kept in zip((small, large), times, strict=True):
-                started = time.perf_counter()
-                forms_section(text)
-                kept.append(time.perf_counter() - started)
-    finally:
-        if collecting:
-            gc.enable()
-    return min(times[0]), min(times[1])
+def read_time(text: str) -> float:
+    """How long one reading of the body takes."""
+    started = time.perf_counter()
+    forms_section(text)
+    return time.perf_counter() - started
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
 def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
     repeats = max(1, SMALL_BODY // len(unit))
-    small, large = fastest_pair(head + unit * repeats + tail, head + unit * repeats * SCALE + tail)
-    assert large / (SCALE * small) < SCALE_BOUND
+    small, large = head + unit * repeats + tail, head + unit * repeats * SCALE + tail
+    ratios: list[float] = []
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        fastest = [float("inf"), float("inf")]
+        for _ in range(RUNS):
+            # Taken in turn, so a change in the runner's load meets both.
+            fastest = [min(fastest[0], read_time(small)), min(fastest[1], read_time(large))]
+            ratios.append(fastest[1] / (SCALE * fastest[0]))
+            if ratios[-1] < SCALE_BOUND:
+                break
+    finally:
+        if collecting:
+            gc.enable()
+    assert ratios[-1] < SCALE_BOUND, ratios
 
 
 def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
@@ -197,17 +214,6 @@ def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() ->
     # the heading.
     assert forms_section(text) is None
     assert time.perf_counter() - started < 1.0
-
-
-@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
-def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str, tail: str) -> None:
-    # Counting the lines the walks read, at two sizes, holds the reading linear without timing it.
-    for repeats in (100, 400):
-        text = head + unit * repeats + tail
-        with mock.patch("forms_considered.blocks", wraps=blocks) as walk:
-            forms_considered.forms_section(text)
-        read = sum(len(call.args[0]) for call in walk.call_args_list)
-        assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
 
 
 # Fences whose closer, or whose end, falls before, at, and past each width the window doubles through, so every
