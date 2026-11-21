@@ -838,7 +838,8 @@ class LooseRefusalAssertionFixtures(unittest.TestCase):
             ("a template that opens with a field", ['self.assert_lines(out, "{}: bad".format(refusal), STEP)']),
             ("a % template that opens with a field", ['self.assert_lines(out, "%s: bad" % refusal, STEP)']),
             ("a sum that opens with indentation", ['self.assert_lines(out, "  " + refusal, STEP)']),
-            ("a template that does not parse", ['self.assert_lines(out, "ERROR: Bad {".format(name), STEP)']),
+            # Its lead is no ERROR line, so only the parse failure, which leaves the line unread, flags it.
+            ("a template that does not parse", ['self.assert_lines(out, "Bad {".format(name), STEP)']),
             # The inner template's doubled % is one % in the outer template, which opens with a field.
             ("a % template filled twice", ['self.assert_lines(out, ("%%s" % ()) % "ERROR: Bad", "Fix it.")']),
             ("lines a call returns, last", ["self.assert_lines(out, *self.expected())"]),
