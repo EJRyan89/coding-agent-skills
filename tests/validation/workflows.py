@@ -2098,8 +2098,9 @@ def _mutation_leg(
         "envs": [MUTATION_WINDOWS_SHELLCHECK_ENV if cache else None, None, None, None],
         "ids": ["shellcheck"] if cache else [],
         "order": [*MUTATION_LEG_ORDER[:2], *restore, *MUTATION_LEG_ORDER[2:]],
+        # The outcomes are uploaded whatever the leg step did, so a step stopped partway hands on what it reached.
         "artifacts": [
-            ["download-artifact", MUTATION_MUTANTS],
+            ["download-artifact", MUTATION_MUTANTS, None],
             [
                 "upload-artifact",
                 {
@@ -2107,6 +2108,7 @@ def _mutation_leg(
                     "path": f"mutation/outcomes-{leg}-{MUTATION_SHARD}.json",
                     "if-no-files-found": "error",
                 },
+                "always()",
             ],
         ],
         "caches": [["cache/restore", cache, None]] if cache else [],
@@ -2134,6 +2136,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
             [
                 "upload-artifact",
                 {"name": "mutation-mutants", "path": "mutation/mutants.json", "if-no-files-found": "error"},
+                None,
             ]
         ],
         "caches": [
@@ -2167,7 +2170,9 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "ids": ["join"],
         # The verdict is saved after the join writes it, and only when the join names its key.
         "order": ["checkout", "setup-python", "download-artifact", "run", "cache/save"],
-        "artifacts": [["download-artifact", {"pattern": "mutation-*", "path": "mutation", "merge-multiple": "true"}]],
+        "artifacts": [
+            ["download-artifact", {"pattern": "mutation-*", "path": "mutation", "merge-multiple": "true"}, None]
+        ],
         "caches": [
             [
                 "cache/save",
@@ -2185,13 +2190,13 @@ def _uses(step: dict[str, Node], action: str) -> bool:
 
 def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
     """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its matrix, its checkout's and Python's
-    inputs, its scripts, the shell each names, and the ids they take, the order of its steps, each artifact step with
-    its inputs, and each cache step with its inputs and condition, and each script's own `env`."""
+    inputs, its scripts, the shell each names, and the ids they take, the order of its steps, each artifact step and
+    each cache step with its inputs and condition, and each script's own `env`."""
     steps = _steps(job)
     checkouts: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "checkout")]
     pythons: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "setup-python")]
     artifacts: list[object] = [
-        [action, _mapping(step, "with")]
+        [action, _mapping(step, "with"), step.get("if")]
         for step in steps
         for action in ("upload-artifact", "download-artifact")
         if _uses(step, action)
@@ -2225,8 +2230,8 @@ def mutation_job_problems(workflow: str) -> list[str]:
     check's, its dependencies and condition, matrix, runner, time limit, checkout, Python, scripts, step ids, the order
     of its steps, its artifact and cache steps, and each script's own `env`, and the select job's outputs listing each
     leg's shards. A script step's own `if` or `continue-on-error` is not read, so a step that is skipped, or whose
-    failure is ignored, passes; no leg sets either, and the one step-level `if` the workflow holds, on the verdict's
-    save, is read with its cache step."""
+    failure is ignored, passes; no leg sets either, and the step-level `if`s the workflow holds, on each leg's upload
+    of its outcomes and on the verdict's save, are read with their artifact and cache steps."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
