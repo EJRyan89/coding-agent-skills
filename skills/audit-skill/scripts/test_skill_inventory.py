@@ -5061,7 +5061,8 @@ def test_a_bash_fence_written_with_prompts_is_read_as_a_session(label: str, tmp_
     # The grammar took a `$ ` prompt for the program, so a file command after one read nothing.
     folder = source_skill(
         tmp_path,
-        f"```{label}\n$ cat ../shared.md\n$ gh pr create --body-file ../pr-body.md\nwrote ../output.md\n"
+        f"```{label}\n$ cat ../shared.md\nfind more in ../notes.md\n$ gh pr create --body-file ../pr-body.md\n"
+        "wrote ../output.md\n"
         "$ head \\\n> ../continued.md\n```\n",
     )
     assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../shared.md", "TOTAL outside 0 0 0"]
@@ -5084,11 +5085,54 @@ def test_a_prompt_inside_a_here_document_or_a_string_leaves_a_bash_fence_read_th
     assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../read.md", "TOTAL outside 0 0 0"]
 
 
+def test_a_prompt_after_an_assignment_makes_a_bash_fence_read_by_command_line(tmp_path: Path) -> None:
+    # Bash reads `A=1` as an assignment before the program, so the `$` after it is the prompt; the grammar would miss
+    # the path in the comment the next line's file command is written with.
+    folder = source_skill(tmp_path, "```bash\nA=1 $ ls\nwc x # see ../a.md\n```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:6 ../a.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_quoted_dollar_is_no_prompt_and_leaves_a_bash_fence_read_through_the_grammar(tmp_path: Path) -> None:
+    # Only an unquoted `$` is a prompt; read by command line, the file command after a pipe read nothing.
+    folder = source_skill(tmp_path, "```bash\n'$' x\necho y | cat ../a.md\n```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:6 ../a.md", "TOTAL outside 0 0 0"]
+
+
+def test_every_shell_fence_after_another_fence_is_read_by_its_commands(tmp_path: Path) -> None:
+    # A fence of another label, or a Bash fence the grammar read, must not end the reading of the fences after it.
+    folder = source_skill(
+        tmp_path,
+        "```text\nx\n```\n```bash\ncat ../read.md\n```\n```bash\ngh pr create --body-file ../written.md\n```\n"
+        "```fish\ngh pr create --body-file ../fish.md\n```\n",
+    )
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:8 ../read.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_file_command_is_found_in_any_case_only_in_a_shell_that_finds_one_so(tmp_path: Path) -> None:
+    # PowerShell runs `CAT` as cat; fish, like Bash, runs no command of that name.
+    folder = source_skill(tmp_path, "```powershell\nCAT ../shouted.md\n```\n```fish\nCAT ../fish.md\n```\n")
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:5 ../shouted.md", "TOTAL outside 0 0 0"]
+
+
+def test_a_path_a_file_command_reads_twice_is_named_twice_and_one_it_also_writes_once(tmp_path: Path) -> None:
+    text = "```bash\ncat ../a.md ../a.md\ncat ../b.md > ../b.md\n```\n"
+    links = skill_inventory.markdown_links(tmp_path, "SKILL.md", "doc", text)
+    assert [(line, reference) for line, reference, _ in links] == [(2, "../a.md"), (2, "../a.md"), (3, "../b.md")]
+
+
+def test_a_path_passed_to_the_script_a_substitution_prints_is_no_read(tmp_path: Path) -> None:
+    # The script `bash -c` runs is what `cat` prints, so `cat` reads none of its words. The substitution is one word
+    # only running settles; read as its own `$(`, the script is refused, and the fence's other reads with it.
+    folder = source_skill(tmp_path, '```bash\nbash -c "$(cat) ../script-argument.md"\necho x | cat ../read.md\n```\n')
+    assert outside_report(folder) == ["OUTSIDE_MISSING SKILL.md:6 ../read.md", "TOTAL outside 0 0 0"]
+
+
 def test_a_path_in_a_quoted_argument_is_placed_on_the_line_it_stands_on(tmp_path: Path) -> None:
-    # A path a file command's quoted argument holds after a newline stands on a later line than the word starts on.
-    folder = source_skill(tmp_path, '```bash\ngrep -e x "../first.md\n../second.md"\n```\n')
+    # A path a file command's quoted argument holds after a newline stands on a later line than the word starts on,
+    # each counted from the path before it, with a line after the word so that no count lands on the fence's last.
+    folder = source_skill(tmp_path, '```bash\ngrep -e x "\n../first.md\n../second.md"\necho done\n```\n')
     assert outside_report(folder) == [
-        "OUTSIDE_MISSING SKILL.md:5 ../first.md",
-        "OUTSIDE_MISSING SKILL.md:6 ../second.md",
+        "OUTSIDE_MISSING SKILL.md:6 ../first.md",
+        "OUTSIDE_MISSING SKILL.md:7 ../second.md",
         "TOTAL outside 0 0 0",
     ]
