@@ -34,6 +34,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import file_presence
+import folder_walk
 import json_reader
 import path_keys
 import review_document
@@ -2409,6 +2410,24 @@ class ResolveTests(unittest.TestCase):
                 ["UNSEARCHED locked the folder cannot be listed: Access is denied", "NOT_FOUND notes.md"],
                 self.resolve("notes.md"),
             )
+
+    def test_an_entry_the_walk_cannot_examine_is_named_unsearched_and_turns_a_single_match_into_a_candidate(
+        self,
+    ) -> None:
+        self.write("docs/design.md", "notes/broken.md")
+        real = folder_walk.is_folder_link
+
+        def is_folder_link(entry: os.DirEntry[str]) -> bool:
+            if entry.name == "broken.md":
+                raise PermissionError(13, "Permission denied")
+            return real(entry)
+
+        expected = [
+            f"UNSEARCHED {Path('notes/broken.md')} the entry cannot be examined: Permission denied",
+            f"CANDIDATE {Path('docs/design.md')}",
+        ]
+        with mock.patch.object(folder_walk, "is_folder_link", is_folder_link):
+            self.assertEqual(expected, self.resolve())
 
     def test_a_match_whose_stat_fails_is_named_unsearched_never_read_as_no_file_and_the_command_exits_1(self) -> None:
         self.write("docs/design.md", "notes/design.md")
