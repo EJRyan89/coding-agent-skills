@@ -74,6 +74,9 @@ def test_a_destination_out_of_the_repository_or_at_its_root_leads_to_no_file(
         ("x [a \\] b](d.md) y", "[a \\] b](d.md)"),
         ("x [a `]` b](d.md) y", "[a `]` b](d.md)"),
         ("x [a [b](d.md) y", "[b](d.md)"),
+        # A double run that no other matches is text, so the `[` after it opens the link's text; the old code-span
+        # pattern paired its last backtick with the one before `c` and blanked the `[`.
+        ("``a [b](d.md) `c`", "[b](d.md)"),
         # A definition takes its whole line, from its label.
         ("  [r]: docs/a.md 'title'", "[r]: docs/a.md 'title'"),
         # No `[` opens the text: from the `]`.

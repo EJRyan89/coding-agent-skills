@@ -4,7 +4,8 @@
   "requests": [
     "Review pull request octo-org/widgets#42.",
     "Re-review octo-org/widgets#42 now that the author has pushed fixes.",
-    "Review the open pull requests in my configured repositories."
+    "Review the open pull requests in my configured repositories.",
+    "Review https://github.com/octo-org/widgets/pull/42."
   ],
   "near_misses": [
     "Review the design document at docs/design/export.md.",

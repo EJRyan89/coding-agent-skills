@@ -83,7 +83,7 @@ from frontmatter import (
 from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
-from markdown_sections import ATX_HEADING, COMMONMARK_CODE_SPAN, code_block_lines, find_fences
+from markdown_sections import ATX_HEADING, code_block_lines, find_fences, without_code_spans
 from module_assignments import assigned_names, sole_assignment
 from path_containment import resolved_path, within
 from path_keys import opens_as
@@ -3357,7 +3357,7 @@ def claude_imports(text: str) -> list[str]:
         path
         for index, line in enumerate(lines)
         if index not in code
-        for path in CLAUDE_IMPORT.findall(COMMONMARK_CODE_SPAN.sub("", line))
+        for path in CLAUDE_IMPORT.findall(without_code_spans(line))
     ]
 
 

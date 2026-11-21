@@ -73,7 +73,7 @@ from conditions import (
     unset_variables_line,
 )
 from console import run_main
-from markdown_sections import CODE, COMMONMARK_CODE_SPAN, HEADING, TABLE_ROW, blocks
+from markdown_sections import CODE, HEADING, TABLE_ROW, blocks, code_spans
 from text_lines import LINE_BREAK
 
 DUPLICATION_ALLOWED = {
@@ -153,7 +153,7 @@ class Unit:
         """Each piece of code in the unit and where it starts in the text."""
         if self.code:
             return [(0, self.text)]
-        return [(match.start(2), match.group(2).strip()) for match in COMMONMARK_CODE_SPAN.finditer(self.text)]
+        return [(span.text_start, span.text.strip()) for span in code_spans(self.text)]
 
 
 @dataclass(frozen=True)
