@@ -67,6 +67,7 @@ from markdown_sections import (
     MARKDOWN_SPACE,
     PARAGRAPH,
     blocks,
+    code_spans,
     find_fences,
     markdown_section,
 )
@@ -106,7 +107,9 @@ class NotesEntry:
 
     @property
     def contract_items(self) -> set[str]:
-        return {item.rstrip("/") for item in re.findall(r"`([^`]+)`", self.fields.get("Contract", ""))}
+        """The text of each code span in the entry's contract field, a trailing `/` dropped, read through
+        markdown_sections' code_spans, which pairs whole backtick runs as CommonMark does."""
+        return {span.text.rstrip("/") for span in code_spans(self.fields.get("Contract", ""))}
 
 
 @dataclass(frozen=True)

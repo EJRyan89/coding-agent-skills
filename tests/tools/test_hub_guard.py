@@ -32,7 +32,7 @@ import git_worktrees
 import path_keys
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
-from markdown_sections import CODE_SPAN, markdown_section
+from markdown_sections import code_spans, markdown_section
 from resident_pwsh import resident_reads
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment, run_git
 
@@ -1517,7 +1517,7 @@ def contract_names(after: str, before: str) -> list[str]:
     """The code spans the guard's section names between two phrases, read with its lines joined."""
     text = " ".join(guard_section().split())
     start = text.index(after) + len(after)
-    return CODE_SPAN.findall(text[start : text.index(before, start)])
+    return [span.text for span in code_spans(text[start : text.index(before, start)])]
 
 
 class CommandGuardTests(GuardTestCase):

@@ -265,12 +265,12 @@ from git_client import GitClient, GitError
 from link_destinations import link_destinations
 from markdown_sections import (
     ATX_HEADING,
-    CODE_SPAN,
     FENCE_LANGUAGES,
     LIST_MARKER,
     POWERSHELL_FENCES,
     SHELL_FENCES,
     Fence,
+    code_spans,
     find_fences,
     prose_code_spans,
 )
@@ -1932,7 +1932,7 @@ def line_references(line: str, language: str | None, names: list[str], allowed: 
     found: list[str] = []
     if language in SHELL_FENCES | POWERSHELL_FENCES:
         return [name for name in SHELL_TOOLS if name in allowed] or ["Bash"]
-    spans = [] if language is not None else [span.strip().strip("\"'") for span in CODE_SPAN.findall(line)]
+    spans = [] if language is not None else [span.text.strip().strip("\"'") for span in code_spans(line)]
     for name in names:
         escaped = re.escape(name)
         if (
@@ -1962,8 +1962,8 @@ def without_subagent_prompts(line: str) -> str:
 def negated_ranges(line: str) -> list[tuple[int, int]]:
     """The column ranges each negator in the line reaches, by the rule above NEGATOR."""
     masked = line
-    for match in CODE_SPAN.finditer(line):  # a dot in a code span ends no clause
-        masked = blanked(masked, match.start() + 1, match.end() - 1)
+    for span in code_spans(line):  # a dot in a code span ends no clause
+        masked = blanked(masked, span.text_start, span.end - span.run)
     bounds = [0, *(match.end() for match in CLAUSE_END.finditer(masked)), len(masked)]
     ranges: list[tuple[int, int]] = []
     for start, end in pairwise(bounds):
@@ -2100,9 +2100,7 @@ def inline_code(line: str, code_line: bool = True) -> bool:
 def generated_code(line: str, code_line: bool) -> bool:
     """Whether a line runs an interpreter on code it holds (inline_code): a code line read whole, a prose line read
     whole and then each of its code spans read as code."""
-    return inline_code(line, code_line) or (
-        not code_line and any(inline_code(span) for span in CODE_SPAN.findall(line))
-    )
+    return inline_code(line, code_line) or (not code_line and any(inline_code(span.text) for span in code_spans(line)))
 
 
 def python_inline_code(words: list[str]) -> bool:
@@ -2223,7 +2221,7 @@ def scan(given: list[Path]) -> list[str]:
             shell = (
                 index in file_commands
                 if language is not None
-                else any(SPAN_SHELL_COMMAND.match(span.strip()) for span in CODE_SPAN.findall(line))
+                else any(SPAN_SHELL_COMMAND.match(span.text.strip()) for span in code_spans(line))
             )
             if shell:
                 cues.append(SHELL_FILE_CUE)
@@ -2759,12 +2757,12 @@ def stated_lines(folder: Path, path: Path, lines: list[str], printed: set[str], 
         line = lines[index]
         if languages[index] is not None or not OUTPUT_WORDS.search(line):
             continue
-        for span in CODE_SPAN.finditer(line):
-            word = SPAN_STATUS.match(span.group(1).strip())
+        for span in code_spans(line):
+            word = SPAN_STATUS.match(span.text.strip())
             if (
                 word
                 and len(word.group(1)) >= STATUS_WORD_LENGTH
-                and not EXAMPLE_LEAD.search(line[: span.start()])
+                and not EXAMPLE_LEAD.search(line[: span.start])
                 and word.group(1) not in printed
                 and not word.group(1).startswith(tuple(prefixes))
             ):
@@ -2980,7 +2978,7 @@ def line_agents(line: str, defined: set[str]) -> list[str]:
     """The subagent types a prose line names: a type a delegation line names by TYPED_AGENT, and any code span that is
     the name of a defined agent."""
     found = [name for match in TYPED_AGENT.finditer(line) for name in match.groups() if name] if delegates(line) else []
-    return found + [span.strip() for span in CODE_SPAN.findall(line) if span.strip() in defined]
+    return found + [span.text.strip() for span in code_spans(line) if span.text.strip() in defined]
 
 
 def named_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> dict[str, tuple[Path, int]]:
