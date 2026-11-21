@@ -25,10 +25,12 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
 import file_presence
 import json_reader
 import private_folder
+import skill_inventory
 import whole_number
 from git_client import NO_HOOKS, GitClient
 from path_containment import resolved_path, within
@@ -97,10 +99,9 @@ DOCUMENT_FOLDER = "document"
 BY_NAME_FOLDER = "drafts"
 HIDDEN_DECOY = ".drafts-old"
 CHECKOUT_DECOY = "old-checkout"
-# The session's own tool calls a by-name run's record carries for the `resolved` kind: the shells, the search tools,
-# a shell command that searches for files or their text, by its program at a command's start, and review-document's
-# `resolve` and `build` commands.
-SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
+# The session's own tool calls a by-name run's record carries for the `resolved` kind, read with audit-skill's shell
+# tools: the search tools, a shell command that searches for files or their text, by its program at a command's
+# start, and review-document's `resolve` and `build` commands.
 SEARCH_TOOLS = frozenset({"Glob", "Grep"})
 SEARCH_PROGRAM = re.compile(
     r"(?:^|[;&|(){}`\n]|\$\()\s*(?:[\w.~-]*[/\\])*"
@@ -388,7 +389,7 @@ def _search(call: Mapping[str, Any], command: str) -> str | None:
 
 def _shell_command(call: Mapping[str, Any]) -> str:
     """The command a shell call of the session ran, or nothing for another tool's call."""
-    command = call["input"].get("command") if call["name"] in SHELL_TOOLS else None
+    command = call["input"].get("command") if call["name"] in skill_inventory.SHELL_TOOLS else None
     return command if isinstance(command, str) else ""
 
 

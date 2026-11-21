@@ -6279,7 +6279,7 @@ def test_the_session_s_tool_calls_are_its_own_in_order_and_a_shape_it_cannot_rea
             skill_evals_runs.session_tool_calls(json.dumps({"type": "assistant", "message": message}))
 
 
-def git_home(root: Path) -> Path:
+def staged_home(root: Path) -> Path:
     home = root / "home"
     home.mkdir()
     GitClient().output(["init", "--quiet"], directory=home)
@@ -6290,7 +6290,7 @@ def test_a_by_name_document_is_staged_one_folder_down_in_the_home_beside_decoys_
     tmp_path: Path,
 ) -> None:
     scenario = by_name_scenario(tmp_path, stage="final")
-    home = git_home(tmp_path)
+    home = staged_home(tmp_path)
     with skill_evals_runs.named_document(scenario, home, GitClient()) as arguments:
         assert arguments == ["draft.md", "--stage", "final"]
         for folder in ("drafts", ".drafts-old", "old-checkout"):
@@ -6302,7 +6302,7 @@ def test_a_by_name_document_is_staged_one_folder_down_in_the_home_beside_decoys_
 
 def test_a_by_name_staging_refuses_a_folder_already_there_and_removes_only_what_it_made(tmp_path: Path) -> None:
     scenario = by_name_scenario(tmp_path)
-    home = git_home(tmp_path)
+    home = staged_home(tmp_path)
     (home / ".drafts-old").mkdir()
     (home / ".drafts-old" / "kept.md").write_text("kept\n", encoding="utf-8")
     with (
@@ -6316,7 +6316,7 @@ def test_a_by_name_staging_refuses_a_folder_already_there_and_removes_only_what_
 
 def test_a_by_name_staging_is_removed_when_its_block_fails(tmp_path: Path) -> None:
     scenario = by_name_scenario(tmp_path)
-    home = git_home(tmp_path)
+    home = staged_home(tmp_path)
     with pytest.raises(RuntimeError), skill_evals_runs.named_document(scenario, home, GitClient()):
         raise RuntimeError("the session failed")
     assert sorted(path.name for path in home.iterdir()) == [".git"]
