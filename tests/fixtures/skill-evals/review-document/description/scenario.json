@@ -8,7 +8,8 @@
     "Review only the documents that pull request octo-org/widgets#42 changes, not its code."
   ],
   "near_misses": [
-    "Review pull request octo-org/widgets#42."
+    "Review pull request octo-org/widgets#42.",
+    "Is our CLAUDE.md and AGENTS.md setup any good for Claude Code, Codex, and Copilot?"
   ],
   "unserved": [
     "Fix the typos in README.md.",

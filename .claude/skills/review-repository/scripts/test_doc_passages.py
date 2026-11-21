@@ -82,6 +82,12 @@ class UnitTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(expected, [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)])
 
+    def test_a_span_pairs_whole_backtick_runs_and_starts_at_its_text(self) -> None:
+        # The double run, which no other matches, is text; the old reader paired its first backtick with the single
+        # one after it, so it read "`a" and "c" as code rather than "b".
+        [unit] = doc_passages.units("``a` b `c`\n")
+        self.assertEqual([(4, "b")], unit.spans())
+
     def test_indented_code_names_a_module_as_a_fenced_block_does(self) -> None:
         name = doc_passages.Name("doc_passages", "module", doc_passages.Hunk("x.py", "@@", 1, 1))
         for text in ("Run it:\n\n    doc_passages.main()\n", "Run it:\n\n```\ndoc_passages.main()\n```\n"):

@@ -34,7 +34,7 @@ from bisect import bisect_left
 from dataclasses import dataclass
 
 from link_destinations import Destination
-from markdown_sections import COMMONMARK_CODE_SPAN
+from markdown_sections import without_code_spans
 
 # What follows an inline link's text, and what follows a link reference definition's label, before the destination.
 INLINE_OPENER = "]("
@@ -69,7 +69,7 @@ def link_spans(line: str, destinations: list[Destination]) -> list[tuple[int, in
     another, and, for each of `)`, `"`, and `'`, the next unescaped one after each column found in a pass back."""
     if not destinations:
         return []
-    text = COMMONMARK_CODE_SPAN.sub(lambda span: " " * len(span.group(0)), line)
+    text = without_code_spans(line, " ")
     opener = _bracket_openers(text)
     following = _next_unescaped(text, ")\"'")
     indent = len(text) - len(text.lstrip(" "))
