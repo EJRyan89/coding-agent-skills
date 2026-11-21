@@ -60,6 +60,16 @@ def forward(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
+def manual_steps(run: Path, committed: bool) -> list[str]:
+    """The steps recovery gives for a run it stopped at, whose staging folder is run."""
+    keep = "keep the copies it installed" if committed else "put back the copies it replaced"
+    return [
+        f"  Run {run.name} was {'' if committed else 'not '}committed to the manifest, so {keep}. A replaced copy sits "
+        f"beside its item as <name>.deploying-bak; a retained backup is under .backups/{run.name}/ in the same root.",
+        f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
+    ]
+
+
 def assert_refusal(lines: Sequence[str], error: str, *steps: str) -> None:
     """The refusal's ERROR line among lines, printed or a DeployError's own, followed at once by each step in order."""
     expected = [error, *steps]
