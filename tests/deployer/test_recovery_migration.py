@@ -34,6 +34,7 @@ from harness import (
     install_entry,
     journal_line,
     make_directory_link,
+    manual_steps,
     tree_state,
 )
 
@@ -49,6 +50,20 @@ SEE_RECOVERY_BACKUPS = 'See "Backups" in docs/recovery.md.'
 MANIFEST_UNDECIDED = (
     "  ERROR: The manifest is missing or cannot be read, so recovery cannot tell whether run {run_id} was committed."
 )
+# The refusal that ends a deployment whose recovery stopped, and its step, written out here for the same reason.
+RECOVERY_FAILED = "ERROR: Recovery failed, so this deployment stopped before deploying anything."
+RECONCILE_BY_HAND = f"Reconcile the run named above by hand, then rerun with --dry-run. {SEE_RECOVERY_FAILED}"
+# The tests that check an ERROR line, or lines a caller passes, apart from the lines after them, each for its reason.
+LINES_APART_ALLOWED = {
+    "RecoveryBranchTests.test_an_unexpected_exception_is_named_and_the_run_rolled_back": (
+        "an unexpected exception's ERROR line names a defect and has no step of its own; the lines after it are "
+        "recovery's"
+    ),
+    "RecoveryBranchTests.assert_rollback_stopped": (
+        "each line a caller passes is one recovery reports on its way through the run, a warning or a failed step's "
+        "ERROR line, never a refusal's step; assert_unreconciled holds the run's refusal with its steps"
+    ),
+}
 
 
 class Killed(BaseException):
@@ -67,6 +82,18 @@ class RecoveryTestCase(DeployerTestCase):
         path = self.staging_run(run_id) / "journal.jsonl"
         self.write(path, "".join(journal_line(entry) for entry in entries))
         return path
+
+    def assert_unreconciled(self, output: str, journal_file: Path, committed: bool) -> None:
+        """Recovery's refusal of a run it could not reconcile, followed at once by the manual steps for the run."""
+        self.assert_refusal(
+            output,
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
+            *manual_steps(journal_file.parent, committed),
+        )
+
+    def assert_recovery_stopped(self, output: str) -> None:
+        """The refusal that ends a deployment whose recovery stopped, followed at once by its step."""
+        self.assert_refusal(output, RECOVERY_FAILED, RECONCILE_BY_HAND)
 
     def commit(self, run_id: str) -> None:
         data = self.manifest()
@@ -597,18 +624,18 @@ class RecoveryFailureTests(RecoveryTestCase):
         )
 
     def assert_recovery_failed(self, result_output: str, path: Path, committed: bool = False) -> None:
+        """The run's failure at path named, and the manual steps for it: right after that line when its journal
+        failed, which stops the run there, and after the refusal of the entries it could not reconcile when one of
+        its items did."""
         run = self.staging_run(self.HELD)
-        keep = "keep the copies it installed" if committed else "put back the copies it replaced"
-        self.assert_lines(
-            result_output,
-            f"  ERROR: Recovery of run {self.HELD} failed at {forward(path)}: Access is denied",
-            f"  Run {self.HELD} was {'' if committed else 'not '}committed to the manifest, so {keep}. "
-            "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
-            f".backups/{self.HELD}/ in the same root.",
-            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
-            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
-        )
+        failure = f"  ERROR: Recovery of run {self.HELD} failed at {forward(path)}: Access is denied"
+        self.assert_lines(result_output, f"Recovering uncommitted run {self.NEXT} (rolling back)...", failure)
+        journal_file = run / "journal.jsonl"
+        if path == journal_file:
+            self.assert_refusal(result_output, failure, *manual_steps(run, committed))
+        else:
+            self.assert_unreconciled(result_output, journal_file, committed)
+        self.assert_recovery_stopped(result_output)
         self.assertNotIn("Traceback", result_output)
         self.assertTrue((run / "journal.jsonl").is_file())
         self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.NEXT).exists())
@@ -954,13 +981,10 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assert_lines(
             output,
             f"Recovering committed run {self.HELD} (completing finalization)...",
-            f"  Run {self.HELD} was committed to the manifest, so keep the copies it installed. A replaced copy sits "
-            f"beside its item as <name>.deploying-bak; a retained backup is under .backups/{self.HELD}/ in the same "
-            "root.",
-            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
             f"Recovering uncommitted run {self.NEXT} (rolling back)...",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
+        self.assert_unreconciled(output, run / "journal.jsonl", committed=True)
+        self.assert_recovery_stopped(output)
         self.assertNotIn(RECOVERY_STOPPED, output)
         self.assertNotIn("Unexpected", output)
         self.assertNotIn("Traceback", output)
@@ -1418,13 +1442,9 @@ class RecoveryBranchTests(RecoveryTestCase):
 
     def assert_completion_stopped(self, journal_file: Path, warning: str, changes_home: str = "") -> None:
         result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=changes_home)
-        self.assert_lines(
-            result.output,
-            f"Recovering committed run {self.RUN} (completing finalization)...",
-            warning,
-            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
-        )
+        self.assert_lines(result.output, f"Recovering committed run {self.RUN} (completing finalization)...", warning)
+        self.assert_unreconciled(result.output, journal_file, committed=True)
+        self.assert_recovery_stopped(result.output)
         self.assertNotIn("Preserved backup", result.output)
         self.assertTrue(journal_file.is_file())
         self.assertIn("Alpha content", self.skill_text("alpha"))
@@ -1554,9 +1574,9 @@ class RecoveryBranchTests(RecoveryTestCase):
             result.output,
             f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
-            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
+        self.assert_unreconciled(result.output, journal_file, committed=True)
+        self.assert_recovery_stopped(result.output)
         self.assertTrue(journal_file.is_file())
         self.assertFalse(destination.exists())
 
@@ -1569,11 +1589,11 @@ class RecoveryBranchTests(RecoveryTestCase):
         link = staging / self.RUN
         make_directory_link(link, outside)
         result = self.deploy_fails("--all", pattern="was not replayed")
+        # The line naming the link is no refusal of its own: the deployment's refusal after it gives the step.
         self.assert_lines(
-            result.output,
-            f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+            result.output, f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}"
         )
+        self.assert_recovery_stopped(result.output)
         self.assertNotIn(f"Recovering committed run {self.RUN}", result.output)
         self.assertNotIn(f"Recovering uncommitted run {self.RUN}", result.output)
         self.assertIn("Alpha content", self.skill_text("alpha"))
@@ -1589,13 +1609,9 @@ class RecoveryBranchTests(RecoveryTestCase):
 
     def assert_rollback_stopped(self, journal_file: Path, *warnings: str, changes_home: str = "") -> None:
         result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=changes_home)
-        self.assert_lines(
-            result.output,
-            f"Recovering uncommitted run {self.RUN} (rolling back)...",
-            *warnings,
-            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
-            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
-        )
+        self.assert_lines(result.output, f"Recovering uncommitted run {self.RUN} (rolling back)...", *warnings)
+        self.assert_unreconciled(result.output, journal_file, committed=False)
+        self.assert_recovery_stopped(result.output)
         self.assertNotIn("Recovery complete", result.output)
         self.assertTrue(journal_file.is_file())
         self.assertFalse(self.lock_dir.exists())
@@ -2814,12 +2830,14 @@ class ManifestStateTests(RecoveryTestCase):
         ):
             recovered = journal.recover_incomplete(self.paths)
         self.assertFalse(recovered, captured.getvalue())
-        self.assert_lines(
+        self.assert_refusal(
             captured.getvalue(),
+            f"  ERROR: Recovery of run {run} failed at {forward(journal_file)}: Access is denied",
             f"  Whether run {run} was committed cannot be told, since the manifest is missing or cannot be read: put "
             "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
             "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
             f"<name>.deploying-bak; a retained backup is under .backups/{run}/ in the same root.",
+            manual_steps(journal_file.parent, committed=False)[1],
         )
         self.assertNotIn("was not committed", captured.getvalue())
 
