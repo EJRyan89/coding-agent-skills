@@ -5735,7 +5735,10 @@ def test_the_synthesis_fixture_plants_its_signals_in_the_input_and_leaves_the_ou
     run.mkdir()
     skill_evals_runs.stage_synthesis(scenario, run)
     report = Insights(run).report(scenario)
-    lines = [json.loads(line) for line in (report.parent / review_synthesis.INPUT_NAME).read_text().splitlines()]
+    lines = [
+        json.loads(line)
+        for line in (report.parent / review_synthesis.INPUT_NAME).read_text(encoding="utf-8").splitlines()
+    ]
     guidance = next(line for line in lines if line["kind"] == "guidance")
     assert guidance["repositories"] == {"example/inventory": ["docs/error-handling.md", "docs/review-guide.md"]}
     assert [line["status"] for line in lines if line["kind"] == "guidance-file"] == ["included", "included"]

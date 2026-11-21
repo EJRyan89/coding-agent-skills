@@ -97,10 +97,8 @@ NO_REVIEW = "the run recorded no review"
 # all that is judged.
 TRIGGER_RECORD = "trigger.json"
 TRIGGER_TURNS = 2
-# A synthesis run's script, which writes the synthesis's self-check with its resolved path, its own code-review
-# configuration, written in its folder, and the reports its summaries folder may hold, one per repository set and
-# period, of which the run's own is the only one.
-SYNTHESIS_SCRIPT = Path("scripts") / "review_insights.py"
+# A synthesis run's own code-review configuration, written in its folder, and the reports its summaries folder may
+# hold, one per repository set and period, of which the run's own is the only one.
 SYNTHESIS_CONFIG = "config.json"
 SUMMARIES = "summaries"
 REPORT_PATTERN = f"{SUMMARIES}/*/*/insights.json"
@@ -242,6 +240,12 @@ def reviewer_script_folders(home: Path, skill: str) -> list[str]:
     return list(dict.fromkeys([started, f"{skills / CORE / 'scripts'}{os.sep}"]))
 
 
+def skill_scripts_folder(home: Path, skill: str) -> str:
+    """The home's deployed scripts folder of a skill, resolved and ending in its separator, as a script that names
+    itself by its resolved path, such as review-insights' synthesis self-check, spells it."""
+    return f"{home / SKILLS / skill / 'scripts'}{os.sep}"
+
+
 def reviewer_grants(home: Path, skill: str) -> list[str]:
     """The commands a reviewer runs besides its file tools, granted in both shells at each spelling of the home's
     scripts: its self-check, which review_pipeline.py writes as python -B "<script>" validate-result --run "<run>"
@@ -253,8 +257,11 @@ def reviewer_grants(home: Path, skill: str) -> list[str]:
     if skill == SYNTHESIS_SKILL:
         # The synthesis's one command, its self-check, which review_synthesis.py writes as python -B "<script>"
         # synthesize --report "<report>" --result "<result>" --check, naming the deployed script's resolved path.
-        script = home / SKILLS / skill / SYNTHESIS_SCRIPT
-        return [f'{shell}({PYTHON} -B "{script}" synthesize --report *)' for shell in ("Bash", "PowerShell")]
+        scripts = skill_scripts_folder(home, skill)
+        return [
+            f'Bash({PYTHON} -B "{scripts}review_insights.py" synthesize --report *)',
+            f'PowerShell({PYTHON} -B "{scripts}review_insights.py" synthesize --report *)',
+        ]
     for folder in reviewer_script_folders(home, skill):
         grants += [
             f'Bash({PYTHON} -B "{folder}review_pipeline.py" validate-result --run *)',
@@ -671,7 +678,7 @@ def review_run(scenario: Scenario, model: str, home: Path, session: Session, run
     if scenario.mode == SYNTHESIS:
         try:
             arguments = stage_synthesis(scenario, run)
-        except OSError as exc:
+        except (OSError, json_writer.JsonWriteRefused) as exc:
             transcript.write_text("", encoding="utf-8")
             failure = "the synthesis fixture could not be staged"
             return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure, RUN), transcript
