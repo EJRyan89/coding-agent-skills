@@ -2938,7 +2938,7 @@ class Gate:
             )
         return replace(leg, local=local(ran, True))
 
-    def local_run(self, ran: LegRun, places: dict[str, list[int]], head: str, ended: bool = True) -> LocalRun:
+    def local_run(self, ran: LegRun, places: dict[str, list[int]], head: str, ended: bool) -> LocalRun:
         """The local run of a leg's mutants at `places` from the leg run that ran them at the commit `head`, under this
         gate's cap."""
         return LocalRun(

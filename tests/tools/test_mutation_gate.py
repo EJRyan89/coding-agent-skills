@@ -4072,6 +4072,18 @@ class UnrunFixtures(unittest.TestCase):
         )
         (self.folder / "local-linux.json").write_text(json.dumps(local_record(LINUX_LEG, local)), encoding="utf-8")
 
+    def test_a_resumed_run_runs_again_a_survivor_the_stopped_run_judged_beside_a_suite_that_failed_unmutated(
+        self,
+    ) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([SURVIVED, NOT_RUN])
+        failed = {"tests/tools/test_other.py": "failed unmutated with exit code 1"}
+        record = {**self.local(), "failed_suites": failed}
+        (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
+        self.unrun_step(self.gate())
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        self.assertEqual((True, {}), (self.local()["ended"], self.local()["kept"]))
+
     def test_a_resumed_run_runs_again_an_errored_mutant_and_finishes(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
         self.stopped_record([ERRORED, NOT_RUN])
@@ -4549,6 +4561,10 @@ def test_an_outcome_a_resumed_run_kept_is_not_held_to_its_suites_and_any_other_i
         ("kept", {PATH_MODULE: [0, 0]}, "local-windows.json.kept.tools/paths.py names [0, 0], not distinct places"),
         ("kept", {"tools/other.py": [0]}, "local-windows.json.kept.tools/other.py names [0], not distinct places"),
         ("kept", [0], "local-windows.json.kept must be"),
+        ("kept", {PATH_MODULE: [-1]}, "local-windows.json.kept.tools/paths.py[0] must be an integer of at least 0"),
+        ("kept", {PATH_MODULE: ["0"]}, "local-windows.json.kept.tools/paths.py[0] must be an integer of at least 0"),
+        ("head", "cd" * 21, "local-windows.json.head must be a lowercase hexadecimal digest of 40 or 64 characters"),
+        ("head", "CD" * 20, "local-windows.json.head must be a lowercase hexadecimal digest of 40 or 64 characters"),
         ("runs", 0, "local-windows.json.runs must be"),
         ("runs", "two", "local-windows.json.runs must be"),
     ],
@@ -4573,6 +4589,27 @@ def test_a_local_record_that_names_no_kept_place_or_runs_ran_once_and_keeps_noth
         "runs": 1,
         "head": "",
     }
+
+
+def test_a_local_record_that_keeps_every_place_or_names_a_head_of_either_hash_length_reads_back() -> None:
+    for head in ("cd" * 20, "cd" * 32):
+        local = read_local_file({**LOCAL_RECORD, "kept": {PATH_MODULE: [0]}, "runs": 2, "head": head}).local
+        assert local is not None
+        assert (local.kept, local.head) == ({PATH_MODULE: [0]}, head)
+
+
+def test_kept_places_exempt_only_their_own_modules_outcomes_from_the_unjudged_suites() -> None:
+    outcome = Outcome(READ_MUTANT, KILLED, ("t",))
+    with pytest.raises(RecordFieldError) as error:
+        mutation_gate.refuse_unjudged_suites(
+            "local-windows.json",
+            "local run",
+            {PATH_MODULE: [outcome], "tools/other.py": [outcome]},
+            {},
+            ["t"],
+            {"tools/other.py": {0}},
+        )
+    assert str(error.value).startswith("local-windows.json.outcomes.tools/paths.py[0].suites must be suites the local")
 
 
 def resume_mutant(line: int) -> Mutant:
