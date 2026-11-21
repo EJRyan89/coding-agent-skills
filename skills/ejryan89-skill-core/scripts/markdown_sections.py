@@ -56,7 +56,7 @@ BACKTICK_RUN = re.compile(r"`+")
 # An inline code span read by a regular expression: a run of backticks, its text, and a run of the same backticks, with
 # the run as the first group and the text as the second. It closes a span on part of a longer run and opens one on the
 # end of a run that no other matches, where CommonMark reads text, and its search takes time growing with the square of
-# a line's backtick run. It is kept only for forms_considered's search between positions; every other reader of
+# a line's backtick run. It is kept only for hidden_comments' search between positions; every other reader of
 # CommonMark's code spans reads them through code_spans.
 COMMONMARK_CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 # An HTML comment, which Markdown renders as nothing, across lines.
