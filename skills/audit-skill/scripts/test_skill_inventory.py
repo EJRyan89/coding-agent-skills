@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+from functools import partial
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +28,8 @@ import skill_menu
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
 from path_containment import resolved_path
+from test_markdown_sections import assert_time_in_proportion
+from text_lines import text_lines
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
@@ -2657,6 +2660,50 @@ class SubagentSettingTests(SourceTreeTestCase):
                 # Nesting past the recursion limit included: json_reader refuses it as a ValueError, never a
                 # RecursionError, so the file reads as one that sets nothing.
                 self.assertEqual([], skill_inventory.json_settings(path, '{"model": "sonnet", "x": ' + text + "}"))
+
+    def test_a_json_setting_is_numbered_at_its_first_place_counting_lf_alone(self) -> None:
+        path = self.root / "settings.json"
+        text = (
+            '{\r"a": {"model": "opus"},\n"b": [{"effort": "high"}, {"model": "opus"}],\r\n\n'
+            '"c": {"effort"  :  "low"},\n"d": {"model": "claude-x\\u002d1"}, "e": {"model": "sonnet"}}'
+        )
+        # A CR alone starts no line; a setting written twice is numbered where it is first written; and one whose text
+        # the file writes with an escape is numbered 1, where no search finds it.
+        self.assertEqual(
+            [
+                ("model", path, 1, "claude-x-1"),
+                ("model", path, 1, "opus"),
+                ("model", path, 1, "opus"),
+                ("effort", path, 2, "high"),
+                ("effort", path, 4, "low"),
+                ("model", path, 5, "sonnet"),
+            ],
+            skill_inventory.json_settings(path, text),
+        )
+
+    def test_a_json_file_of_settings_eight_times_as_long_is_read_in_about_eight_times_the_time(self) -> None:
+        # A linear reading takes about eight times as long. Searching for each setting and counting its line from the
+        # file's start is quadratic; the bound, about 23, sits between.
+        def settings(count: int) -> str:
+            return "[\n" + ",\n".join(f'{{"model": "claude-{index}"}}' for index in range(count)) + "\n]"
+
+        path = self.root / "settings.json"
+        assert_time_in_proportion(partial(skill_inventory.json_settings, path), settings(1000), settings(8000), 8**1.5)
+
+    def test_a_bash_script_s_commands_are_numbered_where_text_lines_breaks_its_lines(self) -> None:
+        # Bash ends the script's lines at LF alone, so cat b.txt is on Bash's line 2 and head d.txt on its line 5, and
+        # each is numbered by the index of the line text_lines gives it.
+        script = "echo a\r\ncat a.txt\rcat b.txt\n\ncat c.txt\r\r\nhead d.txt\n"
+        self.assertEqual(
+            ({1, 4, 6}, {}), skill_inventory.shell_file_commands(Path("run.sh"), script, text_lines(script), 0)
+        )
+
+    def test_a_bash_script_eight_times_as_long_is_numbered_in_about_eight_times_the_time(self) -> None:
+        # Numbering each command by splitting the script from its start is quadratic; the bound sits between.
+        def commands(script: str) -> object:
+            return skill_inventory.shell_file_commands(Path("run.sh"), script, text_lines(script), 0)
+
+        assert_time_in_proportion(commands, "cat a.txt\n" * 1000, "cat a.txt\n" * 8000, 8**1.5)
 
     def test_a_doc_that_is_not_utf8_text_fails_tools_whether_the_skill_or_a_dependency_holds_it(self) -> None:
         # The module docstring: tools, which reads the text itself, fails on a Markdown file the skill loads that is not

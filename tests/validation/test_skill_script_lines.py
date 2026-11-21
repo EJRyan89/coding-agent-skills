@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import skill_scripts
 from skill_scripts import gh_filter_problems, script_contract_problems
+from test_markdown_sections import assert_time_in_proportion
 from validation_support import write_fixture_tree
 
 
@@ -68,3 +69,21 @@ def test_a_bash_script_s_lone_cr_ends_no_line(tmp_path: Path) -> None:
     )
     assert script_contract_problems(tmp_path) == []
     assert gh_filter_problems(tmp_path) == []
+
+
+def test_a_text_naming_the_temporary_directory_is_noted_on_each_line_counting_lf_alone() -> None:
+    # The text starts on line 5; a CR alone starts no line, as Bash reads the script, and each line keeps the first
+    # text on it that names the temporary directory.
+    bash = skill_scripts._TemporaryBash("")
+    bash.name("a\r$TMPDIR\n\n${TMP}/x /tmp\r\nb $TEMP", 5)
+    assert bash.named == {5: "$TMPDIR", 7: "${TMP", 8: "$TEMP"}
+
+
+def test_a_text_naming_the_temporary_directory_eight_times_as_long_is_noted_in_about_eight_times_the_time() -> None:
+    # A linear reading takes about eight times as long. Counting each place's line from the text's start is
+    # quadratic; the bound, about 23, sits between.
+    def name(text: str) -> None:
+        skill_scripts._TemporaryBash("").name(text, 1)
+
+    line = f"echo {'x' * 40} $TMPDIR\n"
+    assert_time_in_proportion(name, line * 1000, line * 8000, 8**1.5)
