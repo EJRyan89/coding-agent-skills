@@ -24,6 +24,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import conditions
 import doc_passages
+import module_closure
 import review_specialists
 import untested_functions
 from git_client import GitClient
@@ -101,8 +102,10 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{INSIGHTS_SCRIPTS}/review_synthesis.py",
     # The skills that read a repository they examine as data, and the one that starts what it configures.
     *EXAMINING_SCRIPTS,
-    # The plugin build's installer of the reviewer guard's hook.
+    # The plugin build's installer of the reviewer guard's hook: the reading of an agent's hooks, and the build that
+    # writes them into the plugin's hooks file, the guard's hook in the plugin.
     "tools/plugin_agents.py",
+    "tools/plugin_build.py",
     # The refusal of a checkout that follows another repository's pull request, and the skill evaluation that runs
     # the checkout's fixtures signed in as the user.
     "tools/checkout_trust.py",
@@ -216,8 +219,15 @@ OUTSIDE_THE_BOUNDARY = {
 # trust-boundary reviewer need not hold it: none carries a pull request's text to a reviewer.
 TOOLS_OUTSIDE_THE_BOUNDARY = {
     "tools/runtime_command_lines.py": "builds each runtime's command line from review_hosts and starts it signed out",
-    "tools/runtime_prompts.py": "renders each reviewer prompt from fixtures into its committed sample, staging no run",
-    "tools/skill_evals_scenarios.py": "reads the fixed scenarios under tests/fixtures/skill-evals, staging no run",
+    "tools/runtime_prompts.py": (
+        "renders each reviewer prompt into its committed sample by staging the checkout's own fixtures as throwaway "
+        "runs through the pipeline's prepare_fixture and run_host, which the route holds; it starts no model and no "
+        "reviewer, so no guard holds anything there, and no author's text reaches it"
+    ),
+    "tools/skill_evals_scenarios.py": (
+        "reads the fixed scenarios under tests/fixtures/skill-evals and stages their documents and fixture copies for "
+        "a run to review, writing no guard hook, run.json, or reviewer agent"
+    ),
 }
 # Each profile, by its file's stem, with every trusted file it names as TRUSTED_ROOT/<path> and the sections of that
 # file it tells its reviewer to read, each as the profile writes it: a heading's text, or the heading line itself.
@@ -360,23 +370,32 @@ def trust_boundary_modules() -> list[str]:
 # The modules that hold the reviewer guard's run contract: the guard, and the run whose RUN_FILE a staging script
 # writes.
 RUN_CONTRACT = frozenset({"review_guard", "review_run"})
+# The files a script names when it does what the guard holds a reviewer to, each a whole string constant or the last
+# part of a path one is: the guard's own script, which a hook runs and so the script writing the reviewer agent's guard
+# hook names, and the run's settings file the guard reads, which only a script writing or reading a guarded run names.
+GUARD_FILES = frozenset({"review_guard.py", "run.json"})
+
+
+def guarded_run_staging(source: str, staging: frozenset[str] = RUN_CONTRACT) -> set[str]:
+    """What a module does that takes part in the reviewer guard's run contract, each as `imports <module>` or `names
+    <file>`: it imports one of `staging`, the run contract's modules unless given the pipeline modules that stage a run,
+    by an import statement or by an import call given the module's name, as module_closure reads one; or it names one of
+    GUARD_FILES. A string equal to a module's name that reaches no import call, such as a dictionary key, is no import,
+    and a sentence that mentions a file, such as a docstring's, names none. Limits, none of which any script here
+    writes: a module name an import call reaches through a variable or given as a keyword, an import call made through
+    a renamed loader (`from importlib import import_module as load`), and one made through `runpy.run_module` are not
+    read; nor is a guard file named only by joining strings, written with Windows separators, or inside a longer
+    string such as a hook's command text."""
+    found = {f"imports {name}" for name in module_closure.imported_names(source) & staging}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            found |= {f"names {name}" for name in GUARD_FILES if node.value.rsplit("/", 1)[-1] == name}
+    return found
 
 
 def stages_a_guarded_run(source: str, staging: frozenset[str] = RUN_CONTRACT) -> bool:
-    """Whether a module takes part in the reviewer guard's run contract: it imports one of `staging`, the run
-    contract's modules unless given the pipeline modules that stage a run, by an import statement or by the module
-    name as a string, as importlib does, or names a run's `run.json`, which only a script that writes or reads a
-    guarded run does."""
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import) and any(alias.name.split(".")[0] in staging for alias in node.names):
-            return True
-        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] in staging:
-            return True
-        if isinstance(node, ast.Constant) and (node.value in staging or node.value == "run.json"):
-            return True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.endswith("/run.json"):
-            return True
-    return False
+    """Whether a module takes part in the reviewer guard's run contract, as `guarded_run_staging` reads it."""
+    return bool(guarded_run_staging(source, staging))
 
 
 def staging_modules() -> frozenset[str]:
@@ -612,10 +631,11 @@ class ManifestTests(unittest.TestCase):
 
     def test_every_script_that_stages_a_guarded_run_reaches_the_trust_boundary_reviewer(self) -> None:
         # A script that imports the guard's run contract or writes a run.json writes what the guard holds a reviewer
-        # to, and the prompt that run names, which carries author text, as review_synthesis.py's does. Each is one the
-        # trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route lists by name.
-        # A script reaching the run file through review_run's RUN_FILE, or staging through a pipeline module that
-        # does, as review-document's does through review_runtime, is found as one importing the guard is.
+        # to, and the prompt that run names, which carries author text, as review_synthesis.py's does; one that names
+        # the guard's script writes the hook that runs it, as skill_evals_runs.py's reviewer agent definition does.
+        # Each is one the trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route
+        # lists by name. A script reaching the run file through review_run's RUN_FILE, or staging through a pipeline
+        # module that does, as review-document's does through review_runtime, is found as one importing the guard is.
         modules = staging_modules()
         self.assertTrue({"review_run", "review_dispatch", "review_pipeline", "review_runtime"} <= modules, modules)
         staging = [
@@ -630,6 +650,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIn(f"{PIPELINE_SCRIPTS}/review_guard.py", staging)
         self.assertIn("skills/review-document/scripts/review_document.py", staging)
         self.assertIn("tools/plugin_canary.py", staging)
+        self.assertIn("tools/skill_evals_runs.py", staging)
         self.assertEqual(
             [],
             [
@@ -641,6 +662,22 @@ class ManifestTests(unittest.TestCase):
         # Each tool named outside the boundary still stages through the run contract, and none of them is routed.
         self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if path not in staging])
         self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if "trust-boundary" in reached([path])[path]])
+        # Each stages only through a pipeline module it imports, never by writing the guard hook or a run.json itself,
+        # so a tool that starts writing either leaves this list for the route.
+        self.assertEqual(
+            {},
+            {
+                path: sorted(found)
+                for path in TOOLS_OUTSIDE_THE_BOUNDARY
+                if (
+                    found := {
+                        reason
+                        for reason in guarded_run_staging((REPOSITORY / path).read_text(encoding="utf-8"), modules)
+                        if not reason.startswith("imports ")
+                    }
+                )
+            },
+        )
 
     def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
@@ -1767,16 +1804,37 @@ def test_the_guidance_names_no_release(name: str) -> None:
         ("import review_guard\n", True),
         ("import review_guard as guard\n", True),
         ('import importlib\nguard = importlib.import_module("review_guard")\n', True),
+        ('guard = __import__("review_guard")\n', True),
         ('RUN = "run.json"\n', True),
         ('path = folder / "code-review-run-x" / "run.json"\n', True),
         ('path = "runs/a/run.json"\n', True),
+        # A module building the reviewer agent's guard hook names the guard's script, though it imports no contract
+        # module, as tools/skill_evals_runs.py does.
+        (
+            'GUARD = home / ".claude" / "skills" / "core" / "scripts" / "review_guard.py"\nhook = {"command": GUARD}\n',
+            True,
+        ),
+        ('GUARD = "~/.claude/skills/core/scripts/review_guard.py"\n', True),
         ("import review_guidance\n", False),
         ('# writes run.json\nNAME = "runs.json"\n', False),
         ('"""Reads the run.json a guarded run holds."""\n', False),
+        ('"""Runs review_guard.py on each call."""\n', False),
+        # A string equal to a contract module's name that reaches no import call is no import: a dictionary key, as a
+        # function named review_run is keyed in CONTENT_ERRORS_ALLOWED, a constant, or a call that imports nothing.
+        ('CONTENT_ERRORS_ALLOWED = {"review_run": "why the function refuses no content"}\n', False),
+        ('MODULE = "review_guard"\n', False),
+        ('print("review_guard")\n', False),
     ],
 )
-def test_a_module_stages_a_guarded_run_when_it_imports_the_guard_or_names_run_json(source: str, staging: bool) -> None:
+def test_a_module_stages_a_guarded_run_by_what_it_does_with_the_guard(source: str, staging: bool) -> None:
     assert stages_a_guarded_run(source) is staging
+
+
+def test_the_evaluation_runs_stage_a_guarded_run_by_the_guard_hook_they_write() -> None:
+    # tools/skill_evals_runs.py imports no contract module and names no run.json: what puts it on the trust-boundary
+    # route is the reviewer agent's guard hook it builds, never a string that happens to equal a module's name.
+    source = (REPOSITORY / "tools" / "skill_evals_runs.py").read_text(encoding="utf-8")
+    assert "names review_guard.py" in guarded_run_staging(source, staging_modules())
 
 
 @pytest.mark.parametrize(
@@ -1802,10 +1860,12 @@ def test_a_module_stages_a_guarded_run_through_a_pipeline_module_that_stages_one
             for path in sorted((REPOSITORY / "skills/ejryan89-code-review-core/references").glob("*-reviewer.md"))
         ),
         "tools/plugin_agents.py",
+        "tools/plugin_build.py",
     ],
 )
 def test_the_reviewer_agent_its_protocols_and_its_hook_installer_reach_the_trust_boundary_reviewer(path: str) -> None:
     # The agent definition declares the guard's hook and tells the reviewer a pull request's text is untrusted, each
-    # protocol is a prompt that carries author text to a reviewer, and the plugin installer writes the hook.
+    # protocol is a prompt that carries author text to a reviewer, and the plugin installer reads the hook and the
+    # build writes it into the plugin's hooks file.
     assert (REPOSITORY / path).is_file()
     assert "trust-boundary" in route(MANIFEST, [path], lambda name: True)
