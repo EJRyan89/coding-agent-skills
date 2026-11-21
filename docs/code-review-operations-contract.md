@@ -1125,7 +1125,7 @@ The analyst agent's input, `synthesis-input.jsonl` beside the report: JSON Lines
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `kind` | string | yes | One of `guidance`. |
-| `repositories` | object | yes | Keyed by repository, each the sorted guidance files its repository-scoped reviewers were built from, empty for one only a generic reviewer reviews. |
+| `repositories` | object | yes | Keyed by repository, each the sorted guidance files of its own its repository-scoped reviewers were built from, empty for one reviewed only by a generic reviewer or by reviewers read from another checkout (`reviewer_root`). |
 
 #### Guidance file line (`synthesis-input:guidance-file`)
 

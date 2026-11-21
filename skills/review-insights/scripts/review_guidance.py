@@ -1,6 +1,6 @@
-"""What the synthesis reads of each repository's reviewer guidance: the files each repository-scoped reviewer was built
-from, the text of its prose files as that reviewer was given it, and the candidate overlaps a script can find in that
-text before any model reads it.
+"""What the synthesis reads of each repository's reviewer guidance: the files of its own each repository-scoped
+reviewer was built from, none for a reviewer read from another checkout, the text of its prose files as that reviewer
+was given it, and the candidate overlaps a script can find in that text before any model reads it.
 
 A reviewer's files are the repository-relative paths in `review.adapter.source_hashes` of the latest record it wrote,
 anywhere in the archive; a profile the suite ships is no file of the repository and is left out, and so is every file
