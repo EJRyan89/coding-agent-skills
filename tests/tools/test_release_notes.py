@@ -56,6 +56,15 @@ class BodyEntriesTests(unittest.TestCase):
         )
         self.assertEqual({"skills/beta"}, entries[0].contract_items)
 
+    def test_an_entry_a_comment_holds_and_a_comment_in_a_heading_are_not_read(self) -> None:
+        body = (
+            "## Upgrade note\n\n<!--\n### Hidden\n\n- Level: patch\n-->\n### Shown <!-- note --> here\n\n"
+            "- Level: patch. A fix.\n- Contract: none\n- User action: none\n"
+        )
+        (entry,) = release_notes.body_entries(body)
+        self.assertEqual("Shown  here", entry.heading)
+        self.assertEqual("### Shown  here\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none", entry.text)
+
     def test_a_wrapped_line_starts_a_block_only_where_markdown_reads_one(self) -> None:
         # A list item is read as CommonMark reads one: one to nine ASCII digits, then a space or a tab, and below a
         # paragraph's text only a bullet or an item numbered 1 starts a list. Only spaces and tabs are whitespace.
