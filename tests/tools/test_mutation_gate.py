@@ -4545,7 +4545,7 @@ class LegStopFixtures(unittest.TestCase):
         "ef" * 20,
     )
 
-    def stopped_leg(self, folder: Path, tree: Path, reach: ReachRunner, run: SuiteRunner) -> None:
+    def stopped_leg(self, folder: Path, tree: Path, reach: ReachRunner, run: SuiteRunner, shard: int) -> None:
         git_client = mock.create_autospec(GitClient, instance=True)
         git_client.output.return_value = self.SELECTED.head + "\n"
         with (
@@ -4557,17 +4557,19 @@ class LegStopFixtures(unittest.TestCase):
             mock.patch("sys.stdout", io.StringIO()),
             self.assertRaises(Stopped),
         ):
-            mutation_gate.main(["leg", str(folder), "--shard", "1"], {})
+            mutation_gate.main(["leg", str(folder), *(("--shard", str(shard)) if shard else ())], {})
 
-    def run_stopped(self, reach: ReachRunner, run: SuiteRunner) -> tuple[LegRun, mutation_gate.Result]:
+    def run_stopped(self, reach: ReachRunner, run: SuiteRunner, shard: int = 1) -> tuple[LegRun, mutation_gate.Result]:
+        """The record the leg step left, of shard `shard` or, with 0, of the whole leg, and the join of it."""
         with tempfile.TemporaryDirectory() as temporary:
             folder, tree = Path(temporary) / "handed on", Path(temporary) / "tree"
             folder.mkdir()
             (tree / "tools").mkdir(parents=True)
             (tree / "tools" / "calc.py").write_text(CALC, encoding="utf-8")
             (folder / "mutants.json").write_text(json.dumps(selection_record(self.SELECTED)), encoding="utf-8")
-            self.stopped_leg(folder, tree, reach, run)
-            return read_leg(folder / "outcomes-linux-1.json", self.SELECTED, LINUX_LEG, 1), mutation_gate.join(folder)
+            self.stopped_leg(folder, tree, reach, run, shard)
+            name = f"outcomes-linux-{shard}.json" if shard else "outcomes-linux.json"
+            return read_leg(folder / name, self.SELECTED, LINUX_LEG, shard), mutation_gate.join(folder)
 
     def test_a_leg_stopped_after_two_mutants_leaves_their_outcomes_and_the_rest_not_run(self) -> None:
         verdicts = iter((KILLED, SURVIVED))
@@ -4594,6 +4596,31 @@ class LegStopFixtures(unittest.TestCase):
             result.text,
         )
         self.assertIn("| `tools/calc.py` | Linux | 5 | 5 | 1 | 0 | 0 | 1 | 0 | 3 | 0 | 50% (1 of 2) |", result.text)
+
+    def test_a_whole_leg_stopped_after_a_mutant_is_named_as_the_leg_rather_than_a_shard(self) -> None:
+        # The leg step without --shard, as a local run of the whole leg writes it.
+        verdicts = iter((KILLED,))
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            found = next(verdicts, None)
+            if found is None:
+                raise Stopped
+            return found
+
+        leg, result = self.run_stopped(stub_reach, run, shard=0)
+        self.assertEqual((0, (0,)), (leg.shard, leg.stopped))
+        self.assertEqual([KILLED] + [NOT_RUN] * 4, [found.status for found in leg.outcomes["tools/calc.py"]])
+        self.assertTrue(
+            result.text.startswith(
+                "**Unfinished, so not a verdict:** the Linux leg stopped before its end, so the mutants it had not "
+                "reached did not run: 4 of the 5 mutants of `tools/calc.py` did not run on Linux. Read its log, and "
+                "rerun the gate.\n"
+            ),
+            result.text,
+        )
+        self.assertIn(
+            "- On Linux, 1 workers ran for 0 of its 40 minutes, the Linux leg stopping before its end;", result.text
+        )
 
     def test_a_leg_stopped_in_its_reach_pass_leaves_every_mutant_not_run(self) -> None:
         def reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:

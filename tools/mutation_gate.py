@@ -243,7 +243,9 @@ MEMORY_BOUND = 2 << 30
 # output. Each holds the exception's name alone or before its message, so a test whose source or name only mentions
 # MemoryError, which pytest quotes indented or after `>`, is not read as one. A process ended by a signal with no such
 # line still errors: RLIMIT_DATA refuses an allocation rather than sending one, so that is a stated limit, not a form
-# the bound produces.
+# the bound produces. Two more stated limits: the end read back may start mid-line, so a line cut just before the name
+# reads as one that raised it, which turns only an exit that would otherwise error into a kill; and an interpreter that
+# aborts with a fatal error while out of memory prints no such line, so its run reads as errored.
 MEMORY_ERROR = re.compile(rb"^(?:E +|INTERNALERROR> *|(?:FAILED|ERROR) .* - )?MemoryError(?::.*)?\r?$", re.MULTILINE)
 # The reason the log gives for such a kill.
 MEMORY_REASON = (
