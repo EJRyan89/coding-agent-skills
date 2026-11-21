@@ -102,8 +102,10 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{INSIGHTS_SCRIPTS}/review_synthesis.py",
     # The skills that read a repository they examine as data, and the one that starts what it configures.
     *EXAMINING_SCRIPTS,
-    # The plugin build's installer of the reviewer guard's hook.
+    # The plugin build's installer of the reviewer guard's hook: the reading of an agent's hooks, and the build that
+    # writes them into the plugin's hooks file, the guard's hook in the plugin.
     "tools/plugin_agents.py",
+    "tools/plugin_build.py",
     # The refusal of a checkout that follows another repository's pull request, and the skill evaluation that runs
     # the checkout's fixtures signed in as the user.
     "tools/checkout_trust.py",
@@ -217,7 +219,11 @@ OUTSIDE_THE_BOUNDARY = {
 # trust-boundary reviewer need not hold it: none carries a pull request's text to a reviewer.
 TOOLS_OUTSIDE_THE_BOUNDARY = {
     "tools/runtime_command_lines.py": "builds each runtime's command line from review_hosts and starts it signed out",
-    "tools/runtime_prompts.py": "renders each reviewer prompt from fixtures into its committed sample, staging no run",
+    "tools/runtime_prompts.py": (
+        "renders each reviewer prompt into its committed sample by staging the checkout's own fixtures as throwaway "
+        "runs through the pipeline's prepare_fixture and run_host, which the route holds; it starts no model and no "
+        "reviewer, so no guard holds anything there, and no author's text reaches it"
+    ),
     "tools/skill_evals_scenarios.py": (
         "reads the fixed scenarios under tests/fixtures/skill-evals and stages their documents and fixture copies for "
         "a run to review, writing no guard hook, run.json, or reviewer agent"
@@ -375,9 +381,11 @@ def guarded_run_staging(source: str, staging: frozenset[str] = RUN_CONTRACT) -> 
     <file>`: it imports one of `staging`, the run contract's modules unless given the pipeline modules that stage a run,
     by an import statement or by an import call given the module's name, as module_closure reads one; or it names one of
     GUARD_FILES. A string equal to a module's name that reaches no import call, such as a dictionary key, is no import,
-    and a sentence that mentions a file, such as a docstring's, names none. Limit: a module name an import call reaches
-    through a variable, and a guard file named only by joining strings, are not read; no script imports or names one
-    so."""
+    and a sentence that mentions a file, such as a docstring's, names none. Limits, none of which any script here
+    writes: a module name an import call reaches through a variable or given as a keyword, an import call made through
+    a renamed loader (`from importlib import import_module as load`), and one made through `runpy.run_module` are not
+    read; nor is a guard file named only by joining strings, written with Windows separators, or inside a longer
+    string such as a hook's command text."""
     found = {f"imports {name}" for name in module_closure.imported_names(source) & staging}
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -1852,10 +1860,12 @@ def test_a_module_stages_a_guarded_run_through_a_pipeline_module_that_stages_one
             for path in sorted((REPOSITORY / "skills/ejryan89-code-review-core/references").glob("*-reviewer.md"))
         ),
         "tools/plugin_agents.py",
+        "tools/plugin_build.py",
     ],
 )
 def test_the_reviewer_agent_its_protocols_and_its_hook_installer_reach_the_trust_boundary_reviewer(path: str) -> None:
     # The agent definition declares the guard's hook and tells the reviewer a pull request's text is untrusted, each
-    # protocol is a prompt that carries author text to a reviewer, and the plugin installer writes the hook.
+    # protocol is a prompt that carries author text to a reviewer, and the plugin installer reads the hook and the
+    # build writes it into the plugin's hooks file.
     assert (REPOSITORY / path).is_file()
     assert "trust-boundary" in route(MANIFEST, [path], lambda name: True)
