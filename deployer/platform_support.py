@@ -569,10 +569,18 @@ def command_line_length(arguments: list[str]) -> int:
     return len(subprocess.list2cmdline(arguments))
 
 
-def process_tree() -> ProcessTree:
+def process_tree(*, memory_limit: int | None = None, own_group: bool = False) -> ProcessTree:
     """A tree for one command and every process it starts, which ends them all when it is left: ejryan89-skill-core's, a
     job object on Windows and a process group elsewhere. A caller that starts the command itself starts it with the
-    tree's start_options."""
+    tree's start_options.
+
+    On Windows, `memory_limit` bounds the bytes each process of the job may commit, so an allocation past it is
+    refused, which Python raises as MemoryError, and `own_group` starts the command in a process group of its own, so
+    a Ctrl-C at the console reaches the caller and not the command or any process it starts. Elsewhere the tree bounds
+    no memory, which memory_bounded's command does on Linux, and the command always leads a session of its own, which a
+    Ctrl-C at the terminal does not reach, so both change nothing there."""
+    if sys.platform == "win32":
+        return job_tree.JobTree(memory_limit=memory_limit, own_group=own_group)
     return job_tree.process_tree()
 
 
@@ -589,11 +597,12 @@ MEMORY_LAUNCHER = (
 
 
 def memory_bounded(command: Sequence[str], limit: int) -> list[str]:
-    """`command`, started so that each of its processes may hold at most `limit` bytes of data where the platform
+    """`command`, started so that each of its processes may hold at most `limit` bytes of data where the command line
     bounds it: on Linux through MEMORY_LAUNCHER, where an allocation past the bound is refused, which Python raises as
-    MemoryError. macOS refuses to lower RLIMIT_DATA and enforces no data limit, and Windows has no limit a process's
-    children inherit without a job object, which ejryan89-skill-core's job_tree holds, so on both the command runs as
-    given, bounded by its caller's time limit alone."""
+    MemoryError. Windows has no limit a process's children inherit without a job object, so there the command runs as
+    given, and `process_tree(memory_limit=limit)` bounds the memory each of its processes may commit. macOS refuses to
+    lower RLIMIT_DATA and enforces no data limit, so there the command runs as given, bounded by its caller's time
+    limit alone."""
     if sys.platform != "linux":
         return list(command)
     return [sys.executable, "-I", "-B", "-c", MEMORY_LAUNCHER, str(limit), *command]
