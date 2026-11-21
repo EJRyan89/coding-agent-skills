@@ -279,9 +279,10 @@ never its judgment: it refuses a body whose title is a `fix`, or with no title, 
 the section is missing, empty, a filler such as `None` or `TBD`, or still the template's placeholder, and reads nothing
 else in it. It reads the section as GitHub renders it: the heading is `## Forms considered` written with hashes, so a
 setext `Forms considered` underlined with `---` reads as missing, and the section ends at the next first- or
-second-level heading GitHub shows, whether written with hashes, underlined, or in HTML. A comment, one left unclosed
-running to the end of the body, and text that renders as nothing, such as an empty tag, `&nbsp;`, or a zero-width
-space, count as no text.
+second-level heading GitHub shows, whether written with hashes, underlined, or in HTML. A comment GitHub hides, one
+that opens a block left unclosed running to the end of the body, and text that renders as nothing, such as an empty
+tag, `&nbsp;`, or a zero-width space, count as no text, while a `<!--` inside a paragraph that ends before any `-->`
+is text GitHub shows.
 
 `review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
 it, as "Configure" in that repository skill says. On each tick the shepherd starts the review once for each admitted
