@@ -5,6 +5,10 @@ name: Mutation
 # summary. It is not a required check; the summary is the record, which the author reads. A run its cap cuts short
 # fails the job, since it is no verdict. A body or title edit does not rerun it, since it reads neither.
 #
+# Each leg step rewrites its record after each mutant and uploads it whatever the step did, and the join reads a shard
+# whose step stopped before its end, or left no record, as having run the mutants it reached and no other, which fails
+# the job too.
+#
 # mutmut refuses Windows, so one Linux job makes the mutants and hands them on as an artifact. The Linux leg runs every
 # module's mutants, and the Windows leg, which never runs mutmut, those of the modules whose behavior differs on Windows,
 # as tools/mutation_gate.py's rule selects them. The select job deals each leg's mutants into shards, one job each, as
@@ -144,10 +148,15 @@ jobs:
           name: mutation-mutants
           path: mutation
 
+      # Its record is written whole after each mutant, so a step stopped partway leaves the outcomes it reached.
       - name: Run the mutants
         run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}
 
+      # It uploads whatever the leg step did, so the outcomes a step stopped partway, or a job past its time limit,
+      # reached reach the join. A leg step that never started leaves no file, and this step fails on it; the join reads
+      # a shard with no record, as a runner's shutdown leaves one when no later step runs, as stopped before its first.
       - name: Upload the outcomes
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-linux-${{ matrix.shard }}
@@ -226,10 +235,12 @@ jobs:
           name: mutation-mutants
           path: mutation
 
+      # As on the Linux leg: the record is written after each mutant and uploaded whatever the step did.
       - name: Run the mutants
         run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}
 
       - name: Upload the outcomes
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-windows-${{ matrix.shard }}
