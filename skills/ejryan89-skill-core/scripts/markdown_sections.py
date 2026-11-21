@@ -172,35 +172,21 @@ def list_item(line: str, *, interrupting: bool = False) -> str | None:
 
 
 def find_fences(lines: list[str]) -> list[Fence]:
-    """Every fenced code block, by CommonMark's rules for the forms Markdown allows.
+    """Every fenced code block, in document order, by CommonMark's rules for the forms Markdown allows: the fences of
+    `_walk`, the one walk `blocks`, `code_block_lines`, and `document_headings` read too, so every reader of a
+    document places a fence alike. Rendering, the extraction of Bash for ShellCheck, validation's Markdown policies, and
+    the audit-skill audit all read fences through this one function.
 
-    A run of three or more backticks or tildes opens a fence, except a backtick run whose info string holds a backtick,
-    which is inline code. Indentation is ignored rather than limited to three spaces, and blockquote and list item
-    markers before the run are read as what holds it, so a fence nested in a list item or a blockquote counts. Only a
-    run of the same character at least as long as the opener's, with nothing after it and nothing before it but
-    spaces, tabs, and the blockquote markers that hold the fence, closes it, so a ``` line inside a ```` fence is body,
-    and so is one indented with any other Unicode space. The info string's first word, the language, is split as
-    commonmark.js splits it, at any whitespace.
-    A fence left open runs to the end of the blockquote that holds it, or of the document. Rendering, the extraction of
-    Bash for ShellCheck, validation's Markdown policies, and the audit-skill audit all read fences through this one
-    function. The block readers, `blocks`, `code_block_lines`, and `document_headings`, read the fences `block_fences`
-    gives, which part from these in two shapes: a fence in a list item, one inside a blockquote included, that a line
-    the item does not hold ends there, not where this one ends it, and a run indented four or more columns past the
-    content that holds it neither opens nor closes a fence there. A blockquote alone never parts them, since this one
-    also ends a fence where its blockquote ends. Validation holds the two to the same fences on every tracked Markdown
-    file, so the shapes stay unwritten until this one reads containers too.
+    The list items and blockquotes that hold a line are read first, as `_walk` reads them, so a fence nested in a list
+    item or a blockquote counts. A run of three or more backticks or tildes at most MAX_BLOCK_INDENT columns past the
+    content that holds it opens a fence, except a backtick run whose info string holds a backtick, which is inline
+    code; one indented further is indented code or a paragraph's text. Only a run of the same character at least as
+    long as the opener's, as far in, with nothing after it but spaces and tabs, closes it, so a ``` line inside a ````
+    fence is body, and so is one indented with any other Unicode space. A fence left open runs to the first line its
+    list items or blockquotes do not hold, as a line indented less than its list item's content, or to the end of the
+    document. The info string's first word, the language, is split as commonmark.js splits it, at any whitespace.
     """
-    fences: list[Fence] = []
-    index = 0
-    while index < len(lines):
-        match = _fence_opener(lines[index])
-        if match is None:
-            index += 1
-            continue
-        fence = _fence_from(lines, index, match)
-        fences.append(fence)
-        index = fence.lines().stop
-    return fences
+    return _walk(lines).fences
 
 
 def _fence_opener(line: str) -> re.Match[str] | None:
@@ -222,24 +208,6 @@ def _opened_fence(line: str, opener: int, match: re.Match[str]) -> Fence:
     # A list item's marker takes a column for each of its characters, and a space or a tab as indentation counts it.
     before = unquoted[: unquoted.index(marker)]
     return Fence(opener, None, language, opener, quotes, indentation(re.sub(r"[^ \t]", " ", before)))
-
-
-def _fence_from(lines: list[str], opener: int, match: re.Match[str]) -> Fence:
-    """The fence that opens at the opener: closed by a matching run, ended by the end of its blockquote, or open."""
-    marker = match.group("marker")
-    opened = _opened_fence(lines[opener], opener, match)
-    language, quotes, indent = opened.language, opened.quotes, opened.indent
-    for later in range(opener + 1, len(lines)):
-        line = lines[later]
-        for _ in range(quotes):
-            quote = QUOTE_MARKER.match(line)
-            if quote is None:
-                return Fence(opener, None, language, later, quotes, indent)
-            line = line[quote.end() :]
-        closing = line.strip(LINE_END)
-        if len(closing) >= len(marker) and set(closing) == {marker[0]}:
-            return Fence(opener, later, language, later, quotes, indent)
-    return Fence(opener, None, language, len(lines), quotes, indent)
 
 
 def code_block_lines(lines: list[str]) -> set[int]:
@@ -265,14 +233,6 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
     return _walk(lines).headings
 
 
-def block_fences(lines: list[str]) -> list[Fence]:
-    """Each fenced code block as `blocks`, `code_block_lines`, and `document_headings` read it, in document order: one
-    `_walk` reads, which ends a fence where the list item or blockquote holding it ends, and opens or closes one only at
-    a run at most MAX_BLOCK_INDENT columns past the content that holds it. Where it parts from `find_fences` is that
-    function's to state."""
-    return _walk(lines).fences
-
-
 def _starts_leaving(rest: str, column: int, start: int) -> bool:
     """Whether what is left of a line that an open container does not hold, starting at `column`, starts a block at
     the column `start` the content of the containers that hold it starts at, which closes the others, rather than
@@ -296,8 +256,8 @@ def _fence_run(rest: str) -> re.Match[str] | None:
 
 def starts_block(line: str, *, opener: bool) -> bool:
     """Whether a line after a paragraph's text, read at the column of the content that holds it, starts a block, which
-    ends the paragraph, rather than lazily continuing it: a fence, whose opener `find_fences` reads and the caller
-    names with `opener`, a blockquote marker, an ATX heading, or a thematic break, each indented at most
+    ends the paragraph, rather than lazily continuing it: a fence, whose opener `_walk` reads and the caller names with
+    `opener`, a blockquote marker, an ATX heading, or a thematic break, each indented at most
     MAX_BLOCK_INDENT columns, an empty ATX heading among them, or a list item that may interrupt a paragraph."""
     block = line.strip(LINE_END) if indentation(line) <= MAX_BLOCK_INDENT else ""
     return bool(
@@ -389,8 +349,7 @@ def blocks(lines: list[str]) -> Iterator[Block]:
     """Each block of a Markdown document in order, as GitHub renders it: a paragraph, a list item, a blockquote, a
     table row, an ATX heading, or a code block, fenced or indented. A thematic break and a blank line end a block and
     are none. Each reader of a document's blocks walks them here and chooses after the walk what it keeps and how it
-    reads a block's lines, so no two readers split a document apart. Its fences are `block_fences`', which part from
-    `find_fences`' only in the shapes that function states.
+    reads a block's lines, so no two readers split a document apart. Its fences are `find_fences`'.
 
     The blocks come from `_walk`, the one walk `code_block_lines` and `document_headings` read too, so a line each
     reader holds in a list item or a blockquote, or reads as code, is held and read alike here. A line after a
@@ -434,11 +393,11 @@ def _walk(lines: list[str]) -> _Walker:
 
     A fence opens at a run of three or more backticks or tildes at most MAX_BLOCK_INDENT columns past the content that
     holds it, and runs to a run of the same character at least as long, as far in, or to the first line its containers
-    leave; the walk reads its lines itself, where `find_fences` ignores indentation and containers, so the two part in
-    the shapes `find_fences` states. A table is a `|` row and a delimiter row right under it with as many cells, such as
-    `| - |`, a paragraph trying only its first delimiter-shaped row; its rows run on, and so does any line under them
-    that starts no block, as GitHub reads them, and a list item or indented code after it opens as after any block but a
-    paragraph. A list item whose marker has only spaces after it, then a blank line, is empty and closes.
+    leave; `find_fences` gives the fences this walk reads, so no reader of fences places one apart from it. A table is
+    a `|` row and a delimiter row right under it with as many cells, such as `| - |`, a paragraph trying only its first
+    delimiter-shaped row; its rows run on, and so does any line under them that starts no block, as GitHub reads them,
+    and a list item or indented code after it opens as after any block but a paragraph. A list item whose marker has
+    only spaces after it, then a blank line, is empty and closes.
 
     The limits: the partial tab a blockquote or list marker consumes is counted as a whole one; an HTML block or a
     setext heading is read as a paragraph, so a heading-shaped line inside an HTML comment is read as a heading; a list
@@ -864,9 +823,10 @@ def without_code_spans(line: str, fill: str = "") -> str:
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:
-    """Each inline code span outside every fence, as its line's index and its text."""
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-    return [(index, span.text) for index, line in enumerate(lines) if index not in fenced for span in code_spans(line)]
+    """Each inline code span outside every code block, fenced or indented, as its line's index and its text: a backtick
+    run inside a code block is the block's text, as GitHub renders it."""
+    code = code_block_lines(lines)
+    return [(index, span.text) for index, line in enumerate(lines) if index not in code for span in code_spans(line)]
 
 
 def markdown_section(text: str, heading: str) -> str | None:
