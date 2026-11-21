@@ -619,8 +619,10 @@ class ProcessArgumentFixtures(unittest.TestCase):
 
     def setUp(self) -> None:
         self.calls: list[tuple[list[str], float, dict[str, object], list[str]]] = []
-        self.tree_sentinel = object()
-        patcher = mock.patch("deployer.platform_support.process_tree", return_value=self.tree_sentinel)
+        # Each tree names what it was asked for, so a test reads what each command's tree holds.
+        patcher = mock.patch(
+            "deployer.platform_support.process_tree", side_effect=lambda **asked: ("tree", sorted(asked.items()))
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -636,10 +638,16 @@ class ProcessArgumentFixtures(unittest.TestCase):
 
         return mock.patch.object(mutation_gate, "run_bounded", side_effect=run)
 
-    def assert_suite_options(self, options: dict[str, object]) -> None:
+    def assert_suite_options(self, options: dict[str, object], bounded: bool = True) -> None:
         self.assertEqual(mutation_gate.suite_environment(), options["env"])
-        self.assertIs(self.tree_sentinel, options["tree"])
+        self.assert_own_group(options, bounded)
         self.assertEqual(Path("tree"), options["cwd"])
+
+    def assert_own_group(self, options: dict[str, object], bounded: bool) -> None:
+        """The command starts in a process group of its own, which a Ctrl-C at the gate does not reach, and, when
+        `bounded`, each of its processes may commit at most MEMORY_BOUND bytes where a tree bounds them, on Windows."""
+        memory = [("memory_limit", mutation_gate.MEMORY_BOUND)] if bounded else []
+        self.assertEqual(("tree", [*memory, ("own_group", True)]), options["tree"])
 
     def test_a_suite_run_stops_at_its_first_failure_within_its_time_and_names_every_selected_test(self) -> None:
         tests = ["tests/x.py::A::test_a", "tests/x.py::test_b[1]"]
@@ -667,7 +675,8 @@ class ProcessArgumentFixtures(unittest.TestCase):
         ((command, timeout, options, _),) = self.calls
         self.assertEqual([sys.executable, "-B", "-m", "pytest", "tests/x.py", "--collect-only", "-q"], command)
         self.assertEqual(mutation_gate.MINIMUM_SUITE_SECONDS, timeout)
-        self.assert_suite_options(options)
+        # Listing a suite's tests runs none of them, so its memory is not bounded.
+        self.assert_suite_options(options, bounded=False)
         self.assertIn("stdout", options)
         self.assertEqual(mutation_gate.OUTPUT_LIMIT, options["output_limit"])
 
@@ -702,10 +711,11 @@ class ProcessArgumentFixtures(unittest.TestCase):
             [coverage_settings(Path(environment["COVERAGE_PROCESS_START"]).parent, [Path("tree/tools/calc.py")])],
             settings,
         )
-        self.assertIs(self.tree_sentinel, options["tree"])
+        self.assert_own_group(options, bounded=True)
         self.assertEqual(["combine", "json"], [command[4] for command, _, _, _ in steps])
         for _, _, step_options, _ in steps:
             self.assertEqual(mutation_gate.suite_environment(), step_options["env"])
+            self.assert_own_group(step_options, bounded=False)
 
 
 # What each of pytest's exits reads as, with and without a collection error in its output.
@@ -969,7 +979,7 @@ class RunSuiteFixtures(unittest.TestCase):
                 printed.getvalue(),
             )
 
-    @unittest.skipUnless(sys.platform == "linux", "only Linux bounds the data a process may hold")
+    @unittest.skipUnless(sys.platform in ("linux", "win32"), "only Linux and Windows bound a process's memory")
     def test_a_mutant_that_allocates_without_end_is_stopped_at_the_bound_and_killed(self) -> None:
         # It stops by itself at four times the bound, so a bound that does not hold fails the test rather than the
         # runner.
@@ -1081,7 +1091,7 @@ class CoverageReachFixtures(unittest.TestCase):
         self.assertIsInstance(result.seconds, float)
         self.assertGreater(result.seconds, 0.0)
 
-    @unittest.skipUnless(sys.platform == "linux", "only Linux bounds the data a process may hold")
+    @unittest.skipUnless(sys.platform in ("linux", "win32"), "only Linux and Windows bound a process's memory")
     def test_a_suite_that_needs_more_than_the_bound_unmutated_fails_unmutated(self) -> None:
         heavy = "def test_it():\n    held = []\n    while len(held) < 64:\n        held.append(bytearray(16 << 20))\n"
         with mock.patch.object(mutation_gate, "MEMORY_BOUND", 256 << 20):
@@ -3952,7 +3962,7 @@ class UnrunFixtures(unittest.TestCase):
             result.text.startswith(
                 "**Unfinished, so not a verdict:** the local run on Linux stopped before its end, so the mutants it "
                 "had not reached did not run: 1 of the 2 mutants of `tools/calc.py` did not run on Linux. Read its "
-                "output, then remove `local-linux.json` and run the `unrun` step again.\n"
+                "output, then run the `unrun` step again, which resumes it.\n"
             ),
             result.text,
         )
@@ -3966,12 +3976,174 @@ class UnrunFixtures(unittest.TestCase):
             result.text,
         )
         self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0% (0 of 1) |", result.text)
+        # Run again, the step resumes the stopped run: it runs only the mutant that run had not reached, and its record
+        # holds both runs' outcomes, the first kept.
+        self.seen.clear()
+        stopped = json.loads((self.folder / "local-linux.json").read_text(encoding="utf-8"))
+        gate = Gate(self.root, "main", 5, 1, GitClient(), stub_generator, stub_reach, self.run_suite, measure=measured)
+        with mock.patch.object(mutation_gate, "Gate", return_value=gate), mock.patch("sys.stdout", io.StringIO()):
+            code = mutation_gate.main(["unrun", str(self.folder)], {})
+        self.assertEqual(["return a * 3"], self.seen)
+        written = json.loads((self.folder / "local-linux.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            (True, {"tools/calc.py": [0, 1]}, {"tools/calc.py": [0]}, 2, 10),
+            (written["ended"], written["mutants"], written["kept"], written["runs"], written["minutes"]),
+        )
+        self.assertEqual(read_selection(self.folder / "mutants.json").head, written["head"])
+        self.assertEqual(stopped["outcomes"]["tools/calc.py"][0], written["outcomes"]["tools/calc.py"][0])
+        self.assertEqual([SURVIVED, SURVIVED], [outcome["status"] for outcome in written["outcomes"]["tools/calc.py"]])
+        result = mutation_gate.join(self.folder)
+        self.assertEqual(0, code)
+        self.assertTrue(result.finished, result.text)
+        self.assertIn(
+            "a local run on Linux then ran the 2 mutants it left without a verdict, in 2 runs of at most 1 workers for "
+            "0 of their 10 minutes;",
+            result.text,
+        )
+        self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0% (0 of 2) |", result.text)
         with self.assertRaisesRegex(
             RuntimeError,
-            r"^local-linux.json holds a local run of the Linux leg that stopped before its end: remove it to run the "
-            r"leg's mutants anew$",
+            r"^local-linux.json already completes the Linux leg: remove it to run the leg's mutants anew$",
         ):
             self.unrun()
+
+    def stop_after(self, mutants: int) -> Gate:
+        """A gate of one worker whose suite runner stops the step once it has run `mutants` mutants, as Ctrl-C does."""
+        calls = itertools.count()
+
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+            if next(calls) >= mutants:
+                raise Stopped
+            return self.run_suite(tree, suite, timeout, tests)
+
+        return Gate(self.root, "main", 5, 1, GitClient(), stub_generator, stub_reach, run, measure=measured)
+
+    def unrun_step(self, gate: Gate) -> None:
+        with mock.patch.object(mutation_gate, "Gate", return_value=gate), mock.patch("sys.stdout", io.StringIO()):
+            mutation_gate.main(["unrun", str(self.folder)], {})
+
+    def local(self) -> dict[str, Any]:
+        return dict(json.loads((self.folder / "local-linux.json").read_text(encoding="utf-8")))
+
+    def test_a_resumed_run_stopped_again_keeps_both_runs_outcomes_and_the_next_resumes_from_there(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        with self.assertRaises(Stopped):
+            self.unrun_step(self.stop_after(0))
+        self.assertEqual(
+            ([], [NOT_RUN, NOT_RUN]), (self.seen, [o["status"] for o in self.local()["outcomes"]["tools/calc.py"]])
+        )
+        with self.assertRaises(Stopped):
+            self.unrun_step(self.stop_after(1))
+        written = self.local()
+        self.assertEqual(
+            (False, 2, {}, [SURVIVED, NOT_RUN]),
+            (
+                written["ended"],
+                written["runs"],
+                written["kept"],
+                [o["status"] for o in written["outcomes"]["tools/calc.py"]],
+            ),
+        )
+        self.unrun_step(self.gate())
+        written = self.local()
+        self.assertEqual(["return a - b", "return a * 3"], self.seen)
+        self.assertEqual(
+            (True, 3, {"tools/calc.py": [0]}, [SURVIVED, SURVIVED]),
+            (
+                written["ended"],
+                written["runs"],
+                written["kept"],
+                [o["status"] for o in written["outcomes"]["tools/calc.py"]],
+            ),
+        )
+        self.assertTrue(mutation_gate.join(self.folder).finished)
+
+    def stopped_record(self, statuses: Sequence[str], head: str | None = None) -> None:
+        """A local run of both of calc.py's mutants, stopped before its end with `statuses`, at `head`, the selection's
+        unless given."""
+        (chosen,) = read_selection(self.folder / "mutants.json").modules
+        outcomes = [
+            Outcome(mutant, status, () if status == NOT_RUN else ("tests/tools/test_calc.py",))
+            for mutant, status in zip(chosen.mutants, statuses, strict=True)
+        ]
+        tested = read_selection(self.folder / "mutants.json").head
+        local = mutation_gate.LocalRun(
+            5, 30.0, 2, {"tools/calc.py": [0, 1]}, {}, [], {"tools/calc.py": outcomes}, False, head=head or tested
+        )
+        (self.folder / "local-linux.json").write_text(json.dumps(local_record(LINUX_LEG, local)), encoding="utf-8")
+
+    def test_a_resumed_run_runs_again_a_survivor_the_stopped_run_judged_beside_a_suite_that_failed_unmutated(
+        self,
+    ) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([SURVIVED, NOT_RUN])
+        failed = {"tests/tools/test_other.py": "failed unmutated with exit code 1"}
+        record = {**self.local(), "failed_suites": failed}
+        (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
+        self.unrun_step(self.gate())
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        self.assertEqual((True, {}), (self.local()["ended"], self.local()["kept"]))
+
+    def test_a_resumed_run_runs_again_an_errored_mutant_and_finishes(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([ERRORED, NOT_RUN])
+        self.unrun_step(self.gate())
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        written = self.local()
+        self.assertEqual((True, {}), (written["ended"], written["kept"]))
+        self.assertTrue(mutation_gate.join(self.folder).finished)
+
+    def test_a_local_run_of_another_commit_than_the_selections_stops_the_join_and_is_not_resumed(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        tested = read_selection(self.folder / "mutants.json").head
+        other = "f" * 40
+        self.assertNotEqual(tested, other)
+        refusal = (
+            rf"^local-linux.json holds a local run at {other}, not at {tested}, the commit this run tested: remove it "
+            r"to run the leg's mutants anew$"
+        )
+        for ended in (False, True):
+            with self.subTest(ended=ended):
+                self.stopped_record([KILLED, NOT_RUN], head=other)
+                record = {**self.local(), "ended": ended}
+                (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaisesRegex(RecordError, refusal):
+                    self.unrun()
+                with self.assertRaisesRegex(RecordError, refusal):
+                    mutation_gate.join(self.folder)
+        self.assertEqual([], self.seen)
+
+    def test_a_local_record_that_names_no_commit_is_joined_as_before_and_not_resumed(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.stopped_record([KILLED, NOT_RUN])
+        unnamed = {key: value for key, value in self.local().items() if key not in ("head", "kept", "runs")}
+        (self.folder / "local-linux.json").write_text(json.dumps(unnamed), encoding="utf-8")
+        self.assertFalse(mutation_gate.join(self.folder).finished)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"^local-linux.json holds a local run of the Linux leg that stopped before its end and names no commit it "
+            r"ran at, so it cannot be resumed: remove it to run the leg's mutants anew$",
+        ):
+            self.unrun()
+        self.assertEqual([], self.seen)
+        (self.folder / "local-linux.json").write_text(json.dumps({**unnamed, "ended": True}), encoding="utf-8")
+        self.assertIn("a local run on Linux then ran the 2 mutants", mutation_gate.join(self.folder).text)
+
+    def test_a_stopped_run_that_had_reached_every_mutant_is_written_as_ended_and_runs_nothing(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.unrun_step(self.gate())
+        record = {**self.local(), "ended": False}
+        (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
+        self.seen.clear()
+        with mock.patch("sys.stdout", io.StringIO()) as printed:
+            completed = self.gate().unrun(self.folder)
+        self.assertEqual([], self.seen)
+        self.assertIn(
+            "0 mutants of the Linux leg are left without a verdict, by the local run in local-linux.json, which this "
+            "run resumes",
+            printed.getvalue(),
+        )
+        self.assertEqual(replace(read_local_file_from(self.folder, completed), ended=True), completed.local)
 
     def test_an_unrun_step_its_measurement_canary_refuses_leaves_no_record_and_the_next_one_runs(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
@@ -4154,6 +4326,11 @@ def read_local_file(local: object, ci: LegRun = LOCAL_LEG) -> LegRun:
         path = Path(temporary) / "local-windows.json"
         path.write_text(json.dumps(local), encoding="utf-8")
         return replace(ci, local=mutation_gate.read_local(mutation_gate.read_record(path), path.name, ci))
+
+
+def read_local_file_from(folder: Path, leg: LegRun) -> mutation_gate.LocalRun:
+    """The local run of the Linux leg the unrun step wrote in `folder`."""
+    return mutation_gate.read_local(mutation_gate.read_record(folder / "local-linux.json"), "local-linux.json", leg)
 
 
 def read_record_file(record: dict[str, Any]) -> LegRun:
@@ -4351,6 +4528,171 @@ def test_a_local_outcome_naming_a_suite_the_local_run_judged_nothing_with_is_ref
         f"local-windows.json.outcomes.tools/paths.py[0].suites must be suites the local run ran, none of them in its "
         f"{listed}, found t, which local-windows.json.{listed} lists"
     )
+
+
+@pytest.mark.parametrize("listed", ["failed_suites", "unmeasured_suites"])
+def test_an_outcome_a_resumed_run_kept_is_not_held_to_its_suites_and_any_other_is(listed: str) -> None:
+    # The stopped run killed the mutant at place 0 with `t`, which the run that resumed it lists as judging nothing.
+    selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (READ_MUTANT, READ_MUTANT), (), True),))
+    ci = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [ci_outcome(NOT_RUN), ci_outcome(NOT_RUN)]}, {}, [])
+    assert len(selected.modules[0].mutants) == len(ci.outcomes[PATH_MODULE])
+    suites: dict[str, Any] = {"failed_suites": {}, "unmeasured_suites": []}
+    suites[listed] = {"t": "failed unmutated"} if listed == "failed_suites" else ["t"]
+    outcome = {"status": KILLED, "suites": ["t"], "tests": []}
+    record = {
+        **LOCAL_RECORD,
+        **suites,
+        "mutants": {PATH_MODULE: [1, 0]},
+        "outcomes": {PATH_MODULE: [{"status": NOT_RUN, "suites": [], "tests": []}, outcome]},
+        "runs": 2,
+    }
+    local = read_local_file({**record, "kept": {PATH_MODULE: [0]}}, ci).local
+    assert local is not None
+    assert (local.kept, local.runs) == ({PATH_MODULE: [0]}, 2)
+    with pytest.raises(RecordFieldError) as error:
+        read_local_file({**record, "kept": {PATH_MODULE: [1]}}, ci)
+    assert str(error.value).startswith("local-windows.json.outcomes.tools/paths.py[1].suites must be suites the local")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("kept", {PATH_MODULE: [1]}, "local-windows.json.kept.tools/paths.py names [1], not distinct places among"),
+        ("kept", {PATH_MODULE: [0, 0]}, "local-windows.json.kept.tools/paths.py names [0, 0], not distinct places"),
+        ("kept", {"tools/other.py": [0]}, "local-windows.json.kept.tools/other.py names [0], not distinct places"),
+        ("kept", [0], "local-windows.json.kept must be"),
+        ("kept", {PATH_MODULE: [-1]}, "local-windows.json.kept.tools/paths.py[0] must be an integer of at least 0"),
+        ("kept", {PATH_MODULE: ["0"]}, "local-windows.json.kept.tools/paths.py[0] must be an integer of at least 0"),
+        ("head", "cd" * 21, "local-windows.json.head must be a lowercase hexadecimal digest of 40 or 64 characters"),
+        ("head", "CD" * 20, "local-windows.json.head must be a lowercase hexadecimal digest of 40 or 64 characters"),
+        ("runs", 0, "local-windows.json.runs must be"),
+        ("runs", "two", "local-windows.json.runs must be"),
+    ],
+)
+def test_kept_places_outside_the_runs_own_or_a_count_of_runs_that_is_no_count_stop_the_join(
+    field: str, value: object, message: str
+) -> None:
+    with pytest.raises(RecordError) as refused:
+        read_local_file({**LOCAL_RECORD, field: value})
+    assert str(refused.value).startswith(message)
+
+
+def test_a_local_record_that_names_no_kept_place_or_runs_ran_once_and_keeps_nothing() -> None:
+    assert not {"kept", "runs"} & set(LOCAL_RECORD)
+    local = read_local_file(LOCAL_RECORD).local
+    assert local is not None
+    assert (local.kept, local.runs) == ({}, 1)
+    assert mutation_gate.local_record(WINDOWS_LEG, local) == {
+        **LOCAL_RECORD,
+        "ended": True,
+        "kept": {},
+        "runs": 1,
+        "head": "",
+    }
+
+
+def test_a_local_record_that_keeps_every_place_or_names_a_head_of_either_hash_length_reads_back() -> None:
+    for head in ("cd" * 20, "cd" * 32):
+        local = read_local_file({**LOCAL_RECORD, "kept": {PATH_MODULE: [0]}, "runs": 2, "head": head}).local
+        assert local is not None
+        assert (local.kept, local.head) == ({PATH_MODULE: [0]}, head)
+
+
+def test_kept_places_exempt_only_their_own_modules_outcomes_from_the_unjudged_suites() -> None:
+    outcome = Outcome(READ_MUTANT, KILLED, ("t",))
+    with pytest.raises(RecordFieldError) as error:
+        mutation_gate.refuse_unjudged_suites(
+            "local-windows.json",
+            "local run",
+            {PATH_MODULE: [outcome], "tools/other.py": [outcome]},
+            {},
+            ["t"],
+            {"tools/other.py": {0}},
+        )
+    assert str(error.value).startswith("local-windows.json.outcomes.tools/paths.py[0].suites must be suites the local")
+
+
+def resume_mutant(line: int) -> Mutant:
+    return Mutant(PATH_MODULE, line, "a", "b", "b\n", False)
+
+
+def test_a_resumed_run_runs_again_what_the_stopped_one_left_without_a_verdict_and_open_beside_an_unjudged_suite() -> (
+    None
+):
+    mutants = [resume_mutant(line) for line in range(6)]
+    statuses = (KILLED, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED, TIMED_OUT)
+    outcomes = {PATH_MODULE: [Outcome(mutant, status) for mutant, status in zip(mutants, statuses, strict=True)]}
+    stopped = mutation_gate.LocalRun(5, 60.0, 2, {PATH_MODULE: [7, 3, 9, 1, 4, 0]}, {}, [], outcomes, False)
+    # Not run and errored mutants have no verdict; a survivor and an unreached mutant every reaching suite judged do.
+    assert mutation_gate.resumable_places(stopped) == {PATH_MODULE: [1, 4]}
+    # A suite the stopped run judged nothing with, unmeasured or failed unmutated, might have killed either.
+    for judged_without in (
+        replace(stopped, unmeasured_suites=["tests/u.py"]),
+        replace(stopped, failed_suites={"tests/f.py": "failed unmutated with exit code 1"}),
+    ):
+        assert mutation_gate.resumable_places(judged_without) == {PATH_MODULE: [3, 9, 1, 4]}
+    assert mutation_gate.resumable_places(replace(stopped, outcomes={PATH_MODULE: outcomes[PATH_MODULE][:1] * 6})) == {}
+
+
+def test_a_resumed_run_joins_the_stopped_ones_outcomes_kept_with_its_own_its_suites_and_their_time() -> None:
+    first, second, third = (resume_mutant(line) for line in (1, 2, 3))
+    stopped = mutation_gate.LocalRun(
+        5,
+        60.0,
+        4,
+        {PATH_MODULE: [4, 0, 2]},
+        {"tests/flaky.py": "failed unmutated", "tests/broken.py": "failed unmutated with exit code 2"},
+        ["tests/early.py"],
+        {PATH_MODULE: [Outcome(first, KILLED, ("tests/a.py",)), Outcome(second, NOT_RUN), Outcome(third, NOT_RUN)]},
+        False,
+        {PATH_MODULE: [4]},
+        2,
+    )
+    ran = mutation_gate.LocalRun(
+        7,
+        30.0,
+        2,
+        {PATH_MODULE: [0, 2]},
+        {"tests/broken.py": "failed unmutated with exit code 1", "tests/late.py": "timed out unmutated"},
+        ["tests/later.py"],
+        {PATH_MODULE: [Outcome(second, SURVIVED, ("tests/flaky.py",)), Outcome(third, NOT_RUN)]},
+        False,
+    )
+    resumed = mutation_gate.resumed_run(stopped, ran)
+    assert resumed == mutation_gate.LocalRun(
+        12,
+        90.0,
+        4,
+        {PATH_MODULE: [4, 0, 2]},
+        # The flaky suite judged a mutant in the resumed run, so it is no longer named as failed.
+        {"tests/broken.py": "failed unmutated with exit code 1", "tests/late.py": "timed out unmutated"},
+        ["tests/later.py"],
+        {
+            PATH_MODULE: [
+                Outcome(first, KILLED, ("tests/a.py",)),
+                Outcome(second, SURVIVED, ("tests/flaky.py",)),
+                Outcome(third, NOT_RUN),
+            ]
+        },
+        False,
+        {PATH_MODULE: [4]},
+        3,
+    )
+    assert mutation_gate.resumed_run(stopped, replace(ran, ended=True)).ended
+
+
+def test_a_mutant_a_resumed_local_run_left_not_run_is_put_down_to_its_stop_and_its_line_names_both_runs() -> None:
+    leg = local_leg(LINUX_LEG, ended=False)
+    assert leg.local is not None
+    leg.local = replace(leg.local, runs=2, minutes=10)
+    report = joined(READ_SELECTED, [leg])
+    assert (mutation_gate.unfinished_line(report) or "").endswith(
+        "Read its output, then run the `unrun` step again, which resumes it."
+    )
+    assert (
+        "a local run on Linux then ran the 1 mutant it left without a verdict, in 2 runs of at most 1 workers for 1 of "
+        "their 10 minutes, stopping before its end"
+    ) in mutation_gate.summary(report)
 
 
 @pytest.mark.parametrize("listed", ["failed_suites", "unmeasured_suites"])
@@ -4683,13 +5025,13 @@ def test_a_mutant_a_local_run_that_ended_left_not_run_is_put_down_to_the_cap_wha
     assert "stopped before" not in text
 
 
-def test_local_runs_stopped_on_both_legs_are_named_in_one_sentence_with_each_ones_file() -> None:
+def test_local_runs_stopped_on_both_legs_are_named_in_one_sentence_with_the_advice_to_resume_each() -> None:
     report = joined(READ_SELECTED, [local_leg(LINUX_LEG, ended=False), local_leg(WINDOWS_LEG, ended=False)])
     assert mutation_gate.unfinished_line(report) == (
         "**Unfinished, so not a verdict:** the local run on Linux and the local run on Windows stopped before their "
         f"end, so the mutants they had not reached did not run: 1 of the 1 mutants of `{PATH_MODULE}` did not run on "
-        "Linux and Windows. Read their output, then remove `local-linux.json` and `local-windows.json` and run the "
-        "`unrun` step again."
+        "Linux and Windows. Read their output, then run the `unrun` step again on each one's platform, which resumes "
+        "it."
     )
     assert (
         f"\n\nA local run that stopped before its end cut `{PATH_MODULE}` short on Linux and Windows: 1 mutants did "

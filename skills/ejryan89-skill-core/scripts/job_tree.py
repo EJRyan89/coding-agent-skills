@@ -6,6 +6,11 @@ Leaving `JobTree.hold` ends every process of the job still running, and the job 
 first, since it kills its processes when its last handle closes. A command starts suspended, joins the job, and only
 then runs, so every process it starts joins with it from the first: none can start outside the job before it joins.
 
+A job may bound the memory each of its processes may commit, `memory_limit` bytes, when its caller asks: Windows then
+refuses an allocation past it, which Python raises as MemoryError, and kills nothing. A command may also start in a
+process group of its own, `own_group`, which Windows starts with Ctrl-C ignored, as every process it starts inherits,
+so a Ctrl-C at the console reaches its caller alone. Neither is set unless asked for.
+
 A command still running that cannot join, or that cannot be let run once it has, is killed and refused with
 `JobRefused`, never run without the job: its caller relies on ending everything it starts. One already gone when it
 would join has nothing left to hold.
@@ -46,6 +51,7 @@ PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 SYNCHRONIZE = 0x00100000
 WAIT_OBJECT_0 = 0
@@ -53,6 +59,7 @@ ERROR_MORE_DATA = 234
 ERROR_NO_MORE_FILES = 18
 CREATE_NO_WINDOW = 0x08000000
 CREATE_SUSPENDED = 0x00000004
+CREATE_NEW_PROCESS_GROUP = 0x00000200
 THREAD_SUSPEND_RESUME = 0x0002
 TH32CS_SNAPTHREAD = 0x00000004
 # What ResumeThread returns when it fails, (DWORD)-1, in place of the thread's previous suspend count.
@@ -129,20 +136,31 @@ class _ThreadEntry(ctypes.Structure):
 
 class JobTree:
     """The process tree of one command: see the module's description. With `hidden_window`, a console command starts
-    without a window of its own."""
+    without a window of its own; with `memory_limit`, each process of the job may commit at most that many bytes; and
+    with `own_group`, the command starts in a process group of its own, which a Ctrl-C at the console does not reach."""
 
     hidden_window = False
+    memory_limit: int | None = None
+    own_group = False
 
-    def __init__(self, *, hidden_window: bool = False) -> None:
+    def __init__(
+        self, *, hidden_window: bool = False, memory_limit: int | None = None, own_group: bool = False
+    ) -> None:
         self.hidden_window = hidden_window
+        self.memory_limit = memory_limit
+        self.own_group = own_group
 
     def start_options(self) -> dict[str, Any]:
-        return {"creationflags": CREATE_SUSPENDED | (CREATE_NO_WINDOW if self.hidden_window else 0)}
+        return {
+            "creationflags": CREATE_SUSPENDED
+            | (CREATE_NO_WINDOW if self.hidden_window else 0)
+            | (CREATE_NEW_PROCESS_GROUP if self.own_group else 0)
+        }
 
     @contextmanager
     def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
         try:
-            job: int | None = job_holding(process.pid)
+            job: int | None = job_holding(process.pid, self.memory_limit)
         except OSError as exc:
             if process.poll() is None:
                 _kill(process)
@@ -345,8 +363,9 @@ def _end_job(job: int) -> None:
             kernel32.CloseHandle(held)  # its processes are ended, so a failure leaks only the handle
 
 
-def job_holding(pid: int) -> int:
-    """A new job that kills its processes when closed, holding the process `pid`; raises OSError when it cannot.
+def job_holding(pid: int, memory_limit: int | None = None) -> int:
+    """A new job that kills its processes when closed, holding the process `pid`, and, with `memory_limit`, refusing
+    each of its processes an allocation that would commit more than that many bytes; raises OSError when it cannot.
 
     The caller's Popen still holds the process's handle, so its PID names no other process here.
     """
@@ -358,6 +377,9 @@ def job_holding(pid: int) -> int:
     try:
         limits = _ExtendedLimitInformation()
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if memory_limit is not None:
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            limits.ProcessMemoryLimit = memory_limit
         if not kernel32.SetInformationJobObject(
             job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
