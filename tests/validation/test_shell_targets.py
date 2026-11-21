@@ -32,6 +32,7 @@ from shell_targets import (
     shell_token_problems,
     unclosed_fence_problems,
 )
+from test_markdown_sections import assert_time_in_proportion
 from toolchain import PREREQUISITES, find_psscriptanalyzer, missing_prerequisites, outdated_prerequisites
 from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
@@ -385,6 +386,32 @@ class ShellTargetsFixtures(unittest.TestCase):
                 result = run_bounded([bash, "-c", form.replace("{{X}}", "a b")], timeout=30)
                 self.assertEqual(quoted, "<a b>" in result.stdout.decode())
 
+    def test_a_token_s_line_offset_counts_lf_alone(self) -> None:
+        # A CR alone and the CR of a CRLF start no line, as Bash reads the script.
+        self.assertEqual(
+            [(0, "X", False), (1, "Y", True), (3, "Z", False)],
+            shell_targets._bash_tokens('a\r{{X}}\necho "{{Y}}"\r\n\n{{Z}}'),
+        )
+        protected, regenerable = "{{REPO_CLEANUP_PROTECTED}}", "{{REPO_CLEANUP_REGENERABLE}}"
+        self.assertEqual(
+            [(0, "REPO_CLEANUP_PROTECTED"), (2, "REPO_CLEANUP_REGENERABLE"), (3, "REPO_CLEANUP_PROTECTED")],
+            shell_targets._lone_optional_tokens(f'f "{protected}"\n\r\ng \'{regenerable}\' x\rh\n"{protected}"'),
+        )
+
+    def test_the_bash_tokens_of_a_text_eight_times_as_long_are_read_in_about_eight_times_the_time(self) -> None:
+        # A linear reading takes about eight times as long. Counting each token's line from the text's start is
+        # quadratic; the bound, about 23, sits between. The tokens stand in a here-document's body, which the grammar
+        # reads quickly, so the numbering is not lost beside the grammar's own work.
+        def document(count: int) -> str:
+            return "cat <<'EOF'\n" + f"{{{{X}}}}{' x' * 20}\n" * count + "EOF\n"
+
+        assert_time_in_proportion(shell_targets._bash_tokens, document(1000), document(8000), 8**1.5)
+
+    def test_lone_optional_tokens_eight_times_as_many_are_read_in_about_eight_times_the_time(self) -> None:
+        # Counting each token's line from the text's start is quadratic; the bound, about 23, sits between.
+        lone = 'f "{{REPO_CLEANUP_PROTECTED}}"\n'
+        assert_time_in_proportion(shell_targets._lone_optional_tokens, lone * 1000, lone * 8000, 8**1.5)
+
     def test_a_bash_token_validation_cannot_place_or_bash_it_cannot_read_fails_closed(self) -> None:
         # A token in a comment is not read; where the grammar keeps no text of the token's own, validation cannot say
         # whether Bash quotes it, so it names the token rather than passing it.
@@ -601,6 +628,40 @@ class ShellTargetsFixtures(unittest.TestCase):
                 ],
                 shell_targets.shell_suppression_problems(root, [root / name for name in files]),
             )
+
+    def test_each_suppression_in_one_text_is_numbered_on_its_own_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "skills/alpha/scripts/run.sh": "#!/usr/bin/env bash\n# shellcheck disable=SC2086\necho $1\n\n"
+                "# shellcheck disable=SC2034\nx=1\n",
+                "docs/guide.md": "Text.\n\n```bash\n# shellcheck disable=SC2086\necho $1\n"
+                "# shellcheck disable=SC2034\n```\n",
+            }
+            write_fixture_tree(root, files)
+            fix = "; fix the cause instead"
+            self.assertEqual(
+                [
+                    f"docs/guide.md:4 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"docs/guide.md:6 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"skills/alpha/scripts/run.sh:2 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"skills/alpha/scripts/run.sh:5 suppresses a rule with a ShellCheck disable directive{fix}",
+                ],
+                shell_targets.shell_suppression_problems(root, [root / name for name in files]),
+            )
+
+    def test_the_suppressions_of_a_script_eight_times_as_long_are_found_in_about_eight_times_the_time(self) -> None:
+        # A linear scan takes about eight times as long. Counting each suppression's line from the script's start is
+        # quadratic; the bound, about 23, sits between.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            line = f"# shellcheck disable=SC2086 {'x' * 40}\n"
+            write_fixture_tree(root, {"small.sh": line * 1000, "large.sh": line * 8000})
+
+            def scan(path: Path) -> list[str]:
+                return shell_targets.shell_suppression_problems(root, [path])
+
+            assert_time_in_proportion(scan, root / "small.sh", root / "large.sh", 8**1.5)
 
 
 class ProgramEndingFixtures(unittest.TestCase):

@@ -18,14 +18,21 @@ with CRLF as Windows does, and `git_client.output_lines` for git's. A line of a 
 character, a name or a path it prints among them, U+2028 or a lone CR included. Validation refuses `str.splitlines`
 on anything but plain bytes, which it breaks at CR, LF, and CRLF alone, and a split at LF alone of a file an author
 writes, outside a module-level `LINE_SPLIT_ALLOWED` that states why.
+
+A reader that numbers many positions of one text reads its `line_starts` once and takes each position's line with
+`bisect_right` over them, never by counting the breaks from the text's start once per position, which takes time
+that grows with the square of the text.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 
 # A line break as YAML 1.2, CommonMark, and .NET's TextReader.ReadLine read one.
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# A line feed alone, where Bash and ShellCheck end a line, for a reader that counts a file's lines as they do.
+LINE_FEED = re.compile("\n")
 # A line with the break that ends it, or the last line when no break ends it.
 KEPT_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 
@@ -60,3 +67,16 @@ def program_lines(output: str) -> list[str]:
     if lines[-1] == "":
         lines.pop()
     return [line.removesuffix("\r") for line in lines]
+
+
+def line_starts(text: str, breaks: re.Pattern[str] = LINE_BREAK) -> list[int]:
+    """Where each line of `text` starts, its lines ending at each match of `breaks`: CRLF, CR, and LF, as `text_lines`
+    breaks them, unless the caller counts lines elsewhere, as LINE_FEED does at LF alone. A text that a break ends has
+    one start more, at its end, so every position up to and including the text's end stands on a line."""
+    return [0, *(match.end() for match in breaks.finditer(text))]
+
+
+def line_index(starts: list[int], position: int) -> int:
+    """The index, from 0, of the line `position` stands on among `starts`, as `line_starts` gives them: the number of
+    breaks that end at or before it. A break stands on the line it ends."""
+    return bisect_right(starts, position) - 1
