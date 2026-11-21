@@ -9,32 +9,32 @@ it is not a required check, and it calls no model and reads no secret. Without a
 process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in FOLDER:
 `select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step outputs
 listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each SHARD_MUTANTS of
-them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across
-the shards that hold it, as dealt_shards deals them; `leg`, on
-Linux and on Windows, runs that platform's leg of them, or with --shard that shard's share, never running mutmut, and
-writes its outcomes to outcomes-<platform>.json, or outcomes-<platform>-<shard>.json, replacing the file whole before
-its reach pass, after it, and after each mutant, each mutant not yet reached written as not run and the record marked
-as not ended until its last write, so a step stopped partway, as a runner's shutdown stops one, leaves the outcomes it
-reached; and `join` reports them, reading each leg's whole record, or each shard the selection deals and no other,
-joined into the leg's, a record not ended, or a shard that left none, read as a step stopped before its end, whose
-mutants it had not reached did not run. The Linux leg runs every
-module's mutants, and the Windows leg those of each module whose behavior differs on Windows by design, as
-runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, one importing one of
-PLATFORM_MODULES, or one whose code reads the platform in any expression: a token of any kind the platform policy's
-PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or creationflags, or one of PLATFORM_VALUES, such as
-os.altsep. A mutant either leg killed counts as killed, and the summary names the legs that ran each module and each
-mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged where it shows. It mutates the
-lines the pull request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base
-names another), as `git diff -U0` names them, in each module under deployer/, tools/, a skill's scripts/, or a
-repository skill's scripts/, in each validation policy directly under tests/validation/, whose fixture suite,
-tests/validation/test_<module>.py, reaches it as any suite reaches a module, and in each validation program directly
-under tests/, such as tests/run_validation.py, beside its own suite, leaving out suites, conftest.py, the suites'
-own fixtures elsewhere under tests/, and deleted files. mutmut's operators make the mutants,
-string literals included, each one mutation of the whole module, and mutmut's own line filter (the `covered_lines` of
-its `create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a mutant only when the
-first line it changes is a changed line too, so a mutation anchored on an expression that starts on an unchanged line,
-such as removing an argument from a call that opens above the change, is left out. A changed module whose changed lines
-yield no mutant is named in the summary, never left out of it.
+them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across the
+shards that hold it, as dealt_shards deals them; `leg`, on Linux and on Windows, runs that platform's leg of them, or
+with --shard that shard's share, never running mutmut, and writes its outcomes to outcomes-<platform>.json, or
+outcomes-<platform>-<shard>.json, replacing the file whole before its reach pass, after it, and after each mutant, each
+mutant not yet reached written as not run and the record marked as not ended until its last write, so a step that
+failed, was cancelled, or ran past its job's time limit partway leaves the outcomes it reached for its upload, which
+runs whatever the step did; a runner's shutdown runs no later step, the upload included, so its shard leaves no record;
+and `join` reports them, reading each leg's whole record, or each shard the selection deals and no other, joined into
+the leg's, a record not ended, or a shard that left none, read as a step stopped before its end, whose mutants it had
+not reached did not run. The Linux leg runs every module's mutants, and the Windows leg those of each module whose
+behavior differs on Windows by design, as runs_on_windows selects it: one of PLATFORM_MODULES, one holding a
+PLATFORM_ALLOWED table, one importing one of PLATFORM_MODULES, or one whose code reads the platform in any expression: a
+token of any kind the platform policy's PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or creationflags, or
+one of PLATFORM_VALUES, such as os.altsep. A mutant either leg killed counts as killed, and the summary names the legs
+that ran each module and each mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged
+where it shows. It mutates the lines the pull request's commits add or change since the base
+(`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names another), as `git diff -U0` names them, in each module
+under deployer/, tools/, a skill's scripts/, or a repository skill's scripts/, in each validation policy directly under
+tests/validation/, whose fixture suite, tests/validation/test_<module>.py, reaches it as any suite reaches a module, and
+in each validation program directly under tests/, such as tests/run_validation.py, beside its own suite, leaving out
+suites, conftest.py, the suites' own fixtures elsewhere under tests/, and deleted files. mutmut's operators make the
+mutants, string literals included, each one mutation of the whole module, and mutmut's own line filter (the
+`covered_lines` of its `create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a
+mutant only when the first line it changes is a changed line too, so a mutation anchored on an expression that starts on
+an unchanged line, such as removing an argument from a call that opens above the change, is left out. A changed module
+whose changed lines yield no mutant is named in the summary, never left out of it.
 
 mutmut's own runner is not used: it records which tests reach a function only inside its pytest process and finds a
 mutant by a module name it derives from the file's path, while the suites here reach most modules through the
@@ -100,7 +100,8 @@ run and how many of them lie on lines that run at import, and each such leg's co
 mutants they leave open, then each module's mutants a CI leg timed out on with no local run to confirm it, which leave
 the run unfinished too. The summary's table counts confirmed and unconfirmed timeouts apart, and each module's kill
 ratio is its killed and confirmed timed-out mutants over every mutant it judged.
-Any exit but a pass whose output names a MemoryError kills a mutant, the log saying so; otherwise pytest's exit for
+Any exit but a pass whose output shows a MemoryError raised, as MEMORY_ERROR reads its lines, kills a mutant, the log
+saying so; otherwise pytest's exit for
 a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
 module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
 named the module's tests by node id. Any other nonzero exit, an interruption, an internal error, a usage error such as
@@ -236,10 +237,15 @@ MINIMUM_SUITE_SECONDS = 60.0
 # mutant that allocates without end then fails its suite with a MemoryError instead of exhausting the runner, whose
 # memory a leg's workers and every process their suites start share, and stopping the leg with every outcome it held.
 MEMORY_BOUND = 2 << 30
-# What Python raises at an allocation the bound refuses, as a suite's output names it, and the reason the log gives for
-# the kill. A process ended by a signal with no MemoryError in the output still errors: RLIMIT_DATA refuses an
-# allocation rather than sending one, so that is a stated limit, not a form the bound produces.
-MEMORY_ERROR = b"MemoryError"
+# A line of a suite's output that shows a MemoryError raised, which Python raises at an allocation the bound refuses:
+# pytest's `E` line of a failed test, its INTERNALERROR line when its own process ran out, its short summary of a test
+# that failed or errored on one, or a traceback's last line, as a process the suite started prints it in the captured
+# output. Each holds the exception's name alone or before its message, so a test whose source or name only mentions
+# MemoryError, which pytest quotes indented or after `>`, is not read as one. A process ended by a signal with no such
+# line still errors: RLIMIT_DATA refuses an allocation rather than sending one, so that is a stated limit, not a form
+# the bound produces.
+MEMORY_ERROR = re.compile(rb"^(?:E +|INTERNALERROR> *|(?:FAILED|ERROR) .* - )?MemoryError(?::.*)?\r?$", re.MULTILINE)
+# The reason the log gives for such a kill.
 MEMORY_REASON = (
     f"a process ran out of memory, as one past the {MEMORY_BOUND >> 30} GiB of data each process of the suite may hold "
     "on Linux does, so the mutant made it allocate without end"
@@ -271,9 +277,9 @@ PASSED = "passed"
 # pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, or
 # ended in a usage error, either of which kills the mutant only when collecting a test module failed, as a mutant that
 # breaks an import or the syntax does; pytest reports that failure, then exits with the usage error when the run named
-# the module's tests by node id, since it then finds none of them. Every other nonzero exit, an interruption, an
-# internal error, a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges
-# nothing.
+# the module's tests by node id, since it then finds none of them. Any nonzero exit whose output shows a MemoryError
+# raised, as MEMORY_ERROR reads it, kills the mutant too. Every other nonzero exit, an interruption, an internal error,
+# a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges nothing.
 TESTS_FAILED_EXIT = 1
 COLLECTION_EXITS = frozenset({2, 4})
 # What pytest's report heads each module it failed to collect with, at the start of its output.
@@ -951,7 +957,8 @@ def suite_environment() -> dict[str, str]:
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
     process it starts ended after it and each bounded to MEMORY_BOUND bytes of data where the platform bounds it:
-    passed on pytest's exit 0, killed on any other exit whose output names a MemoryError, which logs that reason, and
+    passed on pytest's exit 0, killed on any other exit whose output shows a MemoryError raised, which logs that
+    reason, and
     on its exit for a failed test or for a test module it failed to collect, an interruption or, when the run named
     tests, a usage error, timed out past `timeout`, and errored on any other exit, which judges nothing and logs
     pytest's exit and the start of its output. The node ids go to pytest in an argument file, which no command line's
@@ -985,7 +992,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
             return TIMED_OUT
     if finished.returncode == 0:
         return PASSED
-    if MEMORY_ERROR in start or MEMORY_ERROR in end:
+    if MEMORY_ERROR.search(start) or MEMORY_ERROR.search(end):
         print(f"{KILLED:<11} {suite}: pytest exited {finished.returncode}: {MEMORY_REASON}", flush=True)
         return KILLED
     collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in start
@@ -1695,8 +1702,8 @@ def unfinished_line(report: Report) -> str | None:
     if parts and stopped:
         one = len(stopped) == 1
         sentences.append(
-            f"{' and '.join(stopped)} stopped before {'its' if one else 'their'} end, as a runner's shutdown stops a "
-            f"job, so the mutants {'it' if one else 'they'} had not reached did not run: {'; '.join(parts)}. Read "
+            f"{' and '.join(stopped)} stopped before {'its' if one else 'their'} end, so the mutants "
+            f"{'it' if one else 'they'} had not reached did not run: {'; '.join(parts)}. Read "
             f"{'its' if one else 'their'} log, and rerun the gate."
         )
     elif parts:
@@ -1991,12 +1998,13 @@ def joined_shards(leg: str, selected: Selected, shards: Sequence[LegRun]) -> Leg
 
 def unwritten_shard(leg: str, selected: Selected, shard: int) -> LegRun:
     """The run of a shard, from 1, of a leg whose step left no record, as one stopped before its first: each of its
-    mutants not run, no cap read, and nothing measured."""
+    mutants not run, no cap read, and nothing measured. joined_shards counts the shards it joins, so the run names no
+    count of its own."""
     outcomes = {
         chosen.module: [Outcome(mutant, NOT_RUN) for mutant in chosen.mutants]
         for chosen in shard_modules(leg, selected, shard)
     }
-    return LegRun(leg, 0, 0.0, 0, outcomes, {}, [], shard=shard, shards=leg_shards(leg, selected), stopped=(shard,))
+    return LegRun(leg, 0, 0.0, 0, outcomes, {}, [], shard=shard, stopped=(shard,))
 
 
 def joined(selected: Selected, legs: Sequence[LegRun]) -> Report:
@@ -2809,8 +2817,9 @@ def run_files(folder: Path) -> dict[str, Path]:
 def read_leg_files(files: Mapping[str, Path], selected: Selected, name: str) -> LegRun:
     """A needed leg's run: its whole record when the leg ran in one job, else each of its shards' records joined, every
     shard the selection deals named and no other, a shard whose step left no record read as stopped before its first,
-    its mutants not run, as a runner's shutdown leaves one; a whole record beside a shard's, or a shard's record the
-    selection does not deal stops it, since a mutant would then have two verdicts, or none of its own."""
+    its mutants not run, as a runner's shutdown leaves one, since it runs no later step; a whole record beside a
+    shard's, or a shard's record the selection does not deal stops it, since a mutant would then have two verdicts, or
+    none of its own."""
     prefix = shard_name(name, 0).removesuffix("0.json")
     shards = sorted(found for found in files if found.startswith(prefix))
     whole = files.get(outcomes_name(name))

@@ -791,6 +791,63 @@ def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replace
     assert capsys.readouterr().out == "errored     tests/x.py: pytest exited 3: INTERNALERROR �� in a hook\n"
 
 
+@pytest.mark.parametrize(
+    ("code", "output", "status", "memory"),
+    [
+        pytest.param(1, b">       raise MemoryError\nE       MemoryError\n", KILLED, True, id="a test's E line"),
+        pytest.param(2, b"E   MemoryError: cannot allocate\r\n", KILLED, True, id="an E line with a message, in CRLF"),
+        pytest.param(
+            3,
+            b"INTERNALERROR> Traceback (most recent call last):\nINTERNALERROR> MemoryError\n",
+            KILLED,
+            True,
+            id="pytest's own process",
+        ),
+        pytest.param(1, b"FAILED tests/x.py::test_x - MemoryError\n", KILLED, True, id="the short summary"),
+        pytest.param(
+            5,
+            b"-- Captured stderr call --\nTraceback (most recent call last):\nMemoryError\n",
+            KILLED,
+            True,
+            id="a started process's traceback",
+        ),
+        pytest.param(4, b"ERROR: not found: tests/x.py::test_MemoryError\n", ERRORED, False, id="a test's name"),
+        pytest.param(
+            2, b">       raise MemoryError\n    if MemoryError: pass\n", ERRORED, False, id="a test's source quoted"
+        ),
+        pytest.param(5, b"no tests ran\nMemoryErrors are counted elsewhere\n", ERRORED, False, id="a longer word"),
+        pytest.param(
+            1,
+            b"E       assert MemoryError is None\nFAILED tests/x.py::test_x - assert MemoryError is None\n",
+            KILLED,
+            False,
+            id="an assertion that names it",
+        ),
+    ],
+)
+def test_only_a_line_showing_a_memory_error_raised_kills_for_memory(
+    code: int, output: bytes, status: str, memory: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, output)),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == status
+    assert (mutation_gate.MEMORY_REASON in capsys.readouterr().out) is memory
+
+
+def test_a_memory_error_line_that_opens_the_end_read_back_kills(capsys: pytest.CaptureFixture[str]) -> None:
+    # Past the start read back, the line begins at the end's first byte, so a window one byte short reads it cut.
+    tail = b"MemoryError\n" + b"b" * (mutation_gate.OUTPUT_LIMIT - len(b"MemoryError\n"))
+    output = b"a" * (2 * mutation_gate.OUTPUT_LIMIT) + b"\n" + tail
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(3, output)),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == KILLED
+    assert mutation_gate.MEMORY_REASON in capsys.readouterr().out
+
+
 class RunSuiteFixtures(unittest.TestCase):
     """The real suite runner, over a suite with a test that fails and one that passes."""
 
@@ -3141,8 +3198,8 @@ class SplitRunFixtures(unittest.TestCase):
             self.assertFalse(result.finished)
             self.assertTrue(
                 result.text.startswith(
-                    "**Unfinished, so not a verdict:** shard 1 of the Windows leg stopped before its end, as a "
-                    "runner's shutdown stops a job, so the mutants it had not reached did not run: 1 of the 1 mutants "
+                    "**Unfinished, so not a verdict:** shard 1 of the Windows leg stopped before its end, so the "
+                    "mutants it had not reached did not run: 1 of the 1 mutants "
                     "of `tools/paths.py` did not run on Windows. Read its log, and rerun the gate.\n"
                 ),
                 result.text,
@@ -4425,15 +4482,14 @@ def test_a_shard_that_left_no_record_leaves_its_mutants_not_run_beside_the_other
     statuses = [found.status for found in leg.outcomes[module]]
     first = mutation_gate.shard_places(LINUX_LEG, SHARDED, 1)[module]
     assert statuses == [KILLED if place in first and written else NOT_RUN for place in range(45)]
-    assert leg.stopped == (2,) if written else (1, 2)
+    assert leg.stopped == ((2,) if written else (1, 2))
     assert not result.finished
     left = 45 - len(first) if written else 45
     lead = (
-        "shard 2 of the Linux leg stopped before its end, as a runner's shutdown stops a job, so the mutants it had "
-        "not reached did not run"
+        "shard 2 of the Linux leg stopped before its end, so the mutants it had not reached did not run"
         if written
-        else "shard 1 of the Linux leg and shard 2 of the Linux leg stopped before their end, as a runner's shutdown "
-        "stops a job, so the mutants they had not reached did not run"
+        else "shard 1 of the Linux leg and shard 2 of the Linux leg stopped before their end, so the mutants they "
+        "had not reached did not run"
     )
     assert result.text.startswith(
         f"**Unfinished, so not a verdict:** {lead}: {left} of the 45 mutants of `{module}` did not run on Linux. Read "
@@ -4469,8 +4525,8 @@ def test_a_shard_record_written_as_it_went_joins_the_outcomes_it_reached_and_nam
     ]
     assert not result.finished
     assert result.text.startswith(
-        "**Unfinished, so not a verdict:** shard 2 of the Linux leg stopped before its end, as a runner's shutdown "
-        "stops a job, so the mutants it had not reached did not run: "
+        "**Unfinished, so not a verdict:** shard 2 of the Linux leg stopped before its end, so the mutants it had "
+        "not reached did not run: "
         f"13 of the 45 mutants of `{module}` did not run on Linux. Read its log, and rerun the gate.\n"
     )
     assert "of each one's 40 minutes, shard 2 of the Linux leg stopping before its end;" in result.text
@@ -4478,7 +4534,8 @@ def test_a_shard_record_written_as_it_went_joins_the_outcomes_it_reached_and_nam
 
 
 class LegStopFixtures(unittest.TestCase):
-    """The leg step through `main`, stopped partway as a runner's shutdown stops it, with the worktrees, the reach, and
+    """The leg step through `main`, stopped partway as a failed or cancelled step stops it, whose record the upload,
+    which runs whatever the step did, then hands on, with the worktrees, the reach, and
     the suites replaced, so only what its record holds shows."""
 
     SELECTED = Selected(
@@ -4530,8 +4587,8 @@ class LegStopFixtures(unittest.TestCase):
         self.assertFalse(result.finished)
         self.assertTrue(
             result.text.startswith(
-                "**Unfinished, so not a verdict:** shard 1 of the Linux leg stopped before its end, as a runner's "
-                "shutdown stops a job, so the mutants it had not reached did not run: 3 of the 5 mutants of "
+                "**Unfinished, so not a verdict:** shard 1 of the Linux leg stopped before its end, so the mutants it "
+                "had not reached did not run: 3 of the 5 mutants of "
                 "`tools/calc.py` did not run on Linux. Read its log, and rerun the gate.\n"
             ),
             result.text,
@@ -4553,7 +4610,7 @@ class LegStopFixtures(unittest.TestCase):
 
 
 class Stopped(Exception):
-    """The leg step's end partway, as a runner's shutdown ends it."""
+    """The leg step's end partway, as a failure, a cancellation, or its job's time limit ends it."""
 
 
 def test_a_shard_record_of_the_whole_leg_another_deal_or_another_shards_mutants_stops_the_join() -> None:

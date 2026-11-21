@@ -113,6 +113,7 @@ MUTATION_LEG = {
     "leg": mutation_gate.WINDOWS_LEG,
     "shard": 0,
     "shards": 1,
+    "ended": True,
     "minutes": 40,
     "seconds": 1.5,
     "workers": 2,
