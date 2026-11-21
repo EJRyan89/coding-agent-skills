@@ -266,8 +266,11 @@ issue by that line, and an issue a change resolved without one stays open. GitHu
 names anywhere in the body, so the closing-line check, in `tests/validation/pull_request_body.py`, refuses every other
 line that holds one: in prose, in a code span or a code block, in a comment the author wrote, as a list item, or beside
 a second reference or other text, and a line that opens with a closing keyword before a reference that names no issue,
-such as `Closes #abc`. A `Closes #<number>` line of its own passes wherever it stands, a code block included, as does
-the template's bare `Closes #` and the template's own comments, which are its guidance, not the author's. The check
+such as `Closes #abc`. A `Closes #<number>` line of its own passes wherever the rendered body shows it, as do the
+template's bare `Closes #` and the template's own comments, which are its guidance, not the author's. One inside a
+comment the author wrote or a fenced or indented code block is refused as hidden: the squash commit carries it, so its
+issue closes on merge, but GitHub links no reference it does not render, and the project board, which moves an issue
+by that link, never sees the close. The check
 and the title check read through ejryan89-skill-core's `closing_references`, the reader `implement-change`'s
 `pull_request.py check` shares, so a title and a body its check passes are ones these checks pass, and that module's
 docstring names the spellings none of them sees. Reword an example that is not meant to close its issue without the

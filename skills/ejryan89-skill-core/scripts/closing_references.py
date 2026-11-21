@@ -26,16 +26,28 @@ the start of a reference counts there even where no issue follows, as in `Closes
 reference is refused rather than read as no reference. A body line is read with each comment copied, character for
 character, from the pull request template blanked, since that text is the template's guidance, not the author's; every
 comment the author wrote, and every code span and code block, is read, as GitHub reads them.
+
+A `Closes #<n>` line of its own is refused too where the rendered body does not show it: inside a comment the author
+wrote, which GitHub hides, or a fenced or indented code block, which GitHub shows as code. The squash commit still
+carries it, so the issue closes on merge, but GitHub links no reference it does not render as one, so the project board,
+which moves an issue by that link, never sees the close; this repository's history holds an issue a squash commit shut
+from a code span, never linked to its pull request. GitHub's renderer links the line everywhere else it stands alone: in
+a paragraph, under a setext underline, and inside an HTML `<details>` or `<div>` block. hidden_comments reads where a
+comment hides it and where a code block holds it, and its stated limits are this reading's. It also does not see a line
+inside an HTML `<pre>`, `<code>`, or `<a>` block, which GitHub links nothing in, and it refuses as hidden a line in a
+`math` fence or in a footnote definition's continuation indented four spaces, both of which GitHub links.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import whole_number
-from hidden_comments import hidden_spans
+from hidden_comments import Reading, hidden_spans, read_comments
 from text_lines import text_lines
 
 # GitHub's closing keywords, as a pattern a caller may build on.
@@ -137,15 +149,42 @@ def template_comment_spans(body: str, template: str) -> list[tuple[int, int]]:
     return [(first, past) for first, past in hidden_spans(body) if body[first:past] in comments]
 
 
-def stray_closing_lines(body: str, template: str) -> list[tuple[int, str]]:
-    """Each line of `body`, by its number from 1 where CommonMark ends a line, and its text without the spaces around
-    it, that holds a closing reference, or opens with a closing keyword before the start of one, and is neither a
-    `Closes #<n>` line of its own nor the template's closing line with no issue; comments copied from `template` are
-    not read."""
+class StrayLine(NamedTuple):
+    """A body line that names an issue it closes where a pull request may not: its number from 1 where CommonMark ends
+    a line, its text without the spaces around it, and whether it is a `Closes #<n>` line of its own that the rendered
+    body does not show, which closes its issue on merge without GitHub linking it."""
+
+    number: int
+    text: str
+    hidden: bool
+
+
+def hidden_from_render(reading: Reading, index: int, column: int) -> bool:
+    """Whether the rendered body does not show the character at `column` of the line at `index`: a comment GitHub
+    hides holds it, or a code block holds its line."""
+    if index in reading.walked.code:
+        return True
+    position = reading.starts[index] + column
+    span = bisect_right(reading.hidden, (position, len(reading.text) + 1)) - 1
+    return span >= 0 and reading.hidden[span][0] <= position < reading.hidden[span][1]
+
+
+def stray_closing_lines(body: str, template: str) -> list[StrayLine]:
+    """Each line of `body` that holds a closing reference, or opens with a closing keyword before the start of one,
+    and is neither a `Closes #<n>` line of its own nor the template's closing line with no issue, and each `Closes
+    #<n>` line of its own that the rendered body does not show, marked hidden; comments copied from `template` are not
+    read."""
     read = text_lines(blank_spans(body, template_comment_spans(body, template)))
-    return [
-        (number, line.strip())
-        for number, line in enumerate(read, start=1)
-        if (CLOSING_REFERENCE.search(line) or CLOSING_LINE.match(line))
-        and not (CLOSES_ONE.fullmatch(line.strip()) or BARE_CLOSING_LINE.fullmatch(line.strip()))
-    ]
+    found: list[StrayLine] = []
+    reading: Reading | None = None
+    for index, line in enumerate(read):
+        text = line.strip()
+        if CLOSES_ONE.fullmatch(text):
+            # The body is read for its comments and blocks only once a `Closes #<n>` line asks where it stands.
+            if reading is None:
+                reading = read_comments(body)
+            if hidden_from_render(reading, index, len(line) - len(line.lstrip())):
+                found.append(StrayLine(index + 1, text, hidden=True))
+        elif not BARE_CLOSING_LINE.fullmatch(text) and (CLOSING_REFERENCE.search(line) or CLOSING_LINE.match(line)):
+            found.append(StrayLine(index + 1, text, hidden=False))
+    return found

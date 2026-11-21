@@ -884,6 +884,20 @@ def test_a_closing_reference_in_an_author_s_comment_is_reported_and_refused(pros
     assert pull_request.closed_issues(body) == [12, 34, 7]
 
 
+# A `Closes #<n>` line in a comment the author wrote or a code block closes its issue on merge, since the squash commit
+# carries it, but GitHub (`gh api markdown`) renders no link for it, so it is reported closed and refused as hidden.
+@pytest.mark.parametrize(
+    ("hidden", "line"),
+    [("<!--\nCloses #7\n-->", 7), ("```\nCloses #7\n```", 7), ("~~~text\nCloses #7\n~~~", 7), ("    Closes #7", 6)],
+)
+def test_a_closes_line_the_rendered_body_does_not_show_is_reported_and_refused_as_hidden(
+    hidden: str, line: int
+) -> None:
+    body = FILLED.replace("Fixes the quoting of a title.\n", f"Fixes the quoting of a title.\n\n{hidden}\n")
+    assert pull_request.body_problems(body, TEMPLATE) == [f"CLOSES_HIDDEN {line} Closes #7"]
+    assert pull_request.closed_issues(body) == [12, 34, 7]
+
+
 def test_a_template_comment_left_beside_a_closes_line_leaves_the_line_a_closes_line() -> None:
     body = FILLED.replace("Closes #34", "Closes #34 <!-- The problem, in a paragraph. -->")
     assert pull_request.body_problems(body, TEMPLATE) == ["PLACEHOLDER 2 a template comment"]

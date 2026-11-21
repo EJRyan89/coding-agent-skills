@@ -19,8 +19,8 @@ forward slashes:
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
                   outside the examined tree, a condition, name, metadata value, or AssemblyName they cannot
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
-                  not enter, a junction, a symbolic link, a nested checkout, or one it cannot list; its facts are
-                  missing
+                  not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
+                  bound stopped it at; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -53,6 +53,16 @@ records, they are the items that framework's build leaves, a package without a v
 PackageVersion that build leaves. An item, or a metadata value, whose condition or name the reader cannot settle is
 not applied and is reported as an UNREADABLE line naming it and what was done instead; an item inside a Target, which
 MSBuild defines only when the target runs, is left out and reported so, and so is an Import the reader does not read.
+
+A directory holding no solution is searched for *.csproj files below it, in ejryan89-skill-core's folder walk,
+outside the folders the .NET search skips (dotnet_solution's SEARCH_SKIPPED_FOLDERS) and outside hidden folders, whose
+name starts with a dot and which hold a tool's state rather than a project: the search prunes them, listing nothing
+inside them. The search is bounded rather than refused outside a checkout, since a legacy solution may sit in no git
+checkout at all and a checkout may itself be large: it lists at most 10000 folders (PROJECT_SEARCH_FOLDER_LIMIT), the
+directory included, so a search started in a large folder, such as a home folder, ends. Past the bound it stops and
+reports the next folder it would have listed as an UNREADABLE line, which, with every folder after it in the walk's
+order, was not searched; with no project found before it, the FAILED line names it. A solution is read as it lists its
+projects, with no search.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -126,6 +136,8 @@ from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
 
 PROJECT_SUFFIX = ".csproj"
+# The most folders the search for projects lists, the searched directory included, as the module states.
+PROJECT_SEARCH_FOLDER_LIMIT = 10_000
 PATH_LIMIT = 200
 # The permissions of a graph file the script creates: its owner writes it and everyone reads it, as an editor's.
 NEW_FILE_MODE = 0o644
@@ -258,13 +270,24 @@ class Emitter:
         self.emit(fact_line(key, *fields))
 
 
+def hidden(folder: Path) -> bool:
+    """Whether a folder is hidden, its name starting with a dot, which the search for projects prunes."""
+    return folder.name.startswith(".")
+
+
 def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
     """Every .csproj under the directory, in ejryan89-skill-core's folder walk's order, each folder's projects before
-    its subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`). A folder the
-    walk does not enter, a junction or a symbolic link, which may lead outside the directory or back into it, a nested
-    checkout, or one that cannot be listed, is reported, and costs only the projects it holds."""
+    its subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`) and the hidden
+    folders it prunes, within PROJECT_SEARCH_FOLDER_LIMIT folders. A folder the walk does not enter, a junction or a
+    symbolic link, which may lead outside the directory or back into it, a nested checkout, or one that cannot be
+    listed, is reported, and costs only the projects it holds; the folder the bound stopped it at is reported too, and
+    costs the projects in it and in every folder after it in the walk's order."""
     walk = walk_files(
-        directory, lambda name: ordinal_fold(name).endswith(PROJECT_SUFFIX), skipped=SEARCH_SKIPPED_FOLDERS
+        directory,
+        lambda name: ordinal_fold(name).endswith(PROJECT_SUFFIX),
+        skipped=SEARCH_SKIPPED_FOLDERS,
+        prune=hidden,
+        limit=PROJECT_SEARCH_FOLDER_LIMIT,
     )
     unreadable += [(entry.path, entry.reason) for entry in walk.not_entered]
     return walk.files
