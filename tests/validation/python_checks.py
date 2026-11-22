@@ -223,10 +223,20 @@ def noqa_codes(comment: str) -> set[str]:
     }
 
 
-# A ratchet only goes down. The ceilings pyproject.toml sets on a function's complexity, statements, and arguments,
-# and the number of blind excepts kept with a noqa, may fall as the code improves and never rise; a pull request that
-# lowers one lowers its literal here in the same change.
-CEILINGS = {"mccabe": {"max-complexity": 15}, "pylint": {"max-statements": 50, "max-args": 17}}
+# A ratchet only goes down. The ceilings pyproject.toml sets on a function's complexity, statements, arguments, and
+# positional arguments, and the number of blind excepts kept with a noqa, may fall as the code improves and never rise;
+# a pull request that lowers one lowers its literal here in the same change.
+CEILINGS = {
+    "mccabe": {"max-complexity": 15},
+    "pylint": {"max-statements": 50, "max-args": 17, "max-positional-args": 14},
+}
+# What a contributor does instead of raising each ceiling, named in the refusal.
+CEILING_REMEDIES = {
+    "max-complexity": "split the function instead",
+    "max-statements": "split the function instead",
+    "max-args": "group the arguments that travel together into a dataclass or an options object instead",
+    "max-positional-args": "make the later parameters keyword-only instead",
+}
 BLIND_EXCEPT_CEILING = 14
 BLIND_EXCEPT = "BLE001"
 
@@ -256,7 +266,7 @@ def ratchet_problems(lint: dict[str, Any], blind_excepts: list[str]) -> list[str
             if not isinstance(value, int) or isinstance(value, bool) or value > ceiling:
                 found.append(
                     f"[tool.ruff.lint.{table}] {key} is {value!r}; the ratchet holds it at {ceiling} or lower, so "
-                    "split the function instead"
+                    f"{CEILING_REMEDIES[key]}"
                 )
             elif value < ceiling:
                 found.append(
@@ -6338,7 +6348,8 @@ class PythonChecksPolicies(unittest.TestCase):
         lint = configuration["lint"]
         self.assertEqual(
             [
-                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PLR0913", "BLE001", "PTH", "RUF"),
+                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PLR0913", "PLR0917", "BLE001", "PTH"),
+                "RUF",
                 *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
                 *("PT001", "PT002", "PT003", "PT006", "PT007", "PT008", "PT01", "PT020", "PT021", "PT022"),
                 *("PT023", "PT024", "PT025", "PT026", "PT028", "PT03"),
@@ -6368,7 +6379,7 @@ class PythonChecksPolicies(unittest.TestCase):
             lint["per-file-ignores"],
         )
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
-        self.assertEqual(["max-args", "max-statements"], sorted(lint["pylint"]))
+        self.assertEqual(["max-args", "max-positional-args", "max-statements"], sorted(lint["pylint"]))
         self.assertEqual(["exclude", "format", "line-length", "lint", "target-version"], sorted(configuration))
         # ruff's default exclusions are emptied, so every Python file under the roots is formatted and linted.
         self.assertEqual([], configuration["exclude"])
