@@ -544,6 +544,73 @@ class PathBoundTests(unittest.TestCase):
             self.assertEqual([], followed)
             link.unlink()
 
+    def test_nested_checkouts_give_the_innermost_one_holding_the_base(self) -> None:
+        # The look goes on below the first checkout it meets, so a dotfiles checkout at the home folder, a submodule
+        # whose marker is a file, and a worktree whose marker is a file each leave the innermost checkout the tree.
+        marker = ".dotnet-dependencies-test-checkout"
+        home = self.root / "home"
+        (home / marker).mkdir(parents=True)
+        (home / "src" / "app" / marker).mkdir(parents=True)
+        (home / "src" / "app" / "sub").mkdir()
+        repo = self.root / "repo"
+        (repo / marker).mkdir(parents=True)
+        submodule = repo / "mods" / "lib"
+        worktree = repo / ".claude" / "worktrees" / "task"
+        for checkout in (submodule, worktree):
+            (checkout / "src").mkdir(parents=True)
+            (checkout / marker).write_text("gitdir: ../../.git/elsewhere\n", encoding="utf-8")
+        with mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker):
+            for name, base, innermost in (
+                ("dotfiles", home / "src" / "app" / "sub", home / "src" / "app"),
+                ("submodule", submodule / "src", submodule),
+                ("worktree", worktree / "src", worktree),
+            ):
+                with self.subTest(name):
+                    self.assertEqual(innermost, examined_tree(base))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_link_on_the_way_is_followed_only_while_no_checkout_lies_above_it(self) -> None:
+        # The folders are looked at from the top down: a link inside a checkout ends the look, so the checkout above it
+        # is the tree and the marker the link leads to is never stat through it, whatever lies there; a link with no
+        # checkout above is the user's own choice of where to look, followed to the checkout it leads to; and one that
+        # leads nowhere it can be followed is refused naming it.
+        marker = ".dotnet-dependencies-test-checkout"
+        away = self.root / "away"
+        (away / "sub").mkdir(parents=True)
+        (away / marker).mkdir()
+        (self.root / "repo" / marker).mkdir(parents=True)
+        linked = self.root / "repo" / "Linked"
+        linked.symlink_to(away, target_is_directory=True)
+        top = self.root / "Top"
+        top.symlink_to(away, target_is_directory=True)
+        loop = self.root / "Loop"
+        loop.symlink_to(loop, target_is_directory=True)
+        for link in (linked, top, loop):
+            self.addCleanup(link.unlink)
+        reached: list[str] = []
+
+        def spy(real: Callable[..., Any]) -> Callable[..., Any]:
+            def call(path: Any, *rest: Any, **options: Any) -> Any:
+                if Path(path) != linked and (Path(path).is_relative_to(linked) or Path(path).is_relative_to(away)):
+                    reached.append(str(path))
+                return real(path, *rest, **options)
+
+            return call
+
+        with (
+            mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
+            mock.patch.object(os, "stat", spy(os.stat)),
+            mock.patch.object(os, "lstat", spy(os.lstat)),
+        ):
+            self.assertEqual(self.root / "repo", examined_tree(linked / "sub"))
+            self.assertEqual([], reached)
+            self.assertEqual(self.root / "repo", examined_tree(linked))
+            self.assertEqual([], reached)
+            self.assertEqual(top, examined_tree(top / "sub"))
+            with self.assertRaises(msbuild_reader.Unreadable) as raised:
+                examined_tree(loop / "sub")
+        self.assertEqual(loop, raised.exception.file)
+
     def test_a_checkout_marker_it_cannot_stat_is_refused_never_read_as_no_checkout(self) -> None:
         base = self.root / "repo" / "src"
         base.mkdir(parents=True)

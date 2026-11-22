@@ -42,6 +42,7 @@ from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_p
 from file_presence import is_directory, is_occupied, matching
 from folder_walk import outside_link_refusal
 from folders_up import folders_up
+from link_probe import is_link_or_junction
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
 from xml_reader import XmlRefused, read_xml
@@ -74,6 +75,11 @@ class Unreadable(Exception):
         super().__init__(f"{file}: {reason}")
         self.file = file
         self.reason = reason
+
+
+class Refused(Unreadable):
+    """A file a reader refused for where it lies, never for what it holds: outside the examined tree, or inside it
+    with a link on its way that leads out of it (`outside_link_refusal`)."""
 
 
 @dataclass(frozen=True)
@@ -163,19 +169,44 @@ def read_solution(path: Path) -> list[str]:
 
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
-    directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself. A
-    marker is judged from its own metadata and never followed, as the folder walk judges a nested checkout's, so a
-    link there marks a checkout wherever it leads, even nowhere, and nothing is stat through it. A marker it cannot
-    stat raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which
-    would take a folder above or the base for the tree."""
-    for folder in folders_up(base):
+    directory searched, which is the innermost checkout holding it: the nearest folder at or above it holding
+    `CHECKOUT_MARKER`, a folder or a file as a submodule's or a worktree's is, else `base` itself.
+
+    The folders are looked at from the top down, as `base` names them, so a link on its way is met before anything is
+    stat through it, and the look goes on below each checkout it meets, so a checkout inside another, such as a
+    project's inside a dotfiles checkout at the home folder, a submodule, or a worktree, is the one chosen. A folder
+    that is a link, a junction, or another reparse point is followed only while no checkout lies above it, as a link to
+    the place a repository is kept, or macOS's /var, is: the user's own choice of where to look. One inside a checkout
+    ends the look, and that checkout is the tree, so no marker is stat through a link that may lead out of it, whose
+    refusal is the caller's (`outside_link_refusal`). A marker is judged from its own metadata and never followed, as
+    the folder walk judges a nested checkout's, so a link there marks a checkout wherever it leads, even nowhere. A
+    folder or a marker it cannot stat raises `Unreadable` naming it, which the command refuses, never read as no
+    checkout there, which would take a folder above or the base for the tree; a folder that is not there ends the look,
+    since nothing below it holds a marker."""
+    absolute = base.absolute()
+    found: Path | None = None
+    for depth in range(1, len(absolute.parts) + 1):
+        folder = Path(*absolute.parts[:depth])
+        if depth > 1:
+            try:
+                linked = is_link_or_junction(folder)
+                if linked and found is None:
+                    # A link with no checkout above is followed, so one that leads nowhere it can be followed, such as
+                    # a loop, is refused naming it rather than the marker below it.
+                    folder.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                break
+            except OSError as error:
+                raise os_unreadable(error, folder) from None
+            if linked and found is not None:
+                break
         marker = folder / CHECKOUT_MARKER
         try:
             if is_occupied(marker):
-                return folder
+                found = folder
         except OSError as error:
             raise os_unreadable(error, marker) from None
-    return base
+    return base if found is None else found
 
 
 def platform_version(version: str) -> str:
@@ -269,11 +300,11 @@ def nearest_file(project_dir: Path, name: str, tree: Path | None = None) -> Path
     for Directory.Build.props and Directory.Packages.props: the first where `msbuild_file_exists` is true, so a link to
     nothing or a FIFO stops the search, as it stops MSBuild's, and its reader reports it as one it cannot read; None
     when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there, or, inside
-    `tree`, one that `outside_link_refusal` refuses, which is never stat."""
+    `tree`, `Refused` naming one that `outside_link_refusal` refuses, which is never stat."""
     for directory in folders_up(project_dir):
         candidate = directory / name
         if tree is not None and (linked := outside_link_refusal(candidate, tree)) is not None:
-            raise Unreadable(candidate, linked)
+            raise Refused(candidate, linked)
         try:
             if msbuild_file_exists(candidate):
                 return candidate

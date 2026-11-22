@@ -3701,6 +3701,446 @@ class PathBoundTests(Fixture):
         chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
         self.assertIn(chain, self.lines(rows, "PATH"))
 
+    def test_a_root_named_through_a_folder_link_inside_the_checkout_fails_and_nothing_is_stat_through_it(self) -> None:
+        # The checkout holding a --root is found from the top down, so a link inside it ends the look before the
+        # marker below the link is stat, and a solution or folder the link leads out of the checkout fails naming it,
+        # whether or not the folder it leads to holds a checkout of its own.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("outside/X.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Linked"
+        link_folder(outside, linked)
+        self.addCleanup(remove_link, linked)
+        reason = self.outside_reason(linked, "", repo)
+        for marked in (False, True):
+            if marked:
+                (outside / TEST_MARKER).mkdir()
+            for root in (linked / "X.sln", linked):
+                with self.subTest(marked=marked, root=root.name):
+                    touched: list[tuple[str, bool]] = []
+                    with recording_follows(touched):
+                        code, rows = self.run_main("why", "Outside.Pkg", "--root", str(root))
+                    self.assertEqual([], followed_through(touched, [linked], outside))
+                    self.assertEqual((1, [f"FAILED {root} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    def test_a_root_whose_dot_dot_follows_a_link_is_judged_where_the_system_takes_it(self) -> None:
+        # The system takes In/.. after following In, so In/../Linked is Real/Linked, a link out of the checkout, not
+        # the repo/Linked its text names: the run fails naming it, and nothing is stat through it.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (repo / "Real" / "Deep").mkdir(parents=True)
+        self.write("outside/X.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Real" / "Linked"
+        for target, link in ((repo / "Real" / "Deep", repo / "In"), (outside, linked)):
+            link_folder(target, link)
+            self.addCleanup(remove_link, link)
+        reason = self.outside_reason(linked, "", repo)
+        for named in (repo / "In" / ".." / "Linked" / "X.sln", repo / "In" / ".." / "Linked"):
+            with self.subTest(root=named.name):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Outside.Pkg", "--root", str(named))
+                self.assertEqual([], followed_through(touched, [linked], outside))
+                self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    def test_a_root_whose_dot_dot_follows_a_link_inside_the_checkout_is_read_where_the_link_leads(self) -> None:
+        # In/.. is taken after following In, on every platform, so In/../Other/App.sln is Real/Other/App.sln, read
+        # there; read by name, as Windows' own resolving would take it, it would be repo/Other/App.sln, which is not
+        # there.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (repo / "Real" / "Deep").mkdir(parents=True)
+        self.write("repo/Real/Other/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/Real/Other/App.sln", solution("Lib\\Lib.csproj"))
+        inside = repo / "In"
+        link_folder(repo / "Real" / "Deep", inside)
+        self.addCleanup(remove_link, inside)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(inside / ".." / "Other" / "App.sln"))
+        self.assertEqual((0, [(repo / "Real" / "Other" / "App.sln").as_posix()]), (code, self.lines(rows, "ROOT")[0]))
+
+    def test_a_root_whose_dot_dot_steps_back_through_a_link_out_of_the_checkout_fails_and_reads_nothing(self) -> None:
+        # L2/.. is the folder holding the place L2 leads to, outside the checkout, so L2/../O.sln is a solution outside
+        # it: the run fails naming L2, as it does for L2 itself, and neither stats nor reads anything there.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (outside / "a").mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "L2"
+        link_folder(outside / "a", linked)
+        self.addCleanup(remove_link, linked)
+        named = linked / ".." / "O.sln"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+        self.assertEqual([], followed_through(touched, [linked], outside))
+        reason = self.outside_reason(linked, "a", repo)
+        self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_root_whose_dot_dot_steps_back_through_a_relative_link_out_of_the_checkout_fails(self) -> None:
+        # The same with the link's target written relative, `../outside/a`: its own `..` leaves the checkout.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (outside / "a").mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "L2"
+        linked.symlink_to("../outside/a", target_is_directory=True)
+        self.addCleanup(linked.unlink)
+        named = linked / ".." / "O.sln"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+        self.assertEqual([], followed_through(touched, [linked], outside))
+        reason = (
+            f"{linked.as_posix()} is a link to ../outside/a, outside the examined tree {repo.as_posix()}, "
+            "which the reader does not follow"
+        )
+        self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    def test_a_name_not_there_before_a_dot_dot_is_missing_and_no_link_after_it_is_followed(self) -> None:
+        # Linux and macOS cannot open Missing/.., so a --root holding one fails as missing on every platform, never
+        # resolved past the missing name, which would follow Linked or L2 after it out of the checkout. A link to
+        # nothing there is the same.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (outside / "a").mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked, second = repo / "Linked", repo / "L2"
+        for target, link in ((outside, linked), (outside / "a", second)):
+            link_folder(target, link)
+            self.addCleanup(remove_link, link)
+        missing = repo / "Missing"
+        for named in (
+            missing / ".." / "Linked" / "O.sln",
+            missing / ".." / "L2" / ".." / "O.sln",
+            missing / ".." / "Linked",
+        ):
+            with self.subTest(root=str(named.relative_to(repo))):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+                self.assertEqual([], followed_through(touched, [linked, second], outside))
+                self.assertEqual((1, [f"FAILED {named} is missing"]), (code, rows[-1]))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to nothing needs a privilege on Windows")
+    def test_a_link_to_nothing_before_a_dot_dot_is_missing_and_no_link_after_it_is_followed(self) -> None:
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Linked"
+        link_folder(outside, linked)
+        self.addCleanup(remove_link, linked)
+        dangling = repo / "D2"
+        dangling.symlink_to("gone", target_is_directory=True)
+        self.addCleanup(dangling.unlink)
+        named = dangling / ".." / "Linked" / "O.sln"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+        self.assertEqual([], followed_through(touched, [linked], outside))
+        self.assertEqual((1, [f"FAILED {named} is missing"]), (code, rows[-1]))
+
+    def test_a_project_named_with_a_name_not_there_before_a_dot_dot_is_no_project_and_follows_no_link(self) -> None:
+        # The --project twin: Missing/../L2/../Other/Other.csproj is never resolved past Missing, so L2, leading out of
+        # the checkout, is not followed to learn where the path goes, and the project is none of the root's.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        (outside / "a").mkdir(parents=True)
+        second = repo / "L2"
+        link_folder(outside / "a", second)
+        self.addCleanup(remove_link, second)
+        named = repo / "Missing" / ".." / "L2" / ".." / "Other" / "Other.csproj"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+        self.assertEqual([], followed_through(touched, [second], outside))
+        self.assertEqual((1, f"FAILED {named} is not a project of {repo}"), (code, rows[-1][0]))
+
+    def test_a_root_whose_dot_dot_climbs_out_of_one_checkout_is_judged_in_the_next(self) -> None:
+        # Sub/../.. leaves repo at its top, where the system leaves it, and the rest is judged in the checkout it
+        # reaches: a solution there is read, and one a link there leads out of it through `..` fails naming the link.
+        repo = self.root / "repo"
+        other = self.root / "other"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (repo / "Sub").mkdir()
+        (other / TEST_MARKER).mkdir(parents=True)
+        self.write("other/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("other/App.sln", solution("Lib\\Lib.csproj"))
+        (outside / "a").mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        linked = other / "L3"
+        link_folder(outside / "a", linked)
+        self.addCleanup(remove_link, linked)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo / "Sub" / ".." / ".." / "other" / "App.sln"))
+        self.assertEqual((0, ["SUMMARY", "1", "1", "0"]), (code, rows[-1]))
+        named = repo / "Sub" / ".." / ".." / "other" / "L3" / ".." / "O.sln"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(named))
+        self.assertEqual([], followed_through(touched, [linked], outside))
+        reason = self.outside_reason(linked, "a", other)
+        self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    def test_a_root_is_judged_against_the_innermost_checkout_holding_it(self) -> None:
+        # A dotfiles checkout at the home folder holds a project's own checkout: the project's checkout is the tree,
+        # so a link in it to a folder elsewhere in the home folder leads out of the tree and fails the run, where the
+        # outer checkout would have taken it for a link inside and read through it.
+        home = self.root / "home"
+        app = home / "src" / "app"
+        (home / TEST_MARKER).mkdir(parents=True)
+        (app / TEST_MARKER).mkdir(parents=True)
+        self.write("home/other/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("home/other/X.sln", solution("Lib\\Lib.csproj"))
+        linked = app / "Linked"
+        link_folder(home / "other", linked)
+        self.addCleanup(remove_link, linked)
+        reason = (
+            f"{linked.as_posix()} is a link to {(home / 'other').as_posix()}, outside the examined tree "
+            f"{app.as_posix()}, which the reader does not follow"
+        )
+        for root in (linked / "X.sln", linked):
+            with self.subTest(root=root.name):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(root))
+                self.assertEqual([], followed_through(touched, [linked], home / "other"))
+                self.assertEqual((1, [f"FAILED {root} cannot be examined: {reason}"]), (code, rows[-1]))
+
+    def test_a_root_named_through_a_link_inside_the_tree_or_above_every_checkout_is_followed(self) -> None:
+        # A link whose target stays inside the checkout is read through, and one with no checkout above it is the
+        # user's own choice of root, followed to the solution it leads to.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/Real/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/Real/App.sln", solution("Lib\\Lib.csproj"))
+        inside = repo / "Inside"
+        link_folder(repo / "Real", inside)
+        self.addCleanup(remove_link, inside)
+        top = self.root / "Top"
+        link_folder(repo / "Real", top)
+        self.addCleanup(remove_link, top)
+        for root in (inside / "App.sln", inside, top / "App.sln", top):
+            with self.subTest(root=str(root.relative_to(self.root))):
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(root))
+                self.assertEqual((0, ["SUMMARY", "1", "1", "0"]), (code, rows[-1]))
+
+    def test_a_restored_project_whose_evaluation_refused_a_file_is_never_passed_to_the_sdk(self) -> None:
+        # MSBuild would read or stat what the evaluation refused: an import through a folder link leading out of the
+        # tree, or one outside it, and a GetPathOfFileAbove candidate or an Exists() path below such a link. So dotnet
+        # nuget why is not asked about that project, the walk answers it alone, and one line says why; a project whose
+        # evaluation refused nothing is still asked.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/shared/Common.props", "<Project />\n")
+        self.write("outside/Common.props", "<Project />\n")
+        shared = repo / "Shared"
+        link_folder(outside / "shared", shared)
+        self.addCleanup(remove_link, shared)
+        core = self.write("repo/src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("repo/src/Linked/Linked.csproj", importing("..\\..\\Shared\\Common.props"))
+        self.write("repo/src/Out/Out.csproj", importing("..\\..\\..\\outside\\Common.props"))
+        self.write(
+            "repo/src/Probe/Probe.csproj",
+            restored_with("<PropertyGroup Condition=\"Exists('..\\..\\Shared\\Flag.props')\"><P>1</P></PropertyGroup>"),
+        )
+        self.write(
+            "repo/src/Above/Above.csproj",
+            restored_with(
+                "<PropertyGroup><Up>$([MSBuild]::GetPathOfFileAbove('Flag.props', "
+                "'$(MSBuildThisFileDirectory)../../Shared'))</Up></PropertyGroup>"
+            ),
+        )
+        projects = ("Harbor.Core", "Linked", "Out", "Probe", "Above")
+        for name in projects:
+            self.write(f"repo/src/{name}/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write(
+            "repo/App.sln",
+            solution(*(f"src\\{name}\\{name}.csproj" for name in projects)),
+        )
+        not_asked = (
+            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
+            "the examined tree or a link on its way leads out of it"
+        )
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual(1, code)
+        self.assertEqual([[str(core), "Lantern.Json"]], [command[3:] for command in self.sdk.commands])
+        self.assertEqual(
+            [
+                ["src/Above/Above.csproj", "Lantern.Json", not_asked.format("Shared/Flag.props")],
+                ["src/Linked/Linked.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
+                ["src/Out/Out.csproj", "Lantern.Json", not_asked.format((outside / "Common.props").as_posix())],
+                ["src/Probe/Probe.csproj", "Lantern.Json", not_asked.format("Shared/Flag.props")],
+            ],
+            sorted(self.lines(rows, "SDK_FAILED")),
+        )
+        # The walk answers each project the SDK was not asked about.
+        walked = {row[0] for row in self.lines(rows, "PATH") if row[3] == "graph"}
+        self.assertEqual({f"src/{name}/{name}.csproj" for name in projects[1:]}, walked)
+
+    def test_a_restored_project_whose_unread_import_or_outside_probe_was_refused_is_never_passed_to_the_sdk(
+        self,
+    ) -> None:
+        # An Import the reader does not read, for a condition it cannot settle, on the Import or its ImportGroup, or a
+        # wildcard path, is still judged where it lies, a wildcard by its folder, since MSBuild may read it; and an
+        # Exists() path or a GetPathOfFileAbove start outside the tree, with no link, is kept too, since MSBuild
+        # stats it. So the SDK is asked about none of these projects, and each SDK_FAILED line names the path.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/shared/Common.props", "<Project />\n")
+        self.write("outside/Flag.props", "<Project />\n")
+        shared = repo / "Shared"
+        link_folder(outside / "shared", shared)
+        self.addCleanup(remove_link, shared)
+        core = self.write("repo/src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        bodies = {
+            "Cond": "<Import Project=\"..\\..\\Shared\\Common.props\" Condition=\"'$(CI)' == 'true'\" />",
+            "Group": (
+                "<ImportGroup Condition=\"'$(OS)' == 'Windows_NT'\">"
+                '<Import Project="..\\..\\Shared\\Common.props" /></ImportGroup>'
+            ),
+            "Wild": '<Import Project="..\\..\\Shared\\*.props" />',
+            "WildOut": '<Import Project="..\\..\\Sh*\\..\\..\\outside\\x.props" />',
+            "ExOut": "<PropertyGroup Condition=\"Exists('..\\..\\..\\outside\\Flag.props')\"><P>1</P></PropertyGroup>",
+            "AboveOut": (
+                "<PropertyGroup><Up>$([MSBuild]::GetPathOfFileAbove('Flag.props', "
+                "'$(MSBuildThisFileDirectory)../../../outside'))</Up></PropertyGroup>"
+            ),
+        }
+        for name, body in bodies.items():
+            self.write(f"repo/src/{name}/{name}.csproj", restored_with(body))
+        projects = ("Harbor.Core", *bodies)
+        for name in projects:
+            self.write(f"repo/src/{name}/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("repo/App.sln", solution(*(f"src\\{name}\\{name}.csproj" for name in projects)))
+        not_asked = (
+            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
+            "the examined tree or a link on its way leads out of it"
+        )
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        # Judging the paths reaches nothing outside, the Exists() path and the GetPathOfFileAbove start included.
+        self.assertEqual([], followed_through(touched, [shared], outside))
+        self.assertEqual(1, code)
+        self.assertEqual([[str(core), "Lantern.Json"]], [command[3:] for command in self.sdk.commands])
+        self.assertEqual(
+            [
+                ["src/AboveOut/AboveOut.csproj", "Lantern.Json", not_asked.format(outside.as_posix())],
+                ["src/Cond/Cond.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
+                ["src/ExOut/ExOut.csproj", "Lantern.Json", not_asked.format((outside / "Flag.props").as_posix())],
+                ["src/Group/Group.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
+                ["src/Wild/Wild.csproj", "Lantern.Json", not_asked.format("Shared")],
+                ["src/WildOut/WildOut.csproj", "Lantern.Json", not_asked.format((outside / "x.props").as_posix())],
+            ],
+            sorted(self.lines(rows, "SDK_FAILED")),
+        )
+
+    def test_a_refused_file_says_nothing_of_the_sdk_where_the_sdk_would_not_be_asked_anyway(self) -> None:
+        # Without dotnet, or with a restore older than the project, the SDK is not asked whatever the evaluation
+        # refused, so no SDK_FAILED line says it was not asked, and no project records a refused file for it.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/Common.props", "<Project />\n")
+        self.write("repo/src/Out/Out.csproj", importing("..\\..\\..\\outside\\Common.props"))
+        assets = self.write("repo/src/Out/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("repo/App.sln", solution("src\\Out\\Out.csproj"))
+        old = time.time() - 600
+        for name, services, stale in (("no dotnet", self.without_dotnet, False), ("stale", self.with_dotnet, True)):
+            with self.subTest(name):
+                if stale:
+                    os.utime(assets, (old, old))
+                (project,) = dependency_graph.build_graph(root, services).projects.values()
+                self.assertEqual((False, None), (project.sdk_answers, project.sdk_refused))
+                _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
+                self.assertEqual(([], []), (self.lines(rows, "SDK_FAILED"), self.sdk.commands))
+
+    def test_the_files_an_evaluation_refused_are_listed_once_in_the_order_met_and_the_first_is_named(self) -> None:
+        # A.props is met by the evaluation of the files alone and by the net8.0 build, B.props by the build alone,
+        # before A there: each is listed once, the files alone first, and the SDK_FAILED line names A.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/A.props", "<Project />\n")
+        self.write("outside/B.props", "<Project />\n")
+        self.write(
+            "repo/src/Two/Two.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks></PropertyGroup>\n"
+            "  <Import Project=\"..\\..\\..\\outside\\B.props\" Condition=\"'$(TargetFramework)' == 'net8.0'\" />\n"
+            '  <Import Project="..\\..\\..\\outside\\A.props" />\n'
+            '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
+            "</Project>\n",
+        )
+        self.write("repo/src/Two/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("repo/App.sln", solution("src\\Two\\Two.csproj"))
+        graph = dependency_graph.build_graph(root, self.with_dotnet)
+        (project,) = graph.projects.values()
+        first, second = outside / "A.props", outside / "B.props"
+        self.assertEqual([first, second], project.file.refused())
+        self.assertEqual(first, project.sdk_refused)
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual((1, []), (code, self.sdk.commands))
+        reason = (
+            f"dotnet nuget why was not asked, since MSBuild would reach {first.as_posix()}, which the reader refused: "
+            "it lies outside the examined tree or a link on its way leads out of it"
+        )
+        self.assertEqual([["src/Two/Two.csproj", "Lantern.Json", reason]], self.lines(rows, "SDK_FAILED"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_restored_project_whose_nearest_props_file_was_refused_is_never_passed_to_the_sdk(self) -> None:
+        # The nearest Directory.Packages.props, a link leading out of the tree, is refused unread; MSBuild would read
+        # it, so the SDK is not asked about the project it lies above.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/Directory.Packages.props", TOP_CENTRAL)
+        self.write("repo/src/Props/Props.csproj", CORE_PROJECT)
+        self.write("repo/src/Props/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        self.linked_out(repo / "src" / "Props" / "Directory.Packages.props", "Directory.Packages.props")
+        root = self.write("repo/App.sln", solution("src\\Props\\Props.csproj"))
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual(1, code)
+        self.assertEqual([], self.sdk.commands)
+        self.assertEqual(
+            [
+                [
+                    "src/Props/Props.csproj",
+                    "Lantern.Json",
+                    "dotnet nuget why was not asked, since MSBuild would reach src/Props/Directory.Packages.props, "
+                    "which the reader refused: it lies outside the examined tree or a link on its way leads out of it",
+                ]
+            ],
+            self.lines(rows, "SDK_FAILED"),
+        )
+
+
+def restored_with(element: str) -> str:
+    """A restored SDK-style project like Harbor.Core with `element` before its body."""
+    return CORE_PROJECT.replace("<PropertyGroup>", f"{element}\n  <PropertyGroup>", 1)
+
+
+def importing(path: str) -> str:
+    """A restored SDK-style project like Harbor.Core that imports `path` before its body."""
+    return restored_with(f'<Import Project="{path}" />')
+
 
 def sdk_project(body: str) -> str:
     return f'<Project Sdk="Microsoft.NET.Sdk">{body}</Project>'
