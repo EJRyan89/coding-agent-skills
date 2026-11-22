@@ -534,6 +534,14 @@ class EnvironmentTests(unittest.TestCase):
         environment = runtime_canary.environment({"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, home / "log", home)
         self.assertEqual("1", environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"])
 
+    def test_claude_code_writes_no_auto_memory_even_where_the_user_forces_it_on(self) -> None:
+        # CLAUDE_CODE_DISABLE_CLAUDE_MDS stops only the loading of auto memory, so a session could still save memories
+        # under the user's own ~/.claude/projects, and a user's 0 forces auto memory on over --bare and
+        # autoMemoryEnabled: false, so it is replaced by 1.
+        home = Path(tempfile.gettempdir()) / "home"
+        environment = runtime_canary.environment({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}, home / "log", home)
+        self.assertEqual("1", environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"])
+
     def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)

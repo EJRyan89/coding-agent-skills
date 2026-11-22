@@ -1403,6 +1403,32 @@ class PytestConfigurationPolicy(unittest.TestCase):
         # A folder no suite sits in or below is never searched.
         self.assertEqual([], self.problems({**suites, "docs/pytest.ini": ""}))
 
+    def test_the_walk_up_from_a_suite_stops_below_the_root(self) -> None:
+        pinned = '[tool.pytest.ini_options]\naddopts = ["-p", "no:cacheprovider", "--capture=no"]\nstrict = true\n'
+        beside = (
+            "pytest.ini is a pytest configuration file beside pyproject.toml; keep the configuration in "
+            "[tool.pytest.ini_options] alone"
+        )
+        files = {"pyproject.toml": pinned, "pytest.ini": "", "tests/test_a.py": "def test_a():\n    pass\n"}
+        # The root's own file is reported once, as the root's, never as a folder above the suite's.
+        self.assertEqual([beside], self.problems(files))
+        self.assertEqual(
+            [
+                beside,
+                "tests/pytest.ini is a pytest configuration file pytest may read for tests/test_a.py instead of the "
+                "root's pyproject.toml; keep the configuration there",
+            ],
+            self.problems({**files, "tests/pytest.ini": ""}),
+        )
+        # A suite in the root itself, or outside it, has no folder of its own to search.
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as elsewhere:
+            root = Path(temporary)
+            write_fixture_tree(root, {"pyproject.toml": pinned, "pytest.ini": ""})
+            write_fixture_tree(Path(elsewhere), {"pytest.ini": "", "test_b.py": ""})
+            suites = [root / "test_a.py", Path(elsewhere) / "test_b.py"]
+            with mock.patch.object(suite_discovery, "regression_suites", return_value=suites):
+                self.assertEqual([beside], pytest_configuration_problems(root))
+
 
 class PoolSharedStatePolicy(unittest.TestCase):
     RUNNER = "import alpha\nimport beta\n\nPOLICY_MODULES = (alpha, beta)\n"

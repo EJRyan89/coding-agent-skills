@@ -334,7 +334,8 @@ def environment_keys(node: ast.AST) -> Iterator[ast.expr]:
         if name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, (ast.Tuple, ast.List, ast.Set)):
             yield from node.value.elts
         elif name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, ast.Dict):
-            # Settings a caller spreads into an environment, as search_boundary's CLAUDE_INSTRUCTIONS_OFF_VARIABLES.
+            # Settings a caller spreads into an environment, as search_boundary's
+            # CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES.
             yield from (key for key in node.value.keys if key is not None)
 
 

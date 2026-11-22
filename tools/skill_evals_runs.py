@@ -29,7 +29,7 @@ import whole_number
 from git_client import NO_HOOKS, GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
-from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
+from search_boundary import CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES
 from text_lines import LINE_BREAK, text_lines
 
 from deployer import fsops, tools
@@ -90,16 +90,11 @@ AGENT_KEYS = frozenset({"name", "description", "tools", "model", "effort", "omit
 # The variables whose effort outranks an agent's own `effort`, which a run leaves out so the reviewer's stated effort
 # holds; a module-level *_VARIABLES collection, so tools/runtime_changelogs.py watches the changelogs for them.
 EFFORT_VARIABLES = ("CLAUDE_CODE_EFFORT_LEVEL",)
-# The variable that keeps a session from writing auto memory as well as loading it: "When disabled, Claude does not
-# create or load auto memory files" (CLAUDE_CODE_DISABLE_AUTO_MEMORY, https://code.claude.com/docs/en/env-vars, and
-# "Enable or disable auto memory", https://code.claude.com/docs/en/memory). CLAUDE_INSTRUCTIONS_OFF_VARIABLES stops
-# only the loading, so without it a run could still save memories into the user's own memory folder for the home,
-# which every run on that model shares. Also a *_VARIABLES collection the changelog watch reads.
-AUTO_MEMORY_OFF_VARIABLES = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 # No run writes `claudeMdExcludes` (https://code.claude.com/docs/en/memory, "Exclude specific CLAUDE.md files"):
-# CLAUDE_INSTRUCTIONS_OFF_VARIABLES' CLAUDE_CODE_DISABLE_CLAUDE_MDS already keeps every CLAUDE.md out, "including
-# user, project, and auto memory files" (https://code.claude.com/docs/en/env-vars), and the managed one too, which
-# the memory page says claudeMdExcludes cannot exclude, so a list of excluded files would repeat a narrower part of it.
+# CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES' CLAUDE_CODE_DISABLE_CLAUDE_MDS already keeps every CLAUDE.md out,
+# "including user, project, and auto memory files" (https://code.claude.com/docs/en/env-vars), and the managed one too,
+# which the memory page says claudeMdExcludes cannot exclude, so a list of excluded files would repeat a narrower part
+# of it.
 # What the home's path may not hold: the hook command quotes it for Python inside a Bash double quote.
 UNQUOTABLE = re.compile(r"[\\'\"`$!]")
 # The review version a run's record must be, by the scenario's mode: a re-review's canary root first holds the prior
@@ -459,9 +454,9 @@ def skills_in_stream(output: str) -> list[str]:
 
 def trigger_environment(base: Mapping[str, str], run: Path) -> dict[str, str]:
     """The user's environment, sign-in included, with the run's own temporary directory, and with
-    CLAUDE_INSTRUCTIONS_OFF_VARIABLES, so the session reads no CLAUDE.md from a folder above the home, nor any of the
-    user's own, nor auto memory, and with AUTO_MEMORY_OFF_VARIABLES, so it writes no auto memory either."""
-    return {**base, "TMPDIR": str(run / "tmp"), **CLAUDE_INSTRUCTIONS_OFF_VARIABLES, **AUTO_MEMORY_OFF_VARIABLES}
+    CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES, so the session reads no CLAUDE.md from a folder above the home, nor
+    any of the user's own, nor auto memory, and writes no auto memory either."""
+    return {**base, "TMPDIR": str(run / "tmp"), **CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES}
 
 
 def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:

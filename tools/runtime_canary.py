@@ -236,19 +236,20 @@ UNBOUNDED = (
     "agents from the folders above it"
 )
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
-# What each runtime still loads from the user's real configuration once the canary's flags have switched off all
-# they can. Claude Code: checked with a local stand-in for its API under --setting-sources project,local and
-# search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES, with which no CLAUDE.md, rules file, or auto-memory reaches the
-# request, the user's own included. Codex and Copilot: their skill listings and the flags each offers. Codex's AGENTS.md
-# page: every run reads the Codex home's AGENTS.override.md or AGENTS.md, and its command-line reference says
-# --ignore-user-config skips config.toml only. Codex's hooks page: managed hooks, from the system hooks.json,
-# requirements.toml, and MDM or cloud configuration, are trusted by policy and run without review. Copilot's hooks
-# reference: policy, user, and installed plugins' hooks all load and combine, user hooks without admission, and policy
-# hooks machine-wide, which nothing the user sets turns off. Copilot's command reference: its "Skill locations" table
-# lists installed plugins' directories, "Custom agent locations" lists ~/.copilot/agents and installed plugins, and "MCP
-# server loading priority" lists plugin-provided servers, while --disable-builtin-mcps leaves the bundled computer-use
-# plugin's server alone. Codex's pages leave two sources open, so KEPT does not name them: whether a user hooks.json
-# the user trusted, or a plugin its marketplace or the account enables, still loads when config.toml is not read.
+# What each runtime still loads from the user's real configuration once the canary's flags have switched off all they
+# can. Claude Code: checked with a local stand-in for its API under --setting-sources project,local and
+# search_boundary.CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES, with which no CLAUDE.md, rules file, or auto memory
+# reaches the request, the user's own included, and no session writes auto memory. Codex and Copilot: their skill
+# listings and the flags each offers. Codex's AGENTS.md page: every run reads the Codex home's AGENTS.override.md or
+# AGENTS.md, and its command-line reference says --ignore-user-config skips config.toml only. Codex's hooks page:
+# managed hooks, from the system hooks.json, requirements.toml, and MDM or cloud configuration, are trusted by policy
+# and run without review. Copilot's hooks reference: policy, user, and installed plugins' hooks all load and combine,
+# user hooks without admission, and policy hooks machine-wide, which nothing the user sets turns off. Copilot's command
+# reference: its "Skill locations" table lists installed plugins' directories, "Custom agent locations" lists
+# ~/.copilot/agents and installed plugins, and "MCP server loading priority" lists plugin-provided servers, while
+# --disable-builtin-mcps leaves the bundled computer-use plugin's server alone. Codex's pages leave two sources open, so
+# KEPT does not name them: whether a user hooks.json the user trusted, or a plugin its marketplace or the account
+# enables, still loads when config.toml is not read.
 KEPT = {
     "claude": "sign-in only",
     "codex": "global AGENTS.override.md or AGENTS.md in ~/.codex; personal skills in ~/.agents/skills and "
@@ -661,8 +662,9 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
     """The runtime's own environment, sign-in included, plus the Python and Bash recorders and PINNED_VERSION, without
     git's repository-selecting variables, so the runtime and the skill it runs read the canary home, not the
     repository a shell's `GIT_DIR` names, and with ejryan89-skill-core's
-    `search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`, so Claude Code reads no CLAUDE.md from the temporary directory
-    or a folder above it, nor any of the user's own."""
+    `search_boundary.CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES`, so Claude Code reads no CLAUDE.md from the temporary
+    directory or a folder above it, nor any of the user's own, and writes no auto memory into the user's own
+    configuration."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
@@ -671,7 +673,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),
         **PINNED_VERSION,
-        **search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES,
+        **search_boundary.CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES,
     }
 
 

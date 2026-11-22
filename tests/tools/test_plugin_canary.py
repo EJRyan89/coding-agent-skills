@@ -589,6 +589,26 @@ def test_a_result_of_another_kind_fails_the_check_naming_its_kind_never_as_no_re
     )
 
 
+def test_every_claude_code_session_writes_no_auto_memory_even_where_the_user_forces_it_on(tmp_path: Path) -> None:
+    # CLAUDE_CODE_DISABLE_CLAUDE_MDS stops only the loading of auto memory, so a session could still save memories
+    # under the user's own ~/.claude/projects, and a user's 0 forces auto memory on over --bare and
+    # autoMemoryEnabled: false, so it is replaced by 1.
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+    seen: list[dict[str, str]] = []
+
+    def recording(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        seen.append(environment)
+        return Completed(0, "", "")
+
+    session = canary.Session(tmp_path, recording, {"PATH": "x", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}, 30)
+    canary.probe(session, "claude", {"runtime-canary": str(installed)}, "runtime-canary")
+    canary.guard(session, "claude", {"a": "b"}, "coding-agent-skills")
+    canary.unguarded(session, "claude", {"a": "b"}, "coding-agent-skills")
+    assert [environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] for environment in seen] == ["1", "1", "1"]
+
+
 # -- canary() and main() ----------------------------------------------------------------------------------------
 
 
