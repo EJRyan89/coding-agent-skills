@@ -17,6 +17,11 @@ lines a quote or a list item holds, lazy lines included, is markdown_sections' `
 lines as that walk, so every heading that ends the section, ATX, setext, or HTML, is one no container holds by one
 reading, within the limits markdown_sections' walk states.
 
+The limit:
+- an underline under an HTML block other than a comment's or an `<h1>` or `<h2>`, such as a `<div>` closed by
+  `</div>`, makes the block's lines a setext heading that ends the section, since hidden_comments reads such a block
+  as a paragraph, where GitHub reads the underline as the block's.
+
 A title is a fix's when it opens with the type `fix`, in any case, an optional scope, an optional `!`, a colon, and a
 space, by the grammar `TITLE` reads every pull request title with.
 """
