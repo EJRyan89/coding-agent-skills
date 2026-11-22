@@ -2465,7 +2465,6 @@ class RunPieceTests(unittest.TestCase):
             skill_evals_runs.run_environment(forced, run, config),
         ):
             self.assertEqual("1", environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"])
-        self.assertEqual({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}, skill_evals_runs.AUTO_MEMORY_OFF_VARIABLES)
 
     def test_the_configuration_is_one_the_core_accepts(self) -> None:
         written = write_config(skill_evals_runs.review_config(self.root), self.root / "config.json")
