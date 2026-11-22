@@ -29,6 +29,7 @@ from msbuild_reader import (
     framework_key,
     matching_framework,
     nearest_file,
+    outside_link_refusal,
     package_assemblies,
     read_assets,
     read_bounded,
@@ -582,6 +583,116 @@ class PathBoundTests(unittest.TestCase):
             with self.assertRaises(Unreadable) as refused:
                 read_solution(listed)
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
+
+    def outside(self, link: Path, target: Path | str, tree: Path) -> str:
+        target_text = target.as_posix() if isinstance(target, Path) else target
+        return (
+            f"{link.as_posix()} is a link to {target_text}, outside the examined tree {tree.as_posix()}, which the "
+            "reader does not follow"
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_whose_target_stays_inside_the_tree_is_read_and_so_is_a_plain_missing_or_outside_path(self) -> None:
+        # Relative and absolute targets inside the tree, a folder link inside it, and a `..` that steps back inside
+        # are each followed as the system follows them; a missing name is left to its reader, and a path outside the
+        # tree to `refusal`.
+        repo = self.root / "repo"
+        (repo / "Lib").mkdir(parents=True)
+        (repo / "Lib" / "Lib.csproj").write_text("<Project />", encoding="utf-8")
+        (repo / "In.csproj").symlink_to("Lib/Lib.csproj")
+        (repo / "Abs.csproj").symlink_to(repo / "Lib" / "Lib.csproj")
+        (repo / "Via").symlink_to(repo / "Lib", target_is_directory=True)
+        self.addCleanup((repo / "Via").unlink)
+        (repo / "Lib" / "Up.csproj").symlink_to("../Via/./Lib.csproj")
+        for path in (
+            repo / "In.csproj",
+            repo / "Abs.csproj",
+            repo / "Via" / "Lib.csproj",
+            repo / "Lib" / "Up.csproj",
+            repo / "Lib" / "Lib.csproj",
+            repo / "Gone" / "Gone.csproj",
+            repo / "Lib" / "Lib.csproj" / "Under.csproj",
+            self.root / "Elsewhere.csproj",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(outside_link_refusal(path, repo))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_leading_outside_the_tree_is_refused_naming_it_and_nothing_outside_is_examined(self) -> None:
+        # An absolute target, a relative one climbing out with `..`, a `..` after a folder link that leads outside
+        # (which the text alone reads as inside), and a target naming the tree through `..` are each refused naming
+        # the last link followed, with no stat, lstat, or listing of anything outside the tree.
+        repo = self.root / "repo"
+        repo.mkdir()
+        outside = self.root / "outside"
+        (outside / "sub").mkdir(parents=True)
+        (outside / "F.csproj").write_text("<Project />", encoding="utf-8")
+        (repo / "Abs.csproj").symlink_to(outside / "F.csproj")
+        (repo / "Rel.csproj").symlink_to("../outside/F.csproj")
+        (repo / "Out").symlink_to(outside / "sub", target_is_directory=True)
+        self.addCleanup((repo / "Out").unlink)
+        (repo / "Back.csproj").symlink_to("Out/../F.csproj")
+        alias = f"{repo.as_posix()}/../repo/Lib.csproj"
+        (repo / "Alias.csproj").symlink_to(alias)
+        cases = (
+            (repo / "Abs.csproj", self.outside(repo / "Abs.csproj", outside / "F.csproj", repo)),
+            (repo / "Rel.csproj", self.outside(repo / "Rel.csproj", "../outside/F.csproj", repo)),
+            (repo / "Back.csproj", self.outside(repo / "Out", outside / "sub", repo)),
+            (repo / "Out" / "F.csproj", self.outside(repo / "Out", outside / "sub", repo)),
+            (repo / "Alias.csproj", self.outside(repo / "Alias.csproj", alias, repo)),
+        )
+        touched: list[str] = []
+
+        def recording(real: Callable[..., Any]) -> Callable[..., Any]:
+            def call(name: Any, *rest: Any, **options: Any) -> Any:
+                touched.append(str(name))
+                return real(name, *rest, **options)
+
+            return call
+
+        for path, reason in cases:
+            with self.subTest(path=path), contextlib.ExitStack() as stack:
+                for name in ("stat", "lstat", "scandir"):
+                    stack.enter_context(mock.patch.object(os, name, recording(getattr(os, name))))
+                self.assertEqual(reason, outside_link_refusal(path, repo))
+        # The links are judged, but nothing in the outside folder, nor anything through Out, is examined; the tree's
+        # parent folder is listed only by the case probe that compares a path with the tree, which lstats its entries.
+        self.assertIn(str(repo / "Out"), touched)
+        below = [
+            name for name in touched if any(Path(name).is_relative_to(folder) for folder in (outside, repo / "Out"))
+        ]
+        self.assertEqual([], [name for name in below if name not in (str(outside), str(repo / "Out"))])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_loop_of_links_an_unreadable_link_and_an_unreadable_name_are_refused(self) -> None:
+        repo = self.root / "repo"
+        repo.mkdir()
+        loop = repo / "Loop.csproj"
+        loop.symlink_to("Loop.csproj")
+        self.assertEqual(40, msbuild_reader.LINK_LIMIT)
+        self.assertEqual(
+            "more than 40 links lie on the way to it, which the reader does not follow",
+            outside_link_refusal(loop, repo),
+        )
+        # A chain as long as the limit is followed; one link more is refused.
+        chain = repo / "Chain.csproj"
+        chain.symlink_to("Next.csproj")
+        (repo / "Next.csproj").write_text("<Project />", encoding="utf-8")
+        with mock.patch.object(msbuild_reader, "LINK_LIMIT", 1):
+            self.assertIsNone(outside_link_refusal(chain, repo))
+        with mock.patch.object(msbuild_reader, "LINK_LIMIT", 0):
+            self.assertEqual(
+                "more than 0 links lie on the way to it, which the reader does not follow",
+                outside_link_refusal(chain, repo),
+            )
+        with failing_without_a_file(Path, "readlink", chain):
+            self.assertEqual(
+                f"{chain.as_posix()} is a link whose target cannot be read: Access is denied",
+                outside_link_refusal(chain, repo),
+            )
+        locked = repo / "Locked"
+        with stat_failing_at(locked):
+            self.assertEqual("Access is denied", outside_link_refusal(locked / "Lib.csproj", repo))
 
 
 @pytest.mark.parametrize(

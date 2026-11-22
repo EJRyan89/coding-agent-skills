@@ -17,7 +17,8 @@ forward slashes:
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
-                  outside the examined tree, a condition, name, metadata value, or AssemblyName they cannot
+                  outside the examined tree, a file a link on its way leads outside it, naming the link and its
+                  target, a condition, name, metadata value, or AssemblyName they cannot
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
                   not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
                   bound stopped it at; its facts are missing
@@ -74,12 +75,13 @@ second the folder the bound stopped the search at, each ending with the advice t
 solution or its folder, and, when the search found no project at all, with each folder it did not search, as the
 FAILED line of a search finding none names them. A project named through a link to its file is the project the search
 found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
-why it did not reach it; a project below a link on its way is never stat, since the link may lead outside the
-examined tree, so the folder the search passed over is named whether or not the file is there; so is one below a
-folder whose metadata cannot be read. A limit: the --project argument itself is resolved, up to its last `..` and in
-full to match a project found through a link inside the tree, as the narrowing always resolved it, which follows each
-link on its way, reads the metadata of each name past it, and lists each folder past it to learn its case rule; no
-file's contents are read through a link.
+why it did not reach it; a project below a link on its way, or one that is itself a link, is never stat, since the
+link may lead outside the examined tree, so the folder the search passed over is named whether or not the file is
+there; so is one below a folder whose metadata cannot be read. A limit: the --project argument itself is resolved, up
+to its last `..`, and in full to match a project found through a link inside the tree unless a link on its way inside
+the examined tree leads outside it, as the narrowing always resolved it, which follows each link on its way before
+its last `..`, and each link of a path resolved in full, reads the metadata of each name past it, and lists each
+folder past it to learn its case rule; no file's contents are read through a link.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -91,7 +93,14 @@ or one through a packages.config project; for every other project it answers alo
 changes which source a route names and which version leads where the two differ, never which routes are printed.
 A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
 directory searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES
-(msbuild_reader's docstring).
+(msbuild_reader's docstring). Nothing inside the tree is stat, listed, or read through a link that leads outside it
+(msbuild_reader's outside_link_refusal): a project the search finds or a solution lists, an import, the nearest
+Directory.Build.props or Directory.Packages.props, a restore's assets, a packages.config, a config, or a nuspec in the
+packages folder, or the packages folder and a package's folder in it, that a link on its way, its own name included,
+leads outside the tree is an UNREADABLE line naming the link and its target, and an Exists() condition below such a
+link is reported and unsettled; a link whose target stays inside the tree is read through. The NuGet cache lies
+outside the tree and is read where it is. A limit: the names of the assemblies a package's lib folder ships are
+listed with a glob, which may list through a link below that folder; it reads no file's contents.
 The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line
 FAILED <reason> when it cannot finish, such as when the root cannot be resolved, --project names no project of the
 root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be written.
@@ -141,6 +150,7 @@ from msbuild_reader import (
     examined_tree,
     matching_framework,
     os_unreadable,
+    outside_link_refusal,
     package_assemblies,
     read_assets,
     read_nuspec,
@@ -327,12 +337,13 @@ def as_named(path: Path) -> Path:
 
 
 def through_link(root: Path, names: Sequence[str]) -> bool:
-    """Whether the file `names` name below `root` may lie through a link: a folder on its way is a link, a junction, or
-    another reparse point, judged from each folder's own metadata and never followed, so nothing is stat through a
-    link that may lead outside the examined tree. A folder whose metadata cannot be read ends the look as one: what
-    lies past it is not stat either. A folder that is not there ends it as none, since nothing lies past it to reach."""
+    """Whether the file `names` name below `root` may lie through a link: a folder on its way, or the file itself, is a
+    link, a junction, or another reparse point, judged from each name's own metadata and never followed, so nothing is
+    stat through a link that may lead outside the examined tree. A name whose metadata cannot be read ends the look as
+    one: what lies past it is not stat either. A name that is not there ends it as none, since nothing lies past it to
+    reach."""
     folder = root
-    for name in names[:-1]:
+    for name in names:
         folder = folder / name
         try:
             if is_link_or_junction(folder):
@@ -452,7 +463,7 @@ def resolve_root(
             if not ordinal_fold(listed).endswith(PROJECT_SUFFIX):
                 continue
             candidate = project_path(path.parent, listed)
-            refused = refusal(candidate, tree)
+            refused = refusal(candidate, tree) or outside_link_refusal(candidate, tree)
             if refused is not None:
                 graph_unreadable.append((candidate, refused))
                 continue
@@ -525,6 +536,9 @@ def read_configs(graph: Graph, project: Project) -> None:
     for candidate in entries:
         if ordinal_fold(candidate.name) not in CONFIG_FILES:
             continue
+        if (linked := outside_link_refusal(candidate, graph.tree)) is not None:
+            graph.refuse(Unreadable(candidate, linked))
+            continue
         try:
             if not file_presence.is_present(candidate, other_is_absent=True):
                 continue
@@ -557,30 +571,33 @@ def nuget_cache() -> list[Path]:
     return found
 
 
-def packages_folder(project_dir: Path, stop: Path) -> Path | None:
+def packages_folder(project_dir: Path, stop: Path, tree: Path) -> Path | None:
     """The nearest `packages` folder from the project's directory up to the solution's, or None; `Unreadable` naming
-    a candidate whose stat fails."""
+    a candidate whose stat fails, or one a link leads outside `tree` (`outside_link_refusal`), which is never stat."""
     for folder in folders_up(project_dir, stop):
+        if (linked := outside_link_refusal(candidate := folder / "packages", tree)) is not None:
+            raise Unreadable(candidate, linked)
         try:
-            if file_presence.is_directory(candidate := folder / "packages", other_is_absent=True):
+            if file_presence.is_directory(candidate, other_is_absent=True):
                 return candidate
         except OSError as error:
             raise os_unreadable(error, folder / "packages") from None
     return None
 
 
-def package_directory(folders: Sequence[Path], package: str, version: str) -> Path | None:
+def package_directory(folders: Sequence[Path], package: str, version: str, tree: Path) -> Path | None:
     """The folder a package at a version is unpacked in: `<id>.<version>` in a packages folder, or
     `<id>/<version>` in the NuGet cache, matched without regard to case. A folder it cannot list or an entry it cannot
-    stat raises Unreadable naming it, never reads as a package that is not unpacked there."""
+    stat raises Unreadable naming it, never reads as a package that is not unpacked there, and so does an entry inside
+    `tree` that a link leads outside it."""
     for folder in folders:
         wanted = {ordinal_fold(f"{package}.{version}"), ordinal_fold(f"{package}/{version}")}
         for child in _entries(folder):
-            if ordinal_fold(child.name) == ordinal_fold(f"{package}.{version}") and _folder(child):
+            if ordinal_fold(child.name) == ordinal_fold(f"{package}.{version}") and _folder(child, tree):
                 return child
-            if ordinal_fold(child.name) == ordinal_fold(package) and _folder(child):
+            if ordinal_fold(child.name) == ordinal_fold(package) and _folder(child, tree):
                 for inner in _entries(child):
-                    if ordinal_fold(f"{child.name}/{inner.name}") in wanted and _folder(inner):
+                    if ordinal_fold(f"{child.name}/{inner.name}") in wanted and _folder(inner, tree):
                         return inner
     return None
 
@@ -593,9 +610,11 @@ def _entries(folder: Path) -> list[Path]:
         raise os_unreadable(error, folder) from None
 
 
-def _folder(path: Path) -> bool:
+def _folder(path: Path, tree: Path) -> bool:
     """Whether a folder is at path: False for nothing or something else there, and Unreadable naming the path when
-    its stat fails."""
+    its stat fails or a link leads it outside `tree` (`outside_link_refusal`), which is never stat."""
+    if (linked := outside_link_refusal(path, tree)) is not None:
+        raise Unreadable(path, linked)
     try:
         return file_presence.is_directory(path, other_is_absent=True)
     except OSError as error:
@@ -607,7 +626,7 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
     if not reference.version:
         return None
     try:
-        directory = package_directory(folders, reference.id, reference.version)
+        directory = package_directory(folders, reference.id, reference.version, graph.tree)
     except Unreadable as error:
         graph.refuse(error)
         return None
@@ -621,6 +640,9 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         graph.refuse(os_unreadable(error, directory))
         return None
     if not nuspecs:
+        return None
+    if (linked := outside_link_refusal(nuspecs[0], graph.tree)) is not None:
+        graph.refuse(Unreadable(nuspecs[0], linked))
         return None
     try:
         return read_nuspec(nuspecs[0], package_assemblies(directory))
@@ -732,7 +754,7 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
             graph.refuse(error)
         folders: list[Path] = []
         try:
-            folder = packages_folder(project.file.path.parent, graph.base)
+            folder = packages_folder(project.file.path.parent, graph.base, graph.tree)
             folders = [folder] if folder else nuget_cache()
         except Unreadable as error:
             graph.refuse(error)
@@ -748,8 +770,12 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
 
 
 def _present(graph: Graph, path: Path) -> bool:
-    """Whether a regular file is at path: False for nothing or something else there, and for a path whose stat fails,
-    which is reported against it, so the project is still answered from what can be read."""
+    """Whether a regular file is at path: False for nothing or something else there, and for a path whose stat fails
+    or that a link on its way leads outside the examined tree (`outside_link_refusal`), never stat, each reported
+    against it, so the project is still answered from what can be read."""
+    if (linked := outside_link_refusal(path, graph.tree)) is not None:
+        graph.refuse(Unreadable(path, linked))
+        return False
     try:
         return file_presence.is_present(path, other_is_absent=True)
     except OSError as error:
@@ -947,11 +973,15 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
 def named_project(graph: Graph, narrowed: Path) -> Project | None:
     """The project `--project` names: the one at the path as it is named below the solution's directory, where the
     search or the solution found a project, through a link to its file too, and keeps it under the path it found it at,
-    else the one at the path it resolves to. A project found through a link is read from the link's folder, as MSBuild
-    reads it, so the link's project, not its target's, is the one named."""
+    else the one at the path it resolves to, unless a link on its way inside the examined tree leads outside it
+    (`outside_link_refusal`), which is never resolved. A project found through a link is read from the link's folder, as
+    MSBuild reads it, so the link's project, not its target's, is the one named."""
     names = named_below(graph.base, narrowed)
-    project = graph.project_at(graph.base.joinpath(*names)) if names else None
-    return project or graph.project_at(resolved_path(narrowed))
+    named = graph.base.joinpath(*names) if names else as_named(narrowed)
+    project = graph.project_at(named) if names else None
+    if project is not None or outside_link_refusal(named, graph.tree) is not None:
+        return project
+    return graph.project_at(resolved_path(narrowed))
 
 
 def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:

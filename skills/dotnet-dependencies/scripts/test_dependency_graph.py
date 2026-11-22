@@ -1744,7 +1744,7 @@ def unpacked(root: Path, *folders: str) -> Path:
 
 
 def found_folder(packages: Path, package: str, version: str) -> str | None:
-    found = dependency_graph.package_directory([packages], package, version)
+    found = dependency_graph.package_directory([packages], package, version, packages.parent)
     return None if found is None else found.relative_to(packages).as_posix()
 
 
@@ -3085,6 +3085,16 @@ TOP_CENTRAL = """<Project>
 """
 
 
+# A project importing a file beside it and one it finds above it, with an item that holds where a marker exists.
+LINKED_IMPORTS_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="Shared.props" />
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Above.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup Condition="Exists('Linked/marker')"><PackageReference Include="Quill.Extra" Version="1.0.0" /></ItemGroup>
+</Project>
+"""
+
+
 def referencing(*paths: str) -> str:
     items = "".join(f'<ProjectReference Include="{path}" />' for path in paths)
     return LIB_PROJECT.replace("</Project>", f"<ItemGroup>{items}</ItemGroup></Project>")
@@ -3098,6 +3108,49 @@ def recording(method: Callable[..., object], touched: list[str]) -> Callable[...
         return method(path, *args, **kwargs)
 
     return spy
+
+
+# The calls that follow a link at the path they are given, as a stat, an open, or a listing does, unless told not to.
+FOLLOWING_OS_CALLS = ("stat", "scandir")
+
+
+@contextlib.contextmanager
+def recording_follows(touched: list[tuple[str, bool]]) -> Iterator[None]:
+    """Record in `touched` each path a Path method or `os.stat`, `os.lstat`, or `os.scandir` reaches the file system
+    with, and whether the call follows a link there: a call given `follow_symlinks=False`, and `os.lstat`, do not."""
+
+    def spy(method: Callable[..., object], follows: bool) -> Callable[..., object]:
+        def call(path: object = ".", *args: object, **kwargs: object) -> object:
+            touched.append(
+                (
+                    os.fsdecode(path) if isinstance(path, (str, os.PathLike)) else str(path),
+                    follows and kwargs.get("follow_symlinks", True) is not False,
+                )
+            )
+            return method(path, *args, **kwargs)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in FILE_SYSTEM_METHODS:
+            stack.enter_context(mock.patch.object(Path, name, spy(getattr(Path, name), True)))
+        for name in FOLLOWING_OS_CALLS:
+            stack.enter_context(mock.patch.object(os, name, spy(getattr(os, name), True)))
+        stack.enter_context(mock.patch.object(os, "lstat", spy(os.lstat, False)))
+        yield
+
+
+def followed_through(touched: Iterable[tuple[str, bool]], links: Iterable[Path], outside: Path) -> list[str]:
+    """The touched paths a call reached through one of `links`, following it or reaching anything below it, or reached
+    below `outside`, which only a call through a link could reach."""
+    chosen = list(links)
+
+    def through(path: Path, follows: bool) -> bool:
+        if path != outside and path.is_relative_to(outside):
+            return True
+        return any((path == link and follows) or (path != link and path.is_relative_to(link)) for link in chosen)
+
+    return [path for path, follows in touched if through(Path(path), follows)]
 
 
 def refused_reached(touched: Iterable[str]) -> list[str]:
@@ -3125,6 +3178,150 @@ class PathBoundTests(Fixture):
             stack.enter_context(mock.patch("dependency_graph.resolved_path", resolving))
             code, rows = self.run_main(*arguments)
         return code, rows, touched
+
+    def linked_out(self, link: Path, target: str) -> Path:
+        """A symbolic link at `link` to `target` below the fixture's outside folder, made with its folder."""
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(self.root / "outside" / target)
+        return link
+
+    def outside_reason(self, link: Path, target: str, tree: Path) -> str:
+        return (
+            f"{link.as_posix()} is a link to {(self.root / 'outside' / target).as_posix()}, outside the examined tree "
+            f"{tree.as_posix()}, which the reader does not follow"
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_file_linking_outside_the_tree_is_reported_and_never_stat_listed_or_read_through_the_link(self) -> None:
+        """A project the search finds, the central versions it imports, its restore, its config, a packages.config,
+        and a nuspec in the packages folder, each a link to a file outside the tree, is reported naming the link, and
+        no stat, open, or listing reaches through it: the recorder sees os-level calls as well as Path methods."""
+        repo = self.root / "repo"
+        self.write("outside/F.csproj", OUTSIDE_PROJECT)
+        self.write("outside/Directory.Packages.props", TOP_CENTRAL)
+        self.write("outside/project.assets.json", json.dumps(CORE_ASSETS))
+        self.write("outside/web.config", WEB_CONFIG)
+        self.write("outside/packages.config", WEB_PACKAGES)
+        self.write("outside/Lantern.Core.nuspec", CORE_NUSPEC)
+        self.write("repo/App/App.csproj", CENTRALLY_VERSIONED_APP)
+        self.write("repo/Web/Web.csproj", WEB_PROJECT)
+        self.write("repo/Old/Old.csproj", WEB_PROJECT)
+        self.write("repo/Old/packages.config", WEB_PACKAGES)
+        self.write("repo/Sub/Other/Other.csproj", WEB_PROJECT)
+        self.write("repo/Sub/Other/packages.config", WEB_PACKAGES)
+        self.write("outside/pkgs/Lantern.Core.2.0.0/Lantern.Core.nuspec", CORE_NUSPEC)
+        self.write("outside/json/Lantern.Json.nuspec", JSON_NUSPEC)
+        folders = {
+            "Sub/packages": repo / "Sub" / "packages",
+            "packages/Lantern.Json.13.0.1": repo / "packages" / "Lantern.Json.13.0.1",
+        }
+        for link, target in zip(folders.values(), ("pkgs", "json"), strict=True):
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link_folder(self.root / "outside" / target, link)
+            self.addCleanup(remove_link, link)
+        links = {
+            "F.csproj": self.linked_out(repo / "F.csproj", "F.csproj"),
+            "Directory.Packages.props": self.linked_out(repo / "Directory.Packages.props", "Directory.Packages.props"),
+            "App/obj/project.assets.json": self.linked_out(repo / "App/obj/project.assets.json", "project.assets.json"),
+            "App/web.config": self.linked_out(repo / "App/web.config", "web.config"),
+            "Web/packages.config": self.linked_out(repo / "Web/packages.config", "packages.config"),
+            "packages/Lantern.Core.2.0.0/Lantern.Core.nuspec": self.linked_out(
+                repo / "packages/Lantern.Core.2.0.0/Lantern.Core.nuspec", "Lantern.Core.nuspec"
+            ),
+        }
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("conflicts", "--root", str(repo))
+        self.assertEqual(1, code)
+        # The search for the central versions stops at the link, as MSBuild's stops at any file there, and reports it.
+        links |= folders
+        expected = {label: self.outside_reason(link, link.readlink().name, repo) for label, link in links.items()}
+        self.assertEqual(expected, {file: reason for file, reason in self.lines(rows, "UNREADABLE") if file in links})
+        self.assertIn(["F.csproj", "legacy", "direct", "listed"], self.lines(rows, "PROJECT"))
+        self.assertEqual([], followed_through(touched, links.values(), self.root / "outside"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_import_a_file_above_or_an_exists_through_a_link_outside_the_tree_is_reported_never_reached(
+        self,
+    ) -> None:
+        """An Import of a link to a file outside the tree, a search above the project that meets one, and an Exists()
+        below a folder link leading outside are each reported naming the link and left unsettled, never stat."""
+        repo = self.root / "repo"
+        self.write("outside/Shared.props", TOP_CENTRAL)
+        self.write("outside/Above.props", TOP_CENTRAL)
+        self.write("outside/marker", "")
+        self.write("repo/App/App.csproj", LINKED_IMPORTS_PROJECT)
+        shared = self.linked_out(repo / "App" / "Shared.props", "Shared.props")
+        above = self.linked_out(repo / "Above.props", "Above.props")
+        linked = repo / "App" / "Linked"
+        link_folder(self.root / "outside", linked)
+        self.addCleanup(remove_link, linked)
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("conflicts", "--root", str(repo))
+        self.assertEqual(1, code)
+        unreadable = self.lines(rows, "UNREADABLE")
+        imported = self.outside_reason(shared, "Shared.props", repo)
+        reason = f"the Import of Shared.props is not read: {imported}, so every property is unsettled after it"
+        self.assertIn(["App/App.csproj", reason], unreadable)
+        self.assertIn(["Above.props", self.outside_reason(above, "Above.props", repo)], unreadable)
+        exists = f"{linked.as_posix()} is a link to {(self.root / 'outside').as_posix()}, outside the examined tree"
+        self.assertIn(["App/Linked/marker", f"{exists} {repo.as_posix()}, {NOT_FOLLOWED}"], unreadable)
+        self.assertEqual([], followed_through(touched, [shared, above, linked], self.root / "outside"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_named_that_links_outside_the_tree_is_never_stat_or_read_through_the_link(self) -> None:
+        """--project naming a link the search found narrows to it, reported and unread; one in a hidden folder the
+        search prunes fails naming that folder, as `unsearched` judges the file's own metadata and never stats
+        through it."""
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/F.csproj", OUTSIDE_PROJECT)
+        found = self.linked_out(repo / "F.csproj", "F.csproj")
+        hidden = self.linked_out(repo / ".cache" / "F.csproj", "F.csproj")
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo), "--project", str(found))
+        self.assertEqual(
+            (1, "SUMMARY", [["F.csproj", self.outside_reason(found, "F.csproj", repo)]], [["Outside.Pkg"]]),
+            (code, rows[-1][0], self.lines(rows, "UNREADABLE"), self.lines(rows, "MISSING")),
+        )
+        self.assertEqual([], followed_through(touched, [found, hidden], self.root / "outside"))
+        touched.clear()
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo), "--project", str(hidden))
+        reason = "the folder is hidden, its name starting with a dot, which the search prunes"
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {hidden} lies in {repo / '.cache'}, which the search for projects under {repo} does not "
+                f"enter: {reason}; pass --root at its solution or its folder",
+            ),
+            (code, rows[-1][0]),
+        )
+        self.assertIn((str(hidden), False), touched)
+        self.assertEqual([], followed_through(touched, [found, hidden], self.root / "outside"))
+
+    def test_a_solution_entry_through_a_folder_link_outside_the_tree_is_reported_and_never_reached(self) -> None:
+        # The entry is never stat to see whether it is there, which would reach through the link, so it is reported
+        # naming the link whether or not the file is there.
+        repo = self.root / "repo"
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        link_folder(self.root / "outside", repo / "Linked")
+        self.addCleanup(remove_link, repo / "Linked")
+        self.write("repo/Repo.sln", solution("Lib\\Lib.csproj", "Linked\\E\\E.csproj", "Linked\\Gone\\Gone.csproj"))
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo))
+        self.assertEqual(1, code)
+        unreadable = self.lines(rows, "UNREADABLE")
+        self.assertEqual(["Linked/E/E.csproj", "Linked/Gone/Gone.csproj"], [file for file, _ in unreadable])
+        for _, reason in unreadable:
+            self.assertTrue(reason.startswith(f"{(repo / 'Linked').as_posix()} is a link to "), reason)
+            self.assertTrue(reason.endswith(f", outside the examined tree {repo.as_posix()}, {NOT_FOLLOWED}"), reason)
+        self.assertEqual([["Lib/Lib.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([], followed_through(touched, [repo / "Linked"], self.root / "outside"))
 
     def test_a_reference_outside_the_tree_or_to_a_share_or_device_is_reported_and_never_reached(self) -> None:
         self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
@@ -3154,8 +3351,9 @@ class PathBoundTests(Fixture):
 
     def test_a_project_named_through_a_link_outside_the_tree_is_never_examined_through_it(self) -> None:
         """--project naming a file below a link the search does not follow fails naming the link, with no Path method
-        reaching through it, which would reach outside the examined tree; a `..` before the link changes nothing. This
-        pins the stat `unsearched` makes, not the resolution of the argument, whose os-level reads it cannot see."""
+        and no os-level stat or listing reaching through it, which would reach outside the examined tree: neither
+        `unsearched`'s stat nor the argument's resolution in full, which a link leading outside stops; a `..` before
+        the link changes nothing."""
         repo = self.root / "repo"
         self.write("repo/App/App.csproj", LIB_PROJECT)
         self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
@@ -3167,10 +3365,8 @@ class PathBoundTests(Fixture):
             repo / "Linked/Gone.csproj",
         ):
             with self.subTest(named=named):
-                touched: list[str] = []
-                with contextlib.ExitStack() as stack:
-                    for name in FILE_SYSTEM_METHODS:
-                        stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
                     code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
                 self.assertEqual(
                     (
@@ -3180,8 +3376,7 @@ class PathBoundTests(Fixture):
                     ),
                     (code, rows[-1][0]),
                 )
-                self.assertEqual([], [path for path in touched if "/Linked/" in path])
-                self.assertEqual([], refused_reached(touched))
+                self.assertEqual([], followed_through(touched, [repo / "Linked"], self.root / "outside"))
 
     def test_a_folder_whose_metadata_cannot_be_read_ends_the_look_and_nothing_below_it_is_examined(self) -> None:
         # A folder on the way whose own metadata cannot be read may be a link, so nothing below it is stat; the
@@ -3290,21 +3485,29 @@ class PathBoundTests(Fixture):
         references = ("..\\Lib\\Lib.csproj", "..\\Big\\Big.csproj", "..\\Folder\\Folder.csproj")
         self.write("repo/App/App.csproj", referencing(*references))
         devices: list[str] = []
-        # A pipe and a device are made where the platform makes them; a device elsewhere is refused by its form.
+        regular = "not a regular file, so the reader does not open it"
+        expected = [
+            ["Big/Big.csproj", f"the file is larger than the reader's bound of {limit} bytes, so it is not read"]
+        ]
+        # A pipe and a device are made where the platform makes them; a device elsewhere is refused by its form. A
+        # link to a device outside the tree is refused as a link that leads outside, never opened.
         if hasattr(os, "mkfifo"):
             os.mkfifo(self.root / "repo" / "Pipe.csproj")
             devices.append("Pipe.csproj")
+            expected.append(["Pipe.csproj", regular])
         if Path("/dev/zero").exists():
-            (self.root / "repo" / "Zero.csproj").symlink_to("/dev/zero")
+            zero = self.root / "repo" / "Zero.csproj"
+            zero.symlink_to("/dev/zero")
             devices.append("Zero.csproj")
+            tree = (self.root / "repo").as_posix()
+            outside = f"outside the examined tree {tree}, which the reader does not follow"
+            expected.append(["Zero.csproj", f"{zero.as_posix()} is a link to /dev/zero, {outside}"])
         self.write("repo/Repo.sln", solution("App\\App.csproj", *devices))
         with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", limit):
             code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo"))
         self.assertEqual(1, code)
-        bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"
-        regular = "not a regular file, so the reader does not open it"
         self.assertEqual(
-            sorted([["Big/Big.csproj", bound], *[[path, regular] for path in ["Folder/Folder.csproj", *devices]]]),
+            sorted([*expected, ["Folder/Folder.csproj", regular]]),
             sorted(self.lines(rows, "UNREADABLE")),
         )
         chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
@@ -3343,6 +3546,7 @@ def remove_link(link: Path) -> None:
 
 
 LINK_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
+NOT_FOLLOWED = "which the reader does not follow"
 
 
 class ProjectSearchTests(Fixture):
@@ -3545,11 +3749,12 @@ class ProjectSearchTests(Fixture):
     def test_a_project_the_search_found_through_a_link_to_its_file_is_the_one_named_there(self) -> None:
         # The search lists a link to a .csproj as a file and keeps the project under the path it found it at, so
         # --project naming that path narrows to it, past a bound the search reached it before, never blamed on the
-        # bound or called no project of the root.
+        # bound or called no project of the root. Its target lies inside the tree, in a hidden folder the search
+        # prunes, so only the link finds it.
         search = self.root / "search"
-        self.write("outside/Real.csproj", LIB_PROJECT)
+        self.write("search/.shared/Real.csproj", LIB_PROJECT)
         (search / "A").mkdir(parents=True)
-        (search / "A" / "L.csproj").symlink_to(self.root / "outside" / "Real.csproj")
+        (search / "A" / "L.csproj").symlink_to(search / ".shared" / "Real.csproj")
         for name in ("m1", "m2"):
             self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
         for limit in (3, None):
@@ -3631,9 +3836,14 @@ class ProjectSearchTests(Fixture):
                     )
             listed = self.write("search/Listed.sln", solution("Linked\\E\\E.csproj"))
             code, rows = self.run_main("why", "Lib.Pkg", "--root", str(listed), "--project", "../Linked/E/E.csproj")
-        self.assertEqual(
-            (0, [["Linked/E/E.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]]), (code, self.lines(rows, "PATH"))
-        )
+        # The link leads outside the tree, so the listed project is reported and never read or stat, and, like a
+        # solution's entry outside the tree, is no project of the solution.
+        failed = f"FAILED {Path('../Linked/E/E.csproj')} is not a project of {listed}"
+        self.assertEqual((1, failed, []), (code, rows[-1][0], self.lines(rows, "PATH")))
+        [[file, reason]] = self.lines(rows, "UNREADABLE")
+        self.assertEqual("Linked/E/E.csproj", file)
+        self.assertTrue(reason.startswith(f"{(search / 'Linked').as_posix()} is a link to "), reason)
+        self.assertTrue(reason.endswith(f", outside the examined tree {search.as_posix()}, {NOT_FOLLOWED}"), reason)
 
     def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
         search = self.root / "search"
@@ -4355,10 +4565,10 @@ class PresenceReadTests(Fixture):
         project.mkdir(parents=True)
         (self.root / "packages").mkdir()
         self.write("src/packages", "not a folder")
-        self.assertEqual(self.root / "packages", dependency_graph.packages_folder(project, self.root))
+        self.assertEqual(self.root / "packages", dependency_graph.packages_folder(project, self.root, self.root))
         nearer = project / "packages"
         with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
-            dependency_graph.packages_folder(project, self.root)
+            dependency_graph.packages_folder(project, self.root, self.root)
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_package_folder_it_cannot_list_or_stat_is_unreadable_never_a_package_not_unpacked(self) -> None:
@@ -4369,14 +4579,14 @@ class PresenceReadTests(Fixture):
         self.write("other/Lantern.Core.2.0.0", "a file of the folder's name")
         self.assertEqual(
             packages / "Lantern.Core.2.0.0",
-            dependency_graph.package_directory([other, packages], "Lantern.Core", "2.0.0"),
+            dependency_graph.package_directory([other, packages], "Lantern.Core", "2.0.0", self.root),
         )
         with unlistable(packages), self.assertRaises(msbuild_reader.Unreadable) as raised:
-            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0", self.root)
         self.assertEqual((packages, "Access is denied"), (raised.exception.file, raised.exception.reason))
         unpacked = packages / "Lantern.Core.2.0.0"
         with stat_failing_at(unpacked), self.assertRaises(msbuild_reader.Unreadable) as raised:
-            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0", self.root)
         self.assertEqual(unpacked, raised.exception.file)
 
     def test_a_package_folder_it_cannot_read_is_an_unreadable_row_and_its_nuspec_edges_are_left_out(self) -> None:
@@ -4576,7 +4786,7 @@ class PresenceReadTests(Fixture):
             failing_without_a_file(file_presence, "is_directory", nearer),
             self.assertRaises(msbuild_reader.Unreadable) as raised,
         ):
-            dependency_graph.packages_folder(project, self.root)
+            dependency_graph.packages_folder(project, self.root, self.root)
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_the_redirects_of_each_config_are_kept_and_a_listing_error_naming_no_file_is_the_folder_s(self) -> None:
@@ -4625,7 +4835,7 @@ class PresenceReadTests(Fixture):
                 failing_without_a_file(owner, name, target),
                 self.assertRaises(msbuild_reader.Unreadable) as raised,
             ):
-                dependency_graph.package_directory([folder], "Lantern.Core", "1.0.0")
+                dependency_graph.package_directory([folder], "Lantern.Core", "1.0.0", self.root)
             self.assertEqual((target, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_config_or_project_folder_it_cannot_read_is_an_unreadable_row_and_a_folder_config_is_passed_over(
