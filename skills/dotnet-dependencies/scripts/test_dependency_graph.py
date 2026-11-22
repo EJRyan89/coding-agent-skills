@@ -3151,6 +3151,36 @@ class PathBoundTests(Fixture):
         self.assertEqual([["Outside.Pkg"]], self.lines(rows, "MISSING"))
         self.assertEqual([], refused_reached(touched))
 
+    def test_a_project_named_through_a_link_outside_the_tree_is_never_examined_through_it(self) -> None:
+        # --project naming a file below a link the search does not follow fails naming the link, without a stat or a
+        # read through it, which would reach outside the examined tree; a `..` before the link changes nothing.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        link_folder(self.root / "outside", repo / "Linked")
+        self.addCleanup(remove_link, repo / "Linked")
+        for named in (
+            repo / "Linked/Other/Other.csproj",
+            repo / "App/../Linked/Other/Other.csproj",
+            repo / "Linked/Gone.csproj",
+        ):
+            with self.subTest(named=named):
+                touched: list[str] = []
+                with contextlib.ExitStack() as stack:
+                    for name in FILE_SYSTEM_METHODS:
+                        stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+                self.assertEqual(
+                    (
+                        1,
+                        f"FAILED {named} lies in {repo / 'Linked'}, which the search for projects under {repo} "
+                        f"does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                    ),
+                    (code, rows[-1][0]),
+                )
+                self.assertEqual([], [path for path in touched if "/Linked/" in path])
+                self.assertEqual([], refused_reached(touched))
+
     def test_a_solution_entry_outside_the_tree_is_reported_and_never_reached(self) -> None:
         self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
         self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
@@ -3544,6 +3574,31 @@ class ProjectSearchTests(Fixture):
                 code, rows = self.run_main("why", "Root.Pkg", "--root", str(search), "--project", narrowed)
                 self.assertEqual((1, f"FAILED {narrowed} is not a project of {search}"), (code, rows[-1][0]))
                 self.assertEqual([], self.lines(rows, "PATH"))
+
+    def test_a_dot_dot_before_a_link_keeps_the_link_a_folder_the_path_is_named_through(self) -> None:
+        # Only the part up to the last `..` is resolved, so a link after it stays the folder the search passed over,
+        # and a solution's project named through that link is still found.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("outside/E/E.csproj", LIB_PROJECT)
+        self.link(self.root / "outside", "search/Linked")
+        with contextlib.chdir(search / "App"):
+            for named in ("../Linked/E/E.csproj", "../../search/Linked/E/E.csproj", "../App/../Linked/E/E.csproj"):
+                with self.subTest(named=named):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", named)
+                    self.assertEqual(
+                        (
+                            1,
+                            f"FAILED {named} lies in {search / 'Linked'}, which the search for projects under {search} "
+                            f"does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                        ),
+                        (code, rows[-1][0]),
+                    )
+            listed = self.write("search/Listed.sln", solution("Linked\\E\\E.csproj"))
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(listed), "--project", "../Linked/E/E.csproj")
+        self.assertEqual(
+            (0, [["Linked/E/E.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]]), (code, self.lines(rows, "PATH"))
+        )
 
     def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
         search = self.root / "search"

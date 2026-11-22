@@ -74,7 +74,8 @@ second the folder the bound stopped the search at, each ending with the advice t
 solution or its folder, and, when the search found no project at all, with each folder it did not search, as the
 FAILED line of a search finding none names them. A project named through a link to its file is the project the search
 found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
-why it did not reach it.
+why it did not reach it; a project below a link on its way is never stat, since the link may lead outside the
+examined tree, so the folder the search passed over is named whether or not the file is there.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -122,6 +123,7 @@ from executable_locator import RelativeEnvironmentPath, absolute_home, environme
 from flat_text import fact_line, flat_text
 from folder_walk import BOUNDED, NotEntered, is_hidden, walk_files
 from folders_up import folders_up
+from link_probe import is_link_or_junction
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -312,12 +314,29 @@ RETRY_ADVICE = "pass --root at its solution or its folder"
 
 
 def as_named(path: Path) -> Path:
-    """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, unless
-    it holds a `..`, which the system takes only after following any link before it, so its folder is resolved instead
-    and the `..` never steps back out of a link as text would."""
-    if ".." in path.parts:
-        return resolved_path(path.absolute().parent) / path.name
-    return lexical_absolute(path)
+    """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, but for
+    a path holding a `..`, which the system takes only after following any link before it, the part up to its last
+    `..` is resolved, so no `..` steps back out of a link as text would, and the names after it stay as named."""
+    parts = path.absolute().parts
+    if ".." not in parts:
+        return lexical_absolute(path)
+    last = len(parts) - 1 - parts[::-1].index("..")
+    return resolved_path(Path(*parts[: last + 1])).joinpath(*parts[last + 1 :])
+
+
+def through_link(root: Path, names: Sequence[str]) -> bool:
+    """Whether a folder on the way from `root` down to the file `names` name is a link, a junction, or another reparse
+    point, judged from each folder's own metadata and never followed, so nothing is stat through a link that may lead
+    outside the examined tree. A folder whose metadata cannot be read ends the look: no stat reaches past it either."""
+    folder = root
+    for name in names[:-1]:
+        folder = folder / name
+        try:
+            if is_link_or_junction(folder):
+                return True
+        except OSError:
+            return False
+    return False
 
 
 def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
@@ -336,11 +355,13 @@ def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
 def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEntered]) -> str | None:
     """Why the search for projects under `root` did not find `narrowed`, a .csproj file below it: the first folder on
     its way down that the search skips, prunes, or did not enter, or else the bound the search stopped at. None when
-    `narrowed` is no such file, or nothing in the search explains its absence."""
+    `narrowed` is no such file, or nothing in the search explains its absence. A path through a link on its way is
+    never stat, since the link may lead outside the examined tree: its folder is named whether or not the file is
+    there, as the search, which does not follow it either, cannot tell."""
     if narrowed is None or not ordinal_fold(narrowed.name).endswith(PROJECT_SUFFIX):
         return None
     names = named_below(root, narrowed)
-    if not names or not regular_file(narrowed):
+    if not names or not (through_link(root, names) or regular_file(narrowed)):
         return None
     skipped = {name.casefold() for name in SEARCH_SKIPPED_FOLDERS}
     not_entered = {same_path(entry.path): entry for entry in passed_over}
