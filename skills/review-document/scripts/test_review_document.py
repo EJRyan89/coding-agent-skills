@@ -19,7 +19,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from unittest import mock
@@ -153,17 +153,32 @@ def failing_write(folder: Path) -> Iterator[None]:
 
 
 @contextmanager
-def refused_link(folder: Path) -> Iterator[None]:
-    """A hard link into `folder` is refused with EPERM, as a file system without hard links, such as FAT or exFAT,
-    refuses one even where nothing is at its target."""
+def refused_link(folder: Path, code: int = errno.EPERM) -> Iterator[None]:
+    """A hard link into `folder` is refused with `code`, by default EPERM, as a file system without hard links, such
+    as FAT or exFAT, refuses one even where nothing is at its target."""
     real_link = os.link
 
     def link(source: Any, target: Any, *arguments: Any, **options: Any) -> None:
         if Path(target).parent == folder:
-            raise OSError(errno.EPERM, os.strerror(errno.EPERM), str(source), str(target))
+            raise OSError(code, os.strerror(code), str(source), str(target))
         real_link(source, target, *arguments, **options)
 
     with mock.patch.object(os, "link", link):
+        yield
+
+
+@contextmanager
+def failing_reservation(folder: Path) -> Iterator[None]:
+    """A file system without hard links in `folder`, whose replace of the reserved report.md by the copy then fails
+    with EIO, as a disk that fails part way does."""
+    real_replace = os.replace
+
+    def replace(source: Any, target: Any) -> None:
+        if Path(target).parent == folder:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_replace(source, target)
+
+    with refused_link(folder), mock.patch.object(os, "replace", replace):
         yield
 
 
@@ -2210,15 +2225,16 @@ class PullRequestTests(PipelineTestCase):
             for fixture, report in zip(fixtures, recorded, strict=True)
             for line in (f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}")
         ]
-        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
+        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EACCES)}"
         for side, failure, reason in (
             ("read", failing_read(recorded[1]), "[Errno 5] Input/output error"),
             ("write", failing_write(fixtures[1].parent), "[Errno 28] No space left on device"),
             (
                 "link",
-                refused_link(fixtures[1].parent),
-                f"[Errno {errno.EPERM}] {refused}: {str(fixtures[1].parent / 'report.md')!r}",
+                refused_link(fixtures[1].parent, errno.EACCES),
+                f"[Errno {errno.EACCES}] {refused}: {str(fixtures[1].parent / 'report.md')!r}",
             ),
+            ("reserved copy", failing_reservation(fixtures[1].parent), f"[Errno {errno.EIO}] {os.strerror(errno.EIO)}"),
         ):
             with self.subTest(side=side):
                 with failure:
@@ -2281,6 +2297,29 @@ class PullRequestTests(PipelineTestCase):
         refused = f"{unreported} {target} already exists, and is not replaced; the report is at {recorded[1]}"
         self.assertEqual((1, [*first, refused]), run_main("report", "--runs", listed))
         self.assertEqual([], list(folder.iterdir()), "nothing is written through the link")
+
+    def test_a_listed_runs_copy_on_a_file_system_without_hard_links_is_reserved_and_made_whole(self) -> None:
+        listed, recorded, first, _unreported = self.linked_runs()
+        target = self.output / "2" / "report.md"
+        reported = [*first, f"REPORT {target}", f"RECORD {recorded[1].with_suffix('.json')}"]
+        with refused_link(target.parent):
+            self.assertEqual((0, reported), run_main("report", "--runs", listed))
+        self.assertEqual(recorded[1].read_bytes(), target.read_bytes())
+        self.assertEqual(["fixture", "report.md"], sorted(item.name for item in target.parent.iterdir()))
+        with refused_link(target.parent):
+            self.assertEqual((0, reported), run_main("report", "--runs", listed), "reported again as the copy")
+
+    def test_a_listed_runs_empty_report_at_the_copys_place_is_named_as_a_stopped_copys_and_left(self) -> None:
+        listed, recorded, first, unreported = self.linked_runs()
+        target = self.output / "2" / "report.md"
+        target.write_bytes(b"")
+        refused = (
+            f"{unreported} {target} already exists, and is not replaced: it is empty, as a copy stopped between "
+            "reserving report.md and filling it leaves it; once no report runs, delete it and run report again; the "
+            f"report is at {recorded[1]}"
+        )
+        self.assertEqual((1, [*first, refused]), run_main("report", "--runs", listed))
+        self.assertEqual(b"", target.read_bytes(), "the empty report.md is left as it was")
 
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
@@ -2547,11 +2586,16 @@ class OutputTests(DocumentTestCase):
         recorded = self.recorded_report()
         canary = recorded.parent
         arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
-        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
+        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EACCES)}"
         for side, failure, reason in (
             ("read", failing_read(recorded), "[Errno 5] Input/output error"),
             ("write", failing_write(self.output), "[Errno 28] No space left on device"),
-            ("link", refused_link(self.output), f"[Errno {errno.EPERM}] {refused}: {str(self.output / 'report.md')!r}"),
+            (
+                "link",
+                refused_link(self.output, errno.EACCES),
+                f"[Errno {errno.EACCES}] {refused}: {str(self.output / 'report.md')!r}",
+            ),
+            ("reserved copy", failing_reservation(self.output), f"[Errno {errno.EIO}] {os.strerror(errno.EIO)}"),
         ):
             with self.subTest(side=side):
                 with failure:
@@ -2627,6 +2671,77 @@ class OutputTests(DocumentTestCase):
         self.addCleanup(target.chmod, 0o644)
         self.assertEqual((1, [refused]), run_main(*arguments))
         self.assertEqual(0, stat.S_IMODE(target.stat().st_mode), "the file is left as it was")
+
+    def test_a_file_with_the_reports_size_and_time_but_other_bytes_is_refused_as_already_there(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        # Size and modification time match the report's, so only its bytes show it is not the copy.
+        other = bytes(reversed(recorded.read_bytes()))
+        target.write_bytes(other)
+        written = recorded.stat()
+        os.utime(target, ns=(written.st_atime_ns, written.st_mtime_ns))
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(other, target.read_bytes(), "the file is left as it was")
+
+    def test_a_copy_on_a_file_system_without_hard_links_is_reserved_and_made_whole(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        reported = [f"REPORT {target}", f"RECORD {recorded.with_suffix('.json')}"]
+        for code in (errno.EPERM, errno.ENOTSUP, errno.EINVAL):
+            with self.subTest(errno=errno.errorcode[code]):
+                with refused_link(self.output, code):
+                    self.assertEqual((0, reported), run_main(*arguments))
+                self.assertEqual(recorded.read_bytes(), target.read_bytes())
+                self.assertEqual(["fixture", "report.md"], sorted(item.name for item in self.output.iterdir()))
+                with refused_link(self.output, code):
+                    self.assertEqual((0, reported), run_main(*arguments), "reported again as the copy")
+                target.unlink()
+
+    def test_an_empty_report_at_the_copys_place_is_refused_as_a_stopped_copys_and_left(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        target.write_bytes(b"")
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = (
+            f"FAILED {target} already exists, and is not replaced: it is empty, as a copy stopped between reserving "
+            f"report.md and filling it leaves it; once no report runs, delete it and run report again; the report is "
+            f"at {recorded}"
+        )
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(b"", target.read_bytes(), "the empty report.md is left as it was")
+        target.unlink()
+        self.assertEqual((0, [f"REPORT {target}", f"RECORD {recorded.with_suffix('.json')}"]), run_main(*arguments))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_an_empty_file_at_the_copys_place_is_refused_as_already_there_never_as_an_empty_report(
+        self,
+    ) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        empty = self.root / "elsewhere" / "empty.md"
+        empty.parent.mkdir()
+        empty.write_bytes(b"")
+        target.symlink_to(empty)
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(empty, target.readlink(), "the link is left as it was")
+        self.assertEqual(b"", empty.read_bytes(), "nothing is written through the link")
+
+    def test_a_folder_at_the_copys_place_is_refused_as_already_there_and_never_read_as_an_empty_report(self) -> None:
+        # Windows gives a folder, as it gives a link, the size 0 that an empty report.md has.
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        target.mkdir()
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        for name, link in (("tried", nullcontext()), ("refused", refused_link(self.output))):
+            with self.subTest(link=name), link:
+                self.assertEqual((1, [refused]), run_main(*arguments))
+            self.assertTrue(target.is_dir(), "the folder is left as it was")
 
     def test_a_link_to_a_folder_at_the_copys_place_is_refused_as_already_there(self) -> None:
         recorded = self.recorded_report()
