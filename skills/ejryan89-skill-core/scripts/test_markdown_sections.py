@@ -27,6 +27,7 @@ from markdown_sections import (
     blocks,
     code_block_lines,
     code_spans,
+    contained_lines,
     document_headings,
     find_fences,
     is_blank,
@@ -143,6 +144,31 @@ def test_a_list_item_s_content_starts_past_its_marker_and_the_spaces_after_it() 
         None,
     ]
     assert [items_holding([2, 4], width) for width in (0, 2, 3, 4, 8)] == [0, 1, 1, 2, 2]
+
+
+# Documents, each with the lines a list item or a quote holds as GitHub renders it (`gh api markdown`).
+CONTAINED_LINES = {
+    # A numbered line under a bullet's text opens an item of its own, whose content starts at the fourth column, so a
+    # line indented two columns after a blank line is the document's; the blank line, as every one under an open item,
+    # is the item's.
+    "a numbered item that leaves a bullet": ("- a\n2. b\n\n  text\n  ---", {0, 1, 2}),
+    # A lazy line continues the quote's paragraph, and so does an `=` line under it, while a `-` line is a rule.
+    "lazy lines of a quote": ("> a\nlazy\n===\n---\nafter", {0, 1, 2}),
+    # An item with text interrupts a paragraph and holds the lines indented to its content.
+    "an item under a paragraph": ("text\n- # heading\n  w3\n  ---\n---", {1, 2, 3}),
+    # A fence's lines inside an item are the item's, and the line indented less ends both.
+    "a fence in an item": ("- a\n  ```\n  x\n  ```\nb", {0, 1, 2, 3}),
+    # An item that opens empty holds its own line, and a blank line under it ends it.
+    "an item that opens empty": ("- \n\n  text", {0}),
+    "no container": ("# h\n\ntext\n---", set()),
+}
+
+
+@pytest.mark.parametrize(("document", "held"), CONTAINED_LINES.values(), ids=CONTAINED_LINES.keys())
+def test_the_lines_a_container_holds_are_the_walk_s(document: str, held: set[int]) -> None:
+    lines = document.split("\n")
+    assert contained_lines(lines) == held
+    assert not {index for index, _ in document_headings(lines)} & held
 
 
 def test_a_fence_inside_a_list_item_reads_the_marker_as_commonmark_does() -> None:
