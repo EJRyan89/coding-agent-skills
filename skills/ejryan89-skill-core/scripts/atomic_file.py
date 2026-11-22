@@ -21,7 +21,8 @@ import stat
 import tempfile
 from pathlib import Path
 
-# The mode of a file a checkout tracks, which a tool writes into it: its owner writes it and everyone reads it.
+# The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
+# index or graph a script creates: its owner writes it and everyone reads it, as an editor's new file.
 TRACKED_FILE_MODE = 0o644
 
 
