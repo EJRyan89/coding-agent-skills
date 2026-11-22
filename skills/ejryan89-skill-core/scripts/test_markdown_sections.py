@@ -38,10 +38,7 @@ from markdown_sections import (
     starts_block,
     without_code_spans,
 )
-
-# Exported as well, for the suites that still import the timer from here: test_hidden_comments.py and
-# implement-change's test_pull_request.py.
-from test_time_in_proportion import assert_time_in_proportion as assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 
 NBSP = chr(0xA0)
 EM_SPACE = chr(0x2003)
