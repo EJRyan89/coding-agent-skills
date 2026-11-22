@@ -339,6 +339,14 @@ class EveryDeployerRefusesTests(unittest.TestCase):
     function in the scope that binds it. It does not follow:
     - control flow: a refusal counts before a deployment written below it, on whichever branch, and whatever the
       module does with the refusal's result;
+    - when a call runs rather than where it starts: a refusal and a deployment are compared by the place each call
+      begins, so a deployment among the refusal's own arguments counts as after it, and a function counts as guarded
+      once each place naming it comes after the refusal, so a hook registered after the refusal but run before it
+      passes;
+    - a canary function the module reaches by a string, as getattr(runtime_canary, "deploy") does, or the option
+      written with its value in one string, as f"--canary-home={home}" writes it;
+    - a function of the runtime canary that deploys through its own helpers, such as canary or checked, called from
+      another module: only create_home, start_home, and deploy mark a canary home there;
     - a canary function passed as a value, such as tools/skill_evals.py's Seams default, and called through another
       name: the module only has to call the refusal somewhere;
     - a method, or a function the module calls through an attribute, which has no place the module names it, so a
