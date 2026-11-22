@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from file_presence import is_occupied
+from path_containment import resolved_path
 
 # The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
 # index or graph a script creates: its owner writes it and everyone reads it, as an editor's new file.
@@ -162,7 +163,7 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     writer that puts a link at `path`, in the caller's own folder, between the look for an entry and the reservation
     has the reservation made where it leads. That is refused as FileExistsError once the reservation is found not to
     be `path`'s own file, and the file made where the link led is removed when the link still leads to it, and stays
-    otherwise.
+    otherwise; one that cannot be looked at or removed raises its OSError instead.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
@@ -300,9 +301,8 @@ def _reserve(target: Path) -> int:
 
 def _remove_followed(target: Path, reserved: os.stat_result) -> None:
     """Remove the file an exclusive create made by following a link at `target`, found where the link now leads and
-    removed only when it is that same file, `reserved`. Anything else there, or a file that cannot be found or
-    removed, stays."""
-    with contextlib.suppress(OSError):
-        followed = target.resolve()
-        if os.path.samestat(reserved, followed.lstat()):
-            followed.unlink()
+    removed only when it is that same file, `reserved`. Anything else there, or nothing, stays; a place that cannot
+    be looked at, or a file that cannot be removed, raises its OSError, which names it."""
+    followed = resolved_path(target)
+    if is_occupied(followed) and os.path.samestat(reserved, followed.lstat()):
+        followed.unlink()

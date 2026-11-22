@@ -30,6 +30,12 @@ from atomic_file import (
     replace_text,
 )
 
+SKIP_ALLOWED = {
+    "ReservationTests.test_a_link_put_at_the_target_after_the_look_is_refused_and_never_written_through": "the race "
+    "it holds is a symbolic link put at the target, which Windows makes only with a privilege or developer mode a "
+    "machine may lack",
+}
+
 
 def names_in(folder: str) -> list[str]:
     return sorted(item.name for item in Path(folder).iterdir())
