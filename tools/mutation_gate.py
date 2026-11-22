@@ -320,9 +320,12 @@ COLLECTION_ERROR = b"ERROR collecting "
 # module was imported: skill_roots.MissingSibling, which `sibling_scripts` raises when a mutant breaks its call, or any
 # other exit at import. The unmutated suite collected, so the mutant raised it. The frame is read in the start and the
 # end of the output; a traceback so deep that it lies between them, or a line the stderr pytest writes after the
-# traceback cuts where its stdout's buffer filled, reads as errored, a stated limit. So does a KeyboardInterrupt or a
-# pytest.exit raised at import, which end the run as an interruption or with the exit they name, and which no module
-# the gate mutates raises.
+# traceback cuts where its stdout's buffer filled, reads as errored, a stated limit. Three more, none of which any
+# module the gate mutates meets: a KeyboardInterrupt raised at import ends the run as an interruption with no collection
+# error, and an os._exit there ends pytest with no traceback, so each reads as errored; and a SystemExit raised outside
+# a test module's import whose message holds a line reading as this frame, which pytest prefixes with INTERNALERROR> as
+# it does every line of the message, reads as a kill. MissingSibling's message is one line. A pytest.exit at import is
+# collected as a failed module, an Exception in pytest's terms, and kills as any failed collection does.
 COLLECTION_EXIT_FRAME = re.compile(
     rb'^INTERNALERROR> +File "[^"\r\n]*", line \d+, in importtestmodule\r?$', re.MULTILINE
 )
