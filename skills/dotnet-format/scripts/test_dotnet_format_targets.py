@@ -370,8 +370,8 @@ class ResolveTests(unittest.TestCase):
     def test_a_changed_file_project_or_solution_it_cannot_examine_or_list_fails_never_reads_as_none(self) -> None:
         # A changed file it cannot stat would read as deleted, and the run as one with no C# change; a project or
         # solution, or a folder it cannot list, as one with none, which drops the ASP.NET skip or the nearest solution.
-        # A project or solution is judged by its links first, from its own metadata, so its refusal gives the system's
-        # reason through that judgment.
+        # A changed file, project, or solution is judged by its links first, from its own metadata, so its refusal
+        # gives the system's reason through that judgment.
         repo = self.repository
         repo.write("Web/Web.csproj", WEB_PROJECT)
         repo.write("Web/Program.cs")
@@ -381,7 +381,7 @@ class ResolveTests(unittest.TestCase):
         error = "[Errno 13] Access is denied"
         judged = "its links cannot be followed inside the repository root: Access is denied"
         rows: list[tuple[str, bool, str]] = [
-            ("Web/Program.cs", True, f"the changed file Web/Program.cs cannot be examined: {error}: {{target!r}}"),
+            ("Web/Program.cs", True, f"the changed file Web/Program.cs cannot be examined: {judged}"),
             ("Web/Web.csproj", True, f"{root / 'Web/Web.csproj'} cannot be examined: {judged}"),
             ("Web", False, f"{root / 'Web'} cannot be listed: {error}: {{target!r}}"),
             ("App.sln", True, f"{root / 'App.sln'} cannot be examined: {judged}"),
@@ -1136,6 +1136,64 @@ class ResolveTests(unittest.TestCase):
         with recording_reaches(touched):
             reason = self.failed()
         self.assertEqual(f"{linked} cannot be examined: {linked_out(linked, outside / 'Out.sln', repo.root)}", reason)
+        self.assertEqual([], reached(touched, [linked], outside))
+
+    def test_a_solution_the_repository_search_finds_that_is_a_link_out_fails_unread(self) -> None:
+        # Run from src/Lib, whose project src/App.sln does not list, so the nearest solution owns no changed file and
+        # the search of the whole repository runs. The root's Out.sln leads outside, to a solution listing
+        # src\\Lib\\Lib.csproj: read, it would be chosen; it is never stat or opened, and the run fails naming it, as
+        # for a solution it cannot examine (not on Windows, where a link to a file needs a privilege). The folder link
+        # Elsewhere, a junction on Windows, leads outside to another such solution and is passed over unstat'd.
+        repo = self.repository
+        repo.write("src/Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("src/Lib/Code.cs")
+        repo.write("src/App.sln", solution("Nope\\N.csproj"))
+        repo.commit("code")
+        outside = outside_folder(self)
+        (outside / "Out.sln").write_text(solution("src\\Lib\\Lib.csproj"), encoding="utf-8")
+        (outside / "Deep").mkdir()
+        (outside / "Deep" / "Deep.sln").write_text(solution("src\\Lib\\Lib.csproj"), encoding="utf-8")
+        folder = repo.root / "Elsewhere"
+        link_folder(outside / "Deep", folder)
+        self.addCleanup(remove_link, folder)
+        touched: list[tuple[str, bool]] = []
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege on Windows
+            linked = repo.root / "Out.sln"
+            linked.symlink_to(outside / "Out.sln")
+            with recording_reaches(touched):
+                reason = self.failed(cwd=repo.root / "src" / "Lib")
+            self.assertEqual(
+                f"{linked} cannot be examined: {linked_out(linked, outside / 'Out.sln', repo.root)}", reason
+            )
+            self.assertEqual([], reached(touched, [linked, folder], outside))
+            linked.unlink()
+            touched.clear()
+        with recording_reaches(touched):
+            lines = self.resolve(cwd=repo.root / "src" / "Lib")
+        self.assertEqual(
+            [["changed files do not belong to any solution found: src/App.sln"]], self.values(lines, "STOP")
+        )
+        self.assertEqual([], reached(touched, [folder], outside))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_changed_file_that_is_a_link_out_fails_unstat_d(self) -> None:
+        # Code.cs is tracked as a link to a file outside the repository: it is judged by its own metadata and text
+        # before anything stats it, and the run fails naming it, as for a changed file it cannot examine.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib.sln", solution("Lib\\Lib.csproj"))
+        outside = outside_folder(self)
+        (outside / "Code.cs").write_text("class C { }\n", encoding="utf-8")
+        linked = repo.root / "Lib" / "Code.cs"
+        linked.symlink_to(outside / "Code.cs")
+        repo.commit("code")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            reason = self.failed()
+        self.assertEqual(
+            f"the changed file Lib/Code.cs cannot be examined: {linked_out(linked, outside / 'Code.cs', repo.root)}",
+            reason,
+        )
         self.assertEqual([], reached(touched, [linked], outside))
 
 

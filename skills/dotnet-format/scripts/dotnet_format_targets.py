@@ -42,8 +42,8 @@ runs from REPO_ROOT and matches --include paths against that directory.
 
 Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command fails or
 does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot hold, a file
-cannot be read or written, or a project beside a changed file or a solution in the folders it searches upward is a link
-leading outside the repository, which it never stats or reads, it prints `FAILED <reason>` as the last line instead.
+cannot be read or written, or a changed file, a project beside one, or a solution it finds is a link leading outside the
+repository, or lies through one, which it never stats or reads, it prints `FAILED <reason>` as the last line instead.
 
 Exit status:
   0  the lines were printed, ending in SOLUTION or STOP
@@ -396,7 +396,8 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
 
 def changed_files(services: Services, root: Path, base: str) -> list[str]:
     """Committed, uncommitted, and untracked C# files changed on this branch that still exist. Raises Failed for one
-    it cannot examine, or that is something other than a file, which it cannot tell from a deleted one."""
+    it cannot examine, a link leading outside the repository included, or that is something other than a file, which
+    it cannot tell from a deleted one."""
     names = set(
         git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
     )
@@ -406,7 +407,12 @@ def changed_files(services: Services, root: Path, base: str) -> list[str]:
 
 
 def still_there(root: Path, name: str) -> bool:
-    """Whether a changed file is still a file: False only when nothing is at its path, as for one deleted."""
+    """Whether a changed file is still a file: False only when nothing is at its path, as for one deleted. Its name
+    is judged by its links first (`linked_out_refusal`), so one that is, or lies through, a link leading outside the
+    repository fails the resolution unstat'd, as one it cannot examine."""
+    refused = linked_out_refusal(root, root / name)
+    if refused:
+        raise Failed(f"the changed file {name} cannot be examined: {refused}")
     try:
         return is_present(root / name)
     except OSError as error:
@@ -528,12 +534,18 @@ def find_solutions(root: Path) -> list[Path]:
     link.
 
     A folder it cannot list, or an entry it cannot examine, is an error, not an empty one: skipping it could hide the
-    solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it.
+    solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it. The
+    walk is given the root as its tree, so it follows no link entry out of the repository, not even to learn what it
+    is, and a solution that is a link leading out (`linked_out_refusal`) is one it cannot examine, never read.
     """
-    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS)
+    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS, tree=root)
     for entry in walk.not_entered:
         if entry.kind not in (LINKED, LOOP, NESTED_CHECKOUT):
             raise Failed(f"{entry.path}: {entry.reason}")
+    for solution in walk.files:
+        refused = linked_out_refusal(root, solution)
+        if refused:
+            raise Failed(f"{solution} cannot be examined: {refused}")
     return walk.files
 
 
