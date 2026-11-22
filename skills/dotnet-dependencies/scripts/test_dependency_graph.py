@@ -3807,8 +3807,9 @@ class PathBoundTests(Fixture):
         self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
 
     def test_a_name_not_there_before_a_dot_dot_is_missing_and_no_link_after_it_is_followed(self) -> None:
-        # The system cannot open Missing/.., so a --root holding one fails as missing, never resolved past the missing
-        # name, which would follow Linked or L2 after it out of the checkout. A link to nothing there is the same.
+        # Linux and macOS cannot open Missing/.., so a --root holding one fails as missing on every platform, never
+        # resolved past the missing name, which would follow Linked or L2 after it out of the checkout. A link to
+        # nothing there is the same.
         repo = self.root / "repo"
         outside = self.root / "outside"
         (repo / TEST_MARKER).mkdir(parents=True)
@@ -4052,6 +4053,25 @@ class PathBoundTests(Fixture):
             ],
             sorted(self.lines(rows, "SDK_FAILED")),
         )
+
+    def test_a_refused_file_says_nothing_of_the_sdk_where_the_sdk_would_not_be_asked_anyway(self) -> None:
+        # Without dotnet, or with a restore older than the project, the SDK is not asked whatever the evaluation
+        # refused, so no SDK_FAILED line says it was not asked, and no project records a refused file for it.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/Common.props", "<Project />\n")
+        self.write("repo/src/Out/Out.csproj", importing("..\\..\\..\\outside\\Common.props"))
+        assets = self.write("repo/src/Out/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("repo/App.sln", solution("src\\Out\\Out.csproj"))
+        old = time.time() - 600
+        for name, services, stale in (("no dotnet", self.without_dotnet, False), ("stale", self.with_dotnet, True)):
+            with self.subTest(name):
+                if stale:
+                    os.utime(assets, (old, old))
+                (project,) = dependency_graph.build_graph(root, services).projects.values()
+                self.assertEqual((False, None), (project.sdk_answers, project.sdk_refused))
+                _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
+                self.assertEqual(([], []), (self.lines(rows, "SDK_FAILED"), self.sdk.commands))
 
     def test_the_files_an_evaluation_refused_are_listed_once_in_the_order_met_and_the_first_is_named(self) -> None:
         # A.props is met by the evaluation of the files alone and by the net8.0 build, B.props by the build alone,

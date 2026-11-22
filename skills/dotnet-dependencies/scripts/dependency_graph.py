@@ -127,15 +127,17 @@ unsettled. A link whose target stays inside the tree is read through. The NuGet 
 where it is. Limits: the names of the assemblies below a package's lib folder are listed with a glob, which may list
 through a link below that folder, reading no file's contents; a wildcard Import is judged as text and by its folder
 before the wildcard, since the reader expands none, so a link a wildcard matches is not judged, nor a link named after a
-`..` that follows a wildcard, as in `../*/../Shared/Common.props`; a `..` after a link, in --root or --project, is
-judged as Linux and macOS take it, after following the link, so on Windows a path the system would take by name past a
-link can be refused; and the look at the links and the read are two steps (folder_walk.followed_inside), so a name
-replaced by a link between them is read through, and a hard link, being the file itself, is read as a file of the tree
-wherever its other names lie. The script changes nothing on disk but the graph file and runs no restore or build; it
-prints a last line FAILED <reason> when it cannot finish, such as when the root cannot be resolved, a solution found in
-the root folder, or a solution or folder --root names, is one a link inside the checkout leads out of it (`<root> cannot
-be examined: <reason>`), --project names no project of the root, --output is inside a skills directory, the home folder
-is not known, or the graph file cannot be written.
+`..` that follows a wildcard, as in `../*/../Shared/Common.props`; a `..` after a link or after a name that is not
+there, in --root or --project, is judged as Linux and macOS take it, after following the link, and refused as missing
+after a name not there, so on Windows a path the system would take by name can be refused; an Import whose path the
+reader cannot settle, such as one naming a property no file sets, is not read and not judged, so the SDK is still asked
+about its project, and MSBuild may read it wherever it leads; and the look at the links and the read are two steps
+(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
+file itself, is read as a file of the tree wherever its other names lie. The script changes nothing on disk but the
+graph file and runs no restore or build; it prints a last line FAILED <reason> when it cannot finish, such as when the
+root cannot be resolved, a solution found in the root folder, or a solution or folder --root names, is one a link inside
+the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names no project of the root, --output
+is inside a skills directory, the home folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -368,9 +370,9 @@ SDK_NOT_ASKED = (
 def followed_named(path: Path, tree: Path) -> tuple[Path | None, str | None]:
     """Where a path the user names, a --root or a --project, leads inside `tree`, or why not: `followed_inside`, which
     takes each `..` after following the link before it, from the link's text, as Linux and macOS take it, on every
-    platform, and stats nothing outside the tree. A name that is not there before a `..` leaves a path the system
-    cannot open, so it is refused as missing (`file_presence.MISSING`), and nothing past the missing name is resolved,
-    which would follow a link after it."""
+    platform, and stats nothing outside the tree. A name that is not there before a `..` leaves a path Linux and macOS
+    cannot open, so it is refused as missing, on every platform, though Windows takes such a `..` by name
+    (`file_presence.MISSING`), and nothing past the missing name is resolved, which would follow a link after it."""
     inside, refused = followed_inside(path, tree)
     if inside is not None and ".." in inside.parts:
         return None, file_presence.MISSING

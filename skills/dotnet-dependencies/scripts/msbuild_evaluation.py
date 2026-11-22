@@ -936,11 +936,11 @@ class ProjectEvaluation:
         return found
 
     def refused(self) -> list[Path]:
-        """Each file or path an evaluation made so far refused for where it lies, outside the examined tree or through
-        a link leading out of it, once, in the order first met, the evaluation of the files alone first and then each
-        build in the order made: an import, one not read for its condition or a wildcard included, a nearest file, a
-        `*OfFileAbove` start or candidate, or an `Exists()` path. MSBuild would read or stat each, so the caller asks
-        no tool that evaluates the project through MSBuild."""
+        """Each file or path an evaluation made so far refused for where it lies, outside the examined tree or through a
+        link leading out of it, each path, by its text, once, in the order first met, the evaluation of the files alone
+        first and then each build in the order made: an import, one not read for its condition or a wildcard included, a
+        nearest file, a `*OfFileAbove` start or candidate, or an `Exists()` path. MSBuild would read or stat each, so
+        the caller asks no tool that evaluates the project through MSBuild."""
         found: dict[str, Path] = {}
         for path in [*self.outer.refused, *(path for build in self.builds.values() for path in build.refused)]:
             # Keyed by its text, never by same_path, whose case probe would list the folders on a path outside the tree.
