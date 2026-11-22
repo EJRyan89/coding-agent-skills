@@ -797,8 +797,9 @@ removed fails validation until its pattern follows it.
   and `tests/validation/test_line_numbering.py::test_a_count_that_runs_once_or_from_elsewhere_passes`
 - **Search for:** `.count("\n", 0, <match>.start())` or `.count(chr(10), 0, …)` inside a `for` loop, a `while` loop,
   or a comprehension, or in a function such a loop calls, as a `line_of(text, index)` helper; `text_lines(`,
-  `.splitlines()`, or `len(…lines(…))` of `text[:pos]` per item; `LINE_BREAK.findall(text, 0, pos)` per item; and
-  `[0, *(match.end() for match in` a line-break pattern's `finditer`, which builds the starts `line_starts` gives. A
+  `.splitlines()`, `.split("\n")`, or `len(…lines(…))` of `text[:pos]` per item; `LINE_BREAK.findall(text, 0, pos)`
+  or `re.findall("\n", text[:pos])` per item; and `[0, *(match.end() for match in` a line-break pattern's
+  `finditer`, `re.finditer("\n", text)` among them, which builds the starts `line_starts` gives. A
   count from the previous position, as `text.count("\n", position, match.start())` with `position` moved to each
   match, reads the text once and is no hit; neither is a count within each span of a text, as `text[a:b].count("\n")`,
   nor a count of each whole text of many.

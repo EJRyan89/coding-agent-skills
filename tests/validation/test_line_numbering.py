@@ -1,8 +1,9 @@
 """Fixture tests for tests/validation/line_numbering.py.
 
 The policy fails a count of line breaks from a text's start that runs once per position, in a loop or in a function a
-loop of the module calls, and passes a count that runs once, one from another start, and a numbering over the text's
-line starts.
+loop of the module calls, and a text's line starts built from a line-break pattern outside text_lines.py, and passes a
+count that runs once, one from another start, a numbering over the text's line starts, and each form the policy's
+stated limits leave unread.
 """
 
 from __future__ import annotations
@@ -24,6 +25,12 @@ REFUSAL = (
     "grows with the square of the text; read the text's text_lines.line_starts once and take each position's line "
     "with text_lines.line_index, or state why in LINE_COUNT_ALLOWED"
 )
+STARTS_REFUSAL = (
+    "builds a text's line starts from a line-break pattern itself; take them from text_lines.line_starts, and each "
+    "position's line with text_lines.line_index, or state why in LINE_COUNT_ALLOWED"
+)
+# The refusal each marker at a line's end names.
+MARKED = {"# read": REFUSAL, "# starts": STARTS_REFUSAL}
 MODULE = "skills/alpha/scripts/alpha.py"
 
 
@@ -32,7 +39,8 @@ def problems(root: Path, source: str, name: str = MODULE) -> list[str]:
     return line_numbering_problems(root, sorted(root.rglob("*.py")))
 
 
-# Each source marks the line of each count the policy refuses with `# read`.
+# Each source marks the line of each count the policy refuses with `# read`, and of each line starts built from a
+# line-break pattern with `# starts`.
 REFUSED = [
     pytest.param(
         "def f(text, pattern):\n    for match in pattern.finditer(text):\n"
@@ -142,6 +150,113 @@ REFUSED = [
         "def g(text, places):\n    return [text.count('\\n', 0, p) for p in places]\n",
         id="a count outside the scope the allowance names",
     ),
+    pytest.param(
+        "def f(text, places):\n    return [text.count(chr(13), 0, p) for p in places]  # read\n",
+        id="chr(13) from 0",
+    ),
+    pytest.param(
+        "def f(data, places):\n    return [data.count(b'\\r', 0, place) for place in places]  # read\n",
+        id="a bytes CR",
+    ),
+    pytest.param(
+        "def f(data, places):\n    return [data[:place].count(b'\\r\\n') for place in places]  # read\n",
+        id="a bytes CRLF of a slice from the start",
+    ),
+    pytest.param(
+        "def f(text, ps):\n    return [len(text[:p].splitlines()) for p in ps]  # read\n",
+        id="splitlines of a slice from the start",
+    ),
+    pytest.param(
+        "def f(text, ps):\n    return [len(str.splitlines(text[:p])) for p in ps]  # read\n",
+        id="an unbound splitlines of a slice from the start",
+    ),
+    pytest.param(
+        "def f(text, ps):\n    return [len(text[:p].split('\\n')) for p in ps]  # read\n",
+        id="a split at LF of a slice from the start",
+    ),
+    pytest.param(
+        "def f(data, ps):\n    return [len(data[:p].split(b'\\n')) for p in ps]  # read\n",
+        id="a bytes split at LF of a slice from the start",
+    ),
+    pytest.param(
+        "def f(text, ps):\n    return [len(text[0:p].rsplit(sep=chr(10))) for p in ps]  # read\n",
+        id="an rsplit by sep of a slice from 0",
+    ),
+    pytest.param(
+        "def f(text, ps):\n    return [len(str.split(text[:p], '\\r\\n')) for p in ps]  # read\n",
+        id="an unbound split at CRLF of a slice from the start",
+    ),
+    pytest.param(
+        "from text_lines import program_lines\n\n\ndef f(output, places):\n"
+        "    return [len(program_lines(output[:place])) for place in places]  # read\n",
+        id="program_lines of a slice from the start",
+    ),
+    pytest.param(
+        "from text_lines import KEPT_LINE\n\n\ndef f(text, places):\n"
+        "    return [len(KEPT_LINE.findall(text, 0, place)) for place in places]  # read\n",
+        id="KEPT_LINE findall from 0",
+    ),
+    pytest.param(
+        "class Reader:\n    @classmethod\n    def line_of(cls, text, index):\n"
+        "        return text.count('\\n', 0, index)  # read\n\n"
+        "    @classmethod\n    def lines(cls, text, places):\n        return [cls.line_of(text, p) for p in places]\n",
+        id="a method a loop calls on cls",
+    ),
+    pytest.param(
+        "import re\n\nLINE = re.compile('\\n')\n\n\ndef f(text, places):\n"
+        "    return [len(LINE.findall(text, 0, place)) for place in places]  # read\n",
+        id="a module's own compiled line feed from 0",
+    ),
+    pytest.param(
+        "import re\n\nBREAK: re.Pattern[str] = re.compile(r'\\r\\n|\\r|\\n')\n\n\ndef f(text, places):\n"
+        "    return [len(BREAK.split(text[:place])) for place in places]  # read\n",
+        id="a module's own annotated compiled break split on a slice",
+    ),
+    pytest.param(
+        "import re\n\n\ndef f(text, places):\n"
+        "    return [len(re.compile(b'\\n').findall(text[:p])) for p in places]  # read\n",
+        id="a bytes compile in place on a slice",
+    ),
+    pytest.param(
+        "import re\n\n\ndef f(text, places):\n    return [len(re.findall('\\n', text[:p])) for p in places]  # read\n",
+        id="re.findall of a line feed on a slice",
+    ),
+    pytest.param(
+        "from re import split\n\n\ndef f(text, places):\n"
+        "    return [len(split(r'\\n|\\r', text[:p])) for p in places]  # read\n",
+        id="re.split through an import on a slice",
+    ),
+    # Stated: each text is read once, but the policy cannot tell many texts from one.
+    pytest.param(
+        "def f(texts):\n    return [text[:-1].count('\\n') for text in texts]  # read\n",
+        id="the start of each of many texts, which the policy refuses as stated",
+    ),
+    pytest.param(
+        "def line_of(text, index):\n    return text.count('\\n', 0, index)  # read\n\n\n"
+        "class Reader:\n    def line_of(self, index):\n        return index\n\n"
+        "    def lines(self, places):\n        return [self.line_of(p) for p in places]\n",
+        id="a function sharing its name with a method a loop calls, which the policy refuses as stated",
+    ),
+    pytest.param(
+        "from text_lines import LINE_BREAK\n\n\ndef f(text):\n"
+        "    return [0, *(match.end() for match in LINE_BREAK.finditer(text))]  # starts\n",
+        id="line starts built from LINE_BREAK's matches",
+    ),
+    pytest.param(
+        "import re\n\n\ndef f(text):\n    return [0, *(m.end() for m in re.finditer('\\n', text))]  # starts\n",
+        id="line starts built from re.finditer of a line feed",
+    ),
+    pytest.param(
+        "import re\n\nFEED = re.compile(r'\\n')\n\n\ndef f(text):\n"
+        "    return {m.end(): m.start() for m in FEED.finditer(text)}  # starts\n",
+        id="line starts keyed from a module's own compiled line feed",
+    ),
+    pytest.param(
+        "import text_lines\n\n\ndef f(text):\n    starts = [0]\n"
+        "    for match in text_lines.LINE_FEED.finditer(text):  # starts\n        starts.append(match.end())\n"
+        "    return starts\n",
+        id="line starts appended in a for loop",
+    ),
 ]
 
 PASSED = [
@@ -207,18 +322,104 @@ PASSED = [
         "def f(text, places):\n    return [text.count('\\n', 0, p) for p in places]\n",
         id="a count its allowance sanctions",
     ),
+    pytest.param(
+        "def f(text, place):\n    return [n for n in range(text.count('\\n', 0, place))]\n",
+        id="a count in a comprehension's first iterable, which runs once",
+    ),
+    pytest.param(
+        "def f(text, places, place):\n    for p in places:\n        print(p)\n    else:\n"
+        "        return text.count('\\n', 0, place)\n",
+        id="a count in a for loop's else, which runs once",
+    ),
+    pytest.param(
+        "def f(text, place):\n    while place:\n        place -= 1\n    else:\n"
+        "        return text.count('\\n', 0, place)\n",
+        id="a count in a while loop's else, which runs once",
+    ),
+    pytest.param(
+        "def f(texts):\n    return [len(text.split('\\n')) for text in texts]\n", id="a split of each whole text"
+    ),
+    pytest.param(
+        "def f(text, places):\n    return [len(text[:p].split(',')) for p in places]\n",
+        id="a split of a slice at another separator",
+    ),
+    pytest.param(
+        "def f(text, places):\n    return [len(text[:p].split()) for p in places]\n",
+        id="a split of a slice at whitespace",
+    ),
+    pytest.param(
+        "import re\n\n\ndef f(texts):\n    return [len(re.findall('\\n', text)) for text in texts]\n",
+        id="re.findall of each whole text, a stated limit",
+    ),
+    pytest.param(
+        "import re\n\nCLAUSE = re.compile(r'[.;:](?=\\s|$)')\n\n\ndef f(text):\n"
+        "    return [0, *(m.end() for m in CLAUSE.finditer(text))]\n",
+        id="ends of another pattern's matches",
+    ),
+    pytest.param(
+        "from text_lines import LINE_BREAK\n\n\ndef f(text):\n"
+        "    return [m.start() for m in LINE_BREAK.finditer(text)]\n",
+        id="where each line break starts",
+    ),
+    pytest.param(
+        "NEWLINE = '\\n'\n\n\ndef f(text, places):\n    return [text.count(NEWLINE, 0, p) for p in places]\n",
+        id="a line break through a name, a stated limit",
+    ),
+    pytest.param(
+        "import re\n\n\ndef f(text, places):\n    line = re.compile('\\n')\n"
+        "    return [len(line.findall(text, 0, p)) for p in places]\n",
+        id="a pattern a function binds, a stated limit",
+    ),
+    pytest.param(
+        "def f(text, places):\n    return list(map(lambda p: text.count('\\n', 0, p), places))\n",
+        id="a count in a lambda map runs, a stated limit",
+    ),
+    pytest.param(
+        "def f(text, places):\n    return sorted(places, key=lambda p: text.count('\\n', 0, p))\n",
+        id="a count in a sort key, a stated limit",
+    ),
+    pytest.param(
+        "from functools import partial\n\n\ndef line_of(text, index):\n    return text.count('\\n', 0, index)\n\n\n"
+        "def f(text, places):\n    return list(map(partial(line_of, text), places))\n",
+        id="a function map runs through partial, a stated limit",
+    ),
+    pytest.param(
+        "class Reading:\n    def line_of(self, index):\n        return self.text.count('\\n', 0, index)\n\n\n"
+        "def f(reading, places):\n    return [reading.line_of(p) for p in places]\n",
+        id="a method a loop calls on another receiver, a stated limit",
+    ),
 ]
 
 
 @pytest.mark.parametrize("source", REFUSED)
 def test_a_count_from_a_text_s_start_once_per_position_fails(tmp_path: Path, source: str) -> None:
-    lines = [number for number, text in enumerate(source.split("\n"), 1) if text.endswith("# read")]
-    assert problems(tmp_path, source) == [f"{MODULE}:{line} {REFUSAL}" for line in lines]
+    expected = [
+        f"{MODULE}:{number} {refusal}"
+        for number, text in enumerate(source.split("\n"), 1)
+        for marker, refusal in MARKED.items()
+        if text.endswith(marker)
+    ]
+    assert problems(tmp_path, source) == expected
 
 
 @pytest.mark.parametrize("source", PASSED)
 def test_a_count_that_runs_once_or_from_elsewhere_passes(tmp_path: Path, source: str) -> None:
     assert problems(tmp_path, source) == []
+
+
+def test_a_function_another_module_calls_in_a_loop_passes_as_a_stated_limit(tmp_path: Path) -> None:
+    helper = "def line_of(text, index):\n    return text.count('\\n', 0, index)\n"
+    caller = "from helper import line_of\n\n\ndef f(text, places):\n    return [line_of(text, p) for p in places]\n"
+    write_fixture_tree(tmp_path, {"skills/alpha/scripts/helper.py": helper, MODULE: caller})
+    assert line_numbering_problems(tmp_path, sorted(tmp_path.rglob("*.py"))) == []
+
+
+def test_text_lines_builds_the_line_starts_it_gives(tmp_path: Path) -> None:
+    source = (
+        "from text_lines import LINE_BREAK\n\n\ndef line_starts(text):\n"
+        "    return [0, *(match.end() for match in LINE_BREAK.finditer(text))]\n"
+    )
+    assert problems(tmp_path, source, "skills/ejryan89-skill-core/scripts/text_lines.py") == []
 
 
 def test_an_allowance_entry_that_sanctions_nothing_fails(tmp_path: Path) -> None:
