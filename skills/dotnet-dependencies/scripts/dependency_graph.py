@@ -23,7 +23,8 @@ forward slashes:
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
                   not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
                   bound stopped it at; its facts are missing
-    SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
+    SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed, or was not asked since the
+                  project's evaluation refused a file MSBuild would reach; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
                   assembly a package ships, or `name (vversion, graph vother)` for a package the SDK resolves at one
@@ -89,37 +90,54 @@ too, and lists each folder on the way, reading the metadata of a case-swapped na
 names by case, but reads no file's contents; `repo/../repo/Linked/Sub/../Other/Other.csproj`, with Linked leading
 outside, is resolved through Linked and then refused.
 
-`why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
-no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
-answer, is an SDK_FAILED line. The graph walk runs for every project too: for a project the SDK answered, the walk's
-chains along a route the SDK printed are printed once with it, named `sdk`, with the walk's hops at the SDK's
-versions, and the walk's version of a package after `graph` where a referenced project's own restore resolves it
-apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
+`why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json no
+older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an answer,
+is an SDK_FAILED line. The SDK evaluates the project through MSBuild, so a project whose evaluation refused a path for
+where it lies, outside the examined tree or through a link leading out of it, is never passed to it: an import, one the
+reader does not read because its condition cannot be settled or its path is a wildcard included, a nearest
+Directory.Build.props, Directory.Packages.props, or Directory.Build.targets, a *OfFileAbove start or candidate, or an
+Exists() path, each of which MSBuild would read or stat; the walk answers that project alone, and an SDK_FAILED line for
+each name says why, naming the first such file. The graph walk runs for every project too: for a project the SDK
+answered, the walk's chains along a route the SDK printed are printed once with it, named `sdk`, with the walk's hops at
+the SDK's versions, and the walk's version of a package after `graph` where a referenced project's own restore resolves
+it apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
-changes which source a route names and which version leads where the two differ, never which routes are printed.
-A path a solution or project names is read only inside the examined tree, the checkout holding the solution or directory
+changes which source a route names and which version leads where the two differ, never which routes are printed. A path
+a solution or project names is read only inside the examined tree, the checkout holding the solution or directory
 searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's
 docstring). Nothing inside the tree is stat, listed, or read through a link that leads outside it, judged from each
 name's own metadata and each link's text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for
 projects follows no link entry out of the tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE
 line naming the link and its target, and any other such entry is reported as a link the search does not follow, so a
 file link the script also reads, such as a linked Directory.Packages.props, is named twice, by the search and by the
-read. A solution in the root folder so linked, or named by --root, is a FAILED line; a project the search finds or a
-solution lists, an import, the nearest Directory.Build.props or Directory.Packages.props, a restore's assets, a
-packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec, that a link on its
-way, its own name included, leads outside the tree is an UNREADABLE line naming the link and its target; and an Exists()
-condition below such a link is reported and unsettled. A link whose target stays inside the tree is read through. The
-NuGet cache lies outside the tree and is read where it is. Limits: the names of the assemblies below a package's lib
-folder are listed with a glob, which may list through a link below that folder, reading no file's contents; `dotnet
-nuget why`, which `why` asks for a restored SDK-style project, evaluates the project through MSBuild, which reads what
-the script refused, such as an import through a link leading outside the tree; and the look at the links and the read
-are two steps (folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link,
-being the file itself, is read as a file of the tree wherever its other names lie.
-The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line FAILED
-<reason> when it cannot finish, such as when the root cannot be resolved, a root solution, found in the root folder or
-named by --root, is a link leading outside the checkout (`<solution> cannot be examined: <reason>`), --project names no
-project of the root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be
-written.
+read. A --root is judged as named, before it is stat or resolved: the checkout holding it, the innermost one, nearest at
+or above it, is found from the top down (msbuild_reader.examined_tree), following a link on its way only while no
+checkout lies above it, and taken as it stands before the first link inside a checkout, so a link above the checkout,
+such as macOS's /var or a link to the place a repository is kept, is the user's own choice of root and is followed,
+while a link inside the checkout is never followed to look for a marker below it. A solution or folder --root names that
+such a link leads out of the checkout, and a solution in the root folder so linked, is a FAILED line naming the link;
+one whose link stays inside the checkout is read through. A `..` in --root is taken as the system takes it, inside the
+checkout (followed_inside): one after a link steps back from where the link leads, so a link before it that leads out of
+the checkout fails the run the same way, and one that climbs out of the checkout at its top leaves it there and is
+judged again in the folder it reaches. A project the search finds or a solution lists, an import, the nearest
+Directory.Build.props or Directory.Packages.props, a restore's assets, a packages.config, a config, the packages folder,
+a package's folder, its lib folder, or its nuspec, that a link on its way, its own name included, leads outside the tree
+is an UNREADABLE line naming the link and its target; and an Exists() condition below such a link is reported and
+unsettled. A link whose target stays inside the tree is read through. The NuGet cache lies outside the tree and is read
+where it is. Limits: the names of the assemblies below a package's lib folder are listed with a glob, which may list
+through a link below that folder, reading no file's contents; a wildcard Import is judged as text and by its folder
+before the wildcard, since the reader expands none, so a link a wildcard matches is not judged, nor a link named after a
+`..` that follows a wildcard, as in `../*/../Shared/Common.props`; a `..` after a link or after a name that is not
+there, in --root or --project, is judged as Linux and macOS take it, after following the link, and refused as missing
+after a name not there, so on Windows a path the system would take by name can be refused; an Import whose path the
+reader cannot settle, such as one naming a property no file sets, is not read and not judged, so the SDK is still asked
+about its project, and MSBuild may read it wherever it leads; and the look at the links and the read are two steps
+(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
+file itself, is read as a file of the tree wherever its other names lie. The script changes nothing on disk but the
+graph file and runs no restore or build; it prints a last line FAILED <reason> when it cannot finish, such as when the
+root cannot be resolved, a solution found in the root folder, or a solution or folder --root names, is one a link inside
+the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names no project of the root, --output
+is inside a skills directory, the home folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -226,6 +244,8 @@ class Project:
     targets: list[Target] = field(default_factory=lambda: [Target(NO_FRAMEWORK)])
     edges: str = "direct"
     sdk_answers: bool = False
+    # The first file its evaluation refused for where it lies, which keeps a project the SDK would answer from it.
+    sdk_refused: Path | None = None
 
     def targets_for(self, framework: str) -> list[Target]:
         """The targets a walk under `framework` enters: the target of that framework, else every one."""
@@ -341,20 +361,37 @@ def find_projects(
 SKIPPED_REASON = "the .NET search skips a folder so named, a version-control, dependency, build-output, or IDE folder"
 HIDDEN_REASON = "the folder is hidden, its name starting with a dot, which the search prunes"
 RETRY_ADVICE = "pass --root at its solution or its folder"
+SDK_NOT_ASKED = (
+    "dotnet nuget why was not asked, since MSBuild would reach {file}, which the reader refused: it lies outside the"
+    " examined tree or a link on its way leads out of it"
+)
+
+
+def followed_named(path: Path, tree: Path) -> tuple[Path | None, str | None]:
+    """Where a path the user names, a --root or a --project, leads inside `tree`, or why not: `followed_inside`, which
+    takes each `..` after following the link before it, from the link's text, as Linux and macOS take it, on every
+    platform, and stats nothing outside the tree. A name that is not there before a `..` leaves a path Linux and macOS
+    cannot open, so it is refused as missing, on every platform, though Windows takes such a `..` by name
+    (`file_presence.MISSING`), and nothing past the missing name is resolved, which would follow a link after it."""
+    inside, refused = followed_inside(path, tree)
+    if inside is not None and ".." in inside.parts:
+        return None, file_presence.MISSING
+    return inside, refused
 
 
 def as_named(path: Path, tree: Path) -> Path | None:
     """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, but for
     a path holding a `..`, which the system takes only after following any link before it, the part up to its last
     `..` is followed as the system follows it, so no `..` steps back out of a link as text would, and the names after
-    it stay as named. The part inside `tree` is followed by `followed_inside`, which stats nothing outside it, and is
-    None when a link or `..` on it leads out; a part named outside the tree, or through a link above it, is resolved."""
+    it stay as named. The part inside `tree` is followed by `followed_named`, which stats nothing outside it, and is
+    None when a link or `..` on it leads out, or a name before a `..` is not there; a part named outside the tree, or
+    through a link above it, is resolved."""
     parts = path.absolute().parts
     if ".." not in parts:
         return lexical_absolute(path)
     last = len(parts) - 1 - parts[::-1].index("..")
     prefix = Path(*parts[: last + 1])
-    inside, refused = followed_inside(prefix, tree)
+    inside, refused = followed_named(prefix, tree)
     if refused is not None:
         return None
     return (inside or resolved_path(prefix)).joinpath(*parts[last + 1 :])
@@ -470,17 +507,54 @@ def root_solutions(folder: Path) -> list[Path]:
     except OSError as error:
         raise unexaminable(folder, error) from None
     tree = checkout_tree(folder)
-    return [
-        child for child in children if is_solution(child) and not linked_solution(child, tree) and regular_file(child)
-    ]
+    return [child for child in children if is_solution(child) and not linked_root(child, tree) and regular_file(child)]
 
 
-def linked_solution(path: Path, tree: Path) -> bool:
-    """False for a solution no link on its way inside `tree` leads out of it (`outside_link_refusal`), and `Failed`
-    naming it otherwise, since the solution chooses every project the run reads and is never read from outside."""
+def linked_root(path: Path, tree: Path) -> bool:
+    """False for a root, a solution or a folder, that no link on its way inside `tree` leads out of it
+    (`outside_link_refusal`), and `Failed` naming it otherwise, since the root chooses every project the run reads and
+    is never read from outside."""
     if (linked := outside_link_refusal(path, tree)) is not None:
         raise unexaminable(path, Unreadable(path, linked))
     return False
+
+
+def as_given(path: Path, named: Path | None = None) -> Path:
+    """`path` made absolute as the system opens it, judged as the root is (`resolve_root`): a path holding no `..` is
+    normalized as text, keeping the links it is named through. One holding a `..`, which the system takes only after
+    following any link before it, is followed inside the checkout holding its part before the first `..`
+    (`examined_tree`) by `followed_named`, as `as_named` follows a --project, so a link inside the checkout that leads
+    out of it, before a `..` or after it, fails naming the link, and a name not there before a `..` fails as missing.
+    A `..` that climbs out of the checkout at its top, with no link before it, leaves it for the folder above where the
+    checkout lies, resolved, which follows only links above every checkout, and the rest is judged again from there.
+    A `..` after a link is so taken after following the link on every platform, never by the system's own resolving,
+    so on Windows, which takes a path's own `..` by name, a path it would take past a link can be refused. A refusal
+    names `named`, the path as the user gave it, else `path`."""
+    absolute = path.absolute()
+    named = named or absolute
+    parts = absolute.parts
+    if ".." not in parts:
+        return lexical_absolute(path)
+    tree = checkout_tree(Path(*parts[: parts.index("..")]))
+    for index, name in enumerate(parts):
+        if name != "..":
+            continue
+        inside, refused = followed_named(Path(*parts[: index + 1]), tree)
+        if refused is not None:
+            raise root_refusal(named, refused)
+        if inside is None:
+            return as_given(resolved_path(tree).parent.joinpath(*parts[index + 1 :]), named)
+    inside, refused = followed_named(absolute, tree)
+    if refused is not None:
+        raise root_refusal(named, refused)
+    return inside or absolute
+
+
+def root_refusal(named: Path, refused: str) -> Failed:
+    """The failure of a --root `followed_named` refuses: missing, as the system finds it, or not examined, with why."""
+    if refused == file_presence.MISSING:
+        return Failed(f"{named} {refused}")
+    return unexaminable(named, Unreadable(named, refused))
 
 
 def resolve_root(
@@ -489,12 +563,15 @@ def resolve_root(
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
-    the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up. A
-    solution named by `path` that a link leads outside the checkout holding its folder fails before it is stat."""
-    named = path.absolute()
-    if is_solution(named):
-        linked_solution(named, checkout_tree(lexical_absolute(named).parent))
-    path = resolved_path(path)
+    the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up.
+
+    `path` is judged as named before it is stat or resolved: the checkout holding it is found from the top down
+    (`examined_tree`), following a link on its way only while no checkout lies above it, so a link above the checkout
+    is the user's own choice of root and is followed, while a solution or folder that a link inside the checkout leads
+    out of it fails naming the link, as a solution in the root folder so linked does, and nothing is stat through it."""
+    named = as_given(path)
+    linked_root(named, checkout_tree(named.parent if is_solution(named) else named))
+    path = resolved_path(named)
     if regular_file(path):
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
@@ -790,7 +867,12 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
         # Whether the restore is older than the project cannot be told, so the SDK is not asked to answer for it.
         graph.refuse(os_unreadable(error, assets_path))
         fresh = False
-    project.sdk_answers = fresh and services.which("dotnet") is not None
+    asked = fresh and services.which("dotnet") is not None
+    # MSBuild would read or stat what the evaluation refused, so a project whose evaluation refused a file for where it
+    # lies is never asked about and the walk answers it alone.
+    refused = project.file.refused()
+    project.sdk_answers = asked and not refused
+    project.sdk_refused = refused[0] if asked and refused else None
 
 
 def build_closure(graph: Graph, project: Project, services: Services) -> None:
@@ -1054,7 +1136,13 @@ def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
 def sdk_answers(
     graph: Graph, projects: list[Project], name: str, services: Services, out: Emitter
 ) -> dict[str, list[SdkPath]]:
-    """The SDK's chains per project it answered, keyed by the project's path; each failed run is printed."""
+    """The SDK's chains per project it answered, keyed by the project's path; each failed run is printed, and so is each
+    project the SDK would answer but is not asked about, since its evaluation refused a file for where it lies."""
+    for project in projects:
+        if project.sdk_refused is not None:
+            out.line(
+                "SDK_FAILED", graph.label(project), name, SDK_NOT_ASKED.format(file=graph.relative(project.sdk_refused))
+            )
     candidates = [project for project in projects if project.sdk_answers]
     if not candidates:
         return {}
