@@ -33,7 +33,9 @@ Parallel reviewers share one session, so the hook tells them apart by the `agent
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
 reviewer can write: a folder named with the user's id that `private_folder.ensure` finds, before every read and write
 of a claim, to be one only the user owns and can write, so no other local account can remove a claim or plant one.
-A call is denied while it is not. A retry is a fresh agent that claims the same role.
+A call is denied while it is not. A retry is a fresh agent that claims the same role. A claim is created whole or not
+at all, through `atomic_file.create_bytes`, so no reader, a parallel first call of the same agent included, ever sees
+part of one, and a write that fails leaves no claim behind.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
@@ -65,11 +67,13 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import file_presence
 import hook_decision
 import json_reader
@@ -134,6 +138,13 @@ PLUGIN = plugin_name()
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 Claim = tuple[Path, dict[str, Any]]
+# How old, in seconds, a claim that does not parse must be before a new claim prunes it: many times the hook's
+# timeout, so no guard that could still be writing it, such as an older version's beside this one, is running.
+UNREADABLE_CLAIM_AGE = 600
+# Why a reviewer whose own claim does not parse is denied, ending with the remedy: no call can be judged against it.
+UNREADABLE_CLAIM = (
+    "this reviewer's claim could not be read; run the role again with a fresh reviewer, which claims it anew"
+)
 
 
 # The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
@@ -141,7 +152,7 @@ Claim = tuple[Path, dict[str, Any]]
 PRESENCE_ALLOWED = {
     "_log_read": "counts a read the guard already allowed; a path it cannot stat goes uncounted, as one the JSON "
     "writer refuses does, and never turns the read into a denial",
-    "_prune_claims": "a claim whose run.json it cannot stat or read is kept, never pruned as one whose run is gone",
+    "_prune_claims": "a claim, or a run.json, it cannot stat or read is kept, never pruned as one whose run is gone",
 }
 
 
@@ -234,7 +245,9 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     else:
         return
     # The read is already allowed and the log only counts it, so a path the JSON writer refuses, such as one holding
-    # a lone surrogate, stays uncounted, as review_source counts it, and never turns the read into a denial.
+    # a lone surrogate, stays uncounted, as review_source counts it, and never turns the read into a denial. An append
+    # cut short leaves part of a line, which `check` passes over as a read left uncounted: the log only counts, and
+    # only whether it exists shows the claim, which `_start_log` creates empty.
     with (
         contextlib.suppress(OSError, json_writer.JsonWriteRefused),
         read_log(run, role).open("a", encoding="utf-8") as log,
@@ -330,19 +343,26 @@ def claims_folder() -> Path:
 
 
 def _load_claim(agent: str) -> Claim | None:
-    """The run and role this agent claimed, or None when it has claimed none."""
+    """The run and role this agent claimed, or None when it has claimed none.
+
+    A claim that does not parse, or holds a field of the wrong kind, denies its agent's calls while it is there,
+    naming the remedy, a fresh reviewer, rather than reading as no claim: no call can be judged against it, and an
+    older guard beside this one may still be writing it in two steps. `_prune_claims` removes it once it is old, which
+    widens no reviewer's reads, since no version of the guard let a call through under such a claim: this one creates
+    a claim whole or not at all, and an older one denied, or was blocked on, the call whose write failed or was killed
+    part way."""
     claims = claims_folder()
     try:
         claim = json_reader.read_file(claims / f"{agent}.json")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
-        raise Denied("this reviewer's claim could not be read") from exc
+        raise Denied(UNREADABLE_CLAIM) from exc
     try:
         for key in ("run", "role"):
             READ.string(READ.json_object(claim, "claim").get(key), f"claim.{key}", empty=True)
     except FieldError as exc:
-        raise Denied("this reviewer's claim could not be read") from exc
+        raise Denied(UNREADABLE_CLAIM) from exc
     run = Path(claim["run"])
     role = next((role for role in _roles(run) if role["id"] == claim["role"]), None)
     if role is None:
@@ -353,41 +373,57 @@ def _load_claim(agent: str) -> Claim | None:
 def _prune_claims(claims: Path) -> None:
     """Remove each claim in `claims`, the folder claims_folder found the user's own, whose run is gone: finalize
     removes a run's folder, run.json with it. A claim whose run.json it cannot stat, or finds something else in place
-    of, is kept: the error leaves it, as one it cannot read is."""
+    of, is kept: the error leaves it, as one it cannot read or stat is.
+
+    A claim that does not parse, or holds a field of the wrong kind, is removed once its modification time is
+    `UNREADABLE_CLAIM_AGE` old, so it is not kept for good; `_load_claim` says why that widens no reviewer's reads. A
+    younger one is kept, since an older guard beside this one may still be writing it in two steps. A copy a killed
+    create left beside a claim is never read as one."""
     for path in file_presence.matching(claims, "*.json"):
-        with contextlib.suppress(OSError, ValueError):
-            claim = json_reader.read_file(path)
+        with contextlib.suppress(OSError):
             try:
-                run: str | None = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
-            except FieldError:
-                run = None
-            if run is None or not file_presence.is_present(Path(run) / RUN_FILE):
+                claim = json_reader.read_file(path)
+                run = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
+            except (ValueError, FieldError):
+                if time.time() - path.stat().st_mtime >= UNREADABLE_CLAIM_AGE:
+                    path.unlink()
+                continue
+            if not file_presence.is_present(Path(run) / RUN_FILE):
                 path.unlink()
 
 
 def _claim(agent: str, path: Path) -> None:
-    """Bind this agent to the role whose prompt it reads first. When two first calls race, whichever wrote its
-    claim first holds, and the other read is judged against that claim."""
+    """Bind this agent to the role whose prompt it reads first, by creating its claim whole or not at all. When two
+    first calls race, whichever linked its claim into place first holds, and the other read is judged against that
+    whole claim.
+
+    A create that fails before its claim is in place leaves none and denies the call, as any failure does, so the
+    next first read claims anew. One that put its claim in place but could not remove the copy it wrote it through
+    (`UnfinishedCopyError` with `made` set) still denies this call, after starting the role's read log, since the claim
+    holds: the reviewer's next read is judged against it."""
     run = run_root(path)
     role = None if run is None else next((r for r in _roles(run) if _same(path, Path(r["prompt_file"]))), None)
     if run is None or role is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
-    # Serialized before the claim file exists, so a run path the JSON writer refuses leaves no empty claim behind:
-    # the refusal fails the guard's evaluation, which denies the call.
+    # Serialized before the claim is created, so a run path the JSON writer refuses leaves no claim behind: the
+    # refusal fails the guard's evaluation, which denies the call.
     claim = json_writer.dumps({"run": str(run), "role": role["id"]})
     claims = claims_folder()
     _prune_claims(claims)
     try:
-        handle = os.open(claims / f"{agent}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        atomic_file.create_bytes(claims / f"{agent}.json", claim.encode("utf-8"), mode=0o600)
     except FileExistsError:
         claimed = _load_claim(agent)
         if claimed is None:
-            raise Denied("this reviewer's claim could not be read") from None
+            raise Denied(UNREADABLE_CLAIM) from None
         # Judged as any later read of the claimed role is, its `reads` and the run's restricted paths included.
         _check_allowed("Read", path, claimed)
         return
-    with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(claim)
+    except atomic_file.UnfinishedCopyError as exc:
+        if not exc.made:
+            raise
+        _start_log(run, role["id"])
+        raise Denied(f"this reviewer's claim is made, but the copy it was written through is left; {FIRST}") from exc
     _start_log(run, role["id"])
 
 
