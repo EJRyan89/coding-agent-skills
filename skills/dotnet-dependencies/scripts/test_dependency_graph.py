@@ -3806,6 +3806,71 @@ class PathBoundTests(Fixture):
         )
         self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
 
+    def test_a_name_not_there_before_a_dot_dot_is_missing_and_no_link_after_it_is_followed(self) -> None:
+        # The system cannot open Missing/.., so a --root holding one fails as missing, never resolved past the missing
+        # name, which would follow Linked or L2 after it out of the checkout. A link to nothing there is the same.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (outside / "a").mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked, second = repo / "Linked", repo / "L2"
+        for target, link in ((outside, linked), (outside / "a", second)):
+            link_folder(target, link)
+            self.addCleanup(remove_link, link)
+        missing = repo / "Missing"
+        for named in (
+            missing / ".." / "Linked" / "O.sln",
+            missing / ".." / "L2" / ".." / "O.sln",
+            missing / ".." / "Linked",
+        ):
+            with self.subTest(root=str(named.relative_to(repo))):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+                self.assertEqual([], followed_through(touched, [linked, second], outside))
+                self.assertEqual((1, [f"FAILED {named} is missing"]), (code, rows[-1]))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to nothing needs a privilege on Windows")
+    def test_a_link_to_nothing_before_a_dot_dot_is_missing_and_no_link_after_it_is_followed(self) -> None:
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Linked"
+        link_folder(outside, linked)
+        self.addCleanup(remove_link, linked)
+        dangling = repo / "D2"
+        dangling.symlink_to("gone", target_is_directory=True)
+        self.addCleanup(dangling.unlink)
+        named = dangling / ".." / "Linked" / "O.sln"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Out.Pkg", "--root", str(named))
+        self.assertEqual([], followed_through(touched, [linked], outside))
+        self.assertEqual((1, [f"FAILED {named} is missing"]), (code, rows[-1]))
+
+    def test_a_project_named_with_a_name_not_there_before_a_dot_dot_is_no_project_and_follows_no_link(self) -> None:
+        # The --project twin: Missing/../L2/../Other/Other.csproj is never resolved past Missing, so L2, leading out of
+        # the checkout, is not followed to learn where the path goes, and the project is none of the root's.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        (outside / "a").mkdir(parents=True)
+        second = repo / "L2"
+        link_folder(outside / "a", second)
+        self.addCleanup(remove_link, second)
+        named = repo / "Missing" / ".." / "L2" / ".." / "Other" / "Other.csproj"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+        self.assertEqual([], followed_through(touched, [second], outside))
+        self.assertEqual((1, f"FAILED {named} is not a project of {repo}"), (code, rows[-1][0]))
+
     def test_a_root_whose_dot_dot_climbs_out_of_one_checkout_is_judged_in_the_next(self) -> None:
         # Sub/../.. leaves repo at its top, where the system leaves it, and the rest is judged in the checkout it
         # reaches: a solution there is read, and one a link there leads out of it through `..` fails naming the link.
@@ -3969,7 +4034,11 @@ class PathBoundTests(Fixture):
             "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
             "the examined tree or a link on its way leads out of it"
         )
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        # Judging the paths reaches nothing outside, the Exists() path and the GetPathOfFileAbove start included.
+        self.assertEqual([], followed_through(touched, [shared], outside))
         self.assertEqual(1, code)
         self.assertEqual([[str(core), "Lantern.Json"]], [command[3:] for command in self.sdk.commands])
         self.assertEqual(

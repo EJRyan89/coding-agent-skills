@@ -511,7 +511,8 @@ class Evaluation:
         a wildcard, when it lies outside the examined tree or through a link leading out of it: MSBuild may read it.
         The whole path is judged as text, so a `..` after a wildcard that climbs out counts, and its folder before the
         first name holding a wildcard for links too; the reader expands no wildcard, so a link one matches is not
-        judged, and a path it cannot settle is not judged either."""
+        judged, nor a link named after a `..` that follows a wildcard, as in `../*/../Shared/Common.props`, and a
+        path it cannot settle is not judged either."""
         if value is None:
             return
         names = re.split(r"[\\/]", value)
@@ -942,7 +943,8 @@ class ProjectEvaluation:
         no tool that evaluates the project through MSBuild."""
         found: dict[str, Path] = {}
         for path in [*self.outer.refused, *(path for build in self.builds.values() for path in build.refused)]:
-            found.setdefault(same_path(path), path)
+            # Keyed by its text, never by same_path, whose case probe would list the folders on a path outside the tree.
+            found.setdefault(str(path), path)
         return list(found.values())
 
     def labels(self) -> list[str]:
