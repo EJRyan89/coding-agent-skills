@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import bounded_process
+import file_presence
 import github_client
 import review_runtime
 from executable_locator import located_command
@@ -1961,7 +1962,7 @@ class AdapterRequestPathTests(unittest.TestCase):
         for name, given in (("body", {"body": relative}), ("closing_issues", {"closing": relative})):
             with (
                 self.subTest(name=name),
-                mock.patch.object(review_runtime.file_presence, "require"),
+                mock.patch.object(file_presence, "require"),
                 self.assertRaises(RuntimeContractError) as refused,
             ):
                 self.request(**given)
