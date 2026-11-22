@@ -817,20 +817,6 @@ class LinkAtTheTargetTests(unittest.TestCase):
                 raise self.kept
             real_unlink(target, missing_ok=missing_ok)
 
-        real_fstat = os.fstat
-
-        def fstat(descriptor: int) -> os.stat_result:
-            if (
-                self.path.exists()
-                and not self.path.is_symlink()
-                and os.path.samestat(real_fstat(descriptor), self.path.lstat())
-            ):
-                # Another process puts a link where the reservation was, and the check then fails.
-                self.path.unlink()
-                self.path.symlink_to(self.theirs)
-                raise self.check_failure
-            return real_fstat(descriptor)
-
         def replace(_source: Any, _target: Any) -> None:
             # Another process puts a link where the reservation was; the replace then fails.
             self.path.unlink()
@@ -847,8 +833,33 @@ class LinkAtTheTargetTests(unittest.TestCase):
         if case == LINK_REPLACES:
             patches.append(mock.patch.object(os, "replace", replace))
         if case == CHECK_SWAP:
-            patches.append(mock.patch.object(os, "fstat", fstat))
+            patches += self.check_swap_patches()
         return patches
+
+    def check_swap_patches(self) -> list[contextlib.AbstractContextManager[Any]]:
+        real_fstat, real_close = os.fstat, os.close
+        swapped: list[int] = []
+
+        def fstat(descriptor: int) -> os.stat_result:
+            if (
+                self.path.exists()
+                and not self.path.is_symlink()
+                and os.path.samestat(real_fstat(descriptor), self.path.lstat())
+            ):
+                # The check fails, and another process puts a link where the reservation was once it is closed,
+                # since Windows removes no file a process holds open.
+                swapped.append(descriptor)
+                raise self.check_failure
+            return real_fstat(descriptor)
+
+        def close(descriptor: int) -> None:
+            real_close(descriptor)
+            if descriptor in swapped:
+                swapped.remove(descriptor)
+                self.path.unlink()
+                self.path.symlink_to(self.theirs)
+
+        return [mock.patch.object(os, "fstat", fstat), mock.patch.object(os, "close", close)]
 
     def test_a_link_put_at_the_target_is_refused_or_left_and_never_written_through_or_removed(self) -> None:
         for case in (OWN_CREATE, FOLLOWING_CREATE, RETARGETED, FOLLOWED_KEPT, LINK_REPLACES, CHECK_SWAP):
