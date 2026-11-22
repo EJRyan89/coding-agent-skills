@@ -28,7 +28,7 @@ import skill_menu
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
 from path_containment import resolved_path
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 from text_lines import text_lines
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
