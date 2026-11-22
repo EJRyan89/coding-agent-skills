@@ -111,9 +111,11 @@ Any exit but a pass whose output shows a MemoryError raised, as MEMORY_ERROR rea
 saying so; otherwise pytest's exit for
 a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
 module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
-named the module's tests by node id. Any other nonzero exit, an interruption, an internal error, a usage error such as
-a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the next suite, and is
-errored when none killed it, which leaves the run unfinished too, naming each such mutant.
+named the module's tests by node id, and its internal error when a SystemExit ended its import of a test module, as
+skill_roots.MissingSibling does when a mutant breaks a `sibling_scripts` call, since pytest lets that exception end
+its run rather than collecting it as a failed module. Any other nonzero exit, an interruption, another internal error,
+a usage error such as a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the
+next suite, and is errored when none killed it, which leaves the run unfinished too, naming each such mutant.
 
 Once a leg's reach pass ends, before its mutants run, it estimates what they need: each mutant at its first suite's
 unmutated seconds, shared out by the count of that suite's tests it runs when it runs only some, summed by module, in
@@ -302,13 +304,28 @@ PASSED = "passed"
 # pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, or
 # ended in a usage error, either of which kills the mutant only when collecting a test module failed, as a mutant that
 # breaks an import or the syntax does; pytest reports that failure, then exits with the usage error when the run named
-# the module's tests by node id, since it then finds none of them. Any nonzero exit whose output shows a MemoryError
-# raised, as MEMORY_ERROR reads it, kills the mutant too. Every other nonzero exit, an interruption, an internal error,
-# a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges nothing.
+# the module's tests by node id, since it then finds none of them. Its internal error kills the mutant when
+# COLLECTION_EXIT_FRAME shows a SystemExit ended the import of a test module. Any nonzero exit whose output shows a
+# MemoryError raised, as MEMORY_ERROR reads it, kills the mutant too. Every other nonzero exit, an interruption,
+# another internal error, a usage error such as a node id it cannot resolve, no test collected, or too many warnings,
+# judges nothing.
 TESTS_FAILED_EXIT = 1
 COLLECTION_EXITS = frozenset({2, 4})
+INTERNAL_ERROR_EXIT = 3
 # What pytest's report heads each module it failed to collect with, at the start of its output.
 COLLECTION_ERROR = b"ERROR collecting "
+# The frame of pytest's own import of a test module, as the traceback of its internal error prints it. pytest collects
+# any other exception that import raises as a failed module, but lets a SystemExit or a KeyboardInterrupt end its run,
+# and only a SystemExit ends it with an internal error, so that exit with this frame is a SystemExit raised while a test
+# module was imported: skill_roots.MissingSibling, which `sibling_scripts` raises when a mutant breaks its call, or any
+# other exit at import. The unmutated suite collected, so the mutant raised it. The frame is read in the start and the
+# end of the output; a traceback so deep that it lies between them, or a line the stderr pytest writes after the
+# traceback cuts where its stdout's buffer filled, reads as errored, a stated limit. So does a KeyboardInterrupt or a
+# pytest.exit raised at import, which end the run as an interruption or with the exit they name, and which no module
+# the gate mutates raises.
+COLLECTION_EXIT_FRAME = re.compile(
+    rb'^INTERNALERROR> +File "[^"\r\n]*", line \d+, in importtestmodule\r?$', re.MULTILINE
+)
 
 # A mutant mutmut's operators must make, checked before every run, so a release that stops making it fails the gate
 # rather than reporting fewer mutants.
@@ -1006,11 +1023,10 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
     process it starts ended after it and each bounded to MEMORY_BOUND bytes of data where the platform bounds it:
     passed on pytest's exit 0, killed on any other exit whose output shows a MemoryError raised, which logs that
-    reason, and
-    on its exit for a failed test or for a test module it failed to collect, an interruption or, when the run named
-    tests, a usage error, timed out past `timeout`, and errored on any other exit, which judges nothing and logs
-    pytest's exit and the start of its output. The node ids go to pytest in an argument file, which no command line's
-    length limits."""
+    reason, and on its exit for a failed test or for a test module it failed to collect, an interruption or, when the
+    run named tests, a usage error, or for a SystemExit that ended a test module's import, an internal error, timed out
+    past `timeout`, and errored on any other exit, which judges nothing and logs pytest's exit and the start of its
+    output. The node ids go to pytest in an argument file, which no command line's length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-", dir=private_folder.temporary_directory()) as temporary:
         target = suite
         if tests:
@@ -1044,7 +1060,10 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
         print(f"{KILLED:<11} {suite}: pytest exited {finished.returncode}: {MEMORY_REASON}", flush=True)
         return KILLED
     collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in start
-    if finished.returncode == TESTS_FAILED_EXIT or collection_failed:
+    collection_exited = finished.returncode == INTERNAL_ERROR_EXIT and any(
+        COLLECTION_EXIT_FRAME.search(part) for part in (start, end)
+    )
+    if finished.returncode == TESTS_FAILED_EXIT or collection_failed or collection_exited:
         return KILLED
     # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.
     output = flat_text(start.decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
