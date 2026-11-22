@@ -28,6 +28,7 @@ import atomic_file
 import dependency_graph
 import dotnet_solution
 import file_presence
+import link_probe
 import msbuild_reader
 import path_containment
 from dependency_graph import main
@@ -3152,8 +3153,9 @@ class PathBoundTests(Fixture):
         self.assertEqual([], refused_reached(touched))
 
     def test_a_project_named_through_a_link_outside_the_tree_is_never_examined_through_it(self) -> None:
-        # --project naming a file below a link the search does not follow fails naming the link, without a stat or a
-        # read through it, which would reach outside the examined tree; a `..` before the link changes nothing.
+        """--project naming a file below a link the search does not follow fails naming the link, with no Path method
+        reaching through it, which would reach outside the examined tree; a `..` before the link changes nothing. This
+        pins the stat `unsearched` makes, not the resolution of the argument, whose os-level reads it cannot see."""
         repo = self.root / "repo"
         self.write("repo/App/App.csproj", LIB_PROJECT)
         self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
@@ -3180,6 +3182,37 @@ class PathBoundTests(Fixture):
                 )
                 self.assertEqual([], [path for path in touched if "/Linked/" in path])
                 self.assertEqual([], refused_reached(touched))
+
+    def test_a_folder_whose_metadata_cannot_be_read_ends_the_look_and_nothing_below_it_is_examined(self) -> None:
+        # A folder on the way whose own metadata cannot be read may be a link, so nothing below it is stat; the
+        # folder the search passed over above it is still named.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("repo/.tools/In/In.csproj", LIB_PROJECT)
+        probe = link_probe.is_link_or_junction
+
+        def is_link_or_junction(path: Path) -> bool:
+            if Path(path).name == "In":
+                raise PermissionError(13, "Access is denied")
+            return probe(path)
+
+        touched: list[str] = []
+        named = repo / ".tools/In/In.csproj"
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(dependency_graph, "is_link_or_junction", is_link_or_junction))
+            for name in FILE_SYSTEM_METHODS:
+                stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {named} lies in {repo / '.tools'}, which the search for projects under {repo} does not enter: "
+                f"{hidden}; pass --root at its solution or its folder",
+            ),
+            (code, rows[-1][0]),
+        )
+        self.assertEqual([], [path for path in touched if "/.tools/In/" in path])
 
     def test_a_solution_entry_outside_the_tree_is_reported_and_never_reached(self) -> None:
         self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
@@ -3498,6 +3531,7 @@ class ProjectSearchTests(Fixture):
         for unlisted in (
             search / ".tools/notes.txt",
             search / ".tools/Tool/Missing.csproj",
+            search / ".tools/Nowhere/Missing.csproj",
             search / ".tools/Tool",
             self.root / "outside/Out.csproj",
         ):

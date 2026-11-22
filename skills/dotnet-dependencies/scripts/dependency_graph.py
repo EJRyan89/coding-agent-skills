@@ -75,9 +75,11 @@ solution or its folder, and, when the search found no project at all, with each 
 FAILED line of a search finding none names them. A project named through a link to its file is the project the search
 found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
 why it did not reach it; a project below a link on its way is never stat, since the link may lead outside the
-examined tree, so the folder the search passed over is named whether or not the file is there. A limit: the --project
-argument itself is resolved, up to its last `..` and in full to match a project found through a link inside the tree,
-as the narrowing always resolved it, which reads the metadata of each link on its way, never a file through one.
+examined tree, so the folder the search passed over is named whether or not the file is there; so is one below a
+folder whose metadata cannot be read. A limit: the --project argument itself is resolved, up to its last `..` and in
+full to match a project found through a link inside the tree, as the narrowing always resolved it, which follows each
+link on its way, reads the metadata of each name past it, and lists each folder past it to learn its case rule; no
+file's contents are read through a link.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -327,17 +329,20 @@ def as_named(path: Path) -> Path:
 
 
 def through_link(root: Path, names: Sequence[str]) -> bool:
-    """Whether a folder on the way from `root` down to the file `names` name is a link, a junction, or another reparse
-    point, judged from each folder's own metadata and never followed, so nothing is stat through a link that may lead
-    outside the examined tree. A folder whose metadata cannot be read ends the look: no stat reaches past it either."""
+    """Whether the file `names` name below `root` may lie through a link: a folder on its way is a link, a junction, or
+    another reparse point, judged from each folder's own metadata and never followed, so nothing is stat through a
+    link that may lead outside the examined tree. A folder whose metadata cannot be read ends the look as one: what
+    lies past it is not stat either. A folder that is not there ends it as none, since nothing lies past it to reach."""
     folder = root
     for name in names[:-1]:
         folder = folder / name
         try:
             if is_link_or_junction(folder):
                 return True
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return False
+        except OSError:
+            return True
     return False
 
 
