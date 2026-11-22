@@ -2402,7 +2402,13 @@ def parser_names(tree: ast.Module, aliases: Aliases) -> ParserBindings:
 
     Stated limits, which no repository code reaches: a base class another module defines is not read, nor a class or
     a parser reached through another name bound to it, such as `T = Tool`, nor an attribute set on a class from outside
-    its scope or through type(self); and a function nested in a method does not read its receiver's attributes."""
+    its scope or through type(self). A base is looked up among the module's classes by its spelling as written, never
+    through the scope of a class that encloses it, and a class a function or method defines is reached by its own name
+    alone. An attribute a class method binds on its receiver, as `cls.cli = ...`, is read as an instance's, so in the
+    class's instance methods and not in a class method. A class body's own statements do not read the names it binds,
+    as `cli.error(...)` after `cli = argparse.ArgumentParser()` in the same body. An instance reached outside its
+    class's methods, as `Tool().cli` or `tool.cli` after `tool = Tool()`, is not read. A function or lambda nested in a
+    method does not read its receiver's attributes."""
     classes = _classes(tree)
     class_scoped = {id(node) for reading in classes for node in _class_scope(reading.owner)}
     # The functions outside every class's scope annotated to return a parser, called by their names.

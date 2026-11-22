@@ -1206,10 +1206,10 @@ NOT_WRAPPED = [
 ]
 
 
-def tool_class(bound: str, receiver: str, parameter: str = "self", bases: str = "") -> str:
+def tool_class(bound: str, receiver: str, parameter: str = "self", bases: str = "", local: str = "") -> str:
     return (
         f"class Tool{bases}:\n{bound}    @property\n    def status({parameter}) -> int:\n"
-        f"        {receiver}.error('no')\n        return 0\n"
+        f"        {local}{receiver}.error('no')\n        return 0\n"
         "def main() -> int:\n    if X:\n        return Tool().status\n"
     )
 
@@ -1270,6 +1270,9 @@ def tool_class(bound: str, receiver: str, parameter: str = "self", bases: str = 
         (tool_class(ANNOTATED, "self.__class__.cli"), {0, 1, 2}),
         (f"class Tool:\n{ANNOTATED}def main() -> int:\n    Other.cli.error('no')\n", {0, 1}),
         (f"class Outer:\n    class Inner:\n    {ANNOTATED}def main() -> int:\n    Inner.cli.error('no')\n", {0, 1}),
+        # A class a method defines is reached by its own name alone, never through the class that holds the method.
+        (tool_class("", "Local.cli", local=f"class Local:\n        {ANNOTATED}        "), {0, 1, 2}),
+        (tool_class("", "Tool.Local.cli", local=f"class Local:\n        {ANNOTATED}        "), {0, 1}),
         (tool_class(ANNOTATED, "type(other).cli"), {0, 1}),
         (
             f"import logging\nclass Tool:\n{ANNOTATED}def main() -> int:\n    cli = logging.getLogger()\n"
@@ -1401,6 +1404,26 @@ def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_o
     # The class's parsers are read through its name anywhere, and neither its bare name nor its receiver's attribute
     # anywhere else.
     assert set(bindings.module.names) == {"Outer.cli"}
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        # A class named for the base it inherits from, as after `from x import Tool`, is its own lineage once.
+        "from x import Tool\nclass Tool(Tool):\n    cli: argparse.ArgumentParser\n    def run(self): pass\n",
+        # A diamond reads the shared base once through each side.
+        "class Base:\n    cli: argparse.ArgumentParser\nclass Left(Base): pass\nclass Right(Base): pass\n"
+        "class Tool(Left, Right):\n    def run(self): pass\n",
+        # Two classes that inherit from each other, which Python refuses to build, each read the other's once.
+        "class Tool(Base):\n    def run(self): pass\nclass Base(Tool):\n    cli: argparse.ArgumentParser\n",
+    ],
+    ids=["a base named as the class", "a diamond", "a cycle"],
+)
+def test_a_class_inherits_each_base_s_parser_once_however_its_bases_repeat_or_cycle(classes: str) -> None:
+    tree = ast.parse(f"import argparse\n{classes}")
+    bindings = parser_names(tree, import_aliases(tree))
+    run = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "run")
+    assert "self.cli" in bindings.methods[id(run)].names
 
 
 def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
