@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from guidance_record import GUIDANCE_PATH, Changelog
 from presence_denial import denied
 from test_private_folder import judged_folder_calls, recording_temporary_folders
+from test_time_in_proportion import assert_time_in_proportion
 
 from tools import runtime_changelogs as watch
 from tools import runtime_command_lines
@@ -289,12 +290,39 @@ def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str,
         pytest.param("- a\n  ```\n  x\nfoo\n- b\n- c\n", ("a ``` x", "b", "c"), id="open-fence-ending-with-its-bullet"),
         # A heading with no text ends the entry as any heading does.
         pytest.param("- one\n#\ntext\n", ("one",), id="empty-heading"),
+        # Each case below was checked against `gh api markdown`, whose HTML follows it, each line break in it made a
+        # space and none kept between tags. A line at the margin after an item's indented code leaves the item, since
+        # only a paragraph continues lazily.
+        # <ul><li><p>item</p><pre><code>code</code></pre></li></ul><p>lazy</p>
+        pytest.param("- item\n\n      code\nlazy\n", ("item code",), id="margin-line-after-indented-code"),
+        # A bullet in a quote is an entry, and joins its lines without the quote's markers.
+        # <blockquote><ul><li>quoted more</li></ul></blockquote><ul><li>two</li></ul>
+        pytest.param("> - quoted\n> more\n- two\n", ("quoted more", "two"), id="bullet-in-a-quote"),
+        # <ol><li>a<blockquote><ul><li>b c d</li></ul></blockquote></li></ol>
+        pytest.param("1. a\n   > - b\n   >   c\n   d\n", ("b c d",), id="bullet-in-a-quote-in-a-numbered-item"),
+        # Two bullets open on one line are two entries, the outer first, holding the line under the blank one.
+        # <ul><li><ul><li>inner</li></ul><p>outer</p></li></ul>
+        pytest.param("- - inner\n\n  outer\n", ("outer", "inner"), id="two-bullets-on-one-line"),
     ],
 )
 def test_a_bullets_entry_holds_the_lines_github_renders_in_its_list_item(body: str, entries: tuple[str, ...]) -> None:
     assert [("2.0.0", entries)] == [
         (found.name, found.entries) for found in watch.markdown_releases("## 2.0.0\n" + body)
     ]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param(lambda depth: "1. " * depth + "x\n" + "lazy\n" * depth, id="lazy-lines-under-numbered-items"),
+        pytest.param(lambda depth: "- " * depth + "x\n" + "lazy\n" * depth, id="lazy-lines-under-bullets"),
+    ],
+)
+def test_lines_under_deep_items_take_time_in_proportion_to_them(shape: Callable[[int], str]) -> None:
+    # Each line finds its entry once: a reader that climbed the items holding it at each line would take time growing
+    # with the square of the depth and the lines.
+    small, large = shape(300).splitlines(), shape(300 * 8).splitlines()
+    assert_time_in_proportion(watch.bullet_entries, small, large, 8**1.5)
 
 
 CODEX_RELEASES = json.loads((CAPTURED / "codex-releases.json").read_text(encoding="utf-8"))

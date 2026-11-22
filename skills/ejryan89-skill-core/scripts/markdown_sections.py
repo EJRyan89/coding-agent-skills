@@ -1,8 +1,8 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, the block walker and the reader of the lines its containers hold, the labels of a
-fence in an executable language, the inline code span reader, the HTML comment pattern, and the block rules every reader
-of Markdown's structure reads as CommonMark does: the whitespace of block structure, list markers, and which list item
-may interrupt a paragraph."""
+reader, the fenced code block reader, the block walker and the readers of the lines its containers hold and of the list
+items that hold each line, the labels of a fence in an executable language, the inline code span reader, the HTML
+comment pattern, and the block rules every reader of Markdown's structure reads as CommonMark does: the whitespace of
+block structure, list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
@@ -106,12 +106,7 @@ class Fence:
 
     def text(self, line: str) -> str:
         """A line of the fence without the blockquote markers that hold it."""
-        for _ in range(self.quotes):
-            marker = QUOTE_MARKER.match(line)
-            if marker is None:
-                break
-            line = line[marker.end() :]
-        return line
+        return _unquoted(line, self.quotes)
 
     def content(self, line: str) -> str:
         """A body line as CommonMark gives it to the fence's content: without the blockquote markers that hold it, and
@@ -131,6 +126,41 @@ class Fence:
                 return " " * (following - self.indent) + line[index + 1 :]
             width = following
         return ""
+
+
+def _unquoted(line: str, quotes: int) -> str:
+    """A line without the first `quotes` blockquote markers it starts with, or as many as it holds when fewer, as a
+    lazy line holds none."""
+    for _ in range(quotes):
+        marker = QUOTE_MARKER.match(line)
+        if marker is None:
+            break
+        line = line[marker.end() :]
+    return line
+
+
+@dataclass(frozen=True, eq=False)
+class ListItem:
+    """A list item as `_walk` reads it: the index of the line it opens on, its marker as written, such as `-` or `1.`,
+    the index in that line past the marker and the spaces after it, where its text starts, how many blockquotes hold
+    it, and the innermost list item that holds it, or None. Two items are equal only when they are one, so neither a
+    comparison nor a hash reads the items that hold one. The walk keeps the index rather than the text, so a line of
+    many nested markers is not copied once for each."""
+
+    start: int
+    marker: str
+    after: int
+    quotes: int = 0
+    parent: ListItem | None = field(default=None, repr=False)
+
+    def text(self, line: str) -> str:
+        """What follows the item's marker and the spaces after it on `line`, the line it opens on."""
+        return line[self.after :]
+
+    def unquoted(self, line: str) -> str:
+        """A line the item holds without the blockquote markers that hold the item, so a quote inside the item keeps
+        its own `>`."""
+        return _unquoted(line, self.quotes)
 
 
 def is_blank(line: str) -> bool:
@@ -291,45 +321,24 @@ def starts_heading(line: str) -> bool:
     return ATX_HEADING.fullmatch(line) is not None or EMPTY_ATX_HEADING.fullmatch(line) is not None
 
 
-def items_holding(items: list[int], width: int) -> int:
-    """How many of the open list items, by the column each one's content starts at, outermost first, hold a line
-    indented `width` columns."""
-    held = 0
-    while held < len(items) and items[held] <= width:
-        held += 1
-    return held
+@dataclass(frozen=True)
+class DocumentItems:
+    """A document's list items: each one in the order its line opens it, an item before those it holds, and for each
+    line the innermost list item that holds it, or None, whose `parent` gives the items around it."""
+
+    items: list[ListItem]
+    holding: list[ListItem | None]
 
 
-def list_item_content(line: str) -> int | None:
-    """The column the content of the list item a line opens starts at, as `_walk` reads it, or None when the
-    line opens no list item. Whether the item may interrupt a paragraph there is `list_item`'s."""
-    item = _item_content(line, interrupting=False, relative=0)
-    return None if item is None else item[0]
-
-
-def _item_content(line: str, *, interrupting: bool, relative: int) -> tuple[int, str, bool] | None:
-    """For a line that opens a list item as `list_item` reads it, indented `relative` columns past the content of the
-    items that hold it, the column the item's content starts at, its text, and whether that text opens an indented
-    code block, as it does after more than CODE_INDENT columns of space; None for any other line. The content starts
-    after the marker and the one to four spaces after it, or one column past the marker when more follow or the line
-    holds nothing else."""
-    match = LIST_ITEM.fullmatch(line)
-    if match is None or list_item(" " * relative + line.lstrip(MARKDOWN_SPACE), interrupting=interrupting) is None:
-        return None
-    after = _columns(line[: match.end("marker")])
-    spaces = _columns(line[: match.start("text")]) - after
-    opens_code = spaces > CODE_INDENT and not is_blank(match.group("text"))
-    # An item whose text opens indented code, or whose line holds nothing after its marker, has its content one column
-    # past the marker, as CommonMark reads it.
-    return after + (1 if opens_code or is_blank(match.group("text")) else spaces), match.group("text"), opens_code
-
-
-def _columns(text: str) -> int:
-    """The column `text` ends at, a tab advancing to the next multiple of four, as CommonMark counts them."""
-    width = 0
-    for character in text:
-        width += 4 - width % 4 if character == "\t" else 1
-    return width
+def document_items(lines: list[str]) -> DocumentItems:
+    """Every list item of a document and the items that hold each line, as GitHub renders them: an item holds the line
+    it opens on, each line it continues, a blank line under it, a fence's lines inside it, and a line that lazily
+    continues its paragraph though its indentation does not, while a line that ends it, such as one indented less after
+    a blank line or after its indented code, is held by the items around it only. How list items hold a line, and the
+    limits of that reading, are `_walk`'s, the one walk `blocks`, `contained_lines`, and `document_headings` read too.
+    Each line's item is read once, so the time is linear in the document however deep its items nest."""
+    walker = _walk(lines)
+    return DocumentItems(walker.items, walker.holding)
 
 
 # The kinds of block `blocks` yields.
@@ -431,6 +440,7 @@ def _walk(lines: list[str]) -> _Walker:
         # A line the open containers hold once it is read: one they continue, one it opens them on, and a lazy one.
         if walker.containers:
             walker.contained.add(index)
+        walker.holding.append(walker.innermost())
     walker.end_fence(len(lines))
     walker.close()
     return walker
@@ -464,9 +474,11 @@ class _Walker:
     of each list item's content past the content that holds it, or QUOTE_CONTAINER, and the place of each blockquote
     among them; whether a paragraph's text is open; whether the last list item opened with nothing after its marker;
     how many `|` rows in a row the containers hold, the last of them, whether the paragraph they are in has tried to be
-    a table, and whether they are a table's; and the open fence, with its run. What it yields: the blocks, the code
-    lines, the fences, the document's headings, and the lines a container holds. The open block: its first line, kind,
-    and lines, and the blank lines after an open indented code block, which join it only when more code follows."""
+    a table, and whether they are a table's; the open fence, with its run; and `holders`, beside the containers, the
+    innermost list item among each container and those outside it, or None. What it yields: the blocks, the code lines,
+    the fences, the document's headings, the lines a container holds, the list items, and each line's innermost item.
+    The open block: its first line, kind, and lines, and the blank lines after an open indented code block, which join
+    it only when more code follows."""
 
     lines: list[str]
     containers: list[int] = field(default_factory=list)
@@ -484,10 +496,17 @@ class _Walker:
     headings: list[tuple[int, re.Match[str]]] = field(default_factory=list)
     fences: list[Fence] = field(default_factory=list)
     contained: set[int] = field(default_factory=set)
+    holders: list[ListItem | None] = field(default_factory=list)
+    items: list[ListItem] = field(default_factory=list)
+    holding: list[ListItem | None] = field(default_factory=list)
     first: int = 0
     kind: str = ""
     open: list[str] = field(default_factory=list)
     pending: list[int] = field(default_factory=list)
+
+    def innermost(self) -> ListItem | None:
+        """The innermost list item among the open containers, or None."""
+        return self.holders[-1] if self.holders else None
 
     def close(self) -> None:
         """The open block, if any, ends here; the containers that hold it stay open."""
@@ -543,7 +562,7 @@ class _Walker:
             self.leave(count)
             self.paragraph, self.bare = False, False
         opened = len(self.containers)
-        position, column, start, empty = self.opened(line, position, column, start)
+        position, column, start, empty = self.opened(index, position, column, start)
         rest = line[position:]
         if len(self.containers) > opened:
             self.paragraph = False
@@ -565,7 +584,7 @@ class _Walker:
 
     def leave(self, count: int) -> None:
         """The containers past the first `count` close."""
-        del self.containers[count:]
+        del self.containers[count:], self.holders[count:]
         del self.quoted[bisect.bisect_left(self.quoted, count) :]
 
     def lazy(self, index: int) -> None:
@@ -575,11 +594,13 @@ class _Walker:
         else:
             self.begin(index, PARAGRAPH)
 
-    def opened(self, line: str, position: int, column: int, start: int) -> tuple[int, int, int, bool]:
-        """The containers the line opens from `position`, at `column`, each read past the content that holds it: the
-        index past their markers, the column it is at, the column the content of the innermost container starts at,
-        and whether the last list item it opens holds nothing after its marker. Each marker is matched where it stands
-        and each character read once, and a thematic break is looked for only where the rest of the line can be one."""
+    def opened(self, index: int, position: int, column: int, start: int) -> tuple[int, int, int, bool]:
+        """The containers the line at `index` opens from `position`, at `column`, each read past the content that
+        holds it: the index past their markers, the column it is at, the column the content of the innermost container
+        starts at, and whether the last list item it opens holds nothing after its marker. Each marker is matched where
+        it stands and each character read once, and a thematic break is looked for only where the rest of the line can
+        be one."""
+        line = self.lines[index]
         interrupting, empty = self.paragraph, False
         last = len(line.rstrip(MARKDOWN_SPACE))
         thematic = _thematic_from(line)
@@ -588,6 +609,7 @@ class _Walker:
             if line[first] == ">":
                 self.quoted.append(len(self.containers))
                 self.containers.append(QUOTE_CONTAINER)
+                self.holders.append(self.innermost())
                 position, column = _past_quote_marker(line, first, column + width)
                 start = column
             elif first >= thematic and THEMATIC_BREAK.fullmatch(line[first:].rstrip(LINE_END)):
@@ -605,6 +627,9 @@ class _Walker:
                 opens_code = spaces > CODE_INDENT and not empty
                 content = column + after + (1 if opens_code or empty else spaces)
                 self.containers.append(content - start)
+                item = ListItem(index, marker.group("marker"), marker.end(), len(self.quoted), self.innermost())
+                self.items.append(item)
+                self.holders.append(item)
                 position, column, start = marker.end("marker"), column + after, content
                 if empty:
                     break
@@ -652,6 +677,7 @@ class _Walker:
         open block, but an indented code block's, which it may join, and a blockquote's, whose `>` line it joins."""
         if self.bare and self.containers and self.containers[-1] != QUOTE_CONTAINER:
             self.containers.pop()
+            self.holders.pop()
         self.paragraph, self.bare, self.rows, self.table = False, False, 0, False
         if self.kind == CODE and same:
             self.pending.append(index)

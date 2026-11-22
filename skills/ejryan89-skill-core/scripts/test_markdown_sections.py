@@ -7,7 +7,7 @@ import random
 import sys
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -24,16 +24,16 @@ from markdown_sections import (
     SHELL_FENCES,
     CodeSpan,
     CodeSpanReader,
+    ListItem,
     blocks,
     code_block_lines,
     code_spans,
     contained_lines,
     document_headings,
+    document_items,
     find_fences,
     is_blank,
-    items_holding,
     list_item,
-    list_item_content,
     markdown_section,
     prose_code_spans,
     starts_block,
@@ -135,15 +135,71 @@ def test_a_block_start_ends_a_quote_the_walk_reads(document: str, headings: list
     assert [index for index, _ in document_headings(document.splitlines())] == headings
 
 
-def test_a_list_item_s_content_starts_past_its_marker_and_the_spaces_after_it() -> None:
-    assert [list_item_content(line) for line in ("- item", "  -   item", "1.\titem", "-      code", "text")] == [
-        2,
-        6,
-        4,
-        2,
-        None,
-    ]
-    assert [items_holding([2, 4], width) for width in (0, 2, 3, 4, 8)] == [0, 1, 1, 2, 2]
+# Documents, each with the list items that hold each line, as each item's opening line and marker, outermost first,
+# and the HTML `gh api markdown` renders the document as, each line break in it made a space and none kept between tags.
+HOLDING_ITEMS = {
+    # A lazy line continues the numbered item's paragraph; a line indented to the bullet's content after a blank line
+    # leaves the numbered item; and one at the margin after a blank line leaves both.
+    # <ul><li><p>a</p><ol><li>b more lazy</li></ol><p>c</p></li></ul><p>d</p>
+    "a numbered item in a bullet": (
+        "- a\n  1. b\n     more\nlazy\n\n  c\n\nd",
+        [[(0, "-")], *[[(0, "-"), (1, "1.")]] * 4, [(0, "-")], [(0, "-")], []],
+    ),
+    # A line at the margin after an item's indented code is the document's: only a paragraph continues lazily.
+    # <ul><li><p>item</p><pre><code>code</code></pre></li></ul><p>lazy</p>
+    "a lazy-looking line after indented code": ("- item\n\n      code\nlazy", [[(0, "-")], [(0, "-")], [(0, "-")], []]),
+    # A quote inside an item, and an item inside it, hold their lazy lines, the item's own and the quote's.
+    # <ol><li>a<blockquote><ul><li>b c d</li></ul></blockquote></li></ol>
+    "an item in a quote in an item": (
+        "1. a\n   > - b\n   >   c\n   d",
+        [[(0, "1.")], [(0, "1."), (1, "-")], [(0, "1."), (1, "-")], [(0, "1."), (1, "-")]],
+    ),
+    # Two items open on one line, and a line after a blank one indented to the outer item's content leaves the inner.
+    # <ul><li><ul><li>inner</li></ul><p>outer</p></li></ul>
+    "two items on one line": ("- - inner\n\n  outer", [[(0, "-"), (0, "-")], [(0, "-"), (0, "-")], [(0, "-")]]),
+    # An item that opens empty holds the line under it, unless that line is blank, which ends the item.
+    # <ul><li>foo</li></ul>
+    "an empty item and its text": ("- \n  foo", [[(0, "-")], [(0, "-")]]),
+    # <ul><li></li></ul><p>foo</p>
+    "an empty item and a blank line": ("- \n\n  foo", [[(0, "-")], [], []]),
+    # A blank line in a quote ends the item it holds, and the quote's next line is the quote's alone.
+    # <blockquote><ul><li>a</li></ul><p>b</p></blockquote>
+    "an item ending in a quote": ("> - a\n>\n> b", [[(0, "-")], [(0, "-")], []]),
+}
+
+
+@pytest.mark.parametrize(("document", "held"), HOLDING_ITEMS.values(), ids=HOLDING_ITEMS.keys())
+def test_the_list_items_holding_each_line_are_the_walk_s(document: str, held: list[list[tuple[int, str]]]) -> None:
+    lines = document.split("\n")
+    walked = document_items(lines)
+    assert [[(item.start, item.marker) for item in reversed(list(holders(item)))] for item in walked.holding] == held
+    # A line a list item holds is one a container holds, and every item holding a line is one the walk opened.
+    assert {index for index, item in enumerate(walked.holding) if item} <= contained_lines(lines)
+    assert {item for line in walked.holding for item in holders(line)} <= set(walked.items)
+
+
+def holders(item: ListItem | None) -> Iterator[ListItem]:
+    """The item and each one that holds it, innermost first."""
+    while item is not None:
+        yield item
+        item = item.parent
+
+
+def test_a_list_item_gives_its_text_and_takes_off_only_the_quotes_that_hold_it() -> None:
+    # <blockquote><ol><li>one<blockquote><p>quoted lazy</p></blockquote></li></ol></blockquote>, and for the last two,
+    # <ul><li><ul><li>x</li></ul></li></ul> and <blockquote><blockquote><ul><li>y</li></ul></blockquote></blockquote>
+    lines = ["> 1. one", ">    > quoted", "lazy"]
+    item = document_items(lines).holding[1]
+    assert item is not None
+    assert (item.start, item.marker, item.after, item.quotes, item.parent) == (0, "1.", 5, 1, None)
+    assert item.text(lines[0]) == "one"
+    assert [item.unquoted(line) for line in lines] == ["1. one", "   > quoted", "lazy"]
+    assert [(found.text(lines[0]), found.parent) for found in document_items(lines).items] == [("one", None)]
+    outer, inner = document_items(["- - x"]).items
+    assert [(found.text("- - x"), found.parent) for found in (outer, inner)] == [("- x", None), ("x", outer)]
+    assert document_items(["- - x"]).items[0] != document_items(["- - x"]).items[0]
+    (deep,) = document_items(["> > *   y"]).items
+    assert (deep.marker, deep.text("> > *   y"), deep.quotes) == ("*", "y", 2)
 
 
 # Documents, each with the lines a list item or a quote holds as GitHub renders it (`gh api markdown`).
@@ -1148,6 +1204,18 @@ def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker:
     # Each marker is read where it stands: a walk that read the rest of the line again at each marker, such as one that
     # tried a thematic break there, would take time growing with the square of the markers.
     assert_walked_in_proportion(marker * 1000 + "x", marker * 1000 * WALK_FACTOR + "x")
+
+
+@pytest.mark.parametrize("marker", ["* ", "> - "])
+def test_a_line_of_nested_markers_is_never_copied_at_each_marker(marker: str) -> None:
+    # A walk that kept a copy of the rest of the line at each list item it opens would take time growing with the
+    # markers times the line, which a long text after them makes plain beside the cost of reading them.
+    tail = 128
+
+    def document(markers: int) -> str:
+        return marker * markers + "x" * (tail * markers)
+
+    assert_walked_in_proportion(document(1000), document(1000 * WALK_FACTOR))
 
 
 @pytest.mark.parametrize(
