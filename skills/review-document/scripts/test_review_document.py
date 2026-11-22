@@ -2628,6 +2628,19 @@ class OutputTests(DocumentTestCase):
         self.assertEqual((1, [refused]), run_main(*arguments))
         self.assertEqual(0, stat.S_IMODE(target.stat().st_mode), "the file is left as it was")
 
+    def test_a_file_with_the_reports_size_and_time_but_other_bytes_is_refused_as_already_there(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        # Size and modification time match the report's, so only its bytes show it is not the copy.
+        other = bytes(reversed(recorded.read_bytes()))
+        target.write_bytes(other)
+        written = recorded.stat()
+        os.utime(target, ns=(written.st_atime_ns, written.st_mtime_ns))
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(other, target.read_bytes(), "the file is left as it was")
+
     def test_a_link_to_a_folder_at_the_copys_place_is_refused_as_already_there(self) -> None:
         recorded = self.recorded_report()
         target = self.output / "report.md"
