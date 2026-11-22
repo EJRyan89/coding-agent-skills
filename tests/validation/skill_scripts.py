@@ -2110,6 +2110,22 @@ STANDARD_OUTPUT = frozenset({"sys.stdout", "sys.__stdout__"})
 PARSER_CLASS = "argparse.ArgumentParser"
 # The call that adds a subcommand's parser, argparse's add_subparsers(...).add_parser(...), whose result is a parser.
 SUBPARSER_CALL = "add_parser"
+# The typing forms an annotation may wrap a parser's class in, read as the type they wrap: the first item of each, and
+# every member of a Union.
+ANNOTATION_UNION = "typing.Union"
+ANNOTATION_WRAPPERS = frozenset(
+    {ANNOTATION_UNION, "typing.Optional", "typing.ClassVar", "typing.Final", "typing.Annotated"}
+)
+# The decorators that make a method static, a class method, or a property, as bare names and as resolved through an
+# import of builtins or functools.
+STATIC_METHOD = frozenset({"staticmethod", "builtins.staticmethod"})
+CLASS_METHOD = frozenset({"classmethod", "builtins.classmethod"})
+PROPERTIES = frozenset({"property", "builtins.property", "functools.cached_property"})
+# How a method reaches its own class through its receiver, as type(self) or self.__class__.
+CLASS_OF = "type"
+CLASS_ATTRIBUTE = "__class__"
+# The word that makes a receiver's own name read as a parser's, as parser or self.arg_parser.
+PARSER_WORD = "parser"
 # What a module's names stand for where a node sits: one table for the whole module, as import_aliases gives, or a
 # reader of each node's own scope, as CallableResolver's aliases.
 Aliases = dict[str, str] | Callable[[ast.AST], dict[str, str]]
@@ -2121,23 +2137,56 @@ def _aliases_at(aliases: Aliases, node: ast.AST) -> dict[str, str]:
 
 
 def is_parser_annotation(annotation: ast.expr | None, aliases: Aliases) -> bool:
-    """Whether an annotation names argparse's parser, as a name or a quoted one. A stated limit: a quoted annotation
-    that does not parse or nests past nesting_depth's DEPTH_LIMIT is read as naming nothing."""
+    """Whether an annotation names argparse's parser: as a name, a quoted one, either side of a `|` union, or the type
+    a typing wrapper wraps, such as Optional[...], ClassVar[...], Final[...], Annotated[<type>, ...], or any member of
+    Union[...], each part quoted or not. A stated limit: a quoted annotation that does not parse or nests past
+    nesting_depth's DEPTH_LIMIT is read as naming nothing."""
     if annotation is None:
         return False
     table = _aliases_at(aliases, annotation)
-    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-        try:
-            annotation = python_reader.parse_expression(annotation.value).body
-        except python_reader.PythonRefused:
-            return False
-    return qualified_name(annotation, table) == PARSER_CLASS
+    pending: list[ast.expr] = [annotation]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = python_reader.parse_expression(node.value).body
+            except python_reader.PythonRefused:
+                continue
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            pending += [node.left, node.right]
+        elif isinstance(node, ast.Subscript) and (wrapper := qualified_name(node.value, table)) in ANNOTATION_WRAPPERS:
+            items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            pending += items if wrapper == ANNOTATION_UNION else items[:1]
+        elif qualified_name(node, table) == PARSER_CLASS:
+            return True
+    return False
+
+
+def spelling(node: ast.AST) -> str:
+    """The spelling a receiver or an assignment target is read by: a name, or an attribute chain on one or on
+    type(<one>), such as self.cli or type(self).cli; "" for anything else, such as a subscript, a tuple, or a call's
+    result."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = spelling(node.value)
+        return f"{base}.{node.attr}" if base else ""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == CLASS_OF
+        and len(node.args) == 1
+        and not node.keywords
+        and (inner := spelling(node.args[0]))
+    ):
+        return f"{CLASS_OF}({inner})"
+    return ""
 
 
 def _parser_targets(node: ast.AST, aliases: Aliases, builders: set[str]) -> list[ast.expr]:
     """The targets one statement binds to an argument parser: one annotated as a parser, or one assigned
-    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function of the module annotated to
-    return a parser."""
+    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function, by its spelling, that the
+    builders name as returning a parser."""
     if not isinstance(node, (ast.Assign, ast.AnnAssign)):
         return []
     targets: list[ast.expr] = [*node.targets] if isinstance(node, ast.Assign) else [node.target]
@@ -2149,59 +2198,264 @@ def _parser_targets(node: ast.AST, aliases: Aliases, builders: set[str]) -> list
     if (
         qualified_name(callee, _aliases_at(aliases, callee)) == PARSER_CLASS
         or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
-        or (isinstance(callee, ast.Name) and callee.id in builders)
+        or spelling(callee) in builders
     ):
         return targets
     return []
 
 
-def _parser_builders(tree: ast.Module, aliases: Aliases) -> set[str]:
-    """The functions of a module, in any scope, annotated to return an argument parser."""
+def _class_scope(owner: ast.ClassDef) -> list[ast.AST]:
+    """Every node of a class's own scope: its body's statements, at any depth of an if, try, with, or loop, and the
+    functions and classes it defines, never what one of those defines inside itself."""
+    pending: list[ast.AST] = list(owner.body)
+    found: list[ast.AST] = []
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _decorated(function: ast.FunctionDef | ast.AsyncFunctionDef, aliases: Aliases, names: frozenset[str]) -> bool:
+    """Whether a function carries one of the named decorators, each read through the imports where it sits."""
+    return any(
+        qualified_name(decorator, _aliases_at(aliases, decorator)) in names for decorator in function.decorator_list
+    )
+
+
+@dataclass(frozen=True)
+class Spellings:
+    """The receivers that are argument parsers in one scope: the spellings bound to one, such as cli or self.cli, and
+    the spellings of the functions that return one, such as build or self.build, whose call is a parser."""
+
+    names: frozenset[str] = frozenset()
+    builders: frozenset[str] = frozenset()
+
+    def __or__(self, other: Spellings) -> Spellings:
+        return Spellings(self.names | other.names, self.builders | other.builders)
+
+
+@dataclass(frozen=True)
+class ParserBindings:
+    """What a module binds to an argument parser, as parser_names reads it: the spellings read anywhere in it, and
+    those read only in a method of a class, by the method's id."""
+
+    module: Spellings
+    methods: dict[int, Spellings]
+
+    def at(self, function: ast.AST | None) -> Spellings:
+        """The spellings read in a function's own body: the module's, and a method's own."""
+        own = self.methods.get(id(function))
+        return self.module if own is None else self.module | own
+
+    def is_parser(self, receiver: ast.expr, function: ast.AST | None) -> bool:
+        """Whether a receiver in a function's own body, or in the module's when function is None, is an argument
+        parser: a name or attribute named for one, a spelling bound to one, or a call of a function that returns
+        one."""
+        name = (
+            receiver.id
+            if isinstance(receiver, ast.Name)
+            else receiver.attr
+            if isinstance(receiver, ast.Attribute)
+            else ""
+        )
+        if PARSER_WORD in name.casefold():
+            return True
+        spellings = self.at(function)
+        if isinstance(receiver, ast.Call):
+            return spelling(receiver.func) in spellings.builders
+        return spelling(receiver) in spellings.names
+
+
+@dataclass
+class _ClassReading:
+    """One class as parser_names reads it: the spelling it is reached by, its bases, its methods with their receivers,
+    and the names it binds to a parser, its own and then with those of its bases: at class level, by its body, a
+    property, or a method that returns one, and on an instance, by a method's assignment to its receiver."""
+
+    owner: ast.ClassDef
+    path: str
+    bases: list[str]
+    receivers: dict[int, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, bool]] = field(default_factory=dict)
+    names: set[str] = field(default_factory=set)
+    builders: set[str] = field(default_factory=set)
+    instance: set[str] = field(default_factory=set)
+    inherited_names: set[str] = field(default_factory=set)
+    inherited_builders: set[str] = field(default_factory=set)
+
+
+def _classes(tree: ast.Module) -> list[_ClassReading]:
+    """Every class of a module, with the spelling it is reached by: its name, after the names of the classes that hold
+    it, as Outer.Inner, and its own name alone for one a function defines."""
+    found: list[_ClassReading] = []
+    pending: list[tuple[ast.AST, str]] = [(tree, "")]
+    while pending:
+        node, prefix = pending.pop()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                path = f"{prefix}{child.name}"
+                found.append(_ClassReading(child, path, [spelling(base) for base in child.bases]))
+                pending.append((child, f"{path}."))
+            else:
+                pending.append((child, "" if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else prefix))
+    return found
+
+
+def _lineage(reading: _ClassReading, by_path: dict[str, list[_ClassReading]]) -> list[_ClassReading]:
+    """A class and every class it inherits from that the module defines, each base read by the spelling it is
+    reached by, once however the bases repeat or cycle."""
+    found: list[_ClassReading] = []
+    seen: set[int] = set()
+    pending = [reading]
+    while pending:
+        each = pending.pop()
+        if id(each) in seen:
+            continue
+        seen.add(id(each))
+        found.append(each)
+        pending += [base for spelled in each.bases for base in by_path.get(spelled, [])]
+    return found
+
+
+def _receiver_prefixes(receiver: str) -> tuple[str, ...]:
+    """The spellings a method reaches its class by through its receiver: the receiver, type(<receiver>), and
+    <receiver>.__class__."""
+    return (receiver, f"{CLASS_OF}({receiver})", f"{receiver}.{CLASS_ATTRIBUTE}")
+
+
+def _read_class(reading: _ClassReading, aliases: Aliases, builders: set[str]) -> None:
+    """Read what a class's own scope binds to a parser at class level, and the receiver each of its methods takes."""
+    for node in _class_scope(reading.owner):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            reading.names.update(
+                target.id for target in _parser_targets(node, aliases, builders) if isinstance(target, ast.Name)
+            )
+            continue
+        if is_parser_annotation(node.returns, aliases):
+            (reading.names if _decorated(node, aliases, PROPERTIES) else reading.builders).add(node.name)
+        receiver = [*node.args.posonlyargs, *node.args.args][:1]
+        if receiver and not _decorated(node, aliases, STATIC_METHOD):
+            reading.receivers[id(node)] = (node, receiver[0].arg, _decorated(node, aliases, CLASS_METHOD))
+
+
+def _bind_instances(reading: _ClassReading, aliases: Aliases, builders: set[str]) -> list[ast.expr]:
+    """Read the attributes a class's methods bind to a parser on their receivers, which belong to the class, not to
+    the module, and give each target that binds one."""
+    found: list[ast.expr] = []
+    for method, receiver, _ in reading.receivers.values():
+        prefixes = _receiver_prefixes(receiver)
+        called = builders | {f"{prefix}.{name}" for prefix in prefixes for name in reading.inherited_builders}
+        for node in _own_nodes(method):
+            for target in _parser_targets(node, aliases, called):
+                if (spelled := spelling(target)).startswith(f"{receiver}."):
+                    reading.instance.add(spelled.removeprefix(f"{receiver}."))
+                    found.append(target)
+    return found
+
+
+def _bound_spellings(node: ast.AST, aliases: Aliases, builders: set[str], receiver_bound: set[int]) -> set[str]:
+    """The spellings one statement binds to a parser, but for an attribute a method binds on its receiver."""
     return {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_parser_annotation(node.returns, aliases)
+        spelled
+        for target in _parser_targets(node, aliases, builders)
+        if id(target) not in receiver_bound and (spelled := spelling(target))
     }
 
 
-def parser_names(tree: ast.Module, aliases: Aliases) -> set[str]:
-    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope and as
-    written at the binding: one assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of
-    its own function annotated to return a parser, and a parameter, name, or attribute annotated as one. The one
-    reader of a module's parser bindings, which the script-results policy and the exit tables both read."""
-    builders = _parser_builders(tree, aliases)
-    found: set[str] = set()
+def _method_spellings(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    receiver: str,
+    reading: _ClassReading,
+    instance: set[str],
+    reading_with: tuple[Aliases, set[str], set[int]],
+) -> Spellings:
+    """What a method reads as a parser beyond the module's: its class's parsers on its receiver, the class-level ones
+    through type(<receiver>) and <receiver>.__class__ as well, its own local names bound to one, and its class's
+    methods that return one, called on its receiver."""
+    aliases, builders, receiver_bound = reading_with
+    prefixes = _receiver_prefixes(receiver)
+    reached = {f"{prefix}.{name}" for prefix in prefixes for name in reading.inherited_names}
+    reached |= {f"{receiver}.{name}" for name in instance}
+    called = builders | {f"{prefix}.{name}" for prefix in prefixes for name in reading.inherited_builders}
+    for node in _own_nodes(method):
+        reached |= _bound_spellings(node, aliases, called, receiver_bound)
+    return Spellings(frozenset(reached), frozenset(called))
+
+
+def parser_names(tree: ast.Module, aliases: Aliases) -> ParserBindings:
+    """What a module binds to an argument parser, the one reader of its parser bindings, which the script-results
+    policy and the exit tables both read: each spelling, such as cli or self.cli, bound by assignment to
+    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function annotated to return a parser,
+    or annotated as one, and each parameter annotated as one; and each function annotated to return one, whose call is
+    one, as `build().error(...)`.
+
+    A binding in a module-level function or the module's body is read anywhere in the module, as written at the
+    binding. A class's are read in that class's methods and its subclasses', through each one's first parameter, its
+    receiver, and nowhere else: a name its own scope binds, under an if, try, or with as well, a property or method
+    annotated to return a parser, and an attribute one of its methods binds on its receiver, as self.cli =
+    argparse.ArgumentParser(). A class-level one is read on the receiver as self.cli, type(self).cli, and
+    self.__class__.cli, and through the class's own name, as Tool.cli, or Outer.Inner.cli for a nested class, anywhere
+    in the module; one bound on an instance is read on the receiver alone, and not in a class method. A method's own
+    local name bound to what one of its class's methods returns, as `made = self.build()`, is read in that method
+    alone. A static method has no receiver.
+
+    Stated limits, which no repository code reaches: a base class another module defines is not read, nor a class or
+    a parser reached through another name bound to it, such as `T = Tool`, nor an attribute set on a class from outside
+    its scope or through type(self); and a function nested in a method does not read its receiver's attributes."""
+    classes = _classes(tree)
+    class_scoped = {id(node) for reading in classes for node in _class_scope(reading.owner)}
+    # The functions outside every class's scope annotated to return a parser, called by their names.
+    builders = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and id(node) not in class_scoped
+        and is_parser_annotation(node.returns, aliases)
+    }
+    by_path: dict[str, list[_ClassReading]] = {}
+    for reading in classes:
+        by_path.setdefault(reading.path, []).append(reading)
+        _read_class(reading, aliases, builders)
+    lineages = {id(reading): _lineage(reading, by_path) for reading in classes}
+    for reading in classes:
+        reading.inherited_names = {name for each in lineages[id(reading)] for name in each.names}
+        reading.inherited_builders = {name for each in lineages[id(reading)] for name in each.builders}
+    # What a class binds at class level is reached through its own name anywhere in the module.
+    names = {f"{reading.path}.{name}" for reading in classes for name in reading.inherited_names}
+    builders |= {f"{reading.path}.{name}" for reading in classes for name in reading.inherited_builders}
+    receiver_bound = {id(target) for reading in classes for target in _bind_instances(reading, aliases, builders)}
+    methods = {
+        id(method): _method_spellings(
+            method,
+            receiver,
+            reading,
+            set() if class_method else {name for each in lineages[id(reading)] for name in each.instance},
+            (aliases, builders, receiver_bound),
+        )
+        for reading in classes
+        for method, receiver, class_method in reading.receivers.values()
+    }
     for node in ast.walk(tree):
+        if id(node) in class_scoped:
+            continue
         if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
-            found.add(node.arg)
-        found.update(binding(target) for target in _parser_targets(node, aliases, builders))
-    return found - {""}
+            names.add(node.arg)
+        names.update(_bound_spellings(node, aliases, builders, receiver_bound))
+    return ParserBindings(Spellings(frozenset(names), frozenset(builders)), methods)
 
 
-def binding(target: ast.expr) -> str:
-    """The spelling an assignment target binds, as a receiver reads it: a name, or an attribute chain on one, such as
-    self.cli; "" for a target that is neither, such as a subscript or a tuple."""
-    return qualified_name(target, {})
-
-
-def _is_parser(receiver: ast.expr, parsers: set[str]) -> bool:
-    """Whether a receiver is an argument parser: a name or attribute named for one, or a name or attribute chain bound
-    to one."""
-    name = (
-        receiver.id if isinstance(receiver, ast.Name) else receiver.attr if isinstance(receiver, ast.Attribute) else ""
-    )
-    return "parser" in name.casefold() or binding(receiver) in parsers
-
-
-def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str], in_handler: bool) -> list[str]:
-    """What one call does that "Script results" rules out."""
+def _call_breaches(
+    node: ast.Call, resolver: CallableResolver, parsers: ParserBindings, in_handler: bool, holder: ast.AST | None
+) -> list[str]:
+    """What one call does that "Script results" rules out, read in the function whose own body holds it."""
     breaches: list[str] = []
     function = resolver.name(node.func)
     if (
         isinstance(node.func, ast.Attribute)
         and node.func.attr == "error"
         and in_handler
-        and _is_parser(node.func.value, parsers)
+        and parsers.is_parser(node.func.value, holder)
     ):
         breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
     code = exit_argument(node, function) if function in EXIT_CALLS and call_code(node, function) is None else None
@@ -2235,6 +2489,13 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     # Each node's names read in its own scope, and an annotation the resolver never visited, such as a function's
     # return annotation, in the module's.
     parsers = parser_names(tree, lambda node: resolver.aliases(node if id(node) in resolver.scopes else tree))
+    # The function whose own body holds each node, where a method reads its receiver's parsers.
+    holders = {
+        id(inner): function
+        for function in ast.walk(tree)
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for inner in _own_nodes(function)
+    }
     handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
     in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
     entry_points = [
@@ -2252,7 +2513,8 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             breaches += [
-                (node.lineno, breach) for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler)
+                (node.lineno, breach)
+                for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler, holders.get(id(node)))
             ]
     return sorted(breaches)
 
