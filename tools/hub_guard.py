@@ -69,6 +69,7 @@ from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from hub_state import GUARD_SETTING
 from job_tree import process_tree
 from option_reader import Word
+from path_containment import within
 from path_keys import name_key
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from text_lines import text_lines
@@ -2129,11 +2130,6 @@ def index_reached(place: Place) -> tuple[Path | None, bool]:
         return hub, False
     except GitError:
         return None, True  # an index git cannot place may be a guarded hub's
-
-
-def within(path: Path, folder: Path) -> bool:
-    """Whether path is folder or lies anywhere beneath it, each compared as platform_support compares a path."""
-    return any(same_path(each, folder) for each in (path, *path.parents))
 
 
 @dataclass(frozen=True)

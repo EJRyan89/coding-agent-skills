@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import types
+import unicodedata
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -29,6 +30,7 @@ import bash_syntax
 import executable_locator
 import git_client
 import git_worktrees
+import path_containment
 import path_keys
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
@@ -2997,6 +2999,30 @@ class WriteGuardTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
 
+    def test_a_git_call_whose_folder_leaves_the_hub_by_dot_dot_runs_outside_every_hub(self) -> None:
+        # Every platform: `<hub>/../other` names other, beside the hub, so a configuration written there and read by
+        # a git call in it is refused as one outside every hub, while the same call in the hub itself is not.
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        written = "which may be a repository's own git configuration, and runs git outside every guarded hub"
+        command = f'printf x > "{other}/.git/config" && git -C "{self.hub}/../other" log -1'
+        self.assertEqual("deny", self.bash(command, self.tree))
+        self.assertIn(written, self.reason)
+        self.assertIsNone(self.bash(f'printf x > "{other}/.git/config" && git -C "{self.hub}" log -1', self.tree))
+
+    @unittest.skipUnless(
+        sys.platform == "win32", "Windows alone opens a folder spelled with a trailing dot as the folder"
+    )
+    def test_a_git_call_in_the_hub_spelled_with_a_trailing_dot_runs_outside_every_hub_on_windows(self) -> None:
+        # Windows: `<hub>.` opens the hub, but the guard compares the place as written, where the hub's part and
+        # `<hub>.` differ, so the call is judged outside every hub and the configuration it writes is refused.
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        written = "which may be a repository's own git configuration, and runs git outside every guarded hub"
+        command = f'printf x > "{other}/.git/config" && git -C "{self.hub}." log -1'
+        self.assertEqual("deny", self.bash(command, self.tree))
+        self.assertIn(written, self.reason)
+
     def test_a_command_that_writes_a_file_an_include_of_a_git_call_s_configuration_names_is_refused(self) -> None:
         other = self.root / "other"
         run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
@@ -4251,6 +4277,59 @@ class HubsInViewTests(unittest.TestCase):
         self.assertEqual(
             f"hub guard could not look up the hub of {cwd}: git could not read the checkout\n", stderr.getvalue()
         )
+
+
+class WithinTests(unittest.TestCase):
+    """The guard's `within` is path_containment's: a path lies in a folder when its leading parts, `..` folded first,
+    are the folder's as the folder's own directories compare names, so a spelling counts as the folder's only where its
+    directory finds one entry under both."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="guard-within-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def test_the_guard_compares_through_path_containment(self) -> None:
+        self.assertIs(vars(hub_guard)["within"], path_containment.within)
+
+    def test_a_non_ascii_case_or_unicode_form_variant_of_a_missing_folder_is_not_inside_it(self) -> None:
+        # Every platform: no directory holds the folder, so none finds one entry under both spellings. A copy that
+        # composed every name fails the form pair everywhere, and one that folded case where the parent folds fails
+        # the case pair on macOS and Windows.
+        for folder, variant in VARIANTS:
+            with self.subTest(folder=folder, variant=variant):
+                self.assertFalse(path_containment.within(self.root / variant / "x", self.root / folder))
+                self.assertTrue(path_containment.within(self.root / folder / "x", self.root / folder))
+
+    def test_a_variant_of_a_folder_its_directory_keeps_apart_is_not_inside_it(self) -> None:
+        # A file system that keeps the two spellings apart, as Linux's keep case and forms and NTFS keeps forms, shows
+        # it as it is; where the directory takes both for one entry, as APFS does both and NTFS does case, its lookup
+        # is made to answer as one that keeps them apart. Both hold on every platform.
+        for folder, variant in VARIANTS:
+            with self.subTest(folder=folder, variant=variant):
+                (self.root / folder).mkdir()
+                with contextlib.ExitStack() as stack:
+                    if (self.root / variant).exists():
+                        stack.enter_context(mock.patch.object(path_keys, "_one_entry", return_value=False))
+                    self.assertFalse(path_containment.within(self.root / variant / "x", self.root / folder))
+                self.assertTrue(path_containment.within(self.root / folder / "x", self.root / folder))
+
+    def test_a_dot_dot_that_leaves_the_folder_is_folded_before_the_parts_are_compared(self) -> None:
+        # Every platform: the folder is a parent of `<folder>/..`, but `<folder>/../other` names other.
+        folder = self.root / "hub"
+        self.assertFalse(path_containment.within(folder / ".." / "other", folder))
+        self.assertTrue(path_containment.within(self.root / "other" / ".." / "hub" / "x", folder))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows reads a trailing dot and the \\\\?\\ prefix")
+    def test_a_trailing_dot_is_compared_as_written_and_the_extended_prefix_is_set_aside_on_windows(self) -> None:
+        folder = self.root / "hub"
+        folder.mkdir()
+        self.assertFalse(path_containment.within(Path(f"{folder}."), folder))
+        self.assertTrue(path_containment.within(Path(f"\\\\?\\{folder}\\x"), folder))
+
+
+# Each folder name with a spelling that differs only in a non-ASCII letter's case, or only in Unicode form.
+VARIANTS = (("hüb", "HÜB"), (unicodedata.normalize("NFC", "café"), unicodedata.normalize("NFD", "café")))
 
 
 class ContractListTests(unittest.TestCase):

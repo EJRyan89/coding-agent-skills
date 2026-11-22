@@ -1113,6 +1113,95 @@ class SnapshotLinkTests(unittest.TestCase):
             )
 
 
+class SafeSnapshotPathTests(unittest.TestCase):
+    """The check every read and write of a snapshot path makes: the path lies in its root as written, and no link
+    lies on its way from the root, the root and the path included; and the one a listed file the walk did not count
+    makes, which looks for a link at each step below the root before calling the file missing. Links are directory
+    junctions on Windows and symbolic links elsewhere, so each case holds on every platform."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="snapshot-path-")
+        self.addCleanup(temporary.cleanup)
+        self.temporary = Path(temporary.name).resolve()
+        self.root = self.temporary / "source"
+        (self.root / "src").mkdir(parents=True)
+        (self.root / "src" / "app.py").write_bytes(APP)
+        self.outside = self.temporary / "outside"
+        self.outside.mkdir()
+        (self.outside / "app.py").write_bytes(APP)
+
+    def refused(self, root: Path, target: Path) -> str:
+        with self.assertRaises(RuntimeContractError) as caught:
+            review_runtime._require_safe_snapshot_path(root, target)
+        return str(caught.exception)
+
+    def test_a_path_in_its_root_with_no_link_on_its_way_passes(self) -> None:
+        for target in (self.root, self.root / "src", self.root / "src" / "app.py"):
+            with self.subTest(target=target):
+                review_runtime._require_safe_snapshot_path(self.root, target)
+
+    def test_a_path_outside_its_root_is_refused_as_escaping_before_any_link_on_its_way_is_asked(self) -> None:
+        # The sibling shares the root's name as a prefix, and the linked folder outside the root is never asked.
+        sibling = self.temporary / "source-other"
+        sibling.mkdir()
+        (sibling / "app.py").write_bytes(APP)
+        directory_link(self.temporary / "linked", self.outside)
+        for target in (sibling / "app.py", self.temporary / "linked" / "app.py", self.root / ".." / "outside"):
+            with self.subTest(target=target):
+                self.assertEqual(f"Source snapshot path escapes its root: {target}", self.refused(self.root, target))
+
+    def size_refusal(self, relative: str, root: Path | None = None) -> str:
+        """Why a snapshot walk that counted nothing refuses `relative`, as `_SnapshotTree.size` says."""
+        with self.assertRaises(RuntimeContractError) as caught:
+            review_runtime._SnapshotTree(root or self.root).size(relative)
+        return str(caught.exception)
+
+    def test_a_listed_file_the_walk_did_not_count_is_refused_for_a_link_at_each_step_below_the_root(self) -> None:
+        segments = ["a", "b", "app.py"]
+        for depth in range(1, len(segments) + 1):
+            with self.subTest(depth=depth):
+                root = self.temporary / f"depth-{depth}"
+                above = root.joinpath(*segments[: depth - 1])
+                above.mkdir(parents=True)
+                # A link at this step, the folders above it plain; the last step is a link in a file's place.
+                directory_link(above / segments[depth - 1], self.outside)
+                target = root.joinpath(*segments)
+                self.assertEqual(
+                    f"Source snapshot path contains a reparse point: {target}", self.size_refusal("a/b/app.py", root)
+                )
+
+    def test_a_step_that_cannot_be_examined_is_passed_over_for_the_steps_after_it(self) -> None:
+        (self.root / "a").mkdir()
+        directory_link(self.root / "a" / "b", self.outside)
+        unread = self.root / "a"
+        examined: list[Path] = []
+
+        def probe(path: Path) -> bool:
+            examined.append(Path(path))
+            if Path(path) == unread:
+                raise PermissionError(13, "denied")
+            return is_link_or_junction(path)
+
+        target = self.root / "a" / "b" / "app.py"
+        with mock.patch.object(review_runtime, "is_link_or_junction", probe):
+            self.assertEqual(
+                f"Source snapshot path contains a reparse point: {target}", self.size_refusal("a/b/app.py")
+            )
+            # With no link after it, the unexamined step leaves the file missing.
+            self.assertEqual("Source snapshot file is missing: a/new.py", self.size_refusal("a/new.py"))
+        self.assertIn(unread, examined)
+        self.assertIn(self.root / "a" / "new.py", examined)
+
+    def test_a_link_on_the_way_from_the_root_or_at_it_is_refused(self) -> None:
+        directory_link(self.root / "linked", self.outside)
+        target = self.root / "linked" / "app.py"
+        self.assertEqual(f"Source snapshot path contains a reparse point: {target}", self.refused(self.root, target))
+        root = self.temporary / "root-link"
+        directory_link(root, self.root)
+        target = root / "src" / "app.py"
+        self.assertEqual(f"Source snapshot path contains a reparse point: {target}", self.refused(root, target))
+
+
 UTIL = b"def util():\n    return 1\n"
 UTIL_BLOB = hashlib.sha1(b"blob %d\0" % len(UTIL) + UTIL, usedforsecurity=False).hexdigest()
 MINUTE = 60 * 10**9  # in the nanoseconds a file's time is set in

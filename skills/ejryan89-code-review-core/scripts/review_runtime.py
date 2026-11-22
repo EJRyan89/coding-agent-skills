@@ -44,7 +44,7 @@ from git_client import (
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
-from path_containment import posix_within, resolved_path, strictly_resolved_path, within
+from path_containment import posix_within, relative_within, resolved_path, strictly_resolved_path, within
 from review_config import (
     REVIEWER_EFFORTS,
     REVIEWER_MODELS,
@@ -1285,16 +1285,16 @@ def _is_agent_instruction_path(relative: str) -> bool:
 
 
 def _require_safe_snapshot_path(root: Path, target: Path) -> None:
+    """Refuse `target` unless it lies in `root` as written, with no symbolic link, junction, or other reparse point on
+    its way from `root`, the root and the target included, and still lies in the resolved root once resolved. Each is
+    asked from the target up, so a part that cannot be read raises its OSError as the nearest to the target."""
     resolved_root = strictly_resolved_path(root)
-    current = target
-    while True:
-        if is_link_or_junction(current):
+    relative = relative_within(target, root)
+    if relative is None:
+        raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
+    for depth in range(len(relative.parts), -1, -1):
+        if is_link_or_junction(root.joinpath(*relative.parts[:depth])):
             raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
-        if current == root:
-            break
-        if current.parent == current:
-            raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
-        current = current.parent
     resolved = strictly_resolved_path(target)
     if not within(resolved, resolved_root):
         raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
@@ -1367,12 +1367,10 @@ class _SnapshotTree:
                 raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
             if above in self.escaping:
                 raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
-        current = target
-        while current != self.root and current.parent != current:
+        for depth in range(1, len(segments) + 1):
             with suppress(OSError):  # a path that cannot be read is no reparse point found; it is missing below
-                if is_link_or_junction(current):
+                if is_link_or_junction(self.root.joinpath(*segments[:depth])):
                     raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
-            current = current.parent
         if relative in self.irregular:
             raise RuntimeContractError(f"Source snapshot contains a non-regular file: {target}")
         raise RuntimeContractError(f"Source snapshot file is missing: {relative}")

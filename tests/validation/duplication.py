@@ -1348,6 +1348,29 @@ PATH_PATTERN_KEYWORDS = frozenset({"pattern", "path_pattern"})
 NAMED_LAST_FIELD = re.compile(r"(?<!%)(?:%%)*%\((?P<key>[^()]*)\)s\Z")
 # The builtins that make a collection of what they are given, so its items are the prefixes given.
 COLLECTIONS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
+# The calls that give a path back in another form, so comparing what they give compares the path: a function given the
+# path alone, by its last name, and a path's own method given nothing.
+PATH_FORM_FUNCTIONS = frozenset(
+    {
+        "str",
+        "fspath",
+        "path_key",
+        "abspath",
+        "normpath",
+        "normcase",
+        "realpath",
+        "resolved_path",
+        "strictly_resolved_path",
+        "Path",
+        "PurePath",
+        "PurePosixPath",
+        "PureWindowsPath",
+    }
+)
+PATH_FORM_METHODS = frozenset({"resolve", "absolute", "as_posix", "expanduser"})
+# The calls that tell whether two paths are one, by their last name: a function given both, or a path's own method
+# given the other.
+PATH_SAMENESS = frozenset({"same_path", "samefile"})
 
 
 def _last_item(value: ast.expr) -> ast.expr | None:
@@ -1391,6 +1414,11 @@ def _never(_: ast.expr) -> bool:
     return False
 
 
+def _last_name(dotted: str) -> str:
+    """The last name of a dotted name, as `fspath` of `os.fspath`."""
+    return dotted.rpartition(".")[2]
+
+
 def _names_parents(value: ast.expr) -> bool:
     """Whether `value` reads a path's `parents`."""
     return any(isinstance(node, ast.Attribute) and node.attr == "parents" for node in ast.walk(value))
@@ -1425,10 +1453,14 @@ class _ContainmentReader:
         self.added: dict[tuple[int, str], list[ast.expr]] = {}
         # What a loop or a comprehension iterates for each name it binds, whose items the name holds in turn.
         self.looped: dict[tuple[int, str], list[ast.expr]] = {}
+        # The names a loop rebinds to their own `.parent`, so each climbs a path's parents in turn.
+        self.climbing: set[tuple[int, str]] = set()
         for node in ast.walk(tree):
             self._record(node)
 
     def _record(self, node: ast.AST) -> None:
+        if isinstance(node, ast.While | ast.For | ast.AsyncFor):
+            self.climbing.update(self._owner(name)[0] for name in _climbed_names(node))
         if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and (key := self._key(node.target)):
             self.added.setdefault(key, []).append(node.value)
         elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension) and isinstance(node.target, ast.Name):
@@ -1590,7 +1622,9 @@ class _ContainmentReader:
         function = self.name(call.func)
         last = call.args[-1:]
         if function in PATH_JOINS:
-            return any(self.ends(item) or (isinstance(item, ast.Constant) and item.value == "") for item in last)
+            # A last item of trailing characters alone, empty or a glob's wildcards, follows the separator the join
+            # puts after the item before it.
+            return any(map(self.ends, last)) or (len(call.args) > 1 and self._trails(call.args[-1]))
         if function == "str.format":
             template, positional = (call.args[0] if call.args else None), call.args[1:]
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "format":
@@ -1610,12 +1644,11 @@ class _ContainmentReader:
 
     def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
         """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
-        the last item is empty."""
+        the last item, after another, is trailing characters alone, empty or a glob's wildcards."""
         if not (isinstance(items, ast.Tuple | ast.List) and items.elts):
             return False
         last = items.elts[-1]
-        empty = isinstance(last, ast.Constant) and last.value == ""
-        return self.ends(last) or (empty and self.ends(joiner))
+        return self.ends(last) or (len(items.elts) > 1 and self._trails(last) and self.ends(joiner))
 
     def _pattern(self, call: ast.Call, positions: dict[str, int], trailing: str) -> bool:
         """Whether `call` matches against a pattern holding a text built to end in a separator, followed by any of
@@ -1755,14 +1788,59 @@ class _ContainmentReader:
             return self._comparison_test(node)
         return None
 
-    def _parent_taken(self, side: ast.expr, other: ast.expr) -> bool:
-        """Whether a comparison's side is a name a loop or a comprehension takes from what reads a path's `parents`,
-        directly or through a name the module binds to it, so comparing it by `==` with `other` searches them. A path
-        is never among its own parents, so comparing with the path itself, as a walk over `(path, *path.parents)`
-        does to spot its first item, searches nothing."""
+    def _path_itself(self, value: ast.expr) -> ast.expr:
+        """`value` without the calls that give a path back in another form, as `str(parent)`, `path_key(parent)`, or
+        `parent.resolve()` give `parent`, so a comparison of what they give compares the path."""
+        while isinstance(value, ast.Call):
+            function = value.func
+            if isinstance(function, ast.Attribute) and function.attr in PATH_FORM_METHODS and not value.args:
+                value = function.value
+            elif (
+                _last_name(self.name(function)) in PATH_FORM_FUNCTIONS
+                and len(value.args) == 1
+                and not isinstance(value.args[0], ast.Starred)
+            ):
+                value = value.args[0]
+            else:
+                break
+        return value
+
+    def _searches(self, side: ast.expr, other: ast.expr) -> bool:
+        """Whether comparing `side` with `other` as one path searches a path's parents: `side` is, in any of its
+        forms, a name a loop takes from them or one a loop climbs them with."""
+        return self._parent_taken(side, other) or self._climbed(side, other)
+
+    def _climbed(self, side: ast.expr, other: ast.expr) -> bool:
+        """Whether a comparison's side is, in any of its forms, a name a loop rebinds to its own `.parent`, so comparing
+        it with `other` asks whether a folder lies above where it started. Comparing it with an expression of the name
+        itself, as `current.parent == current` spots the anchor, asks nothing of another folder."""
+        side = self._path_itself(side)
         if not isinstance(side, ast.Name):
             return False
-        own = ast.dump(other)
+        key = self._owner(side)[0]
+        return key in self.climbing and not any(
+            isinstance(node, ast.Name) and self._owner(node)[0] == key for node in ast.walk(other)
+        )
+
+    def _compared_paths(self, call: ast.Call) -> list[ast.expr]:
+        """The two paths a call that tells whether paths are one compares: a function's first two arguments, or the
+        path whose method it is and its one argument; none for any other call."""
+        function = call.func.attr if isinstance(call.func, ast.Attribute) else _last_name(self.name(call.func))
+        if function not in PATH_SAMENESS:
+            return []
+        if len(call.args) >= 2:
+            return call.args[:2]
+        return [call.func.value, call.args[0]] if isinstance(call.func, ast.Attribute) and call.args else []
+
+    def _parent_taken(self, side: ast.expr, other: ast.expr) -> bool:
+        """Whether a comparison's side is, in any of its forms, a name a loop or a comprehension takes from what reads
+        a path's `parents`, directly or through a name the module binds to it, so comparing it by `==` with `other`
+        searches them. A path is never among its own parents, so comparing with the path itself, in any of its forms,
+        as a walk over `(path, *path.parents)` does to spot its first item, searches nothing."""
+        side = self._path_itself(side)
+        if not isinstance(side, ast.Name):
+            return False
+        own = ast.dump(self._path_itself(other))
 
         def reads(value: ast.expr) -> bool:
             return any(
@@ -1799,6 +1877,9 @@ class _ContainmentReader:
         subjects = [call.func.value, *call.args] if isinstance(call.func, ast.Attribute) else []
         if method in PARENT_SEARCHES and any(map(_names_parents, subjects)):
             return "a search of a path's parents"
+        compared = self._compared_paths(call)
+        if len(compared) == 2 and (self._searches(*compared) or self._searches(*reversed(compared))):
+            return "a search of a path's parents"
         if method == "startswith" and any(map(self._relative, subjects)) and any(map(self._parent, call.args)):
             return "a relpath checked for a parent segment"
         if (
@@ -1832,7 +1913,7 @@ class _ContainmentReader:
             if isinstance(op, ast.Eq | ast.NotEq)
             for pair in ((sides[index], sides[index + 1]), (sides[index + 1], sides[index]))
         ]
-        if any(map(_names_parents, searched)) or any(self._parent_taken(*pair) for pair in equated):
+        if any(map(_names_parents, searched)) or any(self._searches(*pair) for pair in equated):
             return "a search of a path's parents"
         if any(map(self._parent, sides)) and any(map(self._relative, sides)):
             return "a relpath checked for a parent segment"
@@ -1864,6 +1945,32 @@ def _calls_relative_to(statements: list[ast.stmt]) -> bool:
         return any(calls(child) for child in ast.iter_child_nodes(node))
 
     return any(calls(statement) for statement in statements)
+
+
+def _climbed_names(loop: ast.While | ast.For | ast.AsyncFor) -> Iterator[ast.Name]:
+    """Each name a loop rebinds to its own `.parent`, as `current = current.parent` or `(current := current.parent)`,
+    in a `while` loop's test or any loop's body, which run each time round, leaving out a function, lambda, or class it
+    defines, which runs apart from the loop."""
+    pending: list[ast.AST] = [*([loop.test] if isinstance(loop, ast.While) else []), *loop.body]
+    while pending:
+        node = pending.pop()
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr):
+            targets = [node.target]
+        value = getattr(node, "value", None)
+        for target in targets:
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(value, ast.Attribute)
+                and value.attr == "parent"
+                and isinstance(value.value, ast.Name)
+                and value.value.id == target.id
+            ):
+                yield target
+        if not isinstance(node, (*DEFINITIONS, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
 
 
 def _walks_up(call: ast.Call) -> bool:
