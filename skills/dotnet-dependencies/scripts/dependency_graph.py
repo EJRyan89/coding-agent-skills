@@ -126,14 +126,15 @@ is an UNREADABLE line naming the link and its target; and an Exists() condition 
 unsettled. A link whose target stays inside the tree is read through. The NuGet cache lies outside the tree and is read
 where it is. Limits: the names of the assemblies below a package's lib folder are listed with a glob, which may list
 through a link below that folder, reading no file's contents; a wildcard Import is judged as text and by its folder
-before the wildcard, since the reader expands none, so a link a wildcard matches is not judged; and the look at the
-links and the read are two steps (folder_walk.followed_inside), so a name replaced by a link between them is read
-through, and a hard link, being the file itself, is read as a file of the tree wherever its other names lie. The script
-changes nothing on disk but the graph file and runs no restore or build; it prints a last line FAILED <reason> when it
-cannot finish, such as when the root cannot be resolved, a solution found in the root folder, or a solution or folder
---root names, is one a link inside the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names
-no project of the root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be
-written.
+before the wildcard, since the reader expands none, so a link a wildcard matches is not judged; a `..` after a link, in
+--root or --project, is judged as Linux and macOS take it, after following the link, so on Windows a path the system
+would take by name past a link can be refused; and the look at the links and the read are two steps
+(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
+file itself, is read as a file of the tree wherever its other names lie. The script changes nothing on disk but the
+graph file and runs no restore or build; it prints a last line FAILED <reason> when it cannot finish, such as when the
+root cannot be resolved, a solution found in the root folder, or a solution or folder --root names, is one a link inside
+the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names no project of the root, --output
+is inside a skills directory, the home folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -506,10 +507,12 @@ def as_given(path: Path, named: Path | None = None) -> Path:
     """`path` made absolute as the system opens it, judged as the root is (`resolve_root`): a path holding no `..` is
     normalized as text, keeping the links it is named through. One holding a `..`, which the system takes only after
     following any link before it, is followed inside the checkout holding its part before the first `..`
-    (`examined_tree`) by `followed_inside`, which stats nothing outside it, so a link inside the checkout that leads out
-    of it, before a `..` or after it, fails naming the link. A `..` that climbs out of the checkout at its top, with no
-    link before it, leaves it where the system does: the part up to it is resolved, which follows only links above
-    every checkout, since the checkout's own links have been judged, and the rest is judged again from there. A refusal
+    (`examined_tree`) by `followed_inside`, which reads each link's text and stats nothing outside it, so a link inside
+    the checkout that leads out of it, before a `..` or after it, fails naming the link. A `..` that climbs out of the
+    checkout at its top, with no link before it, leaves it for the folder above where the checkout lies, resolved,
+    which follows only links above every checkout, and the rest is judged again from there. A `..` after a link is so
+    taken after following the link, as Linux and macOS take it, on every platform, never by the system's own resolving,
+    so on Windows, which takes a path's own `..` by name, a path it would take past a link can be refused. A refusal
     names `named`, the path as the user gave it, else `path`."""
     absolute = path.absolute()
     named = named or absolute
@@ -524,7 +527,7 @@ def as_given(path: Path, named: Path | None = None) -> Path:
         if refused is not None:
             raise unexaminable(named, Unreadable(named, refused))
         if inside is None:
-            return as_given(resolved_path(Path(*parts[: index + 1])).joinpath(*parts[index + 1 :]), named)
+            return as_given(resolved_path(tree).parent.joinpath(*parts[index + 1 :]), named)
     inside, refused = followed_inside(absolute, tree)
     if refused is not None:
         raise unexaminable(named, Unreadable(named, refused))
@@ -545,7 +548,7 @@ def resolve_root(
     out of it fails naming the link, as a solution in the root folder so linked does, and nothing is stat through it."""
     named = as_given(path)
     linked_root(named, checkout_tree(named.parent if is_solution(named) else named))
-    path = resolved_path(path)
+    path = resolved_path(named)
     if regular_file(path):
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")

@@ -3748,6 +3748,21 @@ class PathBoundTests(Fixture):
                 self.assertEqual([], followed_through(touched, [linked], outside))
                 self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
 
+    def test_a_root_whose_dot_dot_follows_a_link_inside_the_checkout_is_read_where_the_link_leads(self) -> None:
+        # In/.. is taken after following In, on every platform, so In/../Other/App.sln is Real/Other/App.sln, read
+        # there; read by name, as Windows' own resolving would take it, it would be repo/Other/App.sln, which is not
+        # there.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (repo / "Real" / "Deep").mkdir(parents=True)
+        self.write("repo/Real/Other/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/Real/Other/App.sln", solution("Lib\\Lib.csproj"))
+        inside = repo / "In"
+        link_folder(repo / "Real" / "Deep", inside)
+        self.addCleanup(remove_link, inside)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(inside / ".." / "Other" / "App.sln"))
+        self.assertEqual((0, [(repo / "Real" / "Other" / "App.sln").as_posix()]), (code, self.lines(rows, "ROOT")[0]))
+
     def test_a_root_whose_dot_dot_steps_back_through_a_link_out_of_the_checkout_fails_and_reads_nothing(self) -> None:
         # L2/.. is the folder holding the place L2 leads to, outside the checkout, so L2/../O.sln is a solution outside
         # it: the run fails naming L2, as it does for L2 itself, and neither stats nor reads anything there.
