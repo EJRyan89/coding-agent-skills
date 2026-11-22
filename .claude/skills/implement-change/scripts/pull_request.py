@@ -57,7 +57,6 @@ import argparse
 import re
 import sys
 import tempfile
-from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -86,7 +85,7 @@ from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import hidden_spans
 from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
-from text_lines import LINE_BREAK, text_lines
+from text_lines import line_index, line_starts, text_lines
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -183,9 +182,9 @@ def body_problems(body: str, template: str) -> list[str]:
     problems: list[tuple[int, str]] = []
     # Where each line starts, its lines ending where CommonMark ends one, at CR, LF, and CRLF, read once, so each
     # comment's line is found over them rather than counted from the body's start.
-    starts = [0, *(match.end() for match in LINE_BREAK.finditer(body))]
+    starts = line_starts(body)
     for first, _ in template_comment_spans(body, template):
-        number = bisect_right(starts, first)
+        number = line_index(starts, first) + 1
         problems.append((number, f"PLACEHOLDER {number} a template comment"))
     # closing_references numbers a line as text_lines splits the body, which blanking characters but never a CR or an
     # LF leaves where it was.

@@ -784,6 +784,29 @@ removed fails validation until its pattern follows it.
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
 - **Examples:** #2859, #2871, #2877, #2882, #2897
 
+### A reader that numbers many positions of one text reads its line starts once
+
+- **Rule:** A reader that numbers many positions of one text reads the text's line starts once and takes each
+  position's line from them, never by counting the line breaks, or splitting the text, from its start once per
+  position, and never builds the starts itself from a line-break pattern.
+- **Why:** Counting from the text's start for each position takes time that grows with the square of the text, so a
+  check that is quick on a short body stalls a validation shard, or a script, on a long one.
+- **Use:** `text_lines:line_starts`, where each line of a text starts, at CR, LF, and CRLF or at the breaks a caller
+  passes, as `text_lines:LINE_FEED` for a file Bash reads; `text_lines:line_index`, the line a position stands on
+  among them.
+- **Guard:** `tests/validation/line_numbering.py::LineNumberingPolicies::test_no_reader_counts_line_breaks_from_a_text_s_start_once_per_position`,
+  with fixtures in `tests/validation/test_line_numbering.py::test_a_count_from_a_text_s_start_once_per_position_fails`
+  and `tests/validation/test_line_numbering.py::test_a_count_that_runs_once_or_from_elsewhere_passes`
+- **Search for:** `.count("\n", 0, <match>.start())` or `.count(chr(10), 0, …)` inside a `for` loop, a `while` loop,
+  or a comprehension, or in a function such a loop calls, as a `line_of(text, index)` helper; `text_lines(`,
+  `.splitlines()`, `.split("\n")`, or `len(…lines(…))` of `text[:pos]` per item; `LINE_BREAK.findall(text, 0, pos)`
+  or `re.findall("\n", text[:pos])` per item; and `[0, *(match.end() for match in` a line-break pattern's
+  `finditer`, `re.finditer("\n", text)` among them, which builds the starts `line_starts` gives. A
+  count from the previous position, as `text.count("\n", position, match.start())` with `position` moved to each
+  match, reads the text once and is no hit; neither is a count within each span of a text, as `text[a:b].count("\n")`,
+  nor a count of each whole text of many.
+- **Examples:** #3013, #3014, #3037
+
 ### A path taken from input is judged inside its tree before anything opens it
 
 - **Rule:** A path taken from input is judged inside its tree lexically, then resolved, then probed for a link, before
