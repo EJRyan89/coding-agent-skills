@@ -319,16 +319,160 @@ def _patterns_member(
     )
 
 
+def _bound_text(node: ast.Name, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+    """The text a name gives when its scope binds it exactly once, to an expression whose text is static."""
+    owner = resolver.scopes[id(node)].owner(node.id)
+    values = owner.bindings[node.id] if owner is not None else []
+    if len(values) != 1 or not isinstance(values[0], ast.expr) or id(values[0]) in seen:
+        return None
+    return _static_text(values[0], resolver, seen | {id(values[0])})
+
+
+def _formatted_text(part: ast.FormattedValue, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+    """The text an f-string's placeholder gives: its static value after its conversion and its format specification,
+    which may hold placeholders of its own."""
+    value = _static_text(part.value, resolver, seen)
+    spec = _static_text(part.format_spec, resolver, seen) if part.format_spec is not None else ""
+    if value is None or spec is None:
+        return None
+    converted = {ord("r"): repr, ord("a"): ascii}.get(part.conversion, str)(value)
+    try:
+        return format(converted, spec)
+    except ValueError:
+        return None
+
+
+def _static_items(nodes: list[ast.expr], resolver: CallableResolver, seen: frozenset[int]) -> list[str] | None:
+    """The texts of expressions whose every text is static, or None."""
+    items: list[str] = []
+    for node in nodes:
+        text = _static_text(node, resolver, seen)
+        if text is None:
+            return None
+        items.append(text)
+    return items
+
+
+def _static_mapping(
+    keys: list[ast.expr | None], values: list[ast.expr], resolver: CallableResolver, seen: frozenset[int]
+) -> dict[str, str] | None:
+    """The texts of keys and their values whose every text is static, or None; a key of None is an unpacking."""
+    mapping: dict[str, str] = {}
+    for key, value in zip(keys, values, strict=True):
+        name = _static_text(key, resolver, seen) if key is not None else None
+        text = _static_text(value, resolver, seen)
+        if name is None or text is None:
+            return None
+        mapping[name] = text
+    return mapping
+
+
+def _interpolated_text(node: ast.BinOp, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+    """The text a `%` gives when its template and every value it fills in are static: one value, a literal tuple of
+    them, or a literal dictionary of them under literal string keys."""
+    template = _static_text(node.left, resolver, seen)
+    right = node.right
+    values: str | tuple[str, ...] | dict[str, str] | None
+    if isinstance(right, ast.Dict):
+        values = _static_mapping(right.keys, right.values, resolver, seen)
+    elif isinstance(right, ast.Tuple):
+        items = _static_items(right.elts, resolver, seen)
+        values = tuple(items) if items is not None else None
+    else:
+        values = _static_text(right, resolver, seen)
+    if template is None or values is None:
+        return None
+    try:
+        return template % values
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _called_text(node: ast.Call, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+    """The text a string method call gives when its receiver and arguments are static: `.format` of static values,
+    by position or keyword, and `.join` of a literal tuple or list."""
+    if not isinstance(node.func, ast.Attribute) or node.func.attr not in {"format", "join"}:
+        return None
+    receiver = _static_text(node.func.value, resolver, seen)
+    if receiver is None:
+        return None
+    if node.func.attr == "join":
+        joined = node.args[0] if len(node.args) == 1 else None
+        items = _static_items(joined.elts, resolver, seen) if isinstance(joined, (ast.Tuple, ast.List)) else None
+        return receiver.join(items) if items is not None else None
+    arguments = _static_items(node.args, resolver, seen)
+    # An unpacking's keyword is None, a constant with no text.
+    names: list[ast.expr | None] = [ast.Constant(keyword.arg) for keyword in node.keywords]
+    keywords = _static_mapping(names, [keyword.value for keyword in node.keywords], resolver, seen)
+    if arguments is None or keywords is None:
+        return None
+    try:
+        return receiver.format(*arguments, **keywords)
+    except (IndexError, KeyError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def _static_text(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] = frozenset()) -> str | None:
+    """The string an expression gives when it is static, or None: a string literal; a name its scope binds exactly
+    once, to an expression whose text is static, through the module's own bindings only; and the `+`, `%`, f-string,
+    `.format`, or `.join` of static texts. Seen holds the bindings already followed, so a name bound to itself ends.
+
+    It does not follow a name its scope binds twice, in branches of an if or a try or by an augmented assignment, or
+    binds by a loop, a with, or a parameter with no default; a name imported from another module; an attribute, a
+    subscript, or a function's result; `*` repetition, a comprehension joined, or any other string method; a `%` or a
+    `.format` given an unpacking; or a bytes pattern. Each such expression has no static text here."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return _bound_text(node, resolver, seen)
+    if isinstance(node, ast.JoinedStr):
+        parts = _static_items(node.values, resolver, seen)
+        return "".join(parts) if parts is not None else None
+    if isinstance(node, ast.FormattedValue):
+        return _formatted_text(node, resolver, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _static_text(node.left, resolver, seen), _static_text(node.right, resolver, seen)
+        return left + right if left is not None and right is not None else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return _interpolated_text(node, resolver, seen)
+    if isinstance(node, ast.Call):
+        return _called_text(node, resolver, seen)
+    return None
+
+
+def _grammar_text(node: ast.AST, resolver: CallableResolver) -> str | None:
+    """The text the name grammar's guard compiles at a node: the static pattern of a call PATTERN_CALLS names, or the
+    static text of any other expression when it names the range a-z. A name's read and an f-string's placeholder are
+    left out: what they give is judged where it is bound or in the string around it, and a message that quotes a
+    grammar already judged restates nothing."""
+    if isinstance(node, ast.Call) and resolver.name(node.func) in PATTERN_CALLS:
+        pattern = call_argument(node, 0, "pattern")
+        return _static_text(pattern, resolver) if pattern is not None else None
+    if not isinstance(node, ast.expr) or isinstance(node, (ast.Name, ast.FormattedValue)):
+        return None
+    text = _static_text(node, resolver)
+    return text if text is not None and "a-z" in text else None
+
+
 def _derives_name_grammar(
-    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
 ) -> bool:
-    """A string literal that, read as a regular expression, judges every name in NAME_GRAMMAR_PROBES as the fact's
-    pattern does: the name grammar re-derived, however it treats `--`, which no probe holds, as the deployer's copy
-    once drifted from audit-ai-config's. Only a literal naming the range a-z is compiled."""
-    if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "a-z" in node.value):
+    """A pattern that, compiled, judges every name in NAME_GRAMMAR_PROBES as the fact's pattern does: the name grammar
+    re-derived, however it treats `--`, which no probe holds, as the deployer's copy once drifted from
+    audit-ai-config's.
+
+    The guard compiles the static text of each regular-expression call's pattern, whatever range it spells, and of
+    each string literal and each `+`, `%`, f-string, `.format`, or `.join` that names the range a-z, so a grammar built
+    from pieces, or from a piece bound to a name and joined later, is compiled whole; _static_text names what it
+    follows. Stated limits: a pattern _static_text cannot read, such as a piece imported from another module, a name
+    bound twice, or a piece a function returns, is not compiled; nor is a static text that spells the range another
+    way, as a class listing every letter does, unless a regular-expression call in its own module is given it, by a
+    name or whole. A call's flags are not applied: the text restates the grammar whatever flags compile it."""
+    text = _grammar_text(node, resolver)
+    if text is None:
         return False
     try:
-        candidate = re.compile(node.value)
+        candidate = re.compile(text)
     except re.error:
         return False
     owners = [re.compile(member) for member in members]
@@ -599,7 +743,8 @@ def _keyed_by_folder(node: ast.AST, resolver: CallableResolver) -> bool:
 # three or more times, as in a class of both followed by `{3,}`, built from them so this policy holds no run itself.
 FENCE_MARKERS = ("`", "~")
 FENCE_CLASS_RUN = re.compile(r"\[[^\]]*[" + "".join(FENCE_MARKERS) + r"][^\]]*\]\{3")
-# The re functions that take a pattern first: a fence run in that pattern finds or tests a fence.
+# The re functions that take a pattern first, as `pattern`: a fence run in that pattern finds or tests a fence, and the
+# name grammar's guard compiles that pattern's static text whatever range it spells.
 PATTERN_CALLS = frozenset(
     f"re.{name}" for name in ("compile", "match", "fullmatch", "search", "findall", "finditer", "sub", "subn", "split")
 )

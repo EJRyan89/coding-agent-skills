@@ -433,6 +433,12 @@ removed fails validation until its pattern follows it.
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
   `tests/validation/test_duplication.py::SharedFactPolicy::test_a_re_derived_name_grammar_fails_however_it_treats_consecutive_hyphens_and_an_import_passes`,
+  `tests/validation/test_duplication.py::SharedFactPolicy::test_a_name_grammar_built_from_pieces_fails_on_the_line_that_builds_or_compiles_it`,
+  which compiles the static text of each re function's pattern, whatever range it spells, and of each string
+  literal, concatenation, percent interpolation, f-string, format call, or join that names the range a-z,
+  following a name its scope binds once; a piece imported from another module, a name bound twice, a piece a
+  function returns, an unpacking, and a range spelled another way that no re call in its module is given are
+  stated limits,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_every_job`,
@@ -454,10 +460,12 @@ removed fails validation until its pattern follows it.
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a fence's run built at runtime, as from its marker by `*`, or held in an attribute or another module's name,
   which the fence guard cannot read;
+  a name grammar's piece imported from another module, bound twice, or returned by a function before it is joined,
+  which the name-grammar guard cannot read;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
   `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2701, #2718, #2734, #2738, #2748, #2832
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2701, #2718, #2734, #2738, #2748, #2775, #2832
 
 ### A promise in prose is held where its reader reads it
 
