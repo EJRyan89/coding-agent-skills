@@ -122,10 +122,16 @@ class PullTests(unittest.TestCase):
         issues = [
             {"number": 4, "state": "OPEN", "title": "Total", "body": "Totals are wrong."},
             {"number": 5, "state": "CLOSED", "title": "", "body": "", "repository": "Other/Two"},
+            # The first issue a repository opens is numbered 1.
+            {"number": 1, "state": "OPEN", "title": "First", "body": ""},
         ]
         pull = validate_fixture_pull({**copy.deepcopy(PULL), "closing_issues": issues})
         self.assertEqual(
-            [{"repository": "example/inventory", **issues[0]}, {**issues[1], "repository": "other/two"}],
+            [
+                {"repository": "example/inventory", **issues[0]},
+                {**issues[1], "repository": "other/two"},
+                {"repository": "example/inventory", **issues[2]},
+            ],
             pull["closing_issues"],
         )
         self.assertNotIn("closing_issues", validate_fixture_pull(copy.deepcopy(PULL)))
