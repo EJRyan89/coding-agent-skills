@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import bounded_process
+import file_presence
 import github_client
 import review_runtime
 from executable_locator import located_command
@@ -1883,3 +1884,100 @@ class WholeAnswerTests(unittest.TestCase):
             return GitResult(0, listing, "")
 
         self.assertEqual(listing, review_runtime._run_git(Path("r"), run, "ls-tree", "--name-only", "-z", "HEAD"))
+
+
+class ClosingIssuesFileTests(unittest.TestCase):
+    def test_an_issue_of_another_repository_keeps_its_name_and_state_and_none_of_its_text(self) -> None:
+        issue = {"repository": "other/two", "number": 2, "state": "OPEN", "title": "Secret", "body": "Hidden body"}
+        given, account = review_runtime.given_closing_issues([issue], 1, "example/one")
+        self.assertEqual(
+            {
+                "total": 1,
+                "issues": [
+                    {
+                        "repository": "other/two",
+                        "number": 2,
+                        "state": "OPEN",
+                        "text": "not given: the issue is in another repository",
+                    }
+                ],
+            },
+            given,
+        )
+        self.assertEqual(
+            {
+                "total": 1,
+                "issues": [
+                    {
+                        "repository": "other/two",
+                        "number": 2,
+                        "state": "OPEN",
+                        "same_repository": False,
+                        "body_characters": 0,
+                        "body_given": 0,
+                    }
+                ],
+            },
+            account,
+        )
+
+    def test_a_lone_surrogate_in_a_title_becomes_the_replacement_character(self) -> None:
+        issue = {"repository": "example/one", "number": 3, "state": "OPEN", "title": "Fix \ud800 here", "body": "B"}
+        given, _ = review_runtime.given_closing_issues([issue], 1, "Example/One")
+        [entry] = given["issues"]
+        self.assertEqual("Fix � here", entry["title"])
+        # The file is written as UTF-8, which a lone surrogate could not be.
+        json.dumps(given, ensure_ascii=False).encode("utf-8")
+
+
+class AdapterRequestPathTests(unittest.TestCase):
+    def request(self, *, body: Path | None = None, closing: Path | None = None) -> dict[str, Any]:
+        return build_adapter_request(
+            mode="initial",
+            repository="example/one",
+            pull_number=12,
+            base_ref="main",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            title="Fixture",
+            url="https://github.com/example/one/pull/12",
+            diff_path=self.diff,
+            source_snapshot_root=self.root / "snapshot",
+            body=(body, 5) if body is not None else None,
+            closing_issues=(closing, {"total": 0, "issues": []}) if closing is not None else None,
+        )
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.diff = self.root / "diff.patch"
+        self.diff.write_text("diff --git a/a b/a\n", encoding="utf-8")
+        self.present = self.root / "present.md"
+        self.present.write_text("text\n", encoding="utf-8")
+
+    def test_a_relative_body_or_closing_issues_path_is_refused_naming_which(self) -> None:
+        # Every file is taken as present, so only the path's being relative can refuse it.
+        relative = Path("present.md")
+        for name, given in (("body", {"body": relative}), ("closing_issues", {"closing": relative})):
+            with (
+                self.subTest(name=name),
+                mock.patch.object(file_presence, "require"),
+                self.assertRaises(RuntimeContractError) as refused,
+            ):
+                self.request(**given)
+            self.assertEqual(f"{name} must name an existing absolute file", str(refused.exception))
+
+    def test_a_body_or_closing_issues_path_that_names_no_file_is_refused_naming_which(self) -> None:
+        missing = self.root / "missing.md"
+        for name, given in (("body", {"body": missing}), ("closing_issues", {"closing": missing})):
+            with self.subTest(name=name), self.assertRaises(RuntimeContractError) as refused:
+                self.request(**given)
+            self.assertEqual(f"{name} must name an existing absolute file", str(refused.exception))
+
+    def test_an_absolute_present_body_and_closing_issues_file_pass_the_check(self) -> None:
+        # Past the path check the snapshot is verified, and the fixture has none: reaching that refusal shows the
+        # paths were accepted.
+        with self.assertRaisesRegex(RuntimeContractError, "snapshot") as refused:
+            self.request(body=self.present, closing=self.present)
+        self.assertNotIn("must name an existing absolute file", str(refused.exception))
