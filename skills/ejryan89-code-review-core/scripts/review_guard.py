@@ -246,8 +246,9 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
         return
     # The read is already allowed and the log only counts it, so a path the JSON writer refuses, such as one holding
     # a lone surrogate, stays uncounted, as review_source counts it, and never turns the read into a denial. An append
-    # cut short leaves part of a line, which `check` passes over as a read left uncounted: the log only counts, and
-    # only whether it exists shows the claim, which `_start_log` creates empty.
+    # cut short leaves part of a line, which joins the next entry appended, and `check` passes over the joined line, so
+    # both reads are left uncounted: the log only counts, and only whether it exists shows the claim, which
+    # `_start_log` creates empty.
     with (
         contextlib.suppress(OSError, json_writer.JsonWriteRefused),
         read_log(run, role).open("a", encoding="utf-8") as log,
