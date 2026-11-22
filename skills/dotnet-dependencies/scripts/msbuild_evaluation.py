@@ -18,8 +18,14 @@ or unreadable, is reported, and from it on every property is unsettled, since th
 twice is read once, as MSBuild reads it. Each file or path refused for where it lies, outside the examined tree or
 through a link leading out of it, is also kept apart (`ProjectEvaluation.refused`): an import, one not read because its
 condition cannot be settled or its path is a wildcard, judged by the folder before the wildcard, included; a nearest
-file; a `*OfFileAbove` start or candidate; and an `Exists()` path. MSBuild would read or stat each, so the caller asks
-no tool that evaluates the project through MSBuild about it.
+file; a `*OfFileAbove` start or candidate; an `Exists()` path; and a file of the restore MSBuild reads, judged though
+never read: the `<project file>.nuget.g.props` the common props import and the `.nuget.g.targets` the common targets
+import, from `$(MSBuildProjectExtensionsPath)`, else `$(BaseIntermediateOutputPath)`, else obj/ beside the project, as
+the files leave them at each point, and the assets file, `$(ProjectAssetsFile)` or project.assets.json in that folder,
+as they leave it at the targets. A file MSBuild may read whose path the reader cannot settle, an Import's or one of the
+restore's, is kept apart too (`ProjectEvaluation.unplaced`). MSBuild would read or stat each, so the caller asks no
+tool that evaluates the project through MSBuild about it. A path refused or outside the tree is compared by its text
+(`tree_key`), never by `same_path`, whose case probe would list the folders on its way.
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -69,6 +75,7 @@ from folder_walk import outside_link_refusal
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
+    ASSETS_FILE,
     CENTRAL_VERSIONS,
     AssemblyRef,
     PackageRef,
@@ -134,6 +141,12 @@ NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied
 # Why an Import of a link to nothing is not read: MSBuild's File.Exists finds the link, so it imports it, and the load
 # fails.
 LINK_TO_NOTHING = "a link to nothing, which MSBuild finds and cannot load"
+# The properties naming the folder the restore writes to, the first a file sets taking it, as Microsoft.Common.props
+# defaults MSBuildProjectExtensionsPath to BaseIntermediateOutputPath and that to obj/ beside the project.
+RESTORE_FOLDER = ("MSBuildProjectExtensionsPath", "BaseIntermediateOutputPath")
+DEFAULT_RESTORE_FOLDER = "obj/"
+# The property naming the restore's assets file, which NuGet's targets default to ASSETS_FILE in that folder.
+ASSETS_PROPERTY = "ProjectAssetsFile"
 
 # Whether an item, or a metadata value, applies: True, False, or the condition that cannot be settled.
 Decision = bool | str
@@ -191,6 +204,25 @@ class Sources:
             "solutionfilename": self.solution.name,
             "solutionext": self.solution.suffix,
         }
+
+
+def tree_key(path: Path, tree: Path) -> str:
+    """The key a collection compares `path` by: `same_path` for a path inside `tree`, where the case of its names may
+    matter and its case probe lists only folders a reader may reach, and its text for one `refusal` refuses, so
+    comparing a path outside the tree lists no folder outside it. Every such path comes from `project_path`, made
+    absolute and normalized by text, so one path has one text."""
+    return str(path) if refusal(path, tree) is not None else same_path(path)
+
+
+@dataclass(frozen=True)
+class UnplacedImport:
+    """A file MSBuild may read whose path the reader cannot settle, so it cannot judge where it lies: an `Import`, as
+    written, and the file holding it; or, `generated`, a file of the restore, named by the properties that place it, and
+    the project whose evaluation leaves them unsettled."""
+
+    written: str
+    file: Path
+    generated: bool = False
 
 
 def file_properties(path: Path, prefix: str) -> dict[str, str | None]:
@@ -334,6 +366,7 @@ class Evaluation:
         self.items: list[Placed] = []
         self.reports: list[Unreadable] = []
         self.refused: list[Path] = []
+        self.unplaced: list[UnplacedImport] = []
         self.imported: set[str] = set()
         self.points: set[str] = set()
         self.files = FileSystem(project.path.parent.as_posix(), self.exists, self.folder_above)
@@ -495,25 +528,27 @@ class Evaluation:
         value = values[0] if len(values) == 1 else None
         if unsettled or applies is None:
             condition = (unsettled or ((element.get("Condition") or "").strip(),))[0]
-            self.keep_refused(value)
+            self.keep_refused(value, written)
             self.not_read(written, f"its condition {condition} cannot be evaluated")
             return
         if value is None:
+            self.unplaced.append(UnplacedImport(written, self.file))
             self.not_read(written, "its path names a value the reader cannot settle")
         elif "*" in value or "?" in value:
-            self.keep_refused(value)
+            self.keep_refused(value, written)
             self.not_read(written, "its path is a wildcard, which the reader does not expand")
         else:
             self.import_file(project_path(self.file.parent, value), written)
 
-    def keep_refused(self, value: str | None) -> None:
+    def keep_refused(self, value: str | None, written: str) -> None:
         """Keep among `refused` the file an Import the reader does not read names, its condition unsettled or its path
         a wildcard, when it lies outside the examined tree or through a link leading out of it: MSBuild may read it.
         The whole path is judged as text, so a `..` after a wildcard that climbs out counts, and its folder before the
         first name holding a wildcard for links too; the reader expands no wildcard, so a link one matches is not
-        judged, nor a link named after a `..` that follows a wildcard, as in `../*/../Shared/Common.props`, and a
-        path it cannot settle is not judged either."""
+        judged, nor a link named after a `..` that follows a wildcard, as in `../*/../Shared/Common.props`. A path it
+        cannot settle cannot be judged, so the Import is kept among `unplaced`."""
         if value is None:
+            self.unplaced.append(UnplacedImport(written, self.file))
             return
         names = re.split(r"[\\/]", value)
         wild = next((index for index, name in enumerate(names) if "*" in name or "?" in name), len(names))
@@ -537,14 +572,15 @@ class Evaluation:
         self.state.unsettle()
 
     def import_file(self, path: Path, written: str) -> None:
-        key = same_path(path)
-        if key in self.imported:
-            return
         tree = self.project.sources.tree
         refused = refusal(path, tree) or outside_link_refusal(path, tree)
         if refused is not None:
+            # Judged before it is keyed, since same_path's case probe would list the folders on a path outside the tree.
             self.refused.append(path)
             self.not_read(written, refused)
+            return
+        key = same_path(path)
+        if key in self.imported:
             return
         try:
             present = is_present(path)
@@ -580,8 +616,9 @@ class Evaluation:
         if "props" in self.points:
             return
         self.points.add("props")
-        for name in (BUILD_PROPS, CENTRAL_VERSIONS):
-            self.import_nearest(name)
+        self.import_nearest(BUILD_PROPS)
+        self.restore_import(".props")
+        self.import_nearest(CENTRAL_VERSIONS)
 
     def targets_point(self) -> None:
         """Where the common targets import Directory.Build.targets, and NuGet's add the GlobalPackageReference items."""
@@ -589,7 +626,61 @@ class Evaluation:
             return
         self.points.add("targets")
         self.import_nearest(BUILD_TARGETS)
+        self.restore_import(".targets")
+        self.restore_assets()
         self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
+
+    def set_value(self, name: str) -> str | None:
+        """The one value the files leave `name` at now: `""` when no file set it, and None when it cannot be settled,
+        set to a value the reader cannot settle, to one of several, or after an import the reader did not read."""
+        values = self.state.values.get(ordinal_fold(name))
+        if values is None:
+            return None if self.state.opaque else ""
+        return values[0] if len(values) == 1 else None
+
+    def restore_folder(self) -> str | None:
+        """The folder the restore writes to as the files leave it now, `$(MSBuildProjectExtensionsPath)`, else
+        `$(BaseIntermediateOutputPath)`, else obj/ beside the project, as Microsoft.Common.props defaults them; None
+        when a file may have set one to a value the reader cannot settle."""
+        for name in RESTORE_FOLDER:
+            value = self.set_value(name)
+            if value != "":
+                return value
+        return DEFAULT_RESTORE_FOLDER
+
+    def restore_import(self, suffix: str) -> None:
+        """Judge the file the restore generates for the common props or targets to import, `<project file>.nuget.g`
+        with `suffix`, in the restore's folder. The reader reads it no more than any toolset import, but MSBuild does,
+        so it is kept among `refused` when it lies outside the examined tree or through a link leading out of it, and
+        among `unplaced` when the folder cannot be settled. MSBuild imports every `<project file>.*` file with `suffix`
+        there; the reader expands no wildcard, so another such file is not judged."""
+        name = f"{self.project.path.name}.nuget.g{suffix}"
+        folder = self.restore_folder()
+        if folder is None:
+            self.unplaced.append(UnplacedImport(f"$(MSBuildProjectExtensionsPath){name}", self.project.path, True))
+        else:
+            self.judge_restore_file(project_path(self.project.path.parent, folder) / name)
+
+    def restore_assets(self) -> None:
+        """Judge the restore's assets file MSBuild reads, as `restore_import` judges a generated import:
+        `$(ProjectAssetsFile)` where a file sets it, else project.assets.json in the restore's folder."""
+        value = self.set_value(ASSETS_PROPERTY)
+        if value:
+            self.judge_restore_file(project_path(self.project.path.parent, value))
+            return
+        folder = None if value is None else self.restore_folder()
+        if folder is None:
+            written = "$(ProjectAssetsFile)" if value is None else f"$(MSBuildProjectExtensionsPath){ASSETS_FILE}"
+            self.unplaced.append(UnplacedImport(written, self.project.path, True))
+        else:
+            self.judge_restore_file(project_path(self.project.path.parent, folder) / ASSETS_FILE)
+
+    def judge_restore_file(self, path: Path) -> None:
+        """Keep a file of the restore among `refused` when it lies outside the examined tree or through a link leading
+        out of it, its own name included, which is read without following it."""
+        tree = self.project.sources.tree
+        if refusal(path, tree) is not None or outside_link_refusal(path, tree) is not None:
+            self.refused.append(path)
 
     def import_nearest(self, name: str) -> None:
         """Import the nearest file named `name` at or above the project; a candidate it cannot stat is reported and
@@ -761,9 +852,10 @@ class Entry:
     origin: str
 
 
-def item_key(kind: str, name: str, directory: Path) -> str:
-    """What an Update or a Remove matches an item by: a project by its path, any other by its name without case."""
-    return same_path(project_path(directory, name)) if kind == "ProjectReference" else ordinal_fold(name)
+def item_key(kind: str, name: str, directory: Path, tree: Path) -> str:
+    """What an Update or a Remove matches an item by: a project by its path (`tree_key`), any other by its name without
+    case."""
+    return tree_key(project_path(directory, name), tree) if kind == "ProjectReference" else ordinal_fold(name)
 
 
 def step_unsettled(step: Step, directory: Path) -> list[Unsettled]:
@@ -789,7 +881,7 @@ def item_path(placed: Placed, name: str, directory: Path) -> Path | None:
     return project_path(directory, name) if placed.kind == "ProjectReference" else None
 
 
-def item_pass(steps: Iterable[Step], directory: Path) -> tuple[dict[str, list[Entry]], list[Unsettled]]:
+def item_pass(steps: Iterable[Step], directory: Path, tree: Path) -> tuple[dict[str, list[Entry]], list[Unsettled]]:
     """The item lists the steps leave, in order: an Include adds an item, an Update sets the metadata it gives on each
     included before it with that name, a Remove drops them, and at NuGet's point each GlobalPackageReference becomes a
     PackageReference; with what the steps leave unsettled."""
@@ -807,15 +899,15 @@ def item_pass(steps: Iterable[Step], directory: Path) -> tuple[dict[str, list[En
         if step.decision is not True or step.names is None:
             continue
         for name in step.names:
-            key = item_key(kind, name, directory)
+            key = item_key(kind, name, directory, tree)
             if step.placed.operation == "Include":
                 lists[kind].append(Entry(name, dict(step.metadata), kind))
             elif step.placed.operation == "Update":
                 for item in lists[kind]:
-                    if item_key(kind, item.name, directory) == key:
+                    if item_key(kind, item.name, directory, tree) == key:
                         item.metadata.update(step.metadata)
             else:
-                lists[kind] = [item for item in lists[kind] if item_key(kind, item.name, directory) != key]
+                lists[kind] = [item for item in lists[kind] if item_key(kind, item.name, directory, tree) != key]
     return lists, unsettled
 
 
@@ -833,11 +925,12 @@ class Build:
     reports: list[Unreadable] = field(default_factory=list)
     items: list[Resolved] = field(default_factory=list)
     refused: list[Path] = field(default_factory=list)
+    unplaced: list[UnplacedImport] = field(default_factory=list)
 
 
-def references(framework: str, steps: Iterable[Step], directory: Path) -> Build:
+def references(framework: str, steps: Iterable[Step], directory: Path, tree: Path) -> Build:
     """The references the steps of a build, or of the view with no restore, leave."""
-    lists, unsettled = item_pass(steps, directory)
+    lists, unsettled = item_pass(steps, directory, tree)
     versions = {
         ordinal_fold(item.name): version
         for item in lists["PackageVersion"]
@@ -929,10 +1022,12 @@ class ProjectEvaluation:
         else:
             evaluation = Evaluation(self, True, framework if framework and "," not in framework else None)
         items = evaluation.resolved(restrict)
-        found = references(framework, (build_step(item, framework) for item in items), self.path.parent)
+        steps = (build_step(item, framework) for item in items)
+        found = references(framework, steps, self.path.parent, self.sources.tree)
         found.items = items
         found.reports = list(evaluation.reports)
         found.refused = list(evaluation.refused)
+        found.unplaced = list(evaluation.unplaced)
         return found
 
     def refused(self) -> list[Path]:
@@ -946,6 +1041,13 @@ class ProjectEvaluation:
             # Keyed by its text, never by same_path, whose case probe would list the folders on a path outside the tree.
             found.setdefault(str(path), path)
         return list(found.values())
+
+    def unplaced(self) -> list[UnplacedImport]:
+        """Each file MSBuild may read whose path an evaluation made so far could not settle, once, in the order first
+        met, as `refused` orders its paths: an Import, or a file of the restore. The caller cannot judge where it lies,
+        so it asks no tool that evaluates the project through MSBuild."""
+        builds = (entry for build in self.builds.values() for entry in build.unplaced)
+        return list(dict.fromkeys([*self.outer.unplaced, *builds]))
 
     def labels(self) -> list[str]:
         """The builds the view with no restore reads: one per framework, and one for frameworks the reader cannot
@@ -983,6 +1085,10 @@ class ProjectFile:
         """What the evaluations made so far refused for where it lies (`ProjectEvaluation.refused`)."""
         return [] if self.evaluation is None else self.evaluation.refused()
 
+    def unplaced(self) -> list[UnplacedImport]:
+        """What the evaluations made so far could not place (`ProjectEvaluation.unplaced`)."""
+        return [] if self.evaluation is None else self.evaluation.unplaced()
+
 
 def assembly_name(evaluation: ProjectEvaluation, reports: list[Unreadable]) -> str:
     """The project's AssemblyName as its files leave it, else its file name, as MSBuild defaults it; one the reader
@@ -999,11 +1105,11 @@ def assembly_name(evaluation: ProjectEvaluation, reports: list[Unreadable]) -> s
     return evaluation.path.stem
 
 
-def distinct(reports: Iterable[Unreadable]) -> list[Unreadable]:
-    """Each report once, by its file and reason, in the order first met."""
+def distinct(reports: Iterable[Unreadable], tree: Path) -> list[Unreadable]:
+    """Each report once, by its file (`tree_key`) and reason, in the order first met."""
     found: dict[tuple[str, str], Unreadable] = {}
     for report in reports:
-        found.setdefault((same_path(report.file), report.reason), report)
+        found.setdefault((tree_key(report.file, tree), report.reason), report)
     return list(found.values())
 
 
@@ -1012,9 +1118,11 @@ def read_project(path: Path, sources: Sources) -> ProjectFile:
     itself cannot be read. What an import, a Target, or the AssemblyName costs is in `reports`."""
     evaluation = ProjectEvaluation(path, sources)
     builds = [evaluation.build(label) for label in evaluation.labels()]
-    reports = distinct([*evaluation.outer.reports, *(report for build in builds for report in build.reports)])
+    reports = distinct(
+        [*evaluation.outer.reports, *(report for build in builds for report in build.reports)], sources.tree
+    )
     name = assembly_name(evaluation, reports)
-    view = references("", merged_steps(builds), path.parent)
+    view = references("", merged_steps(builds), path.parent, sources.tree)
     return ProjectFile(
         path=path,
         style=evaluation.style,

@@ -1,17 +1,18 @@
 """Run `dotnet nuget why` for the projects the SDK can answer, and read its tree back into paths.
 
-The command is run once per project, with the project and one package, and prints a block: a heading naming the
-project by its file stem, then for each target framework a tree of the dependency chains that reach the package,
-drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the console
-width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether it
-found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
+The command is run once per project, with the project and one package, in the project's folder, so the .NET host picks
+the SDK by the nearest global.json at or above the project, the one MSBuild's resolvers read, and prints a block: a
+heading naming the project by its file stem, then for each target framework a tree of the dependency chains that reach
+the package, drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the
+console width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether
+it found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
 That text is in the CLI's language, which follows the machine's display language unless `DOTNET_CLI_UI_LANGUAGE` or
 `VSLANG` names another, so the command runs with `DOTNET_CLI_UI_LANGUAGE` set to English (`CLI_LANGUAGE`) and every
-other variable kept, and prints the English the parser reads on every machine. The parser strips the colors, reads
-a chain's depth from the column of its branch, and keeps every chain that ends at the package; a project with no
-heading in the output, or whose run exited nonzero after printing one, was not answered, and the caller walks its own
-graph, a run with no heading naming the first line it printed, which the parser could not read. The answer is keyed by
-the project path the run was for, never by the heading's stem, which two projects may share.
+other variable kept, and prints the English the parser reads on every machine. The parser strips the colors, reads a
+chain's depth from the column of its branch, and keeps every chain that ends at the package; a project with no heading
+in the output, or whose run exited nonzero after printing one, was not answered, and the caller walks its own graph, a
+run with no heading naming the first line it printed, which the parser could not read. The answer is keyed by the
+project path the run was for, never by the heading's stem, which two projects may share.
 """
 
 from __future__ import annotations
@@ -47,7 +48,8 @@ TREE_BASE = 2
 TREE_STEP = 4
 DEFAULT_TIMEOUT_SECONDS = 120
 
-Runner = Callable[[Sequence[str], float], "Completed"]
+# A command, its time limit in seconds, and the folder it runs in.
+Runner = Callable[[Sequence[str], float, Path], "Completed"]
 
 
 @dataclass(frozen=True)
@@ -66,11 +68,12 @@ COMMANDS_ALLOWED = {
 }
 
 
-def subprocess_runner(arguments: Sequence[str], timeout: float) -> Completed:
-    """Run the command with no stdin, every prompt off, and the CLI in English (`CLI_LANGUAGE`), at the path
+def subprocess_runner(arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
+    """Run the command in `folder` with no stdin, every prompt off, and the CLI in English (`CLI_LANGUAGE`), at the path
     ejryan89-skill-core's locator finds for its program."""
+    environment = {**non_interactive_environment(), **CLI_LANGUAGE}
     try:
-        result = run_bounded(located_command(arguments), timeout, env={**non_interactive_environment(), **CLI_LANGUAGE})
+        result = run_bounded(located_command(arguments), timeout, cwd=folder, env=environment)
     except subprocess.TimeoutExpired as expired:
         output = expired.output if isinstance(expired.output, bytes) else b""
         return Completed(-1, output.decode("utf-8", errors="replace"), timed_out=True)
@@ -171,8 +174,8 @@ def first_line(text: str) -> str:
 
 
 def run_why(projects: Sequence[Path], package: str, services: Services, timeout: float) -> WhyAnswer:
-    """Ask the SDK why each project depends on `package`, one run per project: the command's usage shows several
-    projects, but it refuses a second path as an unrecognized argument.
+    """Ask the SDK why each project depends on `package`, one run per project, in the project's folder: the command's
+    usage shows several projects, but it refuses a second path as an unrecognized argument.
 
     A run that times out, cannot start, exits nonzero, or answers nothing records the project's failure and leaves
     that project to the graph walk, whatever part of an answer it printed first; the other projects keep theirs.
@@ -180,7 +183,7 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
     answer = WhyAnswer()
     for project in projects:
         try:
-            result = services.run(why_command(project, package), timeout)
+            result = services.run(why_command(project, package), timeout, project.parent)
         except OSError as error:
             answer.failures[project] = f"dotnet nuget why could not start: {flat_text(str(error))}"
             continue
