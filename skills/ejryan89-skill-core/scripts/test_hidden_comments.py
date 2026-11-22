@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hidden_comments import WALK_WINDOW, hidden_spans, read_comments, without_hidden_comments
 from markdown_sections import blocks
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 
 COMMENTS = [
     ("a <!-- b --> c", "a  c"),

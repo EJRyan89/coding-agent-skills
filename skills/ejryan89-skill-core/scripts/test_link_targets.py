@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import gc
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from link_destinations import link_destinations
+from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
+from test_time_in_proportion import assert_time_in_proportion
 
 SKILL = ".claude/skills/review/SKILL.md"
 
@@ -126,21 +125,19 @@ def test_a_cover_says_whether_a_link_takes_any_column_of_a_run(
 # The scaling test reads the same characters as eight lines and as one line eight times as long. A reader whose time
 # grows with the line's length takes about as long either way, a ratio near 1; one that reads the line again for each
 # link takes eight times as long on the long line. The bound is the two ratios' geometric midpoint, and each side is
-# timed for the same work, about ten milliseconds and more, with garbage collection off, so a loaded runner slows both.
+# timed through assert_time_in_proportion, with each line's destinations found before it.
 LINES = 8
 LINKS = 1000
-RUNS = 7
 SCALING_BOUND = LINES**0.5
-# A long line this many times past the bound is past any runner's noise, so the test fails without timing it again.
-FAR_PAST = 3
 
 
-def _seconds(lines: list[str]) -> float:
-    found = [(line, link_destinations([line])) for line in lines]
-    start = time.perf_counter()
+def _spans_read(found: list[tuple[str, list[Destination]]]) -> None:
     for line, destinations in found:
         link_spans(line, destinations)
-    return time.perf_counter() - start
+
+
+def _found(lines: list[str]) -> list[tuple[str, list[Destination]]]:
+    return [(line, link_destinations([line])) for line in lines]
 
 
 @pytest.mark.parametrize("unit", ["[a](d/b.md) ", "a](d/b.md) "], ids=["opened", "no-opening-bracket"])
@@ -148,16 +145,6 @@ def test_a_line_of_links_takes_time_in_proportion_to_its_length(unit: str) -> No
     # link_span read the whole line again for each link: it masked its code spans, sliced it, and walked back to its
     # start, so a line of 8000 links took about 8 times as long as eight lines of 1000, and about 16 times without a
     # `[`.
-    short = [unit * LINKS] * LINES
-    long = [unit * LINKS * LINES]
-    gc.disable()
-    try:
-        eight = min(_seconds(short) for _ in range(RUNS))
-        one = []
-        for _ in range(RUNS):
-            one.append(_seconds(long))
-            if one[-1] < SCALING_BOUND * eight or one[-1] > FAR_PAST * SCALING_BOUND * eight:
-                break
-    finally:
-        gc.enable()
-    assert min(one) < SCALING_BOUND * eight
+    short = _found([unit * LINKS] * LINES)
+    long = _found([unit * LINKS * LINES])
+    assert_time_in_proportion(_spans_read, short, long, SCALING_BOUND)

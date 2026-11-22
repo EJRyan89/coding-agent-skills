@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import functools
-import gc
-import itertools
 import math
 import random
 import sys
@@ -42,6 +38,7 @@ from markdown_sections import (
     starts_block,
     without_code_spans,
 )
+from test_time_in_proportion import assert_time_in_proportion
 
 NBSP = chr(0xA0)
 EM_SPACE = chr(0x2003)
@@ -1091,140 +1088,6 @@ def test_a_blockquote_s_lines_join_its_block(
     assert [(block.start, block.kind, len(block.lines)) for block in blocks(lines)] == expected
     assert sorted(code_block_lines(lines)) == code
     assert document_headings(lines) == []
-
-
-# The least processor time the smaller input's reading is timed for, repeated as often as that takes, so the clock's
-# tick, about 16 ms on Windows, is a small part of each measurement; and how many times each input is timed.
-LEAST_TIMED_SECONDS = 0.1
-TIMINGS = 3
-
-
-def _seconds[T](read: Callable[[T], object], value: T, repeats: int, limit: float = math.inf) -> float:
-    """The processor time the process spends reading `value` `repeats` times, or, once that passes `limit`, the time
-    so far, so a reading far slower than the bound fails in about the bound's time rather than the reading's. A runner
-    whose pool runs more suites than it has processors shares each processor between them, so a reading long enough to
-    span several of the scheduler's slices takes about twice its own time on the wall clock, while a short one may run
-    in one slice alone: timed by the wall clock, a linear reading measured about twice its ratio there.
-
-    The cyclic garbage collector is off while it times, as `timeit` turns it off. A collection of the older generations
-    walks every object the process holds, and a reading that keeps more of its objects alive at once, as on a longer
-    input, moves more of them into those generations, so the collector's share grows faster than the input, and faster
-    again the more objects the process holds: a linear reading measured about 1.5 times its ratio with it on in a
-    process holding two million objects."""
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        started = time.process_time()
-        for _ in range(repeats):
-            read(value)
-            if (elapsed := time.process_time() - started) > limit:
-                return elapsed
-        return time.process_time() - started
-    finally:
-        if collecting:
-            gc.enable()
-
-
-@functools.cache
-def _clock_tick() -> float:
-    """The step `time.process_time` advances by, the most of two: 15.625 ms on Windows, where it counts whole ticks of
-    the scheduler's clock, and a microsecond or less on Linux and macOS. Each step read starts on a value the clock
-    shows, so it is a whole step."""
-    steps: list[float] = []
-    for _ in range(2):
-        started = time.process_time()
-        while (now := time.process_time()) == started:
-            pass
-        steps.append(now - started)
-    return max(steps)
-
-
-def assert_time_in_proportion[T](read: Callable[[T], object], small: T, large: T, bound: float) -> None:
-    """Fail when reading `large` takes `bound` times as long as reading `small`, or longer, on every timing. Each
-    reading repeats until the smaller takes LEAST_TIMED_SECONDS; the smaller keeps the least of TIMINGS timings, and
-    the larger passes at its first timing under the bound, so only a reading slower on every try fails. The bound
-    sits between the ratio a linear reading gives and the one the slower reading the test guards against gives, with
-    a margin of about two on each side, so neither a noisy runner nor that reading lands on the wrong side.
-
-    A timing read off a clock that advances in ticks comes out up to a tick short or long, and the least of several
-    timings is the one most likely short: on Windows, where the smaller reading takes about seven ticks, that raised
-    a ratio by up to a seventh. So the smaller reading's least timing counts one tick more, which no tick's rounding
-    exceeds, and the ratio is never raised by it; the larger reading takes the bound times as many ticks, so its own
-    rounding moves it by less than one part in a hundred."""
-    repeats = 1
-    while (elapsed := _seconds(read, small, repeats)) < LEAST_TIMED_SECONDS:
-        repeats *= 2
-    least = min([elapsed, *(_seconds(read, small, repeats) for _ in range(TIMINGS - 1))]) + _clock_tick()
-    timed: list[float] = []
-    for _ in range(TIMINGS):
-        timed.append(_seconds(read, large, repeats, bound * least))
-        if timed[-1] < bound * least:
-            return
-    pytest.fail(f"{min(timed):.4f}s is over {min(timed) / least:.1f} times {least:.4f}s, at least {bound:.1f} times")
-
-
-# The step of Windows' processor-time clock.
-WINDOWS_TICK = 0.015625
-
-
-def test_the_clock_tick_is_the_step_process_time_advances_by(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A clock that counts whole ticks, as Windows' does, read three times in each tick.
-    readings = itertools.count()
-    monkeypatch.setattr(time, "process_time", lambda: next(readings) // 3 * WINDOWS_TICK)
-    assert _clock_tick.__wrapped__() == WINDOWS_TICK
-
-
-@pytest.mark.parametrize(
-    ("tick", "outcome"),
-    [
-        pytest.param(WINDOWS_TICK, contextlib.nullcontext(), id="a-tick-added"),
-        pytest.param(0.0, pytest.raises(pytest.fail.Exception, match=r"at least 32\.0 times"), id="none-added"),
-    ],
-)
-def test_a_shorter_timing_read_a_tick_short_raises_no_ratio_over_the_bound(
-    monkeypatch: pytest.MonkeyPatch, tick: float, outcome: contextlib.AbstractContextManager[object]
-) -> None:
-    # The shorter reading takes almost eight ticks and every timing of it reads seven, while the longer one takes 240:
-    # 30 times the shorter one's own time, under the bound of 32, but over 32 times the seven ticks read. Counted one
-    # tick longer, the shorter reading is never read short, so only a helper that adds no tick fails it.
-    clock = [0.0]
-    ticks = {"shorter": 7, "longer": 240}
-
-    def read(value: str) -> None:
-        clock[0] += ticks[value] * WINDOWS_TICK
-
-    monkeypatch.setattr(time, "process_time", lambda: clock[0])
-    monkeypatch.setitem(globals(), "_clock_tick", lambda: tick)
-    with outcome:
-        assert_time_in_proportion(read, "shorter", "longer", 32)
-
-
-def test_the_collector_is_off_while_a_reading_is_timed_and_on_after_it_ends_stops_or_raises() -> None:
-    collecting: list[bool] = []
-
-    def read(value: str) -> None:
-        collecting.append(gc.isenabled())
-        if value == "raise":
-            raise ValueError(value)
-
-    _seconds(read, "read", 2)
-    assert gc.isenabled()
-    # A limit every reading passes stops the timing after its first.
-    _seconds(read, "stop", 3, limit=-1.0)
-    assert gc.isenabled()
-    with pytest.raises(ValueError, match="raise"):
-        _seconds(read, "raise", 1)
-    assert gc.isenabled()
-    assert collecting == [False, False, False, False]
-
-
-def test_a_collector_off_before_a_timing_stays_off_after_it() -> None:
-    gc.disable()
-    try:
-        _seconds(lambda value: None, "read", 1)
-        assert not gc.isenabled()
-    finally:
-        gc.enable()
 
 
 def _walked(lines: list[str]) -> object:
