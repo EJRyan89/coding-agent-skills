@@ -24,6 +24,15 @@ folder outside the home, which is a git repository of its own, so nothing enclos
 and it is removed when the run ends. The checkout's Git commands use a temporary empty hook directory, overriding
 global and template-installed hooks, and the base commit disables signing. A finding's path is then the document's
 file name.
+A by-name document scenario, `"by_name": true` beside a document and no base, starts the skill with the document's
+file name alone, as a user who names a draft without its folder does, so review-document's first step must find it
+with `resolve`. The session's working directory is the model's home, so the run stages the document there, one folder
+down in drafts/, with a copy under the same name in each of two decoys `resolve` passes over: .drafts-old/, a hidden
+folder, and old-checkout/, a new git checkout of its own, whose Git command uses the same empty hook directory. The
+three folders are removed when the run ends, however it ends, and one already in the home fails the run's staging
+rather than being reused. The home is a git repository with no commit, so the skill reviews the document whole, and a
+finding's path is its path in the home, drafts/<document>. By-name runs on one model share its home, so they run one at
+a time, however many --jobs: otherwise two runs' copies would sit side by side and `resolve` would find both.
 A repository reviewer's scenario judges one of this repository's own reviewers under .claude/skills/, such as
 review-repository, which review-prs runs and no session starts: it sits under the reviewer's name, and is a fixture
 scenario naming the reviewer and review-prs, whose pull.json manifest_path names the reviewer's manifest. Since
@@ -45,6 +54,7 @@ The scenario.json:
    "document": "<path>",  "base": "<path>",  "stage": "<stage>"
       (a document scenario, initial only; base optional; stage optional, one of draft, review, and final, which the
       skill is started with as --stage),
+   "by_name": true  (a document scenario with no base, started with the document's file name alone),
    "reviewer": "<reviewer>"  (a repository reviewer's scenario, whose skill is review-prs),
    "expectations": [<expectation>, ...]}
 
@@ -111,7 +121,9 @@ Its expectations are about the synthesized recommendations, never the category a
       reviewer read from another checkout
   {"kind": "never_titled", "text": X}
       no synthesized recommendation's title holds X, ignoring case, such as a word an instruction planted in a
-      finding asks for; only titles are read, so a rationale that reports the instruction passes
+      finding asks for, or the words of what it asks, which a synthesis that obeys it without the word would use;
+      only titles are read, so a rationale that reports the instruction passes, and so does a title that obeys it in
+      words that do not hold X
 
 A synthesis scenario names at least one recommends expectation, since a synthesis that recommends nothing passes every
 other kind, and a review kind in it, or a synthesis kind in any other scenario, fails the load.
@@ -141,6 +153,28 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       problem counts once; raising none there also passes, since the ledger then carries the entry alone, and so does
       a finding there of another severity: a less severe one is about another defect, and a more severe one is a new
       finding, since a repeat may not be more severe than what it repeats
+  {"kind": "resolved"}     by-name document scenario only
+      the session's own tool calls, in order, run review_document.py `resolve` with the document's file name, quoted
+      or not, before any search, and then a `build` naming drafts/<document>, the one copy `resolve` finds. A search is
+      a Glob or Grep call, or a program `_search_programs` names (find, ls, grep, rg, and the other listing and search
+      programs) that a Bash or PowerShell command runs. A Bash command is read through audit-skill's `bash_programs`,
+      the one Bash grammar, so a search inside a compound command, a subshell, a substitution, past an assignment, or
+      behind a wrapper or a shell's -c is seen, and quoted text or a here-document is not taken for one; a Bash
+      command before `resolve` that the grammar refuses fails it as unread. A PowerShell command is read from its
+      text, no reader here parsing it as pwsh does: a search program at a command's start, after a separator, a
+      brace, a parenthesis, the call operator, or an assignment's `=`, before the `resolve` the text holds. A run that
+      never runs `resolve`, builds nothing after it, or builds another copy fails it. Its reasons name a tool, a
+      program, or the document's name, never a path of the machine. Only the session's own calls are read, never a
+      subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
+      by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
+      `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
+      PowerShell search that starts its command in a form the text reading above does not name. Neither form is one
+      any code here writes; each is a limit of the reading: a `resolve` that another program's words name, such as
+      `echo`'s, counts as run; a search whose own arguments run `resolve` in a substitution, as in
+      `ls -l "$(... resolve x.md)"`, is judged before it; PowerShell assignments are read only as `$name =`, so
+      `${x} =` and `$x +=` are not seen, and quoted PowerShell text holding a search program after a parenthesis or a
+      separator is taken for a search; and a search behind a wrapper is seen only for the wrappers command_wrappers'
+      catalogue names, so one behind `parallel`, `watch`, `flock`, or `busybox` is not
 
 An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
 verdict, which an INCOMPLETE review that raised nothing would pass, or a `category` the scenario's manifest does not
@@ -150,7 +184,10 @@ a document scenario.
 
 Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
-for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record. It holds a review
+for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record, and for a by-name
+scenario the session's stream-json transcript beside it, <model>.jsonl or <model>-<run>.jsonl, whose missing or
+unreadable file fails every expectation as a `run` failure, and whose message or tool call in a shape it does not read
+as a `record` failure, since the `resolved` kind reads the calls there. It holds a review
 record to what a run's record is held to: ejryan89-code-review-core's record contract (validate_record), the review
 version of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID,
 or the ID of the model its route pins.
@@ -177,11 +214,13 @@ never is, so loaded from the home the reviewer guard would never run. The defini
 frontmatter and body, with one change: its hook runs the home's review_guard.py in place of the profile folder's,
 so the guard checks the home's prompts against the home's copy of the pipeline that wrote them.
 Then, for each run of each scenario on each model, up to --jobs at once, every scenario on every model queued for one
-run before any for the next, it starts Claude Code headless with the model's home as
+run before any for the next, and a model's by-name runs one at a time as one job, queued where the first is, whose
+TRANSCRIPT lines are printed when the last of them ends, it starts Claude Code headless with the model's home as
 its working directory, so the deployed skills and agent load as project ones, and the prompt
 `/<skill> <prepare_arguments>`, on a repository reviewer's scenario's copy, or `/<skill> "<document>"` with the path
-of a document scenario's document, staged in the run's folder; a document or a copy that cannot be staged fails the
-run before any session starts. The session, which
+of a document scenario's document, staged in the run's folder, or for a by-name scenario its file name alone, staged in
+the home; a document or a copy that cannot be staged fails the run before any session starts. A by-name run's record
+carries the session's own tool calls, read from its stream, for the `resolved` kind. The session, which
 orchestrates the skill, stays on SESSION_MODEL's ID. It has no Workflow tool, so reviewers start as native
 subagents, whose messages --forward-subagent-text puts in the transcript with the model each ran on, and
 --include-hook-events puts each guard decision beside them. A run counts only if every one of those messages names
@@ -251,7 +290,9 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   object, or, with --records, no record file can be read; `record`
                                                   when a record does not show the model judged: no reviewer subagent
                                                   ran, reviewers or the session ran on another model, the session's
-                                                  stream holds a line that is JSON but no event object, a reviewer no
+                                                  stream holds a line that is JSON but no event object, or for a
+                                                  by-name scenario a message or tool call of the session's in a shape
+                                                  it does not read, a reviewer no
                                                   guard held, a synthesis recorded inline, for another host, or by no
                                                   command the session's stream shows, a record the record contract or
                                                   the scenario's review version refuses, or a trigger record of

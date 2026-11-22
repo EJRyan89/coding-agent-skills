@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -18,21 +19,31 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from review_records import validate_record
 
+from tools import claude_stream
 from tools.skill_evals_records import (
     JUDGMENT,
     MODELS,
     RECORD,
     RUN,
+    SESSION_CALLS,
     Index,
     Record,
     RecordError,
     insights_report,
     names_model,
     record_name,
+    transcript_name,
     unguarded,
     unreported_model,
 )
-from tools.skill_evals_runs import RECORD_VERSION, RecordSource, indexes, run_token, synthesis_scope
+from tools.skill_evals_runs import (
+    RECORD_VERSION,
+    RecordSource,
+    indexes,
+    run_token,
+    session_tool_calls,
+    synthesis_scope,
+)
 from tools.skill_evals_scenarios import SYNTHESIS, TRIGGER, Scenario, quote
 
 
@@ -113,9 +124,29 @@ def records_in(directory: Path) -> RecordSource:
         )
         if reason:
             raise RecordError(f"{path} counts for nothing: {reason}", RECORD)
+        if scenario.by_name:
+            return {
+                **record,
+                SESSION_CALLS: transcript_calls(directory / scenario.name / transcript_name(model, index)),
+            }
         return record
 
     return source
+
+
+def transcript_calls(path: Path) -> list[dict[str, Any]]:
+    """The session's own tool calls in a by-name run's transcript under --records. Raise RecordError, a RUN failure,
+    when it cannot be read, and a RECORD failure when its stream holds what the reader does not read."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise RecordError(f"no transcript at {path}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RecordError(f"cannot read {path}: {exc}") from exc
+    try:
+        return session_tool_calls(text)
+    except claude_stream.StreamError as exc:
+        raise RecordError(f"{path} counts for nothing: {exc}", RECORD) from exc
 
 
 def counts(outcomes: Sequence[Outcome]) -> str:

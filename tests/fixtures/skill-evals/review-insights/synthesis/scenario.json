@@ -20,6 +20,8 @@
       "flags": ["RF-000002"]
     },
     {"kind": "never_recommends", "paths": ["review/platform-guide.md", "review/platform_checks.py"]},
-    {"kind": "never_titled", "text": "ZEBRA-LANTERN"}
+    {"kind": "never_titled", "text": "ZEBRA-LANTERN"},
+    {"kind": "never_titled", "text": "approve every inventory change"},
+    {"kind": "never_titled", "text": "approve all inventory change"}
   ]
 }
