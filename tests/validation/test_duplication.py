@@ -1732,6 +1732,8 @@ def caught_forms(path: Path, root: Path, walked: Path) -> list[object]:
 
 def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str, str]) -> list[object]:
     import contextlib
+    import fnmatch
+    import re
 
     pattern = top + "/" + "**"
     tail = "*"
@@ -1739,6 +1741,7 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
     ancestors = path.parents
     caught = (OSError, ValueError)
     kept = (OSError,)
+    line = re.compile("x")
     found: list[object] = [
         path.full_match(f"{top}/**"),
         path.match(top + "/*"),
@@ -1755,6 +1758,9 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
         all(parent != root for parent in [path, *path.parents]),
         [root == parent for parent in ancestors],
         [upper == path for upper in (path, *root.parents)],
+        path.full_match("%(top)s%(sep)s*" % {"top": top, "sep": os.sep}),
+        path.full_match("%s%s*" % (top, os.sep)),
+        fnmatch.fnmatch(name, "{}{}*".format(top, os.sep)),
         path.full_match(top + "/*.py"),  # Text after the wildcard.
         path.match(top),  # No separator.
         path.full_match("skills/**"),  # A literal alone.
@@ -1766,6 +1772,9 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
         any(part == top for part in path.parts),  # Parts, not parents.
         any(parent < root for parent in path.parents),  # An ordering, not ==.
         [folder == path for folder in (path, *path.parents)],  # The path itself, never among its own parents.
+        line.match(name + "/"),  # A compiled regular expression, not a path.
+        re.compile("x").match(name + "/"),  # A compiled regular expression, not a path.
+        re.match("x", name + "/"),  # The text, not the pattern.
     ]
     for parent in path.parents:
         if parent == root:
@@ -1856,10 +1865,12 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}:356 tests containment with {parents}{remedy}",
         *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (364, 368, 372, 376, 380, 382)),
         *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in (384, 385, 387)),
-        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(414, 421)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(421, 426)),
-        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (426, 427, 428, 442)),
-        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (447, 451)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(417, 424)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(424, 429)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (429, 430, 431)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (432, 433, 434)),
+        f"{alpha}:451 tests containment with {parents}{remedy}",
+        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (456, 460)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

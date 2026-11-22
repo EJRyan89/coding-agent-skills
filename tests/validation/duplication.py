@@ -1554,14 +1554,15 @@ class _ContainmentReader:
     def _interpolated(self, value: ast.BinOp) -> bool:
         """Whether a `%` template, static as _static_text reads it, ends in a separator, or in a last field that takes
         a text ending in one: `%s` filled by the one value or a tuple's last item, or a named `%(key)s` filled from a
-        mapping."""
+        mapping. A glob's trailing wildcards are passed over first, so the field before them is the last."""
         template = _static_text(value.left, self.resolver)
         if template is None:
             return False
-        named = NAMED_LAST_FIELD.search(template)
+        stripped = template.rstrip(self.trailing)
+        named = NAMED_LAST_FIELD.search(stripped)
         return (
-            template.rstrip(self.trailing).endswith(SEPARATORS)
-            or (template.endswith("%s") and self.ends(_last_item(value.right)))
+            stripped.endswith(SEPARATORS)
+            or (stripped.endswith("%s") and self.ends(_last_item(value.right)))
             or (named is not None and self._mapped(value.right, named["key"]))
         )
 
@@ -1601,9 +1602,9 @@ class _ContainmentReader:
         text = _static_text(template, self.resolver) if template is not None else None
         if text is None:
             return False
-        return text.rstrip(self.trailing).endswith(SEPARATORS) or self.ends(
-            _last_field(text, positional, call.keywords)
-        )
+        # A glob's trailing wildcards are passed over first, so the field before them is the last.
+        stripped = text.rstrip(self.trailing)
+        return stripped.endswith(SEPARATORS) or self.ends(_last_field(stripped, positional, call.keywords))
 
     def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
         """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
@@ -1623,11 +1624,21 @@ class _ContainmentReader:
 
     def _path_glob(self, call: ast.Call) -> bool:
         """Whether `call` is a path's `match` or `full_match`, bound or called on the class, given a pattern holding a
-        text built to end in a separator, followed by any `*`."""
+        text built to end in a separator, followed by any `*`. A `match` of the `re` module, or of a regular expression
+        the module compiles, matches a text against a pattern, never a path."""
         if not (isinstance(call.func, ast.Attribute) and call.func.attr in PATH_MATCHES):
+            return False
+        if self.name(call.func.value) == "re" or self._compiled(call.func.value):
             return False
         keywords = [keyword.value for keyword in call.keywords if keyword.arg in PATH_PATTERN_KEYWORDS]
         return self._holds_folder([*call.args, *keywords], "*")
+
+    def _compiled(self, receiver: ast.expr) -> bool:
+        """Whether `receiver` is a regular expression the module compiles: a `re.compile` call, or one held in a name,
+        an attribute, or what a function of the module returns."""
+        if isinstance(receiver, ast.Call) and self.name(receiver.func) == "re.compile":
+            return True
+        return self._follow(receiver, self._compiled, _never)
 
     def _holds_folder(self, patterns: list[ast.expr], trailing: str) -> bool:
         """Whether any of `patterns` holds a text built to end in a separator, followed by any of `trailing`."""
