@@ -69,6 +69,7 @@ from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from hub_state import GUARD_SETTING
 from job_tree import process_tree
 from option_reader import Word
+from path_containment import may_lie_in, within
 from path_keys import name_key
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from text_lines import text_lines
@@ -2131,11 +2132,6 @@ def index_reached(place: Place) -> tuple[Path | None, bool]:
         return None, True  # an index git cannot place may be a guarded hub's
 
 
-def within(path: Path, folder: Path) -> bool:
-    """Whether path is folder or lies anywhere beneath it, each compared as platform_support compares a path."""
-    return any(same_path(each, folder) for each in (path, *path.parents))
-
-
 @dataclass(frozen=True)
 class OwnPaths:
     """Where git keeps the repository of a call when no variable names another place, as `git rev-parse` answers it:
@@ -2617,8 +2613,9 @@ class Judge:
                     "cannot place, which the command may write, so it is refused while a hub is guarded. "
                     f"{UNREAD_CONFIGURATION_IT}"
                 )
-            # A folder a write names holds what a copy into it, a move, or a removal reaches.
-            if any(within(include, Path(os.path.realpath(path))) for path in written):
+            # A folder a write names holds what a copy into it, a move, or a removal reaches. Inside refuses here, so
+            # every spelling some file system may read as the folder's counts, the include's folder not yet made too.
+            if any(may_lie_in(include, Path(os.path.realpath(path))) for path in written):
                 return (
                     f"The command writes {include}, a file the git configuration {call_named(call)} reads in "
                     f"{lookup.directory} includes, and a setting written there, such as a cookie jar in a hub, reaches "
@@ -2861,7 +2858,8 @@ class Judge:
             )
         written = Path(os.path.realpath(path))
         files = [file for file in self.configuration if file is not None]
-        if not any(same_path(written, file) for file in files) and any(within(file, written) for file in files):
+        # Inside refuses here, so every spelling some file system may read as the written folder's counts.
+        if not any(same_path(written, file) for file in files) and any(may_lie_in(file, written) for file in files):
             return (
                 f"{writer} {path}, which holds a file git reads its system or global configuration from, and a "
                 "setting written there, such as a trace2 target in a hub, reaches every git the rest of the command "
