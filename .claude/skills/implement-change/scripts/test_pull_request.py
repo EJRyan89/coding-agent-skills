@@ -195,6 +195,19 @@ class BodyCheckTests(unittest.TestCase):
         body = FILLED.replace("\n", "\r").replace("None\r", f"{comment}\rNone\r")
         self.assertEqual(["PLACEHOLDER 12 a template comment"], pull_request.body_problems(body, TEMPLATE))
 
+    def test_each_template_comment_is_numbered_alike_at_lf_crlf_and_a_lone_cr(self) -> None:
+        # Pinned before the check took its line starts from text_lines.line_starts, and unchanged by it.
+        comment = "<!-- One entry per change.\n\n### What changed\n\n- Level: patch\n-->"
+        body = FILLED.replace("None\n", f"{comment}\nNone\n").replace(
+            "Fixes the quoting of a title.", "<!-- The problem, in a paragraph. -->"
+        )
+        for line_break in ("\n", "\r\n", "\r"):
+            with self.subTest(line_break=line_break):
+                self.assertEqual(
+                    ["PLACEHOLDER 4 a template comment", "PLACEHOLDER 12 a template comment"],
+                    pull_request.body_problems(body.replace("\n", line_break), TEMPLATE.replace("\n", line_break)),
+                )
+
     def test_a_body_of_template_comments_eight_times_as_long_is_checked_in_about_eight_times_the_time(self) -> None:
         # A linear check takes about eight times as long. Numbering each comment's line from the body's start is
         # quadratic, and beside the check's linear work took about 38 times as long; the bound, about 23, sits between.
