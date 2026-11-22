@@ -32,8 +32,11 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   `resolve` passes over, and stopped to ask, still fails `resolved` as a `judgment`, and its other expectations as a
   `run`, when its session ran as a counted run's must: Claude Code started, did not time out, and exited 0, the
   stream's last result event says the session ended with no error, the skill was listed when skills were, nothing
-  was denied, the session ran on its own model alone, and its `resolve` returned no error, which would leave the
-  session no choice of its own. Otherwise `resolved` fails as a `run` with the rest. A model's by-name runs share
+  was denied, and the session ran on its own model alone. Otherwise `resolved` fails as a `run` with the rest. When
+  the session's last `resolve` of the document's name returned an error, what it did after was no choice of its own:
+  only the calls through that one are judged, all that call wrote included, since its result does not say which
+  part failed. A search before `resolve` is still a `judgment`, and when all they show is that the session built
+  nothing after `resolve`, `resolved` fails as a `run`. A model's by-name runs share
   its home, so they run one at a time, and `--records` reads each by-name run's transcript beside its record, or in
   place of a record the run never wrote. There it checks what the transcript shows: the last result event, the
   listing, the denials, the session's model, and `resolve`'s result. It cannot see the exit code or whether Claude
@@ -149,7 +152,8 @@ but whose `resolved` was judged on the session's calls is the exception: that on
 the scenario's counts, so a session that searched and stopped reads as `by-name 0/1`, and a model none of whose
 reviewers ran but that has such a judgment gets a row whose Model ID is `none`. Such a run counts among the
 scenario's runs only when its `resolved` failed, as a run that failed, so a run that measured nothing of the
-reviewers never counts as one that passed every expectation. The judgment is the session's, which runs on the
+reviewers never counts as one that passed every expectation; several runs none of which counts read `(0/0 runs)`.
+The judgment is the session's, which runs on the
 strongest model in every row, as the by-name scenario above says. A run measures nothing of a model no record of
 which counted, every expectation on it failing as a `run` or `record`, such as a session that was signed out or a
 reviewer no guard held, so `--write` keeps that model's committed row as it was and prints `KEPT <model>` for it,

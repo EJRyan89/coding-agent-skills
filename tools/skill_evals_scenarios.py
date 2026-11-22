@@ -493,10 +493,40 @@ def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
     return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)
 
 
-def resolve_failed(calls: Sequence[Mapping[str, Any]], name: str) -> bool:
-    """Whether a call of the session's that ran review_document.py `resolve` with the document's name ended in an
-    error, as its tool result reports, so where the session looked after it was no choice of the session's own."""
-    return any(call.get(FAILED_CALL) is True and any(step.resolves for step in _steps(call, name)) for call in calls)
+# The `resolved` verdict on a session that ran `resolve` and then built nothing.
+BUILT_NOTHING = "the session built nothing after it ran resolve"
+
+
+def _resolved_verdict(calls: Sequence[Mapping[str, Any]], name: str) -> str | None:
+    """Why the session's calls fail the `resolved` kind, or None when they pass it."""
+    resolved = False
+    for step in (step for call in calls for step in _steps(call, name)):
+        if not resolved and step.unread:
+            return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
+        if not resolved and step.search is not None:
+            return f"the session searched with {step.search} before it ran resolve"
+        resolved = resolved or step.resolves
+        if resolved and step.built is not None:
+            if step.built:
+                return None
+            return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
+    if resolved:
+        return BUILT_NOTHING
+    return f"the session never ran review_document.py resolve {quote(name)}"
+
+
+def judged_calls(calls: Sequence[Mapping[str, Any]], name: str) -> list[Mapping[str, Any]] | None:
+    """The session's calls the `resolved` kind judges in a run that recorded no review. When the session's last call
+    that ran `resolve` with the document's name ended in an error, as its tool result reports, what the session did
+    after it was no choice of its own, so only the calls through that one are judged, and None is given when all they
+    show is BUILT_NOTHING: a search or an unread command before `resolve` stays the session's, and so does all that the
+    failed call itself wrote, a build chained after `resolve` included, since the session chose every part of it before
+    any part ran and its result does not say which part failed. Otherwise every call is judged."""
+    ran = [index for index, call in enumerate(calls) if any(step.resolves for step in _steps(call, name))]
+    if not ran or calls[ran[-1]].get(FAILED_CALL) is not True:
+        return list(calls)
+    through = list(calls[: ran[-1] + 1])
+    return None if _resolved_verdict(through, name) == BUILT_NOTHING else through
 
 
 def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
@@ -505,20 +535,7 @@ def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
     _fields(spec, {"kind"})
 
     def check(record: Record) -> str | None:
-        resolved = False
-        for step in (step for call in session_calls(record) for step in _steps(call, name)):
-            if not resolved and step.unread:
-                return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
-            if not resolved and step.search is not None:
-                return f"the session searched with {step.search} before it ran resolve"
-            resolved = resolved or step.resolves
-            if resolved and step.built is not None:
-                if step.built:
-                    return None
-                return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
-        if resolved:
-            return "the session built nothing after it ran resolve"
-        return f"the session never ran review_document.py resolve {quote(name)}"
+        return _resolved_verdict(session_calls(record), name)
 
     return Expectation(f"resolved {quote(name)}", check, from_transcript=True)
 

@@ -6831,6 +6831,8 @@ def tool_result(number: int, *, error: bool) -> str:
         (f"{assistant('claude-opus-5-5', calls=[RESOLVE])}\n{tool_result(2, error=False)}\n{ENDED}", True),
         (f"{FAILED_END}\n{assistant('claude-opus-5-5')}\n{ENDED}", True),
         ("", False),
+        # A stream that ended with no error but holds no message of the session's shows no choice of its own.
+        (ENDED, False),
         (assistant("claude-opus-5-5", calls=[RESOLVE]), False),
         (f"{assistant('claude-opus-5-5')}\n{FAILED_END}", False),
         (f"{assistant('claude-opus-5-5')}\n{ENDED}\n{FAILED_END}", False),
@@ -6849,6 +6851,7 @@ def tool_result(number: int, *, error: bool) -> str:
         "resolve-succeeded",
         "error-then-success",
         "empty",
+        "ended-alone",
         "no-result",
         "ended-with-error",
         "error-last",
@@ -6880,11 +6883,76 @@ def test_a_failed_call_is_marked_only_by_its_own_tool_result_of_the_session_s() 
     assert skill_evals_runs.session_tool_calls("\n".join(lines)) == [RESOLVE, BUILD]
     failed = skill_evals_runs.session_tool_calls(f"{session}\n{tool_result(3, error=True)}")
     assert failed == [RESOLVE, {**BUILD, skill_evals_records.FAILED_CALL: True}]
-    # Only a failed resolve of the document's own name makes the session's next steps no choice of its own.
-    assert skill_evals_scenarios.resolve_failed(failed, "draft.md") is False
-    assert skill_evals_scenarios.resolve_failed([{**RESOLVE, "failed": True}], "draft.md") is True
-    assert skill_evals_scenarios.resolve_failed([{**RESOLVE, "failed": True}], "other.md") is False
-    assert skill_evals_scenarios.resolve_failed([{**search, "failed": True}, RESOLVE], "draft.md") is False
+    # A failed build after a resolve that succeeded discharges nothing.
+    assert skill_evals_scenarios.judged_calls(failed, "draft.md") == failed
+    assert skill_evals_scenarios.judged_calls([{**search, "failed": True}, RESOLVE], "draft.md") is not None
+
+
+def errored(call: dict[str, Any]) -> dict[str, Any]:
+    """The call with its tool result reporting an error."""
+    return {**call, skill_evals_records.FAILED_CALL: True}
+
+
+SEARCH = shell("find . -name draft.md")
+DECOY_BUILD = shell(f'python3 "{DOCUMENT_SCRIPT}" build ".drafts-old/draft.md"')
+SEARCHED = "the session searched with find before it ran resolve"
+DECOY = "the session built a file other than drafts/draft.md, the one copy resolve finds"
+# One call that runs resolve and then a build, of a decoy or of the staged copy.
+RESOLVE_THEN = f'python3 "{DOCUMENT_SCRIPT}" resolve "draft.md" && python3 "{DOCUMENT_SCRIPT}" build'
+CHAINED_DECOY = shell(f'{RESOLVE_THEN} ".drafts-old/draft.md"')
+CHAINED_STAGED = shell(f"{RESOLVE_THEN} drafts/draft.md")
+
+
+@pytest.mark.parametrize(
+    ("calls", "verdict"),
+    [
+        # A search before a resolve that then failed stays the session's own.
+        ([SEARCH, errored(RESOLVE)], SEARCHED),
+        ([errored(shell(f'find . -name draft.md; python3 -B "{DOCUMENT_SCRIPT}" resolve "draft.md"'))], SEARCHED),
+        # A resolve that failed and was retried with success discharges nothing.
+        ([errored(RESOLVE), RESOLVE, SEARCH, DECOY_BUILD], DECOY),
+        # A failed call is judged on all it wrote: which of its parts failed is unknown, and the session chose them all.
+        (
+            [errored(CHAINED_DECOY)],
+            DECOY,
+        ),
+        (
+            [errored(CHAINED_STAGED)],
+            None,
+        ),
+        # A last resolve that failed, with nothing of the session's own before it, judges nothing, whatever follows.
+        ([errored(RESOLVE)], "discharged"),
+        ([errored(RESOLVE), SEARCH, DECOY_BUILD], "discharged"),
+        ([shell("cat notes.md"), errored(RESOLVE), BUILD], "discharged"),
+        # A failed resolve of another name is no resolve of this document's.
+        (
+            [errored(shell(f'python3 "{DOCUMENT_SCRIPT}" resolve "other.md"')), BUILD],
+            'the session never ran review_document.py resolve "draft.md"',
+        ),
+        ([RESOLVE, errored(BUILD)], None),
+    ],
+    ids=[
+        "search-then-failed-resolve",
+        "search-and-failed-resolve-in-one-call",
+        "retried",
+        "chained-decoy-build",
+        "chained-staged-build",
+        "failed-alone",
+        "failed-then-search",
+        "read-then-failed",
+        "other-name",
+        "failed-build",
+    ],
+)
+def test_a_last_resolve_that_failed_discharges_only_what_came_after_it(
+    calls: list[dict[str, Any]], verdict: str | None
+) -> None:
+    judged = skill_evals_scenarios.judged_calls(calls, "draft.md")
+    if verdict == "discharged":
+        assert judged is None
+        return
+    assert judged is not None
+    assert resolved(*(dict(call) for call in judged)) == verdict
 
 
 def test_records_judge_nothing_on_a_transcript_that_cannot_be_read_or_is_unread(tmp_path: Path) -> None:
@@ -7010,3 +7078,13 @@ def test_a_run_judged_only_on_the_session_s_calls_counts_among_the_runs_only_whe
         "demo", [scenario], ["haiku", "sonnet"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
     )
     assert [row.split(" | ")[7] for row in rows] == ["named 5/5 (2/2 runs)", "named 4/5 (2/3 runs)"]
+    # Several runs none of which started a reviewer, each passing resolve on the transcript alone, still say so.
+    unreviewed: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("named", "haiku", index): run(None, absent, frozenset(), session, absent, "run", [RESOLVE, BUILD])
+        for index in (1, 2, 3)
+    }
+    outcomes = skill_evals_judging.judge([scenario], ["haiku"], skill_evals_runs.runs_source(unreviewed), 3)
+    (row,) = skill_evals_results.result_rows(
+        "demo", [scenario], ["haiku"], outcomes, unreviewed, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row.split(" | ")[7] == "named 3/3 (0/0 runs)"

@@ -168,9 +168,12 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       recorded no review is still judged on them, as a `judgment`, while its other expectations fail as a `run`,
       when the session ran as a counted run's must: Claude Code started, did not time out, and exited 0, the stream's
       last result event says the session ended with no error, Claude Code listed the skill if it listed any and
-      denied nothing, every message of the session's names SESSION_MODEL's ID, and no `resolve` of the document's
-      name returned an error, which would leave the session no choice of its own; otherwise it fails as a `run` with
-      the rest. Only the session's own calls are read, never a
+      denied nothing, and every message of the session's names SESSION_MODEL's ID; otherwise it fails as a `run`
+      with the rest. When the session's last `resolve` of the document's name returned an error, what it did after
+      was no choice of its own, so only the calls through that one are judged, all that call wrote included, since
+      its result does not say which part failed and the session chose every part; a search or an unread command
+      before `resolve` is still a `judgment`, and when all they show is that the session built nothing after
+      `resolve`, `resolved` fails as a `run` with the rest. Only the session's own calls are read, never a
       subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
       by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
       `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
@@ -196,10 +199,10 @@ unreadable file fails every expectation as a `run` failure, and whose message or
 as a `record` failure, since the `resolved` kind reads the calls there. A by-name scenario's missing or unreadable
 record still has its `resolved` judged on that transcript, when the transcript shows what a run's stream must: a last
 result event saying the session ended with no error, which a session ended at its time limit never writes, the skill
-listed if any were, nothing denied, the session on SESSION_MODEL alone, and no `resolve` that returned an error. It
-cannot see the exit code or whether Claude Code started, which a run reads from the process. A missing transcript, an
-unread one, or one that shows otherwise leaves `resolved` a `run` failure with the rest, and one that is there but
-cannot be read adds why to the record's reason.
+listed if any were, nothing denied, and the session on SESSION_MODEL alone, with a last `resolve` that returned an
+error read as above. It cannot see the exit code or whether Claude Code started, which a run reads from the process.
+A missing transcript, an unread one, or one that shows otherwise leaves `resolved` a `run` failure with the rest, and
+one that is there but cannot be read adds why to the record's reason.
 It holds a review record to what a run's record is held to: ejryan89-code-review-core's record contract
 (validate_record), the review version of the scenario's mode, a guard that held every reviewer, and every
 reviewer's `model` naming that model's ID, or the ID of the model its route pins.
@@ -364,7 +367,8 @@ is left out of both counts, as a scenario none of whose runs held a judgment is 
 `resolved` judged on the session's calls alone, which counts as that run's one expectation, and makes a model none of
 whose reviewers ran a row whose Model ID is `none`. Such a run counts among the scenario's runs only when that
 `resolved` failed, as a run that failed, so a run that measured nothing of the reviewers never counts as one that
-passed.
+passed. Several runs none of which counts read `(0/0 runs)`, so the cell still says the scenario ran several
+times.
 
 Exit status:
   0  no FAIL, FAILED, or DEPLOY_FAILED line

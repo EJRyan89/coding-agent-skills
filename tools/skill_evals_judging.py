@@ -175,14 +175,15 @@ def counts(outcomes: Sequence[Outcome]) -> str:
     """The expectations passed of those checked, and over several runs, the runs that passed every expectation of
     theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs. A run whose only
     outcomes are passes judged on the session's calls alone is no run judged, since it measured nothing of the
-    reviewers; one whose such judgment failed is a run that failed."""
+    reviewers; one whose such judgment failed is a run that failed. Several runs none of which is judged read
+    `(0/0 runs)`, so the cell still says the scenario ran several times."""
     passed = f"{sum(1 for outcome in outcomes if outcome.failure is None)}/{len(outcomes)}"
     numbered = {
         outcome.run
         for outcome in outcomes
         if outcome.run is not None and not (outcome.from_transcript and outcome.failure is None)
     }
-    if not numbered:
+    if all(outcome.run is None for outcome in outcomes):
         return passed
     failed = {outcome.run for outcome in outcomes if outcome.failure is not None}
     return f"{passed} ({len(numbered - failed)}/{len(numbered)} runs)"

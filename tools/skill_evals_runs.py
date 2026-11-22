@@ -67,8 +67,8 @@ from tools.skill_evals_scenarios import (
     Scenario,
     document_arguments,
     document_place,
+    judged_calls,
     quote,
-    resolve_failed,
     reviewed_fixture,
     skill_arguments,
 )
@@ -699,7 +699,7 @@ def unrecorded_calls(output: str, scenario: Scenario) -> list[dict[str, Any]] | 
     """The session's own tool calls in the stream of a by-name run that recorded no review, which the `resolved` kind
     still judges, when the stream shows the session's own choices on its model: session_problems finds nothing, the
     last result event says the session ended with no error, every message of the session's names SESSION_MODEL's ID,
-    as a run that counts must, and no call of the session's that ran `resolve` with the document's name ended in an
+    as a run that counts must; and of those calls, the ones judged_calls keeps after a last `resolve` that ended in an
     error. None otherwise. A stream in a shape this does not read raises StreamError."""
     session, _ = stream_models(output)
     if (
@@ -709,9 +709,9 @@ def unrecorded_calls(output: str, scenario: Scenario) -> list[dict[str, Any]] | 
         or not all(names_model(name, MODELS[SESSION_MODEL]) for name in session)
     ):
         return None
-    calls = session_tool_calls(output)
     name = scenario.document.name if scenario.document is not None else ""
-    return None if resolve_failed(calls, name) else calls
+    judged = judged_calls(session_tool_calls(output), name)
+    return None if judged is None else [dict(call) for call in judged]
 
 
 @dataclass(frozen=True)
