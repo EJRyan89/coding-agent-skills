@@ -172,33 +172,6 @@ class Reading:
         span = bisect_right(self.hidden, (position, len(self.text) + 1)) - 1
         return span >= 0 and self.hidden[span][0] <= position < self.hidden[span][1]
 
-    def visible_lines(self) -> tuple[list[str], list[int]]:
-        """The body's lines once its hidden comments go, as GitHub reads them after it hides them, and for each of
-        the body's own lines, the index of the visible line its first visible character falls on, or of the visible
-        line a hidden comment that holds all of it ends on."""
-        kept: list[tuple[int, int]] = []
-        position = 0
-        for first, past in self.hidden:
-            kept.append((position, first))
-            position = past
-        kept.append((position, len(self.text)))
-        text = "".join(self.text[first:past] for first, past in kept)
-        lines = LINE_BREAK.split(text)
-        visible_starts = line_starts(text)
-        # Where each kept stretch of the body starts in the visible text.
-        offsets: list[int] = []
-        total = 0
-        for first, past in kept:
-            offsets.append(total)
-            total += past - first
-        owners: list[int] = []
-        for start in self.starts:
-            stretch = max(bisect_right(kept, (start, len(self.text) + 1)) - 1, 0)
-            first, past = kept[stretch]
-            visible = offsets[stretch] + min(max(start - first, 0), past - first)
-            owners.append(line_index(visible_starts, visible))
-        return lines, owners
-
     def visible(self, start: int, stop: int) -> str:
         """The body from index `start` to `stop` without the hidden comments in it."""
         kept: list[str] = []
