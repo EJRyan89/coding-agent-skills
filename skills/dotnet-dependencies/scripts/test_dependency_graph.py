@@ -3464,14 +3464,14 @@ class ProjectSearchTests(Fixture):
             )
         # A path that names no existing project below the root, or one outside it, is still no project of the root.
         self.write("outside/Out.csproj", LIB_PROJECT)
-        for project in (
+        for unlisted in (
             search / ".tools/Tool/Missing.csproj",
             search / ".tools/Tool",
             self.root / "outside/Out.csproj",
         ):
-            with self.subTest(project=project):
-                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(project))
-                self.assertEqual((1, f"FAILED {project} is not a project of {search}"), (code, rows[-1][0]))
+            with self.subTest(project=unlisted):
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(unlisted))
+                self.assertEqual((1, f"FAILED {unlisted} is not a project of {search}"), (code, rows[-1][0]))
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / "App/App.csproj"))
         self.assertEqual(["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"], self.lines(rows, "PATH")[0])
 
