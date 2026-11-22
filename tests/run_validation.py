@@ -80,6 +80,7 @@ import fsops_platform
 import job_selection
 import kinds_table
 import known_failures
+import line_numbering
 import literal_escapes
 import markdown_links
 import pull_request_body
@@ -141,6 +142,7 @@ POLICY_MODULES = (
     job_selection,
     kinds_table,
     known_failures,
+    line_numbering,
     literal_escapes,
     markdown_links,
     pull_request_body,

@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hidden_comments import WALK_WINDOW, hidden_spans, without_hidden_comments
+from hidden_comments import WALK_WINDOW, hidden_spans, read_comments, without_hidden_comments
 from markdown_sections import blocks
 from test_markdown_sections import assert_time_in_proportion
 
@@ -160,6 +160,51 @@ def test_each_hidden_comment_s_span_is_where_its_opener_starts_and_just_past_its
     text: str, spans: list[tuple[int, int]]
 ) -> None:
     assert hidden_spans(text) == spans
+
+
+# Each reading's lines, where each starts, the spans of its hidden comments, and its visible lines with the visible
+# line each of its own lines falls on, at CRLF, a lone CR, and LF, with a comment block whose `-->` lies on a later
+# line and a comment within a line that runs past its break. Pinned before the reading took its line starts from
+# text_lines.line_starts, and unchanged by it.
+READINGS = [
+    pytest.param(
+        "a\r\n<!-- x\ry -->\nb <!-- c\r\nd --> e\rf\n",
+        ["a", "<!-- x", "y -->", "b <!-- c", "d --> e", "f", ""],
+        [0, 3, 10, 16, 26, 34, 36],
+        [(3, 15), (18, 31)],
+        (["a", "", "b  e", "f", ""], [0, 1, 1, 2, 2, 3, 4]),
+        id="a block at a lone CR and a comment within a line past a CRLF",
+    ),
+    pytest.param(
+        "<!--\r\none\r\n-->\r\n\r\ntext <!-- in\rline --> end\r\n",
+        ["<!--", "one", "-->", "", "text <!-- in", "line --> end", ""],
+        [0, 6, 11, 16, 18, 31, 45],
+        [(0, 14), (23, 39)],
+        (["", "", "text  end", ""], [0, 0, 0, 1, 2, 2, 3]),
+        id="a block at CRLFs and a comment within a line past a lone CR",
+    ),
+    pytest.param(
+        "x\r<!-- a -->\r<!-- b\nc -->\n",
+        ["x", "<!-- a -->", "<!-- b", "c -->", ""],
+        [0, 2, 13, 20, 26],
+        [(2, 12), (13, 25)],
+        (["x", "", ""], [0, 1, 1, 1, 2]),
+        id="a block on one line and one past an LF",
+    ),
+]
+
+
+@pytest.mark.parametrize(("text", "lines", "starts", "hidden", "visible"), READINGS)
+def test_a_reading_numbers_its_lines_and_its_visible_lines_at_crlf_cr_and_lf(
+    text: str,
+    lines: list[str],
+    starts: list[int],
+    hidden: list[tuple[int, int]],
+    visible: tuple[list[str], list[int]],
+) -> None:
+    reading = read_comments(text)
+    assert (reading.lines, reading.starts, reading.hidden) == (lines, starts, hidden)
+    assert reading.visible_lines() == visible
 
 
 @pytest.mark.parametrize("text", [text for text, _ in COMMENTS] + [case.values[0] for case in LIMITS])
