@@ -670,6 +670,7 @@ class PythonChecksFixtures(unittest.TestCase):
         raised = copy.deepcopy(CEILINGS)
         raised["mccabe"]["max-complexity"] += 1
         raised["pylint"]["max-args"] = True
+        raised["pylint"]["max-positional-args"] += 1
         del raised["pylint"]["max-statements"]
         self.assertEqual(
             [
@@ -679,6 +680,9 @@ class PythonChecksFixtures(unittest.TestCase):
                 f"{CEILINGS['pylint']['max-statements']} or lower, so split the function instead",
                 f"[tool.ruff.lint.pylint] max-args is True; the ratchet holds it at {CEILINGS['pylint']['max-args']} "
                 "or lower, so split the function instead",
+                f"[tool.ruff.lint.pylint] max-positional-args is {CEILINGS['pylint']['max-positional-args'] + 1}; the "
+                f"ratchet holds it at {CEILINGS['pylint']['max-positional-args']} or lower, so split the function "
+                "instead",
             ],
             ratchet_problems(raised, held),
         )
