@@ -99,18 +99,19 @@ searched, and every read only of a regular file within ejryan89-skill-core's REA
 docstring). Nothing inside the tree is stat, listed, or read through a link that leads outside it, judged from each
 name's own metadata and each link's text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for
 projects follows no link entry out of the tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE
-line naming the link and its target, and any other such entry is reported as a link the search does not follow. A
-solution in the root folder so linked, or named by --root, is a FAILED line; a project the search finds or a solution
-lists, an import, the nearest Directory.Build.props or Directory.Packages.props, a restore's assets, a packages.config,
-a config, the packages folder, a package's folder, its lib folder, or its nuspec, that a link on its way, its own name
-included, leads outside the tree is an UNREADABLE line naming the link and its target; and an Exists() condition below
-such a link is reported and unsettled. A link whose target stays inside the tree is read through. The NuGet cache lies
-outside the tree and is read where it is. Limits: the names of the assemblies below a package's lib folder are listed
-with a glob, which may list through a link below that folder, reading no file's contents; `dotnet nuget why`, which
-`why` asks for a restored SDK-style project, evaluates the project through MSBuild, which reads what the script refused,
-such as an import through a link leading outside the tree; and the look at the links and the read are two steps
-(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
-file itself, is read as a file of the tree wherever its other names lie.
+line naming the link and its target, and any other such entry is reported as a link the search does not follow, so a
+file link the script also reads, such as a linked Directory.Packages.props, is named twice, by the search and by the
+read. A solution in the root folder so linked, or named by --root, is a FAILED line; a project the search finds or a
+solution lists, an import, the nearest Directory.Build.props or Directory.Packages.props, a restore's assets, a
+packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec, that a link on its
+way, its own name included, leads outside the tree is an UNREADABLE line naming the link and its target; and an Exists()
+condition below such a link is reported and unsettled. A link whose target stays inside the tree is read through. The
+NuGet cache lies outside the tree and is read where it is. Limits: the names of the assemblies below a package's lib
+folder are listed with a glob, which may list through a link below that folder, reading no file's contents; `dotnet
+nuget why`, which `why` asks for a restored SDK-style project, evaluates the project through MSBuild, which reads what
+the script refused, such as an import through a link leading outside the tree; and the look at the links and the read
+are two steps (folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link,
+being the file itself, is read as a file of the tree wherever its other names lie.
 The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line FAILED
 <reason> when it cannot finish, such as when the root cannot be resolved, a root solution, found in the root folder or
 named by --root, is a link leading outside the checkout (`<solution> cannot be examined: <reason>`), --project names no
