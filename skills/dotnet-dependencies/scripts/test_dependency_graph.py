@@ -3410,6 +3410,125 @@ class ProjectSearchTests(Fixture):
             rows[-1][0],
         )
 
+    def narrowed_failure(self, search: Path, project: str, *, limit: int | None = None) -> str:
+        """The last line of a query narrowed to `project`, a path below `search`, with the search's bound at `limit`."""
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", limit or 10_000):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / project))
+        self.assertEqual(1, code)
+        return rows[-1][0]
+
+    def test_a_project_named_in_a_folder_the_search_passes_over_fails_naming_that_folder_and_why(self) -> None:
+        # --project narrows a query to a project of the root, so a project the search did not reach is not read; the
+        # FAILED line names the folder on its way down that the search skips, prunes, or does not enter, and why.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("elsewhere/Other/Other.csproj", LIB_PROJECT)
+        self.link(self.root / "elsewhere", "search/Linked")
+        self.write("search/worktrees/task/Copy/Copy.csproj", LIB_PROJECT)
+        self.write("search/worktrees/task/.git", "gitdir: ../../../.git/worktrees/task\n")
+        checkout = "the folder holds another checkout, a clone, submodule, or worktree, which the search skips"
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        skipped = "the .NET search skips a folder so named, a version-control, dependency, build-output, or IDE folder"
+        cases = {
+            ".tools/Tool/Tool.csproj": (".tools", hidden),
+            "App/.cache/Deep/Deep.csproj": ("App/.cache", hidden),
+            "packages/Some.Pkg/1.0.0/Sample.csproj": ("packages", skipped),
+            "App/bin/Debug/Sample.csproj": ("App/bin", skipped),
+            "Linked/Other/Other.csproj": ("Linked", LINK_REASON),
+            "worktrees/task/Copy/Copy.csproj": ("worktrees/task", checkout),
+        }
+        for project, (folder, reason) in cases.items():
+            if not (search / project).exists():
+                self.write(f"search/{project}", LIB_PROJECT)
+            with self.subTest(project=project):
+                self.assertEqual(
+                    f"FAILED {search / project} lies in {search / folder}, which the search for projects under "
+                    f"{search} does not enter: {reason}; pass --root at its solution or its folder",
+                    self.narrowed_failure(search, project),
+                )
+        # A folder the search cannot list is named with the walk's reason too.
+        self.write("search/Locked/Inner/Inner.csproj", LIB_PROJECT)
+        listing = os.scandir
+
+        def scandir(path: str | os.PathLike[str]) -> object:
+            if Path(path).name == "Locked":
+                raise PermissionError(13, "Access is denied")
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            self.assertEqual(
+                f"FAILED {search / 'Locked/Inner/Inner.csproj'} lies in {search / 'Locked'}, which the search for "
+                f"projects under {search} does not enter: the folder cannot be listed: Access is denied; pass --root "
+                "at its solution or its folder",
+                self.narrowed_failure(search, "Locked/Inner/Inner.csproj"),
+            )
+        # A path that names no existing project below the root, or one outside it, is still no project of the root.
+        self.write("outside/Out.csproj", LIB_PROJECT)
+        for project in (
+            search / ".tools/Tool/Missing.csproj",
+            search / ".tools/Tool",
+            self.root / "outside/Out.csproj",
+        ):
+            with self.subTest(project=project):
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(project))
+                self.assertEqual((1, f"FAILED {project} is not a project of {search}"), (code, rows[-1][0]))
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / "App/App.csproj"))
+        self.assertEqual(["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"], self.lines(rows, "PATH")[0])
+
+    def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
+        search = self.root / "search"
+        for name in ("A", "B", "C", "D"):
+            self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        bound = "the search stopped at its bound of 3 folders, before this folder and the folders after it"
+        self.assertEqual(
+            f"FAILED {search / 'C/C.csproj'} lies in {search / 'C'}, which the search for projects under {search} "
+            f"does not enter: {bound}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, "C/C.csproj", limit=3),
+        )
+        self.assertEqual(
+            f"FAILED {search / 'D/D.csproj'} lies past the search for projects under {search}, which stopped at "
+            f"{search / 'C'}: {bound}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, "D/D.csproj", limit=3),
+        )
+
+    def test_a_search_finding_no_project_names_why_it_passed_over_the_one_named(self) -> None:
+        # With no project found at all, the run names why it did not reach the project --project names, rather than
+        # only that it found none.
+        search = self.root / "search"
+        self.write("search/.tools/Tool/Tool.csproj", LIB_PROJECT)
+        self.write("search/A/A.csproj", LIB_PROJECT)
+        self.write("search/B/B.csproj", LIB_PROJECT)
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        bound = "the search stopped at its bound of 1 folders, before this folder and the folders after it"
+        self.assertEqual(
+            f"FAILED {search / '.tools/Tool/Tool.csproj'} lies in {search / '.tools'}, which the search for projects "
+            f"under {search} does not enter: {hidden}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, ".tools/Tool/Tool.csproj", limit=1),
+        )
+        self.assertEqual(
+            f"FAILED {search / 'B/B.csproj'} lies past the search for projects under {search}, which stopped at "
+            f"{search / 'A'}: {bound}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, "B/B.csproj", limit=1),
+        )
+        # A project the search does not explain, outside the root here, leaves the failure naming what it skipped.
+        outside = self.write("Out.csproj", LIB_PROJECT)
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 1):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(outside))
+        self.assertEqual(
+            (1, f"FAILED no solution or .csproj found under {search}; {search / 'A'} not searched: {bound}"),
+            (code, rows[-1][0]),
+        )
+
+    def test_a_project_a_solution_does_not_list_is_no_project_of_it_wherever_it_lies(self) -> None:
+        # The search's reasons belong to the search alone: a solution root runs none, so a project it does not list
+        # is no project of it, in a hidden folder or not.
+        self.write("App/App.csproj", LIB_PROJECT)
+        self.write(".build/Tool/Tool.csproj", LIB_PROJECT)
+        listed = self.write("Listed.sln", solution("App\\App.csproj"))
+        project = self.root / ".build/Tool/Tool.csproj"
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root), "--project", str(project))
+        self.assertEqual((1, f"FAILED {project} is not a project of {listed}"), (code, rows[-1][0]))
+
     def test_the_search_is_bounded_at_ten_thousand_folders(self) -> None:
         # The bound the skill and the module docstring state; a home folder holds far more folders than a solution.
         self.assertEqual(10_000, dependency_graph.PROJECT_SEARCH_FOLDER_LIMIT)
