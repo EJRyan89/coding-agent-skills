@@ -32,7 +32,7 @@ from shell_targets import (
     shell_token_problems,
     unclosed_fence_problems,
 )
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 from toolchain import PREREQUISITES, find_psscriptanalyzer, missing_prerequisites, outdated_prerequisites
 from validation_support import REPOSITORY_ROOT, write_fixture_tree
 

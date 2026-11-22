@@ -25,7 +25,7 @@ import whole_number
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})

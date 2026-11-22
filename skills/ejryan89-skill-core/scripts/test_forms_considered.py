@@ -26,6 +26,7 @@ from forms_considered import (
 )
 from markdown_sections import blocks
 from test_hidden_comments import SCALING, WALKS_PER_LINE
+from test_time_in_proportion import assert_time_in_proportion
 
 TEMPLATE = (
     "## Changes\n\n-\n\n## Forms considered\n\n"
@@ -85,41 +86,19 @@ def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str
         assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
 
 
-# A body of SCALE times the units is read against the smaller one by the processor time the process spends, as
-# test_markdown_sections times its walk, since a runner that shares its processors between more suites than it has
-# stretches a reading's wall-clock time unevenly. Each reading repeats until the smaller takes LEAST_TIMED_SECONDS; the
-# smaller keeps the least of TIMINGS timings, and the larger passes at its first timing under the bound. A linear
-# reading takes about SCALE times as long and a quadratic one SCALE squared, so the bound sits halfway between in log
-# space. The walk count above, which runs first, fails a reading that walks too far before this one times it.
+# A body of SCALE times the units is read against the smaller one through assert_time_in_proportion. A linear reading
+# takes about SCALE times as long and a quadratic one SCALE squared, so the bound sits halfway between in log space.
+# The walk count above, which runs first, fails a reading that walks too far before this one times it.
 SCALE = 8
 SCALE_BOUND = SCALE**1.5
-LEAST_TIMED_SECONDS = 0.1
-TIMINGS = 3
 SMALL_BODY = 2_000
-
-
-def processor_seconds(text: str, repeats: int) -> float:
-    """The processor time the process spends reading the body `repeats` times."""
-    started = time.process_time()
-    for _ in range(repeats):
-        forms_section(text)
-    return time.process_time() - started
 
 
 @pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
 def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
     repeats = max(1, SMALL_BODY // len(unit))
     small, large = head + unit * repeats + tail, head + unit * repeats * SCALE + tail
-    readings = 1
-    while (elapsed := processor_seconds(small, readings)) < LEAST_TIMED_SECONDS:
-        readings *= 2
-    least = min([elapsed, *(processor_seconds(small, readings) for _ in range(TIMINGS - 1))])
-    timed: list[float] = []
-    for _ in range(TIMINGS):
-        timed.append(processor_seconds(large, readings))
-        if timed[-1] < SCALE_BOUND * least:
-            return
-    pytest.fail(f"{min(timed):.4f}s is {min(timed) / least:.1f} times {least:.4f}s, at least {SCALE_BOUND:.1f} times")
+    assert_time_in_proportion(forms_section, small, large, SCALE_BOUND)
 
 
 def test_a_body_with_no_comment_is_read_as_it_is_whatever_its_backtick_runs() -> None:
