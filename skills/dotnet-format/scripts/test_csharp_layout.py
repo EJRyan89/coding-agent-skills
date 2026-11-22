@@ -29,11 +29,13 @@ import dotnet_solution
 import whole_number
 from flat_text import flat_text
 from run_dotnet_format import Completed, Services
+from test_dotnet_format_targets import recording_reaches
+from test_folder_walk import reached
 from test_path_containment import resolving_as_python_312
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 READ_ONLY_FILE = "the file is read-only; make it writable to fix it"
-OUTSIDE_THROUGH_LINK = "a symbolic link or junction leads it outside the repository root"
+OUTSIDE_THROUGH_LINK = "its links cannot be followed inside the repository root: "
 
 
 def linked_folder(name: str) -> str:
@@ -470,17 +472,20 @@ class FileTests(unittest.TestCase):
                 self.assertEqual(original, fixable.read_bytes())
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
-    def test_a_repository_root_that_is_a_symbolic_link_loop_fails_naming_it_on_every_python_version(self) -> None:
-        # Python 3.12's Path.resolve raised RuntimeError for the loop, which ended the run FAILED RuntimeError.
+    def test_a_repository_root_that_is_a_symbolic_link_loop_refuses_each_entry_with_the_reason_on_every_python_version(
+        self,
+    ) -> None:
+        # Python 3.12's Path.resolve raised RuntimeError for the loop, which ended the run FAILED RuntimeError. Each
+        # entry's first name cannot be examined below the loop, so the entry is refused with the system's reason,
+        # never read.
         loop = self.root / "loop"
         loop.symlink_to(loop)
         file_list = self.file_list("File.cs")
+        reason = f"its links cannot be followed inside the repository root: {os.strerror(errno.ELOOP)}"
         for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
             with self.subTest(version), resolving():
                 status, lines = self.main("check", "--repo-root", str(loop), "--file-list", str(file_list))
-            self.assertEqual(
-                (1, [[f"FAILED {loop / 'File.cs'} cannot be examined: {os.strerror(errno.ELOOP)}"]]), (status, lines)
-            )
+            self.assertEqual((1, [["REFUSED", "File.cs", reason], ["SUMMARY", "0", "0", "-"]]), (status, lines))
 
     def test_an_unreadable_file_list_fails(self) -> None:
         missing = self.root / "absent.txt"
@@ -856,7 +861,7 @@ class ConfigTests(unittest.TestCase):
         solutions = {
             f"../{outside.name}/Other.sln": "the path is outside the examined tree",
             (outside / "Other.sln").as_posix(): "the path is outside the examined tree",
-            "Linked/Other.sln": "a symbolic link or junction leads it outside the repository root",
+            "Linked/Other.sln": "its links cannot be followed inside the repository root: ",
         }
         for solution, expected in solutions.items():
             with self.subTest(solution=solution):
@@ -1473,6 +1478,79 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(touched)
         self.assertEqual(
             [], [path for path in touched if not Path(dotnet_solution.same_path(Path(path))).is_relative_to(root)]
+        )
+
+    def linked_out(self, link: Path, target: Path) -> str:
+        """The refusal of a solution entry through `link`, whose text is `target`, outside the repository root."""
+        return (
+            f"its links cannot be followed inside the repository root: {link.as_posix()} is a link to"
+            f" {target.as_posix()}, outside the examined tree {self.root.as_posix()}, which the reader does not follow"
+        )
+
+    def test_a_solution_entry_a_folder_link_leads_outside_is_refused_naming_it_and_never_reached(self) -> None:
+        # Linked (a junction on Windows) leads outside the repository to an SDK-style project referencing the
+        # package: the entry is refused naming the link, from its own metadata and text, and nothing below it or in
+        # the folder it leads to is stat, listed, opened, or evaluated, so the package stays missing.
+        outside = outside_directory(self)
+        (outside / "E").mkdir()
+        (outside / "E" / "E.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        link = self.root / "Linked"
+        link_directory(outside, link)
+        listed = (
+            'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "E", "Linked\\E\\E.csproj", "{2}"\r\nEndProject\r\n'
+        )
+        (self.root / "App.sln").write_text(SOLUTION + listed, encoding="utf-8")
+        self.msbuild.items["Linked/E/E.csproj"] = PACKAGE_REFERENCE
+        self.changed("src/App/Program.cs")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            grouped = self.config()
+        self.assertEqual([["Linked\\E\\E.csproj", self.linked_out(link, outside)]], grouped["REFUSED"])
+        self.assertEqual(["src/App/App.csproj"], self.msbuild.evaluated())
+        self.assertEqual([["Roslynator.Formatting.Analyzers", "missing"]], grouped["PACKAGE"])
+        self.assertIn((str(link), False), touched)
+        self.assertEqual([], reached(touched, [link], outside))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_solution_entry_that_is_a_file_link_leading_outside_is_refused_and_never_evaluated(self) -> None:
+        # Two project files that are links out of the repository, by an absolute target and by a relative one
+        # climbing out. Other.csproj owns no changed file, and nothing outside is reached; Owner.csproj owns
+        # Shared/Code.cs, so it would be evaluated were it kept, and it is refused and never evaluated.
+        outside = outside_directory(self)
+        (outside / "E").mkdir()
+        (outside / "E" / "E.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        (self.root / "Shared").mkdir()
+        (self.root / "Shared" / "Code.cs").write_text("class C { }\n", encoding="utf-8")
+        (self.root / "Lone").mkdir()
+        other, owner = self.root / "Lone" / "Other.csproj", self.root / "Shared" / "Owner.csproj"
+        other.symlink_to(outside / "E" / "E.csproj")
+        owner.symlink_to(f"../../{outside.name}/E/E.csproj")
+        listed = "".join(
+            f'Project("{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}") = "{name}", "{entry}", "{{{name}}}"\r\nEndProject\r\n'
+            for name, entry in (("Other", "Lone\\Other.csproj"), ("Owner", "Shared\\Owner.csproj"))
+        )
+        (self.root / "App.sln").write_text(SOLUTION + listed, encoding="utf-8")
+        self.changed("src/App/Program.cs")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            grouped = self.config()
+        self.assertEqual(
+            [["Lone\\Other.csproj", self.linked_out(other, outside / "E" / "E.csproj")]],
+            grouped["REFUSED"][:1],
+        )
+        self.assertEqual([], reached(touched, [other], outside))
+        self.changed("src/App/Program.cs", "Shared/Code.cs")
+        self.msbuild.calls.clear()
+        grouped = self.config()
+        self.assertEqual(
+            [
+                ["Lone\\Other.csproj", self.linked_out(other, outside / "E" / "E.csproj")],
+                ["Shared\\Owner.csproj", self.linked_out(owner, Path(f"../../{outside.name}/E/E.csproj"))],
+            ],
+            grouped["REFUSED"],
+        )
+        self.assertEqual(
+            [("./App.csproj", self.root / "src" / "App")], [(call[0][2], call[1]) for call in self.msbuild.calls]
         )
 
     def test_apply_never_writes_an_editorconfig_that_is_or_lies_below_a_link(self) -> None:

@@ -22,13 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import bounded_process
 import dotnet_format_targets as targets
 import dotnet_solution
+import folder_walk
 import git_client
 import github_client
-import path_containment
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 from github_client import Runner as GhRunner
+from test_folder_walk import reached, recording
 from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
@@ -88,6 +89,50 @@ def remove_link(link: Path) -> None:
         link.rmdir()
     else:
         link.unlink()
+
+
+@contextlib.contextmanager
+def recording_reaches(touched: list[tuple[str, bool]]) -> Iterator[None]:
+    """Record in `touched` each path the file system is reached with, and whether the call follows a link there:
+    ejryan89-skill-core's folder-walk `recording` of `os.stat`, `os.lstat`, `os.scandir` with each listed entry's
+    metadata calls, and `os.readlink`, and each open through `io.open`, which `Path.open` calls, `builtins.open`, and
+    `os.open`, which follows a link unless given `O_NOFOLLOW`."""
+    real_io_open, real_os_open = io.open, os.open
+
+    def opened(file: Any, *rest: Any, **options: Any) -> Any:
+        if isinstance(file, (str, os.PathLike)):
+            touched.append((os.fsdecode(file), True))
+        return real_io_open(file, *rest, **options)
+
+    def os_open(path: Any, flags: int, *rest: Any, **options: Any) -> int:
+        touched.append((os.fsdecode(path), not flags & getattr(os, "O_NOFOLLOW", 0)))
+        return real_os_open(path, flags, *rest, **options)
+
+    with (
+        recording(touched),
+        mock.patch.object(io, "open", opened),
+        mock.patch("builtins.open", opened),
+        mock.patch.object(os, "open", os_open),
+    ):
+        yield
+
+
+def outside_folder(test: unittest.TestCase) -> Path:
+    """A throwaway folder outside the test's repository, holding the SDK-style project E/E.csproj."""
+    directory = tempfile.TemporaryDirectory()
+    test.addCleanup(directory.cleanup)
+    outside = Path(directory.name).resolve()
+    (outside / "E").mkdir()
+    (outside / "E" / "E.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+    return outside
+
+
+def linked_out(link: Path, target: Path, tree: Path) -> str:
+    """The refusal of a path through `link`, whose text is `target`, outside `tree`."""
+    return (
+        f"its links cannot be followed inside the repository root: {link.as_posix()} is a link to {target.as_posix()},"
+        f" outside the examined tree {tree.as_posix()}, which the reader does not follow"
+    )
 
 
 @contextlib.contextmanager
@@ -1003,6 +1048,60 @@ class ResolveTests(unittest.TestCase):
         (repo.root / "Lib.sln").write_bytes(b"\xef\xbb\xbf" + listed.encode("utf-8"))
         self.assertEqual(targets.SDK_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
 
+    def test_a_listed_project_a_folder_link_leads_outside_is_never_reached_so_the_global_tool_formats(self) -> None:
+        # Linked (a junction on Windows) leads outside the repository, where E/E.csproj is SDK-style. Read through
+        # the link, every listed project would be SDK-style and, with no dotnet, the run would stop for want of the
+        # SDK; judged from Linked's own metadata and text, E is not shown to be SDK-style, so the global tool formats
+        # the solution, and nothing below Linked or in the folder it leads to is stat, listed, or opened. A link whose
+        # target stays inside the repository is still read through.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("Other/R/R.csproj", SDK_PROJECT)
+        repo.write("Lib.sln", solution("Lib\\Lib.csproj", "Linked\\E\\E.csproj"))
+        repo.commit("code")
+        outside = outside_folder(self)
+        link = repo.root / "Linked"
+        for name, target in (("Linked", outside), ("In", repo.root / "Other")):
+            link_folder(target, repo.root / name)
+            self.addCleanup(remove_link, repo.root / name)
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            lines = self.resolve(services=Services(dotnet=False))
+        self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
+        self.assertIn((str(link), False), touched)
+        self.assertEqual([], reached(touched, [link], outside))
+        touched.clear()
+        with recording_reaches(touched):
+            self.assertEqual(targets.TOOL_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
+        self.assertEqual([], reached(touched, [link], outside))
+        repo.write("Inside.sln", solution("Lib\\Lib.csproj", "In\\R\\R.csproj"))
+        self.assertEqual(targets.SDK_FORMATTER, targets.formatter_for(repo.root, repo.root / "Inside.sln"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_listed_project_file_that_is_a_link_leading_outside_is_never_reached(self) -> None:
+        # Two project files that are links out of the repository, one by an absolute target and one by a relative
+        # target climbing out, each to an SDK-style project: neither is stat or opened, so the global tool formats.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("Lib.sln", solution("Lib\\Lib.csproj", "Shared\\Abs.csproj", "Shared\\Rel.csproj"))
+        repo.commit("code")
+        outside = outside_folder(self)
+        (repo.root / "Shared").mkdir()
+        absolute, relative = repo.root / "Shared" / "Abs.csproj", repo.root / "Shared" / "Rel.csproj"
+        absolute.symlink_to(outside / "E" / "E.csproj")
+        relative.symlink_to(f"../../{outside.name}/E/E.csproj")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            lines = self.resolve(services=Services(dotnet=False))
+        self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([], reached(touched, [absolute, relative], outside))
+        for link in (absolute, relative):
+            (repo.root / "Only.sln").write_text(solution(link.relative_to(repo.root).as_posix()), encoding="utf-8")
+            with self.subTest(link=link.name):
+                self.assertEqual(targets.TOOL_FORMATTER, targets.formatter_for(repo.root, repo.root / "Only.sln"))
+
 
 class ListedRefusalTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1010,17 +1109,21 @@ class ListedRefusalTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
 
-    def test_an_entry_inside_the_root_is_kept_and_a_device_or_share_form_is_refused_unresolved(self) -> None:
-        resolve = path_containment.resolved_path
-        resolved: list[str] = []
+    def test_an_entry_inside_the_root_is_kept_and_a_device_or_share_form_is_refused_unjudged(self) -> None:
+        judge = folder_walk.outside_link_refusal
+        judged: list[Path] = []
 
-        def recording(path: Path) -> Path:
-            resolved.append(str(path))
-            return resolve(path)
+        def recording_judge(path: Path, tree: Path) -> str | None:
+            judged.append(path)
+            return judge(path, tree)
 
-        with mock.patch("dotnet_format_targets.resolved_path", recording):
+        with mock.patch("dotnet_format_targets.outside_link_refusal", recording_judge):
             self.assertIsNone(targets.listed_refusal(self.root, "src/./App/../App/Program.cs"))
-            self.assertEqual(2, len(resolved), "the entry and the root")
+            self.assertEqual(
+                [self.root / "src" / "App" / "Program.cs", self.root / "src" / "App" / ".." / "App" / "Program.cs"],
+                judged,
+                "the entry by its text and as written",
+            )
             for entry, reason in (
                 ("//?/C:/Program.cs", "the path names a device"),
                 ("\\\\localhost\\share\\Program.cs", "the path names a network share"),
@@ -1028,13 +1131,13 @@ class ListedRefusalTests(unittest.TestCase):
                 with self.subTest(entry=entry):
                     refused = targets.listed_refusal(self.root, entry)
                     self.assertTrue(refused and refused.startswith(reason), refused)
-        self.assertEqual(2, len(resolved), "a refused form is never resolved")
+        self.assertEqual(2, len(judged), "a refused form is never judged by its links")
 
-    def test_an_absolute_entry_or_solution_is_refused_unresolved_inside_the_root_or_outside_it(self) -> None:
+    def test_an_absolute_entry_or_solution_is_refused_unjudged_inside_the_root_or_outside_it(self) -> None:
         inside = self.root / "inside.cs"
         outside = self.root.parent / "outside.cs"
         absolute = "the entry is an absolute path, and an entry names a file relative to the repository root"
-        with mock.patch("dotnet_format_targets.resolved_path") as resolve:
+        with mock.patch("dotnet_format_targets.outside_link_refusal") as judge:
             # The form with backslashes is absolute on Linux too once they read as separators.
             for entry in (str(inside), inside.as_posix(), inside.as_posix().replace("/", "\\")):
                 with self.subTest(entry=entry):
@@ -1044,13 +1147,63 @@ class ListedRefusalTests(unittest.TestCase):
                     )
             refused = targets.listed_refusal(self.root, str(outside))
             self.assertTrue(refused and refused.startswith("the path is outside the examined tree"), refused)
-        resolve.assert_not_called()
+        judge.assert_not_called()
 
-    def test_an_entry_that_cannot_be_resolved_is_refused(self) -> None:
-        denied = PermissionError(13, "Permission denied")
-        with mock.patch("dotnet_format_targets.resolved_path", side_effect=denied):
+    def test_an_entry_whose_name_cannot_be_examined_is_refused_with_the_reason(self) -> None:
+        real_lstat = os.lstat
+        program = self.root / "Program.cs"
+
+        def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(path) == program:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_lstat(path, *rest, **options)
+
+        with mock.patch.object(os, "lstat", lstat):
             refused = targets.listed_refusal(self.root, "Program.cs")
-        self.assertEqual("the path cannot be resolved: Permission denied", refused)
+        self.assertEqual("its links cannot be followed inside the repository root: Permission denied", refused)
+
+    def test_an_entry_a_link_leads_outside_is_refused_with_nothing_outside_reached(self) -> None:
+        # A folder link (a junction on Windows) on the entry's way out of the root: the entry is refused naming the
+        # link, from its own metadata and its text, with nothing below it or in the outside folder stat or listed,
+        # where resolving the entry would lstat each name of the folder the link leads to.
+        outside = outside_folder(self)
+        (outside / "Outside.cs").write_text("class C { }\n", encoding="utf-8")
+        link = self.root / "Linked"
+        link_folder(outside, link)
+        self.addCleanup(remove_link, link)
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            refused = targets.listed_refusal(self.root, "Linked/Outside.cs")
+        self.assertEqual(linked_out(link, outside, self.root), refused)
+        self.assertIn((str(link), False), touched)
+        self.assertEqual([], reached(touched, [link], outside))
+
+    def test_an_entry_holding_dot_dot_is_judged_by_its_text_and_as_linux_and_macos_open_it(self) -> None:
+        # `In` leads to a/b inside the root and a/Out leads outside, so `In/../Out/Outside.cs` reads as Out/Outside.cs
+        # by its text, which Windows opens and nothing is at, and as a/Out/Outside.cs as written, which Linux and macOS
+        # open, taking the `..` after following `In`: it is refused naming a/Out on every platform. The root's Away
+        # leads outside too, so `Missing/../Away/Outside.cs`, which Linux and macOS cannot open past the missing name,
+        # is refused by its text, as Windows opens it, naming that link.
+        outside = outside_folder(self)
+        (self.root / "a" / "b").mkdir(parents=True)
+        for link, target in (
+            (self.root / "In", self.root / "a" / "b"),
+            (self.root / "a" / "Out", outside),
+            (self.root / "Away", outside),
+        ):
+            link_folder(target, link)
+            self.addCleanup(remove_link, link)
+        cases = {
+            "In/../Out/Outside.cs": linked_out(self.root / "a" / "Out", outside, self.root),
+            "Missing/../Away/Outside.cs": linked_out(self.root / "Away", outside, self.root),
+        }
+        for entry, reason in cases.items():
+            touched: list[tuple[str, bool]] = []
+            with self.subTest(entry=entry), recording_reaches(touched):
+                self.assertEqual(reason, targets.listed_refusal(self.root, entry))
+            self.assertEqual([], reached(touched, [self.root / "a" / "Out", self.root / "Away"], outside))
+        # A `..` whose either reading stays inside the root is kept.
+        self.assertIsNone(targets.listed_refusal(self.root, "In/../b/Inside.cs"))
 
 
 class ConsoleTests(unittest.TestCase):

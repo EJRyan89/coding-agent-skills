@@ -24,15 +24,18 @@ that ends in STOP, as does finding no changed C# file or no solution, or choosin
 `dotnet format` formats when dotnet is not installed.
 
 The formatter is the .NET SDK's `dotnet format` for a .slnx solution, which the dotnet-format global tool cannot open,
-and for a .sln whose C# and Visual Basic projects are all SDK-style, since the global tool cannot load the analyzers
-current SDKs give such projects; it is the global tool for any other .sln, such as one holding a .NET Framework project
-in the older format, on which the SDK's command can fail. The global tool is not run on an ASP.NET project's files,
-which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the global tool. A FILE that
-SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker. FILE_LIST ends each name
-with a NUL, the one character no path holds, so every name git lists reads back as written, a leading space or a line
-separator inside it included. A printed line holds each value as ejryan89-skill-core's `fact_line` flattens it, so a
-tab, a control character, or a line break in a name or a reason prints as a space and one fact stays one line; the
-exact names are FILE_LIST's.
+and for a .sln whose C# and Visual Basic projects are all SDK-style files inside the repository, since the global tool
+cannot load the analyzers current SDKs give such projects; it is the global tool for any other .sln, such as one holding
+a .NET Framework project in the older format, on which the SDK's command can fail. A listed project outside the
+repository by its text, or that a symbolic link or junction on its way, its own name included, leads out of it, judged
+from each name's own metadata and each link's text, is never stat or opened, so it is not shown to be SDK-style and the
+global tool formats its solution; `csharp_layout.py config` reports it as REFUSED. The global tool is not run on an
+ASP.NET project's files, which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the
+global tool. A FILE that SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker.
+FILE_LIST ends each name with a NUL, the one character no path holds, so every name git lists reads back as written, a
+leading space or a line separator inside it included. A printed line holds each value as ejryan89-skill-core's
+`fact_line` flattens it, so a tab, a control character, or a line break in a name or a reason prints as a space and one
+fact stays one line; the exact names are FILE_LIST's.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
@@ -81,7 +84,7 @@ from dotnet_solution import (
 from executable_locator import find_program
 from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
-from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, outside_link_refusal, walk_files
 from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -188,13 +191,26 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
+def linked_out_refusal(root: Path, path: Path) -> str | None:
+    """Why a script does not stat, read, or evaluate `path`, a path inside `root` by its text, or None: a symbolic link
+    or junction on its way, its own name included, leads outside the root, or a name on it cannot be examined or a
+    link followed. ejryan89-skill-core's `folder_walk.outside_link_refusal` judges each name down from the root from its
+    own metadata and each link from its text, so nothing outside the root is stat, listed, or opened to decide. A path
+    whose links all stay inside, and one with a name that is not there, which its reader then reports, is None."""
+    linked = outside_link_refusal(path, root)
+    return None if linked is None else f"its links cannot be followed inside the repository root: {linked}"
+
+
 def listed_refusal(root: Path, name: str) -> str | None:
     """Why a script does not read or write the file a FILE_LIST entry names, or None when it lies inside `root`.
 
     The entry is judged first as written, before anything touches it, so an absolute entry, even one naming a file
     inside the root, is refused unopened, and so, through ejryan89-skill-core's `refusal`, are one whose `..`
-    segments leave the root and a network-share or device form; then as resolved, so an entry inside the root that a
-    symbolic link or junction leads out of it is refused too."""
+    segments leave the root and a network-share or device form; then by its links (`linked_out_refusal`), so an entry
+    inside the root that a symbolic link or junction leads out of it is refused too, with nothing outside the root
+    touched to decide. An entry holding a `..` is judged by its links both as its text reads it, as Windows opens it,
+    and as written, as Linux and macOS open it, taking each `..` after following the link before it, on every
+    platform, so an entry either reading leads out of the root is refused wherever it runs."""
     base = lexical_absolute(root)
     path = project_path(base, name)
     refused = refusal(path, base)
@@ -202,12 +218,10 @@ def listed_refusal(root: Path, name: str) -> str | None:
         return refused
     if Path(name.replace("\\", "/")).anchor:
         return "the entry is an absolute path, and an entry names a file relative to the repository root"
-    try:
-        leaves = refusal(resolved_path(path), resolved_path(base)) is not None
-    except OSError as error:
-        return f"the path cannot be resolved: {error.strerror or error}"
-    if leaves:
-        return "a symbolic link or junction leads it outside the repository root, which the script does not leave"
+    for named in dict.fromkeys((path, base / name.replace("\\", "/"))):
+        linked = linked_out_refusal(base, named)
+        if linked:
+            return linked
     return None
 
 
@@ -443,8 +457,10 @@ def is_sdk_style(project: Path) -> bool:
 def formatter_for(root: Path, solution: Path) -> str:
     """The formatter for a solution: the SDK's `dotnet format` for a .slnx, and for a .sln listing C# or Visual Basic
     projects that are all SDK-style files inside `root`; the dotnet-format global tool for any other .sln, one it
-    cannot read included, so that only a solution shown to suit the SDK's command gets it. A relative root or
-    solution is taken from the working directory, as the formatter takes them."""
+    cannot read included, so that only a solution shown to suit the SDK's command gets it. A listed project outside
+    `root` by its text (`refusal`), or that a link on its way leads out of it (`linked_out_refusal`), is never stat or
+    opened, so it is not shown to be SDK-style and the solution gets the global tool; `csharp_layout.py config` reports
+    it as REFUSED. A relative root or solution is taken from the working directory, as the formatter takes them."""
     if has_suffix(solution.name, ".slnx"):
         return SDK_FORMATTER
     root, solution = lexical_absolute(root), lexical_absolute(solution)
@@ -457,7 +473,10 @@ def formatter_for(root: Path, solution: Path) -> str:
         for entry in listed
         if has_suffix((project := project_path(solution.parent, entry)).name, FORMATTED_PROJECT_SUFFIXES)
     ]
-    if projects and all(refusal(project, root) is None and is_sdk_style(project) for project in projects):
+    if projects and all(
+        refusal(project, root) is None and linked_out_refusal(root, project) is None and is_sdk_style(project)
+        for project in projects
+    ):
         return SDK_FORMATTER
     return TOOL_FORMATTER
 

@@ -444,7 +444,7 @@ class MainTests(unittest.TestCase):
         entries = {
             f"../{outside.name}/Outside.cs": "the path is outside the examined tree",
             (outside / "Outside.cs").as_posix(): "the path is outside the examined tree",
-            "Linked/Outside.cs": "a symbolic link or junction leads it outside the repository root",
+            "Linked/Outside.cs": "its links cannot be followed inside the repository root: ",
         }
         self.file_list.write_text("".join(f"{name}\0" for name in [*entries, *self.files]), encoding="utf-8")
         for mode in ("check", "fix"):
@@ -474,7 +474,7 @@ class MainTests(unittest.TestCase):
         solutions = {
             f"../{outside.name}/Other.sln": "the path is outside the examined tree",
             (outside / "Other.sln").as_posix(): "the path is outside the examined tree",
-            "Linked/Other.sln": "a symbolic link or junction leads it outside the repository root",
+            "Linked/Other.sln": "its links cannot be followed inside the repository root: ",
         }
         for mode in ("check", "fix"):
             for solution, expected in solutions.items():
