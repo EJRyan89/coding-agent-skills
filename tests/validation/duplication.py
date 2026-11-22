@@ -1568,12 +1568,14 @@ class _ContainmentReader:
 
     def _mapped(self, mapping: ast.expr, key: str) -> bool:
         """Whether a mapping gives `key` a text ending in a separator: a literal dictionary's last entry under the key,
-        a `dict` call's keyword, or either held in a name, an attribute, or what a function of the module returns."""
+        unless a `**` unpacking after it may replace it, a `dict` call's keyword, or either held in a name, an
+        attribute, or what a function of the module returns."""
         if isinstance(mapping, ast.Dict):
+            # An unpacking's key is None, and its value is a mapping, never a text that ends in a separator.
             values = [
                 value
                 for name, value in zip(mapping.keys, mapping.values, strict=True)
-                if name is not None and _static_text(name, self.resolver) == key
+                if name is None or _static_text(name, self.resolver) == key
             ]
             return bool(values) and self.ends(values[-1])
         if isinstance(mapping, ast.Call) and self.name(mapping.func) == "dict":

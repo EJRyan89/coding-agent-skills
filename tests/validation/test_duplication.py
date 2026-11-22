@@ -1755,6 +1755,7 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
         name.startswith(("%(top)s" + "%(sep)s") % {"top": top, "sep": os.sep}),
         name.startswith("%(top)s%(sep)s" % dict(top=top, sep="/")),
         name.startswith("%(top)s%(sep)s" % fields_of(top)),
+        name.startswith("%(top)s%(sep)s" % {**fields, "sep": os.sep}),
         all(parent != root for parent in [path, *path.parents]),
         [root == parent for parent in ancestors],
         [upper == path for upper in (path, *root.parents)],
@@ -1768,6 +1769,7 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
         name.startswith("%(sep)s%(top)s" % named),  # The last field is top.
         name.startswith("%(top)s%(sep)r" % named),  # A conversion quotes the separator.
         name.startswith("%%(sep)s" % named),  # A doubled % makes the field literal text.
+        name.startswith("%(top)s%(sep)s" % {"sep": os.sep, **fields}),  # An unpacking after the key may replace it.
         any(parent.name == top for parent in path.parents),  # A parent's name, not the parent.
         any(part == top for part in path.parts),  # Parts, not parents.
         any(parent < root for parent in path.parents),  # An ordering, not ==.
@@ -1866,11 +1868,11 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (364, 368, 372, 376, 380, 382)),
         *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in (384, 385, 387)),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(417, 424)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(424, 429)),
-        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (429, 430, 431)),
-        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (432, 433, 434)),
-        f"{alpha}:451 tests containment with {parents}{remedy}",
-        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (456, 460)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(424, 430)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (430, 431, 432)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (433, 434, 435)),
+        f"{alpha}:453 tests containment with {parents}{remedy}",
+        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (458, 462)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
