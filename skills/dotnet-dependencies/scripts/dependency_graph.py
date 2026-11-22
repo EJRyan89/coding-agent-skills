@@ -80,13 +80,14 @@ why it did not reach it; a project below a link on its way, or one that is itsel
 link may lead outside the examined tree, so the folder the search passed over is named whether or not the file is
 there; so is one below a folder whose metadata cannot be read. The --project argument's part up to its last `..` is
 followed inside the tree as the system follows it, never through a link out of it, and the whole path is resolved, to
-match a project found through a link inside the tree, only when it lies in the tree and no link on its way leads out
-of it; a path a link or `..` leads out of the tree, or one named outside it, is no project of the root and is never
-resolved in full. A limit: a --project named outside the tree, through a link above it such as macOS's /var, or with
-its own `..` leaving the tree before a link, has the folders leading to it resolved to learn whether one of them is
-the root, and its part up to its last `..` resolved, which reads the metadata of each name on its way, through such a
-link too, but no file's contents; `repo/../repo/Linked/Sub/../Other/Other.csproj`, with Linked leading outside, is
-resolved through Linked and then refused.
+match a project found through a link inside the tree, only when it lies in the tree and no link on its way leads out of
+it; a path a link or `..` leads out of the tree, or one named outside it, is no project of the root and is never
+resolved in full. A limit: a --project named outside the tree, through a link above it such as macOS's /var, or with its
+own `..` leaving the tree before a link, has the folders leading to it resolved to learn whether one of them is the
+root, and its part up to its last `..` resolved, which reads the metadata of each name on its way, through such a link
+too, and lists each folder on the way, reading the metadata of a case-swapped name in it, to learn whether it compares
+names by case, but reads no file's contents; `repo/../repo/Linked/Sub/../Other/Other.csproj`, with Linked leading
+outside, is resolved through Linked and then refused.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
