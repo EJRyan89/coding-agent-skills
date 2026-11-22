@@ -900,6 +900,37 @@ class RecordTests(unittest.TestCase):
         closing["issues"][0]["body_given"] = 0
         self.assertEqual(24_000, record["pull_request"]["closing_issues"]["issues"][0]["body_given"])
 
+    def test_a_closing_issue_s_negative_body_count_is_refused_naming_the_field(self) -> None:
+        record = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
+        issue = {
+            "repository": "example/one",
+            "number": 1,
+            "state": "OPEN",
+            "same_repository": True,
+            "body_characters": 5,
+            "body_given": 5,
+        }
+        where = "record.pull_request.closing_issues.issues[0]"
+        for name, value in (("body_characters", -1), ("body_given", -1), ("body_characters", -7)):
+            with self.subTest(name=name, value=value):
+                broken: Any = copy.deepcopy(record)
+                broken["pull_request"]["closing_issues"] = {"total": 1, "issues": [{**issue, name: value}]}
+                with self.assertRaises(RecordError) as caught:
+                    validate_record(broken)
+                self.assertEqual(
+                    f"{where}.{name} must be an integer of at least 0, found integer {value}", str(caught.exception)
+                )
+
+    def test_the_report_s_closing_issues_row_reads_none_for_a_pull_request_that_closes_none(self) -> None:
+        request = {**valid_request(), "closing_issues": {"total": 0, "issues": []}}
+        record = build_record(request, valid_adapter_result(), version=1, policy={})
+        validate_record(record)
+        markdown = render_markdown(record, record_payload_hash="0" * 64)
+        self.assertEqual(
+            ["| **Closing issues** | none |"],
+            [line for line in markdown.splitlines() if line.startswith("| **Closing issues**")],
+        )
+
 
 class CoveragePathTests(unittest.TestCase):
     """A file the review leaves uncovered or cannot reach, named as git names it."""
