@@ -12,9 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
 from checkout_fixture import BRANCHES_REFSPEC, FOREIGN, PULL_REQUESTS_REFSPEC, follow, make_foreign, own_checkout
 from git_client import GitClient, GitError, GitResult, subprocess_runner
+from validation_support import CallableResolver
 
 from conftest import GitHome
 from tools import checkout_trust
@@ -24,7 +26,13 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 # What reaches a canary home: the deployer's option, and the runtime canary's functions that make a home or deploy.
 CANARY_OPTION = "--canary-home"
 CANARY_FUNCTIONS = frozenset({"create_home", "start_home", "deploy"})
-CANARY_MODULE = "tools.runtime_canary"
+# A tool imports the runtime canary from the tools package, or by its bare name when tools/ is on sys.path, as running
+# a tool's file puts it; the shared refusal likewise.
+CANARY_MODULES = ("tools.runtime_canary", "runtime_canary")
+CANARY_NAMES = frozenset(f"{module}.{function}" for module in CANARY_MODULES for function in CANARY_FUNCTIONS)
+REFUSALS = frozenset({"tools.checkout_trust.refusal", "checkout_trust.refusal"})
+DEFINED_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+Function = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
 
 
 def temporary_root(test: unittest.TestCase) -> Path:
@@ -214,67 +222,150 @@ class RefusalTests(unittest.TestCase):
         )
 
 
-def imported_canary_names(tree: ast.Module) -> set[str]:
-    """The names a module binds by importing the runtime canary's home-making or deploying functions."""
-    return {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == CANARY_MODULE
-        for alias in node.names
-        if alias.name in CANARY_FUNCTIONS
-    }
+def module_of(name: str) -> str:
+    """The dotted module a file stands for, by its path from the repository root, such as tools.runtime_canary."""
+    return name.removesuffix(".py").replace("/", ".")
 
 
-def reaches_a_canary_home(tree: ast.Module) -> bool:
-    """Whether a module passes --canary-home or uses the runtime canary's function that makes a home or deploys."""
-    imported = imported_canary_names(tree)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and node.value == CANARY_OPTION:
+def is_canary_option(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == CANARY_OPTION
+
+
+class DeployerReader:
+    """Where a module reaches a canary home, and whether a checkout_trust.refusal call comes before each place.
+
+    Names resolve in their lexical scopes through the module's imports and simple assignments, as validation's
+    CallableResolver reads them, and the runtime canary's own functions stand for themselves inside it."""
+
+    def __init__(self, tree: ast.Module, module: str) -> None:
+        self.tree = tree
+        self.module = module
+        self.resolver = CallableResolver(tree)
+        self.functions: dict[int, Function] = {}
+        self._enclose(tree, tree)
+        self.refusals = [
+            node for node in ast.walk(tree) if isinstance(node, ast.Call) and self.name(node.func) in REFUSALS
+        ]
+
+    def _enclose(self, node: ast.AST, function: Function) -> None:
+        """Record the innermost function or lambda each node runs in, or the module itself."""
+        for child in ast.iter_child_nodes(node):
+            self.functions[id(child)] = function
+            self._enclose(child, child if isinstance(child, (*DEFINED_FUNCTIONS, ast.Lambda)) else function)
+
+    def name(self, node: ast.AST) -> str:
+        """The dotted name an expression stands for, with a function the runtime canary defines at its top level
+        standing for itself there."""
+        name = self.resolver.name(node)
+        local = name.removeprefix("<local>.")
+        if local != name and self.module in CANARY_MODULES and self.binds_at_top(node, local):
+            return f"{self.module}.{local}"
+        return name
+
+    def binds_at_top(self, node: ast.AST, name: str) -> bool:
+        return (
+            isinstance(node, ast.Name)
+            and self.resolver.scopes[id(node)].owner(name) is self.resolver.scopes[id(self.tree)]
+        )
+
+    def names_a_canary_function(self, node: ast.AST) -> bool:
+        """Whether an expression reads, never binds, the runtime canary's function that makes a home or deploys."""
+        return (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and isinstance(node.ctx, ast.Load)
+            and self.name(node) in CANARY_NAMES
+        )
+
+    def reaches(self) -> bool:
+        """Whether the module passes --canary-home or uses the runtime canary's function that makes a home or
+        deploys."""
+        return any(is_canary_option(node) or self.names_a_canary_function(node) for node in ast.walk(self.tree))
+
+    def uses(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Name]:
+        """Each place the module reads the name a function's definition binds, in the scope that binds it."""
+        scopes = self.resolver.scopes
+        owner = scopes[id(function)].owner(function.name)
+        return [
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.Name)
+            and node.id == function.name
+            and isinstance(node.ctx, ast.Load)
+            and scopes[id(node)].owner(node.id) is owner
+        ]
+
+    def guarded(self, node: ast.AST, followed: frozenset[int] = frozenset()) -> bool:
+        """Whether a refusal comes before a place in its own function or, failing that, before every place the module
+        names that function; a place at the top of the module, in a lambda, or in a function never named is not."""
+        function = self.functions[id(node)]
+        if any(self.functions[id(call)] is function and position(call) < position(node) for call in self.refusals):
             return True
-        if isinstance(node, ast.Name) and node.id in imported and not isinstance(node.ctx, ast.Store):
-            return True
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr in CANARY_FUNCTIONS
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "runtime_canary"
-        ):
-            return True
-    return False
+        if not isinstance(function, DEFINED_FUNCTIONS) or id(function) in followed:
+            return False
+        uses = self.uses(function)
+        return bool(uses) and all(self.guarded(use, followed | {id(function)}) for use in uses)
+
+    def unguarded_lines(self) -> list[int]:
+        """The lines of each call of the runtime canary's function that makes a home or deploys, and each
+        --canary-home option, that no refusal comes before."""
+        places = [
+            node
+            for node in ast.walk(self.tree)
+            if is_canary_option(node) or (isinstance(node, ast.Call) and self.names_a_canary_function(node.func))
+        ]
+        return sorted({getattr(node, "lineno", 0) for node in places if not self.guarded(node)})
 
 
-def refuses_a_foreign_checkout(tree: ast.Module) -> bool:
-    """Whether a module calls checkout_trust.refusal."""
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "refusal"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "checkout_trust"
-        for node in ast.walk(tree)
-    )
+def position(node: ast.AST) -> tuple[int, int]:
+    return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
 
 def unguarded_deployers(sources: dict[str, str]) -> list[str]:
-    """The modules, by name, that reach a canary home and never call checkout_trust.refusal."""
+    """The modules, by their paths, that reach a canary home and never call checkout_trust.refusal, or reach one at a
+    place no refusal comes before."""
     unguarded: list[str] = []
     for name, text in sorted(sources.items()):
-        tree = ast.parse(text)
-        if reaches_a_canary_home(tree) and not refuses_a_foreign_checkout(tree):
+        reader = DeployerReader(ast.parse(text), module_of(name))
+        if reader.reaches() and (not reader.refusals or reader.unguarded_lines()):
             unguarded.append(name)
     return unguarded
 
 
 class EveryDeployerRefusesTests(unittest.TestCase):
-    """Every tool that deploys into a canary home refuses a foreign checkout first, through the one shared refusal."""
+    """Every tool that deploys into a canary home refuses a foreign checkout first, through the one shared refusal.
 
-    def test_every_tool_reaching_a_canary_home_calls_the_shared_refusal(self) -> None:
+    The reader resolves each name in its lexical scope through the module's imports and simple assignments, as
+    validation's CallableResolver reads them, and follows a function the module defines through each place it names the
+    function in the scope that binds it. It does not follow:
+    - control flow: a refusal counts before a deployment written below it, on whichever branch, and whatever the
+      module does with the refusal's result;
+    - when a call runs rather than where it starts: a refusal and a deployment are compared by the place each call
+      begins, so a deployment among the refusal's own arguments counts as after it, and a function counts as guarded
+      once each place naming it comes after the refusal, so a hook registered after the refusal but run before it
+      passes;
+    - a canary function the module reaches by a string, as getattr(runtime_canary, "deploy") does, or the option
+      written with its value in one string, as f"--canary-home={home}" writes it;
+    - a function of the runtime canary that deploys through its own helpers, such as canary or checked, called from
+      another module: only create_home, start_home, and deploy mark a canary home there;
+    - a canary function passed as a value, such as tools/skill_evals.py's Seams default, and called through another
+      name: the module only has to call the refusal somewhere;
+    - a method, or a function the module calls through an attribute, which has no place the module names it, so a
+      deployment there is read as unguarded, as one in a function that calls itself is;
+    - the --canary-home option where it is used rather than written: in a constant at the top of a module it is read
+      at the top, where no function's refusal comes before it;
+    - an import through importlib or __import__, a star import, or a name bound more than once in its scope, which
+      CallableResolver leaves unresolved rather than guess which binding a read sees.
+    """
+
+    def test_every_tool_reaching_a_canary_home_calls_the_shared_refusal_first(self) -> None:
         sources = {
             path.relative_to(REPOSITORY).as_posix(): path.read_text(encoding="utf-8")
             for path in sorted((REPOSITORY / "tools").glob("*.py"))
         }
         self.assertEqual([], unguarded_deployers(sources))
-        reaching = {name for name, text in sources.items() if reaches_a_canary_home(ast.parse(text))}
+        reaching = {
+            name for name, text in sources.items() if DeployerReader(ast.parse(text), module_of(name)).reaches()
+        }
         self.assertTrue(
             {"tools/runtime_canary.py", "tools/plugin_canary.py", "tools/skill_evals.py"} <= reaching, reaching
         )
@@ -285,7 +376,26 @@ class EveryDeployerRefusesTests(unittest.TestCase):
             "imported.py": "from tools.runtime_canary import create_home\n\nhome = create_home()\n",
             "renamed.py": "from tools.runtime_canary import deploy as put\n\nput(home, source)\n",
             "attribute.py": "from tools import runtime_canary\n\nruntime_canary.deploy(home, source)\n",
+            "aliased.py": "from tools import runtime_canary as rc\n\nrc.deploy(home, source)\n",
+            "qualified.py": "import tools.runtime_canary\n\ntools.runtime_canary.deploy(home, source)\n",
+            "bare.py": "import runtime_canary as canary\n\ncanary.start_home()\n",
         }
+        self.assertEqual(sorted(violating), unguarded_deployers(violating))
+
+    def test_a_module_reaching_a_canary_home_before_its_refusal_is_named(self) -> None:
+        head = "from tools import checkout_trust\nfrom tools import runtime_canary as rc\n\n\n"
+        refuse = "    if checkout_trust.refusal(checkout_trust.reader(root)) is not None:\n        return 1\n"
+        violating = {
+            "late.py": f"def main():\n    rc.deploy(home, source)\n{refuse}",
+            "helper.py": f"def run():\n    rc.deploy(home, source)\n\n\ndef main():\n    run()\n{refuse}    run()\n",
+            "other_function.py": f"def main():\n{refuse}    return 0\n\n\ndef other():\n    rc.deploy(home, source)\n",
+            "top.py": f"def main():\n{refuse}    return 0\n\n\nrc.deploy(home, source)\n",
+            "unnamed.py": f"def main():\n{refuse}    return 0\n\n\ndef entry():\n    rc.create_home()\n",
+            "option_first.py": f"def main():\n    arguments = ['--canary-home', home]\n{refuse}",
+            "elsewhere.py": f"def check():\n{refuse}\n\ndef main():\n    rc.deploy(home, source)\n    check()\n",
+            "assigned.py": f"put = rc.deploy\n\n\ndef main():\n    put(home, source)\n{refuse}",
+        }
+        violating = {name: head + body for name, body in violating.items()}
         self.assertEqual(sorted(violating), unguarded_deployers(violating))
 
     def test_a_module_that_refuses_first_or_reaches_no_home_is_not_named(self) -> None:
@@ -295,6 +405,42 @@ class EveryDeployerRefusesTests(unittest.TestCase):
                 "if checkout_trust.refusal(checkout_trust.reader(root)) is None:\n"
                 "    runtime_canary.deploy(home, source)\n"
             ),
+            "through_helpers.py": (
+                "import tools.checkout_trust as trust\n"
+                "from tools import runtime_canary as rc\n\n\n"
+                "def deploy_home(home):\n"
+                "    def put():\n"
+                "        return rc.deploy(home, source)\n\n"
+                "    return put()\n\n\n"
+                "def run(home):\n"
+                "    return deploy_home(home), ['--canary-home', str(home)]\n\n\n"
+                "def main():\n"
+                "    if trust.refusal(trust.reader(root)) is not None:\n"
+                "        return 1\n"
+                "    home = rc.start_home(rc.create_home)\n"
+                "    return run(home)\n"
+            ),
+            "passed_as_a_value.py": (
+                "from tools import checkout_trust, runtime_canary\n\n\n"
+                "class Seams:\n"
+                "    deploy = runtime_canary.deploy\n\n\n"
+                "def main(seams):\n"
+                "    if checkout_trust.refusal(seams.checkout) is None:\n"
+                "        seams.deploy(home, source)\n"
+            ),
             "unrelated.py": "from tools.runtime_canary import quote\n\ndeploy = quote\n\nprint('--canary-homes')\n",
+            "own_deploy.py": "def deploy(home):\n    return home\n\n\ndeploy(home)\n",
+            # Another function's local variable of the same name is no place the module names the function.
+            "shadowed.py": (
+                "from tools import checkout_trust, runtime_canary\n\n\n"
+                "def run():\n"
+                "    runtime_canary.deploy(home, source)\n\n\n"
+                "def listed():\n"
+                "    run = []\n"
+                "    return run\n\n\n"
+                "def main():\n"
+                "    if checkout_trust.refusal(checkout_trust.reader(root)) is None:\n"
+                "        run()\n"
+            ),
         }
         self.assertEqual([], unguarded_deployers(conforming))
