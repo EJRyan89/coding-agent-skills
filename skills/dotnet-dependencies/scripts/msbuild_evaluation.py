@@ -15,10 +15,11 @@ and an `ImportGroup`'s condition applies to each import in it. An import from th
 reader reads, so it is not read. An import the reader does not read for any other reason, a
 condition or a path it cannot settle, a file outside the examined tree or through a link leading out of it, missing,
 or unreadable, is reported, and from it on every property is unsettled, since the file may set any. A file imported
-twice is read once, as MSBuild reads it. Each file or path refused for where it lies, an import or a nearest file
-outside the examined tree or through a link leading out of it, and a `*OfFileAbove` candidate or an `Exists()` path
-below such a link, is also kept apart (`ProjectEvaluation.refused`), since MSBuild would read or stat it, so the caller
-asks no tool that evaluates the project through MSBuild about it.
+twice is read once, as MSBuild reads it. Each file or path refused for where it lies, outside the examined tree or
+through a link leading out of it, is also kept apart (`ProjectEvaluation.refused`): an import, one not read because its
+condition cannot be settled or its path is a wildcard, judged by the folder before the wildcard, included; a nearest
+file; a `*OfFileAbove` start or candidate; and an `Exists()` path. MSBuild would read or stat each, so the caller asks
+no tool that evaluates the project through MSBuild about it.
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -354,9 +355,11 @@ class Evaluation:
         among them. So the faithful answer is file_presence.is_occupied, which reads the path without following a
         link, not is_there, which reads a link to nothing as nothing there. A path below a folder that a link on its way
         leads outside the examined tree (`outside_link_refusal`) is unsettled and reported, never stat; the path's own
-        name is read without following it, so a link there is answered as MSBuild answers it."""
+        name is read without following it, so a link there is answered as MSBuild answers it. A path the tree refuses
+        is unsettled and kept among `refused`, since MSBuild would stat it."""
         path = project_path(self.project.path.parent, text)
         if refusal(path, self.project.sources.tree) is not None:
+            self.refused.append(path)
             return None
         if (linked := outside_link_refusal(path.parent, self.project.sources.tree)) is not None:
             self.refuse(Refused(path, linked))
@@ -368,8 +371,12 @@ class Evaluation:
             return None
 
     def folder_above(self, name: str, start: str) -> str | None:
+        """The folder of the nearest file named `name` at or above `start`, as the `*OfFileAbove` functions search;
+        None, unsettled, for a start the tree refuses, kept among `refused` since MSBuild would search from it, or a
+        candidate refused or one whose stat fails, which is reported."""
         directory = project_path(self.project.path.parent, start)
         if refusal(directory, self.project.sources.tree) is not None:
+            self.refused.append(directory)
             return None
         try:
             found = nearest_file(directory, name, self.project.sources.tree)
@@ -484,17 +491,38 @@ class Evaluation:
         applies = self.holds(element.get("Condition"))
         if applies is False:
             return
+        values = expanded(written, self.value_of, self.files)
+        value = values[0] if len(values) == 1 else None
         if unsettled or applies is None:
             condition = (unsettled or ((element.get("Condition") or "").strip(),))[0]
+            self.keep_refused(value)
             self.not_read(written, f"its condition {condition} cannot be evaluated")
             return
-        values = expanded(written, self.value_of, self.files)
-        if len(values) != 1 or values[0] is None:
+        if value is None:
             self.not_read(written, "its path names a value the reader cannot settle")
-        elif "*" in values[0] or "?" in values[0]:
+        elif "*" in value or "?" in value:
+            self.keep_refused(value)
             self.not_read(written, "its path is a wildcard, which the reader does not expand")
         else:
-            self.import_file(project_path(self.file.parent, values[0]), written)
+            self.import_file(project_path(self.file.parent, value), written)
+
+    def keep_refused(self, value: str | None) -> None:
+        """Keep among `refused` the file an Import the reader does not read names, its condition unsettled or its path
+        a wildcard, when it lies outside the examined tree or through a link leading out of it: MSBuild may read it.
+        The whole path is judged as text, so a `..` after a wildcard that climbs out counts, and its folder before the
+        first name holding a wildcard for links too; the reader expands no wildcard, so a link one matches is not
+        judged, and a path it cannot settle is not judged either."""
+        if value is None:
+            return
+        names = re.split(r"[\\/]", value)
+        wild = next((index for index, name in enumerate(names) if "*" in name or "?" in name), len(names))
+        path = project_path(self.file.parent, value)
+        folder = project_path(self.file.parent, "/".join(names[:wild]))
+        tree = self.project.sources.tree
+        if refusal(path, tree) is not None:
+            self.refused.append(path)
+        elif refusal(folder, tree) is not None or outside_link_refusal(folder, tree) is not None:
+            self.refused.append(folder)
 
     def refuse(self, error: Unreadable) -> None:
         """Report what the evaluation could not read, and keep a file `Refused` for where it lies among `refused`."""
@@ -907,10 +935,11 @@ class ProjectEvaluation:
         return found
 
     def refused(self) -> list[Path]:
-        """Each file or path an evaluation made so far refused for where it lies, once, in the order first met: an
-        import or a nearest file outside the examined tree or through a link leading out of it, a `*OfFileAbove`
-        candidate or an `Exists()` path behind such a link. MSBuild would read or stat each, so the caller asks no
-        tool that evaluates the project through MSBuild."""
+        """Each file or path an evaluation made so far refused for where it lies, outside the examined tree or through
+        a link leading out of it, once, in the order first met, the evaluation of the files alone first and then each
+        build in the order made: an import, one not read for its condition or a wildcard included, a nearest file, a
+        `*OfFileAbove` start or candidate, or an `Exists()` path. MSBuild would read or stat each, so the caller asks
+        no tool that evaluates the project through MSBuild."""
         found: dict[str, Path] = {}
         for path in [*self.outer.refused, *(path for build in self.builds.values() for path in build.refused)]:
             found.setdefault(same_path(path), path)
