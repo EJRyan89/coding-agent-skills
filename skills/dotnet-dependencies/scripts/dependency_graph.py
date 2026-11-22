@@ -75,7 +75,9 @@ solution or its folder, and, when the search found no project at all, with each 
 FAILED line of a search finding none names them. A project named through a link to its file is the project the search
 found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
 why it did not reach it; a project below a link on its way is never stat, since the link may lead outside the
-examined tree, so the folder the search passed over is named whether or not the file is there.
+examined tree, so the folder the search passed over is named whether or not the file is there. A limit: the --project
+argument itself is resolved, up to its last `..` and in full to match a project found through a link inside the tree,
+as the narrowing always resolved it, which reads the metadata of each link on its way, never a file through one.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
