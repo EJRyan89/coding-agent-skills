@@ -334,18 +334,18 @@ class DuplicatedConstantPolicy(unittest.TestCase):
     def test_an_integer_written_as_a_bit_pattern_copied_fails_by_value_in_any_base(self) -> None:
         self.assertEqual(
             [
-                f"CREATE_NEW_PROCESS_GROUP at deployer/one.py:2 and GROUP at tools/two.py:3{self.FIX}",
-                f"CREATE_NO_WINDOW at deployer/one.py:1 and HIDDEN at tools/two.py:2{self.FIX}",
-                f"MODE at deployer/one.py:3 and NEW_FILE_MODE at tools/two.py:4{self.FIX}",
+                f"CREATE_NEW_PROCESS_GROUP at deployer/one.py:2 and GROUP at tools/two.py:2{self.FIX}",
+                f"CREATE_NO_WINDOW at deployer/one.py:1 and HIDDEN at tools/two.py:1{self.FIX}",
+                f"MODE at deployer/one.py:3 and NEW_FILE_MODE at tools/two.py:3{self.FIX}",
             ],
             self.problems(
                 {
                     "deployer/one.py": (
                         "CREATE_NO_WINDOW = 0x08000000\nCREATE_NEW_PROCESS_GROUP = 0x200\nMODE = 0o644\n"
                     ),
-                    # The source column is a byte offset, so a wide character before the literal does not hide it.
+                    # A wide character before the literal on its line does not shift where the literal is read.
                     "tools/two.py": (
-                        'NOTE = "é"\nHIDDEN = 0X08000000\nGROUP: int = 0b1000000000  # 0x200\nNEW_FILE_MODE = 0x1A4\n'
+                        'NOTE = "é"; HIDDEN = 0X08000000\nGROUP: int = 0b1000000000  # 0x200\nNEW_FILE_MODE = 0x1A4\n'
                     ),
                 }
             ),
