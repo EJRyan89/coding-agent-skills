@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -21,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import json_writer
 import path_containment
 import path_keys
@@ -38,10 +40,23 @@ from test_review_io import UNPARSEABLE_JSON
 from test_review_runtime_validation import directory_link
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+REAL_LINK = os.link
 AGENT = "a71dab35ebc1b97eb"  # the form Claude Code gives an agent ID
 OTHER_AGENT = "a73176509870d6114"
 OTHER_USER = 4242  # another local account's user id
 CLAIMS_NAME = "code-review-reviewer-claims"
+UNREADABLE_CLAIM = (
+    "Code-review reviewer boundary: this reviewer's claim could not be read; run the role again with a fresh "
+    "reviewer, which claims it anew."
+)
+# The age, in seconds, past which a claim that does not parse is pruned: the guard's UNREADABLE_CLAIM_AGE.
+UNREADABLE_CLAIM_AGE = 600
+
+
+def age_by(path: Path, seconds: float) -> None:
+    """Move `path`'s modification time `seconds` further into the past."""
+    status = path.stat()
+    os.utime(path, (status.st_atime - seconds, status.st_mtime - seconds))
 
 
 def make_run(folder: Path, roles: list[str], *, entrypoint: bool = False) -> Path:
@@ -903,16 +918,17 @@ class ClaimTests(GuardFixture):
                 winning_role = "sql-review" if allowed else "csharp-review"
                 winning_claim = json.dumps({"run": str(winner), "role": winning_role})
 
-                def racing_open(
-                    *args: object,
+                def racing_link(
+                    copy: Path,
+                    target: Path,
+                    *,
                     destination: Path = claims / f"{AGENT}.json",
                     content: str = winning_claim,
-                    **kwargs: object,
-                ) -> int:
+                ) -> None:
                     destination.write_text(content, encoding="utf-8")
-                    raise FileExistsError
+                    REAL_LINK(copy, target)
 
-                with mock.patch.object(guard, "CLAIMS", claims), mock.patch.object(os, "open", racing_open):
+                with mock.patch.object(guard, "CLAIMS", claims), mock.patch.object(os, "link", racing_link):
                     reason = self.decide("Read", file_path=self.prompt())
                     if allowed:
                         self.assertIsNone(reason)
@@ -993,7 +1009,7 @@ class ClaimTests(GuardFixture):
         (self.claims / f"{AGENT}.json").write_text(json.dumps({"run": str(self.run_directory)}), encoding="utf-8")
         self.assert_denied(self.decide("Write", file_path=self.result()))
 
-    def test_a_run_or_claim_the_parser_refuses_denies_as_unreadable_and_a_stale_one_is_left_in_place(self) -> None:
+    def test_a_run_or_claim_the_parser_refuses_denies_as_unreadable_and_is_pruned_only_once_it_is_old(self) -> None:
         run_file = self.run_directory / "run.json"
         run = run_file.read_bytes()
         stale = self.claims / f"{OTHER_AGENT}.json"
@@ -1007,16 +1023,174 @@ class ClaimTests(GuardFixture):
                 run_file.write_bytes(run)
                 self.claims.mkdir(exist_ok=True)
                 (self.claims / f"{AGENT}.json").write_bytes(content)
-                self.assertEqual(
-                    "Code-review reviewer boundary: this reviewer's claim could not be read.",
-                    self.decide("Write", file_path=self.result()),
-                )
+                self.assertEqual(UNREADABLE_CLAIM, self.decide("Write", file_path=self.result()))
                 (self.claims / f"{AGENT}.json").unlink()
-                # A new claim prunes claims whose run is gone; one it cannot read is not known to be gone.
+                # A new claim prunes claims whose run is gone; one it cannot read is kept while a guard may still be
+                # writing it, and pruned once it is old.
                 stale.write_bytes(content)
                 self.claim()
                 self.assertEqual(content, stale.read_bytes())
                 (self.claims / f"{AGENT}.json").unlink()
+                age_by(stale, UNREADABLE_CLAIM_AGE)
+                self.claim()
+                self.assertFalse(stale.exists())
+                (self.claims / f"{AGENT}.json").unlink()
+
+    def test_a_claim_whose_write_fails_after_the_create_or_part_way_leaves_none_and_a_retry_claims(self) -> None:
+        # The disk fills once the claim's file is created, or part way through its write: whichever file the guard
+        # writes the claim through, the failed call leaves no claim, so the retry is a first read that claims anew.
+        claim = {"run": str(self.run_directory), "role": "csharp-review"}
+        for fault, patches in (
+            ("after the create", self.full_disk_after_the_create()),
+            ("part way through the write", self.full_disk_part_way()),
+        ):
+            with self.subTest(fault=fault):
+                shutil.rmtree(self.claims, ignore_errors=True)
+                with contextlib.ExitStack() as stack:
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    with self.assertRaises(OSError) as caught:
+                        self.decide("Read", file_path=self.prompt())
+                self.assertEqual(errno.ENOSPC, caught.exception.errno)
+                self.assertFalse((self.claims / f"{AGENT}.json").exists(), "a failed write leaves no claim")
+                self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
+                self.claim()
+                self.assertEqual(claim, json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")))
+                self.assertTrue(guard.claimed(self.run_directory, "csharp-review"))
+                guard.read_log(self.run_directory, "csharp-review").unlink()
+
+    def full_disk_after_the_create(self) -> list[Any]:
+        """os.open creating a file in the claims folder, then failing as a full disk does, the file left created."""
+        real_open = os.open
+
+        def full_disk(file: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            descriptor = real_open(file, flags, *args, **kwargs)
+            if flags & os.O_CREAT and Path(file).parent == self.claims:
+                os.close(descriptor)
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+            return descriptor
+
+        return [mock.patch.object(os, "open", full_disk)]
+
+    def full_disk_part_way(self) -> list[Any]:
+        """Every write, through a descriptor or a stream os.fdopen made, writing the first half of what it is given
+        and then failing as a full disk does."""
+        real_write, real_fdopen = os.write, os.fdopen
+
+        def full_disk(descriptor: int, data: Any) -> int:
+            real_write(descriptor, bytes(data[: len(data) // 2]))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        class HalfStream:
+            def __init__(self, stream: Any) -> None:
+                self.stream = stream
+
+            def __enter__(self) -> HalfStream:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                self.stream.close()
+
+            def write(self, text: str) -> int:
+                self.stream.write(text[: len(text) // 2])
+                self.stream.flush()
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        def half_stream(*args: Any, **kwargs: Any) -> HalfStream:
+            return HalfStream(real_fdopen(*args, **kwargs))
+
+        return [mock.patch.object(os, "write", full_disk), mock.patch.object(os, "fdopen", half_stream)]
+
+    def test_a_parallel_first_call_at_any_step_of_a_claim_reads_the_whole_claim_or_none(self) -> None:
+        # The agent's second first read runs in the middle of the first one's claim, at each step the claim's write
+        # takes: it finds no claim and claims itself, or finds the whole claim, never part of one, and both reads hold.
+        claim = {"run": str(self.run_directory), "role": "csharp-review"}
+        ran: list[str] = []
+        for step in ("open", "fdopen", "write", "fsync", "link"):
+            with self.subTest(step=step):
+                shutil.rmtree(self.claims, ignore_errors=True)
+                parallel: list[str | None] = []
+                with mock.patch.object(os, step, self.parallel_first_read(step, getattr(os, step), parallel, ran)):
+                    self.assertIsNone(self.decide("Read", file_path=self.prompt()))
+                self.assertEqual([None] if parallel else [], parallel, "the parallel first read holds")
+                self.assertEqual(claim, json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")))
+        self.assertIn("link", ran, "the claim is linked into place")
+
+    def parallel_first_read(self, step: str, real: Any, parallel: list[str | None], ran: list[str]) -> Any:
+        """`real`, the os function named `step`, which first makes the agent's parallel first read, once, and keeps
+        its denial reason, or None, in `parallel`, and `step` in `ran`."""
+
+        def at_step(*args: Any, **kwargs: Any) -> Any:
+            if not parallel:
+                parallel.append("running")
+                parallel[0] = self.decide("Read", file_path=self.prompt())
+                ran.append(step)
+            return real(*args, **kwargs)
+
+        return at_step
+
+    def test_a_claim_made_whose_copy_is_left_denies_and_holds_and_one_not_made_leaves_none(self) -> None:
+        real_create = atomic_file.create_bytes
+
+        def unfinished(made: bool) -> Any:
+            def create(path: Path, data: bytes, **kwargs: Any) -> None:
+                copy = path.with_name(f".{path.name}.left.tmp")
+                if made:
+                    real_create(path, data, **kwargs)
+                raise atomic_file.UnfinishedCopyError(
+                    target=path,
+                    copy=copy,
+                    failure=OSError(errno.EIO, "I/O error"),
+                    removal=PermissionError(),
+                    made=made,
+                )
+
+            return create
+
+        with (
+            mock.patch.object(atomic_file, "create_bytes", unfinished(made=False)),
+            self.assertRaises(atomic_file.UnfinishedCopyError),
+        ):
+            self.decide("Read", file_path=self.prompt())
+        self.assert_no_claim("a claim not made is no claim")
+        self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
+        with mock.patch.object(atomic_file, "create_bytes", unfinished(made=True)):
+            self.assertEqual(
+                "Code-review reviewer boundary: this reviewer's claim is made, but the copy it was written through is "
+                "left; read the prompt file your task names first.",
+                self.decide("Read", file_path=self.prompt()),
+            )
+        self.assertTrue(guard.claimed(self.run_directory, "csharp-review"), "the claim holds, so its log is started")
+        self.assertIsNone(self.decide("Read", file_path=self.prompt()))
+        self.assertIsNone(self.decide("Write", file_path=self.result()))
+        self.assert_denied(self.decide("Write", file_path=self.result("sql-review")), "write only your own result file")
+
+    def test_an_older_guard_s_empty_or_partial_claim_denies_naming_the_remedy_and_is_pruned_once_old(self) -> None:
+        # An older guard created a claim and then wrote it, so a write that failed or was killed left it empty or
+        # partial. Its own agent is denied with the remedy; a new claim prunes it once no guard can still be writing it.
+        whole = json.dumps({"run": str(self.run_directory), "role": "csharp-review"}).encode()
+        for content in (b"", whole[: len(whole) // 2]):
+            with self.subTest(content=content):
+                shutil.rmtree(self.claims, ignore_errors=True)
+                self.claims.mkdir()
+                broken = self.claims / f"{OTHER_AGENT}.json"
+                broken.write_bytes(content)
+                for tool, tool_input in (
+                    ("Read", {"file_path": self.prompt()}),
+                    ("Write", {"file_path": self.result()}),
+                ):
+                    self.assertEqual(UNREADABLE_CLAIM, self.decide(tool, agent=OTHER_AGENT, **tool_input))
+                age_by(broken, UNREADABLE_CLAIM_AGE - 60)
+                self.claim()
+                self.assertEqual(content, broken.read_bytes(), "a young claim is kept")
+                age_by(broken, 120)
+                self.claim(agent="a000000000000000f")
+                self.assertFalse(broken.exists(), "an old claim is pruned")
+                # Every call of its agent was denied, so its next read is a first read, of any role's prompt, as a
+                # fresh agent's is, and then holds it to that role alone.
+                self.claim("sql-review", agent=OTHER_AGENT)
+                self.assert_denied(self.decide("Write", agent=OTHER_AGENT, file_path=self.result()), "write only")
+                self.assertIsNone(self.decide("Write", agent=OTHER_AGENT, file_path=self.result("sql-review")))
 
     def test_a_claim_on_a_role_the_run_no_longer_has_denies(self) -> None:
         self.claim()
@@ -1212,7 +1386,7 @@ class FieldKindTests(GuardFixture):
         self.assert_no_claim("a denied first read claims nothing")
 
     def test_claim_fields_of_the_wrong_kind_deny_with_the_unreadable_claim(self) -> None:
-        reason = "Code-review reviewer boundary: this reviewer's claim could not be read."
+        reason = UNREADABLE_CLAIM
         run = str(self.run_directory)
         claims: list[Any] = [
             [],
