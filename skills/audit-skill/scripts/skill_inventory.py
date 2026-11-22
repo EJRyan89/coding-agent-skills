@@ -17,7 +17,8 @@
 Every command prints one fact per line in forward-slash paths. locate prefers a source skill to its deployed
 copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill. It ends
 NOT_FOUND and its AVAILABLE lines, or AMBIGUOUS lines, with STOP <message>, the message the audit stops with, and
-prints only that line for an empty name. A missing or unreadable input prints FAILED <reason> as its last line.
+prints only that line for an empty name. A command that cannot finish prints FAILED <reason>, naming why, as its last
+line.
 
 Exit status:
   0  the command printed its facts
@@ -90,10 +91,12 @@ Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
 including the fence lines, are code and the rest is prose. A helper script or data file that is not UTF-8 text
 counts 0, since it is measured rather than loaded. A Markdown file the skill loads, its own or one it reads from
-outside its folder, that is not UTF-8 text prints UNREADABLE <path> <reason> instead of a cost, the path relative to
-the skill folder, and inventory exits 1 after it; tools and scan, which read the text itself, fail on one. scan fails
-too on a script whose status lines it compares that is not UTF-8 text, not valid Python, or Bash the one Bash grammar
-refuses, whose output it cannot measure.
+outside its folder, that is not UTF-8 text, or one outside its folder that cannot be examined, prints
+UNREADABLE <path> <reason> instead of a cost, the path relative to the skill folder, and inventory exits 1 after it.
+tools and scan read the text itself and no Markdown outside the folder: tools fails on a Markdown file in the folder
+that is not UTF-8 text, and scan on one it is given or that a folder it is given stands for. scan fails too on a
+script whose status lines it compares that is not UTF-8 text, not valid Python, or Bash the one Bash grammar refuses,
+whose output it cannot measure.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -108,8 +111,8 @@ user-invocable: false); DESCRIPTION_LEAD <sentence> is a model-invocable descrip
 shortening its listing keeps longest; INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
 model-invocable skill in its source tree, TRIGGER_SCENARIO <path> <requests> <near misses> is each scenario.json of the
 skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges
-whether the description starts the skill, TRIGGER_SCENARIO_UNREADABLE <path> <reason> each scenario.json there that
-cannot be read or is not a JSON object, and NO_TRIGGER_SCENARIO <path> names that folder when it holds neither.
+whether the description starts the skill, TRIGGER_SCENARIO_UNREADABLE <path> <reason> each scenario.json there the
+audit cannot use, the reason naming why, and NO_TRIGGER_SCENARIO <path> names that folder when it holds neither.
 
 Tool references: a tool counts as used on a line when its exact, case-sensitive name is
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
