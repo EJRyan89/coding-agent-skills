@@ -2428,11 +2428,16 @@ class RunPieceTests(unittest.TestCase):
                 "PATH": "kept",
                 "TMPDIR": str(run / "tmp"),
                 "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
                 "CODE_REVIEW_CONFIG": str(config),
                 "CODE_REVIEW_STATE": str(run / "state.json"),
                 "CODE_REVIEW_FLAGS": str(run / "flags.json"),
             },
-            skill_evals_runs.run_environment({"PATH": "kept", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, run, config),
+            skill_evals_runs.run_environment(
+                {"PATH": "kept", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"},
+                run,
+                config,
+            ),
         )
 
     def test_a_trigger_session_reads_no_claude_md_above_its_home_nor_the_users(self) -> None:
@@ -2440,9 +2445,27 @@ class RunPieceTests(unittest.TestCase):
         # account's CLAUDE.md in the shared temporary directory loaded as project instructions.
         run = self.root / "run"
         self.assertEqual(
-            {"PATH": "kept", "TMPDIR": str(run / "tmp"), "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"},
+            {
+                "PATH": "kept",
+                "TMPDIR": str(run / "tmp"),
+                "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            },
             skill_evals_runs.trigger_environment({"PATH": "kept", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, run),
         )
+
+    def test_no_session_writes_auto_memory_even_where_the_user_forces_it_on(self) -> None:
+        # The variable that keeps CLAUDE.md out stops only the loading of auto memory, so every run on a model could
+        # still save memories into the user's own memory folder for that model's home. A user's 0 forces it on over
+        # every setting, so the run's 1 must replace it in both environments.
+        run, config = self.root / "run", self.root / "config.json"
+        forced = {"PATH": "kept", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}
+        for environment in (
+            skill_evals_runs.trigger_environment(forced, run),
+            skill_evals_runs.run_environment(forced, run, config),
+        ):
+            self.assertEqual("1", environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"])
+        self.assertEqual({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}, skill_evals_runs.AUTO_MEMORY_OFF_VARIABLES)
 
     def test_the_configuration_is_one_the_core_accepts(self) -> None:
         written = write_config(skill_evals_runs.review_config(self.root), self.root / "config.json")
@@ -3041,6 +3064,9 @@ class StubClaude:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
+        # Every review session reads no CLAUDE.md or auto memory, and writes no auto memory.
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS"))
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
         model = reviewer_of(arguments)["model"]
         self.test.assertEqual(model, frontmatter_model(cwd / skill_evals_runs.REVIEWER_AGENT))
         calls: list[dict[str, Any]] = []
@@ -4955,6 +4981,7 @@ class StubTrigger:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
         self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
         self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS"))
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
         request, model = arguments[2], arguments[arguments.index("--model") + 1]
         skills = [] if self.bare else ["audit-ai-config", *(["audit-skill"] if self.listed else [])]
         content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]
@@ -5885,6 +5912,9 @@ class StubSynthesis:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
+        # Every synthesis session reads no CLAUDE.md or auto memory, and writes no auto memory.
+        assert environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS") == "1"
+        assert environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
         words = [quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', arguments[2])]
         assert words[0] == "/review-insights"
         run = Path(environment["TMPDIR"]).parent
