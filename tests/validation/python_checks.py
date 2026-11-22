@@ -230,6 +230,13 @@ CEILINGS = {
     "mccabe": {"max-complexity": 15},
     "pylint": {"max-statements": 50, "max-args": 17, "max-positional-args": 14},
 }
+# What a contributor does instead of raising each ceiling, named in the refusal.
+CEILING_REMEDIES = {
+    "max-complexity": "split the function instead",
+    "max-statements": "split the function instead",
+    "max-args": "group the arguments that travel together into a dataclass or an options object instead",
+    "max-positional-args": "make the later parameters keyword-only instead",
+}
 BLIND_EXCEPT_CEILING = 14
 BLIND_EXCEPT = "BLE001"
 
@@ -259,7 +266,7 @@ def ratchet_problems(lint: dict[str, Any], blind_excepts: list[str]) -> list[str
             if not isinstance(value, int) or isinstance(value, bool) or value > ceiling:
                 found.append(
                     f"[tool.ruff.lint.{table}] {key} is {value!r}; the ratchet holds it at {ceiling} or lower, so "
-                    "split the function instead"
+                    f"{CEILING_REMEDIES[key]}"
                 )
             elif value < ceiling:
                 found.append(
