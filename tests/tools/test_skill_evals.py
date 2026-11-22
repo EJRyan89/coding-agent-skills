@@ -6763,7 +6763,8 @@ def test_records_judge_resolved_on_the_transcript_of_a_by_name_run_that_recorded
     assert verdict[0].startswith(f"cannot read {record}")
     assert verdict[1:] == ("run", False)
     # Another kind of scenario carries no calls, whatever its folder holds.
-    assert skill_evals_judging.unrecorded(dataclasses.replace(scenario, by_name=False), records / "haiku.jsonl") is None
+    other = dataclasses.replace(scenario, by_name=False)
+    assert skill_evals_judging.unrecorded_error(other, records / "haiku.jsonl", "x").calls is None
 
 
 def test_a_row_counts_the_resolved_judgment_of_a_run_that_started_no_reviewer(tmp_path: Path) -> None:
@@ -6821,13 +6822,22 @@ def test_a_transcript_is_judged_only_when_the_session_ran_as_a_counted_run_s_mus
 def test_records_judge_nothing_on_a_transcript_that_cannot_be_read_or_is_unread(tmp_path: Path) -> None:
     scenario = by_name_scenario(tmp_path / "scenarios")
     transcript = tmp_path / "haiku.jsonl"
+
+    def unrecorded(transcript: Path) -> tuple[str, str, list[dict[str, Any]] | None]:
+        error = skill_evals_judging.unrecorded_error(scenario, transcript, "no record")
+        return str(error), error.kind, error.calls
+
+    assert unrecorded(transcript) == ("no record", "run", None)
+    # A transcript that is there and cannot be read is reported beside the record's reason, never read as absent.
     transcript.mkdir()
-    assert skill_evals_judging.unrecorded(scenario, transcript) is None
+    reason, kind, calls = unrecorded(transcript)
+    assert reason.startswith(f"no record; cannot read {transcript}: ")
+    assert (kind, calls) == ("run", None)
     transcript.rmdir()
     transcript.write_bytes(b"\xff\xfe")
-    assert skill_evals_judging.unrecorded(scenario, transcript) is None
+    assert unrecorded(transcript)[0].startswith(f"no record; cannot read {transcript}: ")
     unread = {"type": "assistant", "message": {"model": "claude-opus-5-5", "content": 1}}
     transcript.write_text(json.dumps(unread), encoding="utf-8")
-    assert skill_evals_judging.unrecorded(scenario, transcript) is None
+    assert unrecorded(transcript) == ("no record", "run", None)
     transcript.write_text(assistant("claude-opus-5-5", calls=[RESOLVE]), encoding="utf-8")
-    assert skill_evals_judging.unrecorded(scenario, transcript) == [RESOLVE]
+    assert unrecorded(transcript) == ("no record", "run", [RESOLVE])

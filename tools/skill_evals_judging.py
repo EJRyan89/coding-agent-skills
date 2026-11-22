@@ -93,7 +93,7 @@ def records_in(directory: Path) -> RecordSource:
     the scenario's review version, a guard that held every reviewer, and each reviewer's reported model, the one its
     route pins or else the judged one. A synthesis record is the insights report, which names neither the model nor
     the guard, so neither is checked here. A by-name run's missing or unreadable record carries the session's own
-    tool calls from the transcript beside it when `unrecorded` finds them, as a run's does."""
+    tool calls from the transcript beside it when unrecorded_error finds them, as a run's does."""
 
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
@@ -109,9 +109,9 @@ def records_in(directory: Path) -> RecordSource:
         try:
             record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:
-            raise RecordError(f"no record at {path}", calls=unrecorded(scenario, transcript)) from exc
+            raise unrecorded_error(scenario, transcript, f"no record at {path}") from exc
         except (OSError, ValueError) as exc:
-            raise RecordError(f"cannot read {path}: {exc}", calls=unrecorded(scenario, transcript)) from exc
+            raise unrecorded_error(scenario, transcript, f"cannot read {path}: {exc}") from exc
         if scenario.mode == TRIGGER:
             problem = trigger_record_problem(record, scenario, model)
             if problem:
@@ -136,18 +136,24 @@ def records_in(directory: Path) -> RecordSource:
     return source
 
 
-def unrecorded(scenario: Scenario, path: Path) -> list[dict[str, Any]] | None:
-    """The session's own tool calls in the transcript at `path` under --records of a by-name run that recorded no
-    review, when transcript_judged holds of it; None for any other scenario, or when the transcript is missing, cannot
-    be read, is in a shape the reader does not read, or shows a run that does not count, since the record's own
-    failure then stands for every expectation."""
+def unrecorded_error(scenario: Scenario, path: Path, reason: str) -> RecordError:
+    """The RUN failure, for `reason`, of a run under --records whose record is missing or unreadable. A by-name run's
+    carries the session's own tool calls in the transcript at `path` when transcript_judged holds of it, and adds why
+    the transcript cannot be read when it exists and cannot be; a missing transcript, one in a shape the reader does
+    not read, or one of a run that does not count leaves the reason to stand for every expectation."""
     if not scenario.by_name:
-        return None
+        return RecordError(reason)
     try:
         text = path.read_text(encoding="utf-8")
-        return session_tool_calls(text) if transcript_judged(text, scenario.skill) else None
-    except (OSError, UnicodeDecodeError, claude_stream.StreamError):
-        return None
+    except FileNotFoundError:
+        return RecordError(reason)
+    except (OSError, UnicodeDecodeError) as exc:
+        return RecordError(f"{reason}; cannot read {path}: {exc}")
+    try:
+        calls = session_tool_calls(text) if transcript_judged(text, scenario.skill) else None
+    except claude_stream.StreamError:
+        calls = None
+    return RecordError(reason, calls=calls)
 
 
 def transcript_calls(path: Path) -> list[dict[str, Any]]:
