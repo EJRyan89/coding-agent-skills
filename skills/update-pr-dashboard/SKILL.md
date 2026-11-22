@@ -40,10 +40,10 @@ If the user wants a repository tracked, such as one an `UNTRACKED_REPOSITORY` li
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" repository --add "<owner/repo>"
 ```
-It adds the repository to the set step 1 reads without a scope, or to the user's `--repository-set NAME`. It prints `ADDED_REPOSITORY <owner/repo> reviewer=generic` when the repository had no entry and now has the generic reviewer, `ADDED_TO_SET <set> <owner/repo>`, and `WROTE <configuration>`. A `FAILED` line names a repository already in the set, an unknown set, or a configuration that does not validate; report it. Its pull requests appear from the next collection.
+It adds the repository to the set step 1 reads without a scope, or to the user's `--repository-set NAME`. It prints `ADDED_REPOSITORY <owner/repo> reviewer=generic` when the repository had no entry and now has the generic reviewer, `ADDED_TO_SET <set> <owner/repo>`, and `WROTE <configuration>`. A `FAILED` line names why the configuration was left as it was; report it. Its pull requests appear from the next collection.
 
 If the user wants an `UNTRACKED_REPOSITORY` line gone without tracking the repository, such as a sandbox or one they touch only in passing, mute it, or a pattern such as `"<owner>/*"` or `"<owner>/test-*"` (`*` any run of characters, `?` any one, matched in the owner and the name separately, ignoring case):
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" repository --ignore "<owner/repo>"
 ```
-It records the entry in the configuration's `dashboard.ignored_repositories`, printing `IGNORED <entry>` and `WROTE <configuration>`; `--unignore "<entry>"`, naming the entry as it was muted, removes it, printing `UNIGNORED <entry>`. Muting changes only what step 1 names, never what it collects. A `FAILED` line names an entry already muted or not muted, one that is not an `owner/repo` identity or pattern, or one a repository in a set matches, since a tracked repository cannot be muted; report it.
+It records the entry in the configuration's `dashboard.ignored_repositories`, printing `IGNORED <entry>` and `WROTE <configuration>`; `--unignore "<entry>"`, naming the entry as it was muted, removes it, printing `UNIGNORED <entry>`. Muting changes only what step 1 names, never what it collects. A `FAILED` line names why the configuration was left as it was; report it.
