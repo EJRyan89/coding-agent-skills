@@ -11,9 +11,8 @@
 #                    deployed <commit>, the pin is not the release channel's own, and --unpin was not given; on the
 #                    main channel nothing was fetched, and on the release channel the clone was fetched and the pin
 #                    is at another commit than the release the update would deploy
-#   FETCH_FAILED     followed by Git's error on one line: origin could not be reached, refused, wanted a credential
-#                    the configured helpers could not give without asking, or did not answer within the time limit; a
-#                    fetch that failed in the clone itself, such as a ref Git could not lock, is a FAILED line
+#   FETCH_FAILED     followed by Git's error on one line: a call to origin failed; a fetch that failed in the clone
+#                    itself, such as a ref Git could not lock, is a FAILED line
 #   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
 #                    nothing was fetched
 #   NO_RELEASE       alone, on the release channel: no release tag reaches origin/main; the clone was fetched
