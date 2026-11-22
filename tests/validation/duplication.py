@@ -938,6 +938,10 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     Copied helpers began identical and then drifted, and so did copied patterns; a copy caught while it is still
     identical is caught before it diverges. Two scripts of one skill count, because one can import the other. A name
     bound twice in one file is a copy that has already diverged, and the second binding wins.
+
+    Stated limit: an integer is compared only when written as a hexadecimal, octal, or binary literal, and a decimal
+    integer never, since unrelated counts, limits, and versions share decimal values by chance (BIT_PATTERN_PREFIXES
+    says which). A bit pattern copied in decimal, negated, or built from others, as `A | B` is, goes unseen.
     """
     copies: dict[str, list[Copy]] = {}
     allowances: dict[str, dict[str, str]] = {}
