@@ -921,6 +921,21 @@ def unremovable_copies(folder: Path) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def refused_link(folder: Path) -> Iterator[None]:
+    """A hard link into `folder` is refused with EPERM, as a file system without hard links, such as FAT or exFAT,
+    refuses one even where nothing is at its target."""
+    real_link = os.link
+
+    def link(source: Any, target: Any, *arguments: Any, **options: Any) -> None:
+        if Path(target).parent.resolve() == folder.resolve():
+            raise OSError(errno.EPERM, os.strerror(errno.EPERM), str(source), str(target))
+        real_link(source, target, *arguments, **options)
+
+    with mock.patch.object(os, "link", link):
+        yield
+
+
 class ReportWriteTests(unittest.TestCase):
     """The report is made whole or not at all: a write that fails part way leaves no report and no copy beside it,
     so the next audit writes it, and a copy left beside a report that is made is named."""
@@ -1023,6 +1038,20 @@ class ReportWriteTests(unittest.TestCase):
                 if arguments:
                     self.assertEqual(f"FAILED {failed}: {left}{self.target}: {removal}\n", stdout)
                 copy.unlink()
+
+    def test_a_folder_whose_file_system_refuses_hard_links_gets_no_report_and_a_line_naming_the_refusal(self) -> None:
+        # The limit atomic_file.create_bytes states: the copy is put in place by a hard link, which FAT or exFAT
+        # refuses, so neither a report nor a copy is left, and the line says the file system refused, never that the
+        # report already exists.
+        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
+        for folder, arguments, failed in (
+            (self.out, ("--output", str(self.target)), f"cannot write {self.target}"),
+            (self.temporary, (), "the audit report cannot be written"),
+        ):
+            with self.subTest(folder=folder.name):
+                with refused_link(folder):
+                    self.assertEqual((1, f"FAILED {failed}: {refused}\n", ""), self.audit(*arguments))
+                self.assertEqual([], list(folder.iterdir()), "no report and no copy is left")
 
     def test_a_default_report_takes_the_next_fresh_name_when_one_is_taken(self) -> None:
         taken = write(self.temporary / f"memory-audit-{'a' * 16}.json", "kept\n")

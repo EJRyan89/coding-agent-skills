@@ -38,7 +38,8 @@ anything, an --output that exists or lies inside the memory directory, the confi
 projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills, and it makes
 no folder, so an --output whose folder is missing is a FAILED line. The report is made whole or not at
 all, through ejryan89-skill-core's atomic_file.create_bytes, as a file its owner alone may read and
-write: a write that fails part way leaves no report and no copy, so the next audit writes it. It is put
+write: a write that fails part way leaves no report and no copy, unless the copy itself cannot be
+removed, which the FAILED line names, so the next audit writes it. It is put
 in place by a hard link, so an --output whose file system has none, such as FAT or exFAT, gets no
 report, and the FAILED line names the file system's refusal. Once the report is in place it is whole:
 a temporary copy beside it that cannot then be removed is a `FAILED the audit report <path> is made,
@@ -253,8 +254,8 @@ LINE_SPLIT_ALLOWED = {
 
 PRESENCE_ALLOWED = {
     "output_refusal": (
-        "a failed stat reads as no file here, but main opens the report with mode x, which never replaces a file "
-        "and raises for one it cannot create"
+        "a failed stat reads as no file here, but audit_lines creates the report with create_bytes, which never "
+        "replaces a file and raises for one it cannot create"
     ),
 }
 
