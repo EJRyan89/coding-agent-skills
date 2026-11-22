@@ -521,6 +521,25 @@ class InventoryTests(TemporaryTestCase):
             [line for line in lines if line.startswith(("FILE", "NO_MAIN", "TOTAL main", "TOTAL all"))],
         )
 
+    def test_tools_and_scan_read_no_markdown_outside_the_folder_and_fail_on_one_inside_it(self) -> None:
+        # Only inventory reads a Markdown file outside the skill's folder; tools and scan never do, so one there that
+        # is not UTF-8 text fails neither, while one inside the folder that scan is given fails both.
+        skill = self.root / "skills" / "w"
+        write(skill / "SKILL.md", "---\nname: w\ndescription: d\n---\nSee [a](a.md) and [o](../outside.md).\n")
+        write(skill / "a.md", "ok\n")
+        write(self.root / "skills" / "outside.md", "caf\xe9\n".encode("cp1252"))
+        self.assertEqual(1, run("inventory", str(skill))[0])
+        for command, target in (("tools", skill / "SKILL.md"), ("scan", skill)):
+            with self.subTest(command=command):
+                code, lines, error = run(command, str(target))
+                self.assertEqual(0, code, error)
+                self.assertEqual([], [line for line in lines if line.startswith(("FAILED", "UNREADABLE"))])
+        inside = write(skill / "a.md", "caf\xe9\n".encode("cp1252"))
+        for command, target in (("tools", skill / "SKILL.md"), ("scan", skill)):
+            with self.subTest(command=command, inside=True):
+                code, lines, _ = run(command, str(target))
+                self.assertEqual((1, f"FAILED cannot read {inside.as_posix()}: not UTF-8 text"), (code, lines[-1]))
+
     def test_missing_directory_fails(self) -> None:
         code, lines, error = run("inventory", str(self.root / "absent"))
         self.assertEqual((1, ""), (code, error))
@@ -2506,6 +2525,21 @@ class AgentTests(SourceTreeTestCase):
         # A .git that is a link to nothing is no repository for the skill's commands to run from either.
         (self.root / ".git").symlink_to(self.root / "no-git")
         self.assertNotEqual(self.root, skill_inventory.repository_root(skill.parent))
+
+    def test_a_dependencys_metadata_that_exists_but_cannot_be_read_is_unreadable_and_a_missing_one_is_not(self) -> None:
+        # SKILL.md names these causes of DECLARED_UNREADABLE, which prints only a path: a file that exists but cannot
+        # be read is one, and a file that is missing is none, since a skill with no metadata declares nothing.
+        skill = self.skill("Body.\n", {"skill_deps": ["beta", "gamma"]})
+        self.skill("Body.\n", {}, name="beta")
+        beta = self.root / "deploy-meta" / "beta.json"
+        beta.unlink()
+        beta.mkdir()
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [f"DECLARED_UNREADABLE {beta.as_posix()}", "DECLARED skill beta", "DECLARED skill gamma"],
+            [line for line in lines if line.startswith("DECLARED")],
+        )
 
     def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
         for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
