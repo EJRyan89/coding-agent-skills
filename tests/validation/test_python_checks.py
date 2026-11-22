@@ -42,6 +42,7 @@ from call_tables import TEXT_OPENERS, TextOpener
 from job_selection import all_jobs
 from python_checks import (
     BLIND_EXCEPT_CEILING,
+    CEILING_REMEDIES,
     CEILINGS,
     FORMAT_ROOTS,
     blind_except_noqa,
@@ -667,9 +668,12 @@ class PythonChecksFixtures(unittest.TestCase):
             ],
             ratchet_problems(lowered, held[1:]),
         )
+        # Each ceiling names its own remedy in the refusal.
+        self.assertEqual(sorted(key for keys in CEILINGS.values() for key in keys), sorted(CEILING_REMEDIES))
         raised = copy.deepcopy(CEILINGS)
         raised["mccabe"]["max-complexity"] += 1
         raised["pylint"]["max-args"] = True
+        raised["pylint"]["max-positional-args"] += 1
         del raised["pylint"]["max-statements"]
         self.assertEqual(
             [
@@ -678,7 +682,10 @@ class PythonChecksFixtures(unittest.TestCase):
                 f"[tool.ruff.lint.pylint] max-statements is None; the ratchet holds it at "
                 f"{CEILINGS['pylint']['max-statements']} or lower, so split the function instead",
                 f"[tool.ruff.lint.pylint] max-args is True; the ratchet holds it at {CEILINGS['pylint']['max-args']} "
-                "or lower, so split the function instead",
+                "or lower, so group the arguments that travel together into a dataclass or an options object instead",
+                f"[tool.ruff.lint.pylint] max-positional-args is {CEILINGS['pylint']['max-positional-args'] + 1}; the "
+                f"ratchet holds it at {CEILINGS['pylint']['max-positional-args']} or lower, so make the later "
+                "parameters keyword-only instead",
             ],
             ratchet_problems(raised, held),
         )
