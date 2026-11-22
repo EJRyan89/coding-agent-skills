@@ -40,6 +40,7 @@ import path_keys
 import review_batches
 import review_document
 import review_guard
+import review_io
 import review_pipeline as rp
 import review_run
 import review_runtime
@@ -1930,6 +1931,13 @@ class PullRequestTests(PipelineTestCase):
         def fail_second(listed_runs: list[dict[str, Any]]) -> None:
             listed_runs[1]["status"] = "failed"
 
+        def check_second(listed_runs: list[dict[str, Any]]) -> None:
+            listed_runs[1]["status"] = "valid"
+
+        def without_reports(listed_runs: list[dict[str, Any]]) -> None:
+            for entry in listed_runs:
+                entry.pop("report", None)
+
         def swap_reports(listed_runs: list[dict[str, Any]]) -> None:
             listed_runs[0]["report"], listed_runs[2]["report"] = listed_runs[2]["report"], listed_runs[0]["report"]
 
@@ -1988,6 +1996,20 @@ class PullRequestTests(PipelineTestCase):
                     *reported(fixtures[2], third),
                 ],
             ),
+            # A run check accepted that nobody finalized.
+            (
+                check_second,
+                [*reported(fixtures[0], first), unreported(1, "it is not finalized"), *reported(fixtures[2], third)],
+            ),
+            # A recorded run whose entry names its fixture but no report.
+            (
+                without_reports,
+                [
+                    unreported(0, old.format("report")),
+                    unreported(1, "it is not finalized"),
+                    unreported(2, old.format("report")),
+                ],
+            ),
             # A run list written before prepare and finalize named a run's fixture and report.
             (
                 unnamed,
@@ -2004,6 +2026,47 @@ class PullRequestTests(PipelineTestCase):
                 given = listed if edit is None else self.edited_run_list(listed, edit)
                 self.assertEqual((1, expected), run_main("report", "--runs", given))
         self.assertFalse((self.output / "2" / "report.md").exists())
+
+    def test_a_run_whose_copy_cannot_be_made_is_named_alone_and_the_others_are_still_reported(self) -> None:
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2, 3)]
+        runs, listed = self.prepare_runs(*fixtures)
+        for run in runs:
+            self.answer(run, [])
+        self.pipeline("check", "--runs", listed)
+        recorded = self.finalized(listed)
+        entries = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"]
+        place = review_io.working_path
+        copy = shutil.copyfileobj
+
+        def working_path(path: Path, *arguments: str) -> Path:
+            if path == fixtures[0].parent:
+                raise review_io.PersistenceError(f"{path} is inside a skills directory")
+            return place(path, *arguments)
+
+        def copy_file(source: Any, target: Any) -> None:
+            if Path(target.name).parent == fixtures[2].parent:
+                raise OSError(28, "No space left on device")
+            copy(source, target)
+
+        with (
+            mock.patch.object(review_document, "working_path", side_effect=working_path),
+            mock.patch.object(shutil, "copyfileobj", side_effect=copy_file),
+        ):
+            code, lines = run_main("report", "--runs", listed)
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"UNREPORTED {entries[0]['selector']} {entries[0]['run']} {fixtures[0].parent} is inside a skills "
+                    "directory",
+                    f"REPORT {fixtures[1].parent / 'report.md'}",
+                    f"RECORD {recorded[1].with_suffix('.json')}",
+                    f"UNREPORTED {entries[2]['selector']} {entries[2]['run']} [Errno 28] No space left on device",
+                ],
+            ),
+            (code, lines),
+        )
 
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
