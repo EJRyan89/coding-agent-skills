@@ -2882,7 +2882,15 @@ JSON_WRITER = "skills/ejryan89-skill-core/scripts/json_writer.py"
 # The methods that write to a file or a stream, and the functions that replace or append to a file.
 WRITE_METHODS = frozenset({"write", "write_text", "write_bytes", "writelines"})
 FILE_WRITERS = frozenset(
-    {"replace_text", "replace_bytes", "atomic_write_text", "atomic_write_bytes", "write_atomic", "append_line"}
+    {
+        "replace_text",
+        "replace_bytes",
+        "create_bytes",
+        "atomic_write_text",
+        "atomic_write_bytes",
+        "write_atomic",
+        "append_line",
+    }
 )
 JSON_WRITE_ALLOWANCE = "JSON_WRITE_ALLOWED"
 PRINTS = frozenset({"print", "builtins.print"})

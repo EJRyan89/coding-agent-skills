@@ -322,18 +322,51 @@ class CreateTests(unittest.TestCase):
                 copies = [item for item in Path(temporary).iterdir() if item.name != "report.md"]
                 self.assertEqual(1, len(copies), "the copy stays where the error says")
                 error = raised.exception
-                self.assertEqual(
-                    f"Cannot remove {copies[0]}, the unfinished copy of {path}: synthetic unlink", str(error)
-                )
-                self.assertEqual((path, copies[0]), (error.target, error.copy))
+                self.assertEqual((path, copies[0], linked), (error.target, error.copy, error.made))
                 self.assertEqual(1, chmod.call_count, "the copy's mode is set once and never changed after")
                 if linked:
+                    self.assertEqual(
+                        f"{path} is made, but {copies[0]}, its copy beside it, cannot be removed: synthetic unlink",
+                        str(error),
+                    )
                     self.assertEqual(b"the whole report\n", path.read_bytes(), "the file made keeps its bytes")
                     if os.name != "nt":  # Windows keeps no permission bits but read-only
                         self.assertEqual(0o644, stat.S_IMODE(path.stat().st_mode))
                 else:
+                    self.assertEqual(
+                        f"Cannot remove {copies[0]}, the unfinished copy of {path}: synthetic unlink", str(error)
+                    )
                     self.assertFalse(path.exists())
                 real_unlink(copies[0])
+
+    def test_once_the_link_is_made_the_file_is_made_whatever_ends_the_copys_removal(self) -> None:
+        real_unlink = Path.unlink
+        for name, first, raised in (
+            ("refused once", OSError(16, "Device or resource busy"), None),
+            ("interrupted", KeyboardInterrupt(), KeyboardInterrupt),
+        ):
+            removals: list[Path] = []
+
+            def unlink(
+                self: Path, missing_ok: bool = False, first: BaseException = first, removals: list[Path] = removals
+            ) -> None:
+                removals.append(self)
+                if len(removals) == 1:
+                    raise first
+                real_unlink(self, missing_ok=missing_ok)
+
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with mock.patch.object(Path, "unlink", unlink):
+                    if raised is None:
+                        create_bytes(path, b"the whole report\n")
+                    else:
+                        with self.assertRaises(raised):
+                            create_bytes(path, b"the whole report\n")
+                self.assertEqual(2, len(removals), "the copy's name is removed on the second try")
+                self.assertEqual(b"the whole report\n", path.read_bytes())
+                self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
+                self.assertEqual(["report.md"], names_in(temporary))
 
     def test_a_mode_its_owner_may_not_write_is_refused_before_a_copy_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

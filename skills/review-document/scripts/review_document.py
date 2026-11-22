@@ -26,7 +26,9 @@ Every command prints one fact per line:
           already there; one already holding the same bytes is the earlier copy, and is reported again. A copy is
           made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is
           put in place by a hard link, so an output directory whose file system has none, such as FAT or exFAT, gets
-          no copy, and the reason names the file system's refusal.
+          no copy, and the reason names the file system's refusal. Once the copy is in place, report.md is whole:
+          a temporary copy beside it that cannot then be removed fails with a reason saying report.md is made and
+          naming the copy left, and the next call reports report.md as the earlier copy.
 
 Exit status:
   0  the command printed its facts

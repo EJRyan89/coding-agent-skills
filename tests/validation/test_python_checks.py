@@ -2414,7 +2414,7 @@ from json import dump, dumps
 from pathlib import Path
 
 import json_writer
-from atomic_file import replace_text
+from atomic_file import create_bytes, replace_text
 
 
 def writes(path, handle, value):
@@ -2455,6 +2455,7 @@ def respelled(path, stream, data, values):
     with open_text(json.dumps(data)) as text4: path.write_text(text4)
     first, *rest = json.dumps(data), ""; path.write_text(first)
     path.write_text("".join(chunk for chunk in json.JSONEncoder().iterencode(data)))
+    create_bytes(path, json.dumps(data).encode())
 
 
 def respelled_conforms(path, data):
@@ -2485,7 +2486,7 @@ def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
         *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (37, 38, 39)),
         *(f"{alpha}:40 writes JSON with json.dump{remedy}" for _ in range(2)),
         f"{alpha}:41 writes JSON with json.dump{remedy}",
-        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (42, 43, 44, 45, 46, 47)),
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (42, 43, 44, 45, 46, 47, 48)),
         f"{alpha}: JSON_WRITE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: JSON_WRITE_ALLOWED must map each function, class, or assignment to its reason",
     ]

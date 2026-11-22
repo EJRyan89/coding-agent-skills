@@ -2181,7 +2181,7 @@ class PullRequestTests(PipelineTestCase):
             (
                 "link",
                 refused_link(fixtures[1].parent),
-                f"[Errno {errno.EPERM}] {refused}: '{fixtures[1].parent / 'report.md'}'",
+                f"[Errno {errno.EPERM}] {refused}: {str(fixtures[1].parent / 'report.md')!r}",
             ),
         ):
             with self.subTest(side=side):
@@ -2428,6 +2428,8 @@ class OutputTests(DocumentTestCase):
         self.assertEqual(0, code, lines)
         self.assertEqual([f"REPORT {self.output / 'report.md'}", f"RECORD {canary / 'review.json'}"], lines)
         self.assertEqual("# Code Review\n", (self.output / "report.md").read_text(encoding="utf-8"))
+        if os.name != "nt":  # Windows keeps no permission bits but read-only
+            self.assertEqual(0o644, stat.S_IMODE((self.output / "report.md").stat().st_mode))
 
         # A report.md already there is never replaced; the reason names where the recorded report stays.
         (self.output / "report.md").write_text("mine\n", encoding="utf-8")
@@ -2438,7 +2440,8 @@ class OutputTests(DocumentTestCase):
         self.assertEqual((1, [f"FAILED {self.output / 'report.md'} {reason}"]), (code, lines))
         self.assertEqual("mine\n", (self.output / "report.md").read_text(encoding="utf-8"))
 
-    def test_a_copy_that_fails_part_way_leaves_no_report_and_the_next_report_makes_it(self) -> None:
+    def recorded_report(self) -> Path:
+        """The report finalize recorded, with its record, of the fixture built for a document."""
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
         self.build(document)
@@ -2450,12 +2453,17 @@ class OutputTests(DocumentTestCase):
         named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
         record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
         (canary / "review.json").write_text(json.dumps(record), encoding="utf-8")
+        return recorded
+
+    def test_a_copy_that_fails_part_way_leaves_no_report_and_the_next_report_makes_it(self) -> None:
+        recorded = self.recorded_report()
+        canary = recorded.parent
         arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
         refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
         for side, failure, reason in (
             ("read", failing_read(recorded), "[Errno 5] Input/output error"),
             ("write", failing_write(self.output), "[Errno 28] No space left on device"),
-            ("link", refused_link(self.output), f"[Errno {errno.EPERM}] {refused}: '{self.output / 'report.md'}'"),
+            ("link", refused_link(self.output), f"[Errno {errno.EPERM}] {refused}: {str(self.output / 'report.md')!r}"),
         ):
             with self.subTest(side=side):
                 with failure:
@@ -2465,6 +2473,41 @@ class OutputTests(DocumentTestCase):
                 self.assertEqual((0, reported), run_main(*arguments))
                 self.assertEqual(recorded.read_bytes(), (self.output / "report.md").read_bytes())
                 (self.output / "report.md").unlink()
+
+    def test_once_the_copy_is_linked_in_place_its_removal_never_reads_as_no_report(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        reported = [f"REPORT {target}", f"RECORD {recorded.with_suffix('.json')}"]
+        real_unlink = Path.unlink
+        for name, refusals in (("refused once", 1), ("never removed", 2)):
+            tries: list[Path] = []
+
+            def unlink(
+                path: Path, missing_ok: bool = False, refusals: int = refusals, tries: list[Path] = tries
+            ) -> None:
+                if path.name.startswith(".report.md.") and len(tries) < refusals:
+                    tries.append(path)
+                    raise OSError(16, "Device or resource busy")
+                real_unlink(path, missing_ok=missing_ok)
+
+            with self.subTest(removal=name):
+                with mock.patch.object(Path, "unlink", unlink):
+                    code, lines = run_main(*arguments)
+                self.assertEqual(recorded.read_bytes(), target.read_bytes(), "report.md is whole")
+                if refusals == 1:
+                    # The second try removed the copy, so the copy is made and reported.
+                    self.assertEqual((0, reported), (code, lines))
+                else:
+                    copy = tries[0]
+                    made = f"{target} is made, but {copy}, its copy beside it, cannot be removed"
+                    self.assertEqual((1, [f"FAILED {made}: [Errno 16] Device or resource busy"]), (code, lines))
+                    self.assertTrue(copy.is_file(), "the copy stays where the reason says")
+                    # The next report names the copy already made, never refusing it as another file.
+                    self.assertEqual((0, reported), run_main(*arguments))
+                    copy.unlink()
+                self.assertEqual(["fixture", "report.md"], sorted(item.name for item in self.output.iterdir()))
+                target.unlink()
 
     def test_report_takes_a_run_list_or_one_fixture_and_its_report_and_fails_a_list_with_no_run(self) -> None:
         for arguments in (
