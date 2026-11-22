@@ -38,9 +38,14 @@ lambda or a function another call runs once per item, as `map(lambda p: text.cou
 than `self` or `cls`, as `reading.line_of(place)`; a line break or a start given through a name the policy does not
 resolve, as `text.count(NEWLINE, 0, end)`, and a pattern bound anywhere but at a module's top level; `re.findall` or
 `re.finditer` of a line-break pattern given the whole text, which take no start, and so count only the whole text;
-and a scan of each character for a line break, which no call shows. The policy also refuses, though each text is read
-once, a count of the start of each of many texts, as `[text[:-1].count("\\n") for text in texts]`, and a count in any
-function that shares its name with one a loop calls; LINE_COUNT_ALLOWED sanctions either.
+a scan of each character for a line break, which no call shows; a line-break pattern that makes its CR optional or
+writes its breaks in a group or a class, as `r"\\r?\\n"`, `r"(?:\\r\\n|\\n)"`, or `"[\\r\\n]"`, which is read as no
+line-break pattern; and line starts built over a finditer that is not the loop's own first iterable, as one bound to a
+name first, one inside `enumerate(...)`, or a comprehension's later iterable, or from ends taken as `m.span()[1]`
+rather than `m.end()`. The policy also refuses, though each text is read once, a count of the start of each of many
+texts, as `[text[:-1].count("\\n") for text in texts]`, and a count in any function that shares its name with one a
+loop calls; and it reads a pattern of several breaks in a row, as `re.compile("\\n\\n")`, as a line-break pattern,
+though it matches only blank lines; LINE_COUNT_ALLOWED sanctions each.
 """
 
 from __future__ import annotations
