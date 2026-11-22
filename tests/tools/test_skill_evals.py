@@ -3064,6 +3064,9 @@ class StubClaude:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
+        # Every review session reads no CLAUDE.md or auto memory, and writes no auto memory.
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS"))
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
         model = reviewer_of(arguments)["model"]
         self.test.assertEqual(model, frontmatter_model(cwd / skill_evals_runs.REVIEWER_AGENT))
         calls: list[dict[str, Any]] = []
@@ -5909,6 +5912,9 @@ class StubSynthesis:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
+        # Every synthesis session reads no CLAUDE.md or auto memory, and writes no auto memory.
+        assert environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS") == "1"
+        assert environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
         words = [quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', arguments[2])]
         assert words[0] == "/review-insights"
         run = Path(environment["TMPDIR"]).parent
