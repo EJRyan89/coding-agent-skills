@@ -196,3 +196,20 @@ def test_a_larger_reading_over_the_bound_until_its_last_timing_passes(monkeypatc
     readings = ScriptedReadings(monkeypatch, {"smaller": [0.03], "larger": [*noisy, 0.24]})
     assert_time_in_proportion(readings.read, "smaller", "larger", 32)
     assert readings.reads["larger"] == len(noisy) + 4
+
+
+def test_the_smaller_reading_keeps_the_least_of_its_timings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each reading of the smaller value takes 0.1 s or more, so it is timed once a timing: first slow at 0.3 s, then
+    # 0.1 s, then 0.2 s. The larger one takes 0.5 s, five times the least timing and over the bound of 3, but under
+    # three times the first, the last, or the most, so only a helper that keeps the least fails it.
+    readings = ScriptedReadings(monkeypatch, {"smaller": [0.3, 0.1, 0.2], "larger": [0.5]})
+    with pytest.raises(pytest.fail.Exception, match=r"^0\.5000s is over 5\.0 times 0\.1000s, at least 3\.0 times$"):
+        assert_time_in_proportion(readings.read, "smaller", "larger", 3)
+
+
+def test_a_failure_names_the_least_of_the_larger_reading_s_timings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every timing of the larger reading is over the bound, at 0.9 s, 0.5 s, and 0.7 s, so the failure names 0.5 s, the
+    # one nearest to passing.
+    readings = ScriptedReadings(monkeypatch, {"smaller": [0.1], "larger": [0.9, 0.5, 0.7]})
+    with pytest.raises(pytest.fail.Exception, match=r"^0\.5000s is over 5\.0 times 0\.1000s, at least 3\.0 times$"):
+        assert_time_in_proportion(readings.read, "smaller", "larger", 3)
