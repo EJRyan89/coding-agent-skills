@@ -1938,6 +1938,10 @@ class PullRequestTests(PipelineTestCase):
             for entry in listed_runs:
                 entry.pop("report", None)
 
+        def without_fixtures(listed_runs: list[dict[str, Any]]) -> None:
+            for entry in listed_runs:
+                entry.pop("fixture")
+
         def swap_reports(listed_runs: list[dict[str, Any]]) -> None:
             listed_runs[0]["report"], listed_runs[2]["report"] = listed_runs[2]["report"], listed_runs[0]["report"]
 
@@ -2008,6 +2012,16 @@ class PullRequestTests(PipelineTestCase):
                     unreported(0, old.format("report")),
                     unreported(1, "it is not finalized"),
                     unreported(2, old.format("report")),
+                ],
+            ),
+            # A recorded run whose entry names its report but no fixture, as a run list a prepare from before an update
+            # wrote and an updated finalize recorded holds.
+            (
+                without_fixtures,
+                [
+                    unreported(0, old.format("fixture")),
+                    unreported(1, "it is not finalized"),
+                    unreported(2, old.format("fixture")),
                 ],
             ),
             # A run list written before prepare and finalize named a run's fixture and report.
