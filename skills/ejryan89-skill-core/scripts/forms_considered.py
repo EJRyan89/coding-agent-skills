@@ -12,15 +12,15 @@ character, is no text.
 
 The body's comments, its code blocks, and its headings are read by hidden_comments, the one reader of the comments
 GitHub hides, whose walk of the body's blocks says which headings no container holds and which lines are code. A
-comment GitHub hides is not read, and a `<!--` that code shows is text, within the limits hidden_comments states.
+comment GitHub hides is not read, and a `<!--` that code shows is text, within the limits hidden_comments states. Which
+lines a quote or a list item holds, lazy lines included, is markdown_sections' `contained_lines`, read from the same
+lines as that walk, so every heading that ends the section, ATX, setext, or HTML, is one no container holds by one
+reading, within the limits markdown_sections' walk states.
 
 The limit:
-- a setext heading is held by a list item as this module's own item reading holds it, which tracks the outermost item
-  alone and reads a numbered line under an item's text as a lazy line of it, so after `- a\n2. b` and a blank line, an
-  underlined line indented two columns is read as the first item's, where GitHub ends the section at it, and a list
-  item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt it, so an
-  underline under the item's next line is read as the paragraph's, where GitHub reads the line as the item's, since
-  markdown_sections offers no reader of the lines its containers hold.
+- an underline under an HTML block other than a comment's or an `<h1>` or `<h2>`, such as a `<div>` closed by
+  `</div>`, makes the block's lines a setext heading that ends the section, since hidden_comments reads such a block
+  as a paragraph, where GitHub reads the underline as the block's.
 
 A title is a fix's when it opens with the type `fix`, in any case, an optional scope, an optional `!`, a colon, and a
 space, by the grammar `TITLE` reads every pull request title with.
@@ -37,16 +37,10 @@ from agent_skills import XML_TAG_PATTERN
 from hidden_comments import COMMENT_CLOSER, COMMENT_OPENER, Reading, read_comments
 from markdown_sections import (
     DELIMITER_ROW,
-    INTERRUPTING_LIST_MARKER,
-    LIST_MARKER,
     ORDERED_MARKER,
     PARAGRAPH,
-    QUOTE,
     TABLE_ROW,
-    THEMATIC_BREAK,
-    indentation,
-    is_blank,
-    list_item,
+    contained_lines,
     markdown_section,
 )
 from text_lines import LINE_BREAK
@@ -62,25 +56,6 @@ FORMS_LINE = re.compile(r" {0,3}## +Forms considered(?: +#*)?[ \t]*")
 SECTION_LEVEL = 2
 # The blocks whose text a setext underline may make a heading: a paragraph, and a `|` line GitHub reads as one.
 TEXT_BLOCKS = frozenset({PARAGRAPH, TABLE_ROW})
-# A line that is no paragraph's text: blank, a heading, a list item, a quote, a fence, or a rule. Markdown's whitespace
-# is the space and the tab, and its list markers are read by markdown_sections' rules, so a digit outside ASCII or a
-# line of no-break spaces is text.
-NOT_PARAGRAPH = re.compile(
-    rf"[ \t]*$| {{0,3}}(?:#{{1,6}}(?:[ \t]|$)|[-*+](?:[ \t]|$)|{ORDERED_MARKER}(?:[ \t]|$)|>|`{{3,}}|~{{3,}}"
-    r"|([-*_])(?:[ \t]*\1){2,}[ \t]*$)"
-)
-# A line that ends the paragraph above it: as NOT_PARAGRAPH, but a list item only where CommonMark lets one interrupt a
-# paragraph, a bullet or an item numbered 1 with text after it; any other ordered line continues the paragraph.
-ENDS_PARAGRAPH = re.compile(
-    rf"[ \t]*$| {{0,3}}(?:#{{1,6}}(?:[ \t]|$)|{INTERRUPTING_LIST_MARKER}[ \t]+[^ \t]|>|`{{3,}}|~{{3,}}"
-    r"|([-*_])(?:[ \t]*\1){2,}[ \t]*$)"
-)
-# A line that opens a list item, indented up to three spaces: its marker, and the spaces or tabs after it, or none
-# where the item opens empty.
-LIST_OPENER = re.compile(rf"(?P<indent> {{0,3}})(?P<marker>{LIST_MARKER})(?P<gap>[ \t]*)(?P<text>.*)")
-# Past this many columns after its marker, an item's text is an indented code block, and its content starts one
-# column after the marker.
-MAX_ITEM_GAP = 4
 # A setext heading's underline, which makes the paragraph above it, in the same container, a heading.
 SETEXT_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
 # Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
@@ -193,72 +168,14 @@ def forms_fault(body: str, template: str) -> FormsFault | None:
     return None
 
 
-def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
-    """The index of each line after a list item's first that the item holds, as CommonMark reads it: a blank line, a
-    line indented at least to the column its text starts at, a fence's body, or a lazy line continuing its paragraph.
-    An item that opens empty holds no blank line right after its marker's line, since CommonMark lets an item begin
-    with one blank line at most, so that line ends it. Only the outermost item is tracked, since a line a nested item
-    holds is held by the outer one too."""
-    held: set[int] = set()
-    content: int | None = None
-    # Whether the item opened empty on the line before, so a blank line now ends it.
-    opened_empty = False
-    # Whether the line before is paragraph text, which a lazy line continues and only some markers interrupt.
-    paragraph = False
-    for index, line in enumerate(lines):
-        if content is not None and opened_empty and is_blank(line) and index not in inside_fences:
-            content = None
-        opened_empty = False
-        if content is not None:
-            if index in inside_fences or is_blank(line) or indentation(line) >= content:
-                held.add(index)
-                nested = " " * (indentation(line) - content) + line.lstrip(" \t")
-                paragraph = not is_blank(line) and index not in inside_fences and not NOT_PARAGRAPH.match(nested)
-                continue
-            if paragraph and not ENDS_PARAGRAPH.match(line):
-                held.add(index)
-                continue
-            content = None
-        opener = LIST_OPENER.fullmatch(line)
-        if (
-            opener is not None
-            and not THEMATIC_BREAK.fullmatch(line)
-            and list_item(line, interrupting=paragraph) is not None
-        ):
-            content = _content_column(opener)
-            paragraph = not is_blank(opener.group("text"))
-            opened_empty = not paragraph
-        elif opener is not None and is_blank(opener.group("gap") + opener.group("text")) and not paragraph:
-            # An item that opens empty: its content starts one column after the marker.
-            content = len(opener.group("indent")) + len(opener.group("marker")) + 1
-            paragraph = False
-            opened_empty = True
-        else:
-            paragraph = index not in inside_fences and not NOT_PARAGRAPH.match(line)
-    return held
-
-
-def _content_column(opener: re.Match[str]) -> int:
-    """The column a list item's text starts at, which a line must be indented to for the item to hold it."""
-    marker_end = len(opener.group("indent")) + len(opener.group("marker"))
-    gap = indentation(opener.group("gap") + "x")
-    return marker_end + (1 if gap > MAX_ITEM_GAP or is_blank(opener.group("text")) else gap)
-
-
 def _setext_headings(reading: Reading, start: int) -> list[int]:
     """The first line of the first setext heading of the first or second level at or after `start` that no container
     holds: a paragraph, or a `|` line GitHub reads as one, with an underline right under it, both outside every
     container and code block. A table's rows are no paragraph."""
     walked = reading.walked
-    # Which lines a container holds: a quote's, as the walk reads them, and a list item's, by this module's own item
-    # reading over the body with its hidden comments gone, as `main` read it, with the walk's code blocks, so a
-    # fence-like line an HTML heading's block holds opens none, until markdown_sections offers a reader of the lines
-    # its containers hold.
-    visible, owners = reading.visible_lines()
-    in_items = in_list_items(visible, {owners[line] for line in walked.code})
-    contained = {line for line, owner in enumerate(owners) if owner in in_items} | {
-        line for line, (kind, _) in walked.held.items() if kind == QUOTE
-    }
+    # Which lines a quote or a list item holds, read from the lines the walk read, where each comment and HTML heading
+    # that opens a block stands in as one, so a fence-like line such a block holds opens none.
+    contained = contained_lines(reading.read)
     for underline in range(start + 1, len(reading.lines)):
         if underline in walked.code or underline in contained or reading.hides(underline):
             continue

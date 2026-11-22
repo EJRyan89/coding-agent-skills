@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forms_considered
+import markdown_sections
 from forms_considered import (
     FormsFault,
     forms_fault,
@@ -24,9 +25,9 @@ from forms_considered import (
     is_placeholder,
     placeholder_forms,
 )
-from markdown_sections import blocks
 from test_hidden_comments import SCALING, WALKS_PER_LINE
 from test_time_in_proportion import assert_time_in_proportion
+from text_lines import LINE_BREAK
 
 TEMPLATE = (
     "## Changes\n\n-\n\n## Forms considered\n\n"
@@ -75,15 +76,60 @@ def test_a_comment_opener_code_shows_hides_nothing(forms: str) -> None:
     assert section.strip().endswith(forms.splitlines()[-1])
 
 
-@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
+# Bodies whose `## Forms considered` section runs to their end, holding lists, quotes, comments, and tables with the
+# setext underlines each holds or ends, so every line is read for a setext heading and for the lines a container
+# holds. SCALING's bodies hold no section, so their reading ends before either.
+SECTION_SCALING = {
+    "items and quotes holding underlines": ("## Forms considered\n\n", "- a\n  b\n  ---\n> c\n> ===\n\n", ""),
+    "items holding only a comment under paragraphs": (
+        "## Forms considered\n\n",
+        "w\n- <!-- c -->\n  x\n  ---\n\n",
+        "",
+    ),
+    "lazy lines of items and quotes": ("## Forms considered\n\n", "- a\nlazy\n===\n\n> q\nlazy\n===\n\n", ""),
+    "numbered items leaving bullets": ("## Forms considered\n\n", "- a\n2. b\n\n   text\n   ---\n\n", ""),
+    "tables under rules": ("## Forms considered\n\n", "| a |\n| - |\n| b |\n---\n\n", ""),
+    "comment blocks in items holding underlines": (
+        "## Forms considered\n\n",
+        "- <!--\n  x\n  -->\n  y\n  ---\n\n",
+        "",
+    ),
+}
+# How many times over markdown_sections' walk may read a body's lines: each window hidden_comments walks is read for
+# its blocks and its headings, within WALKS_PER_LINE each, and the whole body once more for its code and once for the
+# lines its containers hold.
+WALKS_PER_LINE_READ = 2 * WALKS_PER_LINE + 2
+# The walks of the whole body forms_section makes when no comment block's window reaches the body's start and end: its
+# blocks, its headings, and its code for hidden_comments, and the lines its containers hold.
+FULL_WALKS = 4
+
+
+@pytest.mark.parametrize(
+    ("head", "unit", "tail"),
+    [*SCALING.values(), *SECTION_SCALING.values()],
+    ids=[*SCALING.keys(), *SECTION_SCALING.keys()],
+)
 def test_the_walks_read_each_line_a_bounded_number_of_times(head: str, unit: str, tail: str) -> None:
     # Counting the lines the walks read, at two sizes, holds the reading linear without timing it.
     for repeats in (100, 400):
         text = head + unit * repeats + tail
-        with mock.patch("hidden_comments.blocks", wraps=blocks) as walk:
+        with mock.patch("markdown_sections._walk", wraps=markdown_sections._walk) as walk:
             forms_considered.forms_section(text)
         read = sum(len(call.args[0]) for call in walk.call_args_list)
-        assert read <= WALKS_PER_LINE * (text.count("\n") + 1)
+        assert read <= WALKS_PER_LINE_READ * (text.count("\n") + 1)
+
+
+@pytest.mark.parametrize(("head", "unit", "tail"), SECTION_SCALING.values(), ids=SECTION_SCALING.keys())
+def test_a_section_is_read_in_four_walks_of_the_whole_body(head: str, unit: str, tail: str) -> None:
+    text = head + unit * 100 + tail
+    # The section runs to the body's end, so no heading cuts its reading short.
+    section = forms_section(text + "\nlast")
+    assert section is not None
+    assert section.endswith("\nlast")
+    lines = len(LINE_BREAK.split(text))
+    with mock.patch("markdown_sections._walk", wraps=markdown_sections._walk) as walk:
+        forms_section(text)
+    assert sum(len(call.args[0]) == lines for call in walk.call_args_list) == FULL_WALKS
 
 
 # A body of SCALE times the units is read against the smaller one through assert_time_in_proportion. A linear reading
@@ -94,7 +140,11 @@ SCALE_BOUND = SCALE**1.5
 SMALL_BODY = 2_000
 
 
-@pytest.mark.parametrize(("head", "unit", "tail"), SCALING.values(), ids=SCALING.keys())
+@pytest.mark.parametrize(
+    ("head", "unit", "tail"),
+    [*SCALING.values(), *SECTION_SCALING.values()],
+    ids=[*SCALING.keys(), *SECTION_SCALING.keys()],
+)
 def test_a_body_scale_times_as_long_is_read_in_about_scale_times_the_time(head: str, unit: str, tail: str) -> None:
     repeats = max(1, SMALL_BODY // len(unit))
     small, large = head + unit * repeats + tail, head + unit * repeats * SCALE + tail
@@ -183,6 +233,19 @@ GITHUB_SECTIONS = {
     "an underline after a tilde line an HTML heading's block holds": (
         "<h2>x</h2>\n~~~\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n===\n\nw4",
         "\nw1\n\n- w2\n",
+    ),
+    # A numbered line under a bullet's text opens an item of its own, whose content starts a column further in, so a
+    # paragraph indented two columns after a blank line is the document's, and the underline under it makes it a
+    # heading that ends the section.
+    "an underline after a numbered item that left a bullet": (
+        "## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter",
+        "\n- a\n2. b\n",
+    ),
+    # An item that holds only a comment, right under a paragraph, interrupts it, as an item with text does, so the
+    # line under it is the item's, and an underline the item does not hold is a rule, which ends nothing.
+    "a rule under an item that holds only a comment and interrupts a paragraph": (
+        "## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4",
+        "\nw1\n- \n  w3\n---\n\nw4",
     ),
     # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
     # it are the item's.
@@ -326,14 +389,16 @@ def test_a_generated_body_is_read_as_github_renders_it(text: str, section: str |
     assert forms_section(text) == section
 
 
-# Where a setext or HTML heading ends the section, read here by the module's own item reading and the walk's quotes as
-# it was before the walk read the rest of the body, each pinned to GitHub's rendering: an underline or an HTML heading
-# a list item or a quote holds is inside the section, and one no container holds ends it.
+# Where a setext or HTML heading ends the section, read through markdown_sections' contained_lines, each pinned to
+# GitHub's rendering: an underline or an HTML heading a list item or a quote holds is inside the section, and one no
+# container holds ends it.
 SETEXT_AND_HTML_ENDS = {
     "underline in an item's later paragraph": ("- a\n\n  text\n  ---", True),
     "underline in a quote": ("> text\n> ---", True),
     "underline below a lazy line of an item": ("- a\ntext\n---", True),
     "equals underline in a numbered item": ("1. a\n   b\n   ===", True),
+    "equals line below a lazy line of a quote": ("> a\ntext\n===", True),
+    "underline in an item that holds only a comment, under a paragraph": ("w1\n- <!-- w2 -->\n  w3\n  ---", True),
     "underline in a nested item": ("- a\n  - b\n\n    text\n    ---", True),
     "underline in a quote in an item": ("- a\n  > text\n  > ---", True),
     "HTML heading in an item": ("- a\n  <h2>x</h2>", True),
@@ -360,19 +425,10 @@ def test_a_setext_or_html_heading_ends_the_section_only_outside_every_container(
     assert ("after" in section) is inside, section
 
 
-@pytest.mark.parametrize(
-    ("text", "section"),
-    [
-        # The module's own item reading holds a numbered line under a bullet's text as lazy, so the underlined line
-        # after the blank line is read as the bullet's, where GitHub ends the section at it.
-        ("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter", "\n- a\n2. b\n\n  Text\n  ---\nafter"),
-        # An item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt
-        # it, so the underline makes the paragraph a heading, where GitHub reads the next line as the item's.
-        ("## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4", "\nw1\n- "),
-    ],
-)
-def test_a_setext_heading_is_held_within_the_module_s_stated_limit(text: str, section: str) -> None:
-    assert forms_section(text) == section
+def test_an_underline_under_an_html_block_is_read_within_the_module_s_stated_limit() -> None:
+    # GitHub reads the `<div>` block to its blank line, the underline among its lines, so the section holds it and
+    # the paragraph after it; hidden_comments reads the block as a paragraph, so the underline makes it a heading.
+    assert forms_section("## Forms considered\n\n<div>\ntext\n</div>\n---\n\nafter") == ""
 
 
 @pytest.mark.parametrize("text", ["## Forms considered", "## Forms considered\n## Next\n\ntext"])
