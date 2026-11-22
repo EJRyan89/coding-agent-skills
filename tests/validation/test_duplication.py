@@ -1874,6 +1874,12 @@ async def climbs(path: Path, root: Path, top: str, steps: list[int]) -> None:
 
         lifted = lambda node: (node := node.parent) == root  # noqa: E731 - A lambda runs apart from the loop.
         kept = kept.parent if step(kept) or lifted(kept) else kept
+    upper = path
+    while not upper.samefile(root):
+        upper = upper.parent
+    higher = path
+    while not same_path(root, higher):
+        higher = higher.parent
 
 
 def fields_of(top: str) -> dict[str, str]:
@@ -1954,7 +1960,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (458, 462)),
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (478, 483, *range(486, 493))),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(493, 498)),
-        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (518, 526, 529, 534, 537)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (518, 526, 529, 534, 537, 549, 552)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

@@ -1166,6 +1166,38 @@ class SafeSnapshotPathTests(unittest.TestCase):
                     f"Source snapshot path holds a parent segment: {target}", self.refused(self.root, target)
                 )
 
+    def test_a_root_spelled_through_a_parent_segment_is_accepted_at_each_caller(self) -> None:
+        # A configuration may name a local reviewer manifest through `..`, as `<cfg>/sibling/../reviewers/m.json`, and
+        # its folder is the root each caller joins a relative path to; only the parts below the root are held to it.
+        (self.temporary / "sibling").mkdir()
+        root = self.temporary / "sibling" / ".." / "source"
+        review_runtime._require_safe_snapshot_path(root, root / "src" / "app.py")
+        target = root / "src" / ".." / "app.py"
+        self.assertEqual(f"Source snapshot path holds a parent segment: {target}", self.refused(root, target))
+        manifest = root / "manifest.json"
+        manifest.write_text("{}", encoding="utf-8")
+        with (
+            mock.patch.object(review_runtime, "validate_adapter_manifest", return_value={}),
+            mock.patch.object(review_runtime, "local_reviewer_files", return_value=["src/app.py"]),
+        ):
+            self.assertEqual({}, review_runtime.load_manifest_from_file(manifest))
+        with (
+            mock.patch.object(review_runtime, "_tree_entries", return_value={}),
+            mock.patch.object(review_runtime, "_read_reviewer_blobs", return_value={}),
+        ):
+            contents, _ = review_runtime._reviewer_contents(
+                self.temporary,
+                HEAD,
+                ["src/app.py"],
+                runner=mock.Mock(),
+                guideline_commit=None,
+                guidelines=set(),
+                local_root=manifest.parent,
+                local={"src/app.py"},
+                blob_reader=mock.Mock(),
+            )
+        self.assertEqual({"src/app.py": APP}, contents)
+
     def size_refusal(self, relative: str, root: Path | None = None) -> str:
         """Why a snapshot walk that counted nothing refuses `relative`, as `_SnapshotTree.size` says."""
         with self.assertRaises(RuntimeContractError) as caught:
