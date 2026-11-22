@@ -275,11 +275,17 @@ request's head mirrored under refs/remotes/origin being no branch. A branch with
 origin's branch or a local one, is the user's own. A pull request from another author is read in full, as its code
 is, before its scenarios run; "Skill evaluations" in docs/skill-evaluations.md states the rule.
 
-What still comes from the user's own setup is their sign-in alone, as for the runtime canary: every CLAUDE.md, rules
-file, and auto-memory is switched off (ejryan89-skill-core's `search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`),
-since Claude Code reads them from each folder above the home, the shared temporary directory included. Each session
-runs without --bare, which would skip the home's skills and agents and the sign-in, so a session whose init event lists
-no skill counts for nothing rather than being judged.
+What still comes from the user's own setup is their environment, the sign-in included, less git's
+repository-selecting variables and, for a review or synthesis session, CLAUDE_CODE_EFFORT_LEVEL, which would outrank
+the reviewer's stated effort (CLAUDE_CODE_SUBAGENT_EFFORT is kept), and Claude Code's managed settings, which apply
+whatever --setting-sources names; the user's own settings are not read. No session, a review's, a synthesis's, or a
+trigger scenario's, loads any CLAUDE.md, rules file, or auto memory (ejryan89-skill-core's
+`search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`), since Claude Code reads them from each folder above the home, the
+shared temporary directory included, and none writes auto memory (`skill_evals_runs.AUTO_MEMORY_OFF_VARIABLES`), which
+would otherwise go to the user's own memory folder for the model's home, shared by every run on that model. Both are
+Claude Code's documented variables (https://code.claude.com/docs/en/env-vars); no run writes `claudeMdExcludes`, for
+the reason beside AUTO_MEMORY_OFF_VARIABLES. Each session runs without --bare, which would skip the home's skills and
+agents and the sign-in, so a session whose init event lists no skill counts for nothing rather than being judged.
 
 Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
 FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:
