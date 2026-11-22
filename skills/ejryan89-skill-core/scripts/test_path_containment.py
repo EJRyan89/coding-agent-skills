@@ -272,6 +272,13 @@ class MayLieInTests(unittest.TestCase):
         self.assertTrue(may_lie_in("//HOST/Share/x", "//host/share"))
         self.assertTrue(may_lie_in("//HOST/Share/x/y", "//host/share/X"))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows' UNC anchor holds the host and the share, which within folds")
+    def test_within_compares_the_names_under_a_posix_double_separator_anchor_as_written(self) -> None:
+        # POSIX: under `//` the host and the share are names no directory answers for, so `within` keeps their case,
+        # the answer that admits less, where `may_lie_in` folds them, the answer that refuses more.
+        self.assertFalse(within("//HOST/Share/x", "//host/share"))
+        self.assertTrue(may_lie_in("//HOST/Share/x", "//host/share"))
+
     @unittest.skipUnless(sys.platform == "win32", "only Windows drops a trailing dot and reads the \\\\?\\ prefix")
     def test_a_trailing_dot_and_the_extended_prefix_are_read_as_windows_opens_them(self) -> None:
         tree = self.root / "tree"
