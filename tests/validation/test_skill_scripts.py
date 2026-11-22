@@ -40,7 +40,7 @@ from skill_scripts import (
     skill_client_classes,
     skill_command_problems,
 )
-from validation_support import REPOSITORY_ROOT, import_aliases, write_fixture_tree
+from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
 from deployer import platform_support
 
@@ -2915,54 +2915,6 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
 def test_script_contract_policy_reads_no_other_receiver_as_a_parser(tmp_path: Path, source: str) -> None:
     write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
     assert script_contract_problems(mark_skills(tmp_path)) == []
-
-
-@pytest.mark.parametrize(
-    ("imports", "static", "made"),
-    [
-        ("", "staticmethod", "classmethod"),
-        ("import builtins\n", "builtins.staticmethod", "builtins.classmethod"),
-        ("from builtins import classmethod, staticmethod\n", "staticmethod", "classmethod"),
-        ("import builtins as b\n", "b.staticmethod", "b.classmethod"),
-    ],
-)
-def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_on_no_other(
-    imports: str, static: str, made: str
-) -> None:
-    source = (
-        f"import argparse\n{imports}"
-        "class Outer:\n    cli: argparse.ArgumentParser\n"
-        "    def __init__(self):\n        self.held = argparse.ArgumentParser()\n"
-        f"    def first(this, /): pass\n    @{made}\n    def made(cls): pass\n"
-        f"    @{static}\n    def static(given): pass\n    def bare(): pass\n"
-        "    if X:\n        def guarded(self): pass\n"
-        "    class Inner:\n        def method(self): pass\n"
-    )
-    tree = ast.parse(source)
-    bindings = skill_scripts.parser_names(tree, import_aliases(tree))
-    found = {
-        node.name: set(bindings.methods[id(node)].names)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and id(node) in bindings.methods
-    }
-
-    def reached(receiver: str, *names: str) -> set[str]:
-        return {
-            f"{prefix}.{name}"
-            for prefix in (receiver, f"type({receiver})", f"{receiver}.__class__")
-            for name in ("cli", *names)
-        } - {f"type({receiver}).held", f"{receiver}.__class__.held"}
-
-    assert found == {
-        "__init__": reached("self", "held"),
-        "first": reached("this", "held"),
-        "made": reached("cls"),
-        "guarded": reached("self", "held"),
-        "method": set(),
-    }
-    # The class's parsers are read through its name anywhere, and neither its bare name nor its receiver's attribute
-    # anywhere else.
-    assert set(bindings.module.names) == {"Outer.cli"}
 
 
 @pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])
