@@ -1240,7 +1240,7 @@ def sdk_answers(
     graph: Graph, projects: list[Project], name: str, services: Services, out: Emitter
 ) -> dict[str, list[SdkPath]]:
     """The SDK's chains per project it answered, keyed by the project's path; each failed run is printed, and so is each
-    project the SDK would answer but is not asked about, since its evaluation refused a file for where it lies."""
+    project the SDK would answer but is not asked about (`sdk_withheld`), with the reason it gives."""
     for project in projects:
         if project.sdk_withheld is not None:
             out.line("SDK_FAILED", graph.label(project), name, project.sdk_withheld)
