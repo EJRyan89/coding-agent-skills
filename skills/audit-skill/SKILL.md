@@ -7,7 +7,7 @@ allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventor
 
 Audit a named agent skill's contract, grants, and cost, and render a bucketed findings report. Read-only — no edits, no prompts.
 
-The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a command that cannot finish prints `FAILED <reason>` as its last line, the line naming why: stop and report it, without rerunning the command with a flag the line suggests, such as `--home`. `inventory` is the exception for a Markdown file the skill loads that is not UTF-8 text, or one outside its folder whose metadata cannot be read: it prints an `UNREADABLE` line naming why, measures the rest, and exits 1, as Step 2 says. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
+The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a command that cannot finish prints `FAILED <reason>` as its last line, the line naming why: stop and report it, without rerunning the command with a flag the line suggests, such as `--home`. `inventory` is the exception for a Markdown file the skill loads that is not UTF-8 text, or one outside its folder that cannot be examined: it prints an `UNREADABLE` line naming why, measures the rest, and exits 1, as Step 2 says. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
 
 ## Step 1 — Locate the skill
 

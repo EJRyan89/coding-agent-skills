@@ -521,6 +521,25 @@ class InventoryTests(TemporaryTestCase):
             [line for line in lines if line.startswith(("FILE", "NO_MAIN", "TOTAL main", "TOTAL all"))],
         )
 
+    def test_tools_and_scan_read_no_markdown_outside_the_folder_and_fail_on_one_inside_it(self) -> None:
+        # Only inventory reads a Markdown file outside the skill's folder; tools and scan never do, so one there that
+        # is not UTF-8 text fails neither, while one inside the folder that scan is given fails both.
+        skill = self.root / "skills" / "w"
+        write(skill / "SKILL.md", "---\nname: w\ndescription: d\n---\nSee [a](a.md) and [o](../outside.md).\n")
+        write(skill / "a.md", "ok\n")
+        write(self.root / "skills" / "outside.md", "caf\xe9\n".encode("cp1252"))
+        self.assertEqual(1, run("inventory", str(skill))[0])
+        for command, target in (("tools", skill / "SKILL.md"), ("scan", skill)):
+            with self.subTest(command=command):
+                code, lines, error = run(command, str(target))
+                self.assertEqual(0, code, error)
+                self.assertEqual([], [line for line in lines if line.startswith(("FAILED", "UNREADABLE"))])
+        inside = write(skill / "a.md", "caf\xe9\n".encode("cp1252"))
+        for command, target in (("tools", skill / "SKILL.md"), ("scan", skill)):
+            with self.subTest(command=command, inside=True):
+                code, lines, _ = run(command, str(target))
+                self.assertEqual((1, f"FAILED cannot read {inside.as_posix()}: not UTF-8 text"), (code, lines[-1]))
+
     def test_missing_directory_fails(self) -> None:
         code, lines, error = run("inventory", str(self.root / "absent"))
         self.assertEqual((1, ""), (code, error))
