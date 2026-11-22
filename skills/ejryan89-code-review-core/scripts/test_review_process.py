@@ -168,6 +168,25 @@ class SameProcessTests(unittest.TestCase):
 
 
 class StartDetachedTests(unittest.TestCase):
+    def test_on_windows_the_host_starts_hidden_in_its_own_group_and_leaves_the_job_when_allowed(self) -> None:
+        # CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB, as Windows defines them, pinned
+        # here against the values job_tree and review_process hold.
+        hidden_in_own_group = 0x08000000 | 0x00000200
+        breakaway = 0x01000000
+        started = mock.Mock(pid=4242)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch("review_process.sys", platform="win32"),
+            mock.patch("review_process.subprocess.Popen", side_effect=[PermissionError(), started]) as popen,
+        ):
+            pid = start_detached([sys.executable, "-c", "pass"], Path(temporary), Path(temporary) / "host.log")
+        self.assertEqual(4242, pid)
+        self.assertEqual(
+            [hidden_in_own_group | breakaway, hidden_in_own_group],
+            [call.kwargs["creationflags"] for call in popen.call_args_list],
+            "a job that refuses breakaway keeps the host in it, still hidden and in its own group",
+        )
+
     def test_a_detached_host_outlives_its_start_and_logs_its_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "run with spaces"

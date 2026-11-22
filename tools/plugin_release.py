@@ -44,6 +44,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import file_presence
 import json_reader
 import json_writer
@@ -154,7 +155,9 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
             path.write_bytes(built[name])
             entry["source"] = {"source": "archive", "url": asset_url(repository, tag, name), "sha256": digest}
             lines += [f'ARCHIVE {name} "{path}" {digest}', f"PINNED {name} {tag} {digest}"]
-        json_writer.write(root / plugin_build.MARKETPLACE, document, indent=2, ensure_ascii=False, mode=0o644)
+        json_writer.write(
+            root / plugin_build.MARKETPLACE, document, indent=2, ensure_ascii=False, mode=atomic_file.TRACKED_FILE_MODE
+        )
     except BaseException:
         # A marketplace or an archive that cannot be written leaves no archive behind: the output is as it was.
         for path in written:

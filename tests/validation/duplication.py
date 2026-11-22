@@ -34,6 +34,7 @@ from validation_support import (
     module_allowance,
     module_imports,
     module_statements,
+    python_source,
     python_trees,
     qualified_name,
     repository_files,
@@ -69,6 +70,15 @@ UNCOMPARED_CONSTANTS = frozenset({"__all__"})
 # A sanction dictionary, such as PLATFORM_ALLOWED or DUPLICATION_ALLOWED itself, names what its module excuses, and
 # another module may excuse the same thing. Only a dictionary under such a name is one; any other value is compared.
 SANCTION_SUFFIX = "_ALLOWED"
+# An integer is compared only when written as a bit pattern, in hexadecimal, octal, or binary, such as a Windows
+# process-creation flag or a file mode: a value an operating system or a format defines, which two modules holding it
+# under any names most likely both copied. A decimal integer is a count, a limit, an exit code, or a version, which
+# modules choose for separate decisions and share by chance, as several record schemas each start at version 1 and
+# several tools wait 120 seconds, so no decimal integer is compared; nor is a bit pattern written in decimal, or built
+# from others, as `A | B` is. A bit pattern is keyed by its value alone, so two unrelated ones that share a value in
+# different modules, such as two interfaces' 0x1 flags, are refused as one copy and sanctioned with
+# DUPLICATION_ALLOWED in each module; within one module, as job_tree.py's two 0x4 flags, nothing is compared.
+BIT_PATTERN_PREFIXES = ("0x", "0o", "0b")
 # A constant's group key starts with this, so a constant and a definition never share a group.
 CONSTANT_KEY = "constant:"
 # The calls that build a collection from a literal. A collection compares by its members in any order, so a tuple and a
@@ -138,9 +148,19 @@ def _literals(node: ast.expr) -> list[str | bytes] | None:
     return items if len(items) == len(node.elts) else None
 
 
-def _constant_key(value: ast.expr, resolver: CallableResolver) -> str | None:
+def _is_bit_pattern(value: ast.Constant, source: Callable[[], str]) -> bool:
+    """Whether an integer literal is written in hexadecimal, octal, or binary, read from its source text, since the
+    syntax tree keeps only the value."""
+    literal = ast.get_source_segment(source(), value) or ""
+    return literal[:2].lower() in BIT_PATTERN_PREFIXES
+
+
+def _constant_key(value: ast.expr, resolver: CallableResolver, source: Callable[[], str]) -> str | None:
     """The group key of a module-level value the policy compares, or None for any other value: a long string or bytes
-    literal, a pattern compiled from a literal, or a collection of literals that together are long."""
+    literal, an integer written as a bit pattern, a pattern compiled from a literal, or a collection of literals that
+    together are long. An integer's key is its value, so 0x1A4 and 0o644 are one copy."""
+    if isinstance(value, ast.Constant) and type(value.value) is int:
+        return f"{CONSTANT_KEY}{value.value!r}" if _is_bit_pattern(value, source) else None
     if isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes)):
         return f"{CONSTANT_KEY}{value.value!r}" if len(value.value) >= MINIMUM_CONSTANT_LENGTH else None
     called = resolver.name(value.func) if isinstance(value, ast.Call) else ""
@@ -157,9 +177,11 @@ def _constant_key(value: ast.expr, resolver: CallableResolver) -> str | None:
     return f"{CONSTANT_KEY}{tuple(sorted(set(items), key=repr))!r}"
 
 
-def _module_copies(name: str, tree: ast.Module) -> Iterator[tuple[str, Copy]]:
+def _module_copies(name: str, tree: ast.Module, path: Path) -> Iterator[tuple[str, Copy]]:
     """Each definition and constant the module may share with another, as its group key and where it is."""
     resolver = CallableResolver(tree)
+    # The source is read again only for a module that binds an integer, whose literal's form the tree does not keep.
+    source = functools.cache(lambda: python_source(path))
     for node in module_statements(tree.body):
         if (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
@@ -174,7 +196,7 @@ def _module_copies(name: str, tree: ast.Module) -> Iterator[tuple[str, Copy]]:
                 and target.id not in UNCOMPARED_CONSTANTS
                 and not (target.id.endswith(SANCTION_SUFFIX) and isinstance(node.value, ast.Dict))
             ]
-            key = _constant_key(node.value, resolver) if targets else None
+            key = _constant_key(node.value, resolver, source) if targets else None
             if key is not None:
                 yield from ((key, (name, node.lineno, target)) for target in targets)
 
@@ -919,6 +941,12 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     Copied helpers began identical and then drifted, and so did copied patterns; a copy caught while it is still
     identical is caught before it diverges. Two scripts of one skill count, because one can import the other. A name
     bound twice in one file is a copy that has already diverged, and the second binding wins.
+
+    Stated limit: an integer is compared only when written as a hexadecimal, octal, or binary literal, and a decimal
+    integer never, since unrelated counts, limits, and versions share decimal values by chance (BIT_PATTERN_PREFIXES
+    says which). A bit pattern copied in decimal, negated, or built from others, as `A | B` is, goes unseen; and since
+    a bit pattern is keyed by its value alone, two unrelated ones sharing a value in different modules are refused
+    as one copy and are sanctioned with DUPLICATION_ALLOWED in each.
     """
     copies: dict[str, list[Copy]] = {}
     allowances: dict[str, dict[str, str]] = {}
@@ -932,7 +960,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     ordered = sorted(files, key=lambda path: path.relative_to(root).as_posix())
     trees: list[tuple[str, ast.Module]] = []
     found: list[str] = []
-    for _, name, tree in python_trees(ordered, root, problems):
+    for path, name, tree in python_trees(ordered, root, problems):
         trees.append((name, tree))
         found += _rebound_names(name, tree)
         allowed = module_allowance(tree, DUPLICATION_ALLOWANCE)
@@ -940,7 +968,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
             allowed = {}
         allowances[name] = allowed
-        for key, place in _module_copies(name, tree):
+        for key, place in _module_copies(name, tree, path):
             copies.setdefault(key, []).append(place)
     copied: dict[str, set[str]] = {}
     for key, group in copies.items():
