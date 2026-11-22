@@ -24,22 +24,26 @@ that ends in STOP, as does finding no changed C# file or no solution, or choosin
 `dotnet format` formats when dotnet is not installed.
 
 The formatter is the .NET SDK's `dotnet format` for a .slnx solution, which the dotnet-format global tool cannot open,
-and for a .sln whose C# and Visual Basic projects are all SDK-style, since the global tool cannot load the analyzers
-current SDKs give such projects; it is the global tool for any other .sln, such as one holding a .NET Framework project
-in the older format, on which the SDK's command can fail. The global tool is not run on an ASP.NET project's files,
-which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the global tool. A FILE that
-SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker. FILE_LIST ends each name
-with a NUL, the one character no path holds, so every name git lists reads back as written, a leading space or a line
-separator inside it included. A printed line holds each value as ejryan89-skill-core's `fact_line` flattens it, so a
-tab, a control character, or a line break in a name or a reason prints as a space and one fact stays one line; the
-exact names are FILE_LIST's.
+and for a .sln whose C# and Visual Basic projects are all SDK-style files inside the repository, since the global tool
+cannot load the analyzers current SDKs give such projects; it is the global tool for any other .sln, such as one holding
+a .NET Framework project in the older format, on which the SDK's command can fail. A listed project outside the
+repository by its text, or that a symbolic link or junction on its way, its own name included, leads out of it, judged
+from each name's own metadata and each link's text, is never stat or opened, so it is not shown to be SDK-style and the
+global tool formats its solution; `csharp_layout.py config` reports it as REFUSED. The global tool is not run on an
+ASP.NET project's files, which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the
+global tool. A FILE that SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker.
+FILE_LIST ends each name with a NUL, the one character no path holds, so every name git lists reads back as written, a
+leading space or a line separator inside it included. A printed line holds each value as ejryan89-skill-core's
+`fact_line` flattens it, so a tab, a control character, or a line break in a name or a reason prints as a space and one
+fact stays one line; the exact names are FILE_LIST's.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
 
-Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command
-fails or does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot
-hold, or a file cannot be read or written, it prints `FAILED <reason>` as the last line instead.
+Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command fails or
+does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot hold, a file
+cannot be read or written, or a changed file, a project beside one, or a solution it finds is a link leading outside the
+repository, or lies through one, which it never stats or reads, it prints `FAILED <reason>` as the last line instead.
 
 Exit status:
   0  the lines were printed, ending in SOLUTION or STOP
@@ -81,7 +85,7 @@ from dotnet_solution import (
 from executable_locator import find_program
 from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
-from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, followed_inside, walk_files
 from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -188,13 +192,37 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
+LINKED_OUT = "its links cannot be followed inside the repository root"
+
+
+def linked_out_refusal(root: Path, path: Path) -> str | None:
+    """Why a script does not stat, read, or evaluate `path`, a path inside `root` by its text, or None: a symbolic link
+    or junction on its way, its own name included, leads outside the root, a name on it cannot be examined or a link
+    followed, or a `..` it holds climbs above the root once the links before it are followed, as Linux and macOS take
+    it, such as after a link to the root itself. ejryan89-skill-core's `folder_walk.followed_inside` judges each name
+    down from the root from its own metadata and each link from its text, so nothing outside the root is stat, listed,
+    or opened to decide. A path whose links all stay inside, and one with a name that is not there, which its reader
+    then reports, is None."""
+    inside, linked = followed_inside(path, root)
+    if linked is not None:
+        return f"{LINKED_OUT}: {linked}"
+    if inside is None:
+        # `path` lies inside the root by its text, so followed_inside answers no place only for a `..` that climbs
+        # above the root's top, a link before it having led there or not.
+        return f"{LINKED_OUT}: a `..` in it climbs above the root once the links before it are followed"
+    return None
+
+
 def listed_refusal(root: Path, name: str) -> str | None:
     """Why a script does not read or write the file a FILE_LIST entry names, or None when it lies inside `root`.
 
     The entry is judged first as written, before anything touches it, so an absolute entry, even one naming a file
     inside the root, is refused unopened, and so, through ejryan89-skill-core's `refusal`, are one whose `..`
-    segments leave the root and a network-share or device form; then as resolved, so an entry inside the root that a
-    symbolic link or junction leads out of it is refused too."""
+    segments leave the root and a network-share or device form; then by its links (`linked_out_refusal`), so an entry
+    inside the root that a symbolic link or junction leads out of it is refused too, with nothing outside the root
+    touched to decide. An entry holding a `..` is judged by its links both as its text reads it, as Windows opens it,
+    and as written, as Linux and macOS open it, taking each `..` after following the link before it, on every
+    platform, so an entry either reading leads out of the root is refused wherever it runs."""
     base = lexical_absolute(root)
     path = project_path(base, name)
     refused = refusal(path, base)
@@ -202,12 +230,10 @@ def listed_refusal(root: Path, name: str) -> str | None:
         return refused
     if Path(name.replace("\\", "/")).anchor:
         return "the entry is an absolute path, and an entry names a file relative to the repository root"
-    try:
-        leaves = refusal(resolved_path(path), resolved_path(base)) is not None
-    except OSError as error:
-        return f"the path cannot be resolved: {error.strerror or error}"
-    if leaves:
-        return "a symbolic link or junction leads it outside the repository root, which the script does not leave"
+    for named in dict.fromkeys((path, base / name.replace("\\", "/"))):
+        linked = linked_out_refusal(base, named)
+        if linked:
+            return linked
     return None
 
 
@@ -370,7 +396,8 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
 
 def changed_files(services: Services, root: Path, base: str) -> list[str]:
     """Committed, uncommitted, and untracked C# files changed on this branch that still exist. Raises Failed for one
-    it cannot examine, or that is something other than a file, which it cannot tell from a deleted one."""
+    it cannot examine, a link leading outside the repository included, or that is something other than a file, which
+    it cannot tell from a deleted one."""
     names = set(
         git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
     )
@@ -380,18 +407,24 @@ def changed_files(services: Services, root: Path, base: str) -> list[str]:
 
 
 def still_there(root: Path, name: str) -> bool:
-    """Whether a changed file is still a file: False only when nothing is at its path, as for one deleted."""
+    """Whether a changed file is still a file: False only when nothing is at its path, as for one deleted. Its name
+    is judged by its links first (`linked_out_refusal`), so one that is, or lies through, a link leading outside the
+    repository fails the resolution unstat'd, as one it cannot examine."""
+    refused = linked_out_refusal(root, root / name)
+    if refused:
+        raise Failed(f"the changed file {name} cannot be examined: {refused}")
     try:
         return is_present(root / name)
     except OSError as error:
         raise Failed(f"the changed file {name} cannot be examined: {error}") from None
 
 
-def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
-    """The files directly in `folder` whose names `wanted` accepts, sorted: a folder or anything else by such a name
-    is none, and so is every file of a folder that is not there. Raises Failed for a folder it cannot list, or such an
-    entry it cannot examine, which could be one; it lists with iterdir, which raises there, where glob matches nothing.
-    """
+def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
+    """The files directly in `folder`, a folder inside `root`, whose names `wanted` accepts, sorted: a folder or
+    anything else by such a name is none, and so is every file of a folder that is not there. Raises Failed for a
+    folder it cannot list, or such an entry it cannot examine, which could be one; it lists with iterdir, which raises
+    there, where glob matches nothing. Such an entry that is a link leading outside `root` (`linked_out_refusal`) is
+    one it cannot examine, and is never stat, so a project or solution behind it is never read."""
     try:
         entries = sorted(folder.iterdir())
     except ABSENT:
@@ -402,6 +435,9 @@ def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
     for path in entries:
         if not wanted(path.name):
             continue
+        refused = linked_out_refusal(root, path)
+        if refused:
+            raise Failed(f"{path} cannot be examined: {refused}")
         try:
             if is_present(path):
                 found.append(path)
@@ -419,9 +455,10 @@ def is_project_name(name: str) -> bool:
 
 def owning_projects(root: Path, file: Path) -> list[Path]:
     """The .csproj files in the nearest directory at or above the file, up to and including the root; a folder or
-    project file it cannot examine fails, since passing it by could miss the ASP.NET project that owns the file."""
+    project file it cannot examine, a project file that is a link leading outside the root included, fails, since
+    passing it by could miss the ASP.NET project that owns the file, and reading it would leave the repository."""
     for folder in folders_up(file.parent, root):
-        projects = listed_files(folder, is_project_name)
+        projects = listed_files(root, folder, is_project_name)
         if projects:
             return projects
     return []
@@ -443,8 +480,10 @@ def is_sdk_style(project: Path) -> bool:
 def formatter_for(root: Path, solution: Path) -> str:
     """The formatter for a solution: the SDK's `dotnet format` for a .slnx, and for a .sln listing C# or Visual Basic
     projects that are all SDK-style files inside `root`; the dotnet-format global tool for any other .sln, one it
-    cannot read included, so that only a solution shown to suit the SDK's command gets it. A relative root or
-    solution is taken from the working directory, as the formatter takes them."""
+    cannot read included, so that only a solution shown to suit the SDK's command gets it. A listed project outside
+    `root` by its text (`refusal`), or that a link on its way leads out of it (`linked_out_refusal`), is never stat or
+    opened, so it is not shown to be SDK-style and the solution gets the global tool; `csharp_layout.py config` reports
+    it as REFUSED. A relative root or solution is taken from the working directory, as the formatter takes them."""
     if has_suffix(solution.name, ".slnx"):
         return SDK_FORMATTER
     root, solution = lexical_absolute(root), lexical_absolute(solution)
@@ -457,7 +496,10 @@ def formatter_for(root: Path, solution: Path) -> str:
         for entry in listed
         if has_suffix((project := project_path(solution.parent, entry)).name, FORMATTED_PROJECT_SUFFIXES)
     ]
-    if projects and all(refusal(project, root) is None and is_sdk_style(project) for project in projects):
+    if projects and all(
+        refusal(project, root) is None and linked_out_refusal(root, project) is None and is_sdk_style(project)
+        for project in projects
+    ):
         return SDK_FORMATTER
     return TOOL_FORMATTER
 
@@ -476,10 +518,11 @@ def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, P
 
 
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
-    """Solutions in the nearest directory from cwd up to the root, or none."""
+    """Solutions in the nearest directory from cwd up to the root, or none; one that is a link leading outside the
+    root fails, as `listed_files` says."""
     inside = any(same_path(folder) == same_path(root) for folder in folders_up(cwd))
     for folder in folders_up(cwd if inside else root, root):
-        found = listed_files(folder, lambda name: is_solution(Path(name)))
+        found = listed_files(root, folder, lambda name: is_solution(Path(name)))
         if found:
             return found
     return []
@@ -491,12 +534,18 @@ def find_solutions(root: Path) -> list[Path]:
     link.
 
     A folder it cannot list, or an entry it cannot examine, is an error, not an empty one: skipping it could hide the
-    solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it.
+    solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it. The
+    walk is given the root as its tree, so it follows no link entry out of the repository, not even to learn what it
+    is, and a solution that is a link leading out (`linked_out_refusal`) is one it cannot examine, never read.
     """
-    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS)
+    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS, tree=root)
     for entry in walk.not_entered:
         if entry.kind not in (LINKED, LOOP, NESTED_CHECKOUT):
             raise Failed(f"{entry.path}: {entry.reason}")
+    for solution in walk.files:
+        refused = linked_out_refusal(root, solution)
+        if refused:
+            raise Failed(f"{solution} cannot be examined: {refused}")
     return walk.files
 
 
