@@ -2457,7 +2457,7 @@ class RunPieceTests(unittest.TestCase):
     def test_no_session_writes_auto_memory_even_where_the_user_forces_it_on(self) -> None:
         # The variable that keeps CLAUDE.md out stops only the loading of auto memory, so every run on a model could
         # still save memories into the user's own memory folder for that model's home. A user's 0 forces it on over
-        # every setting, so the run's 1 must replace it in both environments.
+        # --bare and autoMemoryEnabled: false, so the run's 1 must replace it in both environments.
         run, config = self.root / "run", self.root / "config.json"
         forced = {"PATH": "kept", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}
         for environment in (
