@@ -133,6 +133,17 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   list of names fails the session with that reason instead, since which skills it found cannot be known, and a trigger
   session's message or Skill call in a shape the tool does not read makes its run count for nothing rather than
   recording that the session started no skill.
+- **What a run isolates:** a session takes the user's environment, the sign-in included, less git's
+  repository-selecting variables and, for a review or synthesis session, `CLAUDE_CODE_EFFORT_LEVEL`, which would
+  outrank the reviewer's stated effort (`CLAUDE_CODE_SUBAGENT_EFFORT` is kept). It reads project and local settings
+  only, so not the user's own, though Claude Code's managed settings always apply. Every session, a review's, a
+  synthesis's, or a trigger scenario's, starts with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so it loads no CLAUDE.md, rules
+  file, or auto memory, neither the user's, the managed one, nor any from a folder above the home, and with
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so it writes no auto memory, which would otherwise land in the user's own memory
+  folder for the model's home, where every later run on that model could read it
+  ([environment variables](https://code.claude.com/docs/en/env-vars)). No run writes `claudeMdExcludes`: the first
+  variable already keeps out every file that setting could name, and the managed one, which it cannot
+  ([Memory](https://code.claude.com/docs/en/memory#exclude-specific-claude-md-files)).
 - **What it prints** is `PASS` or `FAIL` per expectation and model, then a table. The tool's `MODELS` constant is the
   one place the models are named, and `tests/tools/test_skill_evals.py` covers the tool with a stub Claude Code and no
   model.
