@@ -27,6 +27,10 @@ from refusal_steps import (
 from validation_support import write_fixture_tree
 
 SUFFIX = " ends at its ERROR line; add the step to take as its next line, or state why it needs none in STEP_ALLOWED"
+PRINTED_SUFFIX = (
+    " gives an ERROR line with no step after it in its text or its block; print the step to take next, or state why "
+    "it needs none in STEP_ALLOWED"
+)
 UNFOLLOWED_SUFFIX = (
     " unpacks lines this policy cannot follow, such as a parameter, a call's result, or a list changed in place, so "
     "its step may be missing; write a literal step after them, or the step before them, or state why it needs none in "
@@ -154,7 +158,7 @@ class RefusalStepFixtures(unittest.TestCase):
                 "\n"
                 "\n"
                 "def other():\n"
-                '    return print("ERROR: not a refusal")\n'
+                '    return len("ERROR: not a refusal")\n'
             ),
         }
         self.assertEqual([], self.problems(files))
@@ -657,11 +661,333 @@ class RefusalStepFixtures(unittest.TestCase):
         self.assertEqual(
             [
                 "deployer/gone.py: STEP_ALLOWED allows parse, which no longer builds a refusal from one line or from "
-                "lines this policy cannot follow",
+                "lines this policy cannot follow, or prints an ERROR line without its step",
                 "deployer/unexplained.py: STEP_ALLOWED must map each scope to the reason its refusals need no step",
             ],
             self.problems(files),
         )
+
+    def test_a_printed_error_line_with_no_step_after_it_fails_however_it_is_printed(self) -> None:
+        files = {
+            "deployer/out.py": (
+                "import sys\n"  # 1
+                "from sys import stderr\n"  # 2
+                "\n"  # 3
+                "\n"  # 4
+                "def plain():\n"  # 5
+                '    print("ERROR: Plain", file=sys.stderr)\n'  # 6
+                "\n"  # 7
+                "\n"  # 8
+                "def indented(run):\n"  # 9
+                '    print(f"  ERROR: Run {run} failed")\n'  # 10: after its indentation, and before a return
+                "    return False\n"  # 11
+                "\n"  # 12
+                "\n"  # 13
+                "def written():\n"  # 14
+                '    sys.stderr.write("\\nERROR: Written\\n\\n")\n'  # 15: blank lines are no step
+                '    stderr.write("ERROR: Imported\\n")\n'  # 16
+                '    sys.stdout.write("ERROR: Out\\n")\n'  # 17
+                "\n"  # 18
+                "\n"  # 19
+                "def formatted(run):\n"  # 20
+                '    print("ERROR: Run {} failed".format(run))\n'  # 21
+                '    print("ERROR: Run %s failed" % run)\n'  # 22
+                '    print("ERR" + "OR: Joined")\n'  # 23
+                "\n"  # 24
+                "\n"  # 25
+                'BOUND = "ERROR: Bound"\n'  # 26
+                "\n"  # 27
+                "\n"  # 28
+                "def held():\n"  # 29
+                "    print(BOUND)\n"  # 30: a name the module binds once
+                "\n"  # 31
+                "\n"  # 32
+                "def joined_by_a_space():\n"  # 33
+                '    print("ERROR: Joined", "Retry.")\n'  # 34: one line, its step on it
+                "\n"  # 35
+                "\n"  # 36
+                "def step_before():\n"  # 37
+                '    print("Retry.\\nERROR: After its step")\n'  # 38
+                "\n"  # 39
+                "\n"  # 40
+                "def unpacked(runs):\n"  # 41
+                '    lines = ["Retry.", "ERROR: Last"]\n'  # 42
+                '    print(*lines, sep="\\n")\n'  # 43
+                '    print(*(f"ERROR: Run {run}" for run in runs), sep="\\n")\n'  # 44
+                "\n"  # 45
+                "\n"  # 46
+                "class Recovery:\n"  # 47
+                "    def report(self):\n"  # 48
+                '        print("ERROR: Method")\n'  # 49
+            ),
+        }
+        self.assertEqual(
+            [
+                f"deployer/out.py:{line} a print in {scope}" + PRINTED_SUFFIX
+                for line, scope in (
+                    (6, "plain"),
+                    (10, "indented"),
+                    (15, "written"),
+                    (16, "written"),
+                    (17, "written"),
+                    (21, "formatted"),
+                    (22, "formatted"),
+                    (23, "formatted"),
+                    (30, "held"),
+                    (34, "joined_by_a_space"),
+                    (38, "step_before"),
+                    (43, "unpacked"),
+                    (44, "unpacked"),
+                    (49, "Recovery.report"),
+                )
+            ],
+            self.problems(files),
+        )
+
+    def test_a_printed_error_line_its_text_or_its_block_follows_with_a_step_passes(self) -> None:
+        errors = (
+            ERRORS + "\n\ndef see_recovery(section):\n"
+            "    if not section:\n"
+            "        raise ValueError(section)\n"
+            "    return f'See \"{section}\" in docs/recovery.md.'\n"
+        )
+        files = {
+            "deployer/out.py": (
+                "import sys\n"
+                "\n"
+                "from .errors import see_recovery\n"
+                "\n"
+                "\n"
+                "def in_text():\n"
+                '    sys.stderr.write("\\nERROR: Old Python\\nSee the installation guide.\\n\\n")\n'
+                '    print("ERROR: Joined", "Retry.", sep="\\n")\n'
+                "\n"
+                "\n"
+                "def next_print(run):\n"
+                '    print(f"  ERROR: Run {run} failed", file=sys.stderr)\n'
+                '    print("  Reconcile it by hand.", file=sys.stderr)\n'
+                "\n"
+                "\n"
+                "def past_more_errors(run):\n"
+                '    print(f"  ERROR: Malformed entry in run {run}")\n'
+                '    print("  ERROR: Validation failed.")\n'
+                "    retained = run\n"
+                "    _print_manual_steps(retained)\n"
+                "    return False\n"
+                "\n"
+                "\n"
+                "def _print_manual_steps(run):\n"
+                "    _say(run)\n"
+                "\n"
+                "\n"
+                "def _say(run):\n"
+                '    print(f"  Delete {run} and rerun.")\n'
+                "\n"
+                "\n"
+                "def guide():\n"
+                '    print("ERROR: Cannot list the runs")\n'
+                "    print(f\"  {see_recovery('When recovery fails')}\")\n"
+                "\n"
+                "\n"
+                "def unpacked(stuck):\n"
+                '    lines = [*(f"ERROR: Run {run} is stuck" for run in stuck), "Reconcile them by hand."]\n'
+                '    print(*lines, sep="\\n")\n'
+                "\n"
+                "\n"
+                "def unread(message, error, logger):\n"
+                # A line whose text is not written where it is printed, and a logger, are stated limits.
+                "    print(message)\n"
+                '    print(f"{message}")\n'
+                '    print(*error.lines, sep="\\n")\n'
+                '    logger.error("ERROR: Logged")\n'
+            ),
+            "deployer/remedy.py": (
+                "def remedy(kind):\n"
+                "    if kind:\n"
+                '        return "Rerun with --debug."\n'
+                '    return f"See {kind}."\n'
+                "\n"
+                "\n"
+                "def through_returns(kind):\n"
+                '    print("ERROR: Two ways")\n'
+                "    print(remedy(kind))\n"
+            ),
+            "deployer/detail.py": (
+                'STEP_ALLOWED = {"_complete": "its caller prints the run\'s ERROR line and its steps"}\n'
+                "\n"
+                "\n"
+                "def _complete():\n"
+                '    print("  ERROR: Detail")\n'
+                "    return False\n"
+            ),
+        }
+        self.assertEqual([], self.problems(files, errors))
+
+    def test_a_step_the_block_may_not_reach_or_a_call_that_prints_none_fails(self) -> None:
+        files = {
+            "deployer/out.py": (
+                "def returned():\n"  # 1
+                '    print("ERROR: Returned")\n'  # 2
+                "    return False\n"  # 3
+                '    print("Unreached.")\n'  # 4
+                "\n"  # 5
+                "\n"  # 6
+                "def branched(run):\n"  # 7
+                '    print("ERROR: Branched")\n'  # 8
+                "    if run:\n"  # 9
+                '        print("Retry.")\n'  # 10
+                "\n"  # 11
+                "\n"  # 12
+                "def nested(run):\n"  # 13
+                "    if run:\n"  # 14
+                '        print("ERROR: Nested")\n'  # 15: its block ends before the step
+                '    print("Retry.")\n'  # 16
+                "\n"  # 17
+                "\n"  # 18
+                "def helper_without_step():\n"  # 19
+                '    print("ERROR: Helper")\n'  # 20
+                "    helper_with_error()\n"  # 21
+                "\n"  # 22
+                "\n"  # 23
+                "def helper_with_error():\n"  # 24
+                '    print("ERROR: Only another")\n'  # 25
+                "\n"  # 26
+                "\n"  # 27
+                "def two_returns(flag):\n"  # 28
+                "    if flag:\n"  # 29
+                '        return "Retry."\n'  # 30
+                "    return flag\n"  # 31: a way that may be anything is no step
+                "\n"  # 32
+                "\n"  # 33
+                "def through_two_returns():\n"  # 34
+                '    print("ERROR: Two returns")\n'  # 35
+                "    print(two_returns(True))\n"  # 36
+                "\n"  # 37
+                "\n"  # 38
+                "def recursive():\n"  # 39
+                '    print("ERROR: Recursive")\n'  # 40
+                "    recursive()\n"  # 41
+            ),
+        }
+        self.assertEqual(
+            [
+                f"deployer/out.py:{line} a print in {scope}" + PRINTED_SUFFIX
+                for line, scope in (
+                    (2, "returned"),
+                    (8, "branched"),
+                    (15, "nested"),
+                    (20, "helper_without_step"),
+                    (25, "helper_with_error"),
+                    (35, "through_two_returns"),
+                    (40, "recursive"),
+                )
+            ],
+            self.problems(files),
+        )
+
+    def test_the_deployer_s_printed_lines_as_they_stood_before_each_had_its_step_fail(self) -> None:
+        # An unexpected exception's line, a staging run that is a link, and a run beside a manifest that cannot be read.
+        errors = (
+            ERRORS + "\n\ndef named(error, action):\n"
+            "    if isinstance(error, OSError):\n"
+            "        return os_error(error, action).lines[0]\n"
+            '    return f"ERROR: Unexpected {type(error).__name__}: {error}"\n'
+        )
+        files = {
+            "deployer/journal.py": (
+                "import sys\n"  # 1
+                "\n"  # 2
+                "\n"  # 3
+                "def _recover_run(paths, run_dir):\n"  # 4
+                "    if is_link_or_junction(run_dir):\n"  # 5
+                "        print(\n"  # 6
+                '            "  ERROR: Staging run is a symlink or junction and was "\n'  # 7
+                '            f"not replayed: {normalize(run_dir)}",\n'  # 8
+                "            file=sys.stderr,\n"  # 9
+                "        )\n"  # 10
+                "        return False\n"  # 11
+                "    committed = _committed_run_id(paths)\n"  # 12
+                "    if committed is None:\n"  # 13
+                "        print(\n"  # 14
+                '            f"  ERROR: The manifest is missing or cannot be read, so recovery cannot tell "\n'  # 15
+                '            f"whether run {run_dir.name} was committed.",\n'  # 16
+                "            file=sys.stderr,\n"  # 17
+                "        )\n"  # 18
+                "        return False\n"  # 19
+                "    return True\n"  # 20
+            ),
+            "deployer/pipeline.py": (
+                "import sys\n"  # 1
+                "\n"  # 2
+                "from . import errors\n"  # 3
+                "\n"  # 4
+                "\n"  # 5
+                "def _recover_from_failure(exc, debug, outcome):\n"  # 6
+                "    if isinstance(exc, errors.DeployError):\n"  # 7
+                "        print_error(exc, debug)\n"  # 8
+                "    else:\n"  # 9
+                # 10: one way of the text it prints is an ERROR line.
+                '        print(errors.named(exc, "finish the deployment"), file=sys.stderr)\n'  # 10
+                "        if debug:\n"  # 11
+                "            print_traceback(exc)\n"  # 12
+                '    print(f"Deployment {outcome}; reconciling the current journal before exit...", file=sys.stderr)\n'
+            ),
+        }
+        self.assertEqual(
+            [
+                "deployer/journal.py:6 a print in _recover_run" + PRINTED_SUFFIX,
+                "deployer/journal.py:14 a print in _recover_run" + PRINTED_SUFFIX,
+                "deployer/pipeline.py:10 a print in _recover_from_failure" + PRINTED_SUFFIX,
+            ],
+            self.problems(files, errors),
+        )
+
+    def test_each_stated_limit_of_printed_lines_passes_unread(self) -> None:
+        files = {
+            "deployer/limits.py": (
+                "import functools\n"
+                "import logging\n"
+                "import os\n"
+                "import sys\n"
+                "import warnings\n"
+                "\n"
+                "\n"
+                "def ways(kind):\n"
+                "    if kind == 1:\n"
+                '        return "ERROR: One"\n'
+                "    if kind == 2:\n"
+                '        return "ERROR: Two"\n'
+                "    if kind == 3:\n"
+                '        return "ERROR: Three"\n'
+                "    if kind == 4:\n"
+                '        return "ERROR: Four"\n'
+                '    return "ERROR: Five"\n'
+                "\n"
+                "\n"
+                "def unread(message, lines, kind):\n"
+                # A line whose text is not written where it is printed, or that a field opens.
+                "    print(message)\n"
+                '    print(f"{message}: ERROR")\n'
+                '    print(*lines, sep="\\n")\n'
+                # A progress line reads as a step.
+                '    print("ERROR: Stopped")\n'
+                '    print("Reconciling the journal...")\n'
+                # A value built more than MOST_TEXTS ways reads as a field.
+                '    print(f"{ways(kind)}{ways(kind)}{ways(kind)}")\n'
+                # Output through anything but print or a write to sys.stderr or sys.stdout.
+                '    logging.getLogger(__name__).error("ERROR: Logged")\n'
+                '    warnings.warn("ERROR: Warned")\n'
+                '    os.write(2, b"ERROR: Raw")\n'
+                "    stream = sys.stderr\n"
+                '    stream.write("ERROR: Held")\n'
+                "    say = print\n"
+                '    say("ERROR: Renamed")\n'
+                '    functools.partial(print, file=sys.stderr)("ERROR: Partial")\n'
+                # A field holding more than one line is read as one.
+                '    print(f"Retry.{message}")\n'
+            ),
+        }
+        self.assertEqual([], self.problems(files))
 
 
 HARNESS = (

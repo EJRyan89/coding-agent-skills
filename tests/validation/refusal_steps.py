@@ -24,6 +24,37 @@ Stated limits, none of which deployer code writes:
 - A call through a local name, a parameter, or a module assignment that shadows a builtin or a module-level function
   is read as that builtin or function.
 
+An ERROR line the deployer prints itself, with the builtin print or a write to sys.stderr or sys.stdout, ends with its
+step too (`_Printed`). The printed text is read as print gives it, its values joined by a literal `sep` or a space,
+each value read as far as it is written there: a string, an f-string, whose field is read as a value is when no
+conversion or format spec changes it, a literal template's `.format` or `%` up to its first field, a `+`, a name bound
+once to one of them, each return of a deployer function it calls, as `errors.named(...)` and `see_recovery(...)` give
+theirs, and the elements of an unpacked list or tuple display, written or held in a name bound once to one, a
+comprehension's or generator's as its element's text. A value the deployer may build more than one way is read as each
+of its texts. A line that starts with `ERROR:` after its indentation is an ERROR line, and its step is a later line of
+the same text that settles as no ERROR line, or else a statement after it in the same block, before the block ends: a
+print each of whose texts holds such a line after its last ERROR line, or a call to a deployer function that, followed
+through the deployer's functions it calls, makes such a print anywhere. The search passes over further printed ERROR
+lines, and over any other expression, assignment, or pass, and ends at any other statement, such as a return, a raise,
+or an if, whose step may not be printed. A printed ERROR line whose step its callers print is excused in its module's
+STEP_ALLOWED with the reason.
+
+Stated limits of printed lines, none of which deployer code writes:
+- A line whose text is not written where it is printed, such as a parameter, a loop's name, a call's result other than
+  a deployer function's return, a name bound more than once, an f-string built elsewhere, or a list unpacked from
+  anything but a display, is read as a field, and a line whose text up to its first field could still open `ERROR:`,
+  as a line that a field opens, is neither an ERROR line nor a step, so an ERROR line it holds needs no step here. The
+  deployer prints such lines only from a refusal's own lines (`print_error`, and journal's `_report` and
+  `_hash_existing`), which the refusals above end with their step.
+- Any line that settles as no ERROR line is read as a step, whatever it says, so an ERROR line followed by a
+  progress line, such as `Deployment failed; reconciling ...`, passes.
+- A value the deployer may build more than MOST_TEXTS ways is read as a field.
+- Output through anything but print or a write to sys.stderr or sys.stdout, such as a logger, `warnings.warn`,
+  `os.write`, `traceback.print_exc`, a stream held in a name, or print called through another name or
+  `functools.partial`, is not read.
+- A field that expands to more than one line at run time is read as one line, so an ERROR line a field holds after a
+  literal step, or a step a field holds, is not read.
+
 The deployer suites check a refusal with the harness's assert_refusal, which holds its ERROR line followed at once by
 each step, and never with assert_lines, which finds each line anywhere in the output, so a step checked that way passes
 wherever it drifts. An assert_lines call under tests/deployer, as `self.assert_lines`, through any other attribute, or
@@ -52,6 +83,7 @@ from __future__ import annotations
 import ast
 import string
 import unittest
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,7 +110,8 @@ REFUSAL_MODULE = "deployer/errors.py"
 STEPLESS = {"deployer.errors.Cancelled": "a cancellation is the user's own act, so it asks nothing of them"}
 # A module states why a refusal ends without a step beside the code, as a module-level STEP_ALLOWED = {scope: reason},
 # where a scope is a function's qualified name, such as "Journal.append", or a module-level assignment's target: a
-# refusal its every caller adds the step to, or one caught beside it that never reaches the user.
+# refusal its every caller adds the step to, or one caught beside it that never reaches the user, and a printed ERROR
+# line whose step its callers print.
 STEP_ALLOWANCE = "STEP_ALLOWED"
 
 
@@ -449,6 +482,245 @@ def _finding(name: str, line: int, scope: str, called: str, ending: str) -> str:
     )
 
 
+# The kinds a printed text's lines are read as: an ERROR line; a line whose text up to its first field cannot settle
+# whether it is one, which is read as neither an ERROR line nor a step; a line that settles it is none, which is a step;
+# and a blank line.
+ERROR_LINE, UNSETTLED_LINE, STEP_LINE, BLANK_LINE = "error", "unsettled", "step", "blank"
+# What stands in a printed text for what only the deployer's run knows, such as an f-string's field or a parameter.
+FIELD = "\x00"
+# The streams whose write the policy reads as printing, beside the builtin print.
+WRITES = frozenset({"sys.stderr.write", "sys.stdout.write"})
+# The statements a search for the step after a printed ERROR line passes over when they print no step; any other, such
+# as a return, a raise, or a block that may leave or print only on one branch, ends the search.
+PASSED_OVER = (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Pass)
+
+
+def _line_kind(line: str) -> str:
+    """How one printed line reads: an ERROR line, a line whose text up to its first field could still open one, a step,
+    or a blank line."""
+    text = line.lstrip()
+    if not text.strip():
+        return BLANK_LINE
+    if text.startswith(ERROR_MARK):
+        return ERROR_LINE
+    lead, field_follows, _ = text.partition(FIELD)
+    return UNSETTLED_LINE if field_follows and ERROR_MARK.startswith(lead) else STEP_LINE
+
+
+def _text_kinds(text: str) -> list[str]:
+    """The kind of each line of a printed text that is not blank."""
+    return [kind for kind in map(_line_kind, text.split("\n")) if kind != BLANK_LINE]
+
+
+def _holds_error(text: str) -> bool:
+    """Whether a printed text holds a line that settles as an ERROR line."""
+    return ERROR_LINE in _text_kinds(text)
+
+
+def _step_after_error(text: str) -> bool:
+    """Whether a printed text holds a step after its last ERROR line, or anywhere when it holds none: a line that
+    settles as no ERROR line."""
+    kinds = _text_kinds(text)
+    last = max((index for index, kind in enumerate(kinds) if kind == ERROR_LINE), default=-1)
+    return STEP_LINE in kinds[last + 1 :]
+
+
+# The texts a printed value may be, one for each way the deployer's code may build it, such as each return of a
+# function it calls.
+Texts = tuple[str, ...]
+# The most texts one printed value is read as; a value that may be more is read as FIELD alone.
+MOST_TEXTS = 64
+
+
+def _distinct(texts: Iterable[str]) -> Texts:
+    """The texts once each, in the order met."""
+    return tuple(dict.fromkeys(texts))
+
+
+def _combined(pieces: list[Texts]) -> Texts:
+    """Every text the pieces may make one after another, or FIELD alone when they may make more than MOST_TEXTS."""
+    texts: Texts = ("",)
+    for piece in pieces:
+        texts = _distinct(text + part for text in texts for part in piece)
+        if len(texts) > MOST_TEXTS:
+            return (FIELD,)
+    return texts
+
+
+def _template(template: str, method: str) -> str:
+    """A filled template's text, read up to its first field, FIELD standing for everything after it."""
+    lead = _template_lead(template, method)
+    if lead is None:
+        return FIELD
+    literal, field_follows = lead
+    return literal + FIELD if field_follows or FIELD in template else literal
+
+
+class _Printed:
+    """How one module's printed lines are read: the text each print or write gives, with FIELD for what only the
+    deployer's run knows, and whether the statements after a printed ERROR line print its step."""
+
+    def __init__(self, reader: _Refusals) -> None:
+        self.reader = reader
+
+    def output(self, node: ast.AST) -> ast.Call | None:
+        """The call, when the node prints: the builtin print, or a write to sys.stderr or sys.stdout."""
+        if not isinstance(node, ast.Call):
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "print" and "print" not in self.reader.aliases:
+            return node
+        return node if qualified_name(node.func, self.reader.aliases) in WRITES else None
+
+    def printed(self, call: ast.Call) -> Texts:
+        """The texts a print or a write may give: a write's argument, or print's arguments joined by its sep."""
+        if not (isinstance(call.func, ast.Name) and call.func.id == "print"):
+            return self.text(call.args[0], frozenset()) if call.args else (FIELD,)
+        separator: Texts = (" ",)
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                separator = (FIELD,)
+            elif keyword.arg == "sep":
+                separator = self.text(keyword.value, frozenset())
+        parts = self._parts(call.args)
+        return _combined(
+            [piece for index, part in enumerate(parts) for piece in ([separator] if index else []) + [part]]
+        )
+
+    def _parts(self, arguments: list[ast.expr]) -> list[Texts]:
+        """The texts of each value print is given: an unpacked list or tuple display, written or held in a name bound
+        once to one, gives its elements, a comprehension or generator its element's text, and anything else unpacked
+        FIELD."""
+        parts: list[Texts] = []
+        for argument in arguments:
+            if not isinstance(argument, ast.Starred):
+                parts.append(self.text(argument, frozenset()))
+                continue
+            value = argument.value
+            if isinstance(value, (ast.GeneratorExp, ast.ListComp)):
+                parts.append(self.text(value.elt, frozenset()))
+                continue
+            elements = self.reader._displayed(value, value, set())
+            parts += [(FIELD,)] if elements is None else self._parts(elements)
+        return parts
+
+    def text(self, node: ast.expr, followed: frozenset[str]) -> Texts:
+        """The texts a value may be, FIELD standing for what only the deployer's run knows: a string, an f-string, a
+        literal template's `.format` or `%`, a `+`, a name bound once to one of them, or each return of a deployer
+        function it calls."""
+        if isinstance(node, ast.Constant):
+            return (node.value,) if isinstance(node.value, str) else (FIELD,)
+        if isinstance(node, ast.JoinedStr):
+            return _combined([self._field(part, followed) for part in node.values])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _combined([self.text(node.left, followed), self.text(node.right, followed)])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            return _distinct(_template(template, "%") for template in self.text(node.left, followed))
+        if isinstance(node, ast.Name):
+            seen = set(followed)
+            statement = self.reader.assignment(node, node, seen)
+            if statement is not None and statement.value is not None:
+                return self.text(statement.value, frozenset(seen))
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+                return _distinct(_template(template, "format") for template in self.text(node.func.value, followed))
+            return self._returned(node, followed)
+        return (FIELD,)
+
+    def _field(self, part: ast.expr, followed: frozenset[str]) -> Texts:
+        """An f-string part's texts: its literal text, or a field's value read as text() reads it, when no conversion
+        or format spec changes it, and FIELD otherwise."""
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            return (part.value,)
+        if isinstance(part, ast.FormattedValue) and part.conversion == -1 and part.format_spec is None:
+            return self.text(part.value, followed)
+        return (FIELD,)
+
+    def _returned(self, call: ast.Call, followed: frozenset[str]) -> Texts:
+        """The texts a deployer function may return, read from each of its returns, as `errors.named` and
+        `see_recovery` give theirs, or FIELD when the call names no deployer function."""
+        name = self.reader.called(call.func) or ""
+        target = self.reader.program.functions.get(name)
+        if target is None or name in followed:
+            return (FIELD,)
+        reader, function = target
+        printed = _Printed(reader)
+        returns = [node.value for node in _own_nodes(function.body) if isinstance(node, ast.Return)]
+        return _distinct(
+            text
+            for value in returns
+            for text in (printed.text(value, followed | {name}) if value is not None else (FIELD,))
+        ) or (FIELD,)
+
+    def stepless(self, call: ast.Call) -> bool:
+        """Whether a print or a write may give an ERROR line that neither a later line of its own text nor a statement
+        after it in its block follows with a step."""
+        stepless = any(_holds_error(text) and not _step_after_error(text) for text in self.printed(call))
+        return stepless and not self._step_follows(call)
+
+    def _step_follows(self, call: ast.Call) -> bool:
+        """Whether the statements after the one holding the call, in its block, print a step before the block ends,
+        passing over further ERROR lines and every statement PASSED_OVER names."""
+        statement: ast.AST = call
+        while not isinstance(statement, ast.stmt):
+            statement = self.reader.parents[statement]
+        block = next(
+            (
+                body
+                for _, body in ast.iter_fields(self.reader.parents.get(statement, statement))
+                if isinstance(body, list) and statement in body
+            ),
+            [],
+        )
+        for following in block[block.index(statement) + 1 :] if statement in block else []:
+            if not isinstance(following, PASSED_OVER):
+                return False
+            value = getattr(following, "value", None)
+            if isinstance(value, ast.Call) and self._prints_step(value, set()):
+                return True
+        return False
+
+    def _prints_step(self, call: ast.Call, seen: set[str]) -> bool:
+        """Whether a call prints a step: a print or a write each of whose texts holds one after its last ERROR line, or
+        a deployer function, followed once, whose own statements make such a call anywhere."""
+        if self.output(call) is not None:
+            return all(_step_after_error(text) for text in self.printed(call))
+        name = self.reader.called(call.func) or ""
+        target = self.reader.program.functions.get(name)
+        if target is None or name in seen:
+            return False
+        seen.add(name)
+        reader, function = target
+        printed = _Printed(reader)
+        return any(
+            isinstance(node, ast.Call) and printed._prints_step(node, seen) for node in _own_nodes(function.body)
+        )
+
+
+def _printed_finding(name: str, line: int, scope: str) -> str:
+    """The report of one print or write that gives an ERROR line without its step."""
+    return (
+        f"{name}:{line} a print in {scope} gives an ERROR line with no step after it in its text or its block; print "
+        f"the step to take next, or state why it needs none in {STEP_ALLOWANCE}"
+    )
+
+
+def stepless_prints(tree: ast.Module, name: str, program: _Program) -> list[tuple[int, str]]:
+    """Each print or write in a module that gives an ERROR line with no step after it in its own text or its block,
+    as (line, scope), ignoring its allowance; `program` is the deployer's code a call after it is followed through."""
+    printed = _Printed(_Refusals(tree, name, set(), program=program))
+    statements = [
+        statement
+        for statement in tree.body
+        if not (isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement_scope(statement) == STEP_ALLOWANCE)
+    ]
+    found: list[tuple[int, str]] = []
+    for node, scope in scoped_nodes(statements):
+        call = printed.output(node)
+        if call is not None and printed.stepless(call):
+            found.append((call.lineno, scope))
+    return found
+
+
 def refusal_step_problems(root: Path) -> list[str]:
     """Report each deployer refusal built from one line, which ends at its ERROR line, or from lines unpacked from
     where this policy cannot follow them, without stating why in its module's STEP_ALLOWED, and each allowance no
@@ -477,15 +749,17 @@ def refusal_step_problems(root: Path) -> list[str]:
             problems.append(f"{name}: {STEP_ALLOWANCE} must map each scope to the reason its refusals need no step")
             allowed = {}
         findings = stepless_refusals(tree, name, refusals, excused, program)
+        printed = stepless_prints(tree, name, program)
         found += [
             _finding(name, line, scope, called, ending)
             for line, scope, called, ending in findings
             if scope not in allowed
         ]
+        found += [_printed_finding(name, line, scope) for line, scope in printed if scope not in allowed]
         problems += [
             f"{name}: {STEP_ALLOWANCE} allows {scope}, which no longer builds a refusal from one line or from lines "
-            "this policy cannot follow"
-            for scope in sorted(set(allowed) - {scope for _, scope, _, _ in findings})
+            "this policy cannot follow, or prints an ERROR line without its step"
+            for scope in sorted(set(allowed) - {scope for _, scope, _, _ in findings} - {scope for _, scope in printed})
         ]
     return found + problems
 
