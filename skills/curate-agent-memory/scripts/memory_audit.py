@@ -35,7 +35,15 @@ a NOTE naming it.
 audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
 temporary file, and prints `REPORT <path>`. It never replaces a file: it refuses, before reading
 anything, an --output that exists or lies inside the memory directory, the configuration directory's
-projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills. The report's
+projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills, and it makes
+no folder, so an --output whose folder is missing is a FAILED line. The report is made whole or not at
+all, through ejryan89-skill-core's atomic_file.create_bytes, as a file its owner alone may read and
+write: a write that fails part way leaves no report and no copy, unless the copy itself cannot be
+removed, which the FAILED line names, so the next audit writes it. It is put
+in place by a hard link, so an --output whose file system has none, such as FAT or exFAT, gets no
+report, and the FAILED line names the file system's refusal. Once the report is in place it is whole:
+a temporary copy beside it that cannot then be removed is a `FAILED the audit report <path> is made,
+...` line naming the copy left, and the report is there to read. The report's
 `unreadable` list names each entry it could not read as a memory, with the reason, and the rest are
 audited. It searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude)
 unless --user-dir names another. A CLAUDE_CONFIG_DIR that is set but is not an absolute path, and a
@@ -104,13 +112,14 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import itertools
 import os
 import re
+import secrets
 import stat
 import sys
-import tempfile
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -124,7 +133,7 @@ import folder_walk
 import json_reader
 import json_writer
 import private_folder
-from atomic_file import TRACKED_FILE_MODE, is_read_only, replace_text
+from atomic_file import TRACKED_FILE_MODE, UnfinishedCopyError, create_bytes, is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
 from file_presence import is_directory, is_present, matching, refusal_reason
@@ -245,8 +254,8 @@ LINE_SPLIT_ALLOWED = {
 
 PRESENCE_ALLOWED = {
     "output_refusal": (
-        "a failed stat reads as no file here, but main opens the report with mode x, which never replaces a file "
-        "and raises for one it cannot create"
+        "a failed stat reads as no file here, but audit_lines creates the report with create_bytes, which never "
+        "replaces a file and raises for one it cannot create"
     ),
 }
 
@@ -1140,7 +1149,8 @@ def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | No
     root = skills_directory_holding(explicit)
     if root:
         return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
-    # A failed stat reads as no file here, but main opens the report with mode "x", which never replaces a file.
+    # A failed stat reads as no file here, but audit_lines creates the report with create_bytes, which never replaces
+    # a file.
     if os.path.lexists(explicit):
         return (
             f"{explicit} already exists, and audit never replaces a file; omit --output to write a new temporary file"
@@ -1297,6 +1307,49 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     return 0, output
 
 
+# How many fresh names a default report tries before audit gives up; each is 64 random bits, so a second is rare.
+REPORT_NAME_TRIES = 100
+
+
+def made_line(exc: OSError) -> list[str]:
+    """The FAILED line of a report create_bytes put in place whole but could not remove the copy of, or none."""
+    if isinstance(exc, UnfinishedCopyError) and exc.made:
+        return [f"FAILED the audit report {flat_text(str(exc))}"]
+    return []
+
+
+def create_output(output: Path, data: bytes) -> tuple[int, list[str]]:
+    """Create the report at --output, whole or not at all, never over an entry there and never making its folder."""
+    try:
+        # create_bytes makes a missing folder, which audit never does, and reads a file or a link in the folder's place
+        # as an entry already at the output; so the folder is examined first, with the reason an open would give.
+        # A folder removed or replaced between this and the create is the one race left, and no code here makes one.
+        if not stat.S_ISDIR(output.parent.stat().st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(output.parent))
+        create_bytes(output, data)
+    except FileExistsError:
+        return 1, [f"FAILED {output} already exists, and audit never replaces a file"]
+    except OSError as exc:
+        return 1, made_line(exc) or [f"FAILED cannot write {output}: {reason(exc)}"]
+    return 0, [f"REPORT {output}"]
+
+
+def create_temporary_report(data: bytes) -> tuple[int, list[str]]:
+    """Create the report under a fresh name in the temporary directory, whole or not at all."""
+    try:
+        folder = private_folder.temporary_directory()
+        for _ in range(REPORT_NAME_TRIES):
+            target = folder / f"memory-audit-{secrets.token_hex(8)}.json"
+            try:
+                create_bytes(target, data)
+            except FileExistsError:
+                continue
+            return 0, [f"REPORT {target}"]
+        raise FileExistsError(errno.EEXIST, f"no name tried in {folder} was free after {REPORT_NAME_TRIES} tries")
+    except OSError as exc:
+        return 1, made_line(exc) or [f"FAILED the audit report cannot be written: {reason(exc)}"]
+
+
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
     user_dir = args.user_dir or config_directory(absolute_home(), dict(os.environ))
@@ -1305,25 +1358,9 @@ def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
         report = json_writer.dumps(found, indent=2) + "\n"
     except json_writer.JsonWriteRefused as exc:
         return 1, [f"FAILED the audit report cannot be written: {flat_text(str(exc))}"]
-    if args.output:
-        try:
-            # Created exclusively, so a file that appeared since the check is never replaced either.
-            with args.output.open("x", encoding="utf-8") as handle:
-                handle.write(report)
-        except FileExistsError:
-            return 1, [f"FAILED {args.output} already exists, and audit never replaces a file"]
-        except OSError as exc:
-            return 1, [f"FAILED cannot write {args.output}: {reason(exc)}"]
-        return 0, [f"REPORT {args.output}"]
-    try:
-        descriptor, name = tempfile.mkstemp(
-            prefix="memory-audit-", suffix=".json", dir=private_folder.temporary_directory()
-        )
-    except OSError as exc:
-        return 1, [f"FAILED the audit report cannot be written: {reason(exc)}"]
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(report)
-    return 0, [f"REPORT {name}"]
+    # json_writer refused what UTF-8 cannot encode, so the report encodes; its lines end in \n on every platform.
+    data = report.encode("utf-8")
+    return create_output(args.output, data) if args.output else create_temporary_report(data)
 
 
 def resolve_command(args: argparse.Namespace) -> tuple[int, list[str]]:
