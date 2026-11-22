@@ -29,6 +29,7 @@ from atomic_file import (
     replace_text,
 )
 from file_presence import is_occupied
+from path_containment import without_extended_prefix
 
 SKIP_ALLOWED = {
     "LinkAtTheTargetTests.setUp": "the races it holds are a symbolic link put at the target, which Windows makes only "
@@ -762,6 +763,9 @@ class LinkAtTheTargetTests(unittest.TestCase):
                 (Path(probe) / "link").symlink_to(Path(probe) / "missing")
             except (OSError, NotImplementedError) as unsupported:
                 self.skipTest(f"this platform makes no symbolic link here: {unsupported}")
+
+    def prepare(self) -> None:
+        """Fresh folders for one case, so what a case that fails leaves behind never reaches the next."""
         folders = [tempfile.TemporaryDirectory() for _ in range(2)]
         for folder in folders:
             self.addCleanup(folder.cleanup)
@@ -799,7 +803,7 @@ class LinkAtTheTargetTests(unittest.TestCase):
             return descriptor
 
         def unlink(target: Path, missing_ok: bool = False) -> None:
-            if target == self.leads_to.resolve():
+            if without_extended_prefix(target) == without_extended_prefix(self.leads_to.resolve()):
                 raise self.kept
             real_unlink(target, missing_ok=missing_ok)
 
@@ -821,15 +825,10 @@ class LinkAtTheTargetTests(unittest.TestCase):
         return patches
 
     def test_a_link_put_at_the_target_is_refused_or_left_and_never_written_through_or_removed(self) -> None:
-        expected: dict[str, BaseException | None] = {
-            OWN_CREATE: None,
-            FOLLOWING_CREATE: None,
-            RETARGETED: None,
-            FOLLOWED_KEPT: self.kept,
-            LINK_REPLACES: self.failure,
-        }
-        for case, error in expected.items():
+        for case in (OWN_CREATE, FOLLOWING_CREATE, RETARGETED, FOLLOWED_KEPT, LINK_REPLACES):
             with self.subTest(case=case):
+                self.prepare()
+                error = {FOLLOWED_KEPT: self.kept, LINK_REPLACES: self.failure}.get(case)
                 with contextlib.ExitStack() as stack:
                     for patch in self.patches(case):
                         stack.enter_context(patch)
@@ -845,13 +844,13 @@ class LinkAtTheTargetTests(unittest.TestCase):
                 if case in (RETARGETED, FOLLOWED_KEPT):
                     # The file made through the link is left where the error, or the link it lost, says.
                     self.assertEqual(b"", self.leads_to.read_bytes())
-                    self.leads_to.unlink()
                 else:
                     self.assertFalse(self.leads_to.exists(), "nothing is left where the link leads")
+                # Windows may give a link's target back in its extended-length form, which names the same place.
                 self.assertEqual(
-                    self.theirs if case in (RETARGETED, LINK_REPLACES) else self.leads_to, self.path.readlink()
+                    self.theirs if case in (RETARGETED, LINK_REPLACES) else self.leads_to,
+                    without_extended_prefix(self.path.readlink()),
                 )
-                self.path.unlink()
 
 
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
