@@ -112,21 +112,7 @@ from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
-from markdown_sections import (
-    LINE_END,
-    MARKDOWN_SPACE,
-    MAX_BLOCK_INDENT,
-    THEMATIC_BREAK,
-    document_headings,
-    find_fences,
-    indentation,
-    is_blank,
-    items_holding,
-    list_item,
-    list_item_content,
-    starts_block,
-    starts_heading,
-)
+from markdown_sections import ListItem, document_headings, document_items
 from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
@@ -172,7 +158,8 @@ VARIABLE_COLLECTION = re.compile(r"(?:^|_)VARIABLES$")
 # heading itself is read through ejryan89-skill-core's markdown_sections, as CommonMark reads one.
 RELEASE_HEADING = re.compile(r"\[?v?(?P<release>[0-9]+(?:\.[0-9]+)+)(?P<suffix>[-+][0-9A-Za-z.]+)?\b")
 RELEASE_LEVELS = 3
-BULLET = re.compile(r"[ \t]*[-*][ \t]+(?P<text>.*)")
+# The markers of a list item that is an entry: a bullet, never a numbered or `+` item.
+BULLETS = frozenset({"-", "*"})
 YAML_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*):", re.MULTILINE)
 KINDS = ("flag", "variable", "path", "frontmatter")
 
@@ -452,78 +439,28 @@ def release_number(text: str) -> tuple[int, ...]:
 def bullet_entries(lines: Sequence[str]) -> list[str]:
     """Each bullet of Markdown, with the lines its list item holds joined to it, on one line.
 
-    A list item holds the lines indented as far as its content, a fence among them, and a line that lazily continues its
-    paragraph. A line indented less ends it when it starts a block, a blockquote, a fence, an ATX heading, a thematic
-    break, or a list item, or follows a blank line, as GitHub renders them, and the block it starts is left out, as text
-    no bullet opens is, so its words never count as an entry's. A fence left open in an item ends where the item does,
-    as `find_fences` reads it, so the lines after the item never join the entry. A numbered or `+` item is no entry, but
-    its lines join the bullet that holds it, if one does, and a bullet nested in it is an entry of its own. Block starts
-    and list items are read through ejryan89-skill-core's markdown_sections, and a fenced line is never a bullet. The
-    limits: a lazy line after an indented code block in an item is read as the item's, where CommonMark ends the item; a
-    marker with no text after it, a lone `-` or `*`, is no list item, as markdown_sections' `list_item` reads it, so it
-    continues the paragraph above; and an HTML block's start, such as `<details>`, `<div>`, or `<!--`, after a bullet's
-    text joins the entry, since markdown_sections reads an HTML block as a paragraph, and a fence line inside an HTML
-    block is read as a fence."""
-    fences = {fence.opener: fence for fence in find_fences(list(lines))}
-    entries: list[list[str]] = []
-    # The column each open list item's content starts at, outermost first, and the entry each one's lines join: the
-    # bullet's own, or for a numbered or `+` item the entry of the bullet holding it, None when no bullet does.
-    items: list[int] = []
-    holders: list[int | None] = []
-    paragraph = False
-
-    def join(text: str) -> None:
-        if holders and holders[-1] is not None:
-            entries[holders[-1]].append(text)
-
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if is_blank(line):
-            paragraph, index = False, index + 1
-            continue
-        width = indentation(line)
-        held = items_holding(items, width)
-        relative = " " * (width - (items[held - 1] if held else 0)) + line.lstrip(MARKDOWN_SPACE)
-        fence = fences.get(index)
-        # Only a paragraph the line's items all hold limits the marker that may interrupt it, as markdown_sections'
-        # walk reads it: a marker that leaves an item opens the next list's item, whatever its number.
-        item = item_text(relative, paragraph=paragraph and held == len(items))
-        content = list_item_content(line)
-        if item is not None and content is not None:
-            del items[held:], holders[held:]
-            if BULLET.fullmatch(relative):
-                holders.append(len(entries))
-                entries.append([item])
-            else:
-                holders.append(holders[-1] if holders else None)
-                join(line.strip())
-            items.append(content)
-            paragraph = fence is None and not is_blank(item)
-        elif held < len(items) and paragraph and not starts_block(relative, opener=fence is not None):
-            join(line.strip())  # a lazy continuation of the item's paragraph
-        else:
-            del items[held:], holders[held:]
-            join(line.strip())
-            block = relative.strip(LINE_END)
-            closes = fence is not None or THEMATIC_BREAK.fullmatch(block) or starts_heading(block)
-            paragraph = bool(items) and not closes
-        if fence is not None:
-            for fenced in fence.lines()[1:]:
-                join(lines[fenced].strip())
-            index = fence.lines().stop
-        else:
-            index += 1
-    return [text for text in (single_line(" ".join(part for part in parts if part)) for parts in entries) if text]
-
-
-def item_text(line: str, *, paragraph: bool) -> str | None:
-    """The text of the list item a line opens, read at the column of the content that holds it, as markdown_sections'
-    `list_item` reads one, or None when it opens none: a thematic break such as `- - -` is none, and after a
-    paragraph's text neither is a marker indented past MAX_BLOCK_INDENT columns, which continues the paragraph."""
-    if indentation(line) > MAX_BLOCK_INDENT or THEMATIC_BREAK.fullmatch(line.strip(LINE_END)) is not None:
-        return None
-    return list_item(line, interrupting=paragraph)
+    Which list items hold each line is read from ejryan89-skill-core's markdown_sections walk, as GitHub renders them:
+    an item holds the lines indented as far as its content, a fence and a blockquote among them, and a line that lazily
+    continues its paragraph, and the block a line that leaves it starts is left out, as text no bullet holds is, so its
+    words never count as an entry's. A numbered or `+` item is no entry, but its lines join the bullet that holds it, if
+    one does, and a bullet nested in it is an entry of its own. A line joins its entry without the blockquote markers
+    that hold the bullet, and the line a bullet opens on joins it from the text after its marker. The limits are the
+    walk's, such as an HTML block read as a paragraph, so an HTML block's start, such as `<details>` or `<!--`, after
+    a bullet's text joins the entry."""
+    walked = document_items(list(lines))
+    # The bullet whose entry each item's lines join: its own, or the one holding it, read once for each item, since an
+    # item opens after the items that hold it.
+    bullets: dict[ListItem | None, ListItem | None] = {None: None}
+    for item in walked.items:
+        bullets[item] = item if item.marker in BULLETS else bullets[item.parent]
+    entries: dict[ListItem, list[str]] = {item: [] for item in walked.items if bullets[item] is item}
+    for index, innermost in enumerate(walked.holding):
+        bullet = bullets[innermost]
+        if bullet is not None:
+            text = bullet.text if bullet.start == index else bullet.unquoted(lines[index])
+            entries[bullet].append(text.strip())
+    joined = (single_line(" ".join(part for part in parts if part)) for parts in entries.values())
+    return [text for text in joined if text]
 
 
 def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:
