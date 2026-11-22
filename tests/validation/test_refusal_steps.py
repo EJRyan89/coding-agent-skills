@@ -811,6 +811,15 @@ class RefusalStepFixtures(unittest.TestCase):
                 "def through_returns(kind):\n"
                 '    print("ERROR: Two ways")\n'
                 "    print(remedy(kind))\n"
+                "\n"
+                "\n"
+                'STEP = "Retry."\n'
+                "\n"
+                "\n"
+                "def field_step(options):\n"
+                '    print("ERROR: Field")\n'
+                '    print(f"  {STEP}")\n'
+                '    print("ERROR: Written sep", "Retry.", sep="\\n", **options)\n'
             ),
             "deployer/detail.py": (
                 'STEP_ALLOWED = {"_complete": "its caller prints the run\'s ERROR line and its steps"}\n'
@@ -867,6 +876,25 @@ class RefusalStepFixtures(unittest.TestCase):
                 "def recursive():\n"  # 39
                 '    print("ERROR: Recursive")\n'  # 40
                 "    recursive()\n"  # 41
+                "\n"  # 42
+                "\n"  # 43
+                'STEP = "Retry."\n'  # 44
+                "import sys\n"  # 45
+                "\n"  # 46
+                "def options_sep(options):\n"  # 47
+                '    print("ERROR: Options")\n'  # 48
+                '    print("ERR", "Retry.", **options)\n'  # 49: a mapping may give any sep, so its line may be "ERR"
+                "\n"  # 50
+                "\n"  # 51
+                "def converted():\n"  # 52
+                '    print("ERROR: Converted")\n'  # 53
+                '    print(f"{STEP!r}")\n'  # 54: a conversion or a format spec changes the field's text
+                '    print(f"{STEP:>10}")\n'  # 55
+                "\n"  # 56
+                "\n"  # 57
+                "def empty_write():\n"  # 58
+                '    print("ERROR: Empty write")\n'  # 59
+                "    sys.stderr.write()\n"  # 60
             ),
         }
         self.assertEqual(
@@ -880,6 +908,9 @@ class RefusalStepFixtures(unittest.TestCase):
                     (25, "helper_with_error"),
                     (35, "through_two_returns"),
                     (40, "recursive"),
+                    (48, "options_sep"),
+                    (53, "converted"),
+                    (59, "empty_write"),
                 )
             ],
             self.problems(files),
@@ -949,6 +980,7 @@ class RefusalStepFixtures(unittest.TestCase):
                 "import logging\n"
                 "import os\n"
                 "import sys\n"
+                "import traceback\n"
                 "import warnings\n"
                 "\n"
                 "\n"
@@ -985,6 +1017,27 @@ class RefusalStepFixtures(unittest.TestCase):
                 '    functools.partial(print, file=sys.stderr)("ERROR: Partial")\n'
                 # A field holding more than one line is read as one.
                 '    print(f"Retry.{message}")\n'
+                # A name bound more than once.
+                '    text = "ERROR: Rebound"\n'
+                "    if kind:\n"
+                '        text = "ERROR: Again"\n'
+                "    print(text)\n"
+                "    traceback.print_exc()\n"
+                # A call that never returns is passed over, so the step after it counts.
+                '    print("ERROR: Exited")\n'
+                "    sys.exit(1)\n"
+                '    print("Unreached step.")\n'
+                # A print's end is not read, so the next print reads as a line of its own.
+                '    print("ERROR: Joined on", end="")\n'
+                '    print(" Retry.")\n'
+                # A function counts as printing the step when one of its branches does.
+                '    print("ERROR: Maybe")\n'
+                "    maybe(kind)\n"
+                "\n"
+                "\n"
+                "def maybe(kind):\n"
+                "    if kind:\n"
+                '        print("Retry.")\n'
             ),
         }
         self.assertEqual([], self.problems(files))

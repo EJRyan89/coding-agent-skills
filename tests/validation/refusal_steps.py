@@ -39,7 +39,7 @@ lines, and over any other expression, assignment, or pass, and ends at any other
 or an if, whose step may not be printed. A printed ERROR line whose step its callers print is excused in its module's
 STEP_ALLOWED with the reason.
 
-Stated limits of printed lines, none of which deployer code writes:
+Stated limits of printed lines; deployer code writes none of them with an ERROR line the policy should have read:
 - A line whose text is not written where it is printed, such as a parameter, a loop's name, a call's result other than
   a deployer function's return, a name bound more than once, an f-string built elsewhere, or a list unpacked from
   anything but a display, is read as a field, and a line whose text up to its first field could still open `ERROR:`,
@@ -54,6 +54,12 @@ Stated limits of printed lines, none of which deployer code writes:
   `functools.partial`, is not read.
 - A field that expands to more than one line at run time is read as one line, so an ERROR line a field holds after a
   literal step, or a step a field holds, is not read.
+- A call that never returns, such as `sys.exit`, `os._exit`, or a deployer function that only raises, is passed over
+  as any expression is, so a step printed after it counts though it is never reached.
+- A print's `end` is not read, so a print that ends without a newline, as `print("ERROR: x", end="")`, joins the next
+  print onto its ERROR line, and that print is still read as a step on a line of its own. The deployer passes `end`
+  only to its prompts, in configure.py and selection.py.
+- A deployer function counts as printing the step when it prints one on any branch, not only on every path it takes.
 
 The deployer suites check a refusal with the harness's assert_refusal, which holds its ERROR line followed at once by
 each step, and never with assert_lines, which finds each line anywhere in the output, so a step checked that way passes
@@ -572,15 +578,16 @@ class _Printed:
         return node if qualified_name(node.func, self.reader.aliases) in WRITES else None
 
     def printed(self, call: ast.Call) -> Texts:
-        """The texts a print or a write may give: a write's argument, or print's arguments joined by its sep."""
+        """The texts a print or a write may give: a write's argument, or print's arguments joined by its sep: the one
+        written, which an unpacked mapping cannot give again, or else what such a mapping may give, or a space."""
         if not (isinstance(call.func, ast.Name) and call.func.id == "print"):
             return self.text(call.args[0], frozenset()) if call.args else (FIELD,)
+        written = [keyword.value for keyword in call.keywords if keyword.arg == "sep"]
         separator: Texts = (" ",)
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                separator = (FIELD,)
-            elif keyword.arg == "sep":
-                separator = self.text(keyword.value, frozenset())
+        if written:
+            separator = self.text(written[0], frozenset())
+        elif any(keyword.arg is None for keyword in call.keywords):
+            separator = (FIELD,)
         parts = self._parts(call.args)
         return _combined(
             [piece for index, part in enumerate(parts) for piece in ([separator] if index else []) + [part]]
