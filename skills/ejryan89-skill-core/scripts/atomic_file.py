@@ -159,7 +159,9 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     or a kill before the replace, can leave an empty file at `path`, which no code here runs to remove. A process that
     removes the reservation and puts its own entry at `path`, or replaces it, before the replace has that entry
     replaced, or removed by a failure's clean-up. Windows' exclusive create follows a link, so a link put at `path`
-    after the entry there is looked for and before the reservation is made has the reservation made where it leads.
+    after the entry there is looked for and before the reservation is made is refused as FileExistsError once the
+    reservation is found not to be `path`'s own file; the file made where the link led is removed when it is still
+    there to find, and stays otherwise.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
@@ -269,14 +271,37 @@ def _reserve(target: Path) -> int:
 
     The entry is looked for first, without following a link: Windows' exclusive create follows a link at `target`,
     making the file where it leads, even where it leads nowhere. Windows also refuses an exclusive create over a folder
-    as PermissionError, so a create refused while an entry is at `target` raises FileExistsError too."""
+    as PermissionError, so a create refused while an entry is at `target` raises FileExistsError too. A link put at
+    `target` between the look and the create is caught after it: a created file that is not `target`'s own entry is
+    closed, removed by _remove_followed, and refused as FileExistsError."""
     if is_occupied(target):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
     try:
-        return os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         raise
     except OSError as refusal:
         if is_occupied(target):
             raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target)) from refusal
         raise
+    try:
+        reserved = os.fstat(descriptor)
+        own = os.path.samestat(reserved, target.lstat())
+    except BaseException:
+        os.close(descriptor)
+        raise
+    if own:
+        return descriptor
+    os.close(descriptor)
+    _remove_followed(target, reserved)
+    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+
+
+def _remove_followed(target: Path, reserved: os.stat_result) -> None:
+    """Remove the file an exclusive create made by following a link at `target`, found where the link now leads and
+    removed only when it is that same file, `reserved`. Anything else there, or a file that cannot be found or
+    removed, stays."""
+    with contextlib.suppress(OSError):
+        followed = target.resolve()
+        if os.path.samestat(reserved, followed.lstat()):
+            followed.unlink()

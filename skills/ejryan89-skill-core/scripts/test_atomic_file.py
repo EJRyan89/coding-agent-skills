@@ -18,6 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import atomic_file
 from atomic_file import (
     NO_HARD_LINK_ERRNOS,
     ReadOnlyTargetError,
@@ -600,6 +601,71 @@ class ReservationTests(unittest.TestCase):
                     self.assertFalse(error.made)
                 for item in Path(temporary).iterdir():
                     real_unlink(item)
+
+    def test_a_link_put_at_the_target_after_the_look_is_refused_and_never_written_through(self) -> None:
+        with tempfile.TemporaryDirectory() as probe:
+            try:
+                (Path(probe) / "link").symlink_to(Path(probe) / "missing")
+            except (OSError, NotImplementedError) as unsupported:
+                self.skipTest(f"this platform makes no symbolic link here: {unsupported}")
+        real_open, real_occupied = os.open, atomic_file.is_occupied
+        for name in ("the platform's own create", "a create that follows the link", "the link retargeted"):
+            with (
+                self.subTest(case=name),
+                tempfile.TemporaryDirectory() as temporary,
+                tempfile.TemporaryDirectory() as elsewhere,
+            ):
+                path = Path(temporary) / "report.md"
+                leads_to = Path(elsewhere) / "missing.md"
+                theirs = Path(elsewhere) / "theirs.md"
+                theirs.write_bytes(b"theirs\n")
+                looks: list[Path] = []
+
+                def appear_then_refuse(_copy: Any, _target: Any, path: Path = path, leads_to: Path = leads_to) -> None:
+                    path.symlink_to(leads_to)
+                    raise refused_link(errno.EPERM)
+
+                def look(target: Path, looks: list[Path] = looks) -> bool:
+                    # The first look finds nothing, as when the link is put there just after it.
+                    looks.append(target)
+                    return False if len(looks) == 1 else real_occupied(target)
+
+                def create(
+                    opened: Any,
+                    flags: int,
+                    mode: int = 0o777,
+                    case: str = name,
+                    path: Path = path,
+                    theirs: Path = theirs,
+                ) -> int:
+                    if Path(opened) != path or case == "the platform's own create":
+                        return real_open(opened, flags, mode)
+                    # Create through the link, as Windows' exclusive create does.
+                    descriptor = real_open(path.resolve(), flags, mode)
+                    if case == "the link retargeted":
+                        path.unlink()
+                        path.symlink_to(theirs)
+                    return descriptor
+
+                with (
+                    mock.patch.object(os, "link", appear_then_refuse),
+                    mock.patch.object(atomic_file, "is_occupied", look),
+                    mock.patch.object(os, "open", create),
+                    mock.patch.object(os, "replace", wraps=os.replace) as replace,
+                    self.assertRaises(FileExistsError),
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertEqual([], replace.call_args_list, "nothing replaces the link")
+                self.assertTrue(path.is_symlink(), "the link is left at the target")
+                self.assertEqual(["report.md"], names_in(temporary), "no copy beside it")
+                self.assertEqual(b"theirs\n", theirs.read_bytes(), "a file the create did not make is left alone")
+                if name == "the link retargeted":
+                    self.assertEqual(theirs, path.readlink())
+                    # The file made through the link can no longer be found by the link, so it stays.
+                    self.assertEqual(b"", leads_to.read_bytes())
+                else:
+                    self.assertEqual(leads_to, path.readlink())
+                    self.assertFalse(leads_to.exists(), "nothing is left where the link leads")
 
     def test_an_exclusive_create_refused_while_an_entry_is_at_the_target_reads_as_already_there(self) -> None:
         # Windows refuses an exclusive create over a folder as PermissionError, not FileExistsError.
