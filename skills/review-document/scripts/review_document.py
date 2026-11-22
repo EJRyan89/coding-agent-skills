@@ -16,13 +16,19 @@ Every command prints one fact per line:
           folder or entry that could not be searched, and for the folder its bound stopped it at. Each path is
           relative to the working directory. It exits 1 when
           it printed an UNSEARCHED line, since what it found may not be all there is.
-  report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
-          record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
-          beside the original>.
+  report  Given --runs and the run list prepare printed, copies the report `finalize` recorded of each recorded run
+          into the output directory beside the fixture the run list names for it, once its record names the review of
+          that fixture's document, and prints REPORT <copy> and RECORD <the record JSON beside the original> for each,
+          in the order prepare published the runs. For a listed run it cannot report, as one whose review failed or
+          that is not finalized, or one whose fixture or report is not what the run list says, it prints UNREPORTED
+          <selector> <run directory> <reason> in its place and goes on. Given --fixture and --report instead, it does
+          the same for that one fixture and report, failing with the reason. A copy is never written over a file
+          already there; one already holding the same bytes is the earlier copy, and is reported again.
 
 Exit status:
   0  the command printed its facts
-  1  a last line FAILED <reason>, or, from resolve, an UNSEARCHED line for what it could not search
+  1  a last line FAILED <reason>, from resolve, an UNSEARCHED line for what it could not search, or, from report,
+     an UNREPORTED line for a run it could not report
   2  a usage error
 
 For a path, the head is the file as it is on disk, refused over the MAX_CHANGED_FILE_BYTES the snapshot reads of a
@@ -80,6 +86,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import filecmp
 import os
 import re
 import shutil
@@ -108,11 +115,13 @@ from github_client import GitHubError
 from link_probe import is_plain_file
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as
+from review_batches import load_run_list
 from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
+from review_run import PipelineError
 from review_runtime import (
     DEFAULT_DOCUMENT_STAGE,
     DOCUMENT_STAGES,
@@ -871,8 +880,51 @@ def report(fixture: Path, recorded: Path) -> list[str]:
         with recorded.open("rb") as source, target.open("xb") as copy:
             shutil.copyfileobj(source, copy)
     except FileExistsError as exc:
-        raise DocumentError(f"{target} already exists, and is not replaced; the report is at {recorded}") from exc
+        # The copy an earlier call made holds the report's bytes, so a run list reported again names it again.
+        if not filecmp.cmp(recorded, target, shallow=False):
+            raise DocumentError(f"{target} already exists, and is not replaced; the report is at {recorded}") from exc
     return [f"REPORT {target}", f"RECORD {record}"]
+
+
+# Why a listed run in each status but recorded has no report to copy.
+UNRECORDED = {
+    "published": "it is not finalized",
+    "valid": "it is not finalized",
+    "failed": "its review failed",
+}
+
+
+def listed_report(entry: dict[str, str]) -> list[str]:
+    """The REPORT and RECORD lines of the run a run list's `entry` names, once its report is copied beside the fixture
+    the entry names. Refused, with why, for a run finalize has not recorded, and for an entry naming no fixture or no
+    report, as a run of a pull request rather than of a fixture, or one listed before prepare and finalize named them,
+    does."""
+    status = entry["status"]
+    if status in UNRECORDED:
+        raise DocumentError(UNRECORDED[status])
+    fixture, recorded = entry.get("fixture"), entry.get("report")
+    if fixture is None or recorded is None:
+        missing = " and ".join(name for name, value in (("fixture", fixture), ("report", recorded)) if value is None)
+        raise DocumentError(
+            f"the run list names no {missing} for it, as one written before it named them does; run report with "
+            "--fixture and --report"
+        )
+    return report(Path(fixture), Path(recorded))
+
+
+def report_runs(run_list: Path) -> list[str]:
+    """The REPORT and RECORD lines of every run the run list at `run_list` names, each once its report is copied
+    beside its fixture, in the order prepare published them, or an UNREPORTED line in place of a run's, with why."""
+    runs = load_run_list(run_list)
+    if not runs["runs"]:
+        raise DocumentError(f"{run_list} lists no prepared run")
+    lines: list[str] = []
+    for entry in runs["runs"]:
+        try:
+            lines += listed_report(entry)
+        except (DocumentError, PersistenceError, OSError) as exc:
+            lines.append(f"UNREPORTED {entry['selector']} {entry['run']} {flat_text(str(exc))}")
+    return lines
 
 
 def refuse_name(name: str) -> None:
@@ -976,10 +1028,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resolve_command = commands.add_parser("resolve", help="find a document named by its file name alone")
     resolve_command.add_argument("name", help="the document's file name, with no folder")
-    report_command = commands.add_parser("report", help="copy the recorded report beside the fixture")
-    report_command.add_argument("--fixture", type=Path, required=True)
-    report_command.add_argument("--report", type=Path, required=True)
+    report_command = commands.add_parser("report", help="copy each recorded report beside its fixture")
+    report_command.add_argument("--runs", type=Path, help="the run list prepare printed; every listed run is reported")
+    report_command.add_argument("--fixture", type=Path, help="with --report, the one fixture to report")
+    report_command.add_argument("--report", type=Path, help="with --fixture, the report finalize recorded of it")
     return parser
+
+
+def report_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[str]:
+    """Report the runs --runs lists, or the one --fixture and --report name; any other mix is a usage error."""
+    one = (args.fixture is None) == (args.report is None) and (args.runs is None) != (args.fixture is None)
+    if not one:
+        parser.error("report takes --runs, or --fixture and --report together")
+    return report_runs(args.runs) if args.runs is not None else report(args.fixture, args.report)
 
 
 def build_command(args: argparse.Namespace, git: GitClient | None, github: GitHubClient | None) -> list[str]:
@@ -992,19 +1053,20 @@ def build_command(args: argparse.Namespace, git: GitClient | None, github: GitHu
 
 
 def main(arguments: list[str] | None = None, git: GitClient | None = None, github: GitHubClient | None = None) -> int:
-    args = build_parser().parse_args(arguments)
+    parser = build_parser()
+    args = parser.parse_args(arguments)
     try:
         if args.command == "build":
             lines = build_command(args, git, github)
         elif args.command == "resolve":
             lines = resolve(args.name, Path.cwd())
         else:
-            lines = report(args.fixture, args.report)
-    except (DocumentError, PersistenceError, GitError, GitHubError, OSError) as exc:
+            lines = report_command(parser, args)
+    except (DocumentError, PipelineError, PersistenceError, GitError, GitHubError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(single_line(line) for line in lines))
-    return 1 if any(line.startswith("UNSEARCHED ") for line in lines) else 0
+    return 1 if any(line.startswith(("UNSEARCHED ", "UNREPORTED ")) for line in lines) else 0
 
 
 if __name__ == "__main__":

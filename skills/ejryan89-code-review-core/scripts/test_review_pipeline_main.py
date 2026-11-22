@@ -451,13 +451,21 @@ class RunListCase(MainCase):
     def listed(self) -> dict[str, Any]:
         return dict(json.loads(self.run_list.read_text(encoding="utf-8")))
 
-    def write_list(self, runs: list[tuple[str, str]], pending: list[dict[str, str]] | None = None) -> None:
-        """A run list naming each (run, status) pair as a run of example/app#<its place in the list>."""
+    def write_list(
+        self, runs: list[tuple[str, str]], pending: list[dict[str, str]] | None = None, *, named: bool = False
+    ) -> None:
+        """A run list naming each (run, status) pair as a run of example/app#<its place in the list>; `named` gives
+        each the fixture and the report a run list prepare and finalize write may name."""
         options: dict[str, Any] = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
         options.update(inline=False, force=False, canary=False)
         value = review_batches.new_run_list(pending or [], options)
         value["runs"] = [
-            {"run": run, "selector": f"example/app#{index}", "status": status}
+            {
+                "run": run,
+                "selector": f"example/app#{index}",
+                "status": status,
+                **({"fixture": f"fixture {index}", "report": f"review {index}.md"} if named else {}),
+            }
             for index, (run, status) in enumerate(runs, 1)
         ]
         self.run_list.write_text(json.dumps(value), encoding="utf-8")
@@ -885,6 +893,14 @@ class PrepareTests(RunListCase):
             sorted(prepare.calls, key=lambda call: str(call[0][0])),
         )
         self.assertEqual([{"kind": "fixture", "target": directories[4]}], self.listed()["pending"])
+        # Each fixture's run names the fixture it was prepared from, so a later command pairs its report with it.
+        self.assertEqual(
+            [
+                {"run": f"run of {directory}", "selector": "example/app#1", "status": "published", "fixture": directory}
+                for directory in directories[:4]
+            ],
+            self.listed()["runs"],
+        )
 
     def test_a_run_list_that_is_not_one_is_refused(self) -> None:
         cases: list[tuple[Any, str]] = [
@@ -1419,6 +1435,76 @@ class RunListCommandTests(RunListCase):
         )
         self.assertEqual([Path("run a"), Path("run c")], [call[0][0] for call in stub.calls])
         self.assertEqual(["recorded", "published", "failed", "failed"], self.statuses())
+        # The run it recorded names its report; no other run names one.
+        self.assertEqual(["review.md", None, None, None], [entry.get("report") for entry in self.listed()["runs"]])
+
+    def test_every_command_reads_a_run_list_with_or_without_each_runs_fixture_and_report(self) -> None:
+        """A run list written before prepare and finalize named a run's fixture and report reads as one that names
+        them: every command that takes one works on the same runs and prints the same lines."""
+        valid: dict[str, Any] = {"selector": "example/app#1", "retry": [], "errors": {}, "failed": {}, "running": {}}
+        recorded: dict[str, Any] = {
+            "selector": "example/app#1",
+            "notes": [],
+            "canary_root": None,
+            "hashes": {},
+            "verdict": "approve",
+            "new": 0,
+            "open": 0,
+            "addressed": 0,
+            "markdown": "review 1.md",
+        }
+        self.stub("check_run", valid)
+        self.stub("finalize", recorded)
+        self.stub("unfinalized_selector", None)
+        self.stub("worked_by_subagents", True)
+        self.stub("workflow_script", (Path("flow.js"), "text\n", 1))
+        self.stub("wait_for_reviewers", ([], {}))
+        self.stub("prepare_fixture", effect=lambda directory, **_: ready("example/app#3", "run c"))
+        self.stub("mark_dispatched")
+        commands = (["workflow"], ["wait-reviewers", "--timeout", "5"], ["check"], ["finalize"], ["unfinalized"])
+        outcomes: dict[bool, list[tuple[int, str, str]]] = {}
+        for named in (False, True):
+            self.write_list(
+                [("run a", "published"), ("run b", "recorded")],
+                pending=[{"kind": "fixture", "target": "fixture 3"}],
+                named=named,
+            )
+            outcomes[named] = [self.run_main(*command, "--runs", str(self.run_list)) for command in commands]
+            outcomes[named].append(self.run_main("prepare", "--runs", str(self.run_list)))
+            # The fields each list held stay, and the run finalize recorded and the run prepare added name theirs.
+            self.assertEqual(
+                [
+                    ("fixture 1" if named else None, "review 1.md"),
+                    ("fixture 2" if named else None, "review 2.md" if named else None),
+                    ("fixture 3", None),
+                ],
+                [(entry.get("fixture"), entry.get("report")) for entry in self.listed()["runs"]],
+            )
+        self.assertEqual(outcomes[False], outcomes[True])
+        self.assertEqual(
+            [
+                "ALL_VALID example/app#1\n",
+                "RECORDED example/app#1 verdict=approve new=0 open=0 addressed=0 review 1.md\n",
+                "UNPREPARED fixture 3\n",
+            ],
+            [outcomes[True][index][1] for index in (2, 3, 4)],
+        )
+
+    def test_a_listed_runs_fixture_and_report_are_single_line_strings_and_no_other_field_is_taken(self) -> None:
+        for field, value, reason in (
+            ("fixture", 3, "run list.runs[0].fixture must be"),
+            ("report", None, "run list.runs[0].report must be"),
+            ("report", "a\nb", "run list.runs[0].report must be"),
+            ("prompt", "x", "run list.runs[0] must be an object of known fields"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.write_list([("run a", "published")])
+                listed = self.listed()
+                listed["runs"][0][field] = value
+                self.run_list.write_text(json.dumps(listed), encoding="utf-8")
+                code, out, _ = self.run_main("unfinalized", "--runs", str(self.run_list))
+                self.assertEqual(1, code)
+                self.assertTrue(out.startswith(f"FAILED {reason}"), out)
 
     def test_unfinalized_names_every_listed_run_and_every_pull_request_never_prepared(self) -> None:
         self.write_list(
