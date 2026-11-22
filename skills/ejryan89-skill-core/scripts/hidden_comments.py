@@ -63,7 +63,7 @@ from markdown_sections import (
     indentation,
     is_blank,
 )
-from text_lines import LINE_BREAK
+from text_lines import LINE_BREAK, line_index, line_starts
 
 # The blockquote and list item markers a line opens with, read as markdown_sections' FENCE_OPENER reads the ones that
 # hold a fence, each followed by its spaces and tabs once, so the match stays linear.
@@ -184,7 +184,7 @@ class Reading:
         kept.append((position, len(self.text)))
         text = "".join(self.text[first:past] for first, past in kept)
         lines = LINE_BREAK.split(text)
-        line_starts = [0, *(match.end() for match in LINE_BREAK.finditer(text))]
+        visible_starts = line_starts(text)
         # Where each kept stretch of the body starts in the visible text.
         offsets: list[int] = []
         total = 0
@@ -196,7 +196,7 @@ class Reading:
             stretch = max(bisect_right(kept, (start, len(self.text) + 1)) - 1, 0)
             first, past = kept[stretch]
             visible = offsets[stretch] + min(max(start - first, 0), past - first)
-            owners.append(bisect_right(line_starts, visible) - 1)
+            owners.append(line_index(visible_starts, visible))
         return lines, owners
 
     def visible(self, start: int, stop: int) -> str:
@@ -217,7 +217,7 @@ def read_comments(text: str) -> Reading:
     """The body read as GitHub reads it before it hides comments: its blocks, with each comment and each HTML heading
     that opens an HTML block read as one, then the comments it hides, left to right."""
     lines = LINE_BREAK.split(text)
-    starts = [0, *(match.end() for match in LINE_BREAK.finditer(text))]
+    starts = line_starts(text)
     read = [_with_bare_end(line) for line in lines]
     headings: set[int] = set()
     # Each HTML block that may run past its line: its first line's index, its last line's, and whether it is a heading.
@@ -241,7 +241,7 @@ def read_comments(text: str) -> Reading:
             continue
         read[index] = line[: block.end() - len(COMMENT_OPENER)] + HEADING_STAND_IN
         end = _comment_end(text, closers, starts[index] + block.end() - len(COMMENT_OPENER))
-        last = bisect_right(starts, end - 1) - 1
+        last = line_index(starts, end - 1)
         if last > index:
             spanning.append((index, last, False))
     blocked = _spanning_blocks(lines, read, spanning)
@@ -498,7 +498,7 @@ def _hidden_comments(
     read = -1
     ends = _block_ends(walked, len(lines))
     while (opener := text.find(COMMENT_OPENER, position)) != -1:
-        line = bisect_right(starts, opener) - 1
+        line = line_index(starts, opener)
         if read != line or (span is not None and span[0] < position):
             # A comment hidden past the next span's start sets the line's backticks before its end aside, so the spans
             # after it pair as CommonMark pairs them from there.
