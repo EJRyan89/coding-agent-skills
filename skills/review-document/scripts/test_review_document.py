@@ -92,6 +92,65 @@ def run_main(*arguments: str, github: GitHubClient | None = None) -> tuple[int, 
     return code, output.getvalue().splitlines()
 
 
+class FailingReader:
+    """A reader of `stream` that gives the first bytes of a read asked for by size, then fails the next read, as a
+    disk that fails part way through a file does; a read of the whole file fails at once, having read part of it."""
+
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+        self.reads = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        self.reads += 1
+        if size is None or size < 0 or self.reads > 1:
+            raise OSError(5, "Input/output error")
+        return bytes(self.stream.read(min(size, 3)))
+
+    def __enter__(self) -> FailingReader:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.stream.close()
+
+
+@contextmanager
+def failing_read(*recorded: Path) -> Iterator[None]:
+    """Each read of a `recorded` report fails part way, through the Path.open every read of it takes."""
+    real_open = Path.open
+
+    def opened(path: Path, *arguments: Any, **options: Any) -> Any:
+        stream = real_open(path, *arguments, **options)
+        return FailingReader(stream) if path in recorded else stream
+
+    with mock.patch.object(Path, "open", autospec=True, side_effect=opened):
+        yield
+
+
+@contextmanager
+def failing_write(folder: Path) -> Iterator[None]:
+    """A write into a new file in `folder` lands its first bytes and then fails, as a disk that fills part way does:
+    the descriptors are those ejryan89-skill-core's atomic_file opens with tempfile.mkstemp."""
+    real_mkstemp, real_write = tempfile.mkstemp, os.write
+    written: dict[int, int] = {}
+
+    def mkstemp(*arguments: Any, **options: Any) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(*arguments, **options)
+        if Path(name).parent == folder:
+            written[descriptor] = 0
+        return descriptor, name
+
+    def write(descriptor: int, data: Any) -> int:
+        if descriptor not in written:
+            return real_write(descriptor, data)
+        written[descriptor] += 1
+        if written[descriptor] > 1:
+            raise OSError(28, "No space left on device")
+        return real_write(descriptor, bytes(data[:3]))
+
+    with mock.patch.object(tempfile, "mkstemp", mkstemp), mock.patch.object(os, "write", write):
+        yield
+
+
 @contextmanager
 def stat_failing_at(path: Path) -> Iterator[None]:
     """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
@@ -2051,21 +2110,15 @@ class PullRequestTests(PipelineTestCase):
         recorded = self.finalized(listed)
         entries = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"]
         place = review_io.working_path
-        copy = shutil.copyfileobj
 
         def working_path(path: Path, *arguments: str) -> Path:
             if path == fixtures[0].parent:
                 raise review_io.PersistenceError(f"{path} is inside a skills directory")
             return place(path, *arguments)
 
-        def copy_file(source: Any, target: Any) -> None:
-            if Path(target.name).parent == fixtures[2].parent:
-                raise OSError(28, "No space left on device")
-            copy(source, target)
-
         with (
             mock.patch.object(review_document, "working_path", side_effect=working_path),
-            mock.patch.object(shutil, "copyfileobj", side_effect=copy_file),
+            failing_write(fixtures[2].parent),
         ):
             code, lines = run_main("report", "--runs", listed)
         self.assertEqual(
@@ -2081,6 +2134,43 @@ class PullRequestTests(PipelineTestCase):
             ),
             (code, lines),
         )
+        # The copy that failed part way left nothing beside its fixture, so the next report copies it.
+        self.assertEqual(["fixture"], sorted(item.name for item in fixtures[2].parent.iterdir()))
+        expected = [
+            line
+            for fixture, report in zip(fixtures, recorded, strict=True)
+            for line in (f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}")
+        ]
+        self.assertEqual((0, expected), run_main("report", "--runs", listed))
+        self.assertEqual(recorded[2].read_bytes(), (fixtures[2].parent / "report.md").read_bytes())
+
+    def test_a_listed_runs_copy_that_fails_part_way_leaves_no_report_and_the_next_report_makes_it(self) -> None:
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2)]
+        runs, listed = self.prepare_runs(*fixtures)
+        for run in runs:
+            self.answer(run, [])
+        self.pipeline("check", "--runs", listed)
+        recorded = self.finalized(listed)
+        entry = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"][1]
+        expected = [
+            line
+            for fixture, report in zip(fixtures, recorded, strict=True)
+            for line in (f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}")
+        ]
+        for side, failure, reason in (
+            ("read", failing_read(recorded[1]), "[Errno 5] Input/output error"),
+            ("write", failing_write(fixtures[1].parent), "[Errno 28] No space left on device"),
+        ):
+            with self.subTest(side=side):
+                with failure:
+                    code, lines = run_main("report", "--runs", listed)
+                unreported = f"UNREPORTED {entry['selector']} {entry['run']} {reason}"
+                self.assertEqual((1, [*expected[:2], unreported]), (code, lines))
+                self.assertEqual(["fixture"], sorted(item.name for item in fixtures[1].parent.iterdir()))
+                self.assertEqual((0, expected), run_main("report", "--runs", listed))
+                self.assertEqual(recorded[1].read_bytes(), (fixtures[1].parent / "report.md").read_bytes())
+                (fixtures[1].parent / "report.md").unlink()
 
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
@@ -2325,6 +2415,32 @@ class OutputTests(DocumentTestCase):
         reason = f"already exists, and is not replaced; the report is at {canary / 'review.md'}"
         self.assertEqual((1, [f"FAILED {self.output / 'report.md'} {reason}"]), (code, lines))
         self.assertEqual("mine\n", (self.output / "report.md").read_text(encoding="utf-8"))
+
+    def test_a_copy_that_fails_part_way_leaves_no_report_and_the_next_report_makes_it(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        self.build(document)
+        canary = self.root / "canary" / "review-document.local" / "document" / "pulls" / "1"
+        canary.mkdir(parents=True)
+        recorded = canary / "review.md"
+        recorded.write_text("# Code Review\n\nThe whole report.\n", encoding="utf-8")
+        pull = json.loads((self.output / "fixture" / "pull.json").read_text(encoding="utf-8"))
+        named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
+        record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
+        (canary / "review.json").write_text(json.dumps(record), encoding="utf-8")
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        for side, failure, reason in (
+            ("read", failing_read(recorded), "[Errno 5] Input/output error"),
+            ("write", failing_write(self.output), "[Errno 28] No space left on device"),
+        ):
+            with self.subTest(side=side):
+                with failure:
+                    self.assertEqual((1, [f"FAILED {reason}"]), run_main(*arguments))
+                self.assertEqual(["fixture"], sorted(item.name for item in self.output.iterdir()))
+                reported = [f"REPORT {self.output / 'report.md'}", f"RECORD {canary / 'review.json'}"]
+                self.assertEqual((0, reported), run_main(*arguments))
+                self.assertEqual(recorded.read_bytes(), (self.output / "report.md").read_bytes())
+                (self.output / "report.md").unlink()
 
     def test_report_takes_a_run_list_or_one_fixture_and_its_report_and_fails_a_list_with_no_run(self) -> None:
         for arguments in (

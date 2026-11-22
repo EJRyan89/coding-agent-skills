@@ -10,6 +10,11 @@ A read-only target is refused before a copy exists, on every platform. Windows r
 where Linux replaces it as it would any other, so the one answer both can give is to refuse; a file counts as
 read-only when its owner may not write it, the bit the Windows read-only attribute clears. A copy that cannot be
 removed because it took a read-only `mode` is made writable first, so a replace refused part way leaves nothing.
+
+`create_bytes` makes a file that must not replace anything, such as a copy a script puts beside a user's files, with
+the same promise: a reader sees no file or the whole of it, and a write that fails leaves nothing at the target and
+no copy beside it. Its last step links the synced copy at the target, which every platform refuses where any entry is
+already there, where a rename would replace one on Linux and macOS.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import errno
 import os
 import stat
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 # The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
@@ -27,7 +33,8 @@ TRACKED_FILE_MODE = 0o644
 
 
 class UnfinishedCopyError(OSError):
-    """A replace that failed and could not remove the copy it wrote beside its target.
+    """A replace or a create that failed and could not remove the copy it wrote beside its target, or a create that
+    made its target and could not then remove the copy's own name.
 
     It derives from OSError, so a caller that reports a failed write as an OSError reports this one too. `copy` is
     the copy left behind, `failure` what ended the write, and `removal` the OSError that kept the copy.
@@ -81,11 +88,54 @@ def replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
     that closed it first would free its number for another thread's open, and a second close would close that file.
     """
+
+    def refuse(target: Path) -> None:
+        if is_read_only(target):
+            raise ReadOnlyTargetError(target)
+
+    _publish(path, data, mode=mode, refuse=refuse, place=Path.replace, creates=False)
+
+
+def create_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    """Create `path` holding `data`, never replacing what is there, through a synced copy beside it given `mode`,
+    making its folder first.
+
+    A file, a folder, or a link already at `path`, one that leads nowhere included, raises FileExistsError and is left
+    as it was. On any other failure nothing is at `path`, the copy is removed, and the failure is raised as it was; a
+    file system with no hard links, such as FAT, refuses the link that puts the copy in place, and that refusal is
+    such a failure. Once `path` holds `data`, a copy whose name cannot then be removed raises UnfinishedCopyError,
+    which names it, and `path` keeps `data`. A `mode` its owner may not write raises ValueError before a copy exists:
+    the copy and `path` are then one file, which Windows refuses to remove by either name while it is read-only.
+    """
+    if not mode & stat.S_IWUSR:
+        raise ValueError(f"create_bytes needs a mode its owner may write, not {mode:o}")
+    _publish(path, data, mode=mode, refuse=lambda _target: None, place=_link_new, creates=True)
+
+
+def _link_new(copy: Path, target: Path) -> None:
+    """Give `copy` the name `target`, which the link refuses where any entry is, and then drop the name `copy`."""
+    os.link(copy, target)
+    copy.unlink()
+
+
+def _publish(
+    path: Path,
+    data: bytes,
+    *,
+    mode: int,
+    refuse: Callable[[Path], None],
+    place: Callable[[Path, Path], object],
+    creates: bool,
+) -> None:
+    """Write `data` to a synced copy beside `path`, given `mode`, once its folder is made and `refuse` has not refused
+    `path`, then `place` the copy at `path`. Whatever fails, the copy is removed and the failure raised as it was, or
+    UnfinishedCopyError raised for a copy that cannot be removed. A replace's copy is made writable first, since its
+    mode may be read-only and Windows refuses to remove a read-only file. A created copy's mode is writable already,
+    and is left alone: once linked, the copy and `path` are one file, and a change would change `path` too."""
     temporary: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if is_read_only(path):
-            raise ReadOnlyTargetError(path)
+        refuse(path)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
@@ -96,13 +146,14 @@ def replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        temporary.replace(path)
+        place(temporary, path)
         temporary = None
     except BaseException as failure:
         if temporary is not None:
             try:
-                with contextlib.suppress(OSError):
-                    temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                if not creates:
+                    with contextlib.suppress(OSError):
+                        temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 temporary.unlink(missing_ok=True)
             except OSError as removal:
                 raise UnfinishedCopyError(target=path, copy=temporary, failure=failure, removal=removal) from removal

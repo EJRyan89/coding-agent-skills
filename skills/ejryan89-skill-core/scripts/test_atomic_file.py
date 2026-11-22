@@ -16,48 +16,56 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from atomic_file import ReadOnlyTargetError, UnfinishedCopyError, is_read_only, replace_bytes, replace_text
+from atomic_file import (
+    ReadOnlyTargetError,
+    UnfinishedCopyError,
+    create_bytes,
+    is_read_only,
+    replace_bytes,
+    replace_text,
+)
 
 
 def names_in(folder: str) -> list[str]:
     return sorted(item.name for item in Path(folder).iterdir())
 
 
+@contextlib.contextmanager
+def watched_descriptors() -> Iterator[tuple[list[int], list[int], list[int]]]:
+    """The descriptors replace_bytes and create_bytes open, each close of one, and each close that found its
+    descriptor already closed. Such a close first gets an unrelated file at that number, as another thread's open
+    would, so the close lands where a second close would land."""
+    opened: list[int] = []
+    closes: list[int] = []
+    reused: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+    real_close = os.close
+
+    def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor, name
+
+    def close(descriptor: int) -> None:
+        if descriptor in opened:
+            closes.append(descriptor)
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                unrelated = os.open(os.devnull, os.O_RDONLY)
+                os.dup2(unrelated, descriptor)
+                real_close(unrelated)
+                reused.append(descriptor)
+        real_close(descriptor)
+
+    with (
+        mock.patch.object(tempfile, "mkstemp", mkstemp),
+        mock.patch.object(os, "close", close),
+    ):
+        yield opened, closes, reused
+
+
 class ReplaceTests(unittest.TestCase):
-    @contextlib.contextmanager
-    def watched_descriptors(self) -> Iterator[tuple[list[int], list[int], list[int]]]:
-        """The descriptors replace_bytes opens, each close of one, and each close that found its descriptor already
-        closed. Such a close first gets an unrelated file at that number, as another thread's open would, so the
-        close lands where a second close would land."""
-        opened: list[int] = []
-        closes: list[int] = []
-        reused: list[int] = []
-        real_mkstemp = tempfile.mkstemp
-        real_close = os.close
-
-        def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
-            descriptor, name = real_mkstemp(*args, **kwargs)
-            opened.append(descriptor)
-            return descriptor, name
-
-        def close(descriptor: int) -> None:
-            if descriptor in opened:
-                closes.append(descriptor)
-                try:
-                    os.fstat(descriptor)
-                except OSError:
-                    unrelated = os.open(os.devnull, os.O_RDONLY)
-                    os.dup2(unrelated, descriptor)
-                    real_close(unrelated)
-                    reused.append(descriptor)
-            real_close(descriptor)
-
-        with (
-            mock.patch.object(tempfile, "mkstemp", mkstemp),
-            mock.patch.object(os, "close", close),
-        ):
-            yield opened, closes, reused
-
     def test_each_failure_closes_the_descriptor_once_leaves_the_target_and_removes_the_copy(self) -> None:
         for name, failure in (
             ("chmod", mock.patch.object(Path, "chmod", side_effect=OSError("synthetic chmod"))),
@@ -69,7 +77,7 @@ class ReplaceTests(unittest.TestCase):
                 path = Path(temporary) / "state.json"
                 path.write_bytes(b"previous\n")
                 with (
-                    self.watched_descriptors() as (opened, closes, reused),
+                    watched_descriptors() as (opened, closes, reused),
                     failure,
                     self.assertRaisesRegex(OSError, f"^synthetic {name}$") as raised,
                 ):
@@ -100,7 +108,7 @@ class ReplaceTests(unittest.TestCase):
             with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "state.json"
                 path.write_bytes(b"previous\n")
-                with self.watched_descriptors() as (opened, closes, _reused), failure, self.assertRaises(raised):
+                with watched_descriptors() as (opened, closes, _reused), failure, self.assertRaises(raised):
                     replace_text(path, "next\n")
                 self.assertEqual(opened, closes)
                 self.assertEqual(b"previous\n", path.read_bytes())
@@ -116,7 +124,7 @@ class ReplaceTests(unittest.TestCase):
             path = Path(temporary) / "state.json"
             path.write_bytes(b"previous\n")
             with (
-                self.watched_descriptors() as (opened, closes, reused),
+                watched_descriptors() as (opened, closes, reused),
                 mock.patch.object(os, "write", short_write),
             ):
                 replace_text(path, "café\nnext\n")
@@ -130,7 +138,7 @@ class ReplaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "condition.txt"
             path.write_bytes(b"previous\n")
-            with self.watched_descriptors() as (opened, closes, _reused):
+            with watched_descriptors() as (opened, closes, _reused):
                 replace_bytes(path, b"caf\xc3\xa9 \xff\xc3")
             self.assertEqual(opened, closes)
             self.assertEqual(b"caf\xc3\xa9 \xff\xc3", path.read_bytes())
@@ -154,7 +162,7 @@ class ReplaceTests(unittest.TestCase):
             ):
                 with (
                     self.subTest(failure=name),
-                    self.watched_descriptors() as (opened, _closes, _reused),
+                    watched_descriptors() as (opened, _closes, _reused),
                     self.assertRaises(error),
                 ):
                     replace_text(target, content)
@@ -199,6 +207,120 @@ class ReplaceTests(unittest.TestCase):
                 self.assertRegex(str(error.removal), re.escape("synthetic unlink"))
                 self.assertIs(failure, error.removal.__context__)
                 self.assertEqual(b"previous\n", path.read_bytes())
+
+
+class CreateTests(unittest.TestCase):
+    """create_bytes makes a file whole or not at all, and never replaces what is already at its target."""
+
+    def test_a_new_file_holds_every_byte_with_its_mode_and_no_copy_beside_it(self) -> None:
+        real_write = os.write
+
+        def short_write(descriptor: int, data: Any) -> int:
+            return real_write(descriptor, bytes(data[:1]))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode in (0o600, 0o644):
+                with self.subTest(mode=oct(mode)):
+                    path = Path(temporary) / "inner" / f"report-{mode:o}.md"
+                    with (
+                        watched_descriptors() as (opened, closes, reused),
+                        mock.patch.object(os, "write", short_write),
+                    ):
+                        create_bytes(path, b"caf\xc3\xa9 \xff\n", mode=mode)
+                    self.assertEqual(1, len(opened))
+                    self.assertEqual(opened, closes)
+                    self.assertEqual([], reused)
+                    self.assertEqual(b"caf\xc3\xa9 \xff\n", path.read_bytes())
+                    self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
+                    if os.name != "nt":  # Windows keeps no permission bits but read-only
+                        self.assertEqual(mode, stat.S_IMODE(path.stat().st_mode))
+            self.assertEqual(["report-600.md", "report-644.md"], names_in(str(Path(temporary) / "inner")))
+
+    def test_an_entry_already_at_the_target_is_never_replaced_and_no_copy_is_left(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "file.md").write_bytes(b"mine\n")
+            (folder / "folder.md").mkdir()
+            entries = ["file.md", "folder.md"]
+            with contextlib.suppress(OSError, NotImplementedError):  # a link only where the platform lets one be made
+                (folder / "nowhere.md").symlink_to(folder / "missing")
+                entries.append("nowhere.md")
+            for name in entries:
+                with self.subTest(entry=name), self.assertRaises(FileExistsError):
+                    create_bytes(folder / name, b"next\n")
+                self.assertEqual(sorted(entries), names_in(temporary), "no copy is left beside the target")
+            self.assertEqual(b"mine\n", (folder / "file.md").read_bytes())
+            self.assertTrue((folder / "folder.md").is_dir())
+
+    def test_each_failure_before_the_file_is_made_leaves_nothing_at_the_target_and_removes_the_copy(self) -> None:
+        real_write = os.write
+        writes: list[int] = []
+
+        def write_then_fail(descriptor: int, data: Any) -> int:
+            # The first write lands part of the bytes; the next fails, as a disk that fills part way does.
+            writes.append(descriptor)
+            if len(writes) > 1:
+                raise OSError(28, "No space left on device")
+            return real_write(descriptor, bytes(data[:3]))
+
+        for name, failure, raised in (
+            ("chmod", mock.patch.object(Path, "chmod", side_effect=OSError("synthetic chmod")), OSError),
+            ("write part way", mock.patch.object(os, "write", write_then_fail), OSError),
+            ("fsync", mock.patch.object(os, "fsync", side_effect=OSError("synthetic fsync")), OSError),
+            ("link", mock.patch.object(os, "link", side_effect=OSError("synthetic link")), OSError),
+            ("interrupted write", mock.patch.object(os, "write", side_effect=KeyboardInterrupt), KeyboardInterrupt),
+            ("interrupted link", mock.patch.object(os, "link", side_effect=KeyboardInterrupt), KeyboardInterrupt),
+        ):
+            writes.clear()
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with watched_descriptors() as (opened, closes, _reused), failure, self.assertRaises(raised):
+                    create_bytes(path, b"the whole report\n")
+                self.assertEqual(1, len(opened))
+                self.assertEqual(opened, closes)
+                self.assertEqual([], names_in(temporary), "nothing at the target and no copy beside it")
+                create_bytes(path, b"the whole report\n")
+                self.assertEqual(b"the whole report\n", path.read_bytes(), "the next create makes it")
+
+    def test_a_copy_whose_name_cannot_be_removed_is_named_in_an_oserror(self) -> None:
+        real_unlink = Path.unlink
+        for name, linked in (("before the link", False), ("after the link", True)):
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                link_failure = mock.patch.object(os, "link", side_effect=OSError("synthetic link"))
+                with (
+                    contextlib.nullcontext() if linked else link_failure,
+                    mock.patch.object(Path, "unlink", side_effect=OSError("synthetic unlink")),
+                    mock.patch.object(Path, "chmod", wraps=Path.chmod, autospec=True) as chmod,
+                    self.assertRaises(UnfinishedCopyError) as raised,
+                ):
+                    create_bytes(path, b"the whole report\n", mode=0o644)
+                copies = [item for item in Path(temporary).iterdir() if item.name != "report.md"]
+                self.assertEqual(1, len(copies), "the copy stays where the error says")
+                error = raised.exception
+                self.assertEqual(
+                    f"Cannot remove {copies[0]}, the unfinished copy of {path}: synthetic unlink", str(error)
+                )
+                self.assertEqual((path, copies[0]), (error.target, error.copy))
+                self.assertEqual(1, chmod.call_count, "the copy's mode is set once and never changed after")
+                if linked:
+                    self.assertEqual(b"the whole report\n", path.read_bytes(), "the file made keeps its bytes")
+                    if os.name != "nt":  # Windows keeps no permission bits but read-only
+                        self.assertEqual(0o644, stat.S_IMODE(path.stat().st_mode))
+                else:
+                    self.assertFalse(path.exists())
+                real_unlink(copies[0])
+
+    def test_a_mode_its_owner_may_not_write_is_refused_before_a_copy_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.md"
+            with (
+                watched_descriptors() as (opened, _closes, _reused),
+                self.assertRaisesRegex(ValueError, "^create_bytes needs a mode its owner may write, not 444$"),
+            ):
+                create_bytes(path, b"next\n", mode=0o444)
+            self.assertEqual([], opened, "no copy was made")
+            self.assertEqual([], names_in(temporary))
 
 
 class ReadOnlyTargetTests(unittest.TestCase):
