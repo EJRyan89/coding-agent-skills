@@ -5,6 +5,7 @@ reviewer it routes to, the output path it refuses, and the report it copies."""
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import io
 import json
@@ -148,6 +149,21 @@ def failing_write(folder: Path) -> Iterator[None]:
         return real_write(descriptor, bytes(data[:3]))
 
     with mock.patch.object(tempfile, "mkstemp", mkstemp), mock.patch.object(os, "write", write):
+        yield
+
+
+@contextmanager
+def refused_link(folder: Path) -> Iterator[None]:
+    """A hard link into `folder` is refused with EPERM, as a file system without hard links, such as FAT or exFAT,
+    refuses one even where nothing is at its target."""
+    real_link = os.link
+
+    def link(source: Any, target: Any, *arguments: Any, **options: Any) -> None:
+        if Path(target).parent == folder:
+            raise OSError(errno.EPERM, os.strerror(errno.EPERM), str(source), str(target))
+        real_link(source, target, *arguments, **options)
+
+    with mock.patch.object(os, "link", link):
         yield
 
 
@@ -2158,9 +2174,15 @@ class PullRequestTests(PipelineTestCase):
             for fixture, report in zip(fixtures, recorded, strict=True)
             for line in (f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}")
         ]
+        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
         for side, failure, reason in (
             ("read", failing_read(recorded[1]), "[Errno 5] Input/output error"),
             ("write", failing_write(fixtures[1].parent), "[Errno 28] No space left on device"),
+            (
+                "link",
+                refused_link(fixtures[1].parent),
+                f"[Errno {errno.EPERM}] {refused}: '{fixtures[1].parent / 'report.md'}'",
+            ),
         ):
             with self.subTest(side=side):
                 with failure:
@@ -2429,9 +2451,11 @@ class OutputTests(DocumentTestCase):
         record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
         (canary / "review.json").write_text(json.dumps(record), encoding="utf-8")
         arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"the file system refused to link the finished copy into place: {os.strerror(errno.EPERM)}"
         for side, failure, reason in (
             ("read", failing_read(recorded), "[Errno 5] Input/output error"),
             ("write", failing_write(self.output), "[Errno 28] No space left on device"),
+            ("link", refused_link(self.output), f"[Errno {errno.EPERM}] {refused}: '{self.output / 'report.md'}'"),
         ):
             with self.subTest(side=side):
                 with failure:

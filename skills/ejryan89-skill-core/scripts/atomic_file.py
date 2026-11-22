@@ -101,11 +101,17 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     making its folder first.
 
     A file, a folder, or a link already at `path`, one that leads nowhere included, raises FileExistsError and is left
-    as it was. On any other failure nothing is at `path`, the copy is removed, and the failure is raised as it was; a
-    file system with no hard links, such as FAT, refuses the link that puts the copy in place, and that refusal is
-    such a failure. Once `path` holds `data`, a copy whose name cannot then be removed raises UnfinishedCopyError,
-    which names it, and `path` keeps `data`. A `mode` its owner may not write raises ValueError before a copy exists:
-    the copy and `path` are then one file, which Windows refuses to remove by either name while it is read-only.
+    as it was. On any other failure nothing is at `path`, the copy is removed, and the failure is raised as it was.
+    Once `path` holds `data`, a copy whose name cannot then be removed raises UnfinishedCopyError, which names it, and
+    `path` keeps `data`.
+
+    The copy is put in place by a hard link, so a folder whose file system has none, such as FAT or exFAT, or a
+    network share that refuses them, cannot hold a file this creates. Its refusal, often EPERM or ENOTSUP, is raised
+    as an OSError of its errno that names `path` and says the file system refused the link, never a FileExistsError,
+    with nothing at `path` and the copy removed.
+
+    A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
+    file, which Windows refuses to remove by either name while it is read-only.
     """
     if not mode & stat.S_IWUSR:
         raise ValueError(f"create_bytes needs a mode its owner may write, not {mode:o}")
@@ -113,8 +119,16 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
 
 
 def _link_new(copy: Path, target: Path) -> None:
-    """Give `copy` the name `target`, which the link refuses where any entry is, and then drop the name `copy`."""
-    os.link(copy, target)
+    """Give `copy` the name `target`, which the link refuses where any entry is, and then drop the name `copy`. Any
+    other refusal of the link, such as a file system with no hard links, is raised with its errno, so as the same
+    OSError subclass, naming `target` rather than the copy that is about to be removed."""
+    try:
+        os.link(copy, target)
+    except FileExistsError:
+        raise
+    except OSError as refusal:
+        reason = f"the file system refused to link the finished copy into place: {refusal.strerror or refusal}"
+        raise OSError(refusal.errno, reason, str(target)) from refusal
     copy.unlink()
 
 

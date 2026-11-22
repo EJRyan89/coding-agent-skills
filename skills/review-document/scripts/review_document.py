@@ -24,7 +24,9 @@ Every command prints one fact per line:
           <selector> <run directory> <reason> in its place and goes on. Given --fixture and --report instead, it does
           the same for that one fixture and report, failing with the reason. A copy is never written over a file
           already there; one already holding the same bytes is the earlier copy, and is reported again. A copy is
-          made whole or not at all: one that fails part way leaves no report.md, so the next call makes it.
+          made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is
+          put in place by a hard link, so an output directory whose file system has none, such as FAT or exFAT, gets
+          no copy, and the reason names the file system's refusal.
 
 Exit status:
   0  the command printed its facts

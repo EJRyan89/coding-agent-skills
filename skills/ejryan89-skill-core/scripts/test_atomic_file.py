@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import re
 import stat
@@ -281,6 +282,29 @@ class CreateTests(unittest.TestCase):
                 self.assertEqual([], names_in(temporary), "nothing at the target and no copy beside it")
                 create_bytes(path, b"the whole report\n")
                 self.assertEqual(b"the whole report\n", path.read_bytes(), "the next create makes it")
+
+    def test_a_file_system_that_refuses_hard_links_leaves_no_copy_and_never_reads_as_already_there(self) -> None:
+        for code, kind in ((errno.EPERM, PermissionError), (errno.ENOTSUP, OSError), (errno.EXDEV, OSError)):
+            with self.subTest(errno=errno.errorcode[code]), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                refusal = OSError(code, os.strerror(code), "copy", "target")
+                with (
+                    mock.patch.object(os, "link", side_effect=refusal),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    create_bytes(path, b"the whole report\n")
+                error = raised.exception
+                self.assertIs(kind, type(error))
+                self.assertNotIsInstance(error, FileExistsError)
+                self.assertEqual(code, error.errno)
+                self.assertEqual(str(path), error.filename)
+                self.assertEqual(
+                    f"[Errno {code}] the file system refused to link the finished copy into place: "
+                    f"{os.strerror(code)}: {str(path)!r}",
+                    str(error),
+                )
+                self.assertIs(refusal, error.__cause__)
+                self.assertEqual([], names_in(temporary), "nothing at the target and no copy beside it")
 
     def test_a_copy_whose_name_cannot_be_removed_is_named_in_an_oserror(self) -> None:
         real_unlink = Path.unlink
