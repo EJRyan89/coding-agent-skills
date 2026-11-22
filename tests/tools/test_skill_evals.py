@@ -6619,3 +6619,472 @@ def test_resolved_fails_a_powershell_build_of_another_draft_after_a_powershell_r
 def test_resolved_judges_only_the_powershell_text_before_resolve() -> None:
     # A search after resolve in the same PowerShell text is not judged, as a later one is not.
     assert resolved(shell(f"{POWERSHELL_RESOLVE}; ls drafts; Get-ChildItem -Recurse", "PowerShell"), BUILD) is None
+
+
+# The by-name scenario's resolved expectation, and its review expectations, as their FAIL lines name them.
+BY_NAME_RESOLVED = 'resolved "export-link-expiry.md"'
+# The result event a session that ended by itself, with no error, writes last.
+ENDED = json.dumps({"type": "result", "subtype": "success", "is_error": False})
+SEARCH_FIRST = "the session searched with find before it ran resolve"
+
+
+def stopped_session(
+    claude: StubClaude, calls: Sequence[dict[str, Any]], **changes: Any
+) -> Callable[[list[str], Path, dict[str, str], float], Any]:
+    """A session that makes these calls of its own, starts no reviewer, and records no review, as a model that
+    searches for the document, finds its decoys, and stops to ask the user does, ending with no error; `changes` replace
+    the run's other fields, such as its exit code."""
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = claude(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"]:
+            return completed
+        stdout = f"{assistant(claude.session, calls=calls)}\n{ENDED}"
+        return dataclasses.replace(completed, stdout=stdout, **changes)
+
+    return runner
+
+
+def fail_kinds(lines: Sequence[str]) -> dict[str, str]:
+    """Each FAIL line's expectation of the by-name scenario on haiku, and its kind."""
+    prefix = "FAIL review-document by-name haiku "
+    kinds = {}
+    for line in lines:
+        if line.startswith(prefix):
+            found = re.fullmatch(r'(.+?) (judgment|run|record) ".*"', line[len(prefix) :])
+            assert found is not None, line
+            kinds[found[1]] = found[2]
+    return kinds
+
+
+def test_a_by_name_run_that_searched_and_recorded_no_review_fails_resolved_as_a_judgment_and_counts_it(
+    evaluation: EvaluateTests,
+) -> None:
+    case = evaluation
+    claude = StubClaude(case, review=False, subagent=False)
+    runner = stopped_session(claude, [shell("find . -name export-link-expiry.md")])
+    # A full run, every model, which --write records.
+    status, lines = case.evaluate(["--jobs", "1", "--write"], case.seams(runner), "review-document", ["by-name"])
+    assert status == 1, lines
+    assert f'FAIL review-document by-name haiku {BY_NAME_RESOLVED} judgment "{SEARCH_FIRST}"' in lines
+    assert fail_kinds(lines) == {
+        BY_NAME_RESOLVED: "judgment",
+        "finding drafts/export-link-expiry.md:17 MUST_FIX": "run",
+        "verdict CHANGES_REQUESTED": "run",
+    }
+    # The review expectations still count for nothing, as the run recorded no review.
+    assert [line for line in lines if line.startswith("NOT_COUNTED by-name haiku ")] == [
+        'NOT_COUNTED by-name haiku run "the run recorded no review"'
+    ]
+    assert f'FAIL review-document by-name haiku {BY_NAME_RESOLVED} judgment "{SEARCH_FIRST}"' in case.cited
+    assert not [line for line in lines if line.startswith("KEPT ")]
+    # No reviewer ran, but the session's judgment counts in the row: the one expectation judged, failed.
+    (row,) = [
+        line for line in case.results.read_text(encoding="utf-8").splitlines() if "| review-document | haiku" in line
+    ]
+    assert row == (
+        "| review-document | haiku | none | high | none | 0/1 | 1 | by-name 0/1 | claude-opus-5-5 | 2.1.291 "
+        "| 2026-10-08 |"
+    )
+
+
+def test_a_by_name_run_that_never_ran_resolve_and_recorded_no_review_fails_resolved_as_a_judgment(
+    evaluation: EvaluateTests,
+) -> None:
+    case = evaluation
+    claude = StubClaude(case, review=False, subagent=False)
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(stopped_session(claude, [])), "review-document", ["by-name"]
+    )
+    assert status == 1, lines
+    never = 'the session never ran review_document.py resolve \\"export-link-expiry.md\\"'
+    assert f'FAIL review-document by-name haiku {BY_NAME_RESOLVED} judgment "{never}"' in lines
+
+
+DENIAL = json.dumps(
+    {"type": "result", "is_error": False, "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "x"}}]}
+)
+
+
+@pytest.mark.parametrize(
+    ("changes", "session", "extra"),
+    [
+        ({"timed_out": True, "returncode": -1}, "claude-opus-5-5", ""),
+        ({"returncode": 1}, "claude-opus-5-5", ""),
+        ({"error": "it could not start"}, "claude-opus-5-5", ""),
+        ({}, "claude-sonnet-5-5", ""),
+        ({}, "claude-opus-5-5", DENIAL),
+    ],
+    ids=["timed-out", "exit-code", "could-not-start", "session-model", "denied"],
+)
+def test_a_by_name_run_that_recorded_no_review_for_a_reason_outside_the_model_judges_nothing(
+    changes: dict[str, Any], session: str, extra: str, evaluation: EvaluateTests
+) -> None:
+    # The session's calls are not its own choices on its model, so resolved keeps the run's reason with the rest.
+    case = evaluation
+    claude = StubClaude(case, review=False, subagent=False, session=session)
+    searched = stopped_session(claude, [shell("find . -name export-link-expiry.md")], **changes)
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = searched(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"] or not extra:
+            return completed
+        return dataclasses.replace(completed, stdout=f"{completed.stdout}\n{extra}")
+
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(runner), "review-document", ["by-name"]
+    )
+    assert status == 1, lines
+    assert set(fail_kinds(lines).values()) == {"run"}, lines
+
+
+def test_records_judge_resolved_on_the_transcript_of_a_by_name_run_that_recorded_no_review(tmp_path: Path) -> None:
+    scenario = by_name_scenario(tmp_path / "scenarios")
+    records = tmp_path / "records" / "named"
+    records.mkdir(parents=True)
+    source = skill_evals_judging.records_in(tmp_path / "records")
+    searched = f"{assistant('claude-opus-5-5', calls=[shell('find . -name draft.md')])}\n{ENDED}"
+
+    def judged() -> list[tuple[str | None, str | None, bool]]:
+        found = skill_evals_judging.judge([scenario], ["haiku"], source)
+        return [(outcome.failure, outcome.kind, outcome.from_transcript) for outcome in found]
+
+    record = str(records / "haiku.json")
+    missing = f"no record at {record}"
+    # With no transcript, or one that shows another session model, a denied command, a session that ended with an
+    # error, or one that wrote no result event, as when it was ended at its time limit, nothing is judged.
+    for transcript in (
+        None,
+        f"{assistant('claude-sonnet-5-5', calls=[shell('find .')])}\n{ENDED}",
+        f"{searched}\n{DENIAL}",
+        f"{searched}\n{FAILED_END}",
+        assistant("claude-opus-5-5", calls=[shell("find . -name draft.md")]),
+    ):
+        if transcript is not None:
+            (records / "haiku.jsonl").write_text(transcript, encoding="utf-8")
+        assert judged() == [(missing, "run", False), (missing, "run", False)]
+    (records / "haiku.jsonl").write_text(searched, encoding="utf-8")
+    assert judged() == [(SEARCH_FIRST, "judgment", True), (missing, "run", False)]
+    (records / "haiku.jsonl").write_text(f"{assistant('claude-opus-5-5', calls=[RESOLVE, BUILD])}\n{ENDED}", "utf-8")
+    assert judged() == [(None, None, True), (missing, "run", False)]
+    # A record that cannot be read is no review either.
+    (records / "haiku.json").mkdir()
+    (resolved_outcome, verdict) = judged()
+    assert resolved_outcome == (None, None, True)
+    assert verdict[0] is not None
+    assert verdict[0].startswith(f"cannot read {record}")
+    assert verdict[1:] == ("run", False)
+    # Another kind of scenario carries no calls, whatever its folder holds.
+    other = dataclasses.replace(scenario, by_name=False)
+    assert skill_evals_judging.unrecorded_error(other, records / "haiku.jsonl", "x").calls is None
+
+
+def test_a_row_counts_the_resolved_judgment_of_a_run_that_started_no_reviewer(tmp_path: Path) -> None:
+    scenario = by_name_scenario(tmp_path)
+    # A scenario judged on its review alone, beside the by-name one.
+    other = dataclasses.replace(scenario, name="other", by_name=False, expectations=scenario.expectations[1:])
+    run = skill_evals_runs.Run
+    session = frozenset({"claude-opus-5-5"})
+    reviewer = frozenset({"claude-haiku-5-5"})
+    absent = "the run recorded no review"
+    searched = [shell("find . -name draft.md")]
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("named", "haiku", None): run(None, absent, frozenset(), session, absent, "run", searched),
+        ("other", "haiku", None): run(record(), None, reviewer, session),
+        # No reviewer ran on any of sonnet's runs, yet the session's resolve is judged, and passes.
+        ("named", "sonnet", None): run(None, absent, frozenset(), session, absent, "run", [RESOLVE, BUILD]),
+        ("other", "sonnet", None): run(None, absent, frozenset(), session, absent, "run"),
+    }
+    outcomes = skill_evals_judging.judge([scenario, other], ["haiku", "sonnet"], skill_evals_runs.runs_source(runs))
+    rows = skill_evals_results.result_rows(
+        "demo", [scenario, other], ["haiku", "sonnet"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert rows == [
+        "| demo | haiku | claude-haiku-5-5 | high | none | 1/2 | 1 | named 0/1, other 1/1 | claude-opus-5-5 | 2.1.291 "
+        "| 2026-10-08 |",
+        "| demo | sonnet | none | high | none | 1/1 | 1 | named 1/1, other not run | claude-opus-5-5 | 2.1.291 "
+        "| 2026-10-08 |",
+    ]
+
+
+def init_event(*skills: str) -> str:
+    """Claude Code's init event, listing these skills."""
+    return json.dumps({"type": "system", "subtype": "init", "skills": list(skills)})
+
+
+# The result event of a session that ended with an error.
+FAILED_END = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True})
+
+
+def tool_result(number: int, *, error: bool) -> str:
+    """The session's tool result for its call numbered as `assistant` numbers them, reporting an error or not."""
+    block = {"type": "tool_result", "tool_use_id": f"toolu_{number}", "is_error": error, "content": "output"}
+    return json.dumps({"type": "user", "message": {"content": [block]}, "parent_tool_use_id": None})
+
+
+@pytest.mark.parametrize(
+    ("stream", "judged"),
+    [
+        (f"{assistant('claude-opus-5-5', calls=[RESOLVE])}\n{ENDED}", True),
+        (f"{init_event('demo', 'other')}\n{assistant('claude-opus-5-5')}\n{ENDED}", True),
+        (f"{assistant('claude-opus-5-5-20261101')}\n{ENDED}", True),
+        (f"{assistant('claude-opus-5-5', calls=[RESOLVE])}\n{tool_result(2, error=False)}\n{ENDED}", True),
+        (f"{FAILED_END}\n{assistant('claude-opus-5-5')}\n{ENDED}", True),
+        ("", False),
+        # A stream that ended with no error but holds no message of the session's shows no choice of its own.
+        (ENDED, False),
+        (assistant("claude-opus-5-5", calls=[RESOLVE]), False),
+        (f"{assistant('claude-opus-5-5')}\n{FAILED_END}", False),
+        (f"{assistant('claude-opus-5-5')}\n{ENDED}\n{FAILED_END}", False),
+        (f"{assistant('claude-opus-5-5')}\n{json.dumps({'type': 'result'})}", False),
+        (f"{assistant('claude-sonnet-5-5')}\n{ENDED}", False),
+        (f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-5-5')}\n{ENDED}", False),
+        (f"{init_event('other')}\n{assistant('claude-opus-5-5')}\n{ENDED}", False),
+        (f"{init_event()}\n{assistant('claude-opus-5-5')}\n{ENDED}", False),
+        (f"{assistant('claude-opus-5-5')}\n{DENIAL}", False),
+        (f"{assistant('claude-opus-5-5', calls=[RESOLVE])}\n{tool_result(2, error=True)}\n{ENDED}", False),
+    ],
+    ids=[
+        "session",
+        "listed",
+        "dated",
+        "resolve-succeeded",
+        "error-then-success",
+        "empty",
+        "ended-alone",
+        "no-result",
+        "ended-with-error",
+        "error-last",
+        "error-unstated",
+        "other-model",
+        "two-models",
+        "unlisted",
+        "nothing-found",
+        "denied",
+        "resolve-failed",
+    ],
+)
+def test_a_transcript_is_judged_only_when_the_session_ran_as_a_counted_run_s_must(
+    stream: str, judged: bool, tmp_path: Path
+) -> None:
+    calls = skill_evals_runs.unrecorded_calls(stream, by_name_scenario(tmp_path))
+    assert (calls is not None) is judged
+
+
+def test_a_failed_call_is_marked_only_by_its_own_tool_result_of_the_session_s() -> None:
+    search = shell("find . -name draft.md")
+    session = assistant("claude-opus-5-5", calls=[RESOLVE, BUILD])
+    # A subagent's result, one naming no call of the session's, and one in a shape not read mark nothing.
+    subagent = json.loads(tool_result(2, error=True))
+    stray = tool_result(9, error=True)
+    prompt = json.dumps({"type": "user", "message": {"content": "review draft.md"}})
+    odd = json.dumps({"type": "user", "message": {"content": ["text", {"type": "tool_result", "is_error": "yes"}]}})
+    lines = [session, json.dumps({**subagent, "parent_tool_use_id": "toolu_1"}), stray, prompt, odd]
+    assert skill_evals_runs.session_tool_calls("\n".join(lines)) == [RESOLVE, BUILD]
+    failed = skill_evals_runs.session_tool_calls(f"{session}\n{tool_result(3, error=True)}")
+    assert failed == [RESOLVE, {**BUILD, skill_evals_records.FAILED_CALL: True}]
+    # A failed build after a resolve that succeeded discharges nothing.
+    assert skill_evals_scenarios.judged_calls(failed, "draft.md") == failed
+    assert skill_evals_scenarios.judged_calls([{**search, "failed": True}, RESOLVE], "draft.md") is not None
+
+
+def errored(call: dict[str, Any]) -> dict[str, Any]:
+    """The call with its tool result reporting an error."""
+    return {**call, skill_evals_records.FAILED_CALL: True}
+
+
+SEARCH = shell("find . -name draft.md")
+DECOY_BUILD = shell(f'python3 "{DOCUMENT_SCRIPT}" build ".drafts-old/draft.md"')
+SEARCHED = "the session searched with find before it ran resolve"
+DECOY = "the session built a file other than drafts/draft.md, the one copy resolve finds"
+# One call that runs resolve and then a build, of a decoy or of the staged copy.
+RESOLVE_THEN = f'python3 "{DOCUMENT_SCRIPT}" resolve "draft.md" && python3 "{DOCUMENT_SCRIPT}" build'
+CHAINED_DECOY = shell(f'{RESOLVE_THEN} ".drafts-old/draft.md"')
+CHAINED_STAGED = shell(f"{RESOLVE_THEN} drafts/draft.md")
+
+
+@pytest.mark.parametrize(
+    ("calls", "verdict"),
+    [
+        # A search before a resolve that then failed stays the session's own.
+        ([SEARCH, errored(RESOLVE)], SEARCHED),
+        ([errored(shell(f'find . -name draft.md; python3 -B "{DOCUMENT_SCRIPT}" resolve "draft.md"'))], SEARCHED),
+        # A resolve that failed and was retried with success discharges nothing.
+        ([errored(RESOLVE), RESOLVE, SEARCH, DECOY_BUILD], DECOY),
+        # A failed call is judged on all it wrote: which of its parts failed is unknown, and the session chose them all.
+        (
+            [errored(CHAINED_DECOY)],
+            DECOY,
+        ),
+        (
+            [errored(CHAINED_STAGED)],
+            None,
+        ),
+        # A last resolve that failed, with nothing of the session's own before it, judges nothing, whatever follows.
+        ([errored(RESOLVE)], "discharged"),
+        ([errored(RESOLVE), SEARCH, DECOY_BUILD], "discharged"),
+        ([shell("cat notes.md"), errored(RESOLVE), BUILD], "discharged"),
+        # A failed resolve of another name is no resolve of this document's.
+        (
+            [errored(shell(f'python3 "{DOCUMENT_SCRIPT}" resolve "other.md"')), BUILD],
+            'the session never ran review_document.py resolve "draft.md"',
+        ),
+        ([RESOLVE, errored(BUILD)], None),
+    ],
+    ids=[
+        "search-then-failed-resolve",
+        "search-and-failed-resolve-in-one-call",
+        "retried",
+        "chained-decoy-build",
+        "chained-staged-build",
+        "failed-alone",
+        "failed-then-search",
+        "read-then-failed",
+        "other-name",
+        "failed-build",
+    ],
+)
+def test_a_last_resolve_that_failed_discharges_only_what_came_after_it(
+    calls: list[dict[str, Any]], verdict: str | None
+) -> None:
+    judged = skill_evals_scenarios.judged_calls(calls, "draft.md")
+    if verdict == "discharged":
+        assert judged is None
+        return
+    assert judged is not None
+    assert resolved(*(dict(call) for call in judged)) == verdict
+
+
+def test_records_judge_nothing_on_a_transcript_that_cannot_be_read_or_is_unread(tmp_path: Path) -> None:
+    scenario = by_name_scenario(tmp_path / "scenarios")
+    transcript = tmp_path / "haiku.jsonl"
+
+    def unrecorded(transcript: Path) -> tuple[str, str, list[dict[str, Any]] | None]:
+        error = skill_evals_judging.unrecorded_error(scenario, transcript, "no record")
+        return str(error), error.kind, error.calls
+
+    assert unrecorded(transcript) == ("no record", "run", None)
+    # A transcript that is there and cannot be read is reported beside the record's reason, never read as absent.
+    transcript.mkdir()
+    reason, kind, calls = unrecorded(transcript)
+    assert reason.startswith(f"no record; cannot read {transcript}: ")
+    assert (kind, calls) == ("run", None)
+    transcript.rmdir()
+    transcript.write_bytes(b"\xff\xfe")
+    assert unrecorded(transcript)[0].startswith(f"no record; cannot read {transcript}: ")
+    unread = {"type": "assistant", "message": {"model": "claude-opus-5-5", "content": 1}}
+    transcript.write_text(json.dumps(unread), encoding="utf-8")
+    assert unrecorded(transcript) == ("no record", "run", None)
+    transcript.write_text(f"{assistant('claude-opus-5-5', calls=[RESOLVE])}\n{ENDED}", encoding="utf-8")
+    assert unrecorded(transcript) == ("no record", "run", [RESOLVE])
+
+
+RESOLVED_BY_NAME = [
+    shell(f'python3 -B "{DOCUMENT_SCRIPT}" resolve "export-link-expiry.md"'),
+    shell(f'python3 -B "{DOCUMENT_SCRIPT}" build "drafts/export-link-expiry.md" --stage "final"'),
+]
+
+
+def test_a_by_name_run_whose_resolve_failed_and_recorded_no_review_judges_nothing(evaluation: EvaluateTests) -> None:
+    # resolve exits with an error, and the session stops: where it looked after is no choice of its own.
+    case = evaluation
+    claude = StubClaude(case, review=False, subagent=False)
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = claude(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"]:
+            return completed
+        session = assistant(claude.session, calls=RESOLVED_BY_NAME[:1])
+        return dataclasses.replace(completed, stdout="\n".join([session, tool_result(2, error=True), ENDED]))
+
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(runner), "review-document", ["by-name"]
+    )
+    assert status == 1, lines
+    assert set(fail_kinds(lines).values()) == {"run"}, lines
+
+
+def test_a_by_name_run_whose_record_counts_for_nothing_never_judges_resolved_from_its_transcript(
+    evaluation: EvaluateTests,
+) -> None:
+    # The session resolved and built as the skill says and ended with no error, but its reviewer ran on another model:
+    # the record is not the model's, so resolved fails as a record with the rest rather than passing on the transcript.
+    case = evaluation
+    claude = StubClaude(case, reviewer="claude-sonnet-5-5")
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        completed = claude(arguments, cwd, environment, timeout)
+        if arguments[1:] == ["--version"]:
+            return completed
+        return dataclasses.replace(completed, stdout=f"{completed.stdout}\n{ENDED}")
+
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--model", "haiku"], case.seams(runner), "review-document", ["by-name"]
+    )
+    assert status == 1, lines
+    assert fail_kinds(lines) == {
+        BY_NAME_RESOLVED: "record",
+        "finding drafts/export-link-expiry.md:17 MUST_FIX": "record",
+        "verdict CHANGES_REQUESTED": "record",
+    }, lines
+
+
+def test_a_write_keeps_a_committed_row_whose_model_only_the_session_s_resolve_judged(
+    evaluation: EvaluateTests,
+) -> None:
+    # No reviewer started on any model, while the session resolved, built, ended with no error, and recorded nothing:
+    # its judgment is the session's, so the committed row stays, and a model with no row gets its `none` row.
+    case = evaluation
+    committed = (
+        "| review-document | haiku | claude-haiku-5-5 | high | none | 3/3 | 1 | by-name 3/3 | claude-opus-5-5 "
+        "| 2.1.291 | 2026-01-01 |"
+    )
+    text = case.results.read_text(encoding="utf-8")
+    header_end = text.index(skill_evals_results.RESULTS_HEADER[1]) + len(skill_evals_results.RESULTS_HEADER[1])
+    case.results.write_text(f"{text[:header_end]}\n{committed}{text[header_end:]}", encoding="utf-8")
+    claude = StubClaude(case, review=False, subagent=False)
+    status, lines = case.evaluate(
+        ["--jobs", "1", "--write"],
+        case.seams(stopped_session(claude, RESOLVED_BY_NAME)),
+        "review-document",
+        ["by-name"],
+    )
+    assert status == 1, lines
+    assert f"PASS review-document by-name haiku {BY_NAME_RESOLVED}" in lines
+    assert [line for line in lines if line.startswith("KEPT ")] == ["KEPT haiku"]
+    rows = [line for line in case.results.read_text(encoding="utf-8").splitlines() if "| review-document |" in line]
+    assert rows[0] == committed
+    assert rows[1].startswith("| review-document | sonnet | none | high | none | 1/1 | 1 | by-name 1/1 |")
+
+
+def test_a_run_judged_only_on_the_session_s_calls_counts_among_the_runs_only_when_it_failed(tmp_path: Path) -> None:
+    scenario = by_name_scenario(tmp_path)
+    run = skill_evals_runs.Run
+    session = frozenset({"claude-opus-5-5"})
+    reviewer = frozenset({"claude-haiku-5-5"})
+    absent = "the run recorded no review"
+    passing = {**record(), skill_evals_records.SESSION_CALLS: [RESOLVE, BUILD]}
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("named", model, index): run(passing, None, reviewer, session)
+        for model in ("haiku", "sonnet")
+        for index in (1, 2)
+    }
+    # haiku's third run passed resolve on the transcript alone, which measured nothing of the reviewers; sonnet's
+    # searched first, a run that failed.
+    runs[("named", "haiku", 3)] = run(None, absent, frozenset(), session, absent, "run", [RESOLVE, BUILD])
+    runs[("named", "sonnet", 3)] = run(None, absent, frozenset(), session, absent, "run", [shell("ls")])
+    outcomes = skill_evals_judging.judge([scenario], ["haiku", "sonnet"], skill_evals_runs.runs_source(runs), 3)
+    rows = skill_evals_results.result_rows(
+        "demo", [scenario], ["haiku", "sonnet"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert [row.split(" | ")[7] for row in rows] == ["named 5/5 (2/2 runs)", "named 4/5 (2/3 runs)"]
+    # Several runs none of which started a reviewer, each passing resolve on the transcript alone, still say so.
+    unreviewed: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("named", "haiku", index): run(None, absent, frozenset(), session, absent, "run", [RESOLVE, BUILD])
+        for index in (1, 2, 3)
+    }
+    outcomes = skill_evals_judging.judge([scenario], ["haiku"], skill_evals_runs.runs_source(unreviewed), 3)
+    (row,) = skill_evals_results.result_rows(
+        "demo", [scenario], ["haiku"], outcomes, unreviewed, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row.split(" | ")[7] == "named 3/3 (0/0 runs)"

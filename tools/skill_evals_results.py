@@ -67,8 +67,9 @@ def result_rows(
     passed, the runs of each scenario, each scenario's counts, and the run's versions; a model none of whose judged
     part ran is recorded as not run, with its first run's reason as the results file records it, which names no path
     of the machine. A run none of whose reviewers ran on a model, such as one the session refused before starting
-    any, holds no judgment of that model, so its expectations are left out of the model's count, and a scenario none
-    of whose runs holds one says `not run`."""
+    any, holds no judgment of that model, so its expectations are left out of the model's count, but one judged on the
+    session's own tool calls alone, a by-name run's `resolved`, which counts; a scenario none of whose runs holds a
+    counted expectation says `not run`, and a model that ran no reviewer but has one names `none` as its model IDs."""
     rows = []
     numbers = {key[2] for key in runs}
     reviewed = any(scenario.mode != TRIGGER for scenario in scenarios)
@@ -78,10 +79,15 @@ def result_rows(
         reviewers = sorted({name for _, run in mine for name in run.reviewers})
         session = ", ".join(sorted({name for _, run in mine for name in run.session})) or "unknown"
         theirs = [outcome for outcome in outcomes if outcome.model == model]
-        if reviewers:
-            unreviewed = {(key[0], key[2]) for key, run in mine if not run.reviewers}
-            theirs = [outcome for outcome in theirs if (outcome.scenario, outcome.run) not in unreviewed]
-            identifier = ", ".join(reviewers)
+        unreviewed = {(key[0], key[2]) for key, run in mine if not run.reviewers}
+        counted = [
+            outcome
+            for outcome in theirs
+            if (outcome.scenario, outcome.run) not in unreviewed or outcome.from_transcript
+        ]
+        if reviewers or counted:
+            theirs = counted
+            identifier = ", ".join(reviewers) or "none"
             detail = ", ".join(
                 f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} not run"
                 for scenario in scenarios
@@ -157,9 +163,12 @@ def kept_models(text: str, skill: str, models: Sequence[str], outcomes: Sequence
     since every outcome of it failed with a run or record kind, and of which the skill has a row. Such a run
     measured nothing of the model, so its new row would replace a measured one with `not run` or a pass count of 0; a
     model the skill has no row of loses nothing, and its new row is written. Raise ScenarioError when results_table
-    cannot read its table."""
+    cannot read its table. A judgment made on the session's calls alone is the session's, on its own model, so it
+    measures nothing of the row's model either."""
     committed = {_row_model(row) for row in results_table(text)[2] if _row_skill(row) == skill}
-    counted = {outcome.model for outcome in outcomes if outcome.kind in (None, JUDGMENT)}
+    counted = {
+        outcome.model for outcome in outcomes if outcome.kind in (None, JUDGMENT) and not outcome.from_transcript
+    }
     return [model for model in models if model in committed and model not in counted]
 
 

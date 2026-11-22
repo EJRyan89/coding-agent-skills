@@ -37,6 +37,7 @@ from deployer.platform_support import PYTHON
 from tools import claude_stream, runtime_canary
 from tools.runtime_canary import Completed, Runner
 from tools.skill_evals_records import (
+    FAILED_CALL,
     MODELS,
     NO_SYNTHESIS,
     RECORD,
@@ -66,6 +67,7 @@ from tools.skill_evals_scenarios import (
     Scenario,
     document_arguments,
     document_place,
+    judged_calls,
     quote,
     reviewed_fixture,
     skill_arguments,
@@ -148,6 +150,9 @@ class Run:
     recorded: str | None = None
     # RUN or RECORD when the run counts for nothing; None when it counts.
     kind: str | None = None
+    # A by-name run that recorded no review: the session's own tool calls when unrecorded_calls finds them in its
+    # stream, which the `resolved` kind still judges; None otherwise.
+    calls: list[dict[str, Any]] | None = None
 
 
 def review_config(directory: Path) -> dict[str, Any]:
@@ -253,12 +258,23 @@ UNREAD_CALLS = "the session's stream holds a message or a tool call in a shape t
 
 
 def session_tool_calls(output: str) -> list[dict[str, Any]]:
-    """The tool calls the session's own messages made, each its tool's name and input, in order; a subagent's call is
-    not the session's. A message of the session's whose content is not a list of blocks, or a call whose name is not
-    text or whose input is not an object, raises StreamShapeError."""
+    """The tool calls the session's own messages made, each its tool's name and input, in order, and FAILED_CALL true
+    on each whose tool result the session got reports an error; a subagent's call is not the session's. A message of
+    the session's whose content is not a list of blocks, or a call whose name is not text or whose input is not an
+    object, raises StreamShapeError; a tool result is read only where it is an object naming its call's ID."""
     calls: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
     for event in claude_stream.events(output):
-        if event.get("type") != "assistant" or event.get("parent_tool_use_id"):
+        if event.get("parent_tool_use_id"):
+            continue
+        if event.get("type") == "user":
+            for block in _content(event):
+                if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error") is True:
+                    failed = by_id.get(str(block.get("tool_use_id")))
+                    if failed is not None:
+                        failed[FAILED_CALL] = True
+            continue
+        if event.get("type") != "assistant":
             continue
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -269,7 +285,9 @@ def session_tool_calls(output: str) -> list[dict[str, Any]]:
                 continue
             if not isinstance(block.get("name"), str) or not isinstance(block.get("input"), dict):
                 raise StreamShapeError(UNREAD_CALLS)
-            calls.append({"name": block["name"], "input": block["input"]})
+            calls.append(call := {"name": block["name"], "input": block["input"]})
+            if isinstance(block.get("id"), str):
+                by_id[block["id"]] = call
     return calls
 
 
@@ -621,7 +639,7 @@ def run_failure(
     With `recorded`, the reason as the results file records it: why the record is missing, why Claude Code could not
     start, and each denied command, which may name the machine's paths, are each a fixed phrase; `absent` is the
     phrase for a missing record, NO_REVIEW or a synthesis run's NO_SYNTHESIS."""
-    listed, denials = runtime_canary.claude_stream(completed.stdout)
+    problems = session_problems(completed.stdout, skill, recorded)
     session, reviewers = stream_models(completed.stdout)
     if missing is not None:
         reasons = [absent if recorded else missing]
@@ -631,15 +649,7 @@ def run_failure(
             reasons.append(f"timed out after {timeout:g} seconds")
         elif completed.returncode != 0:
             reasons.append(f"Claude Code exited with code {completed.returncode}")
-        if nothing := runtime_canary.discovery_failure(completed.stdout):
-            reasons.append(nothing)
-        elif listed is not None and skill not in listed:
-            reasons.append(f"Claude Code did not list {skill}")
-        if denials and recorded:
-            reasons.append(f"denied {len(denials)} command{'' if len(denials) == 1 else 's'}")
-        elif denials:
-            reasons.append(f"denied: {'; '.join(denials)}")
-        return "; ".join(reasons)
+        return "; ".join([*reasons, *problems])
     if not reviewers:
         return "no reviewer subagent ran, so the record is not the model's"
     pinned = [identifier for identifier in pinned_models(pins) if identifier != MODELS[model]]
@@ -652,6 +662,56 @@ def run_failure(
     if elsewhere:
         return f"the session ran on {', '.join(elsewhere)}, not {MODELS[SESSION_MODEL]}"
     return None
+
+
+def session_problems(output: str, skill: str, recorded: bool = False) -> list[str]:
+    """What a session's stream shows went wrong outside the model's choices: Claude Code discovered no skill or did not
+    list this one, and the commands it denied, each named, or with `recorded` counted, as the results file records
+    them. A stream in a shape this does not read raises StreamError."""
+    listed, denials = runtime_canary.claude_stream(output)
+    problems = []
+    if nothing := runtime_canary.discovery_failure(output):
+        problems.append(nothing)
+    elif listed is not None and skill not in listed:
+        problems.append(f"Claude Code did not list {skill}")
+    if denials and recorded:
+        problems.append(f"denied {len(denials)} command{'' if len(denials) == 1 else 's'}")
+    elif denials:
+        problems.append(f"denied: {'; '.join(denials)}")
+    return problems
+
+
+def _content(event: Mapping[str, Any]) -> list[Any]:
+    """A user event's message content blocks, or none when its content is text, such as the prompt."""
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
+def ended_without_error(output: str) -> bool:
+    """Whether the stream's last result event says the session ended with no error. A session that was ended at its
+    time limit, or by anything else, wrote none."""
+    results = [event for event in claude_stream.events(output) if event.get("type") == "result"]
+    return bool(results) and results[-1].get("is_error") is False
+
+
+def unrecorded_calls(output: str, scenario: Scenario) -> list[dict[str, Any]] | None:
+    """The session's own tool calls in the stream of a by-name run that recorded no review, which the `resolved` kind
+    still judges, when the stream shows the session's own choices on its model: session_problems finds nothing, the
+    last result event says the session ended with no error, every message of the session's names SESSION_MODEL's ID,
+    as a run that counts must; and of those calls, the ones judged_calls keeps after a last `resolve` that ended in an
+    error. None otherwise. A stream in a shape this does not read raises StreamError."""
+    session, _ = stream_models(output)
+    if (
+        session_problems(output, scenario.skill)
+        or not ended_without_error(output)
+        or not session
+        or not all(names_model(name, MODELS[SESSION_MODEL]) for name in session)
+    ):
+        return None
+    name = scenario.document.name if scenario.document is not None else ""
+    judged = judged_calls(session_tool_calls(output), name)
+    return None if judged is None else [dict(call) for call in judged]
 
 
 @dataclass(frozen=True)
@@ -796,6 +856,11 @@ def _session_run(
         recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins, absent)
         orchestrators, reviewers = stream_models(completed.stdout)
         calls = session_tool_calls(completed.stdout) if scenario.by_name else None
+        # A session that ran as a counted run's must but recorded no review is still judged on where it looked.
+        ran = not (completed.error or completed.timed_out or completed.returncode)
+        unrecorded = (
+            unrecorded_calls(completed.stdout, scenario) if calls is not None and missing is not None and ran else None
+        )
     except claude_stream.StreamError as exc:
         # A stream in a shape this does not read shows neither the models nor the skills, so the run shows nothing.
         if missing is None:
@@ -807,7 +872,7 @@ def _session_run(
     if record is not None and calls is not None:
         record = {**record, SESSION_CALLS: calls}
     kind = None if failure is None else RUN if missing is not None else RECORD
-    return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
+    return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind, unrecorded), transcript
 
 
 def run_keys(scenarios: Sequence[Scenario], models: Sequence[str], runs: Mapping[RunKey, Run]) -> list[RunKey]:
@@ -925,7 +990,7 @@ def runs_source(runs: Mapping[RunKey, Run]) -> RecordSource:
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         run = runs[(scenario.name, model, index)]
         if run.record is None:
-            raise RecordError(run.failure or NO_REVIEW, run.kind or RUN)
+            raise RecordError(run.failure or NO_REVIEW, run.kind or RUN, run.calls)
         return run.record
 
     return source

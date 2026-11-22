@@ -57,6 +57,7 @@ from suite_names import is_suite_name
 from deployer import fsops
 from tools import runtime_canary
 from tools.skill_evals_records import (
+    FAILED_CALL,
     MODELS,
     Record,
     RecordError,
@@ -131,6 +132,9 @@ class Expectation:
     label: str
     # The reason the record fails the expectation, or None when it passes.
     check: Callable[[Record], str | None]
+    # Whether it reads only the session's own tool calls, SESSION_CALLS, so a by-name run that recorded no review is
+    # still judged on them when its record source carries them.
+    from_transcript: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -489,28 +493,51 @@ def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
     return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)
 
 
+# The `resolved` verdict on a session that ran `resolve` and then built nothing.
+BUILT_NOTHING = "the session built nothing after it ran resolve"
+
+
+def _resolved_verdict(calls: Sequence[Mapping[str, Any]], name: str) -> str | None:
+    """Why the session's calls fail the `resolved` kind, or None when they pass it."""
+    resolved = False
+    for step in (step for call in calls for step in _steps(call, name)):
+        if not resolved and step.unread:
+            return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
+        if not resolved and step.search is not None:
+            return f"the session searched with {step.search} before it ran resolve"
+        resolved = resolved or step.resolves
+        if resolved and step.built is not None:
+            if step.built:
+                return None
+            return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
+    if resolved:
+        return BUILT_NOTHING
+    return f"the session never ran review_document.py resolve {quote(name)}"
+
+
+def judged_calls(calls: Sequence[Mapping[str, Any]], name: str) -> list[Mapping[str, Any]] | None:
+    """The session's calls the `resolved` kind judges in a run that recorded no review. When the session's last call
+    that ran `resolve` with the document's name ended in an error, as its tool result reports, what the session did
+    after it was no choice of its own, so only the calls through that one are judged, and None is given when all they
+    show is BUILT_NOTHING: a search or an unread command before `resolve` stays the session's, and so does all that the
+    failed call itself wrote, a build chained after `resolve` included, since the session chose every part of it before
+    any part ran and its result does not say which part failed. Otherwise every call is judged."""
+    ran = [index for index, call in enumerate(calls) if any(step.resolves for step in _steps(call, name))]
+    if not ran or calls[ran[-1]].get(FAILED_CALL) is not True:
+        return list(calls)
+    through = list(calls[: ran[-1] + 1])
+    return None if _resolved_verdict(through, name) == BUILT_NOTHING else through
+
+
 def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
     """That the session found the document named by `name` alone through review-document's `resolve`, searching for
     nothing before it, and then built the copy `resolve` finds, the one staged in BY_NAME_FOLDER."""
     _fields(spec, {"kind"})
 
     def check(record: Record) -> str | None:
-        resolved = False
-        for step in (step for call in session_calls(record) for step in _steps(call, name)):
-            if not resolved and step.unread:
-                return "the session ran a Bash command before resolve that the Bash grammar refuses, so it is unread"
-            if not resolved and step.search is not None:
-                return f"the session searched with {step.search} before it ran resolve"
-            resolved = resolved or step.resolves
-            if resolved and step.built is not None:
-                if step.built:
-                    return None
-                return f"the session built a file other than {BY_NAME_FOLDER}/{name}, the one copy resolve finds"
-        if resolved:
-            return "the session built nothing after it ran resolve"
-        return f"the session never ran review_document.py resolve {quote(name)}"
+        return _resolved_verdict(session_calls(record), name)
 
-    return Expectation(f"resolved {quote(name)}", check)
+    return Expectation(f"resolved {quote(name)}", check, from_transcript=True)
 
 
 KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {

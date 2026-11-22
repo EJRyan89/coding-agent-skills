@@ -40,17 +40,22 @@ Record = Mapping[str, Any]
 # The key a by-name document scenario's record carries the session's own tool calls under, read from its transcript,
 # beside the review record's own keys, which judge only the review.
 SESSION_CALLS = "session_calls"
+# The key a session call carries, beside its tool's name and input, when its tool result reports an error.
+FAILED_CALL = "failed"
 # A synthesis run that recorded no synthesis of its own, as a NOT_COUNTED line and the results file say it.
 NO_SYNTHESIS = "the run recorded no synthesis"
 
 
 class RecordError(Exception):
     """A record that is missing, unreadable, refused, or lacks what an expectation reads. A record source's error
-    says which kind of failure it is, RUN or RECORD; one an expectation's check raises is a JUDGMENT."""
+    says which kind of failure it is, RUN or RECORD; one an expectation's check raises is a JUDGMENT. A by-name run's
+    error for a review it never recorded carries `calls`, the session's own tool calls, when its transcript shows
+    the session's own choices, so an expectation read from those calls alone is still judged."""
 
-    def __init__(self, message: str, kind: str = RUN) -> None:
+    def __init__(self, message: str, kind: str = RUN, calls: list[dict[str, Any]] | None = None) -> None:
         super().__init__(message)
         self.kind = kind
+        self.calls = calls
 
 
 @dataclass(frozen=True)

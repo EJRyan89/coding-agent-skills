@@ -164,7 +164,16 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       text, no reader here parsing it as pwsh does: a search program at a command's start, after a separator, a
       brace, a parenthesis, the call operator, or an assignment's `=`, before the `resolve` the text holds. A run that
       never runs `resolve`, builds nothing after it, or builds another copy fails it. Its reasons name a tool, a
-      program, or the document's name, never a path of the machine. Only the session's own calls are read, never a
+      program, or the document's name, never a path of the machine. It reads the session's calls alone, so a run that
+      recorded no review is still judged on them, as a `judgment`, while its other expectations fail as a `run`,
+      when the session ran as a counted run's must: Claude Code started, did not time out, and exited 0, the stream's
+      last result event says the session ended with no error, Claude Code listed the skill if it listed any and
+      denied nothing, and every message of the session's names SESSION_MODEL's ID; otherwise it fails as a `run`
+      with the rest. When the session's last `resolve` of the document's name returned an error, what it did after
+      was no choice of its own, so only the calls through that one are judged, all that call wrote included, since
+      its result does not say which part failed and the session chose every part; a search or an unread command
+      before `resolve` is still a `judgment`, and when all they show is that the session built nothing after
+      `resolve`, `resolved` fails as a `run` with the rest. Only the session's own calls are read, never a
       subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
       by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
       `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
@@ -187,10 +196,16 @@ run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N abo
 for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record, and for a by-name
 scenario the session's stream-json transcript beside it, <model>.jsonl or <model>-<run>.jsonl, whose missing or
 unreadable file fails every expectation as a `run` failure, and whose message or tool call in a shape it does not read
-as a `record` failure, since the `resolved` kind reads the calls there. It holds a review
-record to what a run's record is held to: ejryan89-code-review-core's record contract (validate_record), the review
-version of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID,
-or the ID of the model its route pins.
+as a `record` failure, since the `resolved` kind reads the calls there. A by-name scenario's missing or unreadable
+record still has its `resolved` judged on that transcript, when the transcript shows what a run's stream must: a last
+result event saying the session ended with no error, which a session ended at its time limit never writes, the skill
+listed if any were, nothing denied, and the session on SESSION_MODEL alone, with a last `resolve` that returned an
+error read as above. It cannot see the exit code or whether Claude Code started, which a run reads from the process.
+A missing transcript, an unread one, or one that shows otherwise leaves `resolved` a `run` failure with the rest, and
+one that is there but cannot be read adds why to the record's reason.
+It holds a review record to what a run's record is held to: ejryan89-code-review-core's record contract
+(validate_record), the review version of the scenario's mode, a guard that held every reviewer, and every
+reviewer's `model` naming that model's ID, or the ID of the model its route pins.
 The model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
 record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
 unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run. A synthesis
@@ -220,7 +235,8 @@ its working directory, so the deployed skills and agent load as project ones, an
 `/<skill> <prepare_arguments>`, on a repository reviewer's scenario's copy, or `/<skill> "<document>"` with the path
 of a document scenario's document, staged in the run's folder, or for a by-name scenario its file name alone, staged in
 the home; a document or a copy that cannot be staged fails the run before any session starts. A by-name run's record
-carries the session's own tool calls, read from its stream, for the `resolved` kind. The session, which
+carries the session's own tool calls, read from its stream, for the `resolved` kind, and so does one that recorded no
+review when its session ran as the `resolved` kind above says. The session, which
 orchestrates the skill, stays on SESSION_MODEL's ID. It has no Workflow tool, so reviewers start as native
 subagents, whose messages --forward-subagent-text puts in the transcript with the model each ran on, and
 --include-hook-events puts each guard decision beside them. A run counts only if every one of those messages names
@@ -281,7 +297,9 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   snapshot files the guard counted it reading
   NOT_COUNTED <scenario> <model> <kind> "<reason>"
                                                   a record that counts for nothing, so each expectation of its
-                                                  scenario and model fails with this kind and reason: `run` when the
+                                                  scenario and model fails with this kind and reason, but a by-name
+                                                  run's `resolved`, judged on the session's calls as its kind says
+                                                  when the run recorded no review: `run` when the
                                                   run recorded no review, or synthesis, of its own, because the
                                                   session ended before finalize or the synthesis, timed out, could
                                                   not start, did not list the skill, had a command denied, or its
@@ -324,8 +342,9 @@ rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and
 stays for its transcripts. Before `SAMPLE`, --write prints `KEPT <model>` for each model, in run order, no record of
 which counted, every expectation on it failing with the `run` or `record` kind, and of which the skill has a row: such a
 run measured nothing of the model, so its committed row stays as it was written rather than being replaced by `not run`
-or a pass count of 0. A model the skill has no row of loses nothing, and its row is written. When no record of any model
-counted, every committed row stays and the skill's rows change only where a model had none.
+or a pass count of 0. A `resolved` judged on the session's calls alone is the session's, on SESSION_MODEL, so it
+measures nothing of the model either. A model the skill has no row of loses nothing, and its row is written. When no
+record of any model counted, every committed row stays and the skill's rows change only where a model had none.
 Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
 run whose transcript the reader checks against its verdicts: of the runs that passed every expectation, the first after
 the scenario and model the skill's row of the samples table names, in scenario order and then model order, wrapping
@@ -344,7 +363,12 @@ run: the header, its separator, then rows of the header's columns, each naming a
 markers. Every other skill's row is written back as it was. A row's Runs cell is the runs of each scenario, and with
 more than one, each scenario's counts in By scenario end with the runs that passed every expectation, of the runs
 judged, as the citation's cells do; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
-is left out of both counts, as a scenario none of whose runs held a judgment is `not run`.
+is left out of both counts, as a scenario none of whose runs held a judgment is `not run`, except a by-name run's
+`resolved` judged on the session's calls alone, which counts as that run's one expectation, and makes a model none of
+whose reviewers ran a row whose Model ID is `none`. Such a run counts among the scenario's runs only when that
+`resolved` failed, as a run that failed, so a run that measured nothing of the reviewers never counts as one that
+passed. Several runs none of which counts read `(0/0 runs)`, so the cell still says the scenario ran several
+times.
 
 Exit status:
   0  no FAIL, FAILED, or DEPLOY_FAILED line
