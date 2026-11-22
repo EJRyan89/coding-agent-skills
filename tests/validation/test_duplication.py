@@ -331,6 +331,46 @@ class DuplicatedConstantPolicy(unittest.TestCase):
             ),
         )
 
+    def test_an_integer_written_as_a_bit_pattern_copied_fails_by_value_in_any_base(self) -> None:
+        self.assertEqual(
+            [
+                f"CREATE_NEW_PROCESS_GROUP at deployer/one.py:2 and GROUP at tools/two.py:3{self.FIX}",
+                f"CREATE_NO_WINDOW at deployer/one.py:1 and HIDDEN at tools/two.py:2{self.FIX}",
+                f"MODE at deployer/one.py:3 and NEW_FILE_MODE at tools/two.py:4{self.FIX}",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": (
+                        "CREATE_NO_WINDOW = 0x08000000\nCREATE_NEW_PROCESS_GROUP = 0x200\nMODE = 0o644\n"
+                    ),
+                    # The source column is a byte offset, so a wide character before the literal does not hide it.
+                    "tools/two.py": (
+                        'NOTE = "é"\nHIDDEN = 0X08000000\nGROUP: int = 0b1000000000  # 0x200\nNEW_FILE_MODE = 0x1A4\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_a_decimal_or_built_integer_and_a_bit_pattern_held_once_are_not_copies(self) -> None:
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    # Decimal counts and versions modules share by chance, the same flag in decimal or built from
+                    # others, booleans, and two names for one bit pattern in one module are not compared.
+                    "deployer/one.py": (
+                        "SCHEMA_VERSION = 1\nTIMEOUT = 120\nHIDDEN = 134217728\nLIMIT = 0x7FFF\nREADY = True\n"
+                        "CREATE_SUSPENDED = 0x00000004\nTH32CS_SNAPTHREAD = 0x00000004\n"
+                    ),
+                    "tools/two.py": (
+                        "SCHEMA_VERSION = 1\nTIMEOUT = 120\nHIDDEN = 0x08000000\nLIMIT = 32_767\nREADY = 1\n"
+                        "FLAGS = 0x08000000 | 0x200\nNEGATIVE = -0x7FFF\n"
+                    ),
+                    "tools/three.py": "FLAGS = 0x08000200 if READY else 0\nREADY = 0b1 == 1\n",
+                }
+            ),
+        )
+
     def test_a_copy_sanctioned_in_every_module_under_its_own_name_passes(self) -> None:
         self.assertEqual(
             [],
