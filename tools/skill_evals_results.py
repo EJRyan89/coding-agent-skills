@@ -67,8 +67,9 @@ def result_rows(
     passed, the runs of each scenario, each scenario's counts, and the run's versions; a model none of whose judged
     part ran is recorded as not run, with its first run's reason as the results file records it, which names no path
     of the machine. A run none of whose reviewers ran on a model, such as one the session refused before starting
-    any, holds no judgment of that model, so its expectations are left out of the model's count, and a scenario none
-    of whose runs holds one says `not run`."""
+    any, holds no judgment of that model, so its expectations are left out of the model's count, but one judged on the
+    session's own tool calls alone, a by-name run's `resolved`, which counts; a scenario none of whose runs holds a
+    counted expectation says `not run`, and a model that ran no reviewer but has one names `none` as its model IDs."""
     rows = []
     numbers = {key[2] for key in runs}
     reviewed = any(scenario.mode != TRIGGER for scenario in scenarios)
@@ -78,10 +79,15 @@ def result_rows(
         reviewers = sorted({name for _, run in mine for name in run.reviewers})
         session = ", ".join(sorted({name for _, run in mine for name in run.session})) or "unknown"
         theirs = [outcome for outcome in outcomes if outcome.model == model]
-        if reviewers:
-            unreviewed = {(key[0], key[2]) for key, run in mine if not run.reviewers}
-            theirs = [outcome for outcome in theirs if (outcome.scenario, outcome.run) not in unreviewed]
-            identifier = ", ".join(reviewers)
+        unreviewed = {(key[0], key[2]) for key, run in mine if not run.reviewers}
+        counted = [
+            outcome
+            for outcome in theirs
+            if (outcome.scenario, outcome.run) not in unreviewed or outcome.from_transcript
+        ]
+        if reviewers or counted:
+            theirs = counted
+            identifier = ", ".join(reviewers) or "none"
             detail = ", ".join(
                 f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} not run"
                 for scenario in scenarios

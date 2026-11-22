@@ -46,11 +46,14 @@ NO_SYNTHESIS = "the run recorded no synthesis"
 
 class RecordError(Exception):
     """A record that is missing, unreadable, refused, or lacks what an expectation reads. A record source's error
-    says which kind of failure it is, RUN or RECORD; one an expectation's check raises is a JUDGMENT."""
+    says which kind of failure it is, RUN or RECORD; one an expectation's check raises is a JUDGMENT. A by-name run's
+    error for a review it never recorded carries `calls`, the session's own tool calls, when its transcript shows
+    the session's own choices, so an expectation read from those calls alone is still judged."""
 
-    def __init__(self, message: str, kind: str = RUN) -> None:
+    def __init__(self, message: str, kind: str = RUN, calls: list[dict[str, Any]] | None = None) -> None:
         super().__init__(message)
         self.kind = kind
+        self.calls = calls
 
 
 @dataclass(frozen=True)

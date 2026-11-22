@@ -131,6 +131,9 @@ class Expectation:
     label: str
     # The reason the record fails the expectation, or None when it passes.
     check: Callable[[Record], str | None]
+    # Whether it reads only the session's own tool calls, SESSION_CALLS, so a by-name run that recorded no review is
+    # still judged on them when its record source carries them.
+    from_transcript: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -510,7 +513,7 @@ def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:
             return "the session built nothing after it ran resolve"
         return f"the session never ran review_document.py resolve {quote(name)}"
 
-    return Expectation(f"resolved {quote(name)}", check)
+    return Expectation(f"resolved {quote(name)}", check, from_transcript=True)
 
 
 KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {

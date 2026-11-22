@@ -43,6 +43,7 @@ from tools.skill_evals_runs import (
     run_token,
     session_tool_calls,
     synthesis_scope,
+    transcript_judged,
 )
 from tools.skill_evals_scenarios import SYNTHESIS, TRIGGER, Scenario, quote
 
@@ -56,6 +57,8 @@ class Outcome:
     # JUDGMENT, RUN, or RECORD for a failure; None when the expectation passed.
     kind: str | None = None
     run: Index = None
+    # Whether it was judged on the session's own tool calls alone, from a by-name run that recorded no review.
+    from_transcript: bool = False
 
 
 def trigger_record_problem(record: object, scenario: Scenario, model: str) -> str | None:
@@ -89,10 +92,12 @@ def records_in(directory: Path) -> RecordSource:
     synthesis; for any other, the record contract,
     the scenario's review version, a guard that held every reviewer, and each reviewer's reported model, the one its
     route pins or else the judged one. A synthesis record is the insights report, which names neither the model nor
-    the guard, so neither is checked here."""
+    the guard, so neither is checked here. A by-name run's missing or unreadable record carries the session's own
+    tool calls from the transcript beside it when `unrecorded` finds them, as a run's does."""
 
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
+        transcript = directory / scenario.name / transcript_name(model, index)
         if scenario.mode == SYNTHESIS:
             try:
                 present = file_presence.is_present(path)
@@ -104,9 +109,9 @@ def records_in(directory: Path) -> RecordSource:
         try:
             record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:
-            raise RecordError(f"no record at {path}") from exc
+            raise RecordError(f"no record at {path}", calls=unrecorded(scenario, transcript)) from exc
         except (OSError, ValueError) as exc:
-            raise RecordError(f"cannot read {path}: {exc}") from exc
+            raise RecordError(f"cannot read {path}: {exc}", calls=unrecorded(scenario, transcript)) from exc
         if scenario.mode == TRIGGER:
             problem = trigger_record_problem(record, scenario, model)
             if problem:
@@ -125,13 +130,24 @@ def records_in(directory: Path) -> RecordSource:
         if reason:
             raise RecordError(f"{path} counts for nothing: {reason}", RECORD)
         if scenario.by_name:
-            return {
-                **record,
-                SESSION_CALLS: transcript_calls(directory / scenario.name / transcript_name(model, index)),
-            }
+            return {**record, SESSION_CALLS: transcript_calls(transcript)}
         return record
 
     return source
+
+
+def unrecorded(scenario: Scenario, path: Path) -> list[dict[str, Any]] | None:
+    """The session's own tool calls in the transcript at `path` under --records of a by-name run that recorded no
+    review, when transcript_judged holds of it; None for any other scenario, or when the transcript is missing, cannot
+    be read, is in a shape the reader does not read, or shows a run that does not count, since the record's own
+    failure then stands for every expectation."""
+    if not scenario.by_name:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+        return session_tool_calls(text) if transcript_judged(text, scenario.skill) else None
+    except (OSError, UnicodeDecodeError, claude_stream.StreamError):
+        return None
 
 
 def transcript_calls(path: Path) -> list[dict[str, Any]]:
@@ -162,25 +178,28 @@ def counts(outcomes: Sequence[Outcome]) -> str:
 
 def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSource, runs: int = 1) -> list[Outcome]:
     """Every expectation of every run of every scenario on every model. A record the source could not give fails each
-    of its expectations with the source's reason and kind; an expectation the record fails is a judgment."""
+    of its expectations with the source's reason and kind, but one read from the session's own tool calls alone,
+    which is judged on them when the source's error carries them; an expectation the record fails is a judgment."""
     outcomes = []
     for scenario in scenarios:
         for model in models:
             for index in indexes(runs):
                 try:
                     record: Record | None = source(scenario, model, index)
-                    missing, kind = None, None
+                    missing, kind, calls = None, None, None
                 except RecordError as exc:
-                    record, missing, kind = None, str(exc), exc.kind
+                    record, missing, kind, calls = None, str(exc), exc.kind, exc.calls
                 for item in scenario.expectations:
-                    failure = missing
-                    if record is not None:
+                    alone = record is None and calls is not None and item.from_transcript
+                    judged = {SESSION_CALLS: calls} if alone else record
+                    failure, reason = missing, kind
+                    if judged is not None:
                         try:
-                            failure = item.check(record)
+                            failure = item.check(judged)
                         except RecordError as exc:
                             failure = str(exc)
-                        kind = None if failure is None else JUDGMENT
-                    outcomes.append(Outcome(scenario.name, model, item.label, failure, kind, index))
+                        reason = None if failure is None else JUDGMENT
+                    outcomes.append(Outcome(scenario.name, model, item.label, failure, reason, index, alone))
     return outcomes
 
 

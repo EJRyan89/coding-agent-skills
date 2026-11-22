@@ -27,8 +27,13 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   than the one `resolve` found. Bash is read by the one Bash grammar, so a search inside a compound command or behind
   a wrapper is seen; PowerShell is read from its text. It is a judgment of the session, which orchestrates on the
   strongest model in every row, rather than of the reviewers' model, and it does not see a search by a program it
-  does not list, such as `git grep`, `Select-String`, or `findstr`, or one written in another language. A model's by-name runs share its home, so they run one at a time, and `--records` reads
-  each by-name run's transcript beside its record. `review-document`'s `by-name` scenario is the worked example.
+  does not list, such as `git grep`, `Select-String`, or `findstr`, or one written in another language. Since it reads
+  the session's calls alone, a run that recorded no review, such as one whose session searched, found the copies
+  `resolve` passes over, and stopped to ask, still fails `resolved` as a `judgment`, and its other expectations as a
+  `run`, when its session ran as a counted run's must: Claude Code started, did not time out, exited 0, listed the
+  skill when it listed skills, and denied nothing, and the session ran on its own model alone. Otherwise `resolved` fails as a `run` with the
+  rest. A model's by-name runs share its home, so they run one at a time, and `--records` reads each by-name run's
+  transcript beside its record, or in place of a record the run never wrote. `review-document`'s `by-name` scenario is the worked example.
 - **The checkout is trusted input.** A fixture's reviewer manifest names the condition scripts a review runs, and each
   home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the
   checkout, its scenarios included. A pull request from another author is read in full, as its code is, before its
@@ -134,7 +139,11 @@ scenario; with more than one, each scenario's counts end with the runs that pass
 `7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
-name no path of the machine; the run's `FAIL` lines keep the whole reason. A run measures nothing of a model no
+name no path of the machine; the run's `FAIL` lines keep the whole reason. A by-name run that started no reviewer
+but whose `resolved` was judged on the session's calls is the exception: that one expectation counts, in "Passed",
+the scenario's counts, and its runs, so a session that searched and stopped reads as `by-name 0/1`, and a model none
+of whose reviewers ran but that has such a judgment gets a row whose Model ID is `none`. The judgment is the
+session's, which runs on the strongest model in every row, as the by-name scenario above says. A run measures nothing of a model no
 record of which counted, every expectation on it failing as a `run` or `record`, such as a session that was signed
 out or a reviewer no guard held, so `--write` keeps that model's committed row as it was and prints `KEPT <model>`
 for it, and writes the model's new row only when the skill had none. A run with `--write` refuses, before it
