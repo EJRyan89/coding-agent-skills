@@ -37,8 +37,10 @@ import file_presence
 import folder_walk
 import json_reader
 import path_keys
+import review_batches
 import review_document
 import review_guard
+import review_io
 import review_pipeline as rp
 import review_run
 import review_runtime
@@ -811,8 +813,8 @@ class PipelineTestCase(DocumentTestCase):
             self.config,
         )
 
-    def pipeline(self, *arguments: str) -> list[str]:
-        """Run the review pipeline as the skill does, with no GitHub; returns its lines once it succeeds."""
+    def pipeline(self, *arguments: str, code: int = 0) -> list[str]:
+        """Run the review pipeline as the skill does, with no GitHub; returns its lines once it exits with `code`."""
 
         def no_github(command: object) -> CommandResult:
             raise AssertionError(f"a document review called gh: {command}")
@@ -822,16 +824,38 @@ class PipelineTestCase(DocumentTestCase):
         )
         output, errors = io.StringIO(), io.StringIO()
         with redirect_stdout(output), redirect_stderr(errors):
-            code = rp.main(["--config", str(self.config), *arguments], services=services)
-        self.assertEqual((0, ""), (code, errors.getvalue()), output.getvalue())
+            exited = rp.main(["--config", str(self.config), *arguments], services=services)
+        self.assertEqual((code, ""), (exited, errors.getvalue()), output.getvalue())
         return output.getvalue().splitlines()
+
+    def prepare_runs(self, *fixtures: Path) -> tuple[list[Path], str]:
+        """Prepare `fixtures` in one call, as the skill does, and return each fixture's run, in order, and the run
+        list every later command takes."""
+        arguments = [part for fixture in fixtures for part in ("--fixture", str(fixture))]
+        prepared = self.pipeline("prepare", "--host", "claude-code", "--canary", *arguments)
+        runs = [Path(fact.split(" ", 2)[2]) for fact in prepared if fact.startswith("RUN ")]
+        self.assertEqual(len(fixtures), len(runs), prepared)
+        listed = next(fact for fact in prepared if fact.startswith("RUNS "))
+        self.assertTrue(listed.endswith(" pending=0"), listed)
+        return runs, listed.removeprefix("RUNS ").removesuffix(" pending=0")
+
+    def answer(self, run: Path, findings: list[dict[str, Any]]) -> None:
+        """Write the design reviewer's result of `run`, reporting `findings`, as its guarded subagent would."""
+        role = review_run.load_run(run)["roles"][0]
+        result = {"model": "fixture-model", "summary": "Reviewed.", "findings": findings, "prior_dispositions": []}
+        review_guard.read_log(run, role["id"]).touch()  # the reviewer guard's claim of the role starts its log
+        Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
+
+    def finalized(self, runs: str) -> list[Path]:
+        """Finalize the run list's valid runs and return the report each RECORDED line names, in order."""
+        recorded = [fact for fact in self.pipeline("finalize", "--runs", runs) if fact.startswith("RECORDED ")]
+        return [Path(fact.split(" ", 6)[6]) for fact in recorded]
 
     def review(self, document: str, line: int, fixture: Path | None = None) -> tuple[str, dict[str, Any]]:
         """Prepare the fixture `build` wrote, have the design reviewer report one finding on `line` of `document`'s
         extracted text, and finalize. Returns the diff the reviewer read and the record."""
         fixture = fixture or self.output / "fixture"
-        prepared = self.pipeline("prepare", "--host", "claude-code", "--canary", "--fixture", str(fixture))
-        run = Path(next(fact for fact in prepared if fact.startswith("RUN ")).split(" ", 2)[2])
+        (run,), runs = self.prepare_runs(fixture)
         roles = review_run.load_run(run)["roles"]
         self.assertEqual(["design-review"], [role["id"] for role in roles])
         self.prompt = Path(roles[0]["prompt_file"]).read_text(encoding="utf-8")
@@ -844,19 +868,16 @@ class PipelineTestCase(DocumentTestCase):
             "category": "requirement-gap",
             "body": "Retrying forever never gives up on a poisoned message.",
         }
-        result = {"model": "fixture-model", "summary": "One gap.", "findings": [finding], "prior_dispositions": []}
-        review_guard.read_log(run, roles[0]["id"]).touch()  # the reviewer guard's claim of the role starts its log
-        Path(roles[0]["result_file"]).write_text(json.dumps(result), encoding="utf-8")
+        self.answer(run, [finding])
         # Every later command takes the run list prepare printed, as the skill passes it.
-        listed = next(fact for fact in prepared if fact.startswith("RUNS "))
-        self.assertTrue(listed.endswith(" pending=0"), listed)
-        runs = listed.removeprefix("RUNS ").removesuffix(" pending=0")
         self.assertEqual([f"ALL_VALID {review_run.load_run(run)['selector']}"], self.pipeline("check", "--runs", runs))
-        recorded = next(fact for fact in self.pipeline("finalize", "--runs", runs) if fact.startswith("RECORDED "))
+        (self.recorded,) = self.finalized(runs)
         self.assertEqual(["ALL_FINALIZED"], self.pipeline("unfinalized", "--runs", runs))
-        self.recorded = Path(recorded.split(" ", 6)[6])
-        code, lines = run_main("report", "--fixture", str(fixture), "--report", str(self.recorded))
-        self.assertEqual(0, code, lines)
+        code, lines = run_main("report", "--runs", runs)
+        self.assertEqual(
+            (0, [f"REPORT {fixture.parent / 'report.md'}", f"RECORD {self.recorded.with_suffix('.json')}"]),
+            (code, lines),
+        )
         record = json.loads(Path(facts(lines)["RECORD"]).read_text(encoding="utf-8"))
         return diff, record
 
@@ -1853,6 +1874,214 @@ class PullRequestTests(PipelineTestCase):
         self.assertFalse((self.output / "2" / "report.md").exists())
         self.assertTrue((self.output / "1" / "report.md").is_file())
 
+    def edited_run_list(self, runs: str, edit: Callable[[list[dict[str, Any]]], None]) -> str:
+        """A copy of the run list at `runs` whose listed runs `edit` changed, as a run list from elsewhere would hold
+        them."""
+        listed = json.loads(Path(runs).read_text(encoding="utf-8"))
+        edit(listed["runs"])
+        edited = self.root / "edited runs.json"
+        edited.write_text(json.dumps(listed), encoding="utf-8")
+        return str(edited)
+
+    def test_report_takes_the_run_list_and_copies_each_documents_report_beside_its_fixture_in_order(self) -> None:
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2, 3)]
+        runs, listed = self.prepare_runs(*fixtures)
+        for run in runs:
+            self.answer(run, [])
+        self.assertEqual(3, len(self.pipeline("check", "--runs", listed)))
+        recorded = self.finalized(listed)
+        self.assertEqual(3, len(recorded))
+        expected = [
+            line
+            for fixture, report in zip(fixtures, recorded, strict=True)
+            for line in (f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}")
+        ]
+        self.assertEqual((0, expected), run_main("report", "--runs", listed))
+        for fixture, report in zip(fixtures, recorded, strict=True):
+            self.assertEqual(report.read_bytes(), (fixture.parent / "report.md").read_bytes())
+        # Reported again, as a later round of the skill does, each copy already there is named again, unchanged.
+        self.assertEqual((0, expected), run_main("report", "--runs", listed))
+        # A copy that is not the report is never replaced: that run alone is not reported.
+        (self.output / "2" / "report.md").write_text("mine\n", encoding="utf-8")
+        code, lines = run_main("report", "--runs", listed)
+        entry = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"][1]
+        reason = f"already exists, and is not replaced; the report is at {recorded[1]}"
+        unreported = f"UNREPORTED {entry['selector']} {entry['run']} {self.output / '2' / 'report.md'} {reason}"
+        self.assertEqual((1, [*expected[:2], unreported, *expected[4:]]), (code, lines))
+        self.assertEqual("mine\n", (self.output / "2" / "report.md").read_text(encoding="utf-8"))
+
+    def test_report_names_each_listed_run_it_cannot_report_and_reports_the_rest(self) -> None:
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2, 3)]
+        runs, listed = self.prepare_runs(*fixtures)
+        self.answer(runs[0], [])
+        self.answer(runs[2], [])
+        # The second run has no result, so check offers it again and finalize leaves it unfinalized.
+        self.pipeline("check", "--runs", listed, code=1)
+        first, third = self.finalized(listed)
+        entries = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"]
+
+        def unreported(index: int, reason: str) -> str:
+            return f"UNREPORTED {entries[index]['selector']} {entries[index]['run']} {reason}"
+
+        def reported(fixture: Path, report: Path) -> list[str]:
+            return [f"REPORT {fixture.parent / 'report.md'}", f"RECORD {report.with_suffix('.json')}"]
+
+        def fail_second(listed_runs: list[dict[str, Any]]) -> None:
+            listed_runs[1]["status"] = "failed"
+
+        def check_second(listed_runs: list[dict[str, Any]]) -> None:
+            listed_runs[1]["status"] = "valid"
+
+        def without_reports(listed_runs: list[dict[str, Any]]) -> None:
+            for entry in listed_runs:
+                entry.pop("report", None)
+
+        def without_fixtures(listed_runs: list[dict[str, Any]]) -> None:
+            for entry in listed_runs:
+                entry.pop("fixture")
+
+        def swap_reports(listed_runs: list[dict[str, Any]]) -> None:
+            listed_runs[0]["report"], listed_runs[2]["report"] = listed_runs[2]["report"], listed_runs[0]["report"]
+
+        def unbuilt_fixture(listed_runs: list[dict[str, Any]]) -> None:
+            listed_runs[0]["fixture"] = str(self.root)
+
+        def unnamed(listed_runs: list[dict[str, Any]]) -> None:
+            for entry in listed_runs:
+                entry.pop("fixture")
+                entry.pop("report", None)
+
+        old = "the run list names no {} for it, as one written before it named them does; run report with "
+        old += "--fixture and --report"
+        title = "'Review of docs/design/{}.md in octo-org/widgets#7: {}'"
+        other = "{} is not the review of the fixture {}: its record's title is {}, the fixture's {}"
+        cases: list[tuple[Callable[[list[dict[str, Any]]], None] | None, list[str]]] = [
+            # A failed run, and one not finalized, are named in their places; the others are still reported.
+            (
+                None,
+                [*reported(fixtures[0], first), unreported(1, "it is not finalized"), *reported(fixtures[2], third)],
+            ),
+            (
+                fail_second,
+                [*reported(fixtures[0], first), unreported(1, "its review failed"), *reported(fixtures[2], third)],
+            ),
+            # A run list pairing a fixture with another document's report, or naming a folder build never wrote.
+            (
+                swap_reports,
+                [
+                    unreported(
+                        0,
+                        other.format(
+                            third,
+                            fixtures[0],
+                            title.format("limits", "its change"),
+                            title.format("retention", "its change"),
+                        ),
+                    ),
+                    unreported(1, "it is not finalized"),
+                    unreported(
+                        2,
+                        other.format(
+                            first,
+                            fixtures[2],
+                            title.format("retention", "its change"),
+                            title.format("limits", "its change"),
+                        ),
+                    ),
+                ],
+            ),
+            (
+                unbuilt_fixture,
+                [
+                    unreported(0, f"{self.root} is not a fixture review-document built: it holds no pull.json file"),
+                    unreported(1, "it is not finalized"),
+                    *reported(fixtures[2], third),
+                ],
+            ),
+            # A run check accepted that nobody finalized.
+            (
+                check_second,
+                [*reported(fixtures[0], first), unreported(1, "it is not finalized"), *reported(fixtures[2], third)],
+            ),
+            # A recorded run whose entry names its fixture but no report.
+            (
+                without_reports,
+                [
+                    unreported(0, old.format("report")),
+                    unreported(1, "it is not finalized"),
+                    unreported(2, old.format("report")),
+                ],
+            ),
+            # A recorded run whose entry names its report but no fixture, as a run list a prepare from before an update
+            # wrote and an updated finalize recorded holds.
+            (
+                without_fixtures,
+                [
+                    unreported(0, old.format("fixture")),
+                    unreported(1, "it is not finalized"),
+                    unreported(2, old.format("fixture")),
+                ],
+            ),
+            # A run list written before prepare and finalize named a run's fixture and report.
+            (
+                unnamed,
+                [
+                    unreported(0, old.format("fixture and report")),
+                    unreported(1, "it is not finalized"),
+                    unreported(2, old.format("fixture and report")),
+                ],
+            ),
+        ]
+        # The cases that copy nothing run first, so each copy the others make is new.
+        for edit, expected in reversed(cases):
+            with self.subTest(edit=edit.__name__ if edit else "as listed"):
+                given = listed if edit is None else self.edited_run_list(listed, edit)
+                self.assertEqual((1, expected), run_main("report", "--runs", given))
+        self.assertFalse((self.output / "2" / "report.md").exists())
+
+    def test_a_run_whose_copy_cannot_be_made_is_named_alone_and_the_others_are_still_reported(self) -> None:
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2, 3)]
+        runs, listed = self.prepare_runs(*fixtures)
+        for run in runs:
+            self.answer(run, [])
+        self.pipeline("check", "--runs", listed)
+        recorded = self.finalized(listed)
+        entries = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"]
+        place = review_io.working_path
+        copy = shutil.copyfileobj
+
+        def working_path(path: Path, *arguments: str) -> Path:
+            if path == fixtures[0].parent:
+                raise review_io.PersistenceError(f"{path} is inside a skills directory")
+            return place(path, *arguments)
+
+        def copy_file(source: Any, target: Any) -> None:
+            if Path(target.name).parent == fixtures[2].parent:
+                raise OSError(28, "No space left on device")
+            copy(source, target)
+
+        with (
+            mock.patch.object(review_document, "working_path", side_effect=working_path),
+            mock.patch.object(shutil, "copyfileobj", side_effect=copy_file),
+        ):
+            code, lines = run_main("report", "--runs", listed)
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"UNREPORTED {entries[0]['selector']} {entries[0]['run']} {fixtures[0].parent} is inside a skills "
+                    "directory",
+                    f"REPORT {fixtures[1].parent / 'report.md'}",
+                    f"RECORD {recorded[1].with_suffix('.json')}",
+                    f"UNREPORTED {entries[2]['selector']} {entries[2]['run']} [Errno 28] No space left on device",
+                ],
+            ),
+            (code, lines),
+        )
+
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
 # from ejryan89-code-review-core, whose own suite pins the whole sentences.
@@ -2097,6 +2326,29 @@ class OutputTests(DocumentTestCase):
         self.assertEqual((1, [f"FAILED {self.output / 'report.md'} {reason}"]), (code, lines))
         self.assertEqual("mine\n", (self.output / "report.md").read_text(encoding="utf-8"))
 
+    def test_report_takes_a_run_list_or_one_fixture_and_its_report_and_fails_a_list_with_no_run(self) -> None:
+        for arguments in (
+            ["report"],
+            ["report", "--fixture", "fixture"],
+            ["report", "--report", "review.md"],
+            ["report", "--runs", "runs.json", "--fixture", "fixture"],
+            ["report", "--runs", "runs.json", "--fixture", "fixture", "--report", "review.md"],
+        ):
+            with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as raised:
+                    run_main(*arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("report takes --runs, or --fixture and --report together", errors.getvalue())
+        listed = self.root / "runs.json"
+        options = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
+        options.update(inline=False, force=False, canary=True)
+        listed.write_text(json.dumps(review_batches.new_run_list([], options)), encoding="utf-8")
+        self.assertEqual((1, [f"FAILED {listed} lists no prepared run"]), run_main("report", "--runs", str(listed)))
+        listed.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+        code, lines = run_main("report", "--runs", str(listed))
+        self.assertEqual(1, code)
+        self.assertTrue(lines[0].startswith("FAILED run list must be an object with fields"), lines)
+
     def test_report_refuses_a_file_that_is_not_a_recorded_report(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
@@ -2209,8 +2461,12 @@ UNFLATTENED = " \tCannot\r\n read  café\u00a0設計\u2003draft.\v "
 )
 @pytest.mark.parametrize(
     ("command", "arguments"),
-    [("build", ["build", "draft.md"]), ("report", ["report", "--fixture", "fixture", "--report", "report.md"])],
-    ids=["build", "report"],
+    [
+        ("build", ["build", "draft.md"]),
+        ("report", ["report", "--fixture", "fixture", "--report", "report.md"]),
+        ("report_runs", ["report", "--runs", "runs.json"]),
+    ],
+    ids=["build", "report", "report-runs"],
 )
 def test_failures_use_the_shared_flattener_after_converting_the_exception_to_text(
     error: Exception, expected: str, command: str, arguments: list[str]

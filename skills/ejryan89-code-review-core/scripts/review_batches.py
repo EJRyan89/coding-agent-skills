@@ -59,6 +59,11 @@ RUN_STATUSES = ("published", "valid", "failed", "recorded")
 PENDING_KINDS = ("pull", "re-review", "fixture")
 
 
+# What a listed run may also hold: the fixture directory prepare reviewed it from, for a fixture's run, and the
+# Markdown report finalize recorded, once it recorded the run. A run list written before either was kept has neither.
+LISTED_RUN_OPTIONAL_FIELDS = ("fixture", "report")
+
+
 # Pull requests or fixtures one prepare call prepares, the rest staying in its run list: it bounds the call's duration
 # and the reviewers started together.
 MAX_PREPARE_PULLS = 4
@@ -378,10 +383,13 @@ def _read_pending(value: Any, path: str) -> dict[str, str]:
 
 
 def _read_listed_run(value: Any, path: str) -> dict[str, str]:
-    item = READ.json_object(value, path, required=("run", "selector", "status"))
+    item = READ.json_object(value, path, required=("run", "selector", "status"), optional=LISTED_RUN_OPTIONAL_FIELDS)
     READ.string(item["run"], f"{path}.run", single_line=True)
     READ.string(item["selector"], f"{path}.selector", single_line=True)
     READ.one_of(item["status"], f"{path}.status", RUN_STATUSES)
+    for name in LISTED_RUN_OPTIONAL_FIELDS:
+        if name in item:
+            READ.string(item[name], f"{path}.{name}", single_line=True)
     return item
 
 

@@ -25,7 +25,9 @@ Every command prints machine-readable lines on stdout, an expected failure as a 
 publishes in a run list it names in a `RUNS <file> pending=<n>` line; `prepare --runs <file>` prepares the next four.
 `workflow`, `wait-reviewers`, `check`, `finalize`, and `unfinalized` take that list as `--runs <file>` in place of
 one `--run` per run directory, so the orchestrator never carries run directories from one command to the next. Each
-pull request or run succeeds or fails on its own, and every line names its pull request.
+pull request or run succeeds or fails on its own, and every line names its pull request. A fixture's listed run also
+names its fixture directory, and a recorded run the Markdown report `finalize` recorded, so a caller pairs each report
+with the fixture it reviewed from the run list alone.
 
 Exit status:
   0  the command's result, a state to poll again (RUNNING) included
@@ -1367,7 +1369,11 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
         elif result["status"] == "skip":
             print(single_line(f"SKIP {result['selector']} {result['reason']}"))
         elif _publish_prepared(result, item["target"]):
-            runs["runs"].append({"run": str(result["run"]), "selector": result["selector"], "status": "published"})
+            entry = {"run": str(result["run"]), "selector": result["selector"], "status": "published"}
+            # A fixture's run names its fixture, so a later command pairs the run's report with the fixture it reviewed.
+            if item["kind"] == "fixture":
+                entry["fixture"] = item["target"]
+            runs["runs"].append(entry)
         else:
             failed = True
     atomic_write_json(path, runs)
@@ -1532,6 +1538,7 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
             failed = True
             continue
         entry["status"] = "recorded"
+        entry["report"] = str(result["markdown"])
         for note in result["notes"]:
             print(single_line(f"NOTE {result['selector']} {note}"))
         if result["canary_root"]:

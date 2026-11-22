@@ -32,6 +32,7 @@ sys.path.insert(0, str(sibling_scripts("github-activity-report")))
 
 import github_activity_report
 import repo_cleanup
+import review_batches
 import test_review_fixture
 from review_config import write_config
 
@@ -251,6 +252,8 @@ CHECKOUT = "{work}"
 DESIGN = "{work}/docs/design.md"
 RECORDED = "{root}/archive/design.md"
 OUTPUT = "{root}/out"
+# The run list review-document's report --runs reads, naming the one recorded run of the fixture at OUTPUT.
+REPORT_RUNS = "{root}/runs/runs.json"
 # The builder of a prepared run: the fixture canary prepare writes, at RUN, read through the pipeline's own function.
 RUN_BUILDER = """
 import sys
@@ -438,6 +441,27 @@ def recorded_report(fixture: Fixture) -> None:
     recorded.parent.mkdir(parents=True)
     recorded.write_text("# Review\n", encoding="utf-8")
     recorded.with_suffix(".json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def recorded_run_list(fixture: Fixture) -> None:
+    """A recorded report, and the run list prepare and finalize would leave naming its fixture and report."""
+    recorded_report(fixture)
+    values = fixture.values()
+    options = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
+    options.update(host="claude-code", inline=False, force=False, canary=True)
+    listed = review_batches.new_run_list([], options)
+    listed["runs"] = [
+        {
+            "run": f"{fixture.root}/code-review-run-recorded",
+            "selector": "review-document.local/work#1",
+            "status": "recorded",
+            "fixture": f"{OUTPUT.format(**values)}/fixture",
+            "report": RECORDED.format(**values),
+        }
+    ]
+    path = Path(REPORT_RUNS.format(**values))
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(listed), encoding="utf-8")
 
 
 def run_driver(
@@ -1102,6 +1126,14 @@ DRIVERS: list[Driver] = [
         prepare=recorded_report,
         inputs=(f"{OUTPUT}/fixture/pull.json", RECORDED, RECORDED.replace(".md", ".json")),
         outputs=(OUTPUT,),
+    ),
+    Driver(
+        DOCUMENT,
+        "report",
+        ("report", "--runs", REPORT_RUNS),
+        prepare=recorded_run_list,
+        inputs=(REPORT_RUNS, f"{OUTPUT}/fixture/pull.json", RECORDED, RECORDED.replace(".md", ".json")),
+        outputs=(OUTPUT, REPORT_RUNS),
     ),
     # update-coding-agent-skills' calls to origin
     Driver(
