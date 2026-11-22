@@ -1186,7 +1186,11 @@ class ClaimTests(GuardFixture):
                 age_by(broken, 120)
                 self.claim(agent="a000000000000000f")
                 self.assertFalse(broken.exists(), "an old claim is pruned")
-                self.claim(agent=OTHER_AGENT)
+                # Every call of its agent was denied, so its next read is a first read, of any role's prompt, as a
+                # fresh agent's is, and then holds it to that role alone.
+                self.claim("sql-review", agent=OTHER_AGENT)
+                self.assert_denied(self.decide("Write", agent=OTHER_AGENT, file_path=self.result()), "write only")
+                self.assertIsNone(self.decide("Write", agent=OTHER_AGENT, file_path=self.result("sql-review")))
 
     def test_a_claim_on_a_role_the_run_no_longer_has_denies(self) -> None:
         self.claim()

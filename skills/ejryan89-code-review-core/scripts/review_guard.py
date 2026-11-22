@@ -376,9 +376,12 @@ def _prune_claims(claims: Path) -> None:
     of, is kept: the error leaves it, as one it cannot read or stat is.
 
     A claim that does not parse, or holds a field of the wrong kind, is removed once its modification time is
-    `UNREADABLE_CLAIM_AGE` old, so it is not kept for good; `_load_claim` says why that widens no reviewer's reads. A
-    younger one is kept, since an older guard beside this one may still be writing it in two steps. A copy a killed
-    create left beside a claim is never read as one."""
+    `UNREADABLE_CLAIM_AGE` old, so it is not kept for good. Its agent's next read is then a first read again, which may
+    claim any role, another than the prompt it first asked for included. That widens no reviewer's reads, as
+    `_load_claim` says: no call of that agent was ever let through, its claiming read included, so it has read nothing
+    a pull request holds that could choose the role, just as a fresh agent has not. A younger one is kept, since an
+    older guard beside this one may still be writing it in two steps. A copy a killed create left beside a claim is
+    never read as one."""
     for path in file_presence.matching(claims, "*.json"):
         with contextlib.suppress(OSError):
             try:
