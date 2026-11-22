@@ -142,15 +142,20 @@ def _unquoted(line: str, quotes: int) -> str:
 @dataclass(frozen=True, eq=False)
 class ListItem:
     """A list item as `_walk` reads it: the index of the line it opens on, its marker as written, such as `-` or `1.`,
-    what follows the marker and the spaces after it on that line, how many blockquotes hold it, and the innermost list
-    item that holds it, or None. Two items are equal only when they are one, so neither a comparison nor a hash reads
-    the items that hold one."""
+    the index in that line past the marker and the spaces after it, where its text starts, how many blockquotes hold
+    it, and the innermost list item that holds it, or None. Two items are equal only when they are one, so neither a
+    comparison nor a hash reads the items that hold one. The walk keeps the index rather than the text, so a line of
+    many nested markers is not copied once for each."""
 
     start: int
     marker: str
-    text: str
+    after: int
     quotes: int = 0
     parent: ListItem | None = field(default=None, repr=False)
+
+    def text(self, line: str) -> str:
+        """What follows the item's marker and the spaces after it on `line`, the line it opens on."""
+        return line[self.after :]
 
     def unquoted(self, line: str) -> str:
         """A line the item holds without the blockquote markers that hold the item, so a quote inside the item keeps
@@ -622,7 +627,7 @@ class _Walker:
                 opens_code = spaces > CODE_INDENT and not empty
                 content = column + after + (1 if opens_code or empty else spaces)
                 self.containers.append(content - start)
-                item = ListItem(index, marker.group("marker"), line[marker.end() :], len(self.quoted), self.innermost())
+                item = ListItem(index, marker.group("marker"), marker.end(), len(self.quoted), self.innermost())
                 self.items.append(item)
                 self.holders.append(item)
                 position, column, start = marker.end("marker"), column + after, content

@@ -457,7 +457,7 @@ def bullet_entries(lines: Sequence[str]) -> list[str]:
     for index, innermost in enumerate(walked.holding):
         bullet = bullets[innermost]
         if bullet is not None:
-            text = bullet.text if bullet.start == index else bullet.unquoted(lines[index])
+            text = bullet.text(lines[index]) if bullet.start == index else bullet.unquoted(lines[index])
             entries[bullet].append(text.strip())
     joined = (single_line(" ".join(part for part in parts if part)) for parts in entries.values())
     return [text for text in joined if text]

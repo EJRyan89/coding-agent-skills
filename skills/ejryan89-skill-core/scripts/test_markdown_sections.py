@@ -191,14 +191,15 @@ def test_a_list_item_gives_its_text_and_takes_off_only_the_quotes_that_hold_it()
     lines = ["> 1. one", ">    > quoted", "lazy"]
     item = document_items(lines).holding[1]
     assert item is not None
-    assert (item.start, item.marker, item.text, item.quotes, item.parent) == (0, "1.", "one", 1, None)
+    assert (item.start, item.marker, item.after, item.quotes, item.parent) == (0, "1.", 5, 1, None)
+    assert item.text(lines[0]) == "one"
     assert [item.unquoted(line) for line in lines] == ["1. one", "   > quoted", "lazy"]
-    assert [(found.text, found.parent) for found in document_items(lines).items] == [("one", None)]
+    assert [(found.text(lines[0]), found.parent) for found in document_items(lines).items] == [("one", None)]
     outer, inner = document_items(["- - x"]).items
-    assert [(found.text, found.parent) for found in (outer, inner)] == [("- x", None), ("x", outer)]
+    assert [(found.text("- - x"), found.parent) for found in (outer, inner)] == [("- x", None), ("x", outer)]
     assert document_items(["- - x"]).items[0] != document_items(["- - x"]).items[0]
     (deep,) = document_items(["> > *   y"]).items
-    assert (deep.marker, deep.text, deep.quotes) == ("*", "y", 2)
+    assert (deep.marker, deep.text("> > *   y"), deep.quotes) == ("*", "y", 2)
 
 
 # Documents, each with the lines a list item or a quote holds as GitHub renders it (`gh api markdown`).
@@ -1203,6 +1204,18 @@ def test_a_line_of_nested_markers_takes_time_in_proportion_to_its_length(marker:
     # Each marker is read where it stands: a walk that read the rest of the line again at each marker, such as one that
     # tried a thematic break there, would take time growing with the square of the markers.
     assert_walked_in_proportion(marker * 1000 + "x", marker * 1000 * WALK_FACTOR + "x")
+
+
+@pytest.mark.parametrize("marker", ["* ", "> - "])
+def test_a_line_of_nested_markers_is_never_copied_at_each_marker(marker: str) -> None:
+    # A walk that kept a copy of the rest of the line at each list item it opens would take time growing with the
+    # markers times the line, which a long text after them makes plain beside the cost of reading them.
+    tail = 128
+
+    def document(markers: int) -> str:
+        return marker * markers + "x" * (tail * markers)
+
+    assert_walked_in_proportion(document(1000), document(1000 * WALK_FACTOR))
 
 
 @pytest.mark.parametrize(
