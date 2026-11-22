@@ -583,8 +583,8 @@ class ReservationTests(unittest.TestCase):
                 self.assertIs(replace_failure, reservation.failure)
                 self.assertIs(reservation.removal, reservation.__cause__)
                 self.assertEqual(
-                    f"Cannot remove {path}, the empty file reserved for an unfinished create: "
-                    f"[Errno {errno.EBUSY}] synthetic unlink",
+                    f"{path} was reserved by a create that then failed, and what is there now, its empty reservation "
+                    f"or another entry, cannot be removed: [Errno {errno.EBUSY}] synthetic unlink",
                     str(reservation),
                 )
                 self.assertEqual(b"", path.read_bytes(), "the reservation is left empty where the error says")
@@ -597,6 +597,58 @@ class ReservationTests(unittest.TestCase):
                     self.assertFalse(error.made)
                 for item in Path(temporary).iterdir():
                     real_unlink(item)
+
+    def test_the_clean_up_removes_whatever_is_left_at_the_target_and_never_misreports_it(self) -> None:
+        real_replace = os.replace
+
+        def gone(_source: Any, target: Any) -> None:
+            # Another process removed the reservation; the replace then fails, and the clean-up finds nothing.
+            Path(target).unlink()
+            raise OSError(errno.EIO, "synthetic replace")
+
+        def made_then_interrupted(source: Any, target: Any) -> None:
+            # The replace is made, and an interrupt lands as it returns.
+            real_replace(source, target)
+            raise KeyboardInterrupt
+
+        for name, replace, raised in (
+            ("reservation already gone", gone, OSError),
+            ("interrupted once the copy is in place", made_then_interrupted, KeyboardInterrupt),
+        ):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.ENOTSUP)),
+                    mock.patch.object(os, "replace", replace),
+                    self.assertRaises(raised) as caught,
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertNotIsInstance(caught.exception, UnfinishedReservationError)
+                self.assertEqual([], names_in(temporary), "nothing at the target and no copy beside it")
+
+    def test_an_entry_put_in_the_reservations_place_that_cannot_be_removed_is_reported_as_another_entry(self) -> None:
+        failure = OSError(errno.EIO, "synthetic replace")
+
+        def folder_instead(_source: Any, target: Any) -> None:
+            # Another process put a folder where the reservation was; the replace then fails.
+            Path(target).unlink()
+            Path(target).mkdir()
+            raise failure
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.md"
+            with (
+                mock.patch.object(os, "link", side_effect=refused_link(errno.EPERM)),
+                mock.patch.object(os, "replace", folder_instead),
+                self.assertRaises(UnfinishedReservationError) as raised,
+            ):
+                create_bytes(path, REPORT, allow_empty_reservation=True)
+            error = raised.exception
+            self.assertIs(failure, error.failure)
+            self.assertIs(error.removal, error.__cause__)
+            self.assertIn("its empty reservation or another entry, cannot be removed", str(error))
+            self.assertTrue(path.is_dir(), "the folder is left as it was")
+            self.assertEqual(["report.md"], names_in(temporary), "no copy beside it")
 
 
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")

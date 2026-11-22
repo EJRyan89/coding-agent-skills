@@ -66,15 +66,18 @@ class UnfinishedCopyError(OSError):
 
 
 class UnfinishedReservationError(OSError):
-    """A create that reserved its target empty, failed before the copy replaced the reservation, and could not then
-    remove it, so an empty file is left at `target`.
+    """A create that reserved its target, failed before or as the copy replaced the reservation, and could not then
+    remove what is at `target`: its empty reservation, or an entry another process put in its place.
 
     It derives from OSError, so a caller that reports a failed write as an OSError reports this one too. `failure` is
-    what ended the create, and `removal` the OSError that kept the reservation.
+    what ended the create, and `removal` the OSError that kept the entry at `target`.
     """
 
     def __init__(self, *, target: Path, failure: BaseException, removal: OSError) -> None:
-        super().__init__(f"Cannot remove {target}, the empty file reserved for an unfinished create: {removal}")
+        super().__init__(
+            f"{target} was reserved by a create that then failed, and what is there now, its empty reservation or "
+            f"another entry, cannot be removed: {removal}"
+        )
         self.target = target
         self.failure = failure
         self.removal = removal
@@ -148,10 +151,12 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     `allow_empty_reservation` lets a refusal of one of NO_HARD_LINK_ERRNOS fall back to two steps: an exclusive create
     reserves `path` empty, refusing any entry there as FileExistsError, and the copy then replaces the reservation.
     A reader may see the empty reservation until the replace, so allow it only where every reader takes an empty file
-    for one not yet made; the file is still never seen part written. A failure after the reservation removes it and
-    the copy and is raised as it was, and a reservation that cannot be removed raises UnfinishedReservationError. A
-    process that removes the reservation and puts its own entry at `path` before the replace has that entry replaced,
-    or removed by a failure's clean-up.
+    for one not yet made; the file is still never seen part written. A failure raised once the reservation is made
+    removes what is at `path`, whether or not it is still there, and the copy, and is raised as it was; an entry at
+    `path` that cannot be removed raises UnfinishedReservationError. An interrupt or kill as the reservation is made,
+    or a kill before the replace, can leave an empty file at `path`, which no code here runs to remove. A process that
+    removes the reservation and puts its own entry at `path`, or replaces it, before the replace has that entry
+    replaced, or removed by a failure's clean-up.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
@@ -185,15 +190,17 @@ def _link_new(copy: Path, target: Path, *, reserve: bool) -> bool:
 
 def _replace_reservation(copy: Path, target: Path) -> None:
     """Reserve `target` empty with an exclusive create, which raises FileExistsError where any entry is, then replace
-    the reservation with `copy`. Whatever ends it before the replace is made, the reservation is removed and the
-    failure raised as it was, or UnfinishedReservationError raised for a reservation that cannot be removed."""
+    the reservation with `copy`. Whatever is raised once the reservation is made, what is at `target` is removed, if
+    anything still is, and the failure raised as it was, or UnfinishedReservationError raised for an entry that cannot
+    be removed. An interrupt that lands as os.open returns is raised before the reservation's descriptor is held, so
+    it leaves the reservation, as a kill does."""
     descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
         os.close(descriptor)
         copy.replace(target)
     except BaseException as failure:
         try:
-            target.unlink()
+            target.unlink(missing_ok=True)
         except OSError as removal:
             raise UnfinishedReservationError(target=target, failure=failure, removal=removal) from removal
         raise
