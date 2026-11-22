@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import exit_tables
+from skill_scripts import parser_names
 from validation_support import import_aliases, write_fixture_tree
 
 HEADER = "from console import run_main\nimport argparse\n"
@@ -1182,12 +1183,34 @@ PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main
 # A parser bound in a class's body, and a class Tool whose property calls error on a receiver, with a main the reader
 # reaches it from: the reader follows into a method through a property a return reads.
 ANNOTATED = "    cli: argparse.ArgumentParser\n"
+# A property, a method, and an instance attribute that bind a parser in a class.
+PROPERTY = "    @property\n    def cli(self) -> argparse.ArgumentParser:\n        return argparse.ArgumentParser()\n"
+BUILDER = "    def build(self) -> argparse.ArgumentParser:\n        return argparse.ArgumentParser()\n"
+INSTANCE = "    def __init__(self) -> None:\n        self.cli = argparse.ArgumentParser()\n"
+# The annotations that wrap a parser's class, and those that name another type around it.
+WRAPPED = [
+    "argparse.ArgumentParser | None",
+    "None | 'argparse.ArgumentParser'",
+    "typing.Optional[argparse.ArgumentParser]",
+    "typing.Optional['argparse.ArgumentParser']",
+    "'typing.Optional[argparse.ArgumentParser]'",
+    "typing.Union[int, argparse.ArgumentParser]",
+    "typing.Final[argparse.ArgumentParser]",
+    "typing.Annotated[argparse.ArgumentParser, 'cli']",
+]
+NOT_WRAPPED = [
+    "typing.Optional[logging.Logger]",
+    "logging.Logger | None",
+    "list[argparse.ArgumentParser]",
+    "typing.Annotated[logging.Logger, argparse.ArgumentParser]",
+]
 
 
-def tool_class(bound: str, receiver: str, parameter: str = "self") -> str:
+def tool_class(bound: str, receiver: str, parameter: str = "self", bases: str = "", local: str = "") -> str:
     return (
-        f"class Tool:\n{bound}    @property\n    def status({parameter}) -> int:\n        {receiver}.error('no')\n"
-        "        return 0\ndef main() -> int:\n    if X:\n        return Tool().status\n"
+        f"class Tool{bases}:\n{bound}    @property\n    def status({parameter}) -> int:\n"
+        f"        {local}{receiver}.error('no')\n        return 0\n"
+        "def main() -> int:\n    if X:\n        return Tool().status\n"
     )
 
 
@@ -1227,6 +1250,92 @@ def tool_class(bound: str, receiver: str, parameter: str = "self") -> str:
         (tool_class(ANNOTATED, "self.log"), {0, 1}),
         (tool_class(ANNOTATED, "other.cli"), {0, 1}),
         (f"class Holder:\n{ANNOTATED}{tool_class('', 'self.cli')}", {0, 1}),
+        # A property annotated to return a parser is one on the receiver, and its name no builder elsewhere.
+        (tool_class(PROPERTY, "self.cli"), {0, 1, 2}),
+        (
+            f"import functools\n{tool_class(PROPERTY.replace('@property', '@functools.cached_property'), 'self.cli')}",
+            {0, 1, 2},
+        ),
+        (tool_class(PROPERTY.replace("argparse.ArgumentParser:", "logging.Logger:"), "self.cli"), {0, 1}),
+        (f"class Holder:\n{PROPERTY}def main() -> int:\n    made = cli()\n    made.error('no')\n", {0, 1}),
+        # A class-level parser is one through the class's own name, anywhere, and through type(self) or
+        # self.__class__ in its methods; its bare name is none outside its class.
+        (f"class Tool:\n{ANNOTATED}def main() -> int:\n    Tool.cli.error('no')\n", {0, 1, 2}),
+        (
+            f"class Outer:\n    class Inner:\n    {ANNOTATED}def main() -> int:\n    Outer.Inner.cli.error('no')\n",
+            {0, 1, 2},
+        ),
+        (tool_class(ANNOTATED, "Tool.cli"), {0, 1, 2}),
+        (tool_class(ANNOTATED, "type(self).cli"), {0, 1, 2}),
+        (tool_class(ANNOTATED, "self.__class__.cli"), {0, 1, 2}),
+        (f"class Tool:\n{ANNOTATED}def main() -> int:\n    Other.cli.error('no')\n", {0, 1}),
+        (f"class Outer:\n    class Inner:\n    {ANNOTATED}def main() -> int:\n    Inner.cli.error('no')\n", {0, 1}),
+        # A class a method defines is reached by its own name alone, never through the class that holds the method.
+        (tool_class("", "Local.cli", local=f"class Local:\n        {ANNOTATED}        "), {0, 1, 2}),
+        (tool_class("", "Tool.Local.cli", local=f"class Local:\n        {ANNOTATED}        "), {0, 1}),
+        (tool_class(ANNOTATED, "type(other).cli"), {0, 1}),
+        (
+            f"import logging\nclass Tool:\n{ANNOTATED}def main() -> int:\n    cli = logging.getLogger()\n"
+            "    cli.error('no')\n",
+            {0, 1},
+        ),
+        # A parser a base class binds, in its body or on its instance, is one in a subclass's methods.
+        (f"class Base:\n{ANNOTATED}{tool_class('', 'self.cli', bases='(Base)')}", {0, 1, 2}),
+        (f"class Base:\n{INSTANCE}{tool_class('', 'self.cli', bases='(Base)')}", {0, 1, 2}),
+        (
+            f"class Base:\n{ANNOTATED}class Middle(Base):\n    pass\n{tool_class('', 'self.cli', bases='(Middle)')}",
+            {0, 1, 2},
+        ),
+        (f"class Base:\n{ANNOTATED}class Other:\n    pass\n{tool_class('', 'self.cli', bases='(Other)')}", {0, 1}),
+        # A parser a method returns is one where the receiver calls it, or a local name is bound to its call.
+        (tool_class(BUILDER, "self.build()"), {0, 1, 2}),
+        (tool_class(BUILDER, "made = self.build()\n        made"), {0, 1, 2}),
+        (tool_class(BUILDER, "type(self).build()"), {0, 1, 2}),
+        (f"class Tool:\n{BUILDER}def main() -> int:\n    made = Tool.build()\n    made.error('no')\n", {0, 1, 2}),
+        (
+            "def build() -> argparse.ArgumentParser:\n    return argparse.ArgumentParser()\n"
+            "def main() -> int:\n    build().error('no')\n",
+            {0, 1, 2},
+        ),
+        (tool_class(BUILDER, "self.other()"), {0, 1}),
+        (tool_class(BUILDER, "made = self.other()\n        made"), {0, 1}),
+        (f"class Holder:\n{BUILDER}def main() -> int:\n    made = build()\n    made.error('no')\n", {0, 1}),
+        # A parser bound on a method's receiver is one in its own class's methods, and in no other class's.
+        (tool_class(INSTANCE, "self.cli"), {0, 1, 2}),
+        (
+            tool_class(
+                INSTANCE.replace(" = argparse.ArgumentParser()", ": argparse.ArgumentParser = get()"), "self.cli"
+            ),
+            {0, 1, 2},
+        ),
+        (f"class Holder:\n{INSTANCE}{tool_class('', 'self.cli')}", {0, 1}),
+        (
+            tool_class(INSTANCE, "cls.cli", "cls").replace("    @property\n", "    @classmethod\n    @property\n"),
+            {0, 1},
+        ),
+        # A parser's class wrapped in a union or a typing form is still a parser's.
+        *(
+            (f"import typing\ndef main() -> int:\n    made: {annotation} = get()\n    made.error('no')\n", {0, 1, 2})
+            for annotation in WRAPPED
+        ),
+        (
+            tool_class("    cli: typing.ClassVar[argparse.ArgumentParser]\n", "self.cli").replace(
+                "class", "import typing\nclass", 1
+            ),
+            {0, 1, 2},
+        ),
+        (
+            "def main() -> int:\n    probe(argparse.ArgumentParser())\n"
+            "def probe(given: 'argparse.ArgumentParser | None') -> None:\n    given.error('no')\n",
+            {0, 1, 2},
+        ),
+        *(
+            (
+                f"import typing, logging\ndef main() -> int:\n    made: {annotation} = get()\n    made.error('no')\n",
+                {0, 1},
+            )
+            for annotation in NOT_WRAPPED
+        ),
         # Every parsing call argparse offers exits 2 on a usage error.
         ("def main() -> int:\n    got.parse_known_intermixed_args()\n", {0, 1, 2}),
         # A quoted annotation that does not parse names no parser.
@@ -1264,14 +1373,57 @@ def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_o
     source = (
         f"import argparse\n{imports}"
         "class Outer:\n    cli: argparse.ArgumentParser\n"
+        "    def __init__(self):\n        self.held = argparse.ArgumentParser()\n"
         f"    def first(this, /): pass\n    @{made}\n    def made(cls): pass\n"
         f"    @{static}\n    def static(given): pass\n    def bare(): pass\n"
         "    if X:\n        def guarded(self): pass\n"
         "    class Inner:\n        def method(self): pass\n"
     )
     tree = ast.parse(source)
-    found = {method.name: chains for method, chains in exit_tables.method_parsers(tree, import_aliases(tree)).items()}
-    assert found == {"first": {"this.cli"}, "made": {"cls.cli"}, "guarded": {"self.cli"}, "method": set()}
+    bindings = parser_names(tree, import_aliases(tree))
+    found = {
+        node.name: set(bindings.methods[id(node)].names)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and id(node) in bindings.methods
+    }
+
+    def reached(receiver: str, *names: str) -> set[str]:
+        return {
+            f"{prefix}.{name}"
+            for prefix in (receiver, f"type({receiver})", f"{receiver}.__class__")
+            for name in ("cli", *names)
+        } - {f"type({receiver}).held", f"{receiver}.__class__.held"}
+
+    assert found == {
+        "__init__": reached("self", "held"),
+        "first": reached("this", "held"),
+        "made": reached("cls"),
+        "guarded": reached("self", "held"),
+        "method": set(),
+    }
+    # The class's parsers are read through its name anywhere, and neither its bare name nor its receiver's attribute
+    # anywhere else.
+    assert set(bindings.module.names) == {"Outer.cli"}
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        # A class named for the base it inherits from, as after `from x import Tool`, is its own lineage once.
+        "from x import Tool\nclass Tool(Tool):\n    cli: argparse.ArgumentParser\n    def run(self): pass\n",
+        # A diamond reads the shared base once through each side.
+        "class Base:\n    cli: argparse.ArgumentParser\nclass Left(Base): pass\nclass Right(Base): pass\n"
+        "class Tool(Left, Right):\n    def run(self): pass\n",
+        # Two classes that inherit from each other, which Python refuses to build, each read the other's once.
+        "class Tool(Base):\n    def run(self): pass\nclass Base(Tool):\n    cli: argparse.ArgumentParser\n",
+    ],
+    ids=["a base named as the class", "a diamond", "a cycle"],
+)
+def test_a_class_inherits_each_base_s_parser_once_however_its_bases_repeat_or_cycle(classes: str) -> None:
+    tree = ast.parse(f"import argparse\n{classes}")
+    bindings = parser_names(tree, import_aliases(tree))
+    run = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "run")
+    assert "self.cli" in bindings.methods[id(run)].names
 
 
 def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
