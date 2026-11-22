@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import skill_scripts
 from skill_scripts import gh_filter_problems, script_contract_problems
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 from validation_support import write_fixture_tree
 
 

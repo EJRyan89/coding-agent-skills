@@ -23,7 +23,7 @@ import executable_locator
 import silent_reverts
 from git_client import MISSING_GIT, GitError, GitResult
 from silent_reverts import Revert, declarations, find_reverts, silent_revert_problems
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 from validation_support import REPOSITORY_ROOT
 
 from tests import run_validation
