@@ -15,7 +15,10 @@ and an `ImportGroup`'s condition applies to each import in it. An import from th
 reader reads, so it is not read. An import the reader does not read for any other reason, a
 condition or a path it cannot settle, a file outside the examined tree or through a link leading out of it, missing,
 or unreadable, is reported, and from it on every property is unsettled, since the file may set any. A file imported
-twice is read once, as MSBuild reads it.
+twice is read once, as MSBuild reads it. Each file or path refused for where it lies, an import or a nearest file
+outside the examined tree or through a link leading out of it, and a `*OfFileAbove` candidate or an `Exists()` path
+below such a link, is also kept apart (`ProjectEvaluation.refused`), since MSBuild would read or stat it, so the caller
+asks no tool that evaluates the project through MSBuild about it.
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -69,6 +72,7 @@ from msbuild_reader import (
     AssemblyRef,
     PackageRef,
     Redirect,
+    Refused,
     Unreadable,
     framework_key,
     item_specs,
@@ -328,6 +332,7 @@ class Evaluation:
         self.file = project.path
         self.items: list[Placed] = []
         self.reports: list[Unreadable] = []
+        self.refused: list[Path] = []
         self.imported: set[str] = set()
         self.points: set[str] = set()
         self.files = FileSystem(project.path.parent.as_posix(), self.exists, self.folder_above)
@@ -354,7 +359,7 @@ class Evaluation:
         if refusal(path, self.project.sources.tree) is not None:
             return None
         if (linked := outside_link_refusal(path.parent, self.project.sources.tree)) is not None:
-            self.reports.append(Unreadable(path, linked))
+            self.refuse(Refused(path, linked))
             return None
         try:
             return is_occupied(path)
@@ -370,7 +375,7 @@ class Evaluation:
             found = nearest_file(directory, name, self.project.sources.tree)
         except Unreadable as error:
             # A candidate it cannot stat leaves the folder unsettled, never read as none above.
-            self.reports.append(error)
+            self.refuse(error)
             return None
         return "" if found is None else found.parent.as_posix()
 
@@ -491,6 +496,12 @@ class Evaluation:
         else:
             self.import_file(project_path(self.file.parent, values[0]), written)
 
+    def refuse(self, error: Unreadable) -> None:
+        """Report what the evaluation could not read, and keep a file `Refused` for where it lies among `refused`."""
+        self.reports.append(error)
+        if isinstance(error, Refused):
+            self.refused.append(error.file)
+
     def not_read(self, written: str, why: str) -> None:
         reason = f"the Import of {written} is not read: {why}, so every property is unsettled after it"
         self.reports.append(Unreadable(self.file, reason))
@@ -503,6 +514,7 @@ class Evaluation:
         tree = self.project.sources.tree
         refused = refusal(path, tree) or outside_link_refusal(path, tree)
         if refused is not None:
+            self.refused.append(path)
             self.not_read(written, refused)
             return
         try:
@@ -556,7 +568,7 @@ class Evaluation:
         try:
             found = nearest_file(self.project.path.parent, name, self.project.sources.tree)
         except Unreadable as error:
-            self.reports.append(error)
+            self.refuse(error)
             self.state.unsettle()
             return
         if found is not None:
@@ -791,6 +803,7 @@ class Build:
     unsettled: list[Unsettled] = field(default_factory=list)
     reports: list[Unreadable] = field(default_factory=list)
     items: list[Resolved] = field(default_factory=list)
+    refused: list[Path] = field(default_factory=list)
 
 
 def references(framework: str, steps: Iterable[Step], directory: Path) -> Build:
@@ -890,7 +903,18 @@ class ProjectEvaluation:
         found = references(framework, (build_step(item, framework) for item in items), self.path.parent)
         found.items = items
         found.reports = list(evaluation.reports)
+        found.refused = list(evaluation.refused)
         return found
+
+    def refused(self) -> list[Path]:
+        """Each file or path an evaluation made so far refused for where it lies, once, in the order first met: an
+        import or a nearest file outside the examined tree or through a link leading out of it, a `*OfFileAbove`
+        candidate or an `Exists()` path behind such a link. MSBuild would read or stat each, so the caller asks no
+        tool that evaluates the project through MSBuild."""
+        found: dict[str, Path] = {}
+        for path in [*self.outer.refused, *(path for build in self.builds.values() for path in build.refused)]:
+            found.setdefault(same_path(path), path)
+        return list(found.values())
 
     def labels(self) -> list[str]:
         """The builds the view with no restore reads: one per framework, and one for frameworks the reader cannot
@@ -923,6 +947,10 @@ class ProjectFile:
     def build(self, framework: str) -> Build:
         """The references of the build of a framework (`ProjectEvaluation.build`), none for a project not read."""
         return Build(framework) if self.evaluation is None else self.evaluation.build(framework)
+
+    def refused(self) -> list[Path]:
+        """What the evaluations made so far refused for where it lies (`ProjectEvaluation.refused`)."""
+        return [] if self.evaluation is None else self.evaluation.refused()
 
 
 def assembly_name(evaluation: ProjectEvaluation, reports: list[Unreadable]) -> str:
