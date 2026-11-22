@@ -7,10 +7,11 @@ import errno
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -18,8 +19,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from atomic_file import (
+    NO_HARD_LINK_ERRNOS,
     ReadOnlyTargetError,
     UnfinishedCopyError,
+    UnfinishedReservationError,
     create_bytes,
     is_read_only,
     replace_bytes,
@@ -284,7 +287,13 @@ class CreateTests(unittest.TestCase):
                 self.assertEqual(b"the whole report\n", path.read_bytes(), "the next create makes it")
 
     def test_a_file_system_that_refuses_hard_links_leaves_no_copy_and_never_reads_as_already_there(self) -> None:
-        for code, kind in ((errno.EPERM, PermissionError), (errno.ENOTSUP, OSError), (errno.EXDEV, OSError)):
+        for code, kind in (
+            (errno.EPERM, PermissionError),
+            (errno.ENOTSUP, OSError),
+            (errno.EOPNOTSUPP, OSError),
+            (errno.EINVAL, OSError),
+            (errno.EXDEV, OSError),
+        ):
             with self.subTest(errno=errno.errorcode[code]), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "report.md"
                 refusal = OSError(code, os.strerror(code), "copy", "target")
@@ -378,6 +387,257 @@ class CreateTests(unittest.TestCase):
                 create_bytes(path, b"next\n", mode=0o444)
             self.assertEqual([], opened, "no copy was made")
             self.assertEqual([], names_in(temporary))
+
+
+REPORT = b"the whole report\n"
+
+# The errnos a hard link is refused with where the file system has none, written here apart from the module's set:
+# EPERM on Linux's FAT and exFAT, ENOTSUP on macOS's, EINVAL on Windows', EOPNOTSUPP and EXDEV from a network share.
+NO_HARD_LINKS = (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EXDEV)
+
+
+def refused_link(code: int) -> OSError:
+    return OSError(code, os.strerror(code), "copy", "target")
+
+
+class ReservationTests(unittest.TestCase):
+    """create_bytes with allow_empty_reservation, where the file system refuses hard links: an exclusive create
+    reserves the target empty and the copy replaces it, so the file is whole or not there, or the reservation empty.
+    These mock the link's refusal, so they hold on every platform."""
+
+    def test_the_errnos_that_fall_back_are_those_that_say_the_file_system_has_no_hard_links(self) -> None:
+        self.assertEqual(frozenset(NO_HARD_LINKS), NO_HARD_LINK_ERRNOS)
+
+    def test_each_refusal_reserves_the_target_empty_and_replaces_it_whole_leaving_no_copy(self) -> None:
+        real_open, real_replace = os.open, os.replace
+        for code in NO_HARD_LINKS:
+            reservations: list[tuple[int, int]] = []
+            replaced: list[bytes] = []
+
+            def reserve(
+                opened: Any, flags: int, mode: int = 0o777, reservations: list[tuple[int, int]] = reservations
+            ) -> int:
+                descriptor = real_open(opened, flags, mode)
+                if Path(opened).name == "report.md":  # tempfile.mkstemp opens the copy through os.open too
+                    reservations.append((flags, descriptor))
+                return descriptor
+
+            def replace(source: Any, target: Any, replaced: list[bytes] = replaced) -> None:
+                replaced.append(Path(target).read_bytes())
+                real_replace(source, target)
+
+            with self.subTest(errno=errno.errorcode[code]), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "inner" / "report.md"
+                with (
+                    watched_descriptors() as (opened, closes, reused),
+                    mock.patch.object(os, "link", side_effect=refused_link(code)),
+                    mock.patch.object(os, "open", reserve),
+                    mock.patch.object(os, "replace", replace),
+                    mock.patch.object(Path, "unlink", autospec=True) as unlink,
+                ):
+                    create_bytes(path, REPORT, mode=0o644, allow_empty_reservation=True)
+                self.assertEqual([os.O_CREAT | os.O_EXCL | os.O_WRONLY], [flags for flags, _ in reservations])
+                self.assertEqual([b""], replaced, "the copy replaced an empty reservation")
+                self.assertEqual([], unlink.call_args_list, "the replace left no name of the copy's own to remove")
+                self.assertEqual(1, len(opened))
+                # The reservation's descriptor may take the number the copy's freed, which the watcher counts too.
+                self.assertEqual(opened + [number for _, number in reservations if number in opened], closes)
+                self.assertEqual([], reused)
+                self.assertEqual(REPORT, path.read_bytes())
+                self.assertEqual(1, path.stat().st_nlink)
+                if os.name != "nt":  # Windows keeps no permission bits but read-only
+                    self.assertEqual(0o644, stat.S_IMODE(path.stat().st_mode))
+                self.assertEqual(["report.md"], names_in(str(path.parent)))
+
+    def test_any_other_refusal_of_the_link_is_raised_without_a_reservation(self) -> None:
+        for code in (errno.EACCES, errno.ENOSPC, errno.EMLINK):
+            with self.subTest(errno=errno.errorcode[code]), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(code)),
+                    mock.patch.object(os, "open", wraps=os.open) as opened,
+                    self.assertRaises(OSError) as raised,
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertEqual(code, raised.exception.errno)
+                self.assertRegex(str(raised.exception), "the file system refused to link the finished copy into place")
+                self.assertEqual([], [call for call in opened.call_args_list if Path(call.args[0]) == path])
+                self.assertEqual([], names_in(temporary), "nothing at the target and no copy beside it")
+
+    def test_an_entry_that_appears_at_the_target_during_the_fallback_is_never_replaced(self) -> None:
+        def file(path: Path) -> None:
+            path.write_bytes(b"theirs\n")
+
+        def folder(path: Path) -> None:
+            path.mkdir()
+
+        def dangling(path: Path) -> None:
+            path.symlink_to(path.parent / "missing")
+
+        entries: list[tuple[str, Callable[[Path], None]]] = [("file", file), ("folder", folder)]
+        with tempfile.TemporaryDirectory() as temporary, contextlib.suppress(OSError, NotImplementedError):
+            dangling(Path(temporary) / "probe")  # a link only where the platform lets one be made
+            entries.append(("link that leads nowhere", dangling))
+        for name, appear in entries:
+            with self.subTest(entry=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+
+                def appear_then_refuse(
+                    _copy: Any, _target: Any, path: Path = path, appear: Callable[[Path], None] = appear
+                ) -> None:
+                    # The entry appears after the link is refused and before the reservation is made.
+                    appear(path)
+                    raise refused_link(errno.EPERM)
+
+                with (
+                    mock.patch.object(os, "link", appear_then_refuse),
+                    mock.patch.object(os, "replace", wraps=os.replace) as replace,
+                    self.assertRaises(FileExistsError),
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertEqual([], replace.call_args_list)
+                self.assertEqual(["report.md"], names_in(temporary), "no copy is left beside the target")
+                if name == "file":
+                    self.assertEqual(b"theirs\n", path.read_bytes())
+                elif name == "folder":
+                    self.assertTrue(path.is_dir())
+                else:
+                    self.assertTrue(path.is_symlink())
+                    self.assertFalse(path.exists())
+
+    def test_each_failure_in_the_fallback_removes_the_reservation_and_the_copy_and_is_raised_as_it_was(self) -> None:
+        real_close = os.close
+        reserved: list[int] = []
+        real_open = os.open
+
+        def reserve(opened: Any, flags: int, mode: int = 0o777) -> int:
+            descriptor = real_open(opened, flags, mode)
+            if Path(opened).name == "report.md":  # tempfile.mkstemp opens the copy through os.open too
+                reserved.append(descriptor)
+            return descriptor
+
+        for name, failure in (
+            ("reservation", OSError(errno.EACCES, "synthetic reservation")),
+            ("close", OSError(errno.EIO, "synthetic close")),
+            ("replace", OSError(errno.EIO, "synthetic replace")),
+            ("interrupted replace", KeyboardInterrupt()),
+        ):
+            reserved.clear()
+
+            def fail_open(opened: Any, flags: int, mode: int = 0o777, failure: BaseException = failure) -> int:
+                if Path(opened).name == "report.md":
+                    raise failure
+                return real_open(opened, flags, mode)
+
+            def close(descriptor: int, failure: BaseException = failure) -> None:
+                real_close(descriptor)
+                if descriptor in reserved:
+                    raise failure
+
+            patches: dict[str, contextlib.AbstractContextManager[Any]] = {
+                "reservation": mock.patch.object(os, "open", fail_open),
+                "close": mock.patch.object(os, "close", close),
+                "replace": mock.patch.object(os, "replace", side_effect=failure),
+                "interrupted replace": mock.patch.object(os, "replace", side_effect=failure),
+            }
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.ENOTSUP)),
+                    mock.patch.object(os, "open", reserve),
+                    patches[name],
+                    self.assertRaises(type(failure)) as raised,
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertIs(failure, raised.exception)
+                self.assertEqual([], names_in(temporary), "no reservation at the target and no copy beside it")
+                create_bytes(path, REPORT, allow_empty_reservation=True)
+                self.assertEqual(REPORT, path.read_bytes(), "the next create makes it")
+
+    def test_a_reservation_that_cannot_be_removed_is_named_and_the_copy_is_still_removed(self) -> None:
+        real_unlink = os.unlink
+        for name, copy_removable in (("copy removed", True), ("copy kept too", False)):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                replace_failure = OSError(errno.EIO, "synthetic replace")
+
+                def unlink(target: Any, *args: Any, path: Path = path, copy_removable: bool = copy_removable) -> None:
+                    if Path(target) == path or not copy_removable:
+                        raise OSError(errno.EBUSY, "synthetic unlink")
+                    real_unlink(target, *args)
+
+                expected = UnfinishedReservationError if copy_removable else UnfinishedCopyError
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.EINVAL)),
+                    mock.patch.object(os, "replace", side_effect=replace_failure),
+                    mock.patch.object(os, "unlink", unlink),
+                    self.assertRaises(expected) as raised,
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                error = raised.exception
+                reservation = error.failure if isinstance(error, UnfinishedCopyError) else error
+                self.assertIsInstance(reservation, UnfinishedReservationError)
+                assert isinstance(reservation, UnfinishedReservationError)
+                self.assertIsInstance(reservation, OSError)
+                self.assertEqual(path, reservation.target)
+                self.assertIs(replace_failure, reservation.failure)
+                self.assertIs(reservation.removal, reservation.__cause__)
+                self.assertEqual(
+                    f"Cannot remove {path}, the empty file reserved for an unfinished create: "
+                    f"[Errno {errno.EBUSY}] synthetic unlink",
+                    str(reservation),
+                )
+                self.assertEqual(b"", path.read_bytes(), "the reservation is left empty where the error says")
+                copies = [item for item in Path(temporary).iterdir() if item != path]
+                if copy_removable:
+                    self.assertEqual([], copies)
+                else:
+                    assert isinstance(error, UnfinishedCopyError)
+                    self.assertEqual([error.copy], copies)
+                    self.assertFalse(error.made)
+                for item in Path(temporary).iterdir():
+                    real_unlink(item)
+
+
+@unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
+class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
+    """create_bytes on a real FAT and exFAT volume, which refuse hard links, attached from a disk image."""
+
+    def test_a_volume_without_hard_links_refuses_by_default_and_reserves_when_allowed(self) -> None:
+        for file_system in ("MS-DOS", "ExFAT"):
+            with self.subTest(file_system=file_system), tempfile.TemporaryDirectory() as temporary:
+                image = Path(temporary) / "volume.dmg"
+                mount = Path(temporary) / "mount"
+                mount.mkdir()
+                hdiutil = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE"]
+                subprocess.run([*hdiutil, str(image)], check=True, capture_output=True, timeout=120)
+                attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
+                subprocess.run(attach, check=True, capture_output=True, timeout=120)
+                try:
+                    self._check_volume(mount)
+                finally:
+                    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
+                    subprocess.run(detach, check=True, capture_output=True, timeout=120)
+
+    def _check_volume(self, volume: Path) -> None:
+        def names() -> set[str]:
+            # macOS keeps a file's metadata in a "._" file beside it on a volume that has no place for it.
+            return {name for name in names_in(str(volume)) if not name.startswith("._")}
+
+        before = names()
+        path = volume / "report.md"
+        with self.assertRaises(OSError) as raised:
+            create_bytes(path, REPORT)
+        self.assertNotIsInstance(raised.exception, FileExistsError)
+        self.assertIn(raised.exception.errno, NO_HARD_LINKS)
+        self.assertEqual(before, names(), "nothing at the target and no copy beside it")
+        create_bytes(path, REPORT, allow_empty_reservation=True)
+        self.assertEqual(REPORT, path.read_bytes())
+        self.assertEqual(before | {"report.md"}, names(), "no copy beside it")
+        with self.assertRaises(FileExistsError):
+            create_bytes(path, b"next\n", allow_empty_reservation=True)
+        self.assertEqual(REPORT, path.read_bytes())
+        self.assertEqual(before | {"report.md"}, names(), "no copy beside it")
 
 
 class ReadOnlyTargetTests(unittest.TestCase):

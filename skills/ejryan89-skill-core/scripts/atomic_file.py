@@ -14,7 +14,11 @@ removed because it took a read-only `mode` is made writable first, so a replace 
 `create_bytes` makes a file that must not replace anything, such as a copy a script puts beside a user's files, with
 the same promise: a reader sees no file or the whole of it, and a write that fails leaves nothing at the target and
 no copy beside it. Its last step links the synced copy at the target, which every platform refuses where any entry is
-already there, where a rename would replace one on Linux and macOS.
+already there, where a rename would replace one on Linux and macOS. A file system with no hard links, such as FAT or
+exFAT, has no other step that keeps that promise on every platform: macOS refuses a rename that refuses an existing
+entry there too. So a caller whose readers may see an empty file asks for `allow_empty_reservation`, which reserves
+the target empty with an exclusive create and then replaces the reservation with the copy; any other caller gets the
+link's refusal.
 """
 
 from __future__ import annotations
@@ -30,6 +34,11 @@ from pathlib import Path
 # The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
 # index or graph a script creates: its owner writes it and everyone reads it, as an editor's new file.
 TRACKED_FILE_MODE = 0o644
+
+# The errnos a hard link is refused with where the file system has none, whatever is at the target: EPERM on Linux's
+# FAT and exFAT, ENOTSUP on macOS's, EINVAL on Windows' (its ERROR_INVALID_FUNCTION), and EOPNOTSUPP or EXDEV from a
+# network share. A create that allows an empty reservation falls back to one on these alone.
+NO_HARD_LINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EXDEV})
 
 
 class UnfinishedCopyError(OSError):
@@ -54,6 +63,21 @@ class UnfinishedCopyError(OSError):
         self.failure = failure
         self.removal = removal
         self.made = made
+
+
+class UnfinishedReservationError(OSError):
+    """A create that reserved its target empty, failed before the copy replaced the reservation, and could not then
+    remove it, so an empty file is left at `target`.
+
+    It derives from OSError, so a caller that reports a failed write as an OSError reports this one too. `failure` is
+    what ended the create, and `removal` the OSError that kept the reservation.
+    """
+
+    def __init__(self, *, target: Path, failure: BaseException, removal: OSError) -> None:
+        super().__init__(f"Cannot remove {target}, the empty file reserved for an unfinished create: {removal}")
+        self.target = target
+        self.failure = failure
+        self.removal = removal
 
 
 class ReadOnlyTargetError(PermissionError):
@@ -104,7 +128,7 @@ def replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     _publish(path, data, mode=mode, refuse=refuse, place=Path.replace, creates=False)
 
 
-def create_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_reservation: bool = False) -> None:
     """Create `path` holding `data`, never replacing what is there, through a synced copy beside it given `mode`,
     making its folder first.
 
@@ -116,29 +140,63 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     remove either raises UnfinishedCopyError with `made` set, whose message says `path` is made and names the copy.
 
     The copy is put in place by a hard link, so a folder whose file system has none, such as FAT or exFAT, or a
-    network share that refuses them, cannot hold a file this creates. Its refusal, often EPERM or ENOTSUP, is raised
-    as an OSError of its errno that names `path` and says the file system refused the link, never a FileExistsError,
-    with nothing at `path` and the copy removed.
+    network share that refuses them, cannot hold a file this creates unless the caller allows an empty reservation.
+    Without it the refusal, one of NO_HARD_LINK_ERRNOS or any other, is raised as an OSError of its errno that names
+    `path` and says the file system refused the link, never a FileExistsError, with nothing at `path` and the copy
+    removed.
+
+    `allow_empty_reservation` lets a refusal of one of NO_HARD_LINK_ERRNOS fall back to two steps: an exclusive create
+    reserves `path` empty, refusing any entry there as FileExistsError, and the copy then replaces the reservation.
+    A reader may see the empty reservation until the replace, so allow it only where every reader takes an empty file
+    for one not yet made; the file is still never seen part written. A failure after the reservation removes it and
+    the copy and is raised as it was, and a reservation that cannot be removed raises UnfinishedReservationError. A
+    process that removes the reservation and puts its own entry at `path` before the replace has that entry replaced,
+    or removed by a failure's clean-up.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
     """
     if not mode & stat.S_IWUSR:
         raise ValueError(f"create_bytes needs a mode its owner may write, not {mode:o}")
-    _publish(path, data, mode=mode, refuse=lambda _target: None, place=_link_new, creates=True)
+
+    def place(copy: Path, target: Path) -> bool:
+        return _link_new(copy, target, reserve=allow_empty_reservation)
+
+    _publish(path, data, mode=mode, refuse=lambda _target: None, place=place, creates=True)
 
 
-def _link_new(copy: Path, target: Path) -> None:
-    """Give `copy` the name `target` too, which the link refuses where any entry is. Any other refusal of the link,
-    such as a file system with no hard links, is raised with its errno, so as the same OSError subclass, naming
-    `target` rather than the copy that is about to be removed."""
+def _link_new(copy: Path, target: Path, *, reserve: bool) -> bool:
+    """Give `copy` the name `target` too, which the link refuses where any entry is, and return whether the copy's own
+    name remains. A refusal of the link that says the file system has no hard links falls back, when `reserve` allows
+    it, to _replace_reservation, which leaves no name of the copy's own. Any other refusal is raised with its errno,
+    so as the same OSError subclass, naming `target` rather than the copy that is about to be removed."""
     try:
         os.link(copy, target)
     except FileExistsError:
         raise
     except OSError as refusal:
+        if reserve and refusal.errno in NO_HARD_LINK_ERRNOS:
+            _replace_reservation(copy, target)
+            return False
         reason = f"the file system refused to link the finished copy into place: {refusal.strerror or refusal}"
         raise OSError(refusal.errno, reason, str(target)) from refusal
+    return True
+
+
+def _replace_reservation(copy: Path, target: Path) -> None:
+    """Reserve `target` empty with an exclusive create, which raises FileExistsError where any entry is, then replace
+    the reservation with `copy`. Whatever ends it before the replace is made, the reservation is removed and the
+    failure raised as it was, or UnfinishedReservationError raised for a reservation that cannot be removed."""
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.close(descriptor)
+        copy.replace(target)
+    except BaseException as failure:
+        try:
+            target.unlink()
+        except OSError as removal:
+            raise UnfinishedReservationError(target=target, failure=failure, removal=removal) from removal
+        raise
 
 
 def _publish(
@@ -151,7 +209,8 @@ def _publish(
     creates: bool,
 ) -> None:
     """Write `data` to a synced copy beside `path`, given `mode`, once its folder is made and `refuse` has not refused
-    `path`, then `place` the copy at `path`, and, for a create, whose `place` links it, remove the copy's own name.
+    `path`, then `place` the copy at `path`, and, for a create, whose `place` returns whether the copy's own name
+    remains, as it does after a link, remove that name.
     Whatever fails, the copy is removed and the failure raised as it was, or UnfinishedCopyError raised for a copy
     that cannot be removed. A create whose link was made is made: an OSError removing the copy's name that a second
     try overcomes is no failure, and an UnfinishedCopyError says `path` is made.
@@ -174,9 +233,9 @@ def _publish(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        place(temporary, path)
+        remains = place(temporary, path)
         made = creates
-        if creates:
+        if creates and remains:
             temporary.unlink()
         temporary = None
     except BaseException as failure:
