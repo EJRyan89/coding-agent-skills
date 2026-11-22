@@ -10,7 +10,8 @@ with the reason, so each caller decides what a folder it could not search costs 
   reported: the set is the statement. A caller passes another set when its search needs one, as the .NET skills add
   NuGet's `packages` (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`).
 - Pruned: a folder whose path the caller's `prune` accepts, such as a hidden folder, one whose name starts with a dot,
-  is neither entered nor reported either, so the walk lists nothing inside it. `top` is never pruned.
+  which `is_hidden` accepts, is neither entered nor reported either, so the walk lists nothing inside it. `top` is
+  never pruned.
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
   The `.git` entry is the one the folder gives for `.git`, as `path_keys.opens_as` asks it, so `.GIT` marks a checkout
@@ -99,6 +100,12 @@ def is_folder_link(entry: os.DirEntry[str]) -> bool:
         return stat.S_ISDIR(entry.stat().st_mode)
     except FileNotFoundError:
         return True
+
+
+def is_hidden(path: Path) -> bool:
+    """Whether `path` is hidden, its name starting with a dot, as a tool's state or cache folder is: the prune a
+    caller passes to skip hidden folders, and the test of an entry's name the walk could not examine."""
+    return path.name.startswith(".")
 
 
 def folder_identity(path: Path) -> tuple[int, int]:

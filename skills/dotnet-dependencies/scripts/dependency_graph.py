@@ -62,7 +62,24 @@ checkout at all and a checkout may itself be large: it lists at most 10000 folde
 directory included, so a search started in a large folder, such as a home folder, ends. Past the bound it stops and
 reports the next folder it would have listed as an UNREADABLE line, which, with every folder after it in the walk's
 order, was not searched; with no project found before it, the FAILED line names it. A solution is read as it lists its
-projects, with no search.
+projects, with no search. A --project naming a .csproj below a searched directory that the search did not reach is
+not read, since --project narrows a query to a project of the root and reading it would read what the search keeps
+out; the FAILED line says why the search did not reach it instead:
+
+    FAILED <project> lies in <folder>, which the search for projects under <directory> does not enter: <reason>; ...
+    FAILED <project> lies past the search for projects under <directory>, which stopped at <folder>: <reason>; ...
+
+the first naming the first folder on its way down that the search skips, prunes as hidden, or does not enter, the
+second the folder the bound stopped the search at, each ending with the advice to pass --root at the project's
+solution or its folder, and, when the search found no project at all, with each folder it did not search, as the
+FAILED line of a search finding none names them. A project named through a link to its file is the project the search
+found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
+why it did not reach it; a project below a link on its way is never stat, since the link may lead outside the
+examined tree, so the folder the search passed over is named whether or not the file is there; so is one below a
+folder whose metadata cannot be read. A limit: the --project argument itself is resolved, up to its last `..` and in
+full to match a project found through a link inside the tree, as the narrowing always resolved it, which follows each
+link on its way, reads the metadata of each name past it, and lists each folder past it to learn its case rule; no
+file's contents are read through a link.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -108,8 +125,9 @@ from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path
 from flat_text import fact_line, flat_text
-from folder_walk import walk_files
+from folder_walk import BOUNDED, NotEntered, is_hidden, walk_files
 from folders_up import folders_up
+from link_probe import is_link_or_junction
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -207,6 +225,7 @@ class Graph:
     tree: Path  # the examined tree, outside which no path a file names is read (`refusal`)
     projects: dict[str, Project] = field(default_factory=dict)  # same_path -> project
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
+    passed_over: list[NotEntered] = field(default_factory=list)  # the folders the search for projects did not enter
     sources: Sources | None = None  # the files the projects are evaluated from, each parsed once
 
     def relative(self, path: Path) -> str:
@@ -268,27 +287,112 @@ class Emitter:
         self.emit(fact_line(key, *fields))
 
 
-def hidden(folder: Path) -> bool:
-    """Whether a folder is hidden, its name starting with a dot, which the search for projects prunes."""
-    return folder.name.startswith(".")
-
-
-def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
+def find_projects(
+    directory: Path, unreadable: list[tuple[Path, str]], passed_over: list[NotEntered] | None = None
+) -> list[Path]:
     """Every .csproj under the directory, in ejryan89-skill-core's folder walk's order, each folder's projects before
     its subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`) and the hidden
     folders it prunes, within PROJECT_SEARCH_FOLDER_LIMIT folders. A folder the walk does not enter, a junction or a
     symbolic link, which may lead outside the directory or back into it, a nested checkout, or one that cannot be
     listed, is reported, and costs only the projects it holds; the folder the bound stopped it at is reported too, and
-    costs the projects in it and in every folder after it in the walk's order."""
+    costs the projects in it and in every folder after it in the walk's order. Each is added to `passed_over` too, so
+    `unsearched` can say why a project below one was not found."""
     walk = walk_files(
         directory,
         lambda name: ordinal_fold(name).endswith(PROJECT_SUFFIX),
         skipped=SEARCH_SKIPPED_FOLDERS,
-        prune=hidden,
+        prune=is_hidden,
         limit=PROJECT_SEARCH_FOLDER_LIMIT,
     )
     unreadable += [(entry.path, entry.reason) for entry in walk.not_entered]
+    if passed_over is not None:
+        passed_over += walk.not_entered
     return walk.files
+
+
+SKIPPED_REASON = "the .NET search skips a folder so named, a version-control, dependency, build-output, or IDE folder"
+HIDDEN_REASON = "the folder is hidden, its name starting with a dot, which the search prunes"
+RETRY_ADVICE = "pass --root at its solution or its folder"
+
+
+def as_named(path: Path) -> Path:
+    """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, but for
+    a path holding a `..`, which the system takes only after following any link before it, the part up to its last
+    `..` is resolved, so no `..` steps back out of a link as text would, and the names after it stay as named."""
+    parts = path.absolute().parts
+    if ".." not in parts:
+        return lexical_absolute(path)
+    last = len(parts) - 1 - parts[::-1].index("..")
+    return resolved_path(Path(*parts[: last + 1])).joinpath(*parts[last + 1 :])
+
+
+def through_link(root: Path, names: Sequence[str]) -> bool:
+    """Whether the file `names` name below `root` may lie through a link: a folder on its way is a link, a junction, or
+    another reparse point, judged from each folder's own metadata and never followed, so nothing is stat through a
+    link that may lead outside the examined tree. A folder whose metadata cannot be read ends the look as one: what
+    lies past it is not stat either. A folder that is not there ends it as none, since nothing lies past it to reach."""
+    folder = root
+    for name in names[:-1]:
+        folder = folder / name
+        try:
+            if is_link_or_junction(folder):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            return True
+    return False
+
+
+def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
+    """The names leading from `root`, a resolved folder, down to `path` as `as_named` gives it, or None when it lies
+    outside `root`. The shortest leading part of the named path that resolves to `root` stands for it, so a link above
+    the root, such as a temporary folder's, still finds it, and a link below it stays a folder the path is named
+    through."""
+    named = as_named(path)
+    key = same_path(root)
+    for depth in range(1, len(named.parts)):
+        if same_path(resolved_path(Path(*named.parts[:depth]))) == key:
+            return named.parts[depth:]
+    return None
+
+
+def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEntered]) -> str | None:
+    """Why the search for projects under `root` did not find `narrowed`, a .csproj file below it: the first folder on
+    its way down that the search skips, prunes, or did not enter, or else the bound the search stopped at. None when
+    `narrowed` is no such file, or nothing in the search explains its absence. A path through a link on its way is
+    never stat, since the link may lead outside the examined tree: its folder is named whether or not the file is
+    there, as the search, which does not follow it either, cannot tell."""
+    if narrowed is None or not ordinal_fold(narrowed.name).endswith(PROJECT_SUFFIX):
+        return None
+    names = named_below(root, narrowed)
+    if not names or not (through_link(root, names) or regular_file(narrowed)):
+        return None
+    skipped = {name.casefold() for name in SEARCH_SKIPPED_FOLDERS}
+    not_entered = {same_path(entry.path): entry for entry in passed_over}
+    folder = root
+    for name in names[:-1]:
+        folder = folder / name
+        entry = not_entered.get(same_path(folder))
+        if name.casefold() in skipped:
+            reason = SKIPPED_REASON
+        elif is_hidden(folder):
+            reason = HIDDEN_REASON
+        elif entry is not None:
+            reason = entry.reason
+        else:
+            continue
+        return (
+            f"{narrowed} lies in {folder}, which the search for projects under {root} does not enter: {reason}; "
+            f"{RETRY_ADVICE}"
+        )
+    bound = next((entry for entry in passed_over if entry.kind == BOUNDED), None)
+    if bound is None:
+        return None
+    return (
+        f"{narrowed} lies past the search for projects under {root}, which stopped at {bound.path}: {bound.reason}; "
+        f"{RETRY_ADVICE}"
+    )
 
 
 def unexaminable(path: Path, error: OSError | Unreadable) -> Failed:
@@ -326,7 +430,9 @@ def root_solutions(folder: Path) -> list[Path]:
     return [child for child in children if is_solution(child) and regular_file(child)]
 
 
-def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[Path, Path, list[Path]]:
+def resolve_root(
+    path: Path, graph_unreadable: list[tuple[Path, str]], passed_over: list[NotEntered] | None = None
+) -> tuple[Path, Path, list[Path]]:
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
@@ -369,11 +475,17 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
         raise Failed(f"{path} holds more than one solution ({names}); name one with --root")
     if solutions:
         return resolve_root(solutions[0], graph_unreadable)
-    projects = find_projects(path, graph_unreadable)
-    if not projects:
-        skipped = "".join(f"; {folder} not searched: {reason}" for folder, reason in graph_unreadable)
-        raise Failed(f"no solution or .csproj found under {path}{skipped}")
-    return path, path, projects
+    return path, path, find_projects(path, graph_unreadable, passed_over)
+
+
+def no_projects(
+    directory: Path, narrowed: Path | None, unreadable: Iterable[tuple[Path, str]], passed_over: Sequence[NotEntered]
+) -> Failed:
+    """The failure of a search for projects that found none: why it did not reach `narrowed`, the project `--project`
+    names, when `unsearched` finds why, else that it found none, either way naming each folder it did not search."""
+    skipped = "".join(f"; {folder} not searched: {reason}" for folder, reason in unreadable)
+    reason = unsearched(directory, narrowed, passed_over)
+    return Failed(f"{reason or f'no solution or .csproj found under {directory}'}{skipped}")
 
 
 def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
@@ -645,15 +757,19 @@ def _present(graph: Graph, path: Path) -> bool:
         return False
 
 
-def build_graph(root: Path, services: Services) -> Graph:
-    """Read the solution's projects and, for each one whose file could be read, its packages and redirects."""
+def build_graph(root: Path, services: Services, narrowed: Path | None = None) -> Graph:
+    """Read the solution's projects and, for each one whose file could be read, its packages and redirects. A search
+    for projects that finds none fails as `no_projects` says."""
     unreadable: list[tuple[Path, str]] = []
-    resolved, base, listed = resolve_root(root, unreadable)
-    tree = checkout_tree(base)
+    passed_over: list[NotEntered] = []
+    resolved, base, listed = resolve_root(root, unreadable, passed_over)
     # resolve_root shows a solution's paths relative to its folder and a searched folder's relative to itself, so the
     # root is a solution exactly when it is not the base; a second look at the disk could answer otherwise.
     solution = None if resolved == base else resolved
-    graph = Graph(resolved, base, tree, unreadable=unreadable, sources=Sources(tree, solution))
+    if solution is None and not listed:
+        raise no_projects(resolved, narrowed, unreadable, passed_over)
+    tree = checkout_tree(base)
+    graph = Graph(resolved, base, tree, unreadable=unreadable, passed_over=passed_over, sources=Sources(tree, solution))
     load_projects(graph, listed)
     for project in graph.projects.values():
         if project.readable:
@@ -828,13 +944,27 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
     return list(found.values())
 
 
+def named_project(graph: Graph, narrowed: Path) -> Project | None:
+    """The project `--project` names: the one at the path as it is named below the solution's directory, where the
+    search or the solution found a project, through a link to its file too, and keeps it under the path it found it at,
+    else the one at the path it resolves to. A project found through a link is read from the link's folder, as MSBuild
+    reads it, so the link's project, not its target's, is the one named."""
+    names = named_below(graph.base, narrowed)
+    project = graph.project_at(graph.base.joinpath(*names)) if names else None
+    return project or graph.project_at(resolved_path(narrowed))
+
+
 def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
-    """Every project in label order, or the one `--project` names."""
+    """Every project in label order, or the one `--project` names. A project of no solution that a search for projects
+    did not reach fails saying why, as `unsearched` finds it, so the run names the search's bound or the folder it
+    passes over rather than the project."""
     if narrowed is None:
         return sorted(graph.projects.values(), key=lambda item: ordinal_fold(graph.label(item)))
-    project = graph.project_at(resolved_path(narrowed))
+    project = named_project(graph, narrowed)
     if project is None:
-        raise Failed(f"{narrowed} is not a project of {graph.root}")
+        searched = graph.root == graph.base
+        reason = unsearched(graph.root, narrowed, graph.passed_over) if searched else None
+        raise Failed(reason or f"{narrowed} is not a project of {graph.root}")
     return [project]
 
 
@@ -1236,7 +1366,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def run(arguments: argparse.Namespace, services: Services, out: Emitter) -> None:
-    graph = build_graph(arguments.root, services)
+    graph = build_graph(arguments.root, services, arguments.project)
     print_graph(graph, out)
     if arguments.command == "why" and arguments.all:
         why_all_query(graph, arguments.project, out)
