@@ -26,8 +26,10 @@ Every command prints one fact per line:
           already there; a regular file it can read already holding the same bytes is the earlier copy, and is reported
           again, and anything else, a symbolic link or junction included whatever it leads to, is refused. A copy is
           made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is put in
-          place by a hard link, so an output directory whose file system has none, such as FAT or exFAT, gets no copy,
-          and the reason names the file system's refusal. Once the copy is in place, report.md is whole: a temporary
+          place by a hard link, or, on a file system with none, such as FAT or exFAT, by an empty report.md reserved
+          under its name and then replaced by the whole copy, so a reader may meet an empty report.md until the copy
+          lands. A copy a kill stops there leaves that empty report.md, which the next call refuses, saying it is empty
+          and to delete it and run report again. Once the copy is in place, report.md is whole: a temporary
           copy beside it that cannot then be removed fails with a reason saying report.md is made and naming the copy
           left, and the next call reports report.md as the earlier copy.
 
@@ -885,12 +887,21 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     target = directory / REPORT_NAME
     content = recorded.read_bytes()
     try:
-        # Made whole or not at all, so a copy that fails part way leaves no report.md for the next call to refuse.
-        create_bytes(target, content, mode=TRACKED_FILE_MODE)
+        # Made whole or not at all, so a copy that fails part way leaves no report.md for the next call to refuse. A
+        # file system without hard links has the copy replace an empty report.md reserved under its name, which a
+        # reader may meet meanwhile.
+        create_bytes(target, content, mode=TRACKED_FILE_MODE, allow_empty_reservation=True)
     except FileExistsError as exc:
         # The copy an earlier call made holds the report's bytes, so a run list reported again names it again.
         if not earlier_copy(target, recorded):
-            raise DocumentError(f"{target} already exists, and is not replaced; the report is at {recorded}") from exc
+            refused = f"{target} already exists, and is not replaced"
+            if is_empty_file(target):
+                # No recorded report is empty, so this is the reservation of a copy a kill stopped, or one under way.
+                refused += (
+                    ": it is empty, as a copy stopped between reserving report.md and filling it leaves it; once no "
+                    "report runs, delete it and run report again"
+                )
+            raise DocumentError(f"{refused}; the report is at {recorded}") from exc
     return [f"REPORT {target}", f"RECORD {record}"]
 
 
@@ -903,6 +914,12 @@ def earlier_copy(target: Path, recorded: Path) -> bool:
         return filecmp.cmp(recorded, target, shallow=False)
     except OSError:
         return False
+
+
+def is_empty_file(target: Path) -> bool:
+    """Whether the entry at `target` is an empty regular file, never a link, which is never followed. One whose size
+    cannot be read raises its OSError, which names it."""
+    return is_plain_file(target) and target.lstat().st_size == 0
 
 
 # Why a listed run in each status but recorded has no report to copy.
