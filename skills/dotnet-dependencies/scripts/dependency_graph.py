@@ -98,25 +98,25 @@ through a link leading out of it: an import, one the reader does not read becaus
 path is a wildcard included, a nearest Directory.Build.props, Directory.Packages.props, or Directory.Build.targets, a
 *OfFileAbove start or candidate, an Exists() path, the restore's <project file>.nuget.g.props, .nuget.g.targets, or
 assets file where the files leave $(MSBuildProjectExtensionsPath), $(BaseIntermediateOutputPath), and
-$(ProjectAssetsFile) (msbuild_evaluation's docstring), or the nearest global.json at or above the project's folder,
-which the .NET host reads to pick the SDK and MSBuild's resolvers read too; nor when they may read a file whose path the
-reader cannot settle, an Import's, such as one naming a property no file sets, or one of the restore's, such as after an
-Import the reader did not read, which may set its folder; nor when a global.json candidate cannot be stat. The walk
-answers that project alone, and an SDK_FAILED line for each name says why, naming the first such file. The graph walk
-runs for every project too: for a project the SDK answered, the walk's chains along a route the SDK printed are printed
-once with it, named `sdk`, with the walk's hops at the SDK's versions, and the walk's version of a package after `graph`
-where a referenced project's own restore resolves it apart, a split `conflicts` reports; the walk adds every chain the
-SDK cannot see, such as one ending in an assembly or one through a packages.config project; for every other project it
-answers alone. So whether dotnet is installed changes which source a route names and which version leads where the two
-differ, never which routes are printed. A path a solution or project names is read only inside the examined tree, the
-checkout holding the solution or directory searched, and every read only of a regular file within ejryan89-skill-core's
-READ_LIMIT_BYTES (msbuild_reader's docstring). Nothing inside the tree is stat, listed, or read through a link that
-leads outside it, judged from each name's own metadata and each link's text (ejryan89-skill-core's
-folder_walk.outside_link_refusal). The search for projects follows no link entry out of the tree, not even to learn what
-it leads to: a .csproj so linked is an UNREADABLE line naming the link and its target, and any other such entry is
-reported as a link the search does not follow, so a file link the script also reads, such as a linked
-Directory.Packages.props, is named twice, by the search and by the read. A --root is judged as named, before it is stat
-or resolved: the checkout holding it, the innermost one, nearest at or above it, is found from the top down
+$(ProjectAssetsFile) (msbuild_evaluation's docstring), the project's .user file, or the nearest global.json at or above
+the project's folder, which the .NET host reads to pick the SDK and MSBuild's resolvers read too; nor when they may read
+a file whose path the reader cannot settle, an Import's, such as one naming a property no file sets, or one of the
+restore's, such as after an Import the reader did not read, which may set its folder; nor when a global.json candidate
+cannot be stat. The walk answers that project alone, and an SDK_FAILED line for each name says why, naming the first
+such file. The graph walk runs for every project too: for a project the SDK answered, the walk's chains along a route
+the SDK printed are printed once with it, named `sdk`, with the walk's hops at the SDK's versions, and the walk's
+version of a package after `graph` where a referenced project's own restore resolves it apart, a split `conflicts`
+reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly or one through a
+packages.config project; for every other project it answers alone. So whether dotnet is installed changes which source a
+route names and which version leads where the two differ, never which routes are printed. A path a solution or project
+names is read only inside the examined tree, the checkout holding the solution or directory searched, and every read
+only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's docstring). Nothing inside the
+tree is stat, listed, or read through a link that leads outside it, judged from each name's own metadata and each link's
+text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for projects follows no link entry out of the
+tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE line naming the link and its target, and
+any other such entry is reported as a link the search does not follow, so a file link the script also reads, such as a
+linked Directory.Packages.props, is named twice, by the search and by the read. A --root is judged as named, before it
+is stat or resolved: the checkout holding it, the innermost one, nearest at or above it, is found from the top down
 (msbuild_reader.examined_tree), following a link on its way only while no checkout lies above it, and taken as it stands
 before the first link inside a checkout, so a link above the checkout, such as macOS's /var or a link to the place a
 repository is kept, is the user's own choice of root and is followed, while a link inside the checkout is never followed
@@ -139,15 +139,22 @@ are judged, though MSBuild imports every <project file>.*.props and .targets in 
 file sets is taken as obj/, though the environment or the command line may set it; the search for global.json stops, as
 MSBuild's searches do, at anything of that name but a folder, a link to nothing included, which the .NET host may pass
 over to read one further up; an Exists() or *OfFileAbove path the reader cannot settle is stat by MSBuild wherever it
-leads, though no file there is read; a `..` after a link or after a name that is not there, in --root or --project, is
-judged as Linux and macOS take it, after following the link, and refused as missing after a name not there, so on
-Windows a path the system would take by name can be refused; and the look at the links and the read are two steps
-(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
-file itself, is read as a file of the tree wherever its other names lie. The script changes nothing on disk but the
-graph file and runs no restore or build; it prints a last line FAILED <reason> when it cannot finish, such as when the
-root cannot be resolved, a solution found in the root folder, or a solution or folder --root names, is one a link inside
-the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names no project of the root, --output
-is inside a skills directory, the home folder is not known, or the graph file cannot be written.
+leads, though no file there is read; the restore's generated files, the project's .user file, and the nearest
+global.json are judged by where they lie, never by what they hold, so an Import or a ProjectAssetsFile a generated file
+holds, a global.json's sdk.paths, which the .NET host honours from SDK 10, or its msbuild-sdks, that leads outside the
+tree is not seen, nor what the NuGet SDK resolver reads for a versioned MSBuild SDK, every NuGet.Config from the
+project's folder up and the user's and the machine's, or what it downloads; a link inside the checkout whose absolute
+target names the checkout through another spelling of its path, such as /tmp for macOS's /private/tmp, is refused as
+leading out of it, since a target is taken as inside only when it names the checkout as the checkout's own path is
+written; a `..` after a link or after a name that is not there, in --root or --project, is judged as Linux and macOS
+take it, after following the link, and refused as missing after a name not there, so on Windows a path the system would
+take by name can be refused; and the look at the links and the read are two steps (folder_walk.followed_inside), so a
+name replaced by a link between them is read through, and a hard link, being the file itself, is read as a file of the
+tree wherever its other names lie. The script changes nothing on disk but the graph file and runs no restore or build;
+it prints a last line FAILED <reason> when it cannot finish, such as when the root cannot be resolved, a solution found
+in the root folder, or a solution or folder --root names, is one a link inside the checkout leads out of it (`<root>
+cannot be examined: <reason>`), --project names no project of the root, --output is inside a skills directory, the home
+folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -178,7 +185,7 @@ from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path
 from flat_text import fact_line, flat_text
-from folder_walk import BOUNDED, NotEntered, followed_inside, is_hidden, outside_link_refusal, walk_files
+from folder_walk import BOUNDED, NotEntered, followed_inside, is_hidden, names_below, outside_link_refusal, walk_files
 from folders_up import folders_up
 from link_probe import is_link_or_junction
 from msbuild_evaluation import Build, ProjectFile, Sources, UnplacedImport, Unsettled, read_project, tree_key
@@ -404,11 +411,39 @@ def followed_named(path: Path, tree: Path) -> tuple[Path | None, str | None]:
     takes each `..` after following the link before it, from the link's text, as Linux and macOS take it, on every
     platform, and stats nothing outside the tree. A name that is not there before a `..` leaves a path Linux and macOS
     cannot open, so it is refused as missing, on every platform, though Windows takes such a `..` by name
-    (`file_presence.MISSING`), and nothing past the missing name is resolved, which would follow a link after it."""
+    (`file_presence.MISSING`), and nothing past the missing name is resolved, which would follow a link after it. A
+    `..` that leaves the tree at its top is refused when a link brought the path there (`climb_through_link`), and
+    answers None and None, as `followed_inside` does, only when the path's own text stands at the top."""
     inside, refused = followed_inside(path, tree)
+    if inside is None and refused is None:
+        return None, climb_through_link(path, tree)
     if inside is not None and ".." in inside.parts:
         return None, file_presence.MISSING
     return inside, refused
+
+
+def climb_through_link(path: Path, tree: Path) -> str | None:
+    """Why the `..` that takes `path` out of `tree` at its top is refused, or None when the path's own text stands at
+    the top there, so the `..` climbs out by its text alone. `followed_inside` answers None and None for such a `..`
+    whether the path's names reached the top by text or through a link whose text leads there, such as one to `.`, to
+    `..` from a folder below the top, or to the tree's own absolute path; the system takes the `..` after following
+    that link, so where the text stands elsewhere, the path leaves the tree through the link and is refused, never
+    taken as a climb out of the tree's top to the folder above it."""
+    root = tree.absolute()
+    names = names_below(path.absolute(), root)
+    for index, name in enumerate(names or ()):
+        if name != "..":
+            continue
+        before = root.joinpath(*names[:index]) if names else root
+        if followed_inside(before / "..", tree) != (None, None):
+            continue
+        if lexical_absolute(before) == lexical_absolute(root):
+            return None
+        return (
+            f"{before.as_posix()} is reached through a link, so the .. after it leaves the examined tree "
+            f"{root.as_posix()}, which the reader does not follow"
+        )
+    return None
 
 
 def as_named(path: Path, tree: Path) -> Path | None:

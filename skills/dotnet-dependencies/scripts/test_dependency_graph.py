@@ -3901,6 +3901,45 @@ class PathBoundTests(Fixture):
         reason = self.outside_reason(linked, "a", other)
         self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
 
+    def test_a_dot_dot_a_link_brings_to_the_top_of_the_checkout_is_refused_for_a_root_and_a_project(self) -> None:
+        # In leads to the checkout's top by a link to `.`, A/Up by one to `..`, and Abs by one to the checkout's own
+        # absolute path, so the system takes the `..` after each from the top, out of the checkout: a --root naming a
+        # solution past it fails naming the place, and a --project past it is no project of the root, each with nothing
+        # outside stat or listed, never re-rooted in the folder above or resolved there. Windows makes a link to a
+        # folder only as a junction, whose target is absolute, so there only Abs is pinned.
+        repo = self.root / "repo"
+        outside = self.root / "outside"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        (repo / "A").mkdir()
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("outside/O.sln", solution("Other\\Other.csproj"))
+        self.write("outside/Other/Other.csproj", LIB_PROJECT)
+        links = {repo / "Abs": repo}
+        if sys.platform != "win32":
+            links.update({repo / "In": Path(), repo / "A" / "Up": Path("..")})
+        for link, target in links.items():
+            if target.is_absolute():
+                link_folder(target, link)
+            else:
+                link.symlink_to(target, target_is_directory=True)
+            self.addCleanup(remove_link, link)
+        for link in links:
+            reason = (
+                f"{link.as_posix()} is reached through a link, so the .. after it leaves the examined tree "
+                f"{repo.as_posix()}, which the reader does not follow"
+            )
+            named = link / ".." / "outside" / "O.sln"
+            project = link / ".." / "outside" / "Other" / "Other.csproj"
+            with self.subTest(link=link.name):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(named))
+                    outcome = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(project))
+                self.assertEqual([], followed_through(touched, [], outside))
+                self.assertEqual((1, [f"FAILED {named} cannot be examined: {reason}"]), (code, rows[-1]))
+                code, rows = outcome
+                self.assertEqual((1, f"FAILED {project} is not a project of {repo}"), (code, rows[-1][0]))
+
     def test_a_root_is_judged_against_the_innermost_checkout_holding_it(self) -> None:
         # A dotfiles checkout at the home folder holds a project's own checkout: the project's checkout is the tree,
         # so a link in it to a folder elsewhere in the home folder leads out of the tree and fails the run, where the
@@ -4222,6 +4261,19 @@ class PathBoundTests(Fixture):
         # The walk answers each project the SDK did not, Empty's failed run included.
         walked = {row[0] for row in self.lines(rows, "PATH") if row[3] == "graph"}
         self.assertEqual({f"src/{name}/{name}.csproj" for name in bodies}, walked)
+        # A restore folder the body leaves unsettled places neither the generated targets nor, after them, the assets.
+        unsure = self.root / "repo" / "src" / "Unsure" / "Unsure.csproj"
+        project = dependency_graph.build_graph(root, self.with_dotnet).project_at(unsure)
+        assert project is not None
+        self.assertEqual(
+            [
+                msbuild_evaluation.UnplacedImport(
+                    "$(MSBuildProjectExtensionsPath)Unsure.csproj.nuget.g.targets", unsure, True
+                ),
+                msbuild_evaluation.UnplacedImport("$(MSBuildProjectExtensionsPath)project.assets.json", unsure, True),
+            ],
+            project.file.unplaced(),
+        )
 
     def test_a_restored_project_whose_restore_folder_lies_outside_the_tree_is_never_passed_to_the_sdk(self) -> None:
         # The project sets its restore folder, or its assets file, outside the tree in its own body, after the props
@@ -4284,6 +4336,56 @@ class PathBoundTests(Fixture):
             [
                 ["src/Gen/Gen.csproj", "Lantern.Json", refused.format("src/Gen/obj/Gen.csproj.nuget.g.props")],
                 ["src/Global/Global.csproj", "Lantern.Json", refused.format("src/Global/global.json")],
+            ],
+            sorted(self.lines(rows, "SDK_FAILED")),
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_the_generated_targets_are_judged_where_the_props_fixed_their_folder_and_the_user_file_beside_the_project(
+        self,
+    ) -> None:
+        # Microsoft.Common.props fixes MSBuildProjectExtensionsPath after Directory.Build.props, and the common targets
+        # import the generated .nuget.g.targets from it before Directory.Build.targets. So a BaseIntermediateOutputPath
+        # the body sets, and a MSBuildProjectExtensionsPath Directory.Build.targets sets, leave the targets in obj/,
+        # where a link leading out keeps the SDK away. The common targets also import the project's .user file beside
+        # it, so one linked out does too.
+        for name in ("BodyBase", "LateExt"):
+            self.write(f"outside/{name}.csproj.nuget.g.targets", "<Project />\n")
+        self.write("outside/User.csproj.user", "<Project />\n")
+        bodies = {
+            "BodyBase": "<PropertyGroup><BaseIntermediateOutputPath>alt/</BaseIntermediateOutputPath></PropertyGroup>",
+            "LateExt": "",
+            "User": "",
+        }
+        root, core = self.restored_solution(bodies)
+        self.write(
+            "repo/src/LateExt/Directory.Build.targets",
+            "<Project><PropertyGroup><MSBuildProjectExtensionsPath>alt/</MSBuildProjectExtensionsPath></PropertyGroup>"
+            "</Project>\n",
+        )
+        for name in ("BodyBase", "LateExt"):
+            generated = f"{name}.csproj.nuget.g.targets"
+            self.linked_out(self.root / "repo" / "src" / name / "obj" / generated, generated)
+        self.linked_out(self.root / "repo" / "src" / "User" / "User.csproj.user", "User.csproj.user")
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual((0, [[str(core), "Lantern.Json"]]), (code, [c[3:] for c in self.sdk.commands]))
+        refused = (
+            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
+            "the examined tree or a link on its way leads out of it"
+        )
+        self.assertEqual(
+            [
+                [
+                    "src/BodyBase/BodyBase.csproj",
+                    "Lantern.Json",
+                    refused.format("src/BodyBase/obj/BodyBase.csproj.nuget.g.targets"),
+                ],
+                [
+                    "src/LateExt/LateExt.csproj",
+                    "Lantern.Json",
+                    refused.format("src/LateExt/obj/LateExt.csproj.nuget.g.targets"),
+                ],
+                ["src/User/User.csproj", "Lantern.Json", refused.format("src/User/User.csproj.user")],
             ],
             sorted(self.lines(rows, "SDK_FAILED")),
         )

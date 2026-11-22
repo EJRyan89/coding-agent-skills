@@ -4,28 +4,30 @@ properties, once for each build of the project.
 The property pass reads the project's files in the order MSBuild imports them, each element where it sits. An SDK-style
 project begins with the SDK's props, which import the nearest `Directory.Build.props` at or above the project and then
 the nearest `Directory.Packages.props` at or above it (NuGet's props, from `Microsoft.Common.props`), so both come
-before the project's body; it ends with the SDK's targets, which import the nearest `Directory.Build.targets` and
-turn each `GlobalPackageReference` into a `PackageReference`. Each search goes up to the filesystem's root, as MSBuild's
+before the project's body; it ends with the SDK's targets, which import the nearest `Directory.Build.targets` and turn
+each `GlobalPackageReference` into a `PackageReference`. Each search goes up to the filesystem's root, as MSBuild's
 does, and a file it finds outside the examined tree is reported as an import not read, naming its path; one inside it
-that a link leads outside (`outside_link_refusal`) stops the search, as any file there stops MSBuild's, and is
-reported, never stat. A project that is not SDK-style meets the same points where it imports `Microsoft.Common.props`
-and its language's targets. Every other `Import` is read where it sits, resolved against the importing file's folder,
-and an `ImportGroup`'s condition applies to each import in it. An import from the toolset's folders
+that a link leads outside (`outside_link_refusal`) stops the search, as any file there stops MSBuild's, and is reported,
+never stat. A project that is not SDK-style meets the same points where it imports `Microsoft.Common.props` and its
+language's targets. Every other `Import` is read where it sits, resolved against the importing file's folder, and an
+`ImportGroup`'s condition applies to each import in it. An import from the toolset's folders
 (`$(MSBuildExtensionsPath)`, `$(MSBuildToolsPath)`, `$(VSToolsPath)`, and the like) or of an SDK sets no property the
-reader reads, so it is not read. An import the reader does not read for any other reason, a
-condition or a path it cannot settle, a file outside the examined tree or through a link leading out of it, missing,
-or unreadable, is reported, and from it on every property is unsettled, since the file may set any. A file imported
-twice is read once, as MSBuild reads it. Each file or path refused for where it lies, outside the examined tree or
-through a link leading out of it, is also kept apart (`ProjectEvaluation.refused`): an import, one not read because its
-condition cannot be settled or its path is a wildcard, judged by the folder before the wildcard, included; a nearest
-file; a `*OfFileAbove` start or candidate; an `Exists()` path; and a file of the restore MSBuild reads, judged though
-never read: the `<project file>.nuget.g.props` the common props import and the `.nuget.g.targets` the common targets
-import, from `$(MSBuildProjectExtensionsPath)`, else `$(BaseIntermediateOutputPath)`, else obj/ beside the project, as
-the files leave them at each point, and the assets file, `$(ProjectAssetsFile)` or project.assets.json in that folder,
-as they leave it at the targets. A file MSBuild may read whose path the reader cannot settle, an Import's or one of the
-restore's, is kept apart too (`ProjectEvaluation.unplaced`). MSBuild would read or stat each, so the caller asks no
-tool that evaluates the project through MSBuild about it. A path refused or outside the tree is compared by its text
-(`tree_key`), never by `same_path`, whose case probe would list the folders on its way.
+reader reads, so it is not read. An import the reader does not read for any other reason, a condition or a path it
+cannot settle, a file outside the examined tree or through a link leading out of it, missing, or unreadable, is
+reported, and from it on every property is unsettled, since the file may set any. A file imported twice is read once, as
+MSBuild reads it. Each file or path refused for where it lies, outside the examined tree or through a link leading out
+of it, is also kept apart (`ProjectEvaluation.refused`): an import, one not read because its condition cannot be settled
+or its path is a wildcard, judged by the folder before the wildcard, included; a nearest file; a `*OfFileAbove` start or
+candidate; an `Exists()` path; and a file MSBuild reads that the reader judges though it never reads it: the `<project
+file>.nuget.g.props` the common props import and the `.nuget.g.targets` the common targets import before
+Directory.Build.targets, from `$(MSBuildProjectExtensionsPath)`, which the common props fix after Directory.Build.props
+from `$(BaseIntermediateOutputPath)`, else obj/ beside the project, unless a file sets it; the restore's assets file,
+`$(ProjectAssetsFile)` or project.assets.json in that folder, as the files leave them after Directory.Build.targets; and
+the project's `.user` file beside it, which the common targets import when it is there. A file MSBuild may read whose
+path the reader cannot settle, an Import's or one of the restore's, is kept apart too (`ProjectEvaluation.unplaced`).
+MSBuild would read or stat each, so the caller asks no tool that evaluates the project through MSBuild about it. A path
+refused or outside the tree is compared by its text (`tree_key`), never by `same_path`, whose case probe would list the
+folders on its way.
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -617,18 +619,32 @@ class Evaluation:
             return
         self.points.add("props")
         self.import_nearest(BUILD_PROPS)
+        self.fix_restore_folder()
         self.restore_import(".props")
         self.import_nearest(CENTRAL_VERSIONS)
 
     def targets_point(self) -> None:
-        """Where the common targets import Directory.Build.targets, and NuGet's add the GlobalPackageReference items."""
+        """Where the common targets import the restore's generated targets and then Directory.Build.targets, the common
+        targets read the project's .user file and NuGet's the restore's assets, and NuGet's add the
+        GlobalPackageReference items."""
         if "targets" in self.points:
             return
         self.points.add("targets")
-        self.import_nearest(BUILD_TARGETS)
         self.restore_import(".targets")
+        self.import_nearest(BUILD_TARGETS)
+        self.judge_unread(self.project.path.with_name(f"{self.project.path.name}.user"))
         self.restore_assets()
         self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
+
+    def fix_restore_folder(self) -> None:
+        """Fix `$(MSBuildProjectExtensionsPath)` as Microsoft.Common.props does after Directory.Build.props: the
+        restore's folder as the files leave it then (`restore_folder`), made absolute against the project's folder, or
+        unsettled when the reader cannot settle it. So a `BaseIntermediateOutputPath` a later file sets moves neither
+        the generated targets the common targets import nor the assets NuGet's read, as it moves neither in MSBuild;
+        a `MSBuildProjectExtensionsPath` a later file sets does."""
+        folder = self.restore_folder()
+        value = None if folder is None else f"{project_path(self.project.path.parent, folder).as_posix()}/"
+        self.state.set("MSBuildProjectExtensionsPath", (value,), True)
 
     def set_value(self, name: str) -> str | None:
         """The one value the files leave `name` at now: `""` when no file set it, and None when it cannot be settled,
@@ -659,25 +675,27 @@ class Evaluation:
         if folder is None:
             self.unplaced.append(UnplacedImport(f"$(MSBuildProjectExtensionsPath){name}", self.project.path, True))
         else:
-            self.judge_restore_file(project_path(self.project.path.parent, folder) / name)
+            self.judge_unread(project_path(self.project.path.parent, folder) / name)
 
     def restore_assets(self) -> None:
-        """Judge the restore's assets file MSBuild reads, as `restore_import` judges a generated import:
+        """Judge the restore's assets file MSBuild reads, after Directory.Build.targets, as `restore_import` judges a
+        generated import:
         `$(ProjectAssetsFile)` where a file sets it, else project.assets.json in the restore's folder."""
         value = self.set_value(ASSETS_PROPERTY)
         if value:
-            self.judge_restore_file(project_path(self.project.path.parent, value))
+            self.judge_unread(project_path(self.project.path.parent, value))
             return
         folder = None if value is None else self.restore_folder()
         if folder is None:
             written = "$(ProjectAssetsFile)" if value is None else f"$(MSBuildProjectExtensionsPath){ASSETS_FILE}"
             self.unplaced.append(UnplacedImport(written, self.project.path, True))
         else:
-            self.judge_restore_file(project_path(self.project.path.parent, folder) / ASSETS_FILE)
+            self.judge_unread(project_path(self.project.path.parent, folder) / ASSETS_FILE)
 
-    def judge_restore_file(self, path: Path) -> None:
-        """Keep a file of the restore among `refused` when it lies outside the examined tree or through a link leading
-        out of it, its own name included, which is read without following it."""
+    def judge_unread(self, path: Path) -> None:
+        """Keep a file MSBuild reads that the reader does not, one of the restore's or the project's .user file, among
+        `refused` when it lies outside the examined tree or through a link leading out of it, its own name included,
+        which is read without following it."""
         tree = self.project.sources.tree
         if refusal(path, tree) is not None or outside_link_refusal(path, tree) is not None:
             self.refused.append(path)
