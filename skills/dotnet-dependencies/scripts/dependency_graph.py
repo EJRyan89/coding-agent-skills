@@ -82,9 +82,11 @@ there; so is one below a folder whose metadata cannot be read. The --project arg
 followed inside the tree as the system follows it, never through a link out of it, and the whole path is resolved, to
 match a project found through a link inside the tree, only when it lies in the tree and no link on its way leads out
 of it; a path a link or `..` leads out of the tree, or one named outside it, is no project of the root and is never
-resolved in full. A limit: a --project named outside the tree, or through a link above it such as macOS's /var, has
-the folders leading to it resolved to learn whether one of them is the root, and its part up to its last `..`
-resolved, which reads the metadata of each name on its way but no file's contents.
+resolved in full. A limit: a --project named outside the tree, through a link above it such as macOS's /var, or with
+its own `..` leaving the tree before a link, has the folders leading to it resolved to learn whether one of them is
+the root, and its part up to its last `..` resolved, which reads the metadata of each name on its way, through such a
+link too, but no file's contents; `repo/../repo/Linked/Sub/../Other/Other.csproj`, with Linked leading outside, is
+resolved through Linked and then refused.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -380,13 +382,17 @@ def named_below(root: Path, path: Path, tree: Path) -> tuple[str, ...] | None:
     """The names leading from `root`, a resolved folder, down to `path` as `as_named` gives it, or None when it lies
     outside `root`, or a link or `..` on its way inside `tree` leads out of it. The shortest leading part of the named
     path that resolves to `root` stands for it, so a link above the root, such as a temporary folder's, still finds it,
-    and a link below it stays a folder the path is named through."""
+    and a link below it stays a folder the path is named through. A leading part inside `tree` that a link leads out of
+    it (`outside_link_refusal`) ends the look before it is resolved, as when `root` lies below the tree."""
     named = as_named(path, tree)
     if named is None:
         return None
     key = same_path(root)
     for depth in range(1, len(named.parts)):
-        if same_path(resolved_path(Path(*named.parts[:depth]))) == key:
+        prefix = Path(*named.parts[:depth])
+        if outside_link_refusal(prefix, tree) is not None:
+            return None
+        if same_path(resolved_path(prefix)) == key:
             return named.parts[depth:]
     return None
 

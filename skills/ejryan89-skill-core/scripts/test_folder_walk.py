@@ -370,11 +370,12 @@ def recording(touched: list[tuple[str, bool]]) -> Iterator[None]:
 
 
 def reached(touched: list[tuple[str, bool]], links: list[Path], outside: Path) -> list[str]:
-    """The touched paths below `outside`, or that follow one of `links` or lie below it."""
+    """The touched paths below `outside`, a stat or listing of it, or a path that follows one of `links` or lies below
+    it."""
     found = []
     for name, follows in touched:
         path = Path(name)
-        below = path != outside and path.is_relative_to(outside)
+        below = path.is_relative_to(outside) and (follows or path != outside)
         if below or any((path == link and follows) or (path != link and path.is_relative_to(link)) for link in links):
             found.append(name)
     return found
@@ -452,6 +453,23 @@ class OutsideLinkTests(WalkTestCase):
                 self.assertEqual((None, reason), followed_inside(path, self.root))
         self.assertIn((str(out), False), touched)
         self.assertEqual([], reached(touched, [out], outside))
+
+    def test_an_absolute_target_is_followed_from_the_tree_not_from_the_links_folder(self) -> None:
+        # Sub/A.csproj's absolute target names .h/B.csproj from the tree's top, never from Sub, where nothing is; that
+        # second link leads outside, so the path is refused naming it, with nothing outside reached.
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "F.csproj").write_text("x\n", encoding="utf-8")
+        (self.root / "Sub").mkdir()
+        (self.root / ".h").mkdir()
+        second = self.root / ".h" / "B.csproj"
+        second.symlink_to(outside / "F.csproj")
+        (self.root / "Sub" / "A.csproj").symlink_to(second)
+        touched: list[tuple[str, bool]] = []
+        with recording(touched):
+            answer = followed_inside(self.root / "Sub" / "A.csproj", self.root)
+        self.assertEqual((None, self.outside(second, outside / "F.csproj")), answer)
+        self.assertEqual([], reached(touched, [second], outside))
 
     def test_a_loop_of_links_an_unreadable_link_and_an_unreadable_name_are_refused(self) -> None:
         loop = self.root / "Loop.csproj"

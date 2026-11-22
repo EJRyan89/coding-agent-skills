@@ -3210,11 +3210,14 @@ def recording_follows(touched: list[tuple[str, bool]]) -> Iterator[None]:
 
 def followed_through(touched: Iterable[tuple[str, bool]], links: Iterable[Path], outside: Path) -> list[str]:
     """The touched paths a call reached through one of `links`, following it or reaching anything below it, or reached
-    below `outside`, which only a call through a link could reach."""
+    in `outside` or below it, which only a call through a link could reach: any call below it, and a stat or listing of
+    the folder itself."""
     chosen = list(links)
 
     def through(path: Path, follows: bool) -> bool:
-        if path != outside and path.is_relative_to(outside):
+        # The outside folder's own lstat is the case probe's of the folder holding the tree; a stat or listing of it,
+        # or anything below it, reaches outside.
+        if path.is_relative_to(outside) and (follows or path != outside):
             return True
         return any((path == link and follows) or (path != link and path.is_relative_to(link)) for link in chosen)
 
@@ -3428,6 +3431,50 @@ class PathBoundTests(Fixture):
             code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo), "--project", str(named))
         self.assertEqual((1, f"FAILED {named} is not a project of {repo}"), (code, rows[-1][0]))
         self.assertEqual([], followed_through(touched, [linked], self.root / "outside"))
+
+    def test_a_project_named_through_a_link_outside_is_never_resolved_through_it_when_the_root_lies_below_the_tree(
+        self,
+    ) -> None:
+        # With the root below the checkout, the look for the root among the path's leading folders passes the tree;
+        # a folder there that a link leads out of it ends the look before it is resolved, for a searched root, a
+        # solution in a subfolder, and a searched root holding no project.
+        repo = self.root / "repo"
+        (repo / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("repo/src/App.sln", solution("..\\App\\App.csproj"))
+        (repo / "Empty").mkdir()
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Linked"
+        link_folder(self.root / "outside", linked)
+        self.addCleanup(remove_link, linked)
+        named = linked / "Other" / "Other.csproj"
+        for root in (repo / "App", repo / "src" / "App.sln", repo / "Empty"):
+            with self.subTest(root=root.name):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(root), "--project", str(named))
+                self.assertEqual(1, code)
+                # No project of the root, or none found under it, as the run would say for any path outside it.
+                self.assertTrue(rows[-1][0].startswith("FAILED "), rows[-1][0])
+                self.assertEqual([], followed_through(touched, [linked], self.root / "outside"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_searched_project_whose_absolute_target_passes_through_a_second_outside_link_is_never_read(self) -> None:
+        # Sub/A.csproj names .h/B.csproj from the tree's top, and that link leads outside: the project is reported
+        # naming it, unread, and nothing outside is reached.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/F.csproj", OUTSIDE_PROJECT)
+        (repo / "Sub").mkdir()
+        second = self.linked_out(repo / ".h" / "B.csproj", "F.csproj")
+        (repo / "Sub" / "A.csproj").symlink_to(second)
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Out.Pkg", "--root", str(repo))
+        self.assertEqual(1, code)
+        self.assertIn(["Sub/A.csproj", self.outside_reason(second, "F.csproj", repo)], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([], self.lines(rows, "PATH"))
+        self.assertEqual([], followed_through(touched, [second], self.root / "outside"))
 
     def test_a_project_named_outside_the_tree_is_no_project_of_it_and_never_resolved_in_full(self) -> None:
         # Only the folders leading to it are resolved, to learn whether one is the root through a link above it; the
