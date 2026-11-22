@@ -2733,6 +2733,56 @@ FAILED_ON_STDERR = f"prints FAILED on stderr; print it on stdout; see {SCRIPT_RE
 PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
 
 
+def handled(receiver: str, body: str = "", bases: str = "") -> str:
+    """A class Tool whose body opens with body and whose method reports a failure through receiver's error."""
+    return (
+        f"class Tool{bases}:\n{body}    def run(self):\n        try:\n            pass\n        except OSError as e:\n"
+        f"            {receiver}.error(str(e))\n"
+    )
+
+
+def handled_in_main(receiver: str, bound: str = "") -> str:
+    """A module-level main that reports a failure through receiver's error, after binding receiver to bound if given."""
+    binding = f"    {receiver} = {bound}\n" if bound else ""
+    return f"def main():\n{binding}    try:\n        pass\n    except OSError as e:\n        {receiver}.error(str(e))\n"
+
+
+# What binds a parser in a class: its body, a property, a method that returns one, and one of its methods on its
+# receiver.
+ANNOTATED = "    cli: argparse.ArgumentParser\n"
+PROPERTY = "    @property\n    def cli(self) -> argparse.ArgumentParser:\n        return argparse.ArgumentParser()\n"
+BUILDER = "    def build(self) -> argparse.ArgumentParser:\n        return argparse.ArgumentParser()\n"
+INSTANCE = "    def __init__(self):\n        self.cli = argparse.ArgumentParser()\n"
+# Each receiver of a class's parser the script-results policy reads, by its id: the source that binds it and reports
+# through it.
+CLASS_PARSERS = [
+    ("a class body's parser", handled("self.cli", ANNOTATED)),
+    ("a property's parser", handled("self.cli", PROPERTY)),
+    ("a class-level parser through the class's name", handled("Tool.cli", ANNOTATED)),
+    ("a class-level parser through type(self)", handled("type(self).cli", ANNOTATED)),
+    ("a class-level parser through self.__class__", handled("self.__class__.cli", ANNOTATED)),
+    ("a class-level parser outside its class", f"class Tool:\n{ANNOTATED}{handled_in_main('Tool.cli')}"),
+    ("a base class's parser", f"class Base:\n{ANNOTATED}{handled('self.cli', bases='(Base)')}"),
+    ("a base class's instance parser", f"class Base:\n{INSTANCE}{handled('self.cli', bases='(Base)')}"),
+    ("a method's parser", handled("self.build()", BUILDER)),
+    ("a local bound to a method's parser", handled("made = self.build()\n            made", BUILDER)),
+    ("an instance parser", handled("self.cli", INSTANCE)),
+    ("an optional parser", handled("self.cli", "    cli: typing.Optional[argparse.ArgumentParser]\n")),
+    ("a parser or None", handled("self.cli", "    cli: argparse.ArgumentParser | None\n")),
+]
+# Each receiver the script-results policy reads as no parser, beside a class that binds one, by its id.
+CLASS_NON_PARSERS = [
+    ("another class's body", f"class Holder:\n{ANNOTATED}{handled('self.cli')}"),
+    ("another class's instance", f"class Holder:\n{INSTANCE}{handled('self.cli')}"),
+    ("another class's base", f"class Holder:\n{ANNOTATED}class Base:\n    pass\n{handled('self.cli', bases='(Base)')}"),
+    ("a class body's bare name", f"class Holder:\n{ANNOTATED}{handled_in_main('cli', 'logging.getLogger()')}"),
+    ("a method called by its bare name", f"class Holder:\n{BUILDER}{handled_in_main('made', 'build()')}"),
+    ("another method's result", handled("self.other()", BUILDER)),
+    ("a logger property", handled("self.cli", PROPERTY.replace("argparse.ArgumentParser:", "logging.Logger:"))),
+    ("an optional logger", handled("self.cli", "    cli: typing.Optional[logging.Logger]\n")),
+]
+
+
 @pytest.mark.parametrize(
     ("source", "breach"),
     [
@@ -2820,6 +2870,16 @@ PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
             f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
             id="parser.error on a parser built through a module-level alias",
         ),
+        # A receiver a class binds a parser on, in its body, a property, a method that returns one, a base class, or
+        # one of its methods, read in that class's methods, and a class-level one through the class's own name.
+        *(
+            pytest.param(
+                f"import argparse, typing\n{source}",
+                f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+                id=name,
+            )
+            for name, source in CLASS_PARSERS
+        ),
     ],
 )
 def test_script_contract_policy_reads_each_report_through_the_module_s_names(
@@ -2842,8 +2902,15 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
         # A subscript binds no spelling, so a receiver that has none, such as a call's result, is no parser.
         "import argparse\ndef main(holder):\n    holder[0] = argparse.ArgumentParser()\n    try:\n        pass\n"
         "    except OSError as e:\n        made().error(str(e))\n",
+        # A class's parser is none in another class, by its bare name, or through a method called by its bare name.
+        *(f"import argparse, logging, typing\n{source}" for _, source in CLASS_NON_PARSERS),
     ],
-    ids=["another attribute", "an attribute named as a parser's name", "a subscript target"],
+    ids=[
+        "another attribute",
+        "an attribute named as a parser's name",
+        "a subscript target",
+        *(name for name, _ in CLASS_NON_PARSERS),
+    ],
 )
 def test_script_contract_policy_reads_no_other_receiver_as_a_parser(tmp_path: Path, source: str) -> None:
     write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
