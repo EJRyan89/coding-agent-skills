@@ -139,8 +139,6 @@ PROJECT_SUFFIX = ".csproj"
 # The most folders the search for projects lists, the searched directory included, as the module states.
 PROJECT_SEARCH_FOLDER_LIMIT = 10_000
 PATH_LIMIT = 200
-# The permissions of a graph file the script creates: its owner writes it and everyone reads it, as an editor's.
-NEW_FILE_MODE = 0o644
 FINDING_KEYS = ("CONFLICT", "REDIRECT_STALE", "UNREADABLE")
 NO_FRAMEWORK = "-"
 Hop = tuple[str, str, str]  # kind (package, project, assembly, framework), name, version or ""
@@ -1191,7 +1189,10 @@ def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
         try:
             mode = stat.S_IMODE(requested.stat().st_mode)
         except FileNotFoundError:
-            mode = NEW_FILE_MODE
+            # Imported here, not in the import block, which another change reworks at the same time.
+            from atomic_file import TRACKED_FILE_MODE
+
+            mode = TRACKED_FILE_MODE
         except OSError as error:
             raise unexaminable(requested, error) from None
         replace_text(requested, text, mode=mode)
