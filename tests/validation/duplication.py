@@ -1341,6 +1341,11 @@ PARENT_SEARCHES = frozenset({"isdisjoint", "issubset", "issuperset", "intersecti
 # glob's, whose pattern may end in wildcards after the separator.
 REGULAR_EXPRESSIONS = {"re.match": 0, "re.fullmatch": 0, "re.search": 0, "re.compile": 0}
 GLOBS = {"fnmatch.fnmatch": 1, "fnmatch.fnmatchcase": 1, "fnmatch.filter": 1, "fnmatch.translate": 0}
+# A path's own glob matches, and the keywords their pattern goes by: `pattern`, and `path_pattern` before Python 3.13.
+PATH_MATCHES = frozenset({"match", "full_match"})
+PATH_PATTERN_KEYWORDS = frozenset({"pattern", "path_pattern"})
+# A `%` template's last field when it is a named `%(key)s` that nothing follows, and no `%%` makes it literal text.
+NAMED_LAST_FIELD = re.compile(r"(?<!%)(?:%%)*%\((?P<key>[^()]*)\)s\Z")
 # The builtins that make a collection of what they are given, so its items are the prefixes given.
 COLLECTIONS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 
@@ -1520,16 +1525,17 @@ class _ContainmentReader:
         """Whether `value` builds a text ending in a separator from another, as a folder and its separator are built:
         by `+`, an f-string, `%` or `str.format`, a `join` of a path module or of a string, or any of these held in a
         name, an attribute, a parameter's default, or what a function of the module returns, by a binding or a `+=`,
-        or in an item of a tuple or list of prefixes. A literal alone is no folder."""
+        or in an item of a tuple or list of prefixes. A last piece of trailing characters alone, such as a glob's
+        `"*"`, is passed over to the piece before it. A literal alone is no folder."""
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
-            return self.ends(value.right)
-        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod) and isinstance(value.left, ast.Constant):
-            template = value.left.value
-            return isinstance(template, str) and (
-                template.endswith(SEPARATORS) or (template.endswith("%s") and self.ends(_last_item(value.right)))
-            )
+            return self.ends(value.left if self._trails(value.right) else value.right)
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod):
+            return self._interpolated(value)
         if isinstance(value, ast.JoinedStr):
-            last = value.values[-1] if value.values else None
+            pieces = list(value.values)
+            while len(pieces) > 1 and self._trails(pieces[-1]):
+                pieces.pop()
+            last = pieces[-1] if pieces else None
             return self.ends(last.value if isinstance(last, ast.FormattedValue) else last)
         if isinstance(value, ast.Call):
             return self._built_by_call(value)
@@ -1538,6 +1544,47 @@ class _ContainmentReader:
         if (choices := _alternatives(value)) is not None:
             return any(map(self.built, choices))
         return self._follow(value, self.built, self.ends)
+
+    def _trails(self, piece: ast.expr) -> bool:
+        """Whether a piece's static text is made of trailing characters alone, so the text ends where the piece before
+        it does."""
+        text = _static_text(piece, self.resolver)
+        return text is not None and not text.rstrip(self.trailing)
+
+    def _interpolated(self, value: ast.BinOp) -> bool:
+        """Whether a `%` template, static as _static_text reads it, ends in a separator, or in a last field that takes
+        a text ending in one: `%s` filled by the one value or a tuple's last item, or a named `%(key)s` filled from a
+        mapping. A glob's trailing wildcards are passed over first, so the field before them is the last."""
+        template = _static_text(value.left, self.resolver)
+        if template is None:
+            return False
+        stripped = template.rstrip(self.trailing)
+        named = NAMED_LAST_FIELD.search(stripped)
+        return (
+            stripped.endswith(SEPARATORS)
+            or (stripped.endswith("%s") and self.ends(_last_item(value.right)))
+            or (named is not None and self._mapped(value.right, named["key"]))
+        )
+
+    def _mapped(self, mapping: ast.expr, key: str) -> bool:
+        """Whether a mapping gives `key` a text ending in a separator: a literal dictionary's last entry under the key,
+        unless a `**` unpacking after it may replace it, a `dict` call's keyword, or either held in a name, an
+        attribute, or what a function of the module returns."""
+        if isinstance(mapping, ast.Dict):
+            # An unpacking's key is None, and its value is a mapping, never a text that ends in a separator.
+            values = [
+                value
+                for name, value in zip(mapping.keys, mapping.values, strict=True)
+                if name is None or _static_text(name, self.resolver) == key
+            ]
+            return bool(values) and self.ends(values[-1])
+        if isinstance(mapping, ast.Call) and self.name(mapping.func) == "dict":
+            return any(keyword.arg == key and self.ends(keyword.value) for keyword in mapping.keywords)
+
+        def held(value: ast.expr) -> bool:
+            return self._mapped(value, key)
+
+        return self._follow(mapping, held, _never)
 
     def _built_by_call(self, call: ast.Call) -> bool:
         function = self.name(call.func)
@@ -1554,10 +1601,12 @@ class _ContainmentReader:
             return self._each(call, self.built)
         else:
             return self._follow(call, self.built, self.built)
-        if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
+        text = _static_text(template, self.resolver) if template is not None else None
+        if text is None:
             return False
-        filled = _last_field(template.value, positional, call.keywords)
-        return template.value.endswith(SEPARATORS) or self.ends(filled)
+        # A glob's trailing wildcards are passed over first, so the field before them is the last.
+        stripped = text.rstrip(self.trailing)
+        return stripped.endswith(SEPARATORS) or self.ends(_last_field(stripped, positional, call.keywords))
 
     def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
         """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
@@ -1573,11 +1622,33 @@ class _ContainmentReader:
         `trailing`."""
         position = positions.get(self.name(call.func))
         pattern = call_argument(call, position, "pattern", "pat") if position is not None else None
-        if pattern is None:
+        return pattern is not None and self._holds_folder([pattern], trailing)
+
+    def _path_glob(self, call: ast.Call) -> bool:
+        """Whether `call` is a path's `match` or `full_match`, bound or called on the class, given a pattern holding a
+        text built to end in a separator, followed by any `*`. A `match` of the `re` module, or of a regular expression
+        the module compiles, matches a text against a pattern, never a path."""
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr in PATH_MATCHES):
             return False
+        if self.name(call.func.value) == "re" or self._compiled(call.func.value):
+            return False
+        keywords = [keyword.value for keyword in call.keywords if keyword.arg in PATH_PATTERN_KEYWORDS]
+        return self._holds_folder([*call.args, *keywords], "*")
+
+    def _compiled(self, receiver: ast.expr) -> bool:
+        """Whether `receiver` is a regular expression the module compiles: a `re.compile` call, or one held in a name,
+        an attribute, or what a function of the module returns."""
+        if isinstance(receiver, ast.Call) and self.name(receiver.func) == "re.compile":
+            return True
+        return self._follow(receiver, self._compiled, _never)
+
+    def _holds_folder(self, patterns: list[ast.expr], trailing: str) -> bool:
+        """Whether any of `patterns` holds a text built to end in a separator, followed by any of `trailing`."""
         self.trailing = trailing
         try:
-            return any(self.built(node) for node in ast.walk(pattern) if isinstance(node, ast.expr))
+            return any(
+                self.built(node) for pattern in patterns for node in ast.walk(pattern) if isinstance(node, ast.expr)
+            )
         finally:
             self.trailing = ""
 
@@ -1647,12 +1718,17 @@ class _ContainmentReader:
 
     def test(self, node: ast.AST) -> str | None:
         """The containment test `node` writes, or None: an is_relative_to, a commonpath or commonprefix of any path
-        module, a search of a path's parents, a startswith, find, index, regular expression, or glob of a text built
-        to end in a separator, a comparison of what a removeprefix of one leaves, a check for a separator after a
-        prefix, a relpath or a relative_to that walks up checked for a parent segment, a comparison of a path's
-        leading parts, or of a leading slice with a folder and its separator, or a `try` or a `with` whose body calls
-        relative_to and whose handler catches, or whose `contextlib.suppress` suppresses, the ValueError it raises for
-        a path outside the folder, which turns that error into an answer."""
+        module, a search of a path's parents, by a set or sequence method, `in`, `&`, or `==` with a name a loop or a
+        comprehension takes from them, a startswith, find, index, regular expression, glob, or path's `match` or
+        `full_match` of a text built to end in a separator, a comparison of what a removeprefix of one leaves, a check
+        for a separator after a prefix, a relpath or a relative_to that walks up checked for a parent segment, a
+        comparison of a path's leading parts, or of a leading slice with a folder and its separator, or a `try` or a
+        `with` whose body calls relative_to and whose handler catches, or whose `contextlib.suppress` suppresses, the
+        ValueError it raises for a path outside the folder, which turns that error into an answer.
+
+        One comparison of a parent by `==` is no search: one with the very expression whose `parents` the loop takes,
+        as `(path, *path.parents)` compared with `path` to spot its first item, since a path is never among its own
+        parents. A comparison with any other expression is read as containment."""
         if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
             return "is_relative_to"
         if (
@@ -1679,13 +1755,36 @@ class _ContainmentReader:
             return self._comparison_test(node)
         return None
 
+    def _parent_taken(self, side: ast.expr, other: ast.expr) -> bool:
+        """Whether a comparison's side is a name a loop or a comprehension takes from what reads a path's `parents`,
+        directly or through a name the module binds to it, so comparing it by `==` with `other` searches them. A path
+        is never among its own parents, so comparing with the path itself, as a walk over `(path, *path.parents)`
+        does to spot its first item, searches nothing."""
+        if not isinstance(side, ast.Name):
+            return False
+        own = ast.dump(other)
+
+        def reads(value: ast.expr) -> bool:
+            return any(
+                (isinstance(node, ast.Attribute) and node.attr == "parents" and ast.dump(node.value) != own)
+                or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and self._follow(node, reads, _never))
+                for node in ast.walk(value)
+            )
+
+        return any(map(reads, self.looped.get(self._owner(side)[0], [])))
+
     def _catches_value_error(self, caught: ast.expr | None) -> bool:
-        """Whether an `except` clause's type catches ValueError: bare, ValueError itself or a base of it, alone or in a
-        tuple."""
+        """Whether an `except` clause's type catches ValueError: bare, ValueError itself or a base of it, alone, in a
+        tuple, unpacked by `*`, or held in a name the module binds to any of these."""
         if caught is None:
             return True
-        kinds = caught.elts if isinstance(caught, ast.Tuple) else [caught]
-        return any(self.name(kind).removeprefix("builtins.") in VALUE_ERROR_CATCHERS for kind in kinds)
+        if isinstance(caught, ast.Tuple):
+            return any(map(self._catches_value_error, caught.elts))
+        if isinstance(caught, ast.Starred):
+            return self._catches_value_error(caught.value)
+        if self.name(caught).removeprefix("builtins.") in VALUE_ERROR_CATCHERS:
+            return True
+        return isinstance(caught, ast.Name) and self._follow(caught, self._catches_value_error, _never)
 
     def _suppresses_value_error(self, context: ast.expr) -> bool:
         """Whether a `with` item is a `contextlib.suppress` given ValueError or a base of it."""
@@ -1716,7 +1815,7 @@ class _ContainmentReader:
             )
         if self._pattern(call, REGULAR_EXPRESSIONS, ""):
             return "a regular expression of a folder and its separator"
-        if self._pattern(call, GLOBS, "*"):
+        if self._pattern(call, GLOBS, "*") or self._path_glob(call):
             return "a glob of a folder and its separator"
         return None
 
@@ -1727,7 +1826,13 @@ class _ContainmentReader:
             for op, side in zip(comparison.ops, comparison.comparators, strict=True)
             if isinstance(op, ast.In | ast.NotIn)
         ]
-        if any(map(_names_parents, searched)):
+        equated = [
+            pair
+            for index, op in enumerate(comparison.ops)
+            if isinstance(op, ast.Eq | ast.NotEq)
+            for pair in ((sides[index], sides[index + 1]), (sides[index + 1], sides[index]))
+        ]
+        if any(map(_names_parents, searched)) or any(self._parent_taken(*pair) for pair in equated):
             return "a search of a path's parents"
         if any(map(self._parent, sides)) and any(map(self._relative, sides)):
             return "a relpath checked for a parent segment"
