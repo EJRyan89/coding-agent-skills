@@ -266,10 +266,11 @@ class MayLieInTests(unittest.TestCase):
             self.assertTrue(may_lie_in(self.root / "TREE" / "x", tree))
 
     def test_a_network_share_s_names_fold_too(self) -> None:
-        # Every platform: two leading separators open a share's anchor on Windows and a system-defined one on POSIX,
-        # and either is folded, where `within` compares a share's names as written.
+        # Every platform: two leading separators open a share's anchor on Windows, which holds the host and the share,
+        # and a system-defined one on POSIX, under which the host and the share are names no directory answers for;
+        # either way every part is folded, where `within` compares the names under a POSIX one as written.
         self.assertTrue(may_lie_in("//HOST/Share/x", "//host/share"))
-        self.assertFalse(within("//HOST/Share/x", "//host/share"))
+        self.assertTrue(may_lie_in("//HOST/Share/x/y", "//host/share/X"))
 
     @unittest.skipUnless(sys.platform == "win32", "only Windows drops a trailing dot and reads the \\\\?\\ prefix")
     def test_a_trailing_dot_and_the_extended_prefix_are_read_as_windows_opens_them(self) -> None:
