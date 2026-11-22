@@ -31,6 +31,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from file_presence import is_occupied
+
 # The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
 # index or graph a script creates: its owner writes it and everyone reads it, as an editor's new file.
 TRACKED_FILE_MODE = 0o644
@@ -156,7 +158,8 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     `path` that cannot be removed raises UnfinishedReservationError. An interrupt or kill as the reservation is made,
     or a kill before the replace, can leave an empty file at `path`, which no code here runs to remove. A process that
     removes the reservation and puts its own entry at `path`, or replaces it, before the replace has that entry
-    replaced, or removed by a failure's clean-up.
+    replaced, or removed by a failure's clean-up. Windows' exclusive create follows a link, so a link put at `path`
+    after the entry there is looked for and before the reservation is made has the reservation made where it leads.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
@@ -194,7 +197,7 @@ def _replace_reservation(copy: Path, target: Path) -> None:
     anything still is, and the failure raised as it was, or UnfinishedReservationError raised for an entry that cannot
     be removed. An interrupt that lands as os.open returns is raised before the reservation's descriptor is held, so
     it leaves the reservation, as a kill does."""
-    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    descriptor = _reserve(target)
     try:
         os.close(descriptor)
         copy.replace(target)
@@ -258,4 +261,22 @@ def _publish(
                 ) from removal
             if made and isinstance(failure, OSError):
                 return
+        raise
+
+
+def _reserve(target: Path) -> int:
+    """Create `target` empty and exclusively, returning its descriptor, or raise FileExistsError where any entry is.
+
+    The entry is looked for first, without following a link: Windows' exclusive create follows a link at `target`,
+    making the file where it leads, even where it leads nowhere. Windows also refuses an exclusive create over a folder
+    as PermissionError, so a create refused while an entry is at `target` raises FileExistsError too."""
+    if is_occupied(target):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+    try:
+        return os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise
+    except OSError as refusal:
+        if is_occupied(target):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target)) from refusal
         raise

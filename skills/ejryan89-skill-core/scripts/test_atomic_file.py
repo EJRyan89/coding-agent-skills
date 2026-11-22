@@ -492,10 +492,13 @@ class ReservationTests(unittest.TestCase):
                 with (
                     mock.patch.object(os, "link", appear_then_refuse),
                     mock.patch.object(os, "replace", wraps=os.replace) as replace,
+                    mock.patch.object(os, "open", wraps=os.open) as opened,
                     self.assertRaises(FileExistsError),
                 ):
                     create_bytes(path, REPORT, allow_empty_reservation=True)
                 self.assertEqual([], replace.call_args_list)
+                # Never asked of the exclusive create, which on Windows follows a link and refuses a folder otherwise.
+                self.assertEqual([], [call for call in opened.call_args_list if Path(call.args[0]) == path])
                 self.assertEqual(["report.md"], names_in(temporary), "no copy is left beside the target")
                 if name == "file":
                     self.assertEqual(b"theirs\n", path.read_bytes())
@@ -597,6 +600,39 @@ class ReservationTests(unittest.TestCase):
                     self.assertFalse(error.made)
                 for item in Path(temporary).iterdir():
                     real_unlink(item)
+
+    def test_an_exclusive_create_refused_while_an_entry_is_at_the_target_reads_as_already_there(self) -> None:
+        # Windows refuses an exclusive create over a folder as PermissionError, not FileExistsError.
+        real_open = os.open
+        for name, appears in (("a folder appears", True), ("nothing there", False)):
+            refusal = PermissionError(errno.EACCES, "synthetic reservation")
+
+            def refused(
+                opened: Any, flags: int, mode: int = 0o777, appears: bool = appears, refusal: OSError = refusal
+            ) -> int:
+                if Path(opened).name != "report.md":  # tempfile.mkstemp opens the copy through os.open too
+                    return real_open(opened, flags, mode)
+                if appears:
+                    Path(opened).mkdir()
+                raise refusal
+
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.EINVAL)),
+                    mock.patch.object(os, "open", refused),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    create_bytes(path, REPORT, allow_empty_reservation=True)
+                if appears:
+                    self.assertIs(FileExistsError, type(raised.exception))
+                    self.assertEqual((errno.EEXIST, str(path)), (raised.exception.errno, raised.exception.filename))
+                    self.assertIs(refusal, raised.exception.__cause__)
+                    self.assertTrue(path.is_dir(), "the folder is left as it was")
+                    self.assertEqual(["report.md"], names_in(temporary), "no copy beside it")
+                else:
+                    self.assertIs(refusal, raised.exception)
+                    self.assertEqual([], names_in(temporary))
 
     def test_the_clean_up_removes_whatever_is_left_at_the_target_and_never_misreports_it(self) -> None:
         real_replace = os.replace
