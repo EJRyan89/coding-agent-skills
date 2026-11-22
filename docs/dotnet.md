@@ -36,6 +36,9 @@ solution the same way and judge its entries by one rule:
   or a device (`\\?\` or `\\.\`), is refused and never opened or looked up, so a path a repository writes cannot make
   Windows contact another host as you. `dotnet-format` reports it as a `REFUSED` line; `dotnet-dependencies` as an
   `UNREADABLE` line naming the path and the reason.
+- An entry that a symbolic link or junction on its way, its own name included, leads outside the tree is refused the
+  same way, judged from each name's own metadata and each link's text, so nothing outside the tree is stat, listed,
+  or opened to decide; a link whose target stays inside the tree is read through.
 - A solution, project, or settings file is read only when it is a regular file no larger than `READ_LIMIT_BYTES` in
   `dotnet_solution.py`; a larger file or a device is refused unread.
 - A search of the repository for solutions or projects skips version-control, dependency, build-output, and Visual

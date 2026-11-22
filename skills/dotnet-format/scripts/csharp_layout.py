@@ -41,20 +41,34 @@ finding; another value is not, since it is the repository's choice, and neither 
 skill cannot act on.
 
 Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
-from its text before anything touches it and then as resolved: an absolute entry, one whose `..` segments leave the
-root, one written as a network share or a device, and one a symbolic link or junction leads out of the root prints
-`REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is left. `config`
-evaluates a project the solution lists only when the entry lies inside the repository root, judged from its text before
-anything touches it; an entry outside the root, or written as a network share or a device, prints `REFUSED <entry>
-<reason>` and is left unread. A --solution that is absolute or lies outside the root, judged as a FILE_LIST entry
-is, fails as `FAILED the solution <solution> is refused: <reason>` before the solution is read. Neither writes a file
+from its text before anything touches it and then by its links: an absolute entry, one whose `..` segments leave the
+root, one written as a network share or a device, and one a symbolic link or junction on its way, its own name included,
+leads out of the root, or whose `..` climbs above the root once the links before it are followed, as after a link to the
+root itself, prints `REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is
+left. `config` evaluates a project the solution lists only when the entry lies inside the repository root, judged the
+same way, its `..` segments taken by text as MSBuild takes them: an entry outside the root, written as a network share
+or a device, or that a link on its way, its own name included, leads out of the root, prints `REFUSED <entry> <reason>`,
+which is reported and is no finding, and is never stat, read, or evaluated. A project file in the folder of a listed
+file, or the nearest folder above it holding one, that is a link leading out of the root is never stat or read: `config`
+fails naming it, as for a project it cannot examine. A link is judged from each name's own metadata and each link's text
+(ejryan89-skill-core's `folder_walk.followed_inside`), so nothing outside the root is touched to decide, and a link
+whose target stays inside the root is read through. A --solution that is absolute or lies outside the root, judged as a
+FILE_LIST entry is, fails as `FAILED the solution <solution> is refused: <reason>` before the solution is read. Limits:
+a FILE_LIST entry or --solution holding a `..` is judged both by its text, as Windows opens it, and as written, taking
+each `..` after following the link before it, as Linux and macOS open it, on every platform, so one that either reading
+leads out of the root through a link is refused wherever it runs; a link whose absolute target names a place inside the
+root through another spelling of it, such as macOS's /tmp for /private/tmp, is refused, though it leads inside;
+MSBuild's evaluation of a project, like the formatter's own load of the solution, reads the imports it names, a
+Directory.Build.props above the repository included, wherever they lead, which the script does not judge; and the look
+at a path's links and its read are two steps, so a name replaced by a link between them is read through, and a hard
+link, being the file itself, is read as a file of the repository wherever its other names lie. Neither writes a file
 that is read-only, or one that is a symbolic link or a Windows junction or lies below one inside the repository, since
-the write would land wherever the link points. Each judges and reads every file it would write before it writes
-any, so a refusal never stops it part way: `check --fix` prints `REFUSED <file> <reason>` for each file with a fix
-pending that is a link, lies below one, or is read-only, checks it unfixed, and fixes the rest, and `config --apply`
-prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and adds the rest, leaving that setting missing. Each
-replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way
-leaves the file as it was.
+the write would land wherever the link points. Each judges and reads every file it would write before it writes any, so
+a refusal never stops it part way: `check --fix` prints `REFUSED <file> <reason>` for each file with a fix pending that
+is a link, lies below one, or is read-only, checks it unfixed, and fixes the rest, and `config --apply` prints `REFUSED
+<.editorconfig> <reason>`, adds nothing there, and adds the rest, leaving that setting missing. Each replaces a file it
+writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way leaves the file as
+it was.
 
 A failure, such as a listed entry that names no regular file, a FILE_LIST, solution, or analyzer configuration it cannot
 read, or a write that fails, prints `FAILED <reason>` as the last line; a listed file it cannot read is
@@ -63,9 +77,10 @@ may not create a file in, or a file another process holds or made read-only sinc
 `ADDED` lines before the `FAILED` line name changes already written, and the files after it are unchanged.
 
 Exit status:
-  0  check left no VIOLATION, UNREADABLE, or REFUSED line; config left no setting missing and no entry REFUSED
-  1  findings: a VIOLATION remains, a file was UNREADABLE, a setting is still missing, or an entry was REFUSED;
-     or a last line FAILED <reason>
+  0  check left no VIOLATION, UNREADABLE, or REFUSED line; config left no setting missing and no FILE_LIST entry or
+     .editorconfig REFUSED, since a REFUSED line for a project the solution lists is reported and is no finding
+  1  findings: a VIOLATION remains, a file was UNREADABLE, a setting is still missing, or a FILE_LIST entry or an
+     .editorconfig was REFUSED; or a last line FAILED <reason>
   2  a usage error
 """
 
@@ -90,7 +105,17 @@ import whole_number
 from analyzer_config import ANALYZER_CONFIG_BREAKS, analyzer_config_lines, is_section_header, read_line, roslyn_lower
 from atomic_file import TRACKED_FILE_MODE, replace_bytes
 from console import run_main
-from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal, write_refusal
+from dotnet_format_targets import (
+    Failed as TargetsFailed,
+)
+from dotnet_format_targets import (
+    inside_root,
+    linked_out_refusal,
+    owning_projects,
+    read_file_list,
+    solution_refusal,
+    write_refusal,
+)
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from file_presence import is_present, require
 from flat_text import fact_line, flat_text
@@ -916,8 +941,9 @@ class AnalyzerConfigs:
 
 def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], None]) -> dict[str, Path]:
     """The projects a solution lists, by `same_path`; a solution that cannot be read fails. An entry
-    ejryan89-skill-core's `refusal` refuses, outside `root` or a network-share or device form, is reported and never
-    touched."""
+    ejryan89-skill-core's `refusal` refuses, outside `root` or a network-share or device form, or one a link on its
+    way, its own name included, leads outside `root` (`linked_out_refusal`), is reported and never stat, opened, or
+    evaluated."""
     try:
         listed = read_listed_projects(solution)
     except XmlRefused as error:
@@ -925,7 +951,7 @@ def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], Non
     projects: dict[str, Path] = {}
     for entry in listed:
         project = project_path(solution.parent, entry)
-        refused = refusal(project, root)
+        refused = refusal(project, root) or linked_out_refusal(root, project)
         if refused:
             emit(fact_line("REFUSED", entry, refused))
         else:
@@ -1107,7 +1133,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
             if refused_solution:
                 raise Failed(refused_solution)
             findings = configure(root, root / arguments.solution, names, arguments.apply, services or Services(), print)
-    except (Failed, OSError) as error:
+    except (Failed, TargetsFailed, OSError) as error:
         print(f"FAILED {flat_text(str(error))}")
         return 1
     return 1 if findings else 0
