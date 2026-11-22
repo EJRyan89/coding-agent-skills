@@ -3464,7 +3464,9 @@ class ProjectSearchTests(Fixture):
             )
         # A path that names no existing project below the root, or one outside it, is still no project of the root.
         self.write("outside/Out.csproj", LIB_PROJECT)
+        self.write("search/.tools/notes.txt", "notes\n")
         for unlisted in (
+            search / ".tools/notes.txt",
             search / ".tools/Tool/Missing.csproj",
             search / ".tools/Tool",
             self.root / "outside/Out.csproj",
@@ -3475,10 +3477,40 @@ class ProjectSearchTests(Fixture):
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / "App/App.csproj"))
         self.assertEqual(["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"], self.lines(rows, "PATH")[0])
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_the_search_found_through_a_link_to_its_file_is_the_one_named_there(self) -> None:
+        # The search lists a link to a .csproj as a file and keeps the project under the path it found it at, so
+        # --project naming that path narrows to it, past a bound the search reached it before, never blamed on the
+        # bound or called no project of the root.
+        search = self.root / "search"
+        self.write("outside/Real.csproj", LIB_PROJECT)
+        (search / "A").mkdir(parents=True)
+        (search / "A" / "L.csproj").symlink_to(self.root / "outside" / "Real.csproj")
+        for name in ("m1", "m2"):
+            self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        for limit in (3, None):
+            with self.subTest(limit=limit):
+                with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", limit or 10_000):
+                    code, rows = self.run_main(
+                        "why", "Lib.Pkg", "--root", str(search), "--project", str(search / "A/L.csproj")
+                    )
+                # Past the bound the run still exits 1 for the UNREADABLE line naming m2, and answers.
+                bounded = [
+                    ["m2", "the search stopped at its bound of 3 folders, before this folder and the folders after it"]
+                ]
+                self.assertEqual((1, bounded) if limit else (0, []), (code, self.lines(rows, "UNREADABLE")))
+                self.assertEqual("SUMMARY", rows[-1][0])
+                self.assertEqual(
+                    [["A/L.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+                )
+
     def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
         search = self.root / "search"
         for name in ("A", "B", "C", "D"):
             self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        # A linked folder the search reports before its bound is not where it stopped.
+        self.write("elsewhere/Other/Other.csproj", LIB_PROJECT)
+        self.link(self.root / "elsewhere", "search/Bz")
         bound = "the search stopped at its bound of 3 folders, before this folder and the folders after it"
         self.assertEqual(
             f"FAILED {search / 'C/C.csproj'} lies in {search / 'C'}, which the search for projects under {search} "
@@ -3500,14 +3532,16 @@ class ProjectSearchTests(Fixture):
         self.write("search/B/B.csproj", LIB_PROJECT)
         hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
         bound = "the search stopped at its bound of 1 folders, before this folder and the folders after it"
+        # Like the line for no project found, it ends naming each folder the search did not search.
         self.assertEqual(
             f"FAILED {search / '.tools/Tool/Tool.csproj'} lies in {search / '.tools'}, which the search for projects "
-            f"under {search} does not enter: {hidden}; pass --root at its solution or its folder",
+            f"under {search} does not enter: {hidden}; pass --root at its solution or its folder; {search / 'A'} not "
+            f"searched: {bound}",
             self.narrowed_failure(search, ".tools/Tool/Tool.csproj", limit=1),
         )
         self.assertEqual(
             f"FAILED {search / 'B/B.csproj'} lies past the search for projects under {search}, which stopped at "
-            f"{search / 'A'}: {bound}; pass --root at its solution or its folder",
+            f"{search / 'A'}: {bound}; pass --root at its solution or its folder; {search / 'A'} not searched: {bound}",
             self.narrowed_failure(search, "B/B.csproj", limit=1),
         )
         # A project the search does not explain, outside the root here, leaves the failure naming what it skipped.

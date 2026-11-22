@@ -71,7 +71,10 @@ out; the FAILED line says why the search did not reach it instead:
 
 the first naming the first folder on its way down that the search skips, prunes as hidden, or does not enter, the
 second the folder the bound stopped the search at, each ending with the advice to pass --root at the project's
-solution or its folder.
+solution or its folder, and, when the search found no project at all, with each folder it did not search, as the
+FAILED line of a search finding none names them. A project named through a link to its file is the project the search
+found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
+why it did not reach it.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -439,10 +442,14 @@ def resolve_root(
     return path, path, find_projects(path, graph_unreadable, passed_over)
 
 
-def no_projects(directory: Path, unreadable: Iterable[tuple[Path, str]]) -> Failed:
-    """The failure of a search for projects that found none, naming each folder it did not search."""
+def no_projects(
+    directory: Path, narrowed: Path | None, unreadable: Iterable[tuple[Path, str]], passed_over: Sequence[NotEntered]
+) -> Failed:
+    """The failure of a search for projects that found none: why it did not reach `narrowed`, the project `--project`
+    names, when `unsearched` finds why, else that it found none, either way naming each folder it did not search."""
     skipped = "".join(f"; {folder} not searched: {reason}" for folder, reason in unreadable)
-    return Failed(f"no solution or .csproj found under {directory}{skipped}")
+    reason = unsearched(directory, narrowed, passed_over)
+    return Failed(f"{reason or f'no solution or .csproj found under {directory}'}{skipped}")
 
 
 def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
@@ -716,8 +723,7 @@ def _present(graph: Graph, path: Path) -> bool:
 
 def build_graph(root: Path, services: Services, narrowed: Path | None = None) -> Graph:
     """Read the solution's projects and, for each one whose file could be read, its packages and redirects. A search
-    for projects that finds none fails, saying why it did not find `narrowed`, the project `--project` names, when the
-    search explains it, else naming each folder it did not search."""
+    for projects that finds none fails as `no_projects` says."""
     unreadable: list[tuple[Path, str]] = []
     passed_over: list[NotEntered] = []
     resolved, base, listed = resolve_root(root, unreadable, passed_over)
@@ -725,8 +731,7 @@ def build_graph(root: Path, services: Services, narrowed: Path | None = None) ->
     # root is a solution exactly when it is not the base; a second look at the disk could answer otherwise.
     solution = None if resolved == base else resolved
     if solution is None and not listed:
-        reason = unsearched(resolved, narrowed, passed_over)
-        raise Failed(reason) if reason is not None else no_projects(resolved, unreadable)
+        raise no_projects(resolved, narrowed, unreadable, passed_over)
     tree = checkout_tree(base)
     graph = Graph(resolved, base, tree, unreadable=unreadable, passed_over=passed_over, sources=Sources(tree, solution))
     load_projects(graph, listed)
@@ -903,13 +908,22 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
     return list(found.values())
 
 
+def named_project(graph: Graph, narrowed: Path) -> Project | None:
+    """The project `--project` names: the one at the path it resolves to, else the one at the path as it is named below
+    the solution's directory, where the search or the solution found a project through a link to its file and keeps it
+    under the path it found it at."""
+    project = graph.project_at(resolved_path(narrowed))
+    names = named_below(graph.base, narrowed) if project is None else None
+    return graph.project_at(graph.base.joinpath(*names)) if names else project
+
+
 def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     """Every project in label order, or the one `--project` names. A project of no solution that a search for projects
     did not reach fails saying why, as `unsearched` finds it, so the run names the search's bound or the folder it
     passes over rather than the project."""
     if narrowed is None:
         return sorted(graph.projects.values(), key=lambda item: ordinal_fold(graph.label(item)))
-    project = graph.project_at(resolved_path(narrowed))
+    project = named_project(graph, narrowed)
     if project is None:
         searched = graph.root == graph.base
         reason = unsearched(graph.root, narrowed, graph.passed_over) if searched else None
