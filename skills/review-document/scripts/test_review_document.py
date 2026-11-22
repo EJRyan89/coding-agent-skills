@@ -2715,6 +2715,22 @@ class OutputTests(DocumentTestCase):
         target.unlink()
         self.assertEqual((0, [f"REPORT {target}", f"RECORD {recorded.with_suffix('.json')}"]), run_main(*arguments))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_an_empty_file_at_the_copys_place_is_refused_as_already_there_never_as_an_empty_report(
+        self,
+    ) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        empty = self.root / "elsewhere" / "empty.md"
+        empty.parent.mkdir()
+        empty.write_bytes(b"")
+        target.symlink_to(empty)
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(empty, target.readlink(), "the link is left as it was")
+        self.assertEqual(b"", empty.read_bytes(), "nothing is written through the link")
+
     def test_a_folder_at_the_copys_place_is_refused_as_already_there_and_never_read_as_an_empty_report(self) -> None:
         # Windows gives a folder, as it gives a link, the size 0 that an empty report.md has.
         recorded = self.recorded_report()

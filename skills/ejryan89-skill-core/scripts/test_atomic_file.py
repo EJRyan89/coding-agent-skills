@@ -615,6 +615,7 @@ class ReservationTests(unittest.TestCase):
             ("fstat", OSError(errno.EIO, "synthetic fstat")),
             ("lstat", OSError(errno.EIO, "synthetic lstat")),
             ("interrupted fstat", KeyboardInterrupt()),
+            ("fstat, then a close that fails", OSError(errno.EIO, "synthetic fstat")),
         ):
             reserved: list[int] = []
             closed: list[int] = []
@@ -635,10 +636,15 @@ class ReservationTests(unittest.TestCase):
                     raise raised
                 return real_lstat(target)
 
-            def close(descriptor: int, reserved: list[int] = reserved, closed: list[int] = closed) -> None:
+            def close(
+                descriptor: int, reserved: list[int] = reserved, closed: list[int] = closed, case: str = name
+            ) -> None:
                 if descriptor in reserved:
                     closed.append(descriptor)
                 real_close(descriptor)
+                if descriptor in reserved and case == "fstat, then a close that fails":
+                    # The descriptor is released, as a close that fails releases it, and the close then fails.
+                    raise OSError(errno.EIO, "synthetic close")
 
             check = (
                 mock.patch.object(Path, "lstat", lstat) if name == "lstat" else mock.patch.object(os, "fstat", fstat)
@@ -750,6 +756,9 @@ FOLLOWING_CREATE = "a create that follows the link"
 RETARGETED = "the link retargeted"
 FOLLOWED_KEPT = "the followed file cannot be removed"
 LINK_REPLACES = "a link replaces the reservation before a failed replace"
+CHECK_SWAP = "a link replaces the reservation as its check fails"
+# The cases in which the link is put at the target only after the reservation is made.
+LATE_LINKS = (LINK_REPLACES, CHECK_SWAP)
 
 
 class LinkAtTheTargetTests(unittest.TestCase):
@@ -777,13 +786,14 @@ class LinkAtTheTargetTests(unittest.TestCase):
         self.theirs.write_bytes(b"theirs\n")
         self.kept = OSError(errno.EBUSY, "synthetic unlink", str(self.leads_to))
         self.failure = OSError(errno.EIO, "synthetic replace")
+        self.check_failure = OSError(errno.EIO, "synthetic fstat")
 
     def patches(self, case: str) -> list[contextlib.AbstractContextManager[Any]]:
         real_open, real_occupied, real_unlink = os.open, is_occupied, Path.unlink
         looks: list[Path] = []
 
         def appear_then_refuse(_copy: Any, _target: Any) -> None:
-            if case != LINK_REPLACES:
+            if case not in LATE_LINKS:
                 self.path.symlink_to(self.leads_to)
             raise refused_link(errno.EPERM)
 
@@ -793,7 +803,7 @@ class LinkAtTheTargetTests(unittest.TestCase):
             return False if len(looks) == 1 else real_occupied(target)
 
         def create(opened: Any, flags: int, mode: int = 0o777) -> int:
-            if Path(opened) != self.path or case in (OWN_CREATE, LINK_REPLACES):
+            if Path(opened) != self.path or case in (OWN_CREATE, *LATE_LINKS):
                 return real_open(opened, flags, mode)
             # Create through the link, as Windows' exclusive create does.
             descriptor = real_open(self.path.resolve(), flags, mode)
@@ -806,6 +816,20 @@ class LinkAtTheTargetTests(unittest.TestCase):
             if without_extended_prefix(target) == without_extended_prefix(self.leads_to.resolve()):
                 raise self.kept
             real_unlink(target, missing_ok=missing_ok)
+
+        real_fstat = os.fstat
+
+        def fstat(descriptor: int) -> os.stat_result:
+            if (
+                self.path.exists()
+                and not self.path.is_symlink()
+                and os.path.samestat(real_fstat(descriptor), self.path.lstat())
+            ):
+                # Another process puts a link where the reservation was, and the check then fails.
+                self.path.unlink()
+                self.path.symlink_to(self.theirs)
+                raise self.check_failure
+            return real_fstat(descriptor)
 
         def replace(_source: Any, _target: Any) -> None:
             # Another process puts a link where the reservation was; the replace then fails.
@@ -822,13 +846,17 @@ class LinkAtTheTargetTests(unittest.TestCase):
             patches.append(mock.patch.object(Path, "unlink", unlink))
         if case == LINK_REPLACES:
             patches.append(mock.patch.object(os, "replace", replace))
+        if case == CHECK_SWAP:
+            patches.append(mock.patch.object(os, "fstat", fstat))
         return patches
 
     def test_a_link_put_at_the_target_is_refused_or_left_and_never_written_through_or_removed(self) -> None:
-        for case in (OWN_CREATE, FOLLOWING_CREATE, RETARGETED, FOLLOWED_KEPT, LINK_REPLACES):
+        for case in (OWN_CREATE, FOLLOWING_CREATE, RETARGETED, FOLLOWED_KEPT, LINK_REPLACES, CHECK_SWAP):
             with self.subTest(case=case):
                 self.prepare()
-                error = {FOLLOWED_KEPT: self.kept, LINK_REPLACES: self.failure}.get(case)
+                error = {FOLLOWED_KEPT: self.kept, LINK_REPLACES: self.failure, CHECK_SWAP: self.check_failure}.get(
+                    case
+                )
                 with contextlib.ExitStack() as stack:
                     for patch in self.patches(case):
                         stack.enter_context(patch)
@@ -848,7 +876,7 @@ class LinkAtTheTargetTests(unittest.TestCase):
                     self.assertFalse(self.leads_to.exists(), "nothing is left where the link leads")
                 # Windows may give a link's target back in its extended-length form, which names the same place.
                 self.assertEqual(
-                    self.theirs if case in (RETARGETED, LINK_REPLACES) else self.leads_to,
+                    self.theirs if case in (RETARGETED, *LATE_LINKS) else self.leads_to,
                     without_extended_prefix(self.path.readlink()),
                 )
 

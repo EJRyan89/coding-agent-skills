@@ -165,7 +165,8 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     writer that puts a link at `path`, in the caller's own folder, between the look for an entry and the reservation
     has the reservation made where it leads. That is refused as FileExistsError once the reservation is found not to
     be `path`'s own file, and the file made where the link led is removed when the link still leads to it, and stays
-    otherwise; one that cannot be looked at or removed raises its OSError instead.
+    otherwise; one that cannot be looked at or removed raises its OSError instead. Should that writer's link be
+    followed and the check then interrupted, the empty file stays where the link leads.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.

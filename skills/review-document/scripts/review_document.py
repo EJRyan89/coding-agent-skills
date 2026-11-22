@@ -917,9 +917,10 @@ def earlier_copy(target: Path, recorded: Path) -> bool:
 
 
 def is_empty_file(target: Path) -> bool:
-    """Whether the entry at `target` is an empty regular file, never a link, which is never followed. One whose size
-    cannot be read raises its OSError, which names it."""
-    return is_plain_file(target) and target.lstat().st_size == 0
+    """Whether the entry at `target` is an empty regular file, never a link, which is never followed, judged from one
+    lstat of it. One that cannot be read, or is gone by then, raises its OSError, which names it."""
+    metadata = target.lstat()
+    return is_plain_file(target, metadata) and metadata.st_size == 0
 
 
 # Why a listed run in each status but recorded has no report to copy.
