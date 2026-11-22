@@ -184,6 +184,19 @@ GITHUB_SECTIONS = {
         "<h2>x</h2>\n~~~\n\n## Forms considered\n\nw1\n\n- w2\n\nw3\n===\n\nw4",
         "\nw1\n\n- w2\n",
     ),
+    # A numbered line under a bullet's text opens an item of its own, whose content starts a column further in, so a
+    # paragraph indented two columns after a blank line is the document's, and the underline under it makes it a
+    # heading that ends the section.
+    "an underline after a numbered item that left a bullet": (
+        "## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter",
+        "\n- a\n2. b\n",
+    ),
+    # An item that holds only a comment, right under a paragraph, interrupts it, as an item with text does, so the
+    # line under it is the item's, and an underline the item does not hold is a rule, which ends nothing.
+    "a rule under an item that holds only a comment and interrupts a paragraph": (
+        "## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4",
+        "\nw1\n- \n  w3\n---\n\nw4",
+    ),
     # A bare marker opens an item that holds the lines indented to its content, so the comment and the heading under
     # it are the item's.
     "a comment under an item that opens empty": (
@@ -326,14 +339,16 @@ def test_a_generated_body_is_read_as_github_renders_it(text: str, section: str |
     assert forms_section(text) == section
 
 
-# Where a setext or HTML heading ends the section, read here by the module's own item reading and the walk's quotes as
-# it was before the walk read the rest of the body, each pinned to GitHub's rendering: an underline or an HTML heading
-# a list item or a quote holds is inside the section, and one no container holds ends it.
+# Where a setext or HTML heading ends the section, read through markdown_sections' contained_lines, each pinned to
+# GitHub's rendering: an underline or an HTML heading a list item or a quote holds is inside the section, and one no
+# container holds ends it.
 SETEXT_AND_HTML_ENDS = {
     "underline in an item's later paragraph": ("- a\n\n  text\n  ---", True),
     "underline in a quote": ("> text\n> ---", True),
     "underline below a lazy line of an item": ("- a\ntext\n---", True),
     "equals underline in a numbered item": ("1. a\n   b\n   ===", True),
+    "equals line below a lazy line of a quote": ("> a\ntext\n===", True),
+    "underline in an item that holds only a comment, under a paragraph": ("w1\n- <!-- w2 -->\n  w3\n  ---", True),
     "underline in a nested item": ("- a\n  - b\n\n    text\n    ---", True),
     "underline in a quote in an item": ("- a\n  > text\n  > ---", True),
     "HTML heading in an item": ("- a\n  <h2>x</h2>", True),
@@ -358,21 +373,6 @@ def test_a_setext_or_html_heading_ends_the_section_only_outside_every_container(
     section = forms_section(f"## Forms considered\n\n{forms}\n\nafter\n\n## End\n")
     assert section is not None
     assert ("after" in section) is inside, section
-
-
-@pytest.mark.parametrize(
-    ("text", "section"),
-    [
-        # The module's own item reading holds a numbered line under a bullet's text as lazy, so the underlined line
-        # after the blank line is read as the bullet's, where GitHub ends the section at it.
-        ("## Forms considered\n\n- a\n2. b\n\n  Text\n  ---\nafter", "\n- a\n2. b\n\n  Text\n  ---\nafter"),
-        # An item that holds only a comment, right under a paragraph, is read as an empty item that cannot interrupt
-        # it, so the underline makes the paragraph a heading, where GitHub reads the next line as the item's.
-        ("## Forms considered\n\nw1\n- <!-- w2 -->\n  w3\n---\n\nw4", "\nw1\n- "),
-    ],
-)
-def test_a_setext_heading_is_held_within_the_module_s_stated_limit(text: str, section: str) -> None:
-    assert forms_section(text) == section
 
 
 @pytest.mark.parametrize("text", ["## Forms considered", "## Forms considered\n## Next\n\ntext"])

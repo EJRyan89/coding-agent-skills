@@ -1,7 +1,8 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, the block walker, the labels of a fence in an executable language, the inline
-code span reader, the HTML comment pattern, and the block rules every reader of Markdown's structure reads
-as CommonMark does: the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
+reader, the fenced code block reader, the block walker and the reader of the lines its containers hold, the labels of a
+fence in an executable language, the inline code span reader, the HTML comment pattern, and the block rules every reader
+of Markdown's structure reads as CommonMark does: the whitespace of block structure, list markers, and which list item
+may interrupt a paragraph."""
 
 from __future__ import annotations
 
@@ -239,6 +240,16 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
     return _walk(lines).headings
 
 
+def contained_lines(lines: list[str]) -> set[int]:
+    """The indexes of the lines a list item or a blockquote holds, as GitHub renders them: each line that opens one,
+    each line the open ones continue, a blank line among them, a fence's lines inside one, and a line that lazily
+    continues the paragraph of one though its marker or indentation does not. A reader that asks whether a block is the
+    document's own, such as a setext heading's text and underline, asks it here. How list items and blockquotes hold a
+    line, and the limits of that reading, are `_walk`'s, the one walk `blocks`, `code_block_lines`, and
+    `document_headings` read too, so a line held here is never a heading `document_headings` gives."""
+    return _walk(lines).contained
+
+
 def _starts_leaving(rest: str, column: int, start: int) -> bool:
     """Whether what is left of a line that an open container does not hold, starting at `column`, starts a block at
     the column `start` the content of the containers that hold it starts at, which closes the others, rather than
@@ -383,7 +394,8 @@ def blocks(lines: list[str]) -> Iterator[Block]:
 
 def _walk(lines: list[str]) -> _Walker:
     """The document read in one pass, holding one stack of open containers, the list items and blockquotes that hold
-    the line, outermost first: its blocks, the lines of its code blocks, and each heading no container holds.
+    the line, outermost first: its blocks, the lines of its code blocks, each heading no container holds, and the lines
+    a container holds.
 
     Each line is read as CommonMark reads one, once. It continues each open container in turn: a blockquote while a `>`
     marker stands at most MAX_BLOCK_INDENT columns past the content that holds it, and a list item while the line is
@@ -416,6 +428,9 @@ def _walk(lines: list[str]) -> _Walker:
     walker = _Walker(lines)
     for index in range(len(lines)):
         walker.line(index)
+        # A line the open containers hold once it is read: one they continue, one it opens them on, and a lazy one.
+        if walker.containers:
+            walker.contained.add(index)
     walker.end_fence(len(lines))
     walker.close()
     return walker
@@ -447,12 +462,11 @@ def _cells(row: str) -> int:
 class _Walker:
     """What `_walk` has read so far. The structure: the containers that hold the line, outermost first, as the width
     of each list item's content past the content that holds it, or QUOTE_CONTAINER, and the place of each blockquote
-    among them; whether a paragraph's text is
-    open; whether the last list item opened with nothing after its marker; how many `|` rows in a row the containers
-    hold, the last of them, whether the paragraph they are in has tried to be a table, and whether they are a
-    table's; and the open fence, with its run. What it yields: the blocks, the code lines, the fences, and the
-    document's headings. The open block: its first line, kind, and lines, and the blank lines after an open indented
-    code block, which join it only when more code follows."""
+    among them; whether a paragraph's text is open; whether the last list item opened with nothing after its marker;
+    how many `|` rows in a row the containers hold, the last of them, whether the paragraph they are in has tried to be
+    a table, and whether they are a table's; and the open fence, with its run. What it yields: the blocks, the code
+    lines, the fences, the document's headings, and the lines a container holds. The open block: its first line, kind,
+    and lines, and the blank lines after an open indented code block, which join it only when more code follows."""
 
     lines: list[str]
     containers: list[int] = field(default_factory=list)
@@ -469,6 +483,7 @@ class _Walker:
     code: set[int] = field(default_factory=set)
     headings: list[tuple[int, re.Match[str]]] = field(default_factory=list)
     fences: list[Fence] = field(default_factory=list)
+    contained: set[int] = field(default_factory=set)
     first: int = 0
     kind: str = ""
     open: list[str] = field(default_factory=list)
