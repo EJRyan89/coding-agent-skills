@@ -2260,6 +2260,18 @@ class PullRequestTests(PipelineTestCase):
                 finally:
                     target.unlink()
 
+    @unittest.skipIf(sys.platform == "win32", "Windows keeps no permission bits but read-only")
+    def test_a_listed_runs_file_it_cannot_read_at_the_copys_place_is_named_as_already_there(self) -> None:
+        listed, recorded, first, unreported = self.linked_runs()
+        target = self.output / "2" / "report.md"
+        refused = f"{unreported} {target} already exists, and is not replaced; the report is at {recorded[1]}"
+        # The report's own bytes, so the size matches and the compare must open it.
+        target.write_bytes(recorded[1].read_bytes())
+        target.chmod(0)
+        self.addCleanup(target.chmod, 0o644)
+        self.assertEqual((1, [*first, refused]), run_main("report", "--runs", listed))
+        self.assertEqual(0, stat.S_IMODE(target.stat().st_mode), "the file is left as it was")
+
     def test_a_listed_runs_link_to_a_folder_at_the_copys_place_is_named_as_already_there(self) -> None:
         listed, recorded, first, unreported = self.linked_runs()
         target = self.output / "2" / "report.md"
@@ -2602,6 +2614,19 @@ class OutputTests(DocumentTestCase):
                     self.assertEqual(["fixture", "report.md"], sorted(item.name for item in self.output.iterdir()))
                 finally:
                     target.unlink()
+
+    @unittest.skipIf(sys.platform == "win32", "Windows keeps no permission bits but read-only")
+    def test_a_file_it_cannot_read_at_the_copys_place_is_refused_as_already_there_whatever_it_holds(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        # The report's own bytes, so the size matches and the compare must open it.
+        target.write_bytes(recorded.read_bytes())
+        target.chmod(0)
+        self.addCleanup(target.chmod, 0o644)
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual(0, stat.S_IMODE(target.stat().st_mode), "the file is left as it was")
 
     def test_a_link_to_a_folder_at_the_copys_place_is_refused_as_already_there(self) -> None:
         recorded = self.recorded_report()

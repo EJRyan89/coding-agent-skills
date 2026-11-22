@@ -23,13 +23,13 @@ Every command prints one fact per line:
           that is not finalized, or one whose fixture or report is not what the run list says, it prints UNREPORTED
           <selector> <run directory> <reason> in its place and goes on. Given --fixture and --report instead, it does
           the same for that one fixture and report, failing with the reason. A copy is never written over anything
-          already there; a regular file already holding the same bytes is the earlier copy, and is reported again,
-          and anything else, a symbolic link or junction included whatever it leads to, is refused. A copy is
-          made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is
-          put in place by a hard link, so an output directory whose file system has none, such as FAT or exFAT, gets
-          no copy, and the reason names the file system's refusal. Once the copy is in place, report.md is whole:
-          a temporary copy beside it that cannot then be removed fails with a reason saying report.md is made and
-          naming the copy left, and the next call reports report.md as the earlier copy.
+          already there; a regular file it can read already holding the same bytes is the earlier copy, and is reported
+          again, and anything else, a symbolic link or junction included whatever it leads to, is refused. A copy is
+          made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is put in
+          place by a hard link, so an output directory whose file system has none, such as FAT or exFAT, gets no copy,
+          and the reason names the file system's refusal. Once the copy is in place, report.md is whole: a temporary
+          copy beside it that cannot then be removed fails with a reason saying report.md is made and naming the copy
+          left, and the next call reports report.md as the earlier copy.
 
 Exit status:
   0  the command printed its facts
@@ -888,11 +888,21 @@ def report(fixture: Path, recorded: Path) -> list[str]:
         # Made whole or not at all, so a copy that fails part way leaves no report.md for the next call to refuse.
         create_bytes(target, content, mode=TRACKED_FILE_MODE)
     except FileExistsError as exc:
-        # The copy an earlier call made is a regular file holding the report's bytes, so a run list reported again
-        # names it again. A link is never that copy, whatever it leads to, and is never followed to compare it.
-        if not (is_plain_file(target) and filecmp.cmp(recorded, target, shallow=False)):
+        # The copy an earlier call made holds the report's bytes, so a run list reported again names it again.
+        if not earlier_copy(target, recorded):
             raise DocumentError(f"{target} already exists, and is not replaced; the report is at {recorded}") from exc
     return [f"REPORT {target}", f"RECORD {record}"]
+
+
+def earlier_copy(target: Path, recorded: Path) -> bool:
+    """Whether the entry at `target` is a copy `report` made of `recorded`: a regular file, never a link, which is
+    never followed whatever it leads to, holding the same bytes. One that cannot be read is not shown to be it."""
+    if not is_plain_file(target):
+        return False
+    try:
+        return filecmp.cmp(recorded, target, shallow=False)
+    except OSError:
+        return False
 
 
 # Why a listed run in each status but recorded has no report to copy.
