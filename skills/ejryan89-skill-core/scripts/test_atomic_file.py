@@ -31,9 +31,8 @@ from atomic_file import (
 )
 
 SKIP_ALLOWED = {
-    "ReservationTests.test_a_link_put_at_the_target_after_the_look_is_refused_and_never_written_through": "the race "
-    "it holds is a symbolic link put at the target, which Windows makes only with a privilege or developer mode a "
-    "machine may lack",
+    "LinkAtTheTargetTests.setUp": "the races it holds are a symbolic link put at the target, which Windows makes only "
+    "with a privilege or developer mode a machine may lack",
 }
 
 
@@ -608,70 +607,55 @@ class ReservationTests(unittest.TestCase):
                 for item in Path(temporary).iterdir():
                     real_unlink(item)
 
-    def test_a_link_put_at_the_target_after_the_look_is_refused_and_never_written_through(self) -> None:
-        with tempfile.TemporaryDirectory() as probe:
-            try:
-                (Path(probe) / "link").symlink_to(Path(probe) / "missing")
-            except (OSError, NotImplementedError) as unsupported:
-                self.skipTest(f"this platform makes no symbolic link here: {unsupported}")
-        real_open, real_occupied = os.open, atomic_file.is_occupied
-        for name in ("the platform's own create", "a create that follows the link", "the link retargeted"):
-            with (
-                self.subTest(case=name),
-                tempfile.TemporaryDirectory() as temporary,
-                tempfile.TemporaryDirectory() as elsewhere,
-            ):
+    def test_a_check_of_the_reservation_that_fails_closes_and_removes_it_and_is_raised_as_it_was(self) -> None:
+        real_open, real_fstat, real_close = os.open, os.fstat, os.close
+        real_lstat = Path.lstat
+        for name, raised in (
+            ("fstat", OSError(errno.EIO, "synthetic fstat")),
+            ("lstat", OSError(errno.EIO, "synthetic lstat")),
+            ("interrupted fstat", KeyboardInterrupt()),
+        ):
+            reserved: list[int] = []
+            closed: list[int] = []
+
+            def reserve(opened: Any, flags: int, mode: int = 0o777, reserved: list[int] = reserved) -> int:
+                descriptor = real_open(opened, flags, mode)
+                if Path(opened).name == "report.md":  # tempfile.mkstemp opens the copy through os.open too
+                    reserved.append(descriptor)
+                return descriptor
+
+            def fstat(descriptor: int, reserved: list[int] = reserved, raised: BaseException = raised) -> Any:
+                if descriptor in reserved:
+                    raise raised
+                return real_fstat(descriptor)
+
+            def lstat(target: Path, raised: BaseException = raised) -> os.stat_result:
+                if target.name == "report.md":
+                    raise raised
+                return real_lstat(target)
+
+            def close(descriptor: int, reserved: list[int] = reserved, closed: list[int] = closed) -> None:
+                if descriptor in reserved:
+                    closed.append(descriptor)
+                real_close(descriptor)
+
+            check = (
+                mock.patch.object(Path, "lstat", lstat) if name == "lstat" else mock.patch.object(os, "fstat", fstat)
+            )
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "report.md"
-                leads_to = Path(elsewhere) / "missing.md"
-                theirs = Path(elsewhere) / "theirs.md"
-                theirs.write_bytes(b"theirs\n")
-                looks: list[Path] = []
-
-                def appear_then_refuse(_copy: Any, _target: Any, path: Path = path, leads_to: Path = leads_to) -> None:
-                    path.symlink_to(leads_to)
-                    raise refused_link(errno.EPERM)
-
-                def look(target: Path, looks: list[Path] = looks) -> bool:
-                    # The first look finds nothing, as when the link is put there just after it.
-                    looks.append(target)
-                    return False if len(looks) == 1 else real_occupied(target)
-
-                def create(
-                    opened: Any,
-                    flags: int,
-                    mode: int = 0o777,
-                    case: str = name,
-                    path: Path = path,
-                    theirs: Path = theirs,
-                ) -> int:
-                    if Path(opened) != path or case == "the platform's own create":
-                        return real_open(opened, flags, mode)
-                    # Create through the link, as Windows' exclusive create does.
-                    descriptor = real_open(path.resolve(), flags, mode)
-                    if case == "the link retargeted":
-                        path.unlink()
-                        path.symlink_to(theirs)
-                    return descriptor
-
                 with (
-                    mock.patch.object(os, "link", appear_then_refuse),
-                    mock.patch.object(atomic_file, "is_occupied", look),
-                    mock.patch.object(os, "open", create),
-                    mock.patch.object(os, "replace", wraps=os.replace) as replace,
-                    self.assertRaises(FileExistsError),
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.ENOTSUP)),
+                    mock.patch.object(os, "open", reserve),
+                    mock.patch.object(os, "close", close),
+                    check,
+                    self.assertRaises(type(raised)) as caught,
                 ):
                     create_bytes(path, REPORT, allow_empty_reservation=True)
-                self.assertEqual([], replace.call_args_list, "nothing replaces the link")
-                self.assertTrue(path.is_symlink(), "the link is left at the target")
-                self.assertEqual(["report.md"], names_in(temporary), "no copy beside it")
-                self.assertEqual(b"theirs\n", theirs.read_bytes(), "a file the create did not make is left alone")
-                if name == "the link retargeted":
-                    self.assertEqual(theirs, path.readlink())
-                    # The file made through the link can no longer be found by the link, so it stays.
-                    self.assertEqual(b"", leads_to.read_bytes())
-                else:
-                    self.assertEqual(leads_to, path.readlink())
-                    self.assertFalse(leads_to.exists(), "nothing is left where the link leads")
+                self.assertIs(raised, caught.exception)
+                self.assertEqual(1, len(reserved))
+                self.assertEqual(reserved, closed, "the reservation's descriptor is closed once")
+                self.assertEqual([], names_in(temporary), "no reservation at the target and no copy beside it")
 
     def test_an_exclusive_create_refused_while_an_entry_is_at_the_target_reads_as_already_there(self) -> None:
         # Windows refuses an exclusive create over a folder as PermissionError, not FileExistsError.
@@ -757,6 +741,116 @@ class ReservationTests(unittest.TestCase):
             self.assertIn("its empty reservation or another entry, cannot be removed", str(error))
             self.assertTrue(path.is_dir(), "the folder is left as it was")
             self.assertEqual(["report.md"], names_in(temporary), "no copy beside it")
+
+
+# How a link reaches the target, each a case of LinkAtTheTargetTests.
+OWN_CREATE = "the platform's own create"
+FOLLOWING_CREATE = "a create that follows the link"
+RETARGETED = "the link retargeted"
+FOLLOWED_KEPT = "the followed file cannot be removed"
+LINK_REPLACES = "a link replaces the reservation before a failed replace"
+
+
+class LinkAtTheTargetTests(unittest.TestCase):
+    """A symbolic link put at the target while the fallback runs is refused or left alone, never written through or
+    removed. The cases with a create that follows the link emulate Windows' exclusive create, so they hold on every
+    platform; the platform's own create follows the link only on Windows."""
+
+    def setUp(self) -> None:
+        with tempfile.TemporaryDirectory() as probe:
+            try:
+                (Path(probe) / "link").symlink_to(Path(probe) / "missing")
+            except (OSError, NotImplementedError) as unsupported:
+                self.skipTest(f"this platform makes no symbolic link here: {unsupported}")
+        folders = [tempfile.TemporaryDirectory() for _ in range(2)]
+        for folder in folders:
+            self.addCleanup(folder.cleanup)
+        self.folder = Path(folders[0].name)
+        self.path = self.folder / "report.md"
+        self.leads_to = Path(folders[1].name) / "missing.md"
+        self.theirs = Path(folders[1].name) / "theirs.md"
+        self.theirs.write_bytes(b"theirs\n")
+        self.kept = OSError(errno.EBUSY, "synthetic unlink", str(self.leads_to))
+        self.failure = OSError(errno.EIO, "synthetic replace")
+
+    def patches(self, case: str) -> list[contextlib.AbstractContextManager[Any]]:
+        real_open, real_occupied, real_unlink = os.open, atomic_file.is_occupied, Path.unlink
+        looks: list[Path] = []
+
+        def appear_then_refuse(_copy: Any, _target: Any) -> None:
+            if case != LINK_REPLACES:
+                self.path.symlink_to(self.leads_to)
+            raise refused_link(errno.EPERM)
+
+        def look(target: Path) -> bool:
+            # The first look finds nothing, as when the link is put there just after it.
+            looks.append(target)
+            return False if len(looks) == 1 else real_occupied(target)
+
+        def create(opened: Any, flags: int, mode: int = 0o777) -> int:
+            if Path(opened) != self.path or case in (OWN_CREATE, LINK_REPLACES):
+                return real_open(opened, flags, mode)
+            # Create through the link, as Windows' exclusive create does.
+            descriptor = real_open(self.path.resolve(), flags, mode)
+            if case == RETARGETED:
+                self.path.unlink()
+                self.path.symlink_to(self.theirs)
+            return descriptor
+
+        def unlink(target: Path, missing_ok: bool = False) -> None:
+            if target == self.leads_to.resolve():
+                raise self.kept
+            real_unlink(target, missing_ok=missing_ok)
+
+        def replace(_source: Any, _target: Any) -> None:
+            # Another process puts a link where the reservation was; the replace then fails.
+            self.path.unlink()
+            self.path.symlink_to(self.theirs)
+            raise self.failure
+
+        patches: list[contextlib.AbstractContextManager[Any]] = [
+            mock.patch.object(os, "link", appear_then_refuse),
+            mock.patch.object(atomic_file, "is_occupied", look),
+            mock.patch.object(os, "open", create),
+        ]
+        if case == FOLLOWED_KEPT:
+            patches.append(mock.patch.object(Path, "unlink", unlink))
+        if case == LINK_REPLACES:
+            patches.append(mock.patch.object(os, "replace", replace))
+        return patches
+
+    def test_a_link_put_at_the_target_is_refused_or_left_and_never_written_through_or_removed(self) -> None:
+        expected: dict[str, BaseException | None] = {
+            OWN_CREATE: None,
+            FOLLOWING_CREATE: None,
+            RETARGETED: None,
+            FOLLOWED_KEPT: self.kept,
+            LINK_REPLACES: self.failure,
+        }
+        for case, error in expected.items():
+            with self.subTest(case=case):
+                with contextlib.ExitStack() as stack:
+                    for patch in self.patches(case):
+                        stack.enter_context(patch)
+                    with self.assertRaises(OSError) as raised:
+                        create_bytes(self.path, REPORT, allow_empty_reservation=True)
+                if error is None:
+                    self.assertIs(FileExistsError, type(raised.exception))
+                else:
+                    self.assertIs(error, raised.exception)
+                self.assertTrue(self.path.is_symlink(), "the link is left at the target")
+                self.assertEqual(["report.md"], names_in(str(self.folder)), "no copy beside it")
+                self.assertEqual(b"theirs\n", self.theirs.read_bytes(), "a file the create did not make is left alone")
+                if case in (RETARGETED, FOLLOWED_KEPT):
+                    # The file made through the link is left where the error, or the link it lost, says.
+                    self.assertEqual(b"", self.leads_to.read_bytes())
+                    self.leads_to.unlink()
+                else:
+                    self.assertFalse(self.leads_to.exists(), "nothing is left where the link leads")
+                self.assertEqual(
+                    self.theirs if case in (RETARGETED, LINK_REPLACES) else self.leads_to, self.path.readlink()
+                )
+                self.path.unlink()
 
 
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")

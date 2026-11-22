@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from file_presence import is_occupied
+from link_probe import is_link_or_junction
 from path_containment import resolved_path
 
 # The mode of a file a tool or a skill's script writes for others to read, such as one a checkout tracks, or a new
@@ -154,12 +155,13 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     `allow_empty_reservation` lets a refusal of one of NO_HARD_LINK_ERRNOS fall back to two steps: an exclusive create
     reserves `path` empty, refusing any entry there as FileExistsError, and the copy then replaces the reservation.
     A reader may see the empty reservation until the replace, so allow it only where every reader takes an empty file
-    for one not yet made; the file is still never seen part written. A failure raised once the reservation is made
-    removes what is at `path`, whether or not it is still there, and the copy, and is raised as it was; an entry at
-    `path` that cannot be removed raises UnfinishedReservationError. An interrupt or kill as the reservation is made,
-    or a kill before the replace, can leave an empty file at `path`, which no code here runs to remove. A process that
-    removes the reservation and puts its own entry at `path`, or replaces it, before the replace has that entry
-    replaced, or removed by a failure's clean-up. Windows' exclusive create follows a link, so only a concurrent
+    for one not yet made; the file is still never seen part written. A failure raised once the reservation is made,
+    its check included, removes what is at `path`, whether or not it is still there, unless it is a link, and the
+    copy, and is raised as it was; an entry at `path` that cannot be looked at or removed raises
+    UnfinishedReservationError. An interrupt as the reservation is made or checked, or a kill before the replace, can
+    leave an empty file at `path`, which no code here runs to remove. A process that removes the reservation and puts
+    its own entry at `path`, or replaces it, before the replace has that entry replaced, or, unless it is a link,
+    removed by a failure's clean-up. Windows' exclusive create follows a link, so only a concurrent
     writer that puts a link at `path`, in the caller's own folder, between the look for an entry and the reservation
     has the reservation made where it leads. That is refused as FileExistsError once the reservation is found not to
     be `path`'s own file, and the file made where the link led is removed when the link still leads to it, and stays
@@ -197,20 +199,27 @@ def _link_new(copy: Path, target: Path, *, reserve: bool) -> bool:
 
 def _replace_reservation(copy: Path, target: Path) -> None:
     """Reserve `target` empty with an exclusive create, which raises FileExistsError where any entry is, then replace
-    the reservation with `copy`. Whatever is raised once the reservation is made, what is at `target` is removed, if
-    anything still is, and the failure raised as it was, or UnfinishedReservationError raised for an entry that cannot
-    be removed. An interrupt that lands as os.open returns is raised before the reservation's descriptor is held, so
-    it leaves the reservation, as a kill does."""
+    the reservation with `copy`. Whatever is raised once the reservation is made, _remove_reservation removes what is
+    at `target` and the failure is raised as it was. An interrupt that lands as os.open returns, or as _reserve hands
+    back the checked reservation, is raised outside every clean-up, so it leaves the reservation, as a kill does."""
     descriptor = _reserve(target)
     try:
         os.close(descriptor)
         copy.replace(target)
     except BaseException as failure:
-        try:
-            target.unlink(missing_ok=True)
-        except OSError as removal:
-            raise UnfinishedReservationError(target=target, failure=failure, removal=removal) from removal
+        _remove_reservation(target, failure)
         raise
+
+
+def _remove_reservation(target: Path, failure: BaseException) -> None:
+    """Remove what is at `target` once `failure` ended a create that reserved it: its reservation, or an entry put in
+    its place, but never a link or junction, which an exclusive create never makes. Nothing there is no failure. An
+    entry that cannot be looked at or removed raises UnfinishedReservationError."""
+    try:
+        if is_occupied(target) and not is_link_or_junction(target):
+            target.unlink(missing_ok=True)
+    except OSError as removal:
+        raise UnfinishedReservationError(target=target, failure=failure, removal=removal) from removal
 
 
 def _publish(
@@ -275,7 +284,8 @@ def _reserve(target: Path) -> int:
     making the file where it leads, even where it leads nowhere. Windows also refuses an exclusive create over a folder
     as PermissionError, so a create refused while an entry is at `target` raises FileExistsError too. A link put at
     `target` between the look and the create is caught after it: a created file that is not `target`'s own entry is
-    closed, removed by _remove_followed, and refused as FileExistsError."""
+    closed, removed by _remove_followed, and refused as FileExistsError. A check that fails closes the reservation,
+    which _remove_reservation removes, and is raised as it was."""
     if is_occupied(target):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
     try:
@@ -289,8 +299,11 @@ def _reserve(target: Path) -> int:
     try:
         reserved = os.fstat(descriptor)
         own = os.path.samestat(reserved, target.lstat())
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as failure:
+        # A close that fails releases the descriptor all the same, and the failure that ended the check is raised.
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        _remove_reservation(target, failure)
         raise
     if own:
         return descriptor
