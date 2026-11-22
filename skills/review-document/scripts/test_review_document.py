@@ -167,6 +167,42 @@ def refused_link(folder: Path) -> Iterator[None]:
         yield
 
 
+def link_directory(target: Path, link: Path) -> None:
+    """A real link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def file_links(recorded: Path, elsewhere: Path) -> dict[str, Path]:
+    """Where each symbolic link to a file, made where report's copy goes, leads: to nothing, to a file holding other
+    bytes, to one holding the recorded report's own bytes, and to one its owner may not read, none of them a copy
+    report made."""
+    elsewhere.mkdir(exist_ok=True)
+    (elsewhere / "other.md").write_bytes(b"mine\n")
+    (elsewhere / "same.md").write_bytes(recorded.read_bytes())
+    (elsewhere / "unreadable.md").write_bytes(recorded.read_bytes())
+    (elsewhere / "unreadable.md").chmod(0)
+    return {
+        "a link to nothing": elsewhere / "missing.md",
+        "a link to a different file": elsewhere / "other.md",
+        "a link to an identical file": elsewhere / "same.md",
+        "a link to a file it cannot read": elsewhere / "unreadable.md",
+    }
+
+
+def unchanged_as(path: Path) -> tuple[int, int, int] | None:
+    """The mode, size, and modification time of the file at `path`, read without opening it, or None for none."""
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return None
+    return metadata.st_mode, metadata.st_size, metadata.st_mtime_ns
+
+
 @contextmanager
 def stat_failing_at(path: Path) -> Iterator[None]:
     """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
@@ -2194,6 +2230,46 @@ class PullRequestTests(PipelineTestCase):
                 self.assertEqual(recorded[1].read_bytes(), (fixtures[1].parent / "report.md").read_bytes())
                 (fixtures[1].parent / "report.md").unlink()
 
+    def linked_runs(self) -> tuple[str, list[Path], list[str], str]:
+        """A run list of two finalized runs, their recorded reports, the lines reporting the first, and the opening
+        of the UNREPORTED line naming the second."""
+        self.build_pull(self.stub())
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2)]
+        runs, listed = self.prepare_runs(*fixtures)
+        for run in runs:
+            self.answer(run, [])
+        self.pipeline("check", "--runs", listed)
+        recorded = self.finalized(listed)
+        entry = json.loads(Path(listed).read_text(encoding="utf-8"))["runs"][1]
+        first = [f"REPORT {fixtures[0].parent / 'report.md'}", f"RECORD {recorded[0].with_suffix('.json')}"]
+        return listed, recorded, first, f"UNREPORTED {entry['selector']} {entry['run']}"
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_listed_runs_link_to_a_file_at_the_copys_place_is_named_as_already_there_never_followed(self) -> None:
+        listed, recorded, first, unreported = self.linked_runs()
+        target = self.output / "2" / "report.md"
+        refused = f"{unreported} {target} already exists, and is not replaced; the report is at {recorded[1]}"
+        for name, leads_to in file_links(recorded[1], self.root / "elsewhere").items():
+            with self.subTest(link=name):
+                target.symlink_to(leads_to)
+                before = unchanged_as(leads_to)
+                try:
+                    self.assertEqual((1, [*first, refused]), run_main("report", "--runs", listed))
+                    self.assertEqual(leads_to, target.readlink(), "the link is left as it was")
+                    self.assertEqual(before, unchanged_as(leads_to), "nothing is written through the link")
+                finally:
+                    target.unlink()
+
+    def test_a_listed_runs_link_to_a_folder_at_the_copys_place_is_named_as_already_there(self) -> None:
+        listed, recorded, first, unreported = self.linked_runs()
+        target = self.output / "2" / "report.md"
+        folder = self.root / "elsewhere"
+        folder.mkdir()
+        link_directory(folder, target)
+        refused = f"{unreported} {target} already exists, and is not replaced; the report is at {recorded[1]}"
+        self.assertEqual((1, [*first, refused]), run_main("report", "--runs", listed))
+        self.assertEqual([], list(folder.iterdir()), "nothing is written through the link")
+
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
 # from ejryan89-code-review-core, whose own suite pins the whole sentences.
@@ -2508,6 +2584,35 @@ class OutputTests(DocumentTestCase):
                     copy.unlink()
                 self.assertEqual(["fixture", "report.md"], sorted(item.name for item in self.output.iterdir()))
                 target.unlink()
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_a_file_at_the_copys_place_is_refused_as_already_there_and_never_followed(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        for name, leads_to in file_links(recorded, self.root / "elsewhere").items():
+            with self.subTest(link=name):
+                target.symlink_to(leads_to)
+                before = unchanged_as(leads_to)
+                try:
+                    self.assertEqual((1, [refused]), run_main(*arguments))
+                    self.assertEqual(leads_to, target.readlink(), "the link is left as it was")
+                    self.assertEqual(before, unchanged_as(leads_to), "nothing is written through the link")
+                    self.assertEqual(["fixture", "report.md"], sorted(item.name for item in self.output.iterdir()))
+                finally:
+                    target.unlink()
+
+    def test_a_link_to_a_folder_at_the_copys_place_is_refused_as_already_there(self) -> None:
+        recorded = self.recorded_report()
+        target = self.output / "report.md"
+        folder = self.root / "elsewhere"
+        folder.mkdir()
+        link_directory(folder, target)
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        refused = f"FAILED {target} already exists, and is not replaced; the report is at {recorded}"
+        self.assertEqual((1, [refused]), run_main(*arguments))
+        self.assertEqual([], list(folder.iterdir()), "nothing is written through the link")
 
     def test_report_takes_a_run_list_or_one_fixture_and_its_report_and_fails_a_list_with_no_run(self) -> None:
         for arguments in (
