@@ -1681,8 +1681,8 @@ def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) ->
         name.startswith(sorted(item.name for item in path.parents)),  # Plain names, no separator.
         name.startswith(tuple(top, PREFIXES)),  # A collection is made of its first argument alone.
         name.startswith("{1}".format(os.sep)),  # No argument fills the field.
-        name.startswith("%(top)s%(sep)s" % {"top": top, "sep": os.sep}),  # Not read: named % fields (#2320).
-        any(parent == root for parent in path.parents),  # Not read: parents compared by == (#2320).
+        name.startswith("%(top)s%(sep)s" % {"top": top, "sep": os.sep}),
+        any(parent == root for parent in path.parents),
     ]
 
 
@@ -1728,6 +1728,66 @@ def caught_forms(path: Path, root: Path, walked: Path) -> list[object]:
     found.append(path.relative_to(root, walk_up=False).parts[0] == "..")  # Not read: no walk up.
     found.append(path.relative_to(root, walk_up=True))  # Not read: no parent segment checked.
     return found
+
+
+def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str, str]) -> list[object]:
+    import contextlib
+
+    pattern = top + "/" + "**"
+    tail = "*"
+    named = {"top": top, "sep": os.sep}
+    ancestors = path.parents
+    caught = (OSError, ValueError)
+    kept = (OSError,)
+    found: list[object] = [
+        path.full_match(f"{top}/**"),
+        path.match(top + "/*"),
+        Path.full_match(path, pattern),
+        path.full_match(pattern=f"{top}{os.sep}" + tail),
+        path.match(path_pattern="%s/**" % top),
+        path.full_match("{}/*".format(top)),
+        path.full_match(f"{top}{os.sep}**"),
+        name.startswith(("{}" + "{}").format(top, os.sep)),
+        name.startswith("%(top)s%(sep)s" % named),
+        name.startswith(("%(top)s" + "%(sep)s") % {"top": top, "sep": os.sep}),
+        name.startswith("%(top)s%(sep)s" % dict(top=top, sep="/")),
+        name.startswith("%(top)s%(sep)s" % fields_of(top)),
+        all(parent != root for parent in [path, *path.parents]),
+        [root == parent for parent in ancestors],
+        [upper == path for upper in (path, *root.parents)],
+        path.full_match(top + "/*.py"),  # Text after the wildcard.
+        path.match(top),  # No separator.
+        path.full_match("skills/**"),  # A literal alone.
+        name.startswith("%(top)s%(sep)s" % fields),  # A mapping nothing in the module fills.
+        name.startswith("%(sep)s%(top)s" % named),  # The last field is top.
+        name.startswith("%(top)s%(sep)r" % named),  # A conversion quotes the separator.
+        name.startswith("%%(sep)s" % named),  # A doubled % makes the field literal text.
+        any(parent.name == top for parent in path.parents),  # A parent's name, not the parent.
+        any(part == top for part in path.parts),  # Parts, not parents.
+        any(parent < root for parent in path.parents),  # An ordering, not ==.
+        [folder == path for folder in (path, *path.parents)],  # The path itself, never among its own parents.
+    ]
+    for parent in path.parents:
+        if parent == root:
+            found.append(parent)
+    for index, above in enumerate(path.parents):
+        if above == root:  # Not read: a target unpacked from what the loop takes.
+            found.append(index)
+    try:
+        found.append(path.relative_to(root))
+    except caught:
+        found.append(None)
+    with contextlib.suppress(*caught):
+        found.append(path.relative_to(root))
+    try:
+        found.append(path.relative_to(root))
+    except kept:  # The ValueError escapes.
+        found.append(None)
+    return found
+
+
+def fields_of(top: str) -> dict[str, str]:
+    return {"top": top, "sep": "/"}
 
 
 def told_apart(name: str, top: str) -> bool:
@@ -1792,9 +1852,14 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
             for line in (316, 317, 318)
         ),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 342)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (*range(322, 342), 355)),
+        f"{alpha}:356 tests containment with {parents}{remedy}",
         *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (364, 368, 372, 376, 380, 382)),
         *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in (384, 385, 387)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(414, 421)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(421, 426)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (426, 427, 428, 442)),
+        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (447, 451)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

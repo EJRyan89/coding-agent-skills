@@ -47,7 +47,7 @@ from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
-from path_containment import posix_within, within
+from path_containment import posix_within, relative_within, within
 from shell_targets import run_bash_suite
 from skill_scripts import STANDARD_STREAMS
 from toolchain import find_powershell
@@ -1203,6 +1203,14 @@ def git_isolation_problems(root: Path) -> list[str]:
     return problems
 
 
+def _folders_below(suite: Path, root: Path) -> list[Path]:
+    """The folders from a suite's own up to the root, the root left out: none for a suite directly in the root, or
+    one outside it. Where the suite lies in the root is path_containment's answer."""
+    relative = relative_within(suite.parent, root)
+    parts = relative.parts if relative is not None else ()
+    return [root.joinpath(*parts[:depth]) for depth in range(len(parts), 0, -1)]
+
+
 def pytest_configuration_problems(root: Path) -> list[str]:
     """Report a pytest configuration other than PYTEST_CONFIGURATION, another configuration file at the root, or one
     in a suite's folder or a folder between it and the root, which pytest may read instead.
@@ -1218,9 +1226,7 @@ def pytest_configuration_problems(root: Path) -> list[str]:
     ]
     below: dict[Path, Path] = {}
     for suite in regression_suites(root):
-        for folder in suite.parents:
-            if folder == root:
-                break
+        for folder in _folders_below(suite, root):
             below.update(
                 {
                     folder / name: suite
