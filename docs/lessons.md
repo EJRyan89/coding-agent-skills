@@ -282,9 +282,11 @@ removed fails validation until its pattern follows it.
   `OSError` or `FileLockError` that may pass on a retry; and a test under `tests/deployer/` that checks a refusal's
   `ERROR:` line and its step with `assert_lines`, which finds each line anywhere, rather than `assert_refusal`, which
   holds the step right after its `ERROR:` line, or a `LINES_APART_ALLOWED` entry whose test no longer needs it; and
-  an `ERROR:` line the deployer prints itself, with `print` or `sys.stderr.write`, with no step printed after it,
-  which the guard does not read, since it reads `DeployError` constructions only.
-- **Examples:** #2545, #2563, #2696, #2700, #2933, #3016
+  an `ERROR:` line the deployer prints itself whose text the guard does not read: built where it is not printed, such
+  as a parameter, a call's result other than a deployer function's return, or a name bound more than once, or written
+  through a logger or any stream but a print or a write to `sys.stderr` or `sys.stdout`; and a printed `ERROR:` line
+  followed by a line that is not its step, such as a progress line, which the guard reads as one.
+- **Examples:** #2545, #2563, #2696, #2700, #2933, #3016, #3032
 
 ### A report of a change names the change the write made
 
