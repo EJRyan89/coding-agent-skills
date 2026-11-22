@@ -43,7 +43,6 @@ POSIX_ABSOLUTE = re.compile(r"^/(?!/)")
 POSIX_ROOT = re.compile(r"^/$")
 GIT_BASH_DRIVE = re.compile(r"^/([A-Za-z])(?:/(.*))?$", re.DOTALL)
 DRIVE_PATH = re.compile(r"^([A-Za-z]):(.*)$", re.DOTALL)
-CREATE_NO_WINDOW = 0x08000000
 # The longest command line CreateProcess accepts, in characters. A tool given one path per file batches below it.
 COMMAND_LINE_LIMIT = 32_767
 # Seconds a tool the deployer runs, such as Git Bash, ShellCheck, PowerShell, or git, may take before it is ended with
@@ -524,7 +523,7 @@ def hidden_window() -> HiddenWindow:
     A hook runs without a console on Windows, so a console program it starts would otherwise flash a window. Elsewhere
     a program opens no window by starting, so there are none.
     """
-    return {"creationflags": CREATE_NO_WINDOW} if WINDOWS else {}
+    return {"creationflags": job_tree.CREATE_NO_WINDOW} if WINDOWS else {}
 
 
 def install_hint(tool: str) -> str:
