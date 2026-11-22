@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -660,6 +662,19 @@ class MemoryAuditTests(unittest.TestCase):
         code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
         self.assertEqual((1, ""), (code, stderr))
         self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
+        # audit makes no folder, though the create it writes through would.
+        self.assertFalse(target.parent.exists())
+
+    def test_an_output_whose_folder_is_a_file_is_a_failed_line_and_never_read_as_already_there(self) -> None:
+        # The create's folder step reads a file in the folder's place as an entry there, which is no report.
+        write(self.memory_dir / "MEMORY.md", "")
+        folder = write(self.root / "a file", "kept\n")
+        target = folder / "report.json"
+        self.assertEqual(
+            (1, f"FAILED cannot write {target}: {os.strerror(errno.ENOTDIR)}\n", ""),
+            run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+        )
+        self.assertEqual("kept\n", folder.read_text(encoding="utf-8"))
 
     def test_the_report_is_two_space_indented_in_its_keys_order_escaped_past_ascii(self) -> None:
         # The agent and the person it reports to read the file as text, so its bytes are fixed.
@@ -683,10 +698,8 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(0, code)
         # The report is the audit of the memory directory, the repository, and the instruction files it was given.
         self.assertEqual((self.memory_dir, self.root, [instructions]), audited.call_args.args)
-        # Written in text mode, so each line ends as the platform ends one; read back the same way.
-        self.assertEqual(
-            '{\n  "name": "caf\\u00e9",\n  "counts": [\n    1\n  ]\n}\n', target.read_text(encoding="utf-8")
-        )
+        # Written as UTF-8 bytes, so each line ends in \n on every platform.
+        self.assertEqual(b'{\n  "name": "caf\\u00e9",\n  "counts": [\n    1\n  ]\n}\n', target.read_bytes())
 
     def test_a_report_json_cannot_hold_is_refused_by_name_before_the_output_exists(self) -> None:
         write(self.memory_dir / "MEMORY.md", "")
@@ -747,6 +760,29 @@ class MemoryAuditTests(unittest.TestCase):
                 run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
             )
         self.assertEqual("kept\n", target.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(["late.json", "memory", "repo"]), sorted(item.name for item in self.root.iterdir()))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_dangling_link_at_the_output_is_never_replaced_or_followed(self) -> None:
+        # Holds on Linux and macOS, where a symbolic link needs no privilege.
+        write(self.memory_dir / "MEMORY.md", "")
+        out = self.root / "out"
+        out.mkdir()
+        target = out / "report.json"
+        target.symlink_to(self.root / "nowhere.json")
+        refusals = (
+            (nullcontext(), "; omit --output to write a new temporary file"),
+            (mock.patch.object(memory_audit, "output_refusal", return_value=None), ""),
+        )
+        for refusal, remedy in refusals:
+            with self.subTest(checked=not remedy), refusal:
+                self.assertEqual(
+                    (1, f"FAILED {target} already exists, and audit never replaces a file{remedy}\n", ""),
+                    run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+                )
+            self.assertEqual(self.root / "nowhere.json", target.readlink())
+            self.assertEqual(["report.json"], [item.name for item in out.iterdir()])
+            self.assertFalse((self.root / "nowhere.json").exists())
 
     def test_entries_that_are_no_regular_file_are_unreadable_and_the_rest_are_audited(self) -> None:
         write(self.memory_dir / "MEMORY.md", "- [a](a.md) — a\n- [gone](dangling.md) — gone\n")
@@ -820,6 +856,201 @@ class MemoryAuditTests(unittest.TestCase):
         # An audit given its configuration directory and no report file reads nothing CLAUDE_CONFIG_DIR names.
         with mock.patch.dict(os.environ, {CONFIG: "relative config"}):
             self.assertTrue(self.main_output("--user-dir", str(explicit)).startswith("REPORT "))
+
+
+def tracked_descriptors(folder: Path) -> tuple[dict[int, int], Callable[..., tuple[int, str]]]:
+    """A record of the descriptors tempfile.mkstemp opens in `folder`, where atomic_file writes a report's copy, each
+    with the calls made on it so far, and the mkstemp that records them."""
+    real_mkstemp = tempfile.mkstemp
+    calls: dict[int, int] = {}
+
+    def mkstemp(*arguments: Any, **options: Any) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(*arguments, **options)
+        if Path(name).parent.resolve() == folder.resolve():
+            calls[descriptor] = 0
+        return descriptor, name
+
+    return calls, mkstemp
+
+
+@contextmanager
+def failing_write(folder: Path) -> Iterator[None]:
+    """A write into a new file in `folder` lands its first bytes and then fails, as a disk that fills part way does."""
+    calls, mkstemp = tracked_descriptors(folder)
+    real_write = os.write
+
+    def write(descriptor: int, data: Any) -> int:
+        if descriptor not in calls:
+            return real_write(descriptor, data)
+        calls[descriptor] += 1
+        if calls[descriptor] > 1:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        return real_write(descriptor, bytes(data[:3]))
+
+    with mock.patch.object(tempfile, "mkstemp", mkstemp), mock.patch.object(os, "write", write):
+        yield
+
+
+@contextmanager
+def failing_close(folder: Path) -> Iterator[None]:
+    """The close of a new file in `folder`, once the whole report is written, fails, as a network share that reports
+    a failed flush at the close does; the descriptor is closed all the same."""
+    calls, mkstemp = tracked_descriptors(folder)
+    real_close = os.close
+
+    def close(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor in calls:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    with mock.patch.object(tempfile, "mkstemp", mkstemp), mock.patch.object(os, "close", close):
+        yield
+
+
+@contextmanager
+def unremovable_copies(folder: Path) -> Iterator[None]:
+    """A copy atomic_file made in `folder`, a dot file, cannot be removed, as a folder that refuses deletions does."""
+    real_unlink = Path.unlink
+
+    def unlink(path: Path, missing_ok: bool = False) -> None:
+        if path.parent.resolve() == folder.resolve() and path.name.startswith("."):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+        real_unlink(path, missing_ok=missing_ok)
+
+    with mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink):
+        yield
+
+
+class ReportWriteTests(unittest.TestCase):
+    """The report is made whole or not at all: a write that fails part way leaves no report and no copy beside it,
+    so the next audit writes it, and a copy left beside a report that is made is named."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(os.path.realpath(self._temporary.name))
+        self.memory_dir = self.root / "memory"
+        write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        self.out = self.root / "out"
+        self.out.mkdir()
+        self.target = self.out / "report.json"
+        self.temporary = self.root / "Temporary Files"
+        self.temporary.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def audit(self, *arguments: str) -> tuple[int, str, str]:
+        with mock.patch.object(tempfile, "tempdir", str(self.temporary)):
+            return run_main("audit", "--memory-dir", str(self.memory_dir), *arguments)
+
+    def assert_report(self, path: Path) -> None:
+        data = path.read_bytes()
+        self.assertTrue(data.endswith(b"}\n"), data[-20:])
+        self.assertEqual(["one.md"], [entry["file"] for entry in json.loads(data)["memories"]])
+
+    def failures(self) -> tuple[tuple[str, Callable[[Path], Any], str], ...]:
+        return (
+            ("write", failing_write, os.strerror(errno.ENOSPC)),
+            ("close", failing_close, os.strerror(errno.EIO)),
+        )
+
+    def test_an_output_whose_write_fails_part_way_leaves_nothing_and_the_next_audit_writes_it(self) -> None:
+        for side, failure, why in self.failures():
+            with self.subTest(side=side):
+                with failure(self.out):
+                    code, stdout, stderr = self.audit("--output", str(self.target))
+                self.assertEqual((1, f"FAILED cannot write {self.target}: {why}\n", ""), (code, stdout, stderr))
+                self.assertEqual([], list(self.out.iterdir()), "no report and no copy is left")
+                self.assertEqual((0, f"REPORT {self.target}\n", ""), self.audit("--output", str(self.target)))
+                self.assert_report(self.target)
+                self.assertEqual(["report.json"], [item.name for item in self.out.iterdir()])
+                self.target.unlink()
+
+    def test_a_default_report_whose_write_fails_part_way_leaves_nothing_and_the_next_audit_writes_one(self) -> None:
+        for side, failure, why in self.failures():
+            with self.subTest(side=side):
+                with failure(self.temporary):
+                    code, stdout, stderr = self.audit()
+                self.assertEqual((1, f"FAILED the audit report cannot be written: {why}\n", ""), (code, stdout, stderr))
+                self.assertEqual([], list(self.temporary.iterdir()), "no report and no copy is left")
+                code, stdout, stderr = self.audit()
+                self.assertEqual((0, ""), (code, stderr))
+                report = Path(stdout.removeprefix("REPORT ").removesuffix("\n"))
+                self.assertEqual([report], list(self.temporary.iterdir()))
+                self.assert_report(report)
+                report.unlink()
+
+    @unittest.skipIf(sys.platform == "win32", "Windows keeps no permission bits but read-only")
+    def test_the_report_is_its_owners_alone_to_read_and_write(self) -> None:
+        # Holds on Linux and macOS: the report holds the memories' text, so it is private wherever it is written.
+        self.assertEqual(0, self.audit("--output", str(self.target))[0])
+        code, stdout, _ = self.audit()
+        self.assertEqual(0, code)
+        for report in (self.target, Path(stdout.removeprefix("REPORT ").removesuffix("\n"))):
+            with self.subTest(report=report):
+                self.assertEqual(0o600, stat.S_IMODE(report.stat().st_mode))
+
+    def test_a_copy_left_beside_a_report_that_is_made_is_named_and_the_report_is_whole(self) -> None:
+        for folder, arguments in ((self.out, ("--output", str(self.target))), (self.temporary, ())):
+            with self.subTest(folder=folder.name):
+                with unremovable_copies(folder):
+                    code, stdout, stderr = self.audit(*arguments)
+                (copy,) = [item for item in folder.iterdir() if item.name.startswith(".")]
+                (report,) = [item for item in folder.iterdir() if not item.name.startswith(".")]
+                self.assert_report(report)
+                removal = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(copy))
+                made = f"{report} is made, but {copy}, its copy beside it, cannot be removed: {removal}"
+                self.assertEqual((1, f"FAILED the audit report {made}\n", ""), (code, stdout, stderr))
+                copy.unlink()
+                report.unlink()
+
+    def test_an_unfinished_copy_that_cannot_be_removed_is_named_and_no_report_is_made(self) -> None:
+        for folder, arguments, failed in (
+            (self.out, ("--output", str(self.target)), f"cannot write {self.target}"),
+            (self.temporary, (), "the audit report cannot be written"),
+        ):
+            with self.subTest(folder=folder.name):
+                with failing_write(folder), unremovable_copies(folder):
+                    code, stdout, stderr = self.audit(*arguments)
+                (copy,) = list(folder.iterdir())
+                self.assertTrue(copy.name.startswith("."), copy)
+                removal = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(copy))
+                left = f"Cannot remove {copy}, the unfinished copy of "
+                self.assertEqual((1, ""), (code, stderr))
+                self.assertTrue(stdout.startswith(f"FAILED {failed}: {left}"), stdout)
+                self.assertTrue(stdout.endswith(f": {removal}\n"), stdout)
+                if arguments:
+                    self.assertEqual(f"FAILED {failed}: {left}{self.target}: {removal}\n", stdout)
+                copy.unlink()
+
+    def test_a_default_report_takes_the_next_fresh_name_when_one_is_taken(self) -> None:
+        taken = write(self.temporary / f"memory-audit-{'a' * 16}.json", "kept\n")
+        with mock.patch.object(secrets, "token_hex", side_effect=["a" * 16, "b" * 16]):
+            code, stdout, stderr = self.audit()
+        fresh = self.temporary / f"memory-audit-{'b' * 16}.json"
+        self.assertEqual((0, f"REPORT {fresh}\n", ""), (code, stdout, stderr))
+        self.assertEqual("kept\n", taken.read_text(encoding="utf-8"))
+        self.assert_report(fresh)
+        self.assertEqual(sorted([taken, fresh]), sorted(self.temporary.iterdir()))
+
+    def test_a_default_report_with_no_fresh_name_left_is_a_failed_line(self) -> None:
+        taken = write(self.temporary / f"memory-audit-{'a' * 16}.json", "kept\n")
+        with mock.patch.object(secrets, "token_hex", return_value="a" * 16) as named:
+            code, stdout, stderr = self.audit()
+        tries = memory_audit.REPORT_NAME_TRIES
+        self.assertEqual(100, tries)
+        self.assertEqual(tries, named.call_count)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED the audit report cannot be written: no name tried in {self.temporary} was free after {tries} "
+                "tries\n",
+                "",
+            ),
+            (code, stdout, stderr),
+        )
+        self.assertEqual([taken], list(self.temporary.iterdir()))
 
 
 # The variable naming Claude Code's configuration directory, and values of it that name no absolute path.
