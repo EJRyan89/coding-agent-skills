@@ -719,6 +719,10 @@ class RefusalStepFixtures(unittest.TestCase):
                 "class Recovery:\n"  # 47
                 "    def report(self):\n"  # 48
                 '        print("ERROR: Method")\n'  # 49
+                "\n"  # 50
+                "\n"  # 51
+                "def comprehension(runs):\n"  # 52
+                '    print(*[f"ERROR: Run {run}" for run in runs], sep="\\n")\n'  # 53
             ),
         }
         self.assertEqual(
@@ -739,6 +743,7 @@ class RefusalStepFixtures(unittest.TestCase):
                     (43, "unpacked"),
                     (44, "unpacked"),
                     (49, "Recovery.report"),
+                    (53, "comprehension"),
                 )
             ],
             self.problems(files),
@@ -895,6 +900,20 @@ class RefusalStepFixtures(unittest.TestCase):
                 "def empty_write():\n"  # 58
                 '    print("ERROR: Empty write")\n'  # 59
                 "    sys.stderr.write()\n"  # 60
+                "\n"  # 61
+                "\n"  # 62
+                "def bare():\n"  # 63
+                "    return\n"  # 64
+                "\n"  # 65
+                "\n"  # 66
+                "def nothing():\n"  # 67
+                "    pass\n"  # 68
+                "\n"  # 69
+                "\n"  # 70
+                "def through_no_return():\n"  # 71
+                '    print("ERROR: No return")\n'  # 72
+                "    print(bare())\n"  # 73: a bare return, or none, is read as a field, so no step
+                "    print(nothing())\n"  # 74
             ),
         }
         self.assertEqual(
@@ -911,6 +930,7 @@ class RefusalStepFixtures(unittest.TestCase):
                     (48, "options_sep"),
                     (53, "converted"),
                     (59, "empty_write"),
+                    (72, "through_no_return"),
                 )
             ],
             self.problems(files),
