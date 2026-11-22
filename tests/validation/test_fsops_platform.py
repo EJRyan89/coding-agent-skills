@@ -1342,6 +1342,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
                     "def run(path):\n"
                     '    atomic_file.replace_bytes(path, b"")\n'  # 6
                     '    replace_text(path, "")\n'  # 7
+                    '    atomic_file.create_bytes(path, b"")\n'  # 8
                     "    return atomic_file.UnfinishedCopyError\n",
                     "deployer/writer.py": "import atomic_file\n\n\ndef run(work):\n    work(atomic_file)\n",  # 5
                     "tools/elsewhere.py": 'from atomic_file import replace_text\nreplace_text(PATH, "")\n',
@@ -1353,6 +1354,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
                     f"deployer/replaced.py:2 writes with atomic_file.replace_text{route}",
                     f"deployer/replaced.py:6 writes with atomic_file.replace_bytes{route}",
                     f"deployer/replaced.py:7 writes with atomic_file.replace_text{route}",
+                    f"deployer/replaced.py:8 writes with atomic_file.create_bytes{route}",
                     f"deployer/writer.py:5 writes with atomic_file{route}",
                 ],
                 filesystem_write_problems(root),

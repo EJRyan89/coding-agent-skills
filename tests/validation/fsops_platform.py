@@ -514,8 +514,9 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "zipapp.create_archive",
             "venv.create",
             "venv.EnvBuilder",
-            # ejryan89-skill-core's atomic replace, which the skills' scripts share: the deployer's writes are
-            # journaled, so none of them may bypass fsops through it.
+            # ejryan89-skill-core's atomic replace and create, which the skills' scripts share: the deployer's writes
+            # are journaled, so none of them may bypass fsops through them.
+            "atomic_file.create_bytes",
             "atomic_file.replace_bytes",
             "atomic_file.replace_text",
         }
