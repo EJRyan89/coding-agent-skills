@@ -2507,6 +2507,21 @@ class AgentTests(SourceTreeTestCase):
         (self.root / ".git").symlink_to(self.root / "no-git")
         self.assertNotEqual(self.root, skill_inventory.repository_root(skill.parent))
 
+    def test_a_dependencys_metadata_that_exists_but_cannot_be_read_is_unreadable_and_a_missing_one_is_not(self) -> None:
+        # SKILL.md names these causes of DECLARED_UNREADABLE, which prints only a path: a file that exists but cannot
+        # be read is one, and a file that is missing is none, since a skill with no metadata declares nothing.
+        skill = self.skill("Body.\n", {"skill_deps": ["beta", "gamma"]})
+        self.skill("Body.\n", {}, name="beta")
+        beta = self.root / "deploy-meta" / "beta.json"
+        beta.unlink()
+        beta.mkdir()
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [f"DECLARED_UNREADABLE {beta.as_posix()}", "DECLARED skill beta", "DECLARED skill gamma"],
+            [line for line in lines if line.startswith("DECLARED")],
+        )
+
     def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
         for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
             for value in ("ejryan89-skill-core", [1], {"name": "x"}):

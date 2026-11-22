@@ -91,7 +91,7 @@ Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
 including the fence lines, are code and the rest is prose. A helper script or data file that is not UTF-8 text
 counts 0, since it is measured rather than loaded. A Markdown file the skill loads, its own or one it reads from
-outside its folder, that is not UTF-8 text, or one outside its folder that cannot be examined, prints
+outside its folder, that is not UTF-8 text, or one outside its folder whose metadata cannot be read, prints
 UNREADABLE <path> <reason> instead of a cost, the path relative to the skill folder, and inventory exits 1 after it;
 tools and scan, which read the text itself, fail on one. scan fails too on a script whose status lines it compares
 that is not UTF-8 text, not valid Python, or Bash the one Bash grammar refuses, whose output it cannot measure.
