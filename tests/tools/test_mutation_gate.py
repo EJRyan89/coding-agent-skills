@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
 import job_selection
+import skill_roots
 from bounded_process import Finished
 from fixture_template import FixtureTemplate, repository_shape
 from fsops_platform import PLATFORM_TOKENS
@@ -718,16 +719,25 @@ class ProcessArgumentFixtures(unittest.TestCase):
             self.assert_own_group(step_options, bounded=False)
 
 
-# What each of pytest's exits reads as, with and without a collection error in its output.
+# What each of pytest's exits reads as with neither, with a collection error in its output, and with the traceback of
+# a SystemExit raised while pytest imported a test module.
 EXIT_STATUSES = {
-    pytest.ExitCode.OK: (PASSED, PASSED),
-    pytest.ExitCode.TESTS_FAILED: (KILLED, KILLED),
-    pytest.ExitCode.INTERRUPTED: (ERRORED, KILLED),
-    pytest.ExitCode.INTERNAL_ERROR: (ERRORED, ERRORED),
-    pytest.ExitCode.USAGE_ERROR: (ERRORED, KILLED),
-    pytest.ExitCode.NO_TESTS_COLLECTED: (ERRORED, ERRORED),
-    pytest.ExitCode.MAX_WARNINGS_ERROR: (ERRORED, ERRORED),
+    pytest.ExitCode.OK: (PASSED, PASSED, PASSED),
+    pytest.ExitCode.TESTS_FAILED: (KILLED, KILLED, KILLED),
+    pytest.ExitCode.INTERRUPTED: (ERRORED, KILLED, ERRORED),
+    pytest.ExitCode.INTERNAL_ERROR: (ERRORED, ERRORED, KILLED),
+    pytest.ExitCode.USAGE_ERROR: (ERRORED, KILLED, ERRORED),
+    pytest.ExitCode.NO_TESTS_COLLECTED: (ERRORED, ERRORED, ERRORED),
+    pytest.ExitCode.MAX_WARNINGS_ERROR: (ERRORED, ERRORED, ERRORED),
 }
+# The end of pytest's internal error when a test module's import raised a SystemExit, as `sibling_scripts` raises
+# MissingSibling, which pytest lets end its run.
+COLLECTION_EXIT = (
+    b'INTERNALERROR>   File "/venv/_pytest/python.py", line 528, in importtestmodule\n'
+    b"INTERNALERROR>     mod = import_path(\n"
+    b'INTERNALERROR>   File "/tree/tests/test_x.py", line 4, in <module>\n'
+    b"INTERNALERROR> skill_roots.MissingSibling: skill x has no scripts under /tree/skills\n"
+)
 
 
 def test_every_pytest_exit_code_has_a_reading() -> None:
@@ -750,11 +760,11 @@ def finishing(returncode: int, output: bytes) -> Callable[..., types.SimpleNames
     return run
 
 
-@pytest.mark.parametrize(("code", "statuses"), [*EXIT_STATUSES.items(), (9, (ERRORED, ERRORED))])
-def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, statuses: tuple[str, str]) -> None:
+@pytest.mark.parametrize(("code", "statuses"), [*EXIT_STATUSES.items(), (9, (ERRORED, ERRORED, ERRORED))])
+def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, statuses: tuple[str, str, str]) -> None:
     collection = b"==== ERRORS ====\n____ ERROR collecting tests/x.py ____\nImportError\n"
     found = []
-    for output in (b"!!! KeyboardInterrupt !!!\n", collection):
+    for output in (b"!!! KeyboardInterrupt !!!\n", collection, COLLECTION_EXIT):
         with (
             mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(int(code), output)),
             mock.patch("deployer.platform_support.process_tree"),
@@ -846,6 +856,34 @@ def test_only_a_line_showing_a_memory_error_raised_kills_for_memory(
     assert (mutation_gate.MEMORY_REASON in capsys.readouterr().out) is memory
 
 
+@pytest.mark.parametrize(
+    ("output", "status"),
+    [
+        pytest.param(b"x" * (3 * mutation_gate.OUTPUT_LIMIT) + b"\n" + COLLECTION_EXIT, KILLED, id="past the start"),
+        pytest.param(COLLECTION_EXIT + b"x" * (3 * mutation_gate.OUTPUT_LIMIT), KILLED, id="before the end"),
+        pytest.param(COLLECTION_EXIT.replace(b"\n", b"\r\n"), KILLED, id="in CRLF"),
+        pytest.param(
+            COLLECTION_EXIT.replace(b"in importtestmodule", b"in pytest_collection_finish"),
+            ERRORED,
+            id="a hook's frame",
+        ),
+        pytest.param(
+            b"INTERNALERROR> RuntimeError: test_importtestmodule, in importtestmodule\n", ERRORED, id="no frame line"
+        ),
+        pytest.param(
+            b'  File "/venv/_pytest/python.py", line 528, in importtestmodule\n', ERRORED, id="not pytest's error"
+        ),
+    ],
+)
+def test_an_internal_error_kills_only_when_it_ended_the_import_of_a_test_module(output: bytes, status: str) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(3, output)),
+        mock.patch("deployer.platform_support.process_tree"),
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == status
+
+
 def test_a_memory_error_line_that_opens_the_end_read_back_kills(capsys: pytest.CaptureFixture[str]) -> None:
     # Past the start read back, the line begins at the end's first byte, so a window one byte short reads it cut.
     tail = b"MemoryError\n" + b"b" * (mutation_gate.OUTPUT_LIMIT - len(b"MemoryError\n"))
@@ -934,6 +972,23 @@ class RunSuiteFixtures(unittest.TestCase):
         self.assertEqual(KILLED, self.run_tree(broken, ("tests/test_x.py::test_x",)))
         self.assertEqual(KILLED, self.run_tree(broken, ("tests/test_x.py::test_x", "tests/test_x.py::test_y")))
 
+    def test_a_test_module_whose_import_raises_a_system_exit_kills_the_mutant(self) -> None:
+        # pytest lets a SystemExit raised while it imports a test module end its run with an internal error, exit 3,
+        # where it collects any other exception as a failed collection. A mutant that breaks a `sibling_scripts` call,
+        # here one naming a sibling no skill holds, raises MissingSibling, a SystemExit, while its module is imported.
+        scripts = Path(skill_roots.__file__).resolve().parent
+        broken = {
+            "tests/test_x.py": (
+                f"import sys\n\nsys.path.insert(0, {str(scripts)!r})\nfrom skill_roots import sibling_scripts\n\n"
+                "sys.path.insert(0, str(sibling_scripts('not-a-skill-anywhere')))\n\n\ndef test_x():\n    pass\n"
+            )
+        }
+        exiting = {"tests/test_x.py": "raise SystemExit(0)\n\n\ndef test_x():\n    pass\n"}
+        for name, files in (("MissingSibling", broken), ("a bare SystemExit", exiting)):
+            for tests in ((), ("tests/test_x.py::test_x",)):
+                with self.subTest(name, tests=tests), mock.patch("sys.stdout", io.StringIO()):
+                    self.assertEqual(KILLED, self.run_tree(files, tests))
+
     def test_an_exit_that_is_neither_a_pass_nor_a_test_failure_errors_and_judges_nothing(self) -> None:
         cases = {
             # Exit 2 with every module collected: a test interrupted the run.
@@ -942,6 +997,14 @@ class RunSuiteFixtures(unittest.TestCase):
             "internal error": (
                 {
                     "conftest.py": "def pytest_collection_finish(session):\n    raise RuntimeError('hook')\n",
+                    "tests/test_x.py": "def test_x():\n    pass\n",
+                },
+                (),
+            ),
+            # Exit 3: a hook raised a SystemExit, outside the import of any test module.
+            "a hook's SystemExit": (
+                {
+                    "conftest.py": "def pytest_collection_finish(session):\n    raise SystemExit(1)\n",
                     "tests/test_x.py": "def test_x():\n    pass\n",
                 },
                 (),

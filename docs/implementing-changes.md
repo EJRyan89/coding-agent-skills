@@ -202,8 +202,11 @@ the ejryan89-skill-core seam modules `CLAUDE.md` names, each module that imports
 `PLATFORM_ALLOWED` table, and each whose own code reads the platform in any expression, through a token of any kind
 the platform policy's `PLATFORM_TOKENS` catalogues, such as `sys.platform`, `msvcrt`, or `creationflags`, or a
 separator or the null device, such as `os.altsep`. Each process of a suite's run may hold at most the gate's `MEMORY_BOUND` of data on Linux, and commit at most as much
-on Windows, through its job object, so a mutant that allocates without end fails with a MemoryError, and a nonzero exit whose output shows one raised kills the mutant. Any other suite
-run that ends with neither a pass nor a test failure judges
+on Windows, through its job object, so a mutant that allocates without end fails with a MemoryError, and a nonzero exit whose output shows one raised kills the mutant. A test
+module pytest fails to collect kills the mutant too, as a mutant that breaks an import does, and so does pytest's
+internal error when a `SystemExit` ended a test module's import, which pytest lets end its run rather than collect as
+a failure, as ejryan89-skill-core's `MissingSibling` does when a mutant breaks a `sibling_scripts` call. Any other suite
+run that ends with neither a pass, a test failure, nor such a failed collection judges
 nothing, so its mutant is errored, which leaves the run unfinished like a mutant not run. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished while it leaves a mutant without a verdict. The gate's docstring in `tools/mutation_gate.py` gives the
