@@ -124,7 +124,7 @@ import folder_walk
 import json_reader
 import json_writer
 import private_folder
-from atomic_file import is_read_only, replace_text
+from atomic_file import TRACKED_FILE_MODE, is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
 from file_presence import is_directory, is_present, matching, refusal_reason
@@ -139,8 +139,6 @@ from skill_roots import skills_directory_holding
 from text_lines import text_lines
 
 INDEX_NAME = "MEMORY.md"
-# The permissions of an index the rebuild creates: its owner writes it and everyone reads it, as Claude Code's files.
-NEW_INDEX_MODE = 0o644
 # The deployer's ownership manifest beside the skills it deploys, and where a source checkout keeps a skill.
 MANIFEST_NAME = ".deploy-manifest.json"
 SETTINGS_NOTE = (
@@ -801,7 +799,7 @@ def write_index(path: Path, content: str) -> None:
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
-        mode = NEW_INDEX_MODE
+        mode = TRACKED_FILE_MODE
     replace_text(path, content, mode=mode)
 
 

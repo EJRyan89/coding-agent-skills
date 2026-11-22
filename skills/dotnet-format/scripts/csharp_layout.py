@@ -88,7 +88,7 @@ import json_reader
 import nesting_depth
 import whole_number
 from analyzer_config import ANALYZER_CONFIG_BREAKS, analyzer_config_lines, is_section_header, read_line, roslyn_lower
-from atomic_file import replace_bytes
+from atomic_file import TRACKED_FILE_MODE, replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal, write_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
@@ -113,8 +113,6 @@ MSBUILD_ERROR = re.compile(r"\berror [A-Za-z]+[0-9]+ *:")
 # reader takes in: its first error lines, which name the file and the fault.
 MSBUILD_REASON_CHARACTERS = 500
 GLOBAL_CONFIG = ".globalconfig"
-# The permissions of a file the script adds: its owner writes it and everyone reads it, as an editor's new file.
-NEW_FILE_MODE = 0o644
 # The global_level the compiler gives a global analyzer config that sets none: 100 for a file named .globalconfig.
 NAMED_GLOBAL_LEVEL = 100
 # A global_level as the compiler reads it, with .NET's int.TryParse: an optional sign and ASCII digits, the value a
@@ -554,11 +552,11 @@ def read_source(path: Path) -> Source:
 def write_source(path: Path, source: Source, text: str) -> None:
     """Replace `path` with `text` in the encoding and byte order mark it was read in, through ejryan89-skill-core's
     `atomic_file`, so a write that fails part way leaves the file as it was. The file keeps its permissions, and a new
-    one, such as an .editorconfig the script adds, takes `NEW_FILE_MODE`."""
+    one, such as an .editorconfig the script adds, takes ejryan89-skill-core's `TRACKED_FILE_MODE`."""
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
-        mode = NEW_FILE_MODE
+        mode = TRACKED_FILE_MODE
     replace_bytes(path, source.bom + text.encode(source.encoding, errors="surrogatepass"), mode=mode)
 
 

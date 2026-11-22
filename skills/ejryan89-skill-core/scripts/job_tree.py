@@ -57,6 +57,8 @@ SYNCHRONIZE = 0x00100000
 WAIT_OBJECT_0 = 0
 ERROR_MORE_DATA = 234
 ERROR_NO_MORE_FILES = 18
+# The process-creation flags this tree starts a command with, and the ones every other start of a Windows process
+# here imports: the deployer's hidden window and the review host's detached start.
 CREATE_NO_WINDOW = 0x08000000
 CREATE_SUSPENDED = 0x00000004
 CREATE_NEW_PROCESS_GROUP = 0x00000200

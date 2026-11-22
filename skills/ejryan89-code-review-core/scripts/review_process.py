@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import without_repository_variables
+from job_tree import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW
 from process_identity import ProcessStatus
 
 OWNER_ONLY_ALLOWED = {
@@ -27,9 +28,7 @@ OWNER_ONLY_ALLOWED = {
     "_start_session": "starts the review host in a session of its own off Windows, to outlive this process, where "
     "run_bounded waits for the command it starts",
 }
-CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-CREATE_NO_WINDOW = 0x08000000
 
 
 def same_process(status: ProcessStatus, recorded_start: int | None) -> bool | None:
