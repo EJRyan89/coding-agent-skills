@@ -3504,6 +3504,47 @@ class ProjectSearchTests(Fixture):
                     [["A/L.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
                 )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_named_through_a_link_to_its_file_is_the_links_whose_references_resolve_from_its_folder(
+        self,
+    ) -> None:
+        # MSBuild reads a linked project from the link's folder, so its references resolve there; with the target
+        # listed too, --project naming the link narrows to the link's project, never the target's.
+        search = self.root / "search"
+        self.write(
+            "search/Real.csproj", sdk_project('<ItemGroup><ProjectReference Include="Lib/Lib.csproj" /></ItemGroup>')
+        )
+        self.write("search/Lib/Lib.csproj", LIB_PROJECT.replace("Lib.Pkg", "RootLib.Pkg"))
+        self.write("search/A/Lib/Lib.csproj", LIB_PROJECT.replace("Lib.Pkg", "ALib.Pkg"))
+        (search / "A" / "L.csproj").symlink_to(search / "Real.csproj")
+        narrowed = str(search / "A/L.csproj")
+        _, rows = self.run_main("why", "ALib.Pkg", "--root", str(search), "--project", narrowed)
+        self.assertEqual(
+            [["A/L.csproj", "-", "ALib.Pkg", "graph", "Lib (project) > ALib.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+        _, rows = self.run_main("why", "RootLib.Pkg", "--root", str(search), "--project", narrowed)
+        self.assertEqual(([], [["RootLib.Pkg"]]), (self.lines(rows, "PATH"), self.lines(rows, "MISSING")))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows takes a `..` as text before it follows a link")
+    def test_a_project_named_with_a_dot_dot_after_a_link_is_the_one_the_system_opens_there(self) -> None:
+        # The system follows a link before the `..` after it, so Linked/../X.csproj opens the X.csproj beside the
+        # link's target, outside the root, never the root's own X.csproj that the path reads as text.
+        search = self.root / "search"
+        self.write("search/X.csproj", LIB_PROJECT.replace("Lib.Pkg", "Root.Pkg"))
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("outside/X.csproj", LIB_PROJECT.replace("Lib.Pkg", "Ext.Pkg"))
+        self.write("outside/sub/keep.txt", "")
+        self.write("other/empty/keep.txt", "")
+        self.link(self.root / "outside" / "sub", "search/Linked")
+        self.link(self.root / "other" / "empty", "search/Empty")
+        self.link(self.root / "gone" / "sub", "search/Dangling")
+        for link in ("Linked", "Empty", "Dangling"):
+            narrowed = f"{search}/{link}/../X.csproj"
+            with self.subTest(link=link):
+                code, rows = self.run_main("why", "Root.Pkg", "--root", str(search), "--project", narrowed)
+                self.assertEqual((1, f"FAILED {narrowed} is not a project of {search}"), (code, rows[-1][0]))
+                self.assertEqual([], self.lines(rows, "PATH"))
+
     def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
         search = self.root / "search"
         for name in ("A", "B", "C", "D"):

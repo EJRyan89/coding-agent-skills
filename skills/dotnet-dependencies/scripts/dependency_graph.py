@@ -311,11 +311,21 @@ HIDDEN_REASON = "the folder is hidden, its name starting with a dot, which the s
 RETRY_ADVICE = "pass --root at its solution or its folder"
 
 
+def as_named(path: Path) -> Path:
+    """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, unless
+    it holds a `..`, which the system takes only after following any link before it, so its folder is resolved instead
+    and the `..` never steps back out of a link as text would."""
+    if ".." in path.parts:
+        return resolved_path(path.absolute().parent) / path.name
+    return lexical_absolute(path)
+
+
 def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
-    """The names leading from `root`, a resolved folder, down to `path` as it is named, or None when it lies outside
-    `root`. The shortest leading part of the named path that resolves to `root` stands for it, so a link above the
-    root, such as a temporary folder's, still finds it, and a link below it stays a folder the path is named through."""
-    named = lexical_absolute(path)
+    """The names leading from `root`, a resolved folder, down to `path` as `as_named` gives it, or None when it lies
+    outside `root`. The shortest leading part of the named path that resolves to `root` stands for it, so a link above
+    the root, such as a temporary folder's, still finds it, and a link below it stays a folder the path is named
+    through."""
+    named = as_named(path)
     key = same_path(root)
     for depth in range(1, len(named.parts)):
         if same_path(resolved_path(Path(*named.parts[:depth]))) == key:
@@ -909,12 +919,13 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
 
 
 def named_project(graph: Graph, narrowed: Path) -> Project | None:
-    """The project `--project` names: the one at the path it resolves to, else the one at the path as it is named below
-    the solution's directory, where the search or the solution found a project through a link to its file and keeps it
-    under the path it found it at."""
-    project = graph.project_at(resolved_path(narrowed))
-    names = named_below(graph.base, narrowed) if project is None else None
-    return graph.project_at(graph.base.joinpath(*names)) if names else project
+    """The project `--project` names: the one at the path as it is named below the solution's directory, where the
+    search or the solution found a project, through a link to its file too, and keeps it under the path it found it at,
+    else the one at the path it resolves to. A project found through a link is read from the link's folder, as MSBuild
+    reads it, so the link's project, not its target's, is the one named."""
+    names = named_below(graph.base, narrowed)
+    project = graph.project_at(graph.base.joinpath(*names)) if names else None
+    return project or graph.project_at(resolved_path(narrowed))
 
 
 def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
