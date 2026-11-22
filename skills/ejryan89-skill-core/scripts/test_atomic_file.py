@@ -18,7 +18,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import atomic_file
 from atomic_file import (
     NO_HARD_LINK_ERRNOS,
     ReadOnlyTargetError,
@@ -29,6 +28,7 @@ from atomic_file import (
     replace_bytes,
     replace_text,
 )
+from file_presence import is_occupied
 
 SKIP_ALLOWED = {
     "LinkAtTheTargetTests.setUp": "the races it holds are a symbolic link put at the target, which Windows makes only "
@@ -765,16 +765,17 @@ class LinkAtTheTargetTests(unittest.TestCase):
         folders = [tempfile.TemporaryDirectory() for _ in range(2)]
         for folder in folders:
             self.addCleanup(folder.cleanup)
-        self.folder = Path(folders[0].name)
+        # Resolved, so a folder Windows names by its short 8.3 form reads as the long form readlink gives back.
+        self.folder = Path(folders[0].name).resolve()
         self.path = self.folder / "report.md"
-        self.leads_to = Path(folders[1].name) / "missing.md"
-        self.theirs = Path(folders[1].name) / "theirs.md"
+        self.leads_to = Path(folders[1].name).resolve() / "missing.md"
+        self.theirs = Path(folders[1].name).resolve() / "theirs.md"
         self.theirs.write_bytes(b"theirs\n")
         self.kept = OSError(errno.EBUSY, "synthetic unlink", str(self.leads_to))
         self.failure = OSError(errno.EIO, "synthetic replace")
 
     def patches(self, case: str) -> list[contextlib.AbstractContextManager[Any]]:
-        real_open, real_occupied, real_unlink = os.open, atomic_file.is_occupied, Path.unlink
+        real_open, real_occupied, real_unlink = os.open, is_occupied, Path.unlink
         looks: list[Path] = []
 
         def appear_then_refuse(_copy: Any, _target: Any) -> None:
@@ -810,7 +811,7 @@ class LinkAtTheTargetTests(unittest.TestCase):
 
         patches: list[contextlib.AbstractContextManager[Any]] = [
             mock.patch.object(os, "link", appear_then_refuse),
-            mock.patch.object(atomic_file, "is_occupied", look),
+            mock.patch("atomic_file.is_occupied", look),
             mock.patch.object(os, "open", create),
         ]
         if case == FOLLOWED_KEPT:
