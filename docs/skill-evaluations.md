@@ -35,9 +35,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   was denied, and the session ran on its own model alone. Otherwise `resolved` fails as a `run` with the rest. When
   the session's last `resolve` of the document's name returned an error, what it did after was no choice of its own:
   only the calls through that one are judged, all that call wrote included, since its result does not say which
-  part failed. A search before `resolve` is still a `judgment`, and when all they show is that the session built
-  nothing after `resolve`, `resolved` fails as a `run`. A model's by-name runs share
-  its home, so they run one at a time, and `--records` reads each by-name run's transcript beside its record, or in
+  part failed. A search, or a Bash command the grammar refuses, before `resolve` is still a `judgment`, and when all
+  they show is that the session built nothing after `resolve`, `resolved` fails as a `run`. A model's by-name runs
+  share its home, so they run one at a time, and `--records` reads each by-name run's transcript beside its record, or in
   place of a record the run never wrote. There it checks what the transcript shows: the last result event, the
   listing, the denials, the session's model, and `resolve`'s result. It cannot see the exit code or whether Claude
   Code started, which only a run reads from the process, though a session ended at its time limit writes no result
