@@ -6,14 +6,16 @@ project begins with the SDK's props, which import the nearest `Directory.Build.p
 the nearest `Directory.Packages.props` at or above it (NuGet's props, from `Microsoft.Common.props`), so both come
 before the project's body; it ends with the SDK's targets, which import the nearest `Directory.Build.targets` and
 turn each `GlobalPackageReference` into a `PackageReference`. Each search goes up to the filesystem's root, as MSBuild's
-does, and a file it finds outside the examined tree is reported as an import not read, naming its path. A project that
-is not SDK-style meets the same points where it imports `Microsoft.Common.props` and its language's targets. Every
-other `Import` is read where it sits, resolved against the importing file's folder, and an `ImportGroup`'s condition
-applies to each import in it. An import
-from the toolset's folders (`$(MSBuildExtensionsPath)`, `$(MSBuildToolsPath)`, `$(VSToolsPath)`, and the like) or of an
-SDK sets no property the reader reads, so it is not read. An import the reader does not read for any other reason, a
-condition or a path it cannot settle, a file outside the examined tree, missing, or unreadable, is reported, and from it
-on every property is unsettled, since the file may set any. A file imported twice is read once, as MSBuild reads it.
+does, and a file it finds outside the examined tree is reported as an import not read, naming its path; one inside it
+that a link leads outside (`outside_link_refusal`) stops the search, as any file there stops MSBuild's, and is
+reported, never stat. A project that is not SDK-style meets the same points where it imports `Microsoft.Common.props`
+and its language's targets. Every other `Import` is read where it sits, resolved against the importing file's folder,
+and an `ImportGroup`'s condition applies to each import in it. An import from the toolset's folders
+(`$(MSBuildExtensionsPath)`, `$(MSBuildToolsPath)`, `$(VSToolsPath)`, and the like) or of an SDK sets no property the
+reader reads, so it is not read. An import the reader does not read for any other reason, a
+condition or a path it cannot settle, a file outside the examined tree or through a link leading out of it, missing,
+or unreadable, is reported, and from it on every property is unsettled, since the file may set any. A file imported
+twice is read once, as MSBuild reads it.
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -59,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from dotnet_solution import project_path, refusal, same_path
 from file_presence import is_occupied, is_present
+from folder_walk import outside_link_refusal
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -152,8 +155,8 @@ def evaluation_root(path: Path) -> Element:
 @dataclass
 class Sources:
     """The files one run evaluates its projects from, each read and parsed once, and what MSBuild gives every project
-    of the run: the examined tree no file is read outside (`refusal`), and the solution, whose `$(SolutionDir)` and
-    siblings a solution build sets."""
+    of the run: the examined tree no file is read outside (`refusal`), nor through a link leading out of it
+    (`outside_link_refusal`), and the solution, whose `$(SolutionDir)` and siblings a solution build sets."""
 
     tree: Path
     solution: Path | None = None
@@ -163,6 +166,8 @@ class Sources:
         key = same_path(path)
         if key not in self.roots:
             try:
+                if (linked := outside_link_refusal(path, self.tree)) is not None:
+                    raise Unreadable(path, linked)
                 self.roots[key] = evaluation_root(path)
             except Unreadable as error:
                 self.roots[key] = error
@@ -342,9 +347,14 @@ class Evaluation:
         the path, which does not follow a link; elsewhere, File.Exists or Directory.Exists, where .NET's File.Exists
         reads the path itself with lstat and is true for anything but a folder, a FIFO, a device, and a link to nothing
         among them. So the faithful answer is file_presence.is_occupied, which reads the path without following a
-        link, not is_there, which reads a link to nothing as nothing there."""
+        link, not is_there, which reads a link to nothing as nothing there. A path below a folder that a link on its way
+        leads outside the examined tree (`outside_link_refusal`) is unsettled and reported, never stat; the path's own
+        name is read without following it, so a link there is answered as MSBuild answers it."""
         path = project_path(self.project.path.parent, text)
         if refusal(path, self.project.sources.tree) is not None:
+            return None
+        if (linked := outside_link_refusal(path.parent, self.project.sources.tree)) is not None:
+            self.reports.append(Unreadable(path, linked))
             return None
         try:
             return is_occupied(path)
@@ -357,7 +367,7 @@ class Evaluation:
         if refusal(directory, self.project.sources.tree) is not None:
             return None
         try:
-            found = nearest_file(directory, name)
+            found = nearest_file(directory, name, self.project.sources.tree)
         except Unreadable as error:
             # A candidate it cannot stat leaves the folder unsettled, never read as none above.
             self.reports.append(error)
@@ -490,7 +500,8 @@ class Evaluation:
         key = same_path(path)
         if key in self.imported:
             return
-        refused = refusal(path, self.project.sources.tree)
+        tree = self.project.sources.tree
+        refused = refusal(path, tree) or outside_link_refusal(path, tree)
         if refused is not None:
             self.not_read(written, refused)
             return
@@ -543,7 +554,7 @@ class Evaluation:
         """Import the nearest file named `name` at or above the project; a candidate it cannot stat is reported and
         unsettles what follows, as an import it cannot read does."""
         try:
-            found = nearest_file(self.project.path.parent, name)
+            found = nearest_file(self.project.path.parent, name, self.project.sources.tree)
         except Unreadable as error:
             self.reports.append(error)
             self.state.unsettle()
