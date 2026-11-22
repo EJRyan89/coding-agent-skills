@@ -3611,7 +3611,8 @@ class ProjectSearchTests(Fixture):
 
     def test_a_dot_dot_before_a_link_keeps_the_link_a_folder_the_path_is_named_through(self) -> None:
         # Only the part up to the last `..` is resolved, so a link after it stays the folder the search passed over,
-        # and a solution's project named through that link is still found.
+        # and a solution's project named through that link is still found. The FAILED line names the argument as
+        # the script reads it, a path, so with Windows' separators there.
         search = self.root / "search"
         self.write("search/App/App.csproj", LIB_PROJECT)
         self.write("outside/E/E.csproj", LIB_PROJECT)
@@ -3623,8 +3624,8 @@ class ProjectSearchTests(Fixture):
                     self.assertEqual(
                         (
                             1,
-                            f"FAILED {named} lies in {search / 'Linked'}, which the search for projects under {search} "
-                            f"does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                            f"FAILED {Path(named)} lies in {search / 'Linked'}, which the search for projects under "
+                            f"{search} does not enter: {LINK_REASON}; pass --root at its solution or its folder",
                         ),
                         (code, rows[-1][0]),
                     )
