@@ -16,7 +16,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_containment
 import path_keys
-from path_containment import posix_within, refusal, resolved_path, strictly_resolved_path, within, written_refusal
+from path_containment import (
+    may_lie_in,
+    posix_within,
+    refusal,
+    resolved_path,
+    strictly_resolved_path,
+    within,
+    written_refusal,
+)
 
 
 @contextlib.contextmanager
@@ -209,6 +217,65 @@ class WithinTests(unittest.TestCase):
         self.assertFalse(within("D:/tree/x", "C:/tree"))
         self.assertTrue(within("c:/Tree/x", "C:/tree"))
         self.assertFalse(within("//host/share/tree/x", "C:/tree"))
+
+
+class MayLieInTests(unittest.TestCase):
+    """`may_lie_in` takes every spelling some file system may read as the tree's for the tree's, without asking any
+    directory, so a check that refuses what lies inside refuses each of them."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def test_a_path_below_the_tree_lies_in_it_and_the_tree_itself_only_when_not_strict(self) -> None:
+        tree = self.root / "tree"
+        self.assertTrue(may_lie_in(tree / "a" / "b.txt", tree, strict=True))
+        self.assertTrue(may_lie_in(tree, tree))
+        self.assertFalse(may_lie_in(tree, tree, strict=True))
+
+    def test_a_parent_segment_a_sibling_sharing_the_name_and_the_parent_are_outside(self) -> None:
+        tree = self.root / "tree"
+        self.assertFalse(may_lie_in(tree / ".." / "other", tree))
+        self.assertFalse(may_lie_in(self.root / "tree-other" / "x", tree))
+        self.assertFalse(may_lie_in(self.root, tree))
+        self.assertTrue(may_lie_in(self.root / "other" / ".." / "tree" / "x", tree))
+
+    def test_a_case_or_form_variant_lies_in_the_tree_whether_or_not_it_is_there_on_every_file_system(self) -> None:
+        # Every platform and file system: no directory is asked, so a case-sensitive one, which keeps the spellings
+        # apart, and a missing tree, which nothing can be asked about, give the same answer as APFS or NTFS.
+        variants = (("tree", "TREE"), ("trüb", "TRÜB"), ("café", "café"))
+        for made in (False, True):
+            for name, variant in variants:
+                with self.subTest(made=made, name=name, variant=variant):
+                    tree = self.root / str(made) / name
+                    if made:
+                        tree.mkdir(parents=True)
+                    self.assertTrue(may_lie_in(self.root / str(made) / variant / "x", tree))
+                    if not made and not name.isascii():
+                        # `within` keeps a non-ASCII variant of a missing tree apart, since no directory holds it.
+                        self.assertFalse(within(self.root / str(made) / variant / "x", tree))
+
+    def test_no_directory_is_asked(self) -> None:
+        tree = self.root / "tree"
+        tree.mkdir()
+        with (
+            mock.patch.object(path_keys, "folds_case", side_effect=AssertionError("asked")),
+            mock.patch.object(path_keys, "_one_entry", side_effect=AssertionError("asked")),
+        ):
+            self.assertTrue(may_lie_in(self.root / "TREE" / "x", tree))
+
+    def test_a_network_share_s_names_fold_too(self) -> None:
+        # Every platform: two leading separators open a share's anchor on Windows and a system-defined one on POSIX,
+        # and either is folded, where `within` compares a share's names as written.
+        self.assertTrue(may_lie_in("//HOST/Share/x", "//host/share"))
+        self.assertFalse(within("//HOST/Share/x", "//host/share"))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows drops a trailing dot and reads the \\\\?\\ prefix")
+    def test_a_trailing_dot_and_the_extended_prefix_are_read_as_windows_opens_them(self) -> None:
+        tree = self.root / "tree"
+        self.assertTrue(may_lie_in(Path(f"{tree}.") / "missing", tree))
+        self.assertTrue(may_lie_in(Path(f"\\\\?\\{tree}\\x"), tree))
 
 
 class ExtendedPrefixTests(unittest.TestCase):

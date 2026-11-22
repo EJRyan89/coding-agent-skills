@@ -17,6 +17,13 @@ from pathlib import Path
 
 from dotnet_solution import same_path
 
+# The climb compares each folder with `stop` to know where to end, never to answer whether a path lies in a tree: a
+# start outside `stop` walks to the root, and a caller that must stay inside a tree starts inside it.
+CONTAINMENT_ALLOWED = {
+    "folders_up": "the walk ends at the folder that is stop, keyed as dotnet_solution keys a path, and answers no "
+    "containment question",
+}
+
 
 def folders_up(start: Path, stop: Path | None = None) -> Iterator[Path]:
     """`start` and each folder above it, nearest first, through `stop` or the file system's root."""

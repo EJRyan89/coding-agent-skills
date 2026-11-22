@@ -11,6 +11,13 @@ path taken from input or the environment, and `strictly_resolved_path` the one t
 `posix_within` compares a `/`-separated name a listing gives, such as a repository path git lists, by text, case and
 all.
 
+`may_lie_in` is `within` for a check where inside means refuse, as a guard that refuses a write reaching a file it
+protects: each name is folded and composed as a directory that folds case folds it, on every file system and whether
+or not the directory is there, the anchor too, and the path is made absolute as the platform's own path parsing makes
+it, which on Windows drops a name's trailing dots and spaces, without an extended-length or device-namespace prefix.
+So every spelling some file system may take for the tree's lies in it, where `within`, asking the tree's directories,
+keeps apart a spelling it cannot show to be the tree's, which a check that admits by `within` needs.
+
 `refusal` judges an entry taken from input, such as a repository path a record or a list names, inside the tree it
 must stay in, before anything opens it. It runs three tests in turn and names the first that fails, or gives None:
 the entry as written, which must be a relative path with no NUL character, no empty or `..` segment, no segment
@@ -28,7 +35,7 @@ from pathlib import Path
 
 from device_names import is_reserved_device_name
 from link_probe import is_link_or_junction
-from path_keys import same_parts
+from path_keys import fold, same_parts
 
 StrPath = str | os.PathLike[str]
 
@@ -85,6 +92,24 @@ def _plain(path: StrPath) -> Path:
     """`path` as `within` reads it before folding: without an extended-length or device-namespace prefix, made
     absolute against the working directory, and normalized by text alone."""
     return Path(os.path.normpath(Path.cwd() / without_extended_prefix(Path(path))))
+
+
+def may_lie_in(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:
+    """Whether `path` may lie in `tree` on some file system, for a check where inside means refuse; with `strict`, below
+    it. Each name of both is folded and composed as a directory that folds case folds it, whatever the file system
+    and whether or not the directory is there, so a spelling `within` keeps apart because no directory shows it to be
+    the tree's is inside here."""
+    candidate, root = _loose_parts(path), _loose_parts(tree)
+    if len(candidate) < len(root) + strict:
+        return False
+    return candidate[: len(root)] == root
+
+
+def _loose_parts(path: StrPath) -> tuple[str, ...]:
+    """`path`'s parts as `may_lie_in` compares them: without an extended-length or device-namespace prefix, made
+    absolute and normalized as the platform's path parsing does, and each part folded and composed."""
+    absolute = Path(os.path.abspath(without_extended_prefix(Path(path))))  # noqa: PTH100 - the platform's own parsing
+    return tuple(fold(part, True) for part in absolute.parts)
 
 
 def relative_within(path: StrPath, tree: StrPath, *, strict: bool = False) -> Path | None:

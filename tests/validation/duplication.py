@@ -1349,12 +1349,13 @@ NAMED_LAST_FIELD = re.compile(r"(?<!%)(?:%%)*%\((?P<key>[^()]*)\)s\Z")
 # The builtins that make a collection of what they are given, so its items are the prefixes given.
 COLLECTIONS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 # The calls that give a path back in another form, so comparing what they give compares the path: a function given the
-# path alone, by its last name, and a path's own method given nothing.
+# path alone, by its last name, as a one-argument `same_path` gives a path's key, and a path's own method given nothing.
 PATH_FORM_FUNCTIONS = frozenset(
     {
         "str",
         "fspath",
         "path_key",
+        "same_path",
         "abspath",
         "normpath",
         "normcase",
@@ -1815,11 +1816,15 @@ class _ContainmentReader:
         it with `other` asks whether a folder lies above where it started. Comparing it with an expression of the name
         itself, as `current.parent == current` spots the anchor, asks nothing of another folder."""
         side = self._path_itself(side)
-        if not isinstance(side, ast.Name):
+        if isinstance(side, ast.NamedExpr):
+            # `(current := current.parent)` gives the climbing name's next step.
+            side = _own_parent(side.target, side.value) or side
+        if not isinstance(side, ast.Name) or not isinstance(side.ctx, ast.Load):
             return False
         key = self._owner(side)[0]
         return key in self.climbing and not any(
-            isinstance(node, ast.Name) and self._owner(node)[0] == key for node in ast.walk(other)
+            isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and self._owner(node)[0] == key
+            for node in ast.walk(other)
         )
 
     def _compared_paths(self, call: ast.Call) -> list[ast.expr]:
@@ -1947,10 +1952,24 @@ def _calls_relative_to(statements: list[ast.stmt]) -> bool:
     return any(calls(statement) for statement in statements)
 
 
+def _own_parent(target: ast.expr, value: ast.expr | None) -> ast.Name | None:
+    """The name `value` reads when it is `target`'s own `.parent`, as in `current = current.parent`; else None."""
+    if (
+        isinstance(target, ast.Name)
+        and isinstance(value, ast.Attribute)
+        and value.attr == "parent"
+        and isinstance(value.value, ast.Name)
+        and value.value.id == target.id
+    ):
+        return value.value
+    return None
+
+
 def _climbed_names(loop: ast.While | ast.For | ast.AsyncFor) -> Iterator[ast.Name]:
-    """Each name a loop rebinds to its own `.parent`, as `current = current.parent` or `(current := current.parent)`,
-    in a `while` loop's test or any loop's body, which run each time round, leaving out a function, lambda, or class it
-    defines, which runs apart from the loop."""
+    """Each name a loop rebinds to its own `.parent`, as `current = current.parent`, `current: Path = current.parent`,
+    or `(current := current.parent)`, in a `while` loop's test or any loop's body, which run each time round, leaving
+    out a function, lambda, or class it defines, which runs apart from the loop. The name given is the one `.parent`
+    reads, which the scopes record, as they do not record an assignment expression's target."""
     pending: list[ast.AST] = [*([loop.test] if isinstance(loop, ast.While) else []), *loop.body]
     while pending:
         node = pending.pop()
@@ -1961,14 +1980,8 @@ def _climbed_names(loop: ast.While | ast.For | ast.AsyncFor) -> Iterator[ast.Nam
             targets = [node.target]
         value = getattr(node, "value", None)
         for target in targets:
-            if (
-                isinstance(target, ast.Name)
-                and isinstance(value, ast.Attribute)
-                and value.attr == "parent"
-                and isinstance(value.value, ast.Name)
-                and value.value.id == target.id
-            ):
-                yield target
+            if (read := _own_parent(target, value)) is not None:
+                yield read
         if not isinstance(node, (*DEFINITIONS, ast.Lambda)):
             pending.extend(ast.iter_child_nodes(node))
 

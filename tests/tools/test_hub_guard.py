@@ -3046,6 +3046,35 @@ class WriteGuardTests(GuardTestCase):
                 self.assertIn(f"`git fetch` reads in {other} includes", self.reason)
         self.assertIsNone(self.bash(f'printf x > "{self.root}/elsewhere.txt" && git -C "{other}" fetch', self.tree))
 
+    def test_a_write_to_another_spelling_of_an_include_s_folder_not_yet_made_is_refused(self) -> None:
+        # Every platform: no directory holds the include's folder yet, so none can say whether the written spelling is
+        # its own. APFS and NTFS take the two for one folder, so the guard takes every spelling some file system may
+        # read as the include's for it and refuses; on a case-sensitive file system, which keeps them apart, the
+        # refusal is the cautious answer.
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        for folder, written in (("incÉ", "incé"), ("café", "café")):
+            with self.subTest(folder=folder, written=written):
+                included = self.root / folder / "inc.gitconfig"
+                (other / ".git" / "config").write_text(
+                    f'[include]\n\tpath = "{included.as_posix()}"\n', encoding="utf-8"
+                )
+                target = self.root / written / "inc.gitconfig"
+                command = f'mkdir -p "{target.parent}" && printf x > "{target}" && git -C "{other}" fetch'
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`git fetch` reads in {other} includes", self.reason)
+
+    def test_a_write_to_another_spelling_of_the_folder_holding_the_global_configuration_is_refused(self) -> None:
+        # Every platform: the home is not made yet, so no directory can say whether the folder written is the one
+        # holding the global configuration; the guard takes every spelling some file system may read as it for it.
+        located = {
+            **{name: value for name, value in self.environment.items() if name != "GIT_CONFIG_GLOBAL"},
+            "HOME": str(self.root / "hÖme"),
+            "XDG_CONFIG_HOME": str(self.root / "xdg"),
+        }
+        self.assertEqual("deny", self.bash(f'git init -q "{self.root / "höme"}"', self.tree, located))
+        self.assertIn("which holds a file git reads its system or global configuration from", self.reason)
+
     def test_a_git_call_s_configuration_git_cannot_read_is_refused_while_a_hub_is_guarded(self) -> None:
         other = self.root / "other"
         run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
@@ -4280,9 +4309,11 @@ class HubsInViewTests(unittest.TestCase):
 
 
 class WithinTests(unittest.TestCase):
-    """The guard's `within` is path_containment's: a path lies in a folder when its leading parts, `..` folded first,
-    are the folder's as the folder's own directories compare names, so a spelling counts as the folder's only where its
-    directory finds one entry under both."""
+    """The guard compares through path_containment. Where inside admits, as for an index in the session's own git
+    directory or a git call in a guarded hub, `within` counts a spelling as a folder's only where the folder's own
+    directory finds one entry under both, `..` folded first. Where inside refuses, as for a write reaching an include
+    or the folder holding the global configuration, `may_lie_in` counts every spelling some file system may read as
+    the folder's, asking no directory."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="guard-within-")
@@ -4291,14 +4322,16 @@ class WithinTests(unittest.TestCase):
 
     def test_the_guard_compares_through_path_containment(self) -> None:
         self.assertIs(vars(hub_guard)["within"], path_containment.within)
+        self.assertIs(vars(hub_guard)["may_lie_in"], path_containment.may_lie_in)
 
-    def test_a_non_ascii_case_or_unicode_form_variant_of_a_missing_folder_is_not_inside_it(self) -> None:
-        # Every platform: no directory holds the folder, so none finds one entry under both spellings. A copy that
-        # composed every name fails the form pair everywhere, and one that folded case where the parent folds fails
-        # the case pair on macOS and Windows.
+    def test_a_non_ascii_case_or_unicode_form_variant_of_a_missing_folder_admits_nothing_and_refuses(self) -> None:
+        # Every platform: no directory holds the folder, so none finds one entry under both spellings. A site where
+        # inside admits keeps the variant apart, and refuses; a site where inside refuses takes it for the folder, and
+        # refuses too, since APFS and NTFS will open the folder under it once it is made.
         for folder, variant in VARIANTS:
             with self.subTest(folder=folder, variant=variant):
                 self.assertFalse(path_containment.within(self.root / variant / "x", self.root / folder))
+                self.assertTrue(path_containment.may_lie_in(self.root / variant / "x", self.root / folder))
                 self.assertTrue(path_containment.within(self.root / folder / "x", self.root / folder))
 
     def test_a_variant_of_a_folder_its_directory_keeps_apart_is_not_inside_it(self) -> None:
