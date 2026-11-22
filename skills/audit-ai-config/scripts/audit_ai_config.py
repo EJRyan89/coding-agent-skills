@@ -25,9 +25,7 @@ The Markdown and relay reports state the result on one line, before the SUMMARY 
 
 Exit status:
   0  RESULT COMPLIANT
-  1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
-     (the root is not a Git repository, the root could not be examined for a .git, --provenance could not read the
-     provenance file, or the --json report cannot hold a value the audit found)
+  1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>, which names why there is no report
   2  a usage error
 """
 
