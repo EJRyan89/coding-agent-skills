@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import git_client
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
-from test_markdown_sections import assert_time_in_proportion
+from test_time_in_proportion import assert_time_in_proportion
 
 from tools import release_notes
 
