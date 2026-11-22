@@ -73,6 +73,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import file_presence
 import json_reader
 import json_writer
@@ -413,7 +414,7 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
 
 def _write_results(path: Path, passes: list[dict[str, Any]]) -> None:
     try:
-        json_writer.write(path, passes, indent=2, mode=0o644)
+        json_writer.write(path, passes, indent=2, mode=atomic_file.TRACKED_FILE_MODE)
     except (OSError, json_writer.JsonWriteRefused) as exc:
         raise DeployError(f"ERROR: Cannot write the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
 
