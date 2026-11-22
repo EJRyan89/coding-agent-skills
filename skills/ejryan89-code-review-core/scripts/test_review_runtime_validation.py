@@ -1146,9 +1146,25 @@ class SafeSnapshotPathTests(unittest.TestCase):
         sibling.mkdir()
         (sibling / "app.py").write_bytes(APP)
         directory_link(self.temporary / "linked", self.outside)
-        for target in (sibling / "app.py", self.temporary / "linked" / "app.py", self.root / ".." / "outside"):
+        for target in (sibling / "app.py", self.temporary / "linked" / "app.py"):
             with self.subTest(target=target):
                 self.assertEqual(f"Source snapshot path escapes its root: {target}", self.refused(self.root, target))
+
+    def test_a_path_whose_own_parts_climb_by_a_parent_segment_is_refused_before_the_walk(self) -> None:
+        # A link the written path climbs back out of, `linked/..`, lies on the way the path is opened by but not on the
+        # folded path, so it is refused as written; so is any `..`, a link on its way or not.
+        (self.root / "src" / "deeper").mkdir()
+        (self.root / "app.py").write_bytes(APP)
+        directory_link(self.root / "linked", self.root / "src" / "deeper")
+        for target in (
+            self.root / "linked" / ".." / "app.py",
+            self.root / "src" / ".." / "app.py",
+            self.root / ".." / "outside",
+        ):
+            with self.subTest(target=target):
+                self.assertEqual(
+                    f"Source snapshot path holds a parent segment: {target}", self.refused(self.root, target)
+                )
 
     def size_refusal(self, relative: str, root: Path | None = None) -> str:
         """Why a snapshot walk that counted nothing refuses `relative`, as `_SnapshotTree.size` says."""

@@ -1287,7 +1287,11 @@ def _is_agent_instruction_path(relative: str) -> bool:
 def _require_safe_snapshot_path(root: Path, target: Path) -> None:
     """Refuse `target` unless it lies in `root` as written, with no symbolic link, junction, or other reparse point on
     its way from `root`, the root and the target included, and still lies in the resolved root once resolved. Each is
-    asked from the target up, so a part that cannot be read raises its OSError as the nearest to the target."""
+    asked from the target up, so a part that cannot be read raises its OSError as the nearest to the target. A target
+    whose own parts hold `..` is refused first: the walk asks the parts `relative_within` gives, with `..` folded, so a
+    link the written path climbs back out of, as `link/../a`, would go unasked while opening the target follows it."""
+    if ".." in target.parts:
+        raise RuntimeContractError(f"Source snapshot path holds a parent segment: {target}")
     resolved_root = strictly_resolved_path(root)
     relative = relative_within(target, root)
     if relative is None:
