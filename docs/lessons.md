@@ -824,7 +824,7 @@ removed fails validation until its pattern follows it.
 - **Use:** `path_containment:refusal`, which judges an entry from input as written, as resolved, and through the link
   probe, and names why; `path_containment:within`, the one comparison of a path with its tree, which every other
   containment test calls on paths it has made absolute or resolved; `path_containment:relative_within`, the path
-  relative to its tree from the forms `path_containment:within` compares, never a relative_to of the paths as given; `path_containment:posix_within` for a repository
+  relative to its tree from the forms `path_containment:within` compares, never a relative_to of the paths as given; `path_containment:may_lie_in`, for a check where inside means refuse, which takes every spelling some file system may read as the tree's for it; `path_containment:posix_within` for a repository
   path a listing gives; `diff_paths:snapshot_path` and `diff_paths:unsafe_snapshot_name`, which hold a snapshot's
   readers and its writer to the same written rules; `dotnet_solution:refusal` and
   `dotnet_format_targets:listed_refusal`, which compare through it a

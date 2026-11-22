@@ -1797,6 +1797,91 @@ def matched_forms(path: Path, root: Path, name: str, top: str, fields: dict[str,
     return found
 
 
+def wider_forms(path: Path, root: Path, name: str, top: str) -> list[object]:
+    import fnmatch
+
+    from path_keys import path_key
+    from worktrees import same_path
+
+    current = path
+    while current != root:
+        if current.parent == current:  # The climbing name compared with its own parent, its anchor.
+            break
+        current = current.parent
+    above = path
+    while not same_path(above, root):
+        above = above.parent
+    found: list[object] = [
+        any(same_path(each, root) for each in (path, *path.parents)),
+        any(path_key(parent) == path_key(root) for parent in path.parents),
+        any(str(parent) == str(root) for parent in path.parents),
+        any(parent.resolve() == root for parent in path.parents),
+        any(parent.samefile(root) for parent in path.parents),
+        any(os.path.samefile(parent, root) for parent in path.parents),
+        any(os.fspath(parent.absolute()) != os.fspath(root) for parent in path.parents),
+        fnmatch.fnmatch(name, os.path.join(top, "*")),
+        fnmatch.fnmatch(name, posixpath.join(top, "**")),
+        fnmatch.fnmatch(name, ntpath.join(top, "*")),
+        fnmatch.fnmatch(name, "/".join([top, "*"])),
+        path.match(os.path.join(top, "**")),
+        any(str(parent.name) == top for parent in path.parents),  # A parent's name, not the parent.
+        any(len(parent.parts) == 2 for parent in path.parents),  # A count of a parent's parts, not the parent.
+        any(same_path(each, path) for each in (path, *path.parents)),  # The path itself, never among its parents.
+        any(str(each) == str(path) for each in (path, *path.parents)),  # The path itself, never among its parents.
+        same_path(path, root),  # The path, not one of its parents.
+        name.startswith(os.path.join(top, "*")),  # A startswith reads `*` as text.
+        fnmatch.fnmatch(name, os.path.join(top, "*.py")),  # Text after the wildcard.
+        fnmatch.fnmatch(name, os.path.join("*")),  # No folder before the wildcards.
+        fnmatch.fnmatch(name, "/".join(["**"])),  # No folder before the wildcards.
+    ]
+    below = path
+    while below.name != top:  # A climb compared by its name, not the path.
+        below = below.parent
+    return found
+
+
+async def climbs(path: Path, root: Path, top: str, steps: list[int]) -> None:
+    from dotnet_solution import same_path
+
+    cur = path
+    while (cur := cur.parent) != root:
+        pass
+    named = path
+    while (named := named.parent).name != top:  # The step's name, not the step.
+        pass
+    walked = path
+    for _ in steps:
+        walked = walked.parent
+        if walked == root:
+            break
+    typed = path
+    while typed != root:
+        typed: Path = typed.parent
+    stepped = path
+    async for _ in ticks():
+        stepped = stepped.parent
+        if stepped == root:
+            break
+    keyed = path
+    while same_path(keyed) != same_path(root):
+        keyed = keyed.parent
+    kept = path
+    while kept.name != top:
+
+        def step(node: Path) -> bool:
+            node = node.parent
+            return node == root  # A function the loop defines runs apart from it.
+
+        lifted = lambda node: (node := node.parent) == root  # noqa: E731 - A lambda runs apart from the loop.
+        kept = kept.parent if step(kept) or lifted(kept) else kept
+    upper = path
+    while not upper.samefile(root):
+        upper = upper.parent
+    higher = path
+    while not same_path(root, higher):
+        higher = higher.parent
+
+
 def fields_of(top: str) -> dict[str, str]:
     return {"top": top, "sep": "/"}
 
@@ -1873,6 +1958,9 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (433, 434, 435)),
         f"{alpha}:453 tests containment with {parents}{remedy}",
         *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (458, 462)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (478, 483, *range(486, 493))),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(493, 498)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (518, 526, 529, 534, 537, 549, 552)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
