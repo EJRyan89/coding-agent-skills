@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -102,9 +103,11 @@ class Runs:
     def __init__(self, answers: dict[str, Completed]) -> None:
         self.answers = answers
         self.commands: list[list[str]] = []
+        self.folders: list[Path] = []
 
-    def __call__(self, arguments: Sequence[str], timeout: float) -> Completed:
+    def __call__(self, arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
         self.commands.append(list(arguments))
+        self.folders.append(folder)
         project = Path(arguments[-2]).as_posix()
         answer = self.answers.get(project)
         if answer is None:
@@ -132,6 +135,8 @@ class RunTests(unittest.TestCase):
         )
         answer = run_why(projects, "Lantern.Json", Services(run=runs, which=lambda name: None), 30)
         self.assertEqual(4, len(runs.commands))
+        # Each runs in its project's folder, where the .NET host finds the global.json the graph judged.
+        self.assertEqual([project.parent for project in projects], runs.folders)
         self.assertTrue(all(command[:3] == ["dotnet", "nuget", "why"] for command in runs.commands))
         self.assertEqual({projects[0]}, answer.answered)
         self.assertEqual({projects[0]}, set(answer.paths))
@@ -160,13 +165,13 @@ class RunTests(unittest.TestCase):
 
     def test_the_default_runner_joins_both_streams_and_reports_a_time_limit(self) -> None:
         result = sdk_why.subprocess_runner(
-            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"], 60
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"], 60, Path()
         )
         self.assertEqual(3, result.returncode)
         self.assertIn("out", result.text)
         self.assertIn("err", result.text)
         self.assertFalse(result.timed_out)
-        slow = sdk_why.subprocess_runner([sys.executable, "-c", "import time; time.sleep(30)"], 0.5)
+        slow = sdk_why.subprocess_runner([sys.executable, "-c", "import time; time.sleep(30)"], 0.5, Path())
         self.assertTrue(slow.timed_out)
         self.assertEqual(-1, slow.returncode)
 
@@ -179,8 +184,16 @@ class RunTests(unittest.TestCase):
         )
         named = {"DOTNET_CLI_UI_LANGUAGE": "de", "VSLANG": "1031", "DOTNET_DEPENDENCIES_KEPT": "a kept value"}
         with mock.patch.dict(os.environ, named):
-            result = sdk_why.subprocess_runner([sys.executable, "-c", script], 60)
+            result = sdk_why.subprocess_runner([sys.executable, "-c", script], 60, Path())
         self.assertEqual((0, "en|1031|a kept value|0"), (result.returncode, result.text.strip()))
+
+    def test_the_default_runner_runs_in_the_folder_it_is_given(self) -> None:
+        # The .NET host picks the SDK by the nearest global.json at or above the folder it runs in.
+        with tempfile.TemporaryDirectory() as folder:
+            result = sdk_why.subprocess_runner(
+                [sys.executable, "-c", "import os; print(os.getcwd())"], 60, Path(folder)
+            )
+            self.assertEqual(Path(folder).resolve(), Path(result.text.strip()).resolve())
 
     def test_the_runner_states_why_the_policy_cannot_read_its_program(self) -> None:
         self.assertIn("subprocess_runner", sdk_why.COMMANDS_ALLOWED)
@@ -222,7 +235,7 @@ def test_a_long_unread_first_line_and_a_multi_line_start_error_are_each_one_boun
     assert failure.endswith("...")
     assert len(failure) == len(stated) + REASON_CHARACTERS + 3
 
-    def refused(arguments: Sequence[str], timeout: float) -> Completed:
+    def refused(arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
         raise OSError(8, "Exec format\r\n  error")
 
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=refused), 30)
