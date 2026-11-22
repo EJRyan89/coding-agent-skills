@@ -383,6 +383,88 @@ class GitHubTests(unittest.TestCase):
                 f"pull number must be an integer of at least 1, found integer {number}", str(refused.exception)
             )
 
+    @staticmethod
+    def _closing_answer(total: Any, nodes: list[Any], errors: list[Any] | None = None) -> CommandResult:
+        connection = {"totalCount": total, "nodes": nodes}
+        response: dict[str, Any] = {"data": {"repository": {"pullRequest": {"closingIssuesReferences": connection}}}}
+        if errors is not None:
+            response["errors"] = errors
+        return CommandResult(0, json.dumps(response), "")
+
+    def test_closing_issues_are_asked_for_by_the_whole_gh_argument_list(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(list(arguments))
+            return self._closing_answer(0, [])
+
+        GitHubClient(runner).list_closing_issues("Example-Org/Repo.Name", 12, first=10)
+        [call] = calls
+        query = call[4]
+        self.assertTrue(query.startswith("query=query($owner: String!, $name: String!, $number: Int!, "), query)
+        self.assertIn("closingIssuesReferences(first: $first)", query)
+        # The owner and name go as strings (-f), never typed (-F), so a numeric owner or name stays a string; the
+        # number and the bound go typed.
+        self.assertEqual(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                query,
+                "-f",
+                "owner=example-org",
+                "-f",
+                "name=repo.name",
+                "-F",
+                "number=12",
+                "-F",
+                "first=10",
+            ],
+            call,
+        )
+
+    def test_a_pull_request_that_closes_no_issue_reads_as_none_and_a_negative_count_is_refused(self) -> None:
+        self.assertEqual(
+            ([], 0), GitHubClient(answering(self._closing_answer(0, []))).list_closing_issues("a/b", 12, first=10)
+        )
+        count = "graphql response.data.repository.pullRequest.closingIssuesReferences.totalCount"
+        for total in (-1, -5):
+            with self.subTest(total=total), self.assertRaises(GitHubError) as refused:
+                GitHubClient(answering(self._closing_answer(total, []))).list_closing_issues("a/b", 12, first=10)
+            self.assertEqual("malformed", refused.exception.kind)
+            self.assertEqual(f"{count} must be an integer of at least 0, found integer {total}", str(refused.exception))
+
+    def test_a_bound_below_one_is_refused_before_github_is_asked(self) -> None:
+        calls: list[Sequence[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(arguments)
+            return self._closing_answer(0, [])
+
+        for first in (0, -1):
+            with self.subTest(first=first), self.assertRaises(GitHubInputError) as refused:
+                GitHubClient(runner).list_closing_issues("a/b", 12, first=first)
+            self.assertEqual(
+                f"closing issues must be an integer of at least 1, found integer {first}", str(refused.exception)
+            )
+        self.assertEqual([], calls)
+
+    def test_a_closing_issues_answer_carrying_graphql_errors_fails_as_one_though_gh_exits_0(self) -> None:
+        issue = {"number": 4, "state": "OPEN", "title": "T", "body": "B", "repository": {"nameWithOwner": "a/b"}}
+        cases = (
+            ("INTERNAL", "api"),
+            ("FORBIDDEN", "forbidden"),
+        )
+        for kind, expected in cases:
+            errors = [{"type": kind, "path": ["repository"], "message": "boom"}]
+            with self.subTest(kind=kind), self.assertRaises(GitHubError) as refused:
+                GitHubClient(answering(self._closing_answer(1, [issue], errors))).list_closing_issues(
+                    "a/b", 12, first=10
+                )
+            self.assertEqual(expected, refused.exception.kind)
+            self.assertEqual(f"GraphQL request failed ({kind}): boom", str(refused.exception))
+
     def test_graphql_failures_never_return_partial_nodes(self) -> None:
         connection = ("repository", "pullRequests")
         cases = (
