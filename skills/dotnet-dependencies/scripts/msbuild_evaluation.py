@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from dotnet_solution import project_path, refusal, same_path
 from file_presence import is_occupied, is_present
+from folder_walk import outside_link_refusal
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -74,7 +75,6 @@ from msbuild_reader import (
     matching_framework,
     nearest_file,
     os_unreadable,
-    outside_link_refusal,
     parse_xml,
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name

@@ -18,7 +18,8 @@ forward slashes:
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
                   outside the examined tree, a file a link on its way leads outside it, naming the link and its
-                  target, a condition, name, metadata value, or AssemblyName they cannot
+                  target, more than 40 links on its way, or a link whose target cannot be read, a link the search
+                  lists that leads outside it, a condition, name, metadata value, or AssemblyName they cannot
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
                   not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
                   bound stopped it at; its facts are missing
@@ -77,11 +78,13 @@ FAILED line of a search finding none names them. A project named through a link 
 found there. A project whose own stat fails is refused as one that cannot be examined, before the search is asked
 why it did not reach it; a project below a link on its way, or one that is itself a link, is never stat, since the
 link may lead outside the examined tree, so the folder the search passed over is named whether or not the file is
-there; so is one below a folder whose metadata cannot be read. A limit: the --project argument itself is resolved, up
-to its last `..`, and in full to match a project found through a link inside the tree unless a link on its way inside
-the examined tree leads outside it, as the narrowing always resolved it, which follows each link on its way before
-its last `..`, and each link of a path resolved in full, reads the metadata of each name past it, and lists each
-folder past it to learn its case rule; no file's contents are read through a link.
+there; so is one below a folder whose metadata cannot be read. The --project argument's part up to its last `..` is
+followed inside the tree as the system follows it, never through a link out of it, and the whole path is resolved, to
+match a project found through a link inside the tree, only when it lies in the tree and no link on its way leads out
+of it; a path a link or `..` leads out of the tree, or one named outside it, is no project of the root and is never
+resolved in full. A limit: a --project named outside the tree, or through a link above it such as macOS's /var, has
+the folders leading to it resolved to learn whether one of them is the root, and its part up to its last `..`
+resolved, which reads the metadata of each name on its way but no file's contents.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -91,19 +94,28 @@ versions, and the walk's version of a package after `graph` where a referenced p
 apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
-A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
-directory searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES
-(msbuild_reader's docstring). Nothing inside the tree is stat, listed, or read through a link that leads outside it
-(msbuild_reader's outside_link_refusal): a project the search finds or a solution lists, an import, the nearest
-Directory.Build.props or Directory.Packages.props, a restore's assets, a packages.config, a config, or a nuspec in the
-packages folder, or the packages folder and a package's folder in it, that a link on its way, its own name included,
-leads outside the tree is an UNREADABLE line naming the link and its target, and an Exists() condition below such a
-link is reported and unsettled; a link whose target stays inside the tree is read through. The NuGet cache lies
-outside the tree and is read where it is. A limit: the names of the assemblies a package's lib folder ships are
-listed with a glob, which may list through a link below that folder; it reads no file's contents.
-The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line
-FAILED <reason> when it cannot finish, such as when the root cannot be resolved, --project names no project of the
-root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be written.
+A path a solution or project names is read only inside the examined tree, the checkout holding the solution or directory
+searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's
+docstring). Nothing inside the tree is stat, listed, or read through a link that leads outside it, judged from each
+name's own metadata and each link's text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for
+projects follows no link entry out of the tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE
+line naming the link and its target, and any other such entry is reported as a link the search does not follow. A
+solution in the root folder so linked, or named by --root, is a FAILED line; a project the search finds or a solution
+lists, an import, the nearest Directory.Build.props or Directory.Packages.props, a restore's assets, a packages.config,
+a config, the packages folder, a package's folder, its lib folder, or its nuspec, that a link on its way, its own name
+included, leads outside the tree is an UNREADABLE line naming the link and its target; and an Exists() condition below
+such a link is reported and unsettled. A link whose target stays inside the tree is read through. The NuGet cache lies
+outside the tree and is read where it is. Limits: the names of the assemblies below a package's lib folder are listed
+with a glob, which may list through a link below that folder, reading no file's contents; `dotnet nuget why`, which
+`why` asks for a restored SDK-style project, evaluates the project through MSBuild, which reads what the script refused,
+such as an import through a link leading outside the tree; and the look at the links and the read are two steps
+(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
+file itself, is read as a file of the tree wherever its other names lie.
+The script changes nothing on disk but the graph file and runs no restore or build; it prints a last line FAILED
+<reason> when it cannot finish, such as when the root cannot be resolved, a root solution, found in the root folder or
+named by --root, is a link leading outside the checkout (`<solution> cannot be examined: <reason>`), --project names no
+project of the root, --output is inside a skills directory, the home folder is not known, or the graph file cannot be
+written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -134,7 +146,7 @@ from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path
 from flat_text import fact_line, flat_text
-from folder_walk import BOUNDED, NotEntered, is_hidden, walk_files
+from folder_walk import BOUNDED, NotEntered, followed_inside, is_hidden, outside_link_refusal, walk_files
 from folders_up import folders_up
 from link_probe import is_link_or_junction
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
@@ -150,7 +162,6 @@ from msbuild_reader import (
     examined_tree,
     matching_framework,
     os_unreadable,
-    outside_link_refusal,
     package_assemblies,
     read_assets,
     read_nuspec,
@@ -159,7 +170,7 @@ from msbuild_reader import (
     read_solution,
 )
 from ordinal_case import ordinal_fold
-from path_containment import resolved_path
+from path_containment import resolved_path, within
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
 
@@ -306,13 +317,16 @@ def find_projects(
     symbolic link, which may lead outside the directory or back into it, a nested checkout, or one that cannot be
     listed, is reported, and costs only the projects it holds; the folder the bound stopped it at is reported too, and
     costs the projects in it and in every folder after it in the walk's order. Each is added to `passed_over` too, so
-    `unsearched` can say why a project below one was not found."""
+    `unsearched` can say why a project below one was not found. No link entry is followed out of the checkout holding
+    the directory (`checkout_tree`): a .csproj so linked is given to `load_projects`, which reports it, and any other
+    such entry is reported as a link the search does not follow."""
     walk = walk_files(
         directory,
         lambda name: ordinal_fold(name).endswith(PROJECT_SUFFIX),
         skipped=SEARCH_SKIPPED_FOLDERS,
         prune=is_hidden,
         limit=PROJECT_SEARCH_FOLDER_LIMIT,
+        tree=checkout_tree(directory),
     )
     unreadable += [(entry.path, entry.reason) for entry in walk.not_entered]
     if passed_over is not None:
@@ -325,15 +339,21 @@ HIDDEN_REASON = "the folder is hidden, its name starting with a dot, which the s
 RETRY_ADVICE = "pass --root at its solution or its folder"
 
 
-def as_named(path: Path) -> Path:
+def as_named(path: Path, tree: Path) -> Path | None:
     """`path` made absolute as the system opens it, keeping the links it is named through: normalized as text, but for
     a path holding a `..`, which the system takes only after following any link before it, the part up to its last
-    `..` is resolved, so no `..` steps back out of a link as text would, and the names after it stay as named."""
+    `..` is followed as the system follows it, so no `..` steps back out of a link as text would, and the names after
+    it stay as named. The part inside `tree` is followed by `followed_inside`, which stats nothing outside it, and is
+    None when a link or `..` on it leads out; a part named outside the tree, or through a link above it, is resolved."""
     parts = path.absolute().parts
     if ".." not in parts:
         return lexical_absolute(path)
     last = len(parts) - 1 - parts[::-1].index("..")
-    return resolved_path(Path(*parts[: last + 1])).joinpath(*parts[last + 1 :])
+    prefix = Path(*parts[: last + 1])
+    inside, refused = followed_inside(prefix, tree)
+    if refused is not None:
+        return None
+    return (inside or resolved_path(prefix)).joinpath(*parts[last + 1 :])
 
 
 def through_link(root: Path, names: Sequence[str]) -> bool:
@@ -355,12 +375,14 @@ def through_link(root: Path, names: Sequence[str]) -> bool:
     return False
 
 
-def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
+def named_below(root: Path, path: Path, tree: Path) -> tuple[str, ...] | None:
     """The names leading from `root`, a resolved folder, down to `path` as `as_named` gives it, or None when it lies
-    outside `root`. The shortest leading part of the named path that resolves to `root` stands for it, so a link above
-    the root, such as a temporary folder's, still finds it, and a link below it stays a folder the path is named
-    through."""
-    named = as_named(path)
+    outside `root`, or a link or `..` on its way inside `tree` leads out of it. The shortest leading part of the named
+    path that resolves to `root` stands for it, so a link above the root, such as a temporary folder's, still finds it,
+    and a link below it stays a folder the path is named through."""
+    named = as_named(path, tree)
+    if named is None:
+        return None
     key = same_path(root)
     for depth in range(1, len(named.parts)):
         if same_path(resolved_path(Path(*named.parts[:depth]))) == key:
@@ -368,7 +390,7 @@ def named_below(root: Path, path: Path) -> tuple[str, ...] | None:
     return None
 
 
-def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEntered]) -> str | None:
+def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEntered], tree: Path) -> str | None:
     """Why the search for projects under `root` did not find `narrowed`, a .csproj file below it: the first folder on
     its way down that the search skips, prunes, or did not enter, or else the bound the search stopped at. None when
     `narrowed` is no such file, or nothing in the search explains its absence. A path through a link on its way is
@@ -376,7 +398,7 @@ def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEnter
     there, as the search, which does not follow it either, cannot tell."""
     if narrowed is None or not ordinal_fold(narrowed.name).endswith(PROJECT_SUFFIX):
         return None
-    names = named_below(root, narrowed)
+    names = named_below(root, narrowed, tree)
     if not names or not (through_link(root, names) or regular_file(narrowed)):
         return None
     skipped = {name.casefold() for name in SEARCH_SKIPPED_FOLDERS}
@@ -433,12 +455,24 @@ def regular_file(path: Path) -> bool:
 def root_solutions(folder: Path) -> list[Path]:
     """The solution files directly in `folder`, in path order: entries named as a solution that are regular files,
     so a folder so named is passed over. A folder it cannot list, or a solution-named entry it cannot stat, is refused
-    naming it, never read as holding no solution, which would take the projects below it for the answer."""
+    naming it, never read as holding no solution, which would take the projects below it for the answer; so is one a
+    link leads outside the checkout holding the folder (`linked_solution`), which is never stat."""
     try:
         children = sorted(folder.iterdir())
     except OSError as error:
         raise unexaminable(folder, error) from None
-    return [child for child in children if is_solution(child) and regular_file(child)]
+    tree = checkout_tree(folder)
+    return [
+        child for child in children if is_solution(child) and not linked_solution(child, tree) and regular_file(child)
+    ]
+
+
+def linked_solution(path: Path, tree: Path) -> bool:
+    """False for a solution no link on its way inside `tree` leads out of it (`outside_link_refusal`), and `Failed`
+    naming it otherwise, since the solution chooses every project the run reads and is never read from outside."""
+    if (linked := outside_link_refusal(path, tree)) is not None:
+        raise unexaminable(path, Unreadable(path, linked))
+    return False
 
 
 def resolve_root(
@@ -447,7 +481,11 @@ def resolve_root(
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
-    the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up."""
+    the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up. A
+    solution named by `path` that a link leads outside the checkout holding its folder fails before it is stat."""
+    named = path.absolute()
+    if is_solution(named):
+        linked_solution(named, checkout_tree(lexical_absolute(named).parent))
     path = resolved_path(path)
     if regular_file(path):
         if not is_solution(path):
@@ -490,12 +528,16 @@ def resolve_root(
 
 
 def no_projects(
-    directory: Path, narrowed: Path | None, unreadable: Iterable[tuple[Path, str]], passed_over: Sequence[NotEntered]
+    directory: Path,
+    narrowed: Path | None,
+    unreadable: Iterable[tuple[Path, str]],
+    passed_over: Sequence[NotEntered],
+    tree: Path,
 ) -> Failed:
     """The failure of a search for projects that found none: why it did not reach `narrowed`, the project `--project`
     names, when `unsearched` finds why, else that it found none, either way naming each folder it did not search."""
     skipped = "".join(f"; {folder} not searched: {reason}" for folder, reason in unreadable)
-    reason = unsearched(directory, narrowed, passed_over)
+    reason = unsearched(directory, narrowed, passed_over, tree)
     return Failed(f"{reason or f'no solution or .csproj found under {directory}'}{skipped}")
 
 
@@ -645,7 +687,7 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         graph.refuse(Unreadable(nuspecs[0], linked))
         return None
     try:
-        return read_nuspec(nuspecs[0], package_assemblies(directory))
+        return read_nuspec(nuspecs[0], package_assemblies(directory, graph.tree))
     except Unreadable as error:
         graph.refuse(error)
         return None
@@ -792,9 +834,9 @@ def build_graph(root: Path, services: Services, narrowed: Path | None = None) ->
     # resolve_root shows a solution's paths relative to its folder and a searched folder's relative to itself, so the
     # root is a solution exactly when it is not the base; a second look at the disk could answer otherwise.
     solution = None if resolved == base else resolved
-    if solution is None and not listed:
-        raise no_projects(resolved, narrowed, unreadable, passed_over)
     tree = checkout_tree(base)
+    if solution is None and not listed:
+        raise no_projects(resolved, narrowed, unreadable, passed_over, tree)
     graph = Graph(resolved, base, tree, unreadable=unreadable, passed_over=passed_over, sources=Sources(tree, solution))
     load_projects(graph, listed)
     for project in graph.projects.values():
@@ -973,14 +1015,17 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
 def named_project(graph: Graph, narrowed: Path) -> Project | None:
     """The project `--project` names: the one at the path as it is named below the solution's directory, where the
     search or the solution found a project, through a link to its file too, and keeps it under the path it found it at,
-    else the one at the path it resolves to, unless a link on its way inside the examined tree leads outside it
-    (`outside_link_refusal`), which is never resolved. A project found through a link is read from the link's folder, as
-    MSBuild reads it, so the link's project, not its target's, is the one named."""
-    names = named_below(graph.base, narrowed)
-    named = graph.base.joinpath(*names) if names else as_named(narrowed)
-    project = graph.project_at(named) if names else None
-    if project is not None or outside_link_refusal(named, graph.tree) is not None:
+    else the one at the path it resolves to inside the examined tree. A path that a link or `..` on its way leads out
+    of the tree (`as_named`, `outside_link_refusal`), or that is named outside it, is never resolved in full. A
+    project found through a link is read from the link's folder, as MSBuild reads it, so the link's project, not its
+    target's, is the one named."""
+    names = named_below(graph.base, narrowed, graph.tree)
+    project = graph.project_at(graph.base.joinpath(*names)) if names else None
+    if project is not None:
         return project
+    named = as_named(narrowed, graph.tree)
+    if named is None or not within(named, graph.tree) or outside_link_refusal(named, graph.tree) is not None:
+        return None
     return graph.project_at(resolved_path(narrowed))
 
 
@@ -993,7 +1038,7 @@ def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     project = named_project(graph, narrowed)
     if project is None:
         searched = graph.root == graph.base
-        reason = unsearched(graph.root, narrowed, graph.passed_over) if searched else None
+        reason = unsearched(graph.root, narrowed, graph.passed_over, graph.tree) if searched else None
         raise Failed(reason or f"{narrowed} is not a project of {graph.root}")
     return [project]
 

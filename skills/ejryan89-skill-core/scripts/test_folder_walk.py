@@ -3,14 +3,15 @@ failures, and its bound."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,7 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import folder_walk
 from folder_walk import (
     BOUNDED,
+    LINK_LIMIT,
     LINKED,
+    LINKED_OUT_REASON,
     LINKED_REASON,
     LOOP,
     LOOP_REASON,
@@ -28,7 +31,9 @@ from folder_walk import (
     UNEXAMINED,
     UNLISTABLE,
     NotEntered,
+    followed_inside,
     is_hidden,
+    outside_link_refusal,
     walk_files,
 )
 
@@ -306,6 +311,224 @@ class LinkTests(WalkTestCase):
         walk = walk_files(self.root, every_file, follow=lambda path: True)
         self.assertIn(("linked_root", LOOP), self.not_entered(walk))
         self.assertEqual(["linked/file.txt", "target/file.txt"], self.files(walk))
+
+
+class RecordedEntry:
+    """A listed entry whose metadata calls are recorded in `touched` with whether each follows a link."""
+
+    def __init__(self, entry: os.DirEntry[str], touched: list[tuple[str, bool]]) -> None:
+        self.entry, self.touched, self.name, self.path = entry, touched, entry.name, entry.path
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.stat(follow_symlinks=follow_symlinks)
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.is_file(follow_symlinks=follow_symlinks)
+
+    def is_symlink(self) -> bool:
+        self.touched.append((self.path, False))
+        return self.entry.is_symlink()
+
+
+@contextlib.contextmanager
+def recording(touched: list[tuple[str, bool]]) -> Iterator[None]:
+    """Record each path `os.stat`, `os.lstat`, `os.scandir`, `os.readlink`, and a listed entry's metadata calls reach,
+    with whether the call follows a link there."""
+    real_scandir, real_stat, real_lstat, real_readlink = os.scandir, os.stat, os.lstat, os.readlink
+
+    @contextlib.contextmanager
+    def scandir(path: Any = ".") -> Iterator[Iterator[RecordedEntry]]:
+        touched.append((os.fsdecode(path), True))
+        with real_scandir(path) as listing:
+            yield (RecordedEntry(entry, touched) for entry in listing)
+
+    def stat(path: Any, *rest: Any, follow_symlinks: bool = True, **options: Any) -> os.stat_result:
+        touched.append((os.fsdecode(path), follow_symlinks))
+        return real_stat(path, *rest, follow_symlinks=follow_symlinks, **options)
+
+    def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+        touched.append((os.fsdecode(path), False))
+        return real_lstat(path, *rest, **options)
+
+    def readlink(path: Any, *rest: Any, **options: Any) -> Any:
+        touched.append((os.fsdecode(path), False))
+        return real_readlink(path, *rest, **options)
+
+    with (
+        mock.patch.object(os, "scandir", scandir),
+        mock.patch.object(os, "stat", stat),
+        mock.patch.object(os, "lstat", lstat),
+        mock.patch.object(os, "readlink", readlink),
+    ):
+        yield
+
+
+def reached(touched: list[tuple[str, bool]], links: list[Path], outside: Path) -> list[str]:
+    """The touched paths below `outside`, or that follow one of `links` or lie below it."""
+    found = []
+    for name, follows in touched:
+        path = Path(name)
+        below = path != outside and path.is_relative_to(outside)
+        if below or any((path == link and follows) or (path != link and path.is_relative_to(link)) for link in links):
+            found.append(name)
+    return found
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+class OutsideLinkTests(WalkTestCase):
+    """`followed_inside` and `outside_link_refusal` follow a path's links inside a tree as text, never outside it, and
+    a walk given that tree follows no link entry out of it."""
+
+    def outside(self, link: Path, target: Path | str) -> str:
+        target_text = target.as_posix() if isinstance(target, Path) else target
+        return (
+            f"{link.as_posix()} is a link to {target_text}, outside the examined tree {self.root.as_posix()}, which "
+            "the reader does not follow"
+        )
+
+    def test_a_link_whose_target_stays_inside_the_tree_is_followed_there_and_so_is_a_plain_or_missing_path(
+        self,
+    ) -> None:
+        # Relative and absolute targets inside the tree, a folder link inside it, and a `..` that steps back inside
+        # are each followed as the system follows them; a missing name ends the look with the rest as written, and a
+        # path outside the tree, or whose own `..` climbs out of it, is `within`'s question.
+        self.write("Lib/Lib.csproj")
+        lib = self.root / "Lib" / "Lib.csproj"
+        (self.root / "In.csproj").symlink_to("Lib/Lib.csproj")
+        (self.root / "Abs.csproj").symlink_to(lib)
+        self.link(self.root / "Lib", "Via")
+        (self.root / "Lib" / "Up.csproj").symlink_to("../Via/./Lib.csproj")
+        cases = (
+            (self.root / "In.csproj", lib),
+            (self.root / "Abs.csproj", lib),
+            (self.root / "Via" / "Lib.csproj", lib),
+            (self.root / "Lib" / "Up.csproj", lib),
+            (lib, lib),
+            (self.root / "Gone" / "Gone.csproj", self.root / "Gone" / "Gone.csproj"),
+            (lib / "Under.csproj", lib / "Under.csproj"),
+            (self.base / "Elsewhere.csproj", None),
+            (self.root / "Lib" / ".." / ".." / "tree" / "In.csproj", None),
+        )
+        for path, inside in cases:
+            with self.subTest(path=path):
+                self.assertEqual((inside, None), followed_inside(path, self.root))
+                self.assertIsNone(outside_link_refusal(path, self.root))
+
+    def test_a_link_leading_outside_the_tree_is_refused_naming_the_link_whose_text_leads_out(self) -> None:
+        # An absolute target, a relative one climbing out with `..`, a `..` after a folder link that leads outside
+        # (which the text alone reads as inside), a target naming the tree through `..`, and a `..` a link's text holds
+        # after a second link inside the tree, which names the first link, the one whose `..` climbs out, are each
+        # refused with no stat, lstat, readlink, or listing of anything outside the tree.
+        outside = self.base / "outside"
+        (outside / "sub").mkdir(parents=True)
+        (outside / "F.csproj").write_text("x\n", encoding="utf-8")
+        (self.root / "x" / "y").mkdir(parents=True)
+        (self.root / "Abs.csproj").symlink_to(outside / "F.csproj")
+        (self.root / "Rel.csproj").symlink_to("../outside/F.csproj")
+        out = self.link(outside / "sub", "Out")
+        (self.root / "Back.csproj").symlink_to("Out/../F.csproj")
+        alias = f"{self.root.as_posix()}/../tree/Lib.csproj"
+        (self.root / "Alias.csproj").symlink_to(alias)
+        (self.root / "D2").symlink_to(self.root / "x" / "y", target_is_directory=True)
+        climb = "D2/../../../outside/F.csproj"
+        (self.root / "V.csproj").symlink_to(climb)
+        cases = (
+            (self.root / "Abs.csproj", self.outside(self.root / "Abs.csproj", outside / "F.csproj")),
+            (self.root / "Rel.csproj", self.outside(self.root / "Rel.csproj", "../outside/F.csproj")),
+            (self.root / "Back.csproj", self.outside(out, outside / "sub")),
+            (out / "F.csproj", self.outside(out, outside / "sub")),
+            (self.root / "Alias.csproj", self.outside(self.root / "Alias.csproj", alias)),
+            (self.root / "V.csproj", self.outside(self.root / "V.csproj", climb)),
+        )
+        touched: list[tuple[str, bool]] = []
+        for path, reason in cases:
+            with self.subTest(path=path), recording(touched):
+                self.assertEqual((None, reason), followed_inside(path, self.root))
+        self.assertIn((str(out), False), touched)
+        self.assertEqual([], reached(touched, [out], outside))
+
+    def test_a_loop_of_links_an_unreadable_link_and_an_unreadable_name_are_refused(self) -> None:
+        loop = self.root / "Loop.csproj"
+        loop.symlink_to("Loop.csproj")
+        self.assertEqual(40, LINK_LIMIT)
+        self.assertEqual(
+            "more than 40 links lie on the way to it, which the reader does not follow",
+            outside_link_refusal(loop, self.root),
+        )
+        # A chain as long as the limit is followed; one link more is refused.
+        chain = self.root / "Chain.csproj"
+        chain.symlink_to("Next.csproj")
+        self.write("Next.csproj")
+        with mock.patch.object(folder_walk, "LINK_LIMIT", 1):
+            self.assertEqual((self.root / "Next.csproj", None), followed_inside(chain, self.root))
+        with mock.patch.object(folder_walk, "LINK_LIMIT", 0):
+            self.assertEqual(
+                "more than 0 links lie on the way to it, which the reader does not follow",
+                outside_link_refusal(chain, self.root),
+            )
+        real_readlink = Path.readlink
+
+        def readlink(path: Path) -> Path:
+            if path == chain:
+                raise PermissionError(13, "Access is denied")
+            return real_readlink(path)
+
+        with mock.patch.object(Path, "readlink", readlink):
+            self.assertEqual(
+                f"{chain.as_posix()} is a link whose target cannot be read: Access is denied",
+                outside_link_refusal(chain, self.root),
+            )
+        locked = self.root / "Locked"
+        real_lstat = os.lstat
+
+        def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(path) == locked:
+                raise PermissionError(13, "Access is denied")
+            return real_lstat(path, *rest, **options)
+
+        with mock.patch.object(os, "lstat", lstat):
+            self.assertEqual("Access is denied", outside_link_refusal(locked / "Lib.csproj", self.root))
+
+    def test_a_walk_given_its_tree_follows_no_link_entry_out_of_it_not_even_to_learn_what_it_is(self) -> None:
+        # A wanted link to a file outside is given to the caller to refuse, any other link leading outside is reported
+        # as a link the search does not follow, a skipped or pruned one is passed over unreported, and a link to a
+        # folder inside the tree is still told apart by its target, as before.
+        outside = self.base / "outside"
+        (outside / "dir").mkdir(parents=True)
+        (outside / "F.csproj").write_text("x\n", encoding="utf-8")
+        (outside / "README").write_text("x\n", encoding="utf-8")
+        self.write("Lib/Lib.csproj")
+        (self.root / "F.csproj").symlink_to(outside / "F.csproj")
+        (self.root / "README").symlink_to(outside / "README")
+        folders = [self.link(outside / "dir", name) for name in ("Ref", "obj", ".hidden")]
+        self.link(self.root / "Lib", "Inside")
+        links = [self.root / "F.csproj", self.root / "README", *folders]
+        touched: list[tuple[str, bool]] = []
+        with recording(touched):
+            walk = walk_files(self.root, lambda name: name.endswith(".csproj"), prune=is_hidden, tree=self.root)
+        self.assertEqual(["F.csproj", "Lib/Lib.csproj"], self.files(walk))
+        # A link leading outside is reported as the folder is listed; one inside, as the walk would enter it.
+        self.assertEqual([("README", LINKED), ("Ref", LINKED), ("Inside", LINKED)], self.not_entered(walk))
+        self.assertEqual(
+            [LINKED_OUT_REASON, LINKED_OUT_REASON, LINKED_REASON], [entry.reason for entry in walk.not_entered]
+        )
+        self.assertEqual(
+            "the entry is a junction or a symbolic link that leads outside the examined tree, which the search does "
+            "not follow",
+            LINKED_OUT_REASON,
+        )
+        self.assertEqual([], reached(touched, links, outside))
+        # Without a tree, the walk tells a link's kind by following it, as it always has.
+        touched.clear()
+        with recording(touched):
+            walk_files(self.root, lambda name: name.endswith(".csproj"), prune=is_hidden)
+        self.assertNotEqual([], reached(touched, links, outside))
 
 
 class FailureTests(WalkTestCase):

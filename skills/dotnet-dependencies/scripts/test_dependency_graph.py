@@ -3085,6 +3085,7 @@ TOP_CENTRAL = """<Project>
 """
 
 
+QUILL_NUSPEC = "<package><metadata><id>Quill.Http</id><version>1.2.0</version></metadata></package>\n"
 # A project importing a file beside it and one it finds above it, with an item that holds where a marker exists.
 LINKED_IMPORTS_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <Import Project="Shared.props" />
@@ -3110,33 +3111,100 @@ def recording(method: Callable[..., object], touched: list[str]) -> Callable[...
     return spy
 
 
-# The calls that follow a link at the path they are given, as a stat, an open, or a listing does, unless told not to.
-FOLLOWING_OS_CALLS = ("stat", "scandir")
+class RecordedEntry:
+    """A listed entry whose metadata calls are recorded in `touched` with whether each follows a link."""
+
+    def __init__(self, entry: os.DirEntry[str], touched: list[tuple[str, bool]]) -> None:
+        self.entry, self.touched, self.name, self.path = entry, touched, entry.name, entry.path
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.stat(follow_symlinks=follow_symlinks)
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        self.touched.append((self.path, follow_symlinks))
+        return self.entry.is_file(follow_symlinks=follow_symlinks)
+
+    def is_symlink(self) -> bool:
+        self.touched.append((self.path, False))
+        return self.entry.is_symlink()
+
+    def is_junction(self) -> bool:
+        self.touched.append((self.path, False))
+        return self.entry.is_junction()
+
+    def inode(self) -> int:
+        return self.entry.inode()
+
+
+class RecordedListing:
+    """A listing `os.scandir` gives, used with `with` or alone, whose entries are `RecordedEntry`s."""
+
+    def __init__(self, listing: Any, touched: list[tuple[str, bool]]) -> None:
+        self.listing, self.touched = listing, touched
+
+    def __enter__(self) -> RecordedListing:
+        return self
+
+    def __exit__(self, *details: object) -> None:
+        self.listing.close()
+
+    def __iter__(self) -> Iterator[RecordedEntry]:
+        return (RecordedEntry(entry, self.touched) for entry in self.listing)
+
+    def close(self) -> None:
+        self.listing.close()
+
+
+def touched_name(path: object) -> str:
+    return os.fsdecode(path) if isinstance(path, (str, os.PathLike)) else str(path)
 
 
 @contextlib.contextmanager
 def recording_follows(touched: list[tuple[str, bool]]) -> Iterator[None]:
-    """Record in `touched` each path a Path method or `os.stat`, `os.lstat`, or `os.scandir` reaches the file system
-    with, and whether the call follows a link there: a call given `follow_symlinks=False`, and `os.lstat`, do not."""
+    """Record in `touched` each path the file system is reached with, and whether the call follows a link there: each
+    Path method of FILE_SYSTEM_METHODS, `os.stat`, `os.lstat`, `os.scandir` and each metadata call of an entry it lists,
+    `os.readlink`, `os.open`, and `open`. A call given `follow_symlinks=False`, `os.lstat`, `os.readlink`, an entry's
+    `is_symlink`, and an `os.open` with `O_NOFOLLOW` do not follow."""
+    real_scandir, real_open, real_os_open = os.scandir, io.open, os.open
 
     def spy(method: Callable[..., object], follows: bool) -> Callable[..., object]:
         def call(path: object = ".", *args: object, **kwargs: object) -> object:
-            touched.append(
-                (
-                    os.fsdecode(path) if isinstance(path, (str, os.PathLike)) else str(path),
-                    follows and kwargs.get("follow_symlinks", True) is not False,
-                )
-            )
+            touched.append((touched_name(path), follows and kwargs.get("follow_symlinks", True) is not False))
             return method(path, *args, **kwargs)
 
         return call
 
+    def scandir(path: Any = ".") -> RecordedListing:
+        touched.append((touched_name(path), True))
+        return RecordedListing(real_scandir(path), touched)
+
+    def os_open(path: Any, flags: int, *rest: Any, **options: Any) -> int:
+        touched.append((touched_name(path), not flags & getattr(os, "O_NOFOLLOW", 0)))
+        return real_os_open(path, flags, *rest, **options)
+
+    def opened(file: Any, *rest: Any, **options: Any) -> Any:
+        if isinstance(file, (str, os.PathLike)):
+            touched.append((touched_name(file), True))
+        return real_open(file, *rest, **options)
+
     with contextlib.ExitStack() as stack:
         for name in FILE_SYSTEM_METHODS:
             stack.enter_context(mock.patch.object(Path, name, spy(getattr(Path, name), True)))
-        for name in FOLLOWING_OS_CALLS:
-            stack.enter_context(mock.patch.object(os, name, spy(getattr(os, name), True)))
+        stack.enter_context(mock.patch.object(os, "stat", spy(os.stat, True)))
         stack.enter_context(mock.patch.object(os, "lstat", spy(os.lstat, False)))
+        stack.enter_context(mock.patch.object(os, "readlink", spy(os.readlink, False)))
+        stack.enter_context(mock.patch.object(os, "scandir", scandir))
+        stack.enter_context(mock.patch.object(os, "open", os_open))
+        stack.enter_context(mock.patch.object(io, "open", opened))
+        stack.enter_context(mock.patch("builtins.open", opened))
         yield
 
 
@@ -3194,8 +3262,11 @@ class PathBoundTests(Fixture):
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_a_file_linking_outside_the_tree_is_reported_and_never_stat_listed_or_read_through_the_link(self) -> None:
         """A project the search finds, the central versions it imports, its restore, its config, a packages.config,
-        and a nuspec in the packages folder, each a link to a file outside the tree, is reported naming the link, and
-        no stat, open, or listing reaches through it: the recorder sees os-level calls as well as Path methods."""
+        a nuspec in the packages folder, and a packages folder, a package folder, and a package's lib folder, each a
+        link outside the tree, is reported naming the link, a project whose link's `..` climbs out after a second link
+        naming the first, and no stat, open, readlink, or listing reaches through it, nor through a folder link the
+        search lists, one named like a folder it skips, or the checkout's marker: the recorder sees os-level calls, a
+        listed entry's metadata calls, and opens, as well as Path methods."""
         repo = self.root / "repo"
         self.write("outside/F.csproj", OUTSIDE_PROJECT)
         self.write("outside/Directory.Packages.props", TOP_CENTRAL)
@@ -3211,11 +3282,23 @@ class PathBoundTests(Fixture):
         self.write("repo/Sub/Other/packages.config", WEB_PACKAGES)
         self.write("outside/pkgs/Lantern.Core.2.0.0/Lantern.Core.nuspec", CORE_NUSPEC)
         self.write("outside/json/Lantern.Json.nuspec", JSON_NUSPEC)
+        self.write("outside/dir/In/In.csproj", OUTSIDE_PROJECT)
+        self.write("outside/lib/net45/Quill.Http.dll", "")
+        self.write("repo/packages/Quill.Http.1.2.0/Quill.Http.nuspec", QUILL_NUSPEC)
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        (repo / "x" / "y").mkdir(parents=True)
+        (repo / "D2").symlink_to(repo / "x" / "y", target_is_directory=True)
+        (repo / "V.csproj").symlink_to("D2/../../../outside/F.csproj")
         folders = {
             "Sub/packages": repo / "Sub" / "packages",
             "packages/Lantern.Json.13.0.1": repo / "packages" / "Lantern.Json.13.0.1",
+            "packages/Quill.Http.1.2.0/lib": repo / "packages" / "Quill.Http.1.2.0" / "lib",
+            "Lib/obj/project.assets.json": repo / "Lib" / "obj",
         }
-        for link, target in zip(folders.values(), ("pkgs", "json"), strict=True):
+        for name in ("Ref", ".git"):
+            link_folder(self.root / "outside" / "dir", repo / name)
+            self.addCleanup(remove_link, repo / name)
+        for link, target in zip(folders.values(), ("pkgs", "json", "lib", "dir"), strict=True):
             link.parent.mkdir(parents=True, exist_ok=True)
             link_folder(self.root / "outside" / target, link)
             self.addCleanup(remove_link, link)
@@ -3236,9 +3319,18 @@ class PathBoundTests(Fixture):
         # The search for the central versions stops at the link, as MSBuild's stops at any file there, and reports it.
         links |= folders
         expected = {label: self.outside_reason(link, link.readlink().name, repo) for label, link in links.items()}
-        self.assertEqual(expected, {file: reason for file, reason in self.lines(rows, "UNREADABLE") if file in links})
+        climb = f"{(repo / 'V.csproj').as_posix()} is a link to D2/../../../outside/F.csproj, outside the examined tree"
+        expected["V.csproj"] = f"{climb} {repo.as_posix()}, {NOT_FOLLOWED}"
+        unreadable = self.lines(rows, "UNREADABLE")
+        read = [(file, reason) for file, reason in unreadable if file in expected and reason != LINK_OUT_REASON]
+        self.assertEqual(sorted(expected.items()), sorted(read))
+        # The search follows no link it lists out of the tree, not even to tell a folder from a file, so each such
+        # link but a .csproj, which the read refuses, is reported as one it does not follow.
+        searched = sorted(file for file, reason in unreadable if reason == LINK_OUT_REASON)
+        self.assertEqual(["App/web.config", "Directory.Packages.props", "Ref", "Web/packages.config"], searched)
         self.assertIn(["F.csproj", "legacy", "direct", "listed"], self.lines(rows, "PROJECT"))
-        self.assertEqual([], followed_through(touched, links.values(), self.root / "outside"))
+        every_link = [*links.values(), repo / "V.csproj", repo / "Ref", repo / ".git"]
+        self.assertEqual([], followed_through(touched, every_link, self.root / "outside"))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_an_import_a_file_above_or_an_exists_through_a_link_outside_the_tree_is_reported_never_reached(
@@ -3301,6 +3393,55 @@ class PathBoundTests(Fixture):
         )
         self.assertIn((str(hidden), False), touched)
         self.assertEqual([], followed_through(touched, [found, hidden], self.root / "outside"))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_root_solution_that_links_outside_the_tree_fails_and_is_never_stat_or_read(self) -> None:
+        # The solution chooses every project the run reads, so one a link leads outside the checkout, found in the root
+        # folder or named by --root, fails naming the link before it is stat, resolved, or read.
+        repo = self.root / "repo"
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("outside/O.sln", solution("E\\E.csproj"))
+        self.write("outside/E/E.csproj", OUTSIDE_PROJECT)
+        link = self.linked_out(repo / "X.sln", "O.sln")
+        reason = self.outside_reason(link, "O.sln", repo)
+        for root in (repo, link):
+            with self.subTest(root=root.name):
+                touched: list[tuple[str, bool]] = []
+                with recording_follows(touched):
+                    code, rows = self.run_main("why", "Outside.Pkg", "--root", str(root))
+                self.assertEqual((1, [f"FAILED {link} cannot be examined: {reason}"]), (code, rows[-1]))
+                self.assertEqual([], followed_through(touched, [link], self.root / "outside"))
+
+    def test_a_project_named_with_a_dot_dot_after_a_link_outside_the_tree_is_never_resolved_through_it(self) -> None:
+        # The system takes Linked/Sub/.. outside the tree, so the project it names is no project of the root, and
+        # neither the part up to the `..` nor the whole path is resolved through the link to learn so.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/Sub/keep.txt", "")
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        linked = repo / "Linked"
+        link_folder(self.root / "outside", linked)
+        self.addCleanup(remove_link, linked)
+        named = repo / "Linked" / "Sub" / ".." / "Other" / "Other.csproj"
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo), "--project", str(named))
+        self.assertEqual((1, f"FAILED {named} is not a project of {repo}"), (code, rows[-1][0]))
+        self.assertEqual([], followed_through(touched, [linked], self.root / "outside"))
+
+    def test_a_project_named_outside_the_tree_is_no_project_of_it_and_never_resolved_in_full(self) -> None:
+        # Only the folders leading to it are resolved, to learn whether one is the root through a link above it; the
+        # file itself is never stat, nor its folder listed to learn its case rule.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        named = self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Outside.Pkg", "--root", str(repo), "--project", str(named))
+        self.assertEqual((1, f"FAILED {named} is not a project of {repo}"), (code, rows[-1][0]))
+        reached = {Path(path) for path, _ in touched}
+        self.assertNotIn(named, reached)
+        self.assertNotIn((str(named.parent), True), touched)
 
     def test_a_solution_entry_through_a_folder_link_outside_the_tree_is_reported_and_never_reached(self) -> None:
         # The entry is never stat to see whether it is there, which would reach through the link, so it is reported
@@ -3372,7 +3513,7 @@ class PathBoundTests(Fixture):
                     (
                         1,
                         f"FAILED {named} lies in {repo / 'Linked'}, which the search for projects under {repo} "
-                        f"does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                        f"does not enter: {LINK_OUT_REASON}; pass --root at its solution or its folder",
                     ),
                     (code, rows[-1][0]),
                 )
@@ -3546,6 +3687,10 @@ def remove_link(link: Path) -> None:
 
 
 LINK_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
+# A link the search lists that leads outside the examined tree, folder or file, which it never follows to tell which.
+LINK_OUT_REASON = (
+    "the entry is a junction or a symbolic link that leads outside the examined tree, which the search does not follow"
+)
 NOT_FOLLOWED = "which the reader does not follow"
 
 
@@ -3560,20 +3705,20 @@ class ProjectSearchTests(Fixture):
 
     def test_a_linked_folder_is_reported_and_never_entered_and_the_other_projects_answer(self) -> None:
         # A link to a folder elsewhere would read its projects as the directory's own, and one back into the
-        # directory would loop; a junction whose target is gone cannot be listed. Each is reported, and the run
-        # answers for the projects outside them.
+        # directory would loop; a junction whose target is gone cannot be listed. Each is reported, one leading out
+        # of the tree as such, never followed to learn what it is, and the run answers for the projects outside them.
         search = self.root / "search"
         self.write("search/App/App.csproj", LIB_PROJECT)
         self.write("elsewhere/Other/Other.csproj", LIB_PROJECT.replace("Lib.Pkg", "Other.Pkg"))
         self.link(self.root / "elsewhere", "search/Linked")
         self.link(search, "search/App/Loop")
-        expected = [["Linked", LINK_REASON]]
+        expected = [["Linked", LINK_OUT_REASON]]
         if sys.platform == "win32":
             gone = self.root / "gone"
             gone.mkdir()
             self.link(gone, "search/Stale")
             gone.rmdir()
-            expected.append(["Stale", LINK_REASON])
+            expected.append(["Stale", LINK_OUT_REASON])
         code, rows = self.run_main("why", "Lib.Pkg", "Other.Pkg", "--root", str(search))
         self.assertEqual(1, code)
         self.assertEqual([*expected, ["App/Loop", LINK_REASON]], self.lines(rows, "UNREADABLE"))
@@ -3701,7 +3846,7 @@ class ProjectSearchTests(Fixture):
             "App/.cache/Deep/Deep.csproj": ("App/.cache", hidden),
             "packages/Some.Pkg/1.0.0/Sample.csproj": ("packages", skipped),
             "App/bin/Debug/Sample.csproj": ("App/bin", skipped),
-            "Linked/Other/Other.csproj": ("Linked", LINK_REASON),
+            "Linked/Other/Other.csproj": ("Linked", LINK_OUT_REASON),
             "worktrees/task/Copy/Copy.csproj": ("worktrees/task", checkout),
         }
         for project, (folder, reason) in cases.items():
@@ -3830,7 +3975,7 @@ class ProjectSearchTests(Fixture):
                         (
                             1,
                             f"FAILED {Path(named)} lies in {search / 'Linked'}, which the search for projects under "
-                            f"{search} does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                            f"{search} does not enter: {LINK_OUT_REASON}; pass --root at its solution or its folder",
                         ),
                         (code, rows[-1][0]),
                     )
@@ -4456,7 +4601,7 @@ class PresenceReadTests(Fixture):
             with (
                 self.subTest(root),
                 mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", TEST_MARKER),
-                failing_without_a_file(msbuild_reader, "is_there", marker),
+                failing_without_a_file(msbuild_reader, "is_occupied", marker),
             ):
                 code, rows = self.run_main("conflicts", "--root", str(self.root / root))
             self.assertEqual((1, f"FAILED {marker} cannot be examined: Access is denied"), (code, rows[-1][0]))

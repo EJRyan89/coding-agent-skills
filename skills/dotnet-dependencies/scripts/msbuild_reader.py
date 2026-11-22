@@ -16,10 +16,12 @@ The readers read only what the examined tree holds and only so much of it. A pat
 ProjectReference, or a project a restore recorded, is made absolute without reaching the file system
 (ejryan89-skill-core's `project_path`), and the caller asks ejryan89-skill-core's `refusal` before anything opens or
 looks it up: one outside the tree (`examined_tree`), or in a device or network form, is refused unread. A file inside
-the tree is stat or read only when `outside_link_refusal` finds no link on its way, its own name included, that leads
-outside the tree, judging each name from its own metadata and each link from its text, so a link out of the tree is
-reported, never followed. A read opens only a regular file and refuses one holding more than ejryan89-skill-core's
-`READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`).
+the tree is stat or read only when ejryan89-skill-core's `folder_walk.outside_link_refusal` finds no link on its way,
+its own name included, that leads outside the tree, judging each name from its own metadata and each link from its text,
+so a link out of the tree is reported, never followed. A read opens only a regular file and refuses one holding more
+than ejryan89-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`). Two limits: the
+look at the links and the read are two steps, so a name replaced by a link between them is read through; and a hard
+link is the file itself, with no link to judge, so a hard link to a file elsewhere is read as a file of the tree.
 """
 
 from __future__ import annotations
@@ -37,12 +39,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, is_occupied, is_there, matching
+from file_presence import is_directory, is_occupied, matching
+from folder_walk import outside_link_refusal
 from folders_up import folders_up
-from link_probe import is_link_or_junction
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
-from path_containment import within, without_extended_prefix
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
@@ -64,9 +65,6 @@ PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
 ASSETS_FILE = "project.assets.json"
 CONFIG_FILES = ("web.config", "app.config")
-# The most links `outside_link_refusal` follows on one path, as Linux bounds one lookup, so a loop of links ends.
-LINK_LIMIT = 40
-NOT_FOLLOWED = "which the reader does not follow"
 
 
 class Unreadable(Exception):
@@ -166,87 +164,18 @@ def read_solution(path: Path) -> list[str]:
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself. A
-    marker that is a link to nothing marks no checkout, since git reads nothing through it. A marker it cannot stat
-    raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which would
-    take a folder above or the base for the tree."""
+    marker is judged from its own metadata and never followed, as the folder walk judges a nested checkout's, so a
+    link there marks a checkout wherever it leads, even nowhere, and nothing is stat through it. A marker it cannot
+    stat raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which
+    would take a folder above or the base for the tree."""
     for folder in folders_up(base):
         marker = folder / CHECKOUT_MARKER
         try:
-            if is_there(marker):
+            if is_occupied(marker):
                 return folder
         except OSError as error:
             raise os_unreadable(error, marker) from None
     return base
-
-
-def outside_link_refusal(path: Path, tree: Path) -> str | None:
-    """Why the file at `path`, inside `tree`, is not read: a symbolic link, junction, or other reparse point on its
-    way down from the tree, its own name included, leads outside the tree, or cannot be judged. Each name is judged
-    from its own metadata (`link_probe`), and a link from its text alone (`Path.readlink`), followed as the system
-    follows it, a `..` after a link stepping back from where the link leads, so nothing outside the tree is stat,
-    listed, or opened to decide. A name whose metadata cannot be read, refused with the operating system's reason, a
-    link whose text cannot be read, an absolute target naming the tree through another link, and more than LINK_LIMIT
-    links are refused too. None for a path whose links all stay inside the tree, one with a name that is not there,
-    whose reader then reports it, and one outside the tree, which `refusal` judges."""
-    root = lexical_absolute(tree)
-    named = lexical_absolute(path)
-    if not within(named, root):
-        return None
-    pending = list(named.parts[len(root.parts) :])
-    current, links, last = root, 0, (Path(), Path())
-    while pending:
-        name = pending.pop(0)
-        if name == "..":
-            if len(current.parts) <= len(root.parts):
-                return leads_outside(*last, root)
-            current = current.parent
-            continue
-        candidate = current / name
-        try:
-            linked = is_link_or_junction(candidate)
-        except (FileNotFoundError, NotADirectoryError):
-            return None
-        except OSError as error:
-            # Its stat fails as the reader's would, so the refusal gives the operating system's reason as the read did.
-            return error.strerror or str(error)
-        if not linked:
-            current = candidate
-            continue
-        links += 1
-        if links > LINK_LIMIT:
-            return f"more than {LINK_LIMIT} links lie on the way to it, {NOT_FOLLOWED}"
-        try:
-            written = candidate.readlink()
-        except OSError as error:
-            return f"{candidate.as_posix()} is a link whose target cannot be read: {error.strerror or error}"
-        last = (candidate, written)
-        followed = followed_names(written, root)
-        if followed is None:
-            return leads_outside(*last, root)
-        if written.anchor:
-            current = root
-        pending = [*followed, *pending]
-    return None
-
-
-def leads_outside(link: Path, written: Path, root: Path) -> str:
-    """The refusal of a path whose way leads out of `root` through `link`, the last link followed, naming it and its
-    text `written`."""
-    shown = without_extended_prefix(written).as_posix()
-    return f"{link.as_posix()} is a link to {shown}, outside the examined tree {root.as_posix()}, {NOT_FOLLOWED}"
-
-
-def followed_names(written: Path, root: Path) -> list[str] | None:
-    """The names a link's text `written` leads through, from the link's folder for a relative target or from `root`
-    for an absolute one, or None for an absolute one outside `root`: named apart from its leading parts, as text, or
-    through a `.` or `..` in them, which would need the parts above `root` to be looked up to place."""
-    target = without_extended_prefix(written)
-    if not target.anchor:
-        return list(target.parts)
-    head = target.parts[: len(root.parts)]
-    if not target.is_absolute() or len(head) < len(root.parts) or {".", ".."} & set(head):
-        return None
-    return list(target.parts[len(root.parts) :]) if within(Path(*head), root) else None
 
 
 def platform_version(version: str) -> str:
@@ -404,11 +333,13 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
     return PackageNode(package, version, dependencies, assemblies)
 
 
-def package_assemblies(package_dir: Path) -> tuple[str, ...]:
+def package_assemblies(package_dir: Path, tree: Path | None = None) -> tuple[str, ...]:
     """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
-    something other than a folder stands at lib/, whether one is there cannot be told, or a folder below it cannot be
-    listed."""
+    something other than a folder stands at lib/, whether one is there cannot be told, a folder below it cannot be
+    listed, or, inside `tree`, a link on its way leads outside it (`outside_link_refusal`), which is never stat."""
     lib = package_dir / "lib"
+    if tree is not None and (linked := outside_link_refusal(lib, tree)) is not None:
+        raise Unreadable(lib, linked)
     try:
         if not is_directory(lib):
             return ()

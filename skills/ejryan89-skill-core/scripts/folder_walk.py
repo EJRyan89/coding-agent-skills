@@ -20,7 +20,10 @@ with the reason, so each caller decides what a folder it could not search costs 
   and that leads to a folder or to nothing, is not entered, since it may lead out of the tree or back into it,
   and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
   back into a folder the walk is inside is reported as `LOOP` and not entered, so the walk always ends. `top` is
-  searched as given, link or not; a link to a file or a device is an entry the caller judges.
+  searched as given, link or not; a link to a file or a device is an entry the caller judges. A caller that gives
+  `tree` has no link entry followed out of it, not even to learn where it leads: an entry that `outside_link_refusal`
+  finds leads outside `tree` is given to the caller when `wanted` accepts its name, for the caller to refuse, and is
+  otherwise reported as `LINKED` with `LINKED_OUT_REASON`, folder or file, since telling them apart would follow it.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
   `UNEXAMINED`, each by path with the reason and the error, and the walk goes on; an error never ends it.
 - Bounds: none by depth, and none by count unless the caller gives `limit`, the most folders the walk lists, `top`
@@ -39,6 +42,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from link_probe import is_link_or_junction
+from path_containment import within, without_extended_prefix
 from path_keys import opens_as
 
 SKIPPED_FOLDERS = frozenset(
@@ -56,6 +60,14 @@ UNEXAMINED: Final = "unexamined"
 BOUNDED: Final = "bounded"
 
 LINKED_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
+LINKED_OUT_REASON = (
+    "the entry is a junction or a symbolic link that leads outside the examined tree, which the search does not follow"
+)
+# The most links `followed_inside` follows on one path, as Linux bounds one lookup, so a loop of links ends.
+LINK_LIMIT = 40
+NOT_FOLLOWED = "which the reader does not follow"
+# A link a name came from, its path and its text, or None for a name the path itself holds.
+Source = tuple[Path, Path] | None
 LOOP_REASON = "the folder is a link back into a folder the search is inside, which it does not enter again"
 NESTED_CHECKOUT_REASON = "the folder holds another checkout, a clone, submodule, or worktree, which the search skips"
 
@@ -102,6 +114,92 @@ def is_folder_link(entry: os.DirEntry[str]) -> bool:
         return True
 
 
+def followed_inside(path: Path, tree: Path) -> tuple[Path | None, str | None]:
+    """Where `path` leads inside `tree`, as the system follows it, or why it is not followed: each name down from the
+    tree is judged from its own metadata (`link_probe`) and a link from its text alone, a `..` stepping back from where
+    the name before it leads, so nothing outside the tree is stat, listed, or opened to decide. The answer is the path
+    it leads to and None, or None and the refusal: a link, or a `..` a link's text holds, that leads outside the tree,
+    naming the link whose text it is; a name whose metadata cannot be read, with the operating system's reason; a link
+    whose text cannot be read; an absolute target naming the tree through `.` or `..` or another link; and more than
+    LINK_LIMIT links. A name that is not there ends the look, the rest joined as written, since nothing past it can be
+    followed. A path whose own leading parts do not name the tree, read as written, or whose own `..` climbs out of it
+    with no link before it, answers None and None: `within`'s question, not this one. The look and a later read are two
+    steps, so a name replaced by a link between them is read through, and a hard link is the file itself, read as a file
+    of the tree wherever its other names are."""
+    root = tree.absolute()
+    below = names_below(path.absolute(), root)
+    if below is None:
+        return None, None
+    pending: list[tuple[str, Source]] = [(name, None) for name in below]
+    current, depth, links = root, 0, 0
+    while pending:
+        name, source = pending.pop(0)
+        if name == "..":
+            if depth == 0:
+                # A `..` the path itself holds leaves the tree by its own text, which is `within`'s question.
+                return (None, None) if source is None else (None, leads_outside(source, root))
+            current, depth = current.parent, depth - 1
+            continue
+        candidate = current / name
+        try:
+            linked = is_link_or_junction(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            return candidate.joinpath(*(rest for rest, _ in pending)), None
+        except OSError as error:
+            # Its stat fails as the reader's would, so the refusal gives the operating system's reason as the read did.
+            return None, error.strerror or str(error)
+        if not linked:
+            current, depth = candidate, depth + 1
+            continue
+        links += 1
+        if links > LINK_LIMIT:
+            return None, f"more than {LINK_LIMIT} links lie on the way to it, {NOT_FOLLOWED}"
+        try:
+            written = candidate.readlink()
+        except OSError as error:
+            return None, f"{candidate.as_posix()} is a link whose target cannot be read: {error.strerror or error}"
+        target = without_extended_prefix(written)
+        followed = names_below(target, root) if target.anchor else list(target.parts)
+        if followed is None:
+            return None, leads_outside((candidate, written), root)
+        if target.anchor:
+            current, depth = root, 0
+        pending = [*((followed_name, (candidate, written)) for followed_name in followed), *pending]
+    return current, None
+
+
+def outside_link_refusal(path: Path, tree: Path) -> str | None:
+    """Why the file at `path`, inside `tree`, is not stat or read: `followed_inside`'s refusal, or None for a path
+    whose links all stay inside the tree, one with a name that is not there, whose reader then reports it, and one
+    whose leading parts do not name the tree, which `refusal` judges."""
+    return followed_inside(path, tree)[1]
+
+
+def names_below(path: Path, root: Path) -> list[str] | None:
+    """The names an absolute `path` holds below `root`, as written, `..` included, or None when its leading parts do
+    not name `root`: a relative path, one shorter than `root`, one whose leading parts hold a `.` or `..`, which would
+    need the folders above `root` looked up to place, or one `within` finds elsewhere."""
+    target = without_extended_prefix(path)
+    head = target.parts[: len(root.parts)]
+    if not target.is_absolute() or len(head) < len(root.parts) or {".", ".."} & set(head):
+        return None
+    return list(target.parts[len(root.parts) :]) if within(Path(*head), root) else None
+
+
+def leads_outside(source: tuple[Path, Path], root: Path) -> str:
+    """The refusal of a path whose way leads out of `root` through the link `source`, naming it and its text."""
+    link, written = source
+    outside = f"outside the examined tree {root.as_posix()}, {NOT_FOLLOWED}"
+    return f"{link.as_posix()} is a link to {without_extended_prefix(written).as_posix()}, {outside}"
+
+
+def leaves(entry: os.DirEntry[str], tree: Path) -> bool:
+    """Whether a listed entry is a link, judged from its own metadata, that `outside_link_refusal` refuses inside
+    `tree`, so the walk neither follows it nor stats what it leads to."""
+    own = entry.stat(follow_symlinks=False)
+    return is_link_or_junction(entry.path, own) and outside_link_refusal(Path(entry.path), tree) is not None
+
+
 def is_hidden(path: Path) -> bool:
     """Whether `path` is hidden, its name starting with a dot, as a tool's state or cache folder is: the prune a
     caller passes to skip hidden folders, and the test of an entry's name the walk could not examine."""
@@ -134,6 +232,7 @@ def walk_files(
     prune: Callable[[Path], bool] | None = None,
     follow: Callable[[Path], bool] | None = None,
     limit: int | None = None,
+    tree: Path | None = None,
 ) -> Walk:
     """Every file below `top` whose name `wanted` accepts, and every folder not entered, as the module states."""
     walk = Walk()
@@ -156,7 +255,7 @@ def walk_files(
             break
         listed += 1
         entered = []
-        for path, linked in search_folder(walk, folder, top, wanted, excluded):
+        for path, linked in search_folder(walk, folder, top, wanted, excluded, tree):
             identities = enter(walk, path, linked, inside, follow)
             if identities is not None:
                 entered.append((path, identities))
@@ -192,11 +291,16 @@ def is_checkout_marker(name: str, folder: Path) -> bool:
 
 
 def search_folder(
-    walk: Walk, folder: Path, top: Path, wanted: Callable[[str], bool], excluded: Callable[[Path], bool]
+    walk: Walk,
+    folder: Path,
+    top: Path,
+    wanted: Callable[[str], bool],
+    excluded: Callable[[Path], bool],
+    tree: Path | None = None,
 ) -> list[tuple[Path, bool]]:
     """Add the wanted files directly in `folder` to `walk`, and give its subfolders to search, in name order, each
     with whether it is a link, but those `excluded` skips or prunes; a folder that cannot be listed or is a nested
-    checkout is reported and gives none."""
+    checkout is reported and gives none. With `tree`, a link entry leading outside it is never followed (`leaves`)."""
     try:
         with os.scandir(folder) as listing:
             entries = sorted(listing, key=lambda entry: entry.name)
@@ -210,7 +314,12 @@ def search_folder(
     for entry in entries:
         path = Path(entry.path)
         try:
-            if is_folder_link(entry):
+            if tree is not None and leaves(entry, tree):
+                if wanted(entry.name):
+                    walk.files.append(path)
+                elif not excluded(path):
+                    walk.not_entered.append(NotEntered(path, LINKED, LINKED_OUT_REASON))
+            elif is_folder_link(entry):
                 if not excluded(path):
                     subfolders.append((path, True))
             elif entry.is_dir(follow_symlinks=False):
