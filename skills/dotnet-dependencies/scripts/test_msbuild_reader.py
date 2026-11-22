@@ -517,15 +517,32 @@ class PathBoundTests(unittest.TestCase):
             self.assertEqual(base, examined_tree(base))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
-    def test_a_checkout_marker_that_is_a_link_to_nothing_marks_no_checkout(self) -> None:
-        # Git reads nothing through a link to nothing, so the tree is the checkout above it, never the folder it is in.
+    def test_a_checkout_marker_that_is_a_link_marks_a_checkout_and_is_never_followed(self) -> None:
+        # A marker is judged from its own metadata, as the folder walk judges a nested checkout's: a link there marks
+        # the checkout wherever it leads, outside or nowhere, and no stat follows it to learn which.
         base = self.root / "repo" / "src"
         base.mkdir(parents=True)
         marker = ".dotnet-dependencies-test-checkout"
         (self.root / marker).mkdir()
-        (self.root / "repo" / marker).symlink_to(self.root / "nowhere", target_is_directory=True)
-        with mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker):
-            self.assertEqual(self.root, examined_tree(base))
+        (self.root / "outside").mkdir()
+        link = self.root / "repo" / marker
+        followed: list[str] = []
+
+        def stat(path: Any, *rest: Any, real: Callable[..., Any] = os.stat, **options: Any) -> Any:
+            if options.get("follow_symlinks", True) and Path(path) == link:
+                followed.append(str(path))
+            return real(path, *rest, **options)
+
+        for target in (self.root / "nowhere", self.root / "outside"):
+            link.symlink_to(target, target_is_directory=True)
+            with (
+                self.subTest(target=target.name),
+                mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
+                mock.patch.object(os, "stat", stat),
+            ):
+                self.assertEqual(self.root / "repo", examined_tree(base))
+            self.assertEqual([], followed)
+            link.unlink()
 
     def test_a_checkout_marker_it_cannot_stat_is_refused_never_read_as_no_checkout(self) -> None:
         base = self.root / "repo" / "src"
@@ -535,7 +552,7 @@ class PathBoundTests(unittest.TestCase):
         locked = self.root / "repo" / marker
         for name, failing in (
             ("naming the marker", stat_failing_at(locked)),
-            ("naming no file", failing_without_a_file(msbuild_reader, "is_there", locked)),
+            ("naming no file", failing_without_a_file(msbuild_reader, "is_occupied", locked)),
         ):
             with (
                 self.subTest(name),

@@ -15,9 +15,13 @@ names through `matching_framework`, which prefers the name spelled alike.
 The readers read only what the examined tree holds and only so much of it. A path a file names, a solution's entry, a
 ProjectReference, or a project a restore recorded, is made absolute without reaching the file system
 (ejryan89-skill-core's `project_path`), and the caller asks ejryan89-skill-core's `refusal` before anything opens or
-looks it up: one outside the tree (`examined_tree`), or in a device or network form, is refused unread. A read opens
-only a regular file and refuses one holding more than ejryan89-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`,
-the one bound (`read_bounded`).
+looks it up: one outside the tree (`examined_tree`), or in a device or network form, is refused unread. A file inside
+the tree is stat or read only when ejryan89-skill-core's `folder_walk.outside_link_refusal` finds no link on its way,
+its own name included, that leads outside the tree, judging each name from its own metadata and each link from its text,
+so a link out of the tree is reported, never followed. A read opens only a regular file and refuses one holding more
+than ejryan89-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`). Two limits: the
+look at the links and the read are two steps, so a name replaced by a link between them is read through; and a hard
+link is the file itself, with no link to judge, so a hard link to a file elsewhere is read as a file of the tree.
 """
 
 from __future__ import annotations
@@ -35,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, is_occupied, is_there, matching
+from file_presence import is_directory, is_occupied, matching
+from folder_walk import outside_link_refusal
 from folders_up import folders_up
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
@@ -159,13 +164,14 @@ def read_solution(path: Path) -> list[str]:
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself. A
-    marker that is a link to nothing marks no checkout, since git reads nothing through it. A marker it cannot stat
-    raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which would
-    take a folder above or the base for the tree."""
+    marker is judged from its own metadata and never followed, as the folder walk judges a nested checkout's, so a
+    link there marks a checkout wherever it leads, even nowhere, and nothing is stat through it. A marker it cannot
+    stat raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which
+    would take a folder above or the base for the tree."""
     for folder in folders_up(base):
         marker = folder / CHECKOUT_MARKER
         try:
-            if is_there(marker):
+            if is_occupied(marker):
                 return folder
         except OSError as error:
             raise os_unreadable(error, marker) from None
@@ -258,13 +264,16 @@ def msbuild_file_exists(path: Path) -> bool:
     return is_occupied(path) and not is_directory(path, other_is_absent=True)
 
 
-def nearest_file(project_dir: Path, name: str) -> Path | None:
+def nearest_file(project_dir: Path, name: str, tree: Path | None = None) -> Path | None:
     """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
     for Directory.Build.props and Directory.Packages.props: the first where `msbuild_file_exists` is true, so a link to
     nothing or a FIFO stops the search, as it stops MSBuild's, and its reader reports it as one it cannot read; None
-    when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there."""
+    when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there, or, inside
+    `tree`, one that `outside_link_refusal` refuses, which is never stat."""
     for directory in folders_up(project_dir):
         candidate = directory / name
+        if tree is not None and (linked := outside_link_refusal(candidate, tree)) is not None:
+            raise Unreadable(candidate, linked)
         try:
             if msbuild_file_exists(candidate):
                 return candidate
@@ -324,11 +333,13 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
     return PackageNode(package, version, dependencies, assemblies)
 
 
-def package_assemblies(package_dir: Path) -> tuple[str, ...]:
+def package_assemblies(package_dir: Path, tree: Path | None = None) -> tuple[str, ...]:
     """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
-    something other than a folder stands at lib/, whether one is there cannot be told, or a folder below it cannot be
-    listed."""
+    something other than a folder stands at lib/, whether one is there cannot be told, a folder below it cannot be
+    listed, or, inside `tree`, a link on its way leads outside it (`outside_link_refusal`), which is never stat."""
     lib = package_dir / "lib"
+    if tree is not None and (linked := outside_link_refusal(lib, tree)) is not None:
+        raise Unreadable(lib, linked)
     try:
         if not is_directory(lib):
             return ()
