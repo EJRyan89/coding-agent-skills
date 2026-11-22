@@ -28,6 +28,7 @@ import atomic_file
 import dependency_graph
 import dotnet_solution
 import file_presence
+import link_probe
 import msbuild_reader
 import path_containment
 from dependency_graph import main
@@ -3151,6 +3152,68 @@ class PathBoundTests(Fixture):
         self.assertEqual([["Outside.Pkg"]], self.lines(rows, "MISSING"))
         self.assertEqual([], refused_reached(touched))
 
+    def test_a_project_named_through_a_link_outside_the_tree_is_never_examined_through_it(self) -> None:
+        """--project naming a file below a link the search does not follow fails naming the link, with no Path method
+        reaching through it, which would reach outside the examined tree; a `..` before the link changes nothing. This
+        pins the stat `unsearched` makes, not the resolution of the argument, whose os-level reads it cannot see."""
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("outside/Other/Other.csproj", OUTSIDE_PROJECT)
+        link_folder(self.root / "outside", repo / "Linked")
+        self.addCleanup(remove_link, repo / "Linked")
+        for named in (
+            repo / "Linked/Other/Other.csproj",
+            repo / "App/../Linked/Other/Other.csproj",
+            repo / "Linked/Gone.csproj",
+        ):
+            with self.subTest(named=named):
+                touched: list[str] = []
+                with contextlib.ExitStack() as stack:
+                    for name in FILE_SYSTEM_METHODS:
+                        stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+                self.assertEqual(
+                    (
+                        1,
+                        f"FAILED {named} lies in {repo / 'Linked'}, which the search for projects under {repo} "
+                        f"does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                    ),
+                    (code, rows[-1][0]),
+                )
+                self.assertEqual([], [path for path in touched if "/Linked/" in path])
+                self.assertEqual([], refused_reached(touched))
+
+    def test_a_folder_whose_metadata_cannot_be_read_ends_the_look_and_nothing_below_it_is_examined(self) -> None:
+        # A folder on the way whose own metadata cannot be read may be a link, so nothing below it is stat; the
+        # folder the search passed over above it is still named.
+        repo = self.root / "repo"
+        self.write("repo/App/App.csproj", LIB_PROJECT)
+        self.write("repo/.tools/In/In.csproj", LIB_PROJECT)
+        probe = link_probe.is_link_or_junction
+
+        def is_link_or_junction(path: Path) -> bool:
+            if Path(path).name == "In":
+                raise PermissionError(13, "Access is denied")
+            return probe(path)
+
+        touched: list[str] = []
+        named = repo / ".tools/In/In.csproj"
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(dependency_graph, "is_link_or_junction", is_link_or_junction))
+            for name in FILE_SYSTEM_METHODS:
+                stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {named} lies in {repo / '.tools'}, which the search for projects under {repo} does not enter: "
+                f"{hidden}; pass --root at its solution or its folder",
+            ),
+            (code, rows[-1][0]),
+        )
+        self.assertEqual([], [path for path in touched if "/.tools/In/" in path])
+
     def test_a_solution_entry_outside_the_tree_is_reported_and_never_reached(self) -> None:
         self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
         self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
@@ -3409,6 +3472,227 @@ class ProjectSearchTests(Fixture):
             "its bound of 1 folders, before this folder and the folders after it",
             rows[-1][0],
         )
+
+    def narrowed_failure(self, search: Path, project: str, *, limit: int | None = None) -> str:
+        """The last line of a query narrowed to `project`, a path below `search`, with the search's bound at `limit`."""
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", limit or 10_000):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / project))
+        self.assertEqual(1, code)
+        return rows[-1][0]
+
+    def test_a_project_named_in_a_folder_the_search_passes_over_fails_naming_that_folder_and_why(self) -> None:
+        # --project narrows a query to a project of the root, so a project the search did not reach is not read; the
+        # FAILED line names the folder on its way down that the search skips, prunes, or does not enter, and why.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("elsewhere/Other/Other.csproj", LIB_PROJECT)
+        self.link(self.root / "elsewhere", "search/Linked")
+        self.write("search/worktrees/task/Copy/Copy.csproj", LIB_PROJECT)
+        self.write("search/worktrees/task/.git", "gitdir: ../../../.git/worktrees/task\n")
+        checkout = "the folder holds another checkout, a clone, submodule, or worktree, which the search skips"
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        skipped = "the .NET search skips a folder so named, a version-control, dependency, build-output, or IDE folder"
+        cases = {
+            ".tools/Tool/Tool.csproj": (".tools", hidden),
+            "App/.cache/Deep/Deep.csproj": ("App/.cache", hidden),
+            "packages/Some.Pkg/1.0.0/Sample.csproj": ("packages", skipped),
+            "App/bin/Debug/Sample.csproj": ("App/bin", skipped),
+            "Linked/Other/Other.csproj": ("Linked", LINK_REASON),
+            "worktrees/task/Copy/Copy.csproj": ("worktrees/task", checkout),
+        }
+        for project, (folder, reason) in cases.items():
+            if not (search / project).exists():
+                self.write(f"search/{project}", LIB_PROJECT)
+            with self.subTest(project=project):
+                self.assertEqual(
+                    f"FAILED {search / project} lies in {search / folder}, which the search for projects under "
+                    f"{search} does not enter: {reason}; pass --root at its solution or its folder",
+                    self.narrowed_failure(search, project),
+                )
+        # A folder the search cannot list is named with the walk's reason too.
+        self.write("search/Locked/Inner/Inner.csproj", LIB_PROJECT)
+        listing = os.scandir
+
+        def scandir(path: str | os.PathLike[str]) -> object:
+            if Path(path).name == "Locked":
+                raise PermissionError(13, "Access is denied")
+            return listing(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            self.assertEqual(
+                f"FAILED {search / 'Locked/Inner/Inner.csproj'} lies in {search / 'Locked'}, which the search for "
+                f"projects under {search} does not enter: the folder cannot be listed: Access is denied; pass --root "
+                "at its solution or its folder",
+                self.narrowed_failure(search, "Locked/Inner/Inner.csproj"),
+            )
+        # A path that names no existing project below the root, or one outside it, is still no project of the root.
+        self.write("outside/Out.csproj", LIB_PROJECT)
+        self.write("search/.tools/notes.txt", "notes\n")
+        for unlisted in (
+            search / ".tools/notes.txt",
+            search / ".tools/Tool/Missing.csproj",
+            search / ".tools/Nowhere/Missing.csproj",
+            search / ".tools/Tool",
+            self.root / "outside/Out.csproj",
+        ):
+            with self.subTest(project=unlisted):
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(unlisted))
+                self.assertEqual((1, f"FAILED {unlisted} is not a project of {search}"), (code, rows[-1][0]))
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(search / "App/App.csproj"))
+        self.assertEqual(["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"], self.lines(rows, "PATH")[0])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_the_search_found_through_a_link_to_its_file_is_the_one_named_there(self) -> None:
+        # The search lists a link to a .csproj as a file and keeps the project under the path it found it at, so
+        # --project naming that path narrows to it, past a bound the search reached it before, never blamed on the
+        # bound or called no project of the root.
+        search = self.root / "search"
+        self.write("outside/Real.csproj", LIB_PROJECT)
+        (search / "A").mkdir(parents=True)
+        (search / "A" / "L.csproj").symlink_to(self.root / "outside" / "Real.csproj")
+        for name in ("m1", "m2"):
+            self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        for limit in (3, None):
+            with self.subTest(limit=limit):
+                with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", limit or 10_000):
+                    code, rows = self.run_main(
+                        "why", "Lib.Pkg", "--root", str(search), "--project", str(search / "A/L.csproj")
+                    )
+                # Past the bound the run still exits 1 for the UNREADABLE line naming m2, and answers.
+                bounded = [
+                    ["m2", "the search stopped at its bound of 3 folders, before this folder and the folders after it"]
+                ]
+                self.assertEqual((1, bounded) if limit else (0, []), (code, self.lines(rows, "UNREADABLE")))
+                self.assertEqual("SUMMARY", rows[-1][0])
+                self.assertEqual(
+                    [["A/L.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+                )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_named_through_a_link_to_its_file_is_the_links_whose_references_resolve_from_its_folder(
+        self,
+    ) -> None:
+        # MSBuild reads a linked project from the link's folder, so its references resolve there; with the target
+        # listed too, --project naming the link narrows to the link's project, never the target's.
+        search = self.root / "search"
+        self.write(
+            "search/Real.csproj", sdk_project('<ItemGroup><ProjectReference Include="Lib/Lib.csproj" /></ItemGroup>')
+        )
+        self.write("search/Lib/Lib.csproj", LIB_PROJECT.replace("Lib.Pkg", "RootLib.Pkg"))
+        self.write("search/A/Lib/Lib.csproj", LIB_PROJECT.replace("Lib.Pkg", "ALib.Pkg"))
+        (search / "A" / "L.csproj").symlink_to(search / "Real.csproj")
+        narrowed = str(search / "A/L.csproj")
+        _, rows = self.run_main("why", "ALib.Pkg", "--root", str(search), "--project", narrowed)
+        self.assertEqual(
+            [["A/L.csproj", "-", "ALib.Pkg", "graph", "Lib (project) > ALib.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+        _, rows = self.run_main("why", "RootLib.Pkg", "--root", str(search), "--project", narrowed)
+        self.assertEqual(([], [["RootLib.Pkg"]]), (self.lines(rows, "PATH"), self.lines(rows, "MISSING")))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows takes a `..` as text before it follows a link")
+    def test_a_project_named_with_a_dot_dot_after_a_link_is_the_one_the_system_opens_there(self) -> None:
+        # The system follows a link before the `..` after it, so Linked/../X.csproj opens the X.csproj beside the
+        # link's target, outside the root, never the root's own X.csproj that the path reads as text.
+        search = self.root / "search"
+        self.write("search/X.csproj", LIB_PROJECT.replace("Lib.Pkg", "Root.Pkg"))
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("outside/X.csproj", LIB_PROJECT.replace("Lib.Pkg", "Ext.Pkg"))
+        self.write("outside/sub/keep.txt", "")
+        self.write("other/empty/keep.txt", "")
+        self.link(self.root / "outside" / "sub", "search/Linked")
+        self.link(self.root / "other" / "empty", "search/Empty")
+        self.link(self.root / "gone" / "sub", "search/Dangling")
+        for link in ("Linked", "Empty", "Dangling"):
+            narrowed = f"{search}/{link}/../X.csproj"
+            with self.subTest(link=link):
+                code, rows = self.run_main("why", "Root.Pkg", "--root", str(search), "--project", narrowed)
+                self.assertEqual((1, f"FAILED {narrowed} is not a project of {search}"), (code, rows[-1][0]))
+                self.assertEqual([], self.lines(rows, "PATH"))
+
+    def test_a_dot_dot_before_a_link_keeps_the_link_a_folder_the_path_is_named_through(self) -> None:
+        # Only the part up to the last `..` is resolved, so a link after it stays the folder the search passed over,
+        # and a solution's project named through that link is still found. The FAILED line names the argument as
+        # the script reads it, a path, so with Windows' separators there.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("outside/E/E.csproj", LIB_PROJECT)
+        self.link(self.root / "outside", "search/Linked")
+        with contextlib.chdir(search / "App"):
+            for named in ("../Linked/E/E.csproj", "../../search/Linked/E/E.csproj", "../App/../Linked/E/E.csproj"):
+                with self.subTest(named=named):
+                    code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", named)
+                    self.assertEqual(
+                        (
+                            1,
+                            f"FAILED {Path(named)} lies in {search / 'Linked'}, which the search for projects under "
+                            f"{search} does not enter: {LINK_REASON}; pass --root at its solution or its folder",
+                        ),
+                        (code, rows[-1][0]),
+                    )
+            listed = self.write("search/Listed.sln", solution("Linked\\E\\E.csproj"))
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(listed), "--project", "../Linked/E/E.csproj")
+        self.assertEqual(
+            (0, [["Linked/E/E.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]]), (code, self.lines(rows, "PATH"))
+        )
+
+    def test_a_project_named_past_the_search_bound_fails_naming_the_folder_the_search_stopped_at(self) -> None:
+        search = self.root / "search"
+        for name in ("A", "B", "C", "D"):
+            self.write(f"search/{name}/{name}.csproj", LIB_PROJECT)
+        # A linked folder the search reports before its bound is not where it stopped.
+        self.write("elsewhere/Other/Other.csproj", LIB_PROJECT)
+        self.link(self.root / "elsewhere", "search/Bz")
+        bound = "the search stopped at its bound of 3 folders, before this folder and the folders after it"
+        self.assertEqual(
+            f"FAILED {search / 'C/C.csproj'} lies in {search / 'C'}, which the search for projects under {search} "
+            f"does not enter: {bound}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, "C/C.csproj", limit=3),
+        )
+        self.assertEqual(
+            f"FAILED {search / 'D/D.csproj'} lies past the search for projects under {search}, which stopped at "
+            f"{search / 'C'}: {bound}; pass --root at its solution or its folder",
+            self.narrowed_failure(search, "D/D.csproj", limit=3),
+        )
+
+    def test_a_search_finding_no_project_names_why_it_passed_over_the_one_named(self) -> None:
+        # With no project found at all, the run names why it did not reach the project --project names, rather than
+        # only that it found none.
+        search = self.root / "search"
+        self.write("search/.tools/Tool/Tool.csproj", LIB_PROJECT)
+        self.write("search/A/A.csproj", LIB_PROJECT)
+        self.write("search/B/B.csproj", LIB_PROJECT)
+        hidden = "the folder is hidden, its name starting with a dot, which the search prunes"
+        bound = "the search stopped at its bound of 1 folders, before this folder and the folders after it"
+        # Like the line for no project found, it ends naming each folder the search did not search.
+        self.assertEqual(
+            f"FAILED {search / '.tools/Tool/Tool.csproj'} lies in {search / '.tools'}, which the search for projects "
+            f"under {search} does not enter: {hidden}; pass --root at its solution or its folder; {search / 'A'} not "
+            f"searched: {bound}",
+            self.narrowed_failure(search, ".tools/Tool/Tool.csproj", limit=1),
+        )
+        self.assertEqual(
+            f"FAILED {search / 'B/B.csproj'} lies past the search for projects under {search}, which stopped at "
+            f"{search / 'A'}: {bound}; pass --root at its solution or its folder; {search / 'A'} not searched: {bound}",
+            self.narrowed_failure(search, "B/B.csproj", limit=1),
+        )
+        # A project the search does not explain, outside the root here, leaves the failure naming what it skipped.
+        outside = self.write("Out.csproj", LIB_PROJECT)
+        with mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 1):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(search), "--project", str(outside))
+        self.assertEqual(
+            (1, f"FAILED no solution or .csproj found under {search}; {search / 'A'} not searched: {bound}"),
+            (code, rows[-1][0]),
+        )
+
+    def test_a_project_a_solution_does_not_list_is_no_project_of_it_wherever_it_lies(self) -> None:
+        # The search's reasons belong to the search alone: a solution root runs none, so a project it does not list
+        # is no project of it, in a hidden folder or not.
+        self.write("App/App.csproj", LIB_PROJECT)
+        self.write(".build/Tool/Tool.csproj", LIB_PROJECT)
+        listed = self.write("Listed.sln", solution("App\\App.csproj"))
+        project = self.root / ".build/Tool/Tool.csproj"
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root), "--project", str(project))
+        self.assertEqual((1, f"FAILED {project} is not a project of {listed}"), (code, rows[-1][0]))
 
     def test_the_search_is_bounded_at_ten_thousand_folders(self) -> None:
         # The bound the skill and the module docstring state; a home folder holds far more folders than a solution.

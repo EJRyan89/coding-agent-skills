@@ -102,7 +102,7 @@ import json_writer
 import private_folder
 from console import run_main
 from flat_text import LINE_UNSAFE, flat_text, single_line
-from folder_walk import BOUNDED, UNEXAMINED, UNLISTABLE, Walk, walk_files
+from folder_walk import BOUNDED, UNEXAMINED, UNLISTABLE, Walk, is_hidden, walk_files
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from link_probe import is_plain_file
@@ -901,11 +901,6 @@ def first_folder(folders: tuple[str, ...], matches: Callable[[str], bool]) -> Pa
     return None
 
 
-def hidden(folder: Path) -> bool:
-    """Whether a folder is hidden, its name starting with a dot, which `resolve`'s walk prunes."""
-    return folder.name.startswith(".")
-
-
 def unprintable(name: str) -> bool:
     return LINE_UNSAFE.search(name) is not None
 
@@ -918,7 +913,7 @@ def unsearched_lines(walk: Walk, top: Path, wanted: Callable[[str], bool]) -> li
     for skipped in walk.not_entered:
         if skipped.kind not in {UNLISTABLE, UNEXAMINED, BOUNDED}:
             continue
-        if skipped.kind == UNEXAMINED and hidden(skipped.path) and not wanted(skipped.path.name):
+        if skipped.kind == UNEXAMINED and is_hidden(skipped.path) and not wanted(skipped.path.name):
             continue
         relative = skipped.path.relative_to(top)
         lines.append(f"UNSEARCHED {flat_text(str(relative))} {flat_text(skipped.reason)}")
@@ -935,7 +930,7 @@ def resolve(name: str, top: Path) -> list[str]:
     def wanted(entry: str) -> bool:
         return name_key(entry) == key
 
-    walk = walk_files(top, wanted, prune=hidden, limit=RESOLVE_FOLDER_LIMIT)
+    walk = walk_files(top, wanted, prune=is_hidden, limit=RESOLVE_FOLDER_LIMIT)
     unsearched = unsearched_lines(walk, top, wanted)
     found: list[Path] = []
     for path in walk.files:
