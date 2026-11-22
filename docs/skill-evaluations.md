@@ -30,10 +30,15 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   does not list, such as `git grep`, `Select-String`, or `findstr`, or one written in another language. Since it reads
   the session's calls alone, a run that recorded no review, such as one whose session searched, found the copies
   `resolve` passes over, and stopped to ask, still fails `resolved` as a `judgment`, and its other expectations as a
-  `run`, when its session ran as a counted run's must: Claude Code started, did not time out, exited 0, listed the
-  skill when it listed skills, and denied nothing, and the session ran on its own model alone. Otherwise `resolved` fails as a `run` with the
-  rest. A model's by-name runs share its home, so they run one at a time, and `--records` reads each by-name run's
-  transcript beside its record, or in place of a record the run never wrote. `review-document`'s `by-name` scenario is the worked example.
+  `run`, when its session ran as a counted run's must: Claude Code started, did not time out, and exited 0, the
+  stream's last result event says the session ended with no error, the skill was listed when skills were, nothing
+  was denied, the session ran on its own model alone, and its `resolve` returned no error, which would leave the
+  session no choice of its own. Otherwise `resolved` fails as a `run` with the rest. A model's by-name runs share
+  its home, so they run one at a time, and `--records` reads each by-name run's transcript beside its record, or in
+  place of a record the run never wrote. There it checks what the transcript shows: the last result event, the
+  listing, the denials, the session's model, and `resolve`'s result. It cannot see the exit code or whether Claude
+  Code started, which only a run reads from the process, though a session ended at its time limit writes no result
+  event. `review-document`'s `by-name` scenario is the worked example.
 - **The checkout is trusted input.** A fixture's reviewer manifest names the condition scripts a review runs, and each
   home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the
   checkout, its scenarios included. A pull request from another author is read in full, as its code is, before its
@@ -140,13 +145,16 @@ scenario; with more than one, each scenario's counts end with the runs that pass
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
 name no path of the machine; the run's `FAIL` lines keep the whole reason. A by-name run that started no reviewer
-but whose `resolved` was judged on the session's calls is the exception: that one expectation counts, in "Passed",
-the scenario's counts, and its runs, so a session that searched and stopped reads as `by-name 0/1`, and a model none
-of whose reviewers ran but that has such a judgment gets a row whose Model ID is `none`. The judgment is the
-session's, which runs on the strongest model in every row, as the by-name scenario above says. A run measures nothing of a model no
-record of which counted, every expectation on it failing as a `run` or `record`, such as a session that was signed
-out or a reviewer no guard held, so `--write` keeps that model's committed row as it was and prints `KEPT <model>`
-for it, and writes the model's new row only when the skill had none. A run with `--write` refuses, before it
+but whose `resolved` was judged on the session's calls is the exception: that one expectation counts in "Passed" and
+the scenario's counts, so a session that searched and stopped reads as `by-name 0/1`, and a model none of whose
+reviewers ran but that has such a judgment gets a row whose Model ID is `none`. Such a run counts among the
+scenario's runs only when its `resolved` failed, as a run that failed, so a run that measured nothing of the
+reviewers never counts as one that passed every expectation. The judgment is the session's, which runs on the
+strongest model in every row, as the by-name scenario above says. A run measures nothing of a model no record of
+which counted, every expectation on it failing as a `run` or `record`, such as a session that was signed out or a
+reviewer no guard held, so `--write` keeps that model's committed row as it was and prints `KEPT <model>` for it,
+and writes the model's new row only when the skill had none. A `resolved` judged on the session's calls alone
+measures nothing of the model either, so it never makes `--write` replace a committed row. A run with `--write` refuses, before it
 starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
 pull request that changes a skill's prompt, description, model guidance, or reviewer instructions cites this run.
 

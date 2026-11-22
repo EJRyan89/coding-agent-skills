@@ -163,9 +163,12 @@ def kept_models(text: str, skill: str, models: Sequence[str], outcomes: Sequence
     since every outcome of it failed with a run or record kind, and of which the skill has a row. Such a run
     measured nothing of the model, so its new row would replace a measured one with `not run` or a pass count of 0; a
     model the skill has no row of loses nothing, and its new row is written. Raise ScenarioError when results_table
-    cannot read its table."""
+    cannot read its table. A judgment made on the session's calls alone is the session's, on its own model, so it
+    measures nothing of the row's model either."""
     committed = {_row_model(row) for row in results_table(text)[2] if _row_skill(row) == skill}
-    counted = {outcome.model for outcome in outcomes if outcome.kind in (None, JUDGMENT)}
+    counted = {
+        outcome.model for outcome in outcomes if outcome.kind in (None, JUDGMENT) and not outcome.from_transcript
+    }
     return [model for model in models if model in committed and model not in counted]
 
 

@@ -57,6 +57,7 @@ from suite_names import is_suite_name
 from deployer import fsops
 from tools import runtime_canary
 from tools.skill_evals_records import (
+    FAILED_CALL,
     MODELS,
     Record,
     RecordError,
@@ -490,6 +491,12 @@ def _steps(call: Mapping[str, Any], name: str) -> list[Step]:
     if not isinstance(command, str) or call["name"] not in skill_inventory.SHELL_TOOLS:
         return []
     return _bash_steps(command, name) if call["name"] == "Bash" else _powershell_steps(command, name)
+
+
+def resolve_failed(calls: Sequence[Mapping[str, Any]], name: str) -> bool:
+    """Whether a call of the session's that ran review_document.py `resolve` with the document's name ended in an
+    error, as its tool result reports, so where the session looked after it was no choice of the session's own."""
+    return any(call.get(FAILED_CALL) is True and any(step.resolves for step in _steps(call, name)) for call in calls)
 
 
 def resolved_expectation(spec: Mapping[str, object], name: str) -> Expectation:

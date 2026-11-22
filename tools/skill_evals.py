@@ -166,9 +166,11 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       never runs `resolve`, builds nothing after it, or builds another copy fails it. Its reasons name a tool, a
       program, or the document's name, never a path of the machine. It reads the session's calls alone, so a run that
       recorded no review is still judged on them, as a `judgment`, while its other expectations fail as a `run`,
-      when the session ran as a counted run's must: Claude Code started, did not time out, exited 0, listed the skill
-      if it listed any, and denied nothing, and every message of the session's names SESSION_MODEL's ID; otherwise it
-      fails as a `run` with the rest. Only the session's own calls are read, never a
+      when the session ran as a counted run's must: Claude Code started, did not time out, and exited 0, the stream's
+      last result event says the session ended with no error, Claude Code listed the skill if it listed any and
+      denied nothing, every message of the session's names SESSION_MODEL's ID, and no `resolve` of the document's
+      name returned an error, which would leave the session no choice of its own; otherwise it fails as a `run` with
+      the rest. Only the session's own calls are read, never a
       subagent's, and a search after `resolve`, in the same command or later, is not judged. Not seen: a search
       by a program the list does not name, such as `git ls-files`, `git grep`, `Select-String`, `findstr`, or
       `where /r`, a program a variable names, a search written in another language, such as `python -c`, and a
@@ -192,10 +194,12 @@ for each run from 1 to N: the record JSON a run finalized, or a trigger scenario
 scenario the session's stream-json transcript beside it, <model>.jsonl or <model>-<run>.jsonl, whose missing or
 unreadable file fails every expectation as a `run` failure, and whose message or tool call in a shape it does not read
 as a `record` failure, since the `resolved` kind reads the calls there. A by-name scenario's missing or unreadable
-record still has its `resolved` judged on that transcript, when the transcript shows Claude Code listed the skill if it
-listed any, denied nothing, and ran the session on SESSION_MODEL alone; a transcript that is missing, unreadable,
-unread, or shows otherwise leaves `resolved` a `run` failure with the rest. A transcript holds no exit status or time
-limit, so --records judges one of a session that timed out or exited with an error as one that ended by itself.
+record still has its `resolved` judged on that transcript, when the transcript shows what a run's stream must: a last
+result event saying the session ended with no error, which a session ended at its time limit never writes, the skill
+listed if any were, nothing denied, the session on SESSION_MODEL alone, and no `resolve` that returned an error. It
+cannot see the exit code or whether Claude Code started, which a run reads from the process. A missing transcript, an
+unread one, or one that shows otherwise leaves `resolved` a `run` failure with the rest, and one that is there but
+cannot be read adds why to the record's reason.
 It holds a review record to what a run's record is held to: ejryan89-code-review-core's record contract
 (validate_record), the review version of the scenario's mode, a guard that held every reviewer, and every
 reviewer's `model` naming that model's ID, or the ID of the model its route pins.
@@ -335,8 +339,9 @@ rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and
 stays for its transcripts. Before `SAMPLE`, --write prints `KEPT <model>` for each model, in run order, no record of
 which counted, every expectation on it failing with the `run` or `record` kind, and of which the skill has a row: such a
 run measured nothing of the model, so its committed row stays as it was written rather than being replaced by `not run`
-or a pass count of 0. A model the skill has no row of loses nothing, and its row is written. When no record of any model
-counted, every committed row stays and the skill's rows change only where a model had none.
+or a pass count of 0. A `resolved` judged on the session's calls alone is the session's, on SESSION_MODEL, so it
+measures nothing of the model either. A model the skill has no row of loses nothing, and its row is written. When no
+record of any model counted, every committed row stays and the skill's rows change only where a model had none.
 Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
 run whose transcript the reader checks against its verdicts: of the runs that passed every expectation, the first after
 the scenario and model the skill's row of the samples table names, in scenario order and then model order, wrapping
@@ -357,7 +362,9 @@ more than one, each scenario's counts in By scenario end with the runs that pass
 judged, as the citation's cells do; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
 is left out of both counts, as a scenario none of whose runs held a judgment is `not run`, except a by-name run's
 `resolved` judged on the session's calls alone, which counts as that run's one expectation, and makes a model none of
-whose reviewers ran a row whose Model ID is `none`.
+whose reviewers ran a row whose Model ID is `none`. Such a run counts among the scenario's runs only when that
+`resolved` failed, as a run that failed, so a run that measured nothing of the reviewers never counts as one that
+passed.
 
 Exit status:
   0  no FAIL, FAILED, or DEPLOY_FAILED line

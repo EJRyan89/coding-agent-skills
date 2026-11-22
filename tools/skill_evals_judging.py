@@ -43,7 +43,7 @@ from tools.skill_evals_runs import (
     run_token,
     session_tool_calls,
     synthesis_scope,
-    transcript_judged,
+    unrecorded_calls,
 )
 from tools.skill_evals_scenarios import SYNTHESIS, TRIGGER, Scenario, quote
 
@@ -138,7 +138,7 @@ def records_in(directory: Path) -> RecordSource:
 
 def unrecorded_error(scenario: Scenario, path: Path, reason: str) -> RecordError:
     """The RUN failure, for `reason`, of a run under --records whose record is missing or unreadable. A by-name run's
-    carries the session's own tool calls in the transcript at `path` when transcript_judged holds of it, and adds why
+    carries the session's own tool calls in the transcript at `path` when unrecorded_calls finds them, and adds why
     the transcript cannot be read when it exists and cannot be; a missing transcript, one in a shape the reader does
     not read, or one of a run that does not count leaves the reason to stand for every expectation."""
     if not scenario.by_name:
@@ -150,7 +150,7 @@ def unrecorded_error(scenario: Scenario, path: Path, reason: str) -> RecordError
     except (OSError, UnicodeDecodeError) as exc:
         return RecordError(f"{reason}; cannot read {path}: {exc}")
     try:
-        calls = session_tool_calls(text) if transcript_judged(text, scenario.skill) else None
+        calls = unrecorded_calls(text, scenario)
     except claude_stream.StreamError:
         calls = None
     return RecordError(reason, calls=calls)
@@ -173,9 +173,15 @@ def transcript_calls(path: Path) -> list[dict[str, Any]]:
 
 def counts(outcomes: Sequence[Outcome]) -> str:
     """The expectations passed of those checked, and over several runs, the runs that passed every expectation of
-    theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs."""
+    theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs. A run whose only
+    outcomes are passes judged on the session's calls alone is no run judged, since it measured nothing of the
+    reviewers; one whose such judgment failed is a run that failed."""
     passed = f"{sum(1 for outcome in outcomes if outcome.failure is None)}/{len(outcomes)}"
-    numbered = {outcome.run for outcome in outcomes if outcome.run is not None}
+    numbered = {
+        outcome.run
+        for outcome in outcomes
+        if outcome.run is not None and not (outcome.from_transcript and outcome.failure is None)
+    }
     if not numbered:
         return passed
     failed = {outcome.run for outcome in outcomes if outcome.failure is not None}

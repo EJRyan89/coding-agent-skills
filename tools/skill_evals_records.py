@@ -40,6 +40,8 @@ Record = Mapping[str, Any]
 # The key a by-name document scenario's record carries the session's own tool calls under, read from its transcript,
 # beside the review record's own keys, which judge only the review.
 SESSION_CALLS = "session_calls"
+# The key a session call carries, beside its tool's name and input, when its tool result reports an error.
+FAILED_CALL = "failed"
 # A synthesis run that recorded no synthesis of its own, as a NOT_COUNTED line and the results file say it.
 NO_SYNTHESIS = "the run recorded no synthesis"
 
