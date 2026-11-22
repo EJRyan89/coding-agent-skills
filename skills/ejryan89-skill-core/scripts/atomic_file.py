@@ -158,10 +158,11 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     `path` that cannot be removed raises UnfinishedReservationError. An interrupt or kill as the reservation is made,
     or a kill before the replace, can leave an empty file at `path`, which no code here runs to remove. A process that
     removes the reservation and puts its own entry at `path`, or replaces it, before the replace has that entry
-    replaced, or removed by a failure's clean-up. Windows' exclusive create follows a link, so a link put at `path`
-    after the entry there is looked for and before the reservation is made is refused as FileExistsError once the
-    reservation is found not to be `path`'s own file; the file made where the link led is removed when it is still
-    there to find, and stays otherwise.
+    replaced, or removed by a failure's clean-up. Windows' exclusive create follows a link, so only a concurrent
+    writer that puts a link at `path`, in the caller's own folder, between the look for an entry and the reservation
+    has the reservation made where it leads. That is refused as FileExistsError once the reservation is found not to
+    be `path`'s own file, and the file made where the link led is removed when the link still leads to it, and stays
+    otherwise.
 
     A `mode` its owner may not write raises ValueError before a copy exists: once linked, the copy and `path` are one
     file, which Windows refuses to remove by either name while it is read-only.
