@@ -708,6 +708,118 @@ class SharedFactPolicy(unittest.TestCase):
         )
         self.assertEqual([], self.problems({source: imported, audit: imported, "tools/other.py": others}))
 
+    def test_a_name_grammar_built_from_pieces_fails_on_the_line_that_builds_or_compiles_it(self) -> None:
+        # A grammar no single literal holds whole: each spelling builds it from pieces, so only the built text,
+        # compiled whole, judges the probes as NAME_PATTERN does.
+        module = "skills/audit-ai-config/scripts/audit_ai_config.py"
+        built: dict[str, tuple[str, int | tuple[int, ...]]] = {
+            "concatenation": ('import re\n\nNAME = re.compile("[a-z0-9]+" + "(?:-[a-z0-9]+)*")\n', 3),
+            "f-string": ('import re\n\nLOWER = "a-z"\nNAME = re.compile(rf"[{LOWER}0-9]+(?:-[{LOWER}0-9]+)*")\n', 4),
+            "f-string with a conversion and a format": (
+                'import re\n\nRUN = "[a-z0-9]+"\nNAME = re.compile(f"{RUN!s}(?:-{RUN:s})*")\n',
+                4,
+            ),
+            "format by position": ('import re\n\nNAME = re.compile("[{0}]+(?:-[{0}]+)*".format("a-z0-9"))\n', 3),
+            "format by keyword": ('import re\n\nNAME = re.compile("[{c}]+(?:-[{c}]+)*".format(c="a-z0-9"))\n', 3),
+            "percent with one value": ('import re\n\nNAME = re.compile("%s(?:-[a-z0-9]+)*" % "[a-z0-9]+")\n', 3),
+            "percent with a tuple": (
+                'import re\n\nNAME = re.compile("%s(?:-%s)*" % ("[a-z0-9]+", "[a-z0-9]+"))\n',
+                3,
+            ),
+            "percent with a mapping": (
+                'import re\n\nNAME = re.compile("%(r)s(?:-%(r)s)*" % {"r": "[a-z0-9]+"})\n',
+                3,
+            ),
+            "join": ('import re\n\nNAME = re.compile("".join(["[a-z0-9]+", "(?:-[a-z0-9]+)*"]))\n', 3),
+            "a piece bound to a name": ('import re\n\nRUN = "[a-z0-9]+"\nNAME = re.compile(f"{RUN}(?:-{RUN})*")\n', 4),
+            "a piece bound in a function": (
+                'import re\n\n\ndef valid(name):\n    run = "[a-z0-9]+"\n'
+                '    return re.fullmatch(run + f"(?:-{run})*", name)\n',
+                6,
+            ),
+            "a built pattern bound to a name and compiled later": (
+                'import re\n\nRUN = "[a-z0-9]+"\nGRAMMAR = RUN + "(?:-" + RUN + ")*"\n\n\n'
+                "def valid(name):\n    return re.search(f'^{GRAMMAR}$', name)\n",
+                (4, 8),
+            ),
+            # The range spelled out names no a-z, so only the call's pattern, read whatever range it spells, holds it.
+            "a range spelled out and handed to a call by name": (
+                'import re\n\nRUN = "[abcdefghijklmnopqrstuvwxyz0123456789]+"\nPATTERN = RUN + "(?:-" + RUN + ")*"\n'
+                "NAME = re.compile(pattern=PATTERN)\n",
+                5,
+            ),
+            # A message quoting the grammar built above restates nothing of its own.
+            "a built grammar never compiled here": (
+                'RUN = "[a-z0-9]+"\nGRAMMAR = "%s(?:-%s)*" % (RUN, RUN)\nHINT = f"names match {GRAMMAR}"\n',
+                2,
+            ),
+        }
+        for spelling, (source, lines) in built.items():
+            with self.subTest(spelling=spelling):
+                expected = [
+                    self.restated(module, line, "NAME_PATTERN", self.AGENT_SKILLS)
+                    for line in ([lines] if isinstance(lines, int) else lines)
+                ]
+                self.assertEqual(expected, self.problems({module: source}))
+
+    def test_a_pattern_built_from_pieces_that_is_no_name_grammar_or_not_static_passes(self) -> None:
+        module = "skills/audit-ai-config/scripts/audit_ai_config.py"
+        passing = {
+            # Another format built the same ways: a slug that may end in a hyphen, and a case-blind name.
+            "another format": (
+                'import re\n\nRUN = "[a-z0-9]"\nSLUG = re.compile(RUN + "[a-z0-9-]{0,63}")\n'
+                'LOGIN = re.compile("[{0}]+(?:-[{0}]+)*".format("A-Za-z0-9"))\n'
+            ),
+            # A piece the module binds twice, in either branch of an if, has no one static value to compile.
+            "a piece bound twice": (
+                'import re\nimport sys\n\nif sys.platform == "win32":\n    RUN = "[a-z0-9]+"\nelse:\n'
+                '    RUN = "[a-z]+"\nNAME = re.compile(f"{RUN}(?:-{RUN})*")\n'
+            ),
+            "a piece a parameter gives": (
+                'import re\n\n\ndef valid(name, run):\n    return re.fullmatch(f"{run}(?:-{run})*", name)\n'
+            ),
+            "a pattern built at run time": (
+                'import re\n\n\ndef valid(name, runs):\n    return re.fullmatch("-".join(runs), name)\n'
+            ),
+            # A template the values cannot fill, by a missing position, attribute, item, or key, or a conversion the
+            # value cannot take, has no text.
+            "an unformattable template": (
+                'import re\n\nNAME = re.compile("[{0}]+(?:-[{1}]+)*".format("a-z0-9"))\n'
+                'ATTRIBUTE = re.compile("[{0.lower}]+(?:-[a-z0-9]+)*".format("a-z0-9"))\n'
+                'ITEM = re.compile("[{0[k]}]+(?:-[a-z0-9]+)*".format("a-z0-9"))\n'
+            ),
+            "an unfillable percent": (
+                'import re\n\nNAME = re.compile("%d(?:-[a-z0-9]+)*" % "[a-z0-9]+")\n'
+                'KEY = re.compile("%(k)s(?:-[a-z0-9]+)*" % {"j": "[a-z0-9]+"})\n'
+                'CONVERSION = re.compile("%y(?:-[a-z0-9]+)*" % "[a-z0-9]+")\n'
+            ),
+            "an imported name grammar": (
+                "import re\n\nfrom agent_skills import NAME_PATTERN\n\nNAME = re.compile(NAME_PATTERN.pattern)\n"
+            ),
+            # A placeholder's conversion and format change its text, quoting or padding the run, so the built text is
+            # another pattern; a format the text cannot take has no text.
+            "a placeholder converted or formatted": (
+                'import re\n\nRUN = "[a-z0-9]+"\nQUOTED = re.compile(f"{RUN!r}(?:-{RUN})*")\n'
+                'ASCII = re.compile(f"{RUN!a}(?:-{RUN})*")\nPADDED = re.compile(f"{RUN:>12}(?:-{RUN})*")\n'
+                'NUMBER = re.compile(f"{RUN:d}(?:-{RUN})*")\n'
+            ),
+            # Pieces given through an unpacking, or joined from a generator, have no static text.
+            "pieces unpacked or generated": (
+                'import re\n\nPIECES = ("[a-z0-9]+", "(?:-[a-z0-9]+)*")\nPARTS = {"c": "a-z0-9"}\n'
+                'BY_POSITION = re.compile("{0}{1}".format(*PIECES))\n'
+                'BY_KEYWORD = re.compile("[{c}]+(?:-[{c}]+)*".format(**PARTS))\n'
+                'BY_MAPPING = re.compile("[%(c)s]+(?:-[%(c)s]+)*" % {**PARTS})\n'
+                'GENERATED = re.compile("".join(piece for piece in PIECES))\n'
+            ),
+            # A name its own binding reads ends the reading instead of following itself.
+            "a name bound to itself": (
+                'import re\n\nGRAMMAR = GRAMMAR + "(?:-[a-z0-9]+)*"\nNAME = re.compile(GRAMMAR)\n'
+            ),
+        }
+        for case, source in passing.items():
+            with self.subTest(case=case):
+                self.assertEqual([], self.problems({module: source}))
+
     def test_a_reading_of_the_user_only_key_fails_outside_the_shared_reader(self) -> None:
         reference = "tools/skill_reference.py"
         readings = {
