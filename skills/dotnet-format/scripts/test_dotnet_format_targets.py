@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 from unittest import mock
@@ -370,6 +370,8 @@ class ResolveTests(unittest.TestCase):
     def test_a_changed_file_project_or_solution_it_cannot_examine_or_list_fails_never_reads_as_none(self) -> None:
         # A changed file it cannot stat would read as deleted, and the run as one with no C# change; a project or
         # solution, or a folder it cannot list, as one with none, which drops the ASP.NET skip or the nearest solution.
+        # A project or solution is judged by its links first, from its own metadata, so its refusal gives the system's
+        # reason through that judgment.
         repo = self.repository
         repo.write("Web/Web.csproj", WEB_PROJECT)
         repo.write("Web/Program.cs")
@@ -377,17 +379,18 @@ class ResolveTests(unittest.TestCase):
         repo.commit("web")
         root = repo.root
         error = "[Errno 13] Access is denied"
+        judged = "its links cannot be followed inside the repository root: Access is denied"
         rows: list[tuple[str, bool, str]] = [
-            ("Web/Program.cs", True, "the changed file Web/Program.cs cannot be examined"),
-            ("Web/Web.csproj", True, f"{root / 'Web/Web.csproj'} cannot be examined"),
-            ("Web", False, f"{root / 'Web'} cannot be listed"),
-            ("App.sln", True, f"{root / 'App.sln'} cannot be examined"),
-            (".", False, f"{root} cannot be listed"),
+            ("Web/Program.cs", True, f"the changed file Web/Program.cs cannot be examined: {error}: {{target!r}}"),
+            ("Web/Web.csproj", True, f"{root / 'Web/Web.csproj'} cannot be examined: {judged}"),
+            ("Web", False, f"{root / 'Web'} cannot be listed: {error}: {{target!r}}"),
+            ("App.sln", True, f"{root / 'App.sln'} cannot be examined: {judged}"),
+            (".", False, f"{root} cannot be listed: {error}: {{target!r}}"),
         ]
         for relative, stat, reason in rows:
             target = root / relative if relative != "." else root
             with self.subTest(relative=relative), denied(target, stat=stat):
-                self.assertEqual(f"{reason}: {error}: {str(target)!r}", self.failed())
+                self.assertEqual(reason.format(target=str(target)), self.failed())
 
     def test_a_folder_by_a_project_or_solution_name_is_passed_by_and_the_files_after_it_found(self) -> None:
         repo = self.repository
@@ -1013,8 +1016,10 @@ class ResolveTests(unittest.TestCase):
             (repo.root / "App.sln").unlink()
             (repo.root / "App.sln").symlink_to("/dev/zero")
             failure = self.failed()
+            # A link out of the repository, to a device here, is judged by its text and never stat or opened.
+            linked = repo.root / "App.sln"
             self.assertEqual(
-                f"{repo.root / 'App.sln'} cannot be read: not a regular file, so the reader does not open it", failure
+                f"{linked} cannot be examined: {linked_out(linked, Path('/dev/zero'), repo.root)}", failure
             )
 
     def test_an_slnx_declaring_another_encoding_is_read_as_decoded(self) -> None:
@@ -1102,6 +1107,37 @@ class ResolveTests(unittest.TestCase):
             with self.subTest(link=link.name):
                 self.assertEqual(targets.TOOL_FORMATTER, targets.formatter_for(repo.root, repo.root / "Only.sln"))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_or_solution_found_beside_a_changed_file_that_is_a_link_out_fails_unread(self) -> None:
+        # P/P.csproj owns the changed P/Code.cs and leads outside to an ASP.NET project: read, it would make the
+        # global tool skip Code.cs as SKIPPED_ASPNET; it is never stat or opened, and the run fails naming it, as for
+        # a project it cannot examine. A solution in the invocation folder that leads outside fails the same way.
+        repo = self.repository
+        repo.write("P/Code.cs")
+        repo.write("Lib.sln", solution("P\\P.csproj"))
+        repo.commit("code")
+        outside = outside_folder(self)
+        (outside / "W.csproj").write_text(WEB_PROJECT, encoding="utf-8")
+        project = repo.root / "P" / "P.csproj"
+        project.symlink_to(outside / "W.csproj")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            reason = self.failed()
+        self.assertEqual(
+            f"{project} cannot be examined: {linked_out(project, outside / 'W.csproj', repo.root)}", reason
+        )
+        self.assertEqual([], reached(touched, [project], outside))
+        project.unlink()
+        repo.write("P/P.csproj", SDK_PROJECT)
+        linked = repo.root / "Out.sln"
+        linked.symlink_to(outside / "Out.sln")
+        (outside / "Out.sln").write_text(solution("P\\P.csproj"), encoding="utf-8")
+        touched.clear()
+        with recording_reaches(touched):
+            reason = self.failed()
+        self.assertEqual(f"{linked} cannot be examined: {linked_out(linked, outside / 'Out.sln', repo.root)}", reason)
+        self.assertEqual([], reached(touched, [linked], outside))
+
 
 class ListedRefusalTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1110,14 +1146,14 @@ class ListedRefusalTests(unittest.TestCase):
         self.root = Path(directory.name).resolve()
 
     def test_an_entry_inside_the_root_is_kept_and_a_device_or_share_form_is_refused_unjudged(self) -> None:
-        judge = folder_walk.outside_link_refusal
+        judge = folder_walk.followed_inside
         judged: list[Path] = []
 
-        def recording_judge(path: Path, tree: Path) -> str | None:
+        def recording_judge(path: Path, tree: Path) -> tuple[Path | None, str | None]:
             judged.append(path)
             return judge(path, tree)
 
-        with mock.patch("dotnet_format_targets.outside_link_refusal", recording_judge):
+        with mock.patch("dotnet_format_targets.followed_inside", recording_judge):
             self.assertIsNone(targets.listed_refusal(self.root, "src/./App/../App/Program.cs"))
             self.assertEqual(
                 [self.root / "src" / "App" / "Program.cs", self.root / "src" / "App" / ".." / "App" / "Program.cs"],
@@ -1137,7 +1173,7 @@ class ListedRefusalTests(unittest.TestCase):
         inside = self.root / "inside.cs"
         outside = self.root.parent / "outside.cs"
         absolute = "the entry is an absolute path, and an entry names a file relative to the repository root"
-        with mock.patch("dotnet_format_targets.outside_link_refusal") as judge:
+        with mock.patch("dotnet_format_targets.followed_inside") as judge:
             # The form with backslashes is absolute on Linux too once they read as separators.
             for entry in (str(inside), inside.as_posix(), inside.as_posix().replace("/", "\\")):
                 with self.subTest(entry=entry):
@@ -1204,6 +1240,47 @@ class ListedRefusalTests(unittest.TestCase):
             self.assertEqual([], reached(touched, [self.root / "a" / "Out", self.root / "Away"], outside))
         # A `..` whose either reading stays inside the root is kept.
         self.assertIsNone(targets.listed_refusal(self.root, "In/../b/Inside.cs"))
+
+    def climbing(self, links: Mapping[str, Path | str], entry: str) -> None:
+        """Make each link of `links`, by its path below the root, to its target, and check that `entry`, a FILE_LIST
+        entry and a --solution, is refused as climbing above the root after them, with nothing outside reached; a
+        `..` after a link to the root leaves the root as Linux and macOS open it, though the text reads inside."""
+        outside = outside_folder(self)
+        (outside / "Outside.cs").write_text("class C { }\n", encoding="utf-8")
+        made = []
+        for relative, target in links.items():
+            link = self.root / relative
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(target, Path):
+                link_folder(target, link)
+            else:
+                link.symlink_to(target, target_is_directory=True)
+            self.addCleanup(remove_link, link)
+            made.append(link)
+        entry = entry.format(outside=outside.name)
+        reason = (
+            "its links cannot be followed inside the repository root: a `..` in it climbs above the root once the"
+            " links before it are followed"
+        )
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            self.assertEqual(reason, targets.listed_refusal(self.root, entry))
+            self.assertEqual(f"the solution {entry} is refused: {reason}", targets.solution_refusal(self.root, entry))
+        self.assertEqual([], reached(touched, made, outside))
+
+    def test_a_dot_dot_after_a_link_to_the_root_by_its_absolute_path_is_refused(self) -> None:
+        # Abs (a junction on Windows) leads to the root itself, so Abs/.. is the folder above the root.
+        self.climbing({"Abs": self.root}, "Abs/../{outside}/Outside.cs")
+
+    @unittest.skipIf(sys.platform == "win32", "a relative symbolic link needs a privilege on Windows")
+    def test_a_dot_dot_after_a_relative_link_to_the_root_is_refused(self) -> None:
+        # In leads to `.`, the root, and A/Up to `..`, the root from A, so the `..` after either is the folder above.
+        for links, entry in (
+            ({"In": "."}, "In/../{outside}/Outside.cs"),
+            ({"A/Up": ".."}, "A/Up/../{outside}/Outside.cs"),
+        ):
+            with self.subTest(entry=entry):
+                self.climbing(links, entry)
 
 
 class ConsoleTests(unittest.TestCase):

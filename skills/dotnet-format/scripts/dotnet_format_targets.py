@@ -40,9 +40,10 @@ fact stays one line; the exact names are FILE_LIST's.
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
 
-Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command
-fails or does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot
-hold, or a file cannot be read or written, it prints `FAILED <reason>` as the last line instead.
+Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command fails or
+does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot hold, a file
+cannot be read or written, or a project beside a changed file or a solution in the folders it searches upward is a link
+leading outside the repository, which it never stats or reads, it prints `FAILED <reason>` as the last line instead.
 
 Exit status:
   0  the lines were printed, ending in SOLUTION or STOP
@@ -84,7 +85,7 @@ from dotnet_solution import (
 from executable_locator import find_program
 from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
-from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, outside_link_refusal, walk_files
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, followed_inside, walk_files
 from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -191,14 +192,25 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
+LINKED_OUT = "its links cannot be followed inside the repository root"
+
+
 def linked_out_refusal(root: Path, path: Path) -> str | None:
     """Why a script does not stat, read, or evaluate `path`, a path inside `root` by its text, or None: a symbolic link
-    or junction on its way, its own name included, leads outside the root, or a name on it cannot be examined or a
-    link followed. ejryan89-skill-core's `folder_walk.outside_link_refusal` judges each name down from the root from its
-    own metadata and each link from its text, so nothing outside the root is stat, listed, or opened to decide. A path
-    whose links all stay inside, and one with a name that is not there, which its reader then reports, is None."""
-    linked = outside_link_refusal(path, root)
-    return None if linked is None else f"its links cannot be followed inside the repository root: {linked}"
+    or junction on its way, its own name included, leads outside the root, a name on it cannot be examined or a link
+    followed, or a `..` it holds climbs above the root once the links before it are followed, as Linux and macOS take
+    it, such as after a link to the root itself. ejryan89-skill-core's `folder_walk.followed_inside` judges each name
+    down from the root from its own metadata and each link from its text, so nothing outside the root is stat, listed,
+    or opened to decide. A path whose links all stay inside, and one with a name that is not there, which its reader
+    then reports, is None."""
+    inside, linked = followed_inside(path, root)
+    if linked is not None:
+        return f"{LINKED_OUT}: {linked}"
+    if inside is None:
+        # `path` lies inside the root by its text, so followed_inside answers no place only for a `..` that climbs
+        # above the root's top, a link before it having led there or not.
+        return f"{LINKED_OUT}: a `..` in it climbs above the root once the links before it are followed"
+    return None
 
 
 def listed_refusal(root: Path, name: str) -> str | None:
@@ -401,11 +413,12 @@ def still_there(root: Path, name: str) -> bool:
         raise Failed(f"the changed file {name} cannot be examined: {error}") from None
 
 
-def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
-    """The files directly in `folder` whose names `wanted` accepts, sorted: a folder or anything else by such a name
-    is none, and so is every file of a folder that is not there. Raises Failed for a folder it cannot list, or such an
-    entry it cannot examine, which could be one; it lists with iterdir, which raises there, where glob matches nothing.
-    """
+def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
+    """The files directly in `folder`, a folder inside `root`, whose names `wanted` accepts, sorted: a folder or
+    anything else by such a name is none, and so is every file of a folder that is not there. Raises Failed for a
+    folder it cannot list, or such an entry it cannot examine, which could be one; it lists with iterdir, which raises
+    there, where glob matches nothing. Such an entry that is a link leading outside `root` (`linked_out_refusal`) is
+    one it cannot examine, and is never stat, so a project or solution behind it is never read."""
     try:
         entries = sorted(folder.iterdir())
     except ABSENT:
@@ -416,6 +429,9 @@ def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
     for path in entries:
         if not wanted(path.name):
             continue
+        refused = linked_out_refusal(root, path)
+        if refused:
+            raise Failed(f"{path} cannot be examined: {refused}")
         try:
             if is_present(path):
                 found.append(path)
@@ -433,9 +449,10 @@ def is_project_name(name: str) -> bool:
 
 def owning_projects(root: Path, file: Path) -> list[Path]:
     """The .csproj files in the nearest directory at or above the file, up to and including the root; a folder or
-    project file it cannot examine fails, since passing it by could miss the ASP.NET project that owns the file."""
+    project file it cannot examine, a project file that is a link leading outside the root included, fails, since
+    passing it by could miss the ASP.NET project that owns the file, and reading it would leave the repository."""
     for folder in folders_up(file.parent, root):
-        projects = listed_files(folder, is_project_name)
+        projects = listed_files(root, folder, is_project_name)
         if projects:
             return projects
     return []
@@ -495,10 +512,11 @@ def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, P
 
 
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
-    """Solutions in the nearest directory from cwd up to the root, or none."""
+    """Solutions in the nearest directory from cwd up to the root, or none; one that is a link leading outside the
+    root fails, as `listed_files` says."""
     inside = any(same_path(folder) == same_path(root) for folder in folders_up(cwd))
     for folder in folders_up(cwd if inside else root, root):
-        found = listed_files(folder, lambda name: is_solution(Path(name)))
+        found = listed_files(root, folder, lambda name: is_solution(Path(name)))
         if found:
             return found
     return []

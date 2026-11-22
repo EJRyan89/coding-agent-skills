@@ -1510,12 +1510,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([["Roslynator.Formatting.Analyzers", "missing"]], grouped["PACKAGE"])
         self.assertIn((str(link), False), touched)
         self.assertEqual([], reached(touched, [link], outside))
+        # A solution entry's REFUSED line is reported and is no finding: with every setting added, config exits 0.
+        status, grouped = self.run_config("--apply")
+        self.assertEqual(0, status)
+        self.assertEqual([["Linked\\E\\E.csproj", self.linked_out(link, outside)]], grouped["REFUSED"])
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
-    def test_a_solution_entry_that_is_a_file_link_leading_outside_is_refused_and_never_evaluated(self) -> None:
+    def test_a_solution_entry_that_is_a_file_link_leading_outside_is_refused_and_never_reached(self) -> None:
         # Two project files that are links out of the repository, by an absolute target and by a relative one
-        # climbing out. Other.csproj owns no changed file, and nothing outside is reached; Owner.csproj owns
-        # Shared/Code.cs, so it would be evaluated were it kept, and it is refused and never evaluated.
+        # climbing out. Other.csproj owns no changed file and is refused; Owner.csproj owns Shared/Code.cs, so the
+        # package check would evaluate it and the configuration search look beside it: the run fails naming it, as
+        # for a project it cannot examine. Neither is stat, opened, or evaluated.
         outside = outside_directory(self)
         (outside / "E").mkdir()
         (outside / "E" / "E.csproj").write_text(SDK_PROJECT, encoding="utf-8")
@@ -1535,23 +1540,25 @@ class ConfigTests(unittest.TestCase):
         with recording_reaches(touched):
             grouped = self.config()
         self.assertEqual(
-            [["Lone\\Other.csproj", self.linked_out(other, outside / "E" / "E.csproj")]],
-            grouped["REFUSED"][:1],
-        )
-        self.assertEqual([], reached(touched, [other], outside))
-        self.changed("src/App/Program.cs", "Shared/Code.cs")
-        self.msbuild.calls.clear()
-        grouped = self.config()
-        self.assertEqual(
             [
                 ["Lone\\Other.csproj", self.linked_out(other, outside / "E" / "E.csproj")],
                 ["Shared\\Owner.csproj", self.linked_out(owner, Path(f"../../{outside.name}/E/E.csproj"))],
             ],
             grouped["REFUSED"],
         )
-        self.assertEqual(
-            [("./App.csproj", self.root / "src" / "App")], [(call[0][2], call[1]) for call in self.msbuild.calls]
+        self.assertEqual([], reached(touched, [other, owner], outside))
+        self.changed("src/App/Program.cs", "Shared/Code.cs")
+        self.msbuild.calls.clear()
+        touched.clear()
+        with recording_reaches(touched):
+            status, grouped = self.run_config()
+        self.assertEqual(1, status)
+        failed = (
+            f"FAILED {owner} cannot be examined: {self.linked_out(owner, Path(f'../../{outside.name}/E/E.csproj'))}"
         )
+        self.assertEqual(failed, list(grouped)[-1])
+        self.assertEqual([], self.msbuild.calls)
+        self.assertEqual([], reached(touched, [other, owner], outside))
 
     def test_apply_never_writes_an_editorconfig_that_is_or_lies_below_a_link(self) -> None:
         editorconfig = self.root / ".editorconfig"

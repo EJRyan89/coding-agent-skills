@@ -78,6 +78,9 @@ from dotnet_format_targets import (
     solution_refusal,
     write_refusal,
 )
+from dotnet_format_targets import (
+    Failed as TargetsFailed,
+)
 from executable_locator import find_program, located_command
 from flat_text import fact_line, flat_text
 from path_containment import resolved_path
@@ -432,7 +435,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
             services or Services(),
             print,
         )
-    except (Failed, OSError) as error:
+    except (Failed, TargetsFailed, OSError) as error:
         print(f"FAILED {flat_text(str(error))}")
         return 1
     return 1 if findings else 0

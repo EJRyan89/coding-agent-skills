@@ -431,6 +431,27 @@ class MainTests(unittest.TestCase):
         self.assertEqual(["SUMMARY", "0", "0", "-"], lines[0])
         self.assertEqual(["LOG"], [fields[0] for fields in lines[1:]])
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_project_owning_a_listed_file_that_is_a_link_out_fails_unread_before_the_formatter_runs(self) -> None:
+        # The global tool formats a solution it cannot read, so the ASP.NET skip looks for the project owning each
+        # file: src/App/App.csproj leads outside the repository, so it is never opened, and the run fails naming it
+        # on one FAILED line, with nothing formatted.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        outside = Path(directory.name).resolve()
+        (outside / "Web.csproj").write_text(WEB_PROJECT, encoding="utf-8")
+        (self.root / "src" / "App").mkdir(parents=True)
+        project = self.root / "src" / "App" / "App.csproj"
+        project.symlink_to(outside / "Web.csproj")
+        runner = FakeRunner(0, "  Format complete in 10ms.\n")
+        reason = (
+            f"{project} cannot be examined: its links cannot be followed inside the repository root:"
+            f" {project.as_posix()} is a link to {(outside / 'Web.csproj').as_posix()},"
+            f" outside the examined tree {self.root.as_posix()}, which the reader does not follow"
+        )
+        self.assert_failed(self.run_formatter("check", runner), reason)
+        self.assertEqual([], runner.calls)
+
     def test_an_entry_outside_the_root_is_refused_and_never_passed_to_the_formatter(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
