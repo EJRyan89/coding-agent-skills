@@ -496,6 +496,26 @@ class NoteFixtures(unittest.TestCase):
         self.assertEqual({}, result.notes, "a failed job's report is its own; it keeps no notes")
         self.assertNotIn("NOTE failing suite", printed.getvalue())
 
+    def test_a_verbose_run_prints_every_job_s_line_and_a_quiet_one_only_a_noted_job_s(self) -> None:
+        for verbose in (True, False):
+            quiet, _ = job_running("quiet suite", PASSES)
+            with self.subTest(verbose=verbose), contextlib.redirect_stdout(io.StringIO()) as printed:
+                run_jobs([quiet], verbose=verbose, workers=1)
+            if verbose:
+                self.assertRegex(printed.getvalue(), r"\Aok +[0-9.]+s quiet suite\n\Z")
+            else:
+                self.assertEqual("", printed.getvalue())
+
+    def test_the_retries_come_back_in_label_order_whatever_order_the_jobs_ran_in(self) -> None:
+        # The heaviest job starts first, so "b" runs before "a" on one worker.
+        light, _ = job_running("a retried", ENDED, PASSES)
+        heavy, _ = job_running("b retried", ENDED, PASSES)
+        heavy = Job(heavy.label, heavy.name, 2, heavy.run)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([light, heavy], verbose=False, workers=1)
+        self.assertLess(printed.getvalue().index("b retried"), printed.getvalue().index("a retried"), "b ran first")
+        self.assertEqual(["a retried", "b retried"], [retry.job.label for retry in result.retries])
+
     def test_a_job_s_notes_stay_its_own_and_none_outlive_it(self) -> None:
         jobs = [
             job_running(f"suite {index}", [sys.executable, "-c", f"print({MARK + str(index)!r})"])[0]
@@ -529,8 +549,15 @@ class NoteFixtures(unittest.TestCase):
             job = Job("left attached", "left attached", 1, lambda: run_process(command, PYTEST_ENVIRONMENT))
             with contextlib.redirect_stdout(io.StringIO()) as printed:
                 result = run_jobs([job], verbose=False, workers=1)
+        # A failed run ends its message with the end of the suite's own output, where pytest says why, so a reader
+        # that quotes only the end of this suite's output, as the mutation gate's reach run does, still shows it.
+        self.assertEqual(
+            [],
+            [failure.job.label for failure in result.failures],
+            "".join(failure.report[-1500:] for failure in result.failures),
+        )
         report = f"the MS-DOS test volume at {Path('mount')} stays attached: hdiutil detach exited with status 16: busy"
-        self.assertEqual(([], {"left attached": [report]}), (result.failures, result.notes))
+        self.assertEqual({"left attached": [report]}, result.notes)
         self.assertIn(f"NOTE left attached: {report}\n", printed.getvalue())
         summary = step_summary((3, 12, 0), {}, "Mode.", 1, 1, 1.0, [], notes=result.notes)
         self.assertTrue(summary.endswith(f"- Noted: `left attached`\n\n  ```text\n  {report}\n  ```\n\n"), summary)
@@ -554,11 +581,16 @@ class NotedReportFixtures(unittest.TestCase):
             return passed, out.getvalue(), summary.read_text(encoding="utf-8")
 
     def test_a_passing_job_s_notes_are_reported_indented_and_leave_the_run_passing(self) -> None:
-        passed, out, summary = self.report(PoolResult([], [], {"tests/a.py": ["ERROR: a volume stays attached"]}))
+        notes = {"tests/a.py": ["ERROR: a volume stays attached", "a second note"]}
+        passed, out, summary = self.report(PoolResult([], [], notes))
         self.assertTrue(passed, "a note is no failure")
-        self.assertIn(f"\n{'=' * 70}\nNOTED tests/a.py\n{'-' * 70}\n  ERROR: a volume stays attached\n", out)
+        self.assertIn(
+            f"\n{'=' * 70}\nNOTED tests/a.py\n{'-' * 70}\n  ERROR: a volume stays attached\n  a second note\n", out
+        )
         self.assertTrue(out.rstrip().endswith("validation passed."), out)
-        self.assertIn("- Noted: `tests/a.py`\n\n  ```text\n  ERROR: a volume stays attached\n  ```\n", summary)
+        self.assertIn(
+            "- Noted: `tests/a.py`\n\n  ```text\n  ERROR: a volume stays attached\n  a second note\n  ```\n", summary
+        )
         self.assertIn("**validation passed**", summary)
 
     def test_a_failing_job_s_output_is_reported_whole_as_before_and_never_as_notes(self) -> None:
