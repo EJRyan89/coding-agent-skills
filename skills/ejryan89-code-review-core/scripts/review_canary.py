@@ -16,7 +16,9 @@ that author's input until the user has read it, as the pull request's code is, a
 stays its author's input whatever the fixture says. It still takes the real path from the commits on. `fixture_change`
 commits both trees, byte for byte, to a throwaway repository whose origin names the fixture's repository, so `prepare`
 snapshots the head from that repository's objects as it snapshots a checkout's, with the same exclusions, and reads the
-diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub.
+diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub. The trees' files are
+committed but for the AppleDouble `._<name>` sidecars macOS writes beside `<name>` on a FAT, exFAT, or SMB volume,
+which `_is_apple_double` leaves out.
 """
 
 from __future__ import annotations
@@ -56,6 +58,9 @@ OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body", "document_stage", "cl
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
 # A closing issue's `repository` defaults to the fixture's own, so a fixture names another only to show one.
 CLOSING_ISSUE_FIELDS = frozenset({"number", "state", "title", "body"})
+# The AppleDouble sidecar's name prefix, and its header: the magic number 0x00051607 and version 2, big-endian.
+APPLE_DOUBLE_PREFIX = "._"
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
 
@@ -165,12 +170,28 @@ def validate_prior_record(value: object, *, repository: str, number: int) -> Rev
     return record
 
 
+def _is_apple_double(name: str, names: set[str], path: Path, relative: str) -> bool:
+    """Whether the regular file `name` is the AppleDouble sidecar macOS writes as `._<name>` beside `<name>` on a
+    volume with no room for a file's extended attributes, such as FAT, exFAT, or an SMB share: its folder's listing
+    also holds `<name>`, and it opens with the AppleDouble header. `._<name>` is a legal name on every platform, so
+    one that is not such a sidecar stays a file of the fixture."""
+    if not name.startswith(APPLE_DOUBLE_PREFIX) or name.removeprefix(APPLE_DOUBLE_PREFIX) not in names:
+        return False
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(APPLE_DOUBLE_HEADER)) == APPLE_DOUBLE_HEADER
+    except OSError as exc:
+        raise FixtureError(f"Cannot read the fixture file {relative}: {exc}") from exc
+
+
 def _tree_files(root: Path) -> list[tuple[str, Path]]:
     """Each file under `root` as (its POSIX path, its path), sorted. A link or another entry that is not a regular
-    file or folder has no place in a fixture and is refused.
+    file or folder has no place in a fixture and is refused. An AppleDouble sidecar beside its file or folder, which
+    macOS writes on its own and the fixture's author never did, is left out (`_is_apple_double`).
 
     Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
-    makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
+    makes no file-system call per entry, but for opening a sidecar's header, and the POSIX path is built as a string
+    rather than through pathlib."""
     file_presence.require(
         root, FixtureError, f"The fixture has no {root.name}/ tree", f"The fixture's {root.name}/ tree", folder=True
     )
@@ -180,18 +201,21 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
     folders = [("", str(root))]
     while folders:
         prefix, folder = folders.pop()
-        with os.scandir(folder) as entries:
-            for entry in entries:
-                relative = prefix + entry.name
-                path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
-                if is_link_or_junction(path, metadata):
-                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
-                if stat.S_ISDIR(metadata.st_mode):
-                    folders.append((relative + "/", entry.path))
-                elif stat.S_ISREG(metadata.st_mode):
+        with os.scandir(folder) as listing:
+            entries = list(listing)
+        names = {entry.name for entry in entries}
+        for entry in entries:
+            relative = prefix + entry.name
+            path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
+            if is_link_or_junction(path, metadata):
+                raise FixtureError(f"The fixture holds a link or special file: {relative}")
+            if stat.S_ISDIR(metadata.st_mode):
+                folders.append((relative + "/", entry.path))
+            elif stat.S_ISREG(metadata.st_mode):
+                if not _is_apple_double(entry.name, names, path, relative):
                     files.append((relative, path))
-                else:
-                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
+            else:
+                raise FixtureError(f"The fixture holds a link or special file: {relative}")
     return sorted(files)
 
 

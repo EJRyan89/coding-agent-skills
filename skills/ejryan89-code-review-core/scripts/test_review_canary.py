@@ -59,6 +59,10 @@ PULL: dict[str, Any] = {
 }
 
 
+# The AppleDouble header macOS writes at the start of a `._<name>` sidecar: magic 0x00051607, version 0x00020000.
+APPLE_DOUBLE = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+
+
 def git(directory: Path, *arguments: str) -> bytes:
     result = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, check=False)
     if result.returncode != 0:
@@ -569,6 +573,74 @@ class FixtureChangeTests(unittest.TestCase):
             "only the root is examined by its own call",
         )
 
+    def test_an_apple_double_sidecar_beside_its_file_or_folder_is_left_out_and_any_other_dot_underscore_file_kept(
+        self,
+    ) -> None:
+        # Planted as macOS writes them on FAT, exFAT, and SMB volumes, so the walk is held on every platform.
+        sidecar = APPLE_DOUBLE + b"Mac OS X        \x00\x02"
+        base = {"doc.md": b"old\n", "._doc.md": sidecar}
+        head = {
+            "doc.md": b"new\n",
+            "._doc.md": sidecar,
+            "docs/guide.md": b"guide\n",
+            "._docs": sidecar,
+            "docs/._guide.md": sidecar,
+            # Not sidecars: one with no file beside it, one that does not open with the header, one cut short of it,
+            # and AppleSingle's magic number.
+            "._alone.md": sidecar,
+            "kept.md": b"kept\n",
+            "._kept.md": b"plain text\n",
+            "short.md": b"short\n",
+            "._short.md": APPLE_DOUBLE[:7],
+            "single.md": b"single\n",
+            "._single.md": b"\x00\x05\x16\x00\x00\x02\x00\x00",
+        }
+        directory = write_fixture(self.root / "fixture", base, head)
+        with fixture_change(directory, subprocess_runner) as change:
+            listed = {
+                commit: git(change.repository, "ls-tree", "-r", "-z", "--name-only", commit).split(b"\0")[:-1]
+                for commit in (change.pull["baseRefOid"], change.pull["headRefOid"])
+            }
+            diff = change.diff
+        self.assertEqual(
+            {
+                change.pull["baseRefOid"]: [b"doc.md"],
+                change.pull["headRefOid"]: [
+                    b"._alone.md",
+                    b"._kept.md",
+                    b"._short.md",
+                    b"._single.md",
+                    b"doc.md",
+                    b"docs/guide.md",
+                    b"kept.md",
+                    b"short.md",
+                    b"single.md",
+                ],
+            },
+            listed,
+        )
+        self.assertNotIn("._doc.md", diff)
+        self.assertNotIn("._docs", diff)
+
+    def test_a_dot_underscore_file_whose_header_cannot_be_read_is_refused_by_name_as_the_tree_is_walked(self) -> None:
+        tree = self.root / "tree"
+        write_tree(tree, {"doc.md": b"new\n", "._doc.md": APPLE_DOUBLE, "._alone.md": APPLE_DOUBLE})
+        real = Path.open
+        opened: list[str] = []
+
+        def refusing(path: Path, *arguments: Any, **keywords: Any) -> Any:
+            opened.append(path.name)
+            if path.name == "._doc.md":
+                raise PermissionError("synthetic refusal")
+            return real(path, *arguments, **keywords)
+
+        with (
+            mock.patch.object(Path, "open", refusing),
+            self.assertRaisesRegex(FixtureError, r"^Cannot read the fixture file \._doc\.md: synthetic refusal$"),
+        ):
+            review_canary._tree_files(tree)
+        self.assertEqual(["._doc.md"], opened, "only a dot-underscore file with a file beside it is opened")
+
     def test_an_invalid_pull_json_is_refused_before_any_repository_exists(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"}, pull={"number": 1})
         with self.assertRaises(FixtureFieldError) as caught, fixture_change(directory, subprocess_runner):
@@ -579,6 +651,46 @@ class FixtureChangeTests(unittest.TestCase):
             str(caught.exception),
         )
         self.assertEqual([], list(self.temporary.iterdir()))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
+class RealSidecarVolumeTests(unittest.TestCase):
+    """A fixture written to a real FAT or exFAT volume, attached from a disk image, where macOS writes an AppleDouble
+    sidecar beside each file that has an extended attribute."""
+
+    def test_the_sidecars_macos_writes_on_fat_and_exfat_are_never_committed(self) -> None:
+        for file_system in ("MS-DOS", "ExFAT"):
+            with self.subTest(file_system=file_system), tempfile.TemporaryDirectory() as temporary:
+                image = Path(temporary).resolve() / "volume.dmg"
+                mount = Path(temporary).resolve() / "mount"
+                mount.mkdir()
+                hdiutil = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE"]
+                subprocess.run([*hdiutil, str(image)], check=True, capture_output=True, timeout=120)
+                attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
+                subprocess.run(attach, check=True, capture_output=True, timeout=120)
+                try:
+                    self._check_volume(mount)
+                finally:
+                    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
+                    subprocess.run(detach, check=True, capture_output=True, timeout=120)
+
+    def _check_volume(self, volume: Path) -> None:
+        directory = write_fixture(volume / "fixture", {"doc.md": b"old\n"}, {"doc.md": b"new\n", "docs/a.md": b"a\n"})
+        # macOS may already mark a new file with an attribute; one set here makes the sidecar whatever it does.
+        for written in ("base/doc.md", "head/doc.md", "head/docs/a.md", "head/docs"):
+            attribute = ["xattr", "-w", "org.example.fixture", "1", str(directory / written)]
+            subprocess.run(attribute, check=True, capture_output=True, timeout=60)
+        self.assertTrue((directory / "head" / "._doc.md").is_file(), "the volume holds the sidecar macOS writes")
+        self.assertEqual(APPLE_DOUBLE, (directory / "head" / "._doc.md").read_bytes()[: len(APPLE_DOUBLE)])
+        self.assertTrue((directory / "head" / "._docs").is_file(), "and one beside a folder")
+        with fixture_change(directory, subprocess_runner) as change:
+            listed = [
+                git(change.repository, "ls-tree", "-r", "-z", "--name-only", commit).split(b"\0")[:-1]
+                for commit in (change.pull["baseRefOid"], change.pull["headRefOid"])
+            ]
+            diff = change.diff
+        self.assertEqual([[b"doc.md"], [b"doc.md", b"docs/a.md"]], listed)
+        self.assertNotIn("._", diff)
 
 
 class PriorRecordTests(unittest.TestCase):
