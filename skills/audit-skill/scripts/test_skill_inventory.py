@@ -22,9 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
+import dotnet_solution
 import powershell_commands
 import skill_inventory
 import skill_menu
+import tree_reader
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
 from path_containment import resolved_path
@@ -548,10 +550,10 @@ class InventoryTests(TemporaryTestCase):
 
     def test_an_unreadable_file_fails_with_its_path(self) -> None:
         write(self.root / "SKILL.md", "x")
-        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied", "locked.md")):
+        with mock.patch.object(Path, "open", side_effect=PermissionError(13, "Permission denied", "locked.md")):
             code, lines, error = run("inventory", str(self.root))
         self.assertEqual((1, ""), (code, error))
-        self.assertEqual(["FAILED cannot read locked.md: Permission denied"], lines)
+        self.assertEqual([f"FAILED cannot read {(self.root / 'SKILL.md').as_posix()}: Permission denied"], lines)
 
 
 class ToolsTests(TemporaryTestCase):
@@ -2356,7 +2358,7 @@ def test_require_text_refuses_a_file_it_cannot_read_with_the_reason() -> None:
     with tempfile.TemporaryDirectory() as folder:
         path = write(Path(folder) / "With Space" / "SKILL.md", "text")
         with (
-            mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")),
+            mock.patch.object(Path, "open", side_effect=PermissionError(13, "Permission denied")),
             pytest.raises(skill_inventory.InputError) as caught,
         ):
             skill_inventory.require_text(path)
@@ -4164,17 +4166,237 @@ def test_a_link_that_leaves_the_skill_after_a_leading_dot_slash_is_read(tmp_path
     ]
 
 
-def test_an_outside_target_the_inventory_already_sizes_is_counted_once(tmp_path: Path) -> None:
-    # A file of the skill folder that is a link to a file outside is listed and sized as a FILE line, so the read its
-    # link leads to is not counted again as an outside read.
+def outside_link_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """A skill whose references/shared.md and scripts/tool.py are links to files outside it, which SKILL.md names, and
+    whose references/secret.md is one it names nowhere; the outside files hold what a read through them would print."""
+    outside = tmp_path / "outside"
+    write(outside / "shared.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    write(outside / "secret.md", "For each item, cat the file.\n")
+    write(outside / "tool.py", 'print("OUTSIDE_WORD here")\n')
     skill = tmp_path / "skills" / "alpha"
-    shared = write(tmp_path / "skills" / "shared.md", "12345678\n")
-    texts = {"SKILL.md": ("main", "---\nname: alpha\n---\nRead `../shared.md`.\n")}
-    assert skill_inventory.outside_lines(skill, texts, [shared]) == ["TOTAL outside 0 0 0"]
-    assert skill_inventory.outside_lines(skill, texts, []) == [
-        "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
+    write(
+        skill / "SKILL.md",
+        "---\nname: alpha\n---\nRead `references/shared.md`.\n"
+        '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n',
+    )
+    (skill / "references").mkdir()
+    (skill / "scripts").mkdir()
+    (skill / "references" / "shared.md").symlink_to(outside / "shared.md")
+    (skill / "references" / "secret.md").symlink_to(outside / "secret.md")
+    (skill / "scripts" / "tool.py").symlink_to(outside / "tool.py")
+    return skill, outside
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_file_of_the_skill_that_is_a_link_leading_out_is_passed_over_and_a_path_through_it_is_an_outside_read(
+    tmp_path: Path,
+) -> None:
+    # The walk sized each such link as a file of the skill, read through it: a link out of the folder is now passed
+    # over as a link to a folder always was, and the Markdown path that leads through one is the outside read it is.
+    skill, _ = outside_link_skill(tmp_path)
+    assert [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)] == ["SKILL.md"]
+    code, lines, error = run("inventory", str(skill))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith(("FILE ", "OUTSIDE_", "TOTAL outside"))] == [
+        "FILE main 109 33 SKILL.md",
+        "OUTSIDE_READ SKILL.md:4 9 3 references/shared.md",
         "TOTAL outside 1 9 3",
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_scan_reads_no_file_of_the_skill_through_a_link_leading_out(tmp_path: Path) -> None:
+    # scan read each linked file's text, printing its lines as cues, and the skill's own scripts through their links.
+    skill, outside = outside_link_skill(tmp_path)
+    assert skill_inventory.scanned_files(skill) == [skill / "SKILL.md"]
+    assert skill_inventory.skill_scripts(skill, skill / "scripts") == []
+    code, lines, error = run("scan", str(skill))
+    assert (code, error) == (0, "")
+    assert not [line for line in lines if "secret.md" in line or "For each item" in line]
+    # The command names the script inside the folder, where a link leads out, so it is passed over, never read where
+    # the link leads: main compared the outside script's lines as UNEXPLAINED.
+    assert not [line for line in lines if "OUTSIDE_WORD" in line or (outside / "tool.py").as_posix() in line]
+    assert not skill_inventory.runs_repository_code(skill / "scripts" / "tool.py", skill)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_skill_md_that_is_a_link_leading_out_of_its_folder_is_no_main_file(tmp_path: Path) -> None:
+    write(tmp_path / "outside" / "SKILL.md", "---\nname: alpha\n---\nBody.\n")
+    skill = tmp_path / "skills" / "alpha"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").symlink_to(tmp_path / "outside" / "SKILL.md")
+    assert skill_inventory.main_files(skill) == []
+    code, lines, _ = run("inventory", str(skill))
+    assert (code, "NO_MAIN" in lines) == (0, True)
+    assert run("scan", str(skill))[:2] == (1, [f"FAILED no SKILL.md in {skill.as_posix()}"])
+    assert run("tools", str(skill / "SKILL.md"))[1][-1].startswith(
+        f"FAILED {(skill / 'SKILL.md').as_posix()} cannot be examined: "
+    )
+    home = tmp_path / "home"
+    write(home / ".claude" / "skills" / "alpha" / "README.md", "")
+    (home / ".claude" / "skills" / "alpha" / "SKILL.md").symlink_to(tmp_path / "outside" / "SKILL.md")
+    code, lines, _ = run("locate", "alpha", "--home", str(home), "--repo", str(tmp_path / "skills"))
+    assert (code, lines[1], lines[-1].startswith("STOP skill 'alpha' not found")) == (1, "NOT_FOUND alpha", True)
+
+
+def test_a_scripts_folder_that_is_a_link_leading_out_is_passed_over(tmp_path: Path) -> None:
+    # link_folder makes a junction on Windows, so this runs on every platform. main read the script a command runs
+    # through the link, and listed and read every script beside it there.
+    write(tmp_path / "outside" / "tool.py", 'print("OUTSIDE_WORD here")\n')
+    write(tmp_path / "outside" / "other.py", 'print("BESIDE_WORD here")\n')
+    skill = tmp_path / "skills" / "alpha"
+    write(skill / "SKILL.md", '---\nname: alpha\n---\n```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n')
+    link_folder(tmp_path / "outside", skill / "scripts")
+    assert skill_inventory.skill_scripts(skill, skill / "scripts") == []
+    with mock.patch.object(skill_inventory, "outside_bytes", side_effect=AssertionError("read outside")):
+        assert skill_inventory.status_lines(skill) == []
+        assert skill_inventory.command_scripts(skill, None, skill_inventory.skill_markdown(skill)) == ([], [])
+
+
+def test_a_helper_or_data_file_over_the_readers_bound_is_sized_unread(tmp_path: Path) -> None:
+    # It is measured rather than loaded, so its size comes from its status through the reader, and it counts no text.
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    write(skill / "data.bin", b"0" * 41)
+    write(skill / "scripts" / "big.py", 'MODEL = "haiku"\n' + "#" * 41 + "\n")
+    with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
+        code, lines, error = run("inventory", str(skill))
+        tools_code, tools_lines, _ = run("tools", str(skill / "SKILL.md"))
+    assert (code, error, tools_code) == (0, "", 0)
+    assert [line for line in lines if line.startswith(("FILE data", "FILE helper"))] == [
+        "FILE data 41 0 data.bin",
+        "FILE helper 58 0 scripts/big.py",
+    ]
+    assert not [line for line in tools_lines if line.startswith("PINNED_SUBAGENT")]
+
+
+def test_a_doc_over_the_readers_bound_fails_with_the_readers_reason(tmp_path: Path) -> None:
+    # A Markdown file the skill loads is read whole or not at all, and the reader's own reason names why.
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    doc = write(skill / "references" / "big.md", "x" * 41)
+    reason = "the file is larger than the reader's bound of 40 bytes, so it is not read"
+    with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
+        with pytest.raises(skill_inventory.InputError) as caught:
+            skill_inventory.require_text(doc)
+        assert str(caught.value) == f"cannot read {doc.as_posix()}: {reason}"
+        assert run("inventory", str(skill))[:2] == (1, [f"FAILED cannot read {doc.as_posix()}: {reason}"])
+        assert run("scan", str(skill))[:2] == (1, [f"FAILED cannot read {doc.as_posix()}: {reason}"])
+
+
+def test_own_needs_names_a_path_the_reader_refuses_once(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "alpha"
+    main = write(skill / "SKILL.md", "---\nname: alpha\n---\nBody.\n")
+    refused = tree_reader.TreeRefused(main, "a reason")
+    with (
+        mock.patch.object(tree_reader.TreeReader, "contents", side_effect=refused),
+        pytest.raises(skill_inventory.InputError) as caught,
+    ):
+        skill_inventory.own_needs(skill)
+    assert str(caught.value) == f"{main.as_posix()} cannot be examined: a reason"
+
+
+def test_a_path_the_user_names_through_a_dot_dot_is_resolved_before_the_reader_reads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reader judges a path below its tree as written, so each of these failed with a `..` in the folder's name.
+    repo = tmp_path / "repo"
+    write(repo / "deploy-meta" / "alpha.json", "{}")
+    skill = write(repo / "skills" / "alpha" / "SKILL.md", "---\nname: alpha\n---\nBody.\n").parent
+    write(repo / "skills" / "beta" / "SKILL.md", "---\nname: beta\n---\nBody.\n")
+    plugin = tmp_path / "out" / "demo"
+    write(plugin / skill_menu.PLUGIN_MANIFEST, json.dumps({"name": "demo"}))
+    write(plugin / "skills" / "gamma" / "SKILL.md", "---\nname: gamma\n---\nBody.\n")
+    (tmp_path / "home").mkdir()
+    monkeypatch.chdir(repo / "skills" / "beta")
+    for arguments in (
+        ("inventory", "../alpha"),
+        ("inventory", str(repo / "skills" / "beta" / ".." / "alpha")),
+        ("tools", "../alpha/SKILL.md"),
+        ("scan", "../alpha"),
+    ):
+        code, lines, _ = run(*arguments)
+        assert (code, [line for line in lines if line.startswith("FAILED")]) == (0, []), arguments
+    home = str(tmp_path / "home")
+    code, lines, _ = run("locate", "alpha", "--repo", "../..", "--home", home)
+    assert (code, lines[1:]) == (
+        0,
+        [f"SKILL_FILE {(skill / 'SKILL.md').as_posix()}", f"SKILL_DIR {skill.as_posix()}", "SCOPE source"],
+    )
+    code, lines, _ = run("locate", "demo:gamma ../../../out", "--repo", str(repo), "--home", home)
+    assert (code, lines[-1]) == (0, f"PLUGIN demo {plugin.as_posix()}")
+    # Only the part up to the last `..` is resolved: a skill folder that is a link is read under the name given.
+    real = write(tmp_path / "real" / "delta" / "SKILL.md", "---\nname: delta\n---\nBody.\n").parent
+    link_folder(real, repo / "skills" / "delta")
+    code, lines, _ = run("inventory", "../delta")
+    assert (code, [line for line in lines if line.startswith(("FILE", "FAILED"))]) == (0, ["FILE main 26 7 SKILL.md"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_name_after_the_last_dot_dot_is_judged_by_the_reader_as_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Resolving the whole path followed a SKILL.md that is a link out of its folder, reading the file it leads to.
+    outside = write(tmp_path / "outside" / "gamma-SKILL.md", "---\nname: gamma\n---\nBody.\n")
+    gamma = tmp_path / "skills" / "gamma"
+    gamma.mkdir(parents=True)
+    (gamma / "SKILL.md").symlink_to(outside)
+    (tmp_path / "skills" / "beta").mkdir()
+    monkeypatch.chdir(tmp_path / "skills" / "beta")
+    code, lines, _ = run("tools", "../gamma/SKILL.md")
+    assert code == 1
+    assert lines[-1].startswith(f"FAILED {(gamma.resolve() / 'SKILL.md').as_posix()} cannot be examined: ")
+
+
+def test_scan_fails_on_a_script_of_the_skill_over_the_readers_bound(tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    script = write(skill / "scripts" / "big.py", 'print("DONE")\n' + "#" * 41 + "\n")
+    reason = "the file is larger than the reader's bound of 40 bytes, so it is not read"
+    with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
+        code, lines, _ = run("scan", str(skill))
+    assert (code, lines[-1]) == (1, f"FAILED cannot read {script.resolve().as_posix()}: {reason}")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_script_a_link_leads_out_of_is_passed_over_in_a_skill_reached_through_a_linked_folder(tmp_path: Path) -> None:
+    # The skill is audited through a link to its folder, and its command names the script from the repository root,
+    # which is the resolved checkout: only the folder as it opens holds that spelling, so passed_over judges it there.
+    write(tmp_path / "outside" / "tool.py", 'print("OUTSIDE_WORD here")\n')
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    real = write(
+        repo / "skills" / "alpha" / "SKILL.md",
+        "---\nname: alpha\n---\n```bash\n"
+        "python -B skills/alpha/scripts/tool.py\n"
+        'python -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n',
+    ).parent
+    (real / "scripts").mkdir()
+    (real / "scripts" / "tool.py").symlink_to(tmp_path / "outside" / "tool.py")
+    linked = tmp_path / "linked"
+    link_folder(real, linked)
+    script = repo.resolve() / "skills" / "alpha" / "scripts" / "tool.py"
+    assert skill_inventory.passed_over(linked, script)
+    with mock.patch.object(skill_inventory, "outside_bytes", side_effect=AssertionError("read outside")):
+        code, lines, error = run("scan", str(linked))
+    assert (code, error) == (0, "")
+    assert not [line for line in lines if "OUTSIDE_WORD" in line or "tool.py" in line.split(" ")[1:2]]
+
+
+def test_a_refusal_of_the_reader_fails_naming_the_path_and_why(tmp_path: Path) -> None:
+    # A path the reader does not touch ends the command as the .NET skills name one, never as a stat's failure.
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    refused = tree_reader.TreeRefused(skill / "SKILL.md", "a reason")
+    with mock.patch.object(tree_reader.TreeReader, "contents", side_effect=refused):
+        assert run("inventory", str(skill))[:2] == (
+            1,
+            [f"FAILED {(skill / 'SKILL.md').as_posix()} cannot be examined: a reason"],
+        )
+        assert run("tools", str(skill / "SKILL.md"))[:2] == (
+            1,
+            [f"FAILED {(skill / 'SKILL.md').as_posix()} cannot be examined: a reason"],
+        )
 
 
 def test_inventory_reads_each_link_spelling_commonmark_allows(tmp_path: Path) -> None:
@@ -4504,7 +4726,7 @@ def test_an_outside_read_is_placed_on_the_line_commonmark_breaks(separator: str,
     skill = tmp_path / "skills" / "alpha"
     write(tmp_path / "skills" / "shared.md", "12345678\n")
     texts = {"SKILL.md": ("main", f"---\nname: alpha\n---\nIntro{separator}read `../shared.md`.\n")}
-    assert skill_inventory.outside_lines(skill, texts, []) == [
+    assert skill_inventory.outside_lines(skill, texts) == [
         "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
         "TOTAL outside 1 9 3",
     ]
