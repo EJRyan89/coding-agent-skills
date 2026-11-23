@@ -4325,6 +4325,62 @@ def test_a_path_the_user_names_through_a_dot_dot_is_resolved_before_the_reader_r
     )
     code, lines, _ = run("locate", "demo:gamma ../../../out", "--repo", str(repo), "--home", home)
     assert (code, lines[-1]) == (0, f"PLUGIN demo {plugin.as_posix()}")
+    # Only the part up to the last `..` is resolved: a skill folder that is a link is read under the name given.
+    real = write(tmp_path / "real" / "delta" / "SKILL.md", "---\nname: delta\n---\nBody.\n").parent
+    link_folder(real, repo / "skills" / "delta")
+    code, lines, _ = run("inventory", "../delta")
+    assert (code, [line for line in lines if line.startswith(("FILE", "FAILED"))]) == (0, ["FILE main 26 7 SKILL.md"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_name_after_the_last_dot_dot_is_judged_by_the_reader_as_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Resolving the whole path followed a SKILL.md that is a link out of its folder, reading the file it leads to.
+    outside = write(tmp_path / "outside" / "gamma-SKILL.md", "---\nname: gamma\n---\nBody.\n")
+    gamma = tmp_path / "skills" / "gamma"
+    gamma.mkdir(parents=True)
+    (gamma / "SKILL.md").symlink_to(outside)
+    (tmp_path / "skills" / "beta").mkdir()
+    monkeypatch.chdir(tmp_path / "skills" / "beta")
+    code, lines, _ = run("tools", "../gamma/SKILL.md")
+    assert code == 1
+    assert lines[-1].startswith(f"FAILED {(gamma.resolve() / 'SKILL.md').as_posix()} cannot be examined: ")
+
+
+def test_scan_fails_on_a_script_of_the_skill_over_the_readers_bound(tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    script = write(skill / "scripts" / "big.py", 'print("DONE")\n' + "#" * 41 + "\n")
+    reason = "the file is larger than the reader's bound of 40 bytes, so it is not read"
+    with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
+        code, lines, _ = run("scan", str(skill))
+    assert (code, lines[-1]) == (1, f"FAILED cannot read {script.resolve().as_posix()}: {reason}")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_script_a_link_leads_out_of_is_passed_over_in_a_skill_reached_through_a_linked_folder(tmp_path: Path) -> None:
+    # The skill is audited through a link to its folder, and its command names the script from the repository root,
+    # which is the resolved checkout: only the folder as it opens holds that spelling, so passed_over judges it there.
+    write(tmp_path / "outside" / "tool.py", 'print("OUTSIDE_WORD here")\n')
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    real = write(
+        repo / "skills" / "alpha" / "SKILL.md",
+        "---\nname: alpha\n---\n```bash\n"
+        "python -B skills/alpha/scripts/tool.py\n"
+        'python -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n',
+    ).parent
+    (real / "scripts").mkdir()
+    (real / "scripts" / "tool.py").symlink_to(tmp_path / "outside" / "tool.py")
+    linked = tmp_path / "linked"
+    link_folder(real, linked)
+    script = repo.resolve() / "skills" / "alpha" / "scripts" / "tool.py"
+    assert skill_inventory.passed_over(linked, script)
+    with mock.patch.object(skill_inventory, "outside_bytes", side_effect=AssertionError("read outside")):
+        code, lines, error = run("scan", str(linked))
+    assert (code, error) == (0, "")
+    assert not [line for line in lines if "OUTSIDE_WORD" in line or "tool.py" in line.split(" ")[1:2]]
 
 
 def test_a_refusal_of_the_reader_fails_naming_the_path_and_why(tmp_path: Path) -> None:

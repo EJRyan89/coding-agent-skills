@@ -102,9 +102,10 @@ counts 0, since it is measured rather than loaded. A Markdown file the skill loa
 outside its folder, that is not UTF-8 text, or one outside its folder that cannot be examined, prints
 UNREADABLE <path> <reason> instead of a cost, the path relative to the skill folder, and inventory exits 1 after it.
 tools and scan read the text itself and no Markdown outside the folder: tools fails on a Markdown file in the folder
-that is not UTF-8 text, and scan on one it is given or that a folder it is given stands for. scan fails too on a
-script whose status lines it compares that is not UTF-8 text, not valid Python, or Bash the one Bash grammar refuses,
-whose output it cannot measure.
+that is not UTF-8 text, and scan on one it is given or that a folder it is given stands for. scan fails too on a script
+whose status lines it compares that is not UTF-8 text, not valid Python, Bash the one Bash grammar refuses, or larger
+than the reader's bound, whose output it cannot measure, and tools on a script a command of the skill runs, or one of
+the skill's own whose git commands it reads in a source tree, that is larger than the reader's bound.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -2361,11 +2362,16 @@ def decomposes_a_value(line: str) -> bool:
 
 
 def given_path(path: Path) -> Path:
-    """A path the user names, resolved as the system opens it (`path_containment.resolved_path`) when it holds a `..`,
-    the user's own choice of where to look, before any reader is bound to it: a reader judges each path below its tree
-    as written, so a folder named through a `..` would hold no path it lets through. Any other is kept as named, so the
-    lines it prints name it as the user did."""
-    return resolved_path(path) if ".." in path.parts else path
+    """A path the user names, its part up to its last `..` resolved as the system opens it
+    (`path_containment.resolved_path`), the user's own choice of where to look, and the names after it kept as named,
+    before any reader is bound to it: a reader judges each path below its tree as written, so a folder named through a
+    `..` would hold no path it lets through, and a name after the last `..`, such as a SKILL.md that is a link leading
+    out of its folder, is then judged by the reader as it would be named any other way. A path with no `..` is kept as
+    named, so the lines it prints name it as the user did."""
+    if ".." not in path.parts:
+        return path
+    last = max(index for index, part in enumerate(path.parts) if part == "..")
+    return resolved_path(Path(*path.parts[: last + 1])).joinpath(*path.parts[last + 1 :])
 
 
 def is_given_folder(path: Path) -> bool:
