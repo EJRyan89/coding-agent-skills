@@ -31,6 +31,7 @@ from github_client import CommandResult
 from github_client import Runner as GhRunner
 from test_folder_walk import reached, recording
 from test_private_folder import judged_folder_calls, recording_temporary_folders
+from tree_reader import TreeReader, TreeRefused
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
@@ -1138,6 +1139,66 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(f"{linked} cannot be examined: {linked_out(linked, outside / 'Out.sln', repo.root)}", reason)
         self.assertEqual([], reached(touched, [linked], outside))
 
+    def test_a_solution_entry_outside_the_repository_is_compared_by_its_text_listing_no_folder_outside(self) -> None:
+        # Lib.sln lists Lib\Lib.csproj and a project outside the repository. The choice of the solution compares
+        # each entry with the changed file's project; the outside entry is compared by its text, so the case probe of
+        # the path key never lists the outside folder or anything below it.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        outside = outside_folder(self)
+        entry = os.path.relpath(outside / "E" / "E.csproj", repo.root).replace("/", "\\")
+        repo.write("Lib.sln", solution("Lib\\Lib.csproj", entry))
+        repo.commit("code")
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            lines = self.resolve(services=Services(dotnet=False))
+        self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([], reached(touched, [], outside))
+        self.assertNotIn(str(outside), [name for name, _ in touched])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
+    def test_a_changed_file_or_folder_named_as_a_windows_device_is_resolved_where_the_system_allows_it(self) -> None:
+        # Con.cs and the folder Aux are ordinary names on Linux and macOS. A name git lists or the search finds is
+        # judged by its links alone, so resolve lists the changed files and chooses the solution in Tools/Aux, as on
+        # main; the device-name rule is for a path a file names, such as a solution's entry. The formatter and the
+        # layout checker still refuse such a FILE_LIST entry or --solution, as on main.
+        repo = self.repository
+        repo.write("App/App.csproj", SDK_PROJECT)
+        repo.write("App/Con.cs")
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Aux/Helper.cs")
+        repo.write("Tools/Aux/All.sln", solution("..\\..\\App\\App.csproj", "..\\..\\Lib\\Lib.csproj"))
+        repo.commit("code")
+        lines = self.resolve()
+        self.assertEqual([["App/Con.cs"], ["Lib/Aux/Helper.cs"]], self.values(lines, "FILE"))
+        self.assertEqual([["Tools/Aux/All.sln", "2"]], self.values(lines, "SOLUTION"))
+
+    def test_a_folder_the_search_upward_climbs_that_links_outside_is_refused_unlisted(self) -> None:
+        # Out is a folder link (a junction on Windows) leading outside the repository. resolve takes the invocation
+        # folder resolved and git lists no file through a folder link, so neither search upward meets one there; called
+        # with such a folder, each refuses it naming the link, with nothing outside listed.
+        repo = self.repository
+        outside = outside_folder(self)
+        (outside / "Out.sln").write_text(solution("E\\E.csproj"), encoding="utf-8")
+        link = repo.root / "Out"
+        link_folder(outside, link)
+        self.addCleanup(remove_link, link)
+        reason = (
+            f"{link.as_posix()} is a link to {outside.as_posix()}, outside the examined tree {repo.root.as_posix()}, "
+            "which the reader does not follow"
+        )
+        touched: list[tuple[str, bool]] = []
+        searches: tuple[Callable[[], object], ...] = (
+            lambda: targets.owning_projects(repo.root, link / "E" / "Code.cs"),
+            lambda: targets.nearest_solutions(repo.root, link),
+        )
+        for search in searches:
+            with recording_reaches(touched), self.assertRaises(TreeRefused) as refused:
+                search()
+            self.assertEqual(reason, refused.exception.reason)
+        self.assertEqual([], reached(touched, [link], outside))
+
     def test_a_solution_the_repository_search_finds_that_is_a_link_out_fails_unread(self) -> None:
         # Run from src/Lib, whose project src/App.sln does not list, so the nearest solution owns no changed file and
         # the search of the whole repository runs. The root's Out.sln leads outside, to a solution listing
@@ -1595,7 +1656,7 @@ def test_origin_s_default_branch_keeps_a_name_ending_in_a_character_strip_drops(
 def test_a_web_project_is_named_as_msbuild_compares_its_sdk(expected: bool, sdk: str, tmp_path: Path) -> None:
     project = tmp_path / "App.csproj"
     project.write_text(f'<Project Sdk="{sdk}"></Project>\n', encoding="utf-8")
-    assert expected is targets.is_web_project(project)
+    assert expected is targets.is_web_project(TreeReader(tmp_path), project)
 
 
 LONG_S = "\u017f"

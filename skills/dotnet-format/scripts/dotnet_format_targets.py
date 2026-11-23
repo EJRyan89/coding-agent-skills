@@ -69,30 +69,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import json_reader
 import msbuild_xml
 import private_folder
-from atomic_file import is_read_only
 from console import run_main
 from dotnet_solution import (
     SEARCH_SKIPPED_FOLDERS,
     is_solution,
     lexical_absolute,
+    listed_projects,
+    project_keys,
     project_path,
-    read_listed_projects,
-    read_text,
     refusal,
-    same_path,
-    solution_projects,
 )
 from executable_locator import find_program
-from file_presence import ABSENT, NotAFile, is_present
+from file_presence import ABSENT, NotAFile
 from flat_text import fact_line, flat_text
-from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, followed_inside, walk_files
-from folders_up import folders_up
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, followed_inside
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
-from link_probe import is_link_or_junction
 from ordinal_case import has_suffix, ordinal_fold
-from path_containment import resolved_path
+from path_containment import resolved_path, within
+from tree_reader import TreeReader
 from xml_reader import XmlRefused, read_xml
 
 # An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
@@ -112,6 +108,20 @@ TOOL_FORMATTER = "dotnet-format"
 REMOTE_REFS = "refs/remotes/origin/"
 # Why a solution needs the .NET SDK's dotnet, after its name.
 SDK_SOLUTION = "is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's dotnet format formats"
+
+
+# The reads made before the repository's tree is bound, or of a file that is the skill's own, which
+# ejryan89-skill-core's tree_reader does not judge.
+TREE_READ_ALLOWED = {
+    "read_file_list": (
+        "the FILE_LIST is the skill's own file, which resolve wrote under the private temporary directory and the "
+        "caller names; it is no file of the repository"
+    ),
+    "given_folder": (
+        "a folder the user names, the repository's top git gives, the folder the skill was invoked from, or a "
+        "--repo-root, is resolved before any tree is bound, since it chooses the tree"
+    ),
+}
 
 
 GIT_STATUS_ALLOWED = {
@@ -260,11 +270,12 @@ def link_refusal(root: Path, path: Path) -> str | None:
     """Why `path`, a file under `root` the script would write, is not written, or None: it, or a folder between it
     and `root`, is a link, so the write would land wherever the link points. A path that does not exist yet, such
     as an .editorconfig the script adds, is judged by the folders that do."""
+    reader = TreeReader(root)
     current = root
     for part in path.relative_to(root).parts:
         current = current / part
         try:
-            if is_link_or_junction(current):
+            if reader.is_link(current):
                 where = "the file" if current == path else f"its folder {current.relative_to(root).as_posix()}"
                 return f"{where} is a symbolic link or junction, which the script does not write through"
         except FileNotFoundError:
@@ -278,7 +289,7 @@ def write_refusal(root: Path, path: Path) -> str | None:
     """Why `path`, a file under `root` that a fix would rewrite, is not written, or None: `link_refusal`'s reason, or
     the file is read-only, which `atomic_file` refuses to replace."""
     refused = link_refusal(root, path)
-    if refused is None and is_read_only(path):
+    if refused is None and TreeReader(root).read_only(path):
         refused = "the file is read-only; make it writable to fix it"
     return refused
 
@@ -310,7 +321,14 @@ def repository_root(services: Services, cwd: Path) -> Path:
         raise Failed(flat_text(str(exc))) from exc
     if top is None:
         raise Failed(f"{cwd} is not inside a Git repository")
-    return resolved_path(top)
+    return given_folder(top)
+
+
+def given_folder(path: Path) -> Path:
+    """A folder the user names, or git names for them, made absolute with every link followed: the repository's top,
+    the folder the skill was invoked from, or a --repo-root. It chooses the tree every later read stays inside, so it
+    is resolved before any tree is bound."""
+    return resolved_path(path)
 
 
 def ref_exists(services: Services, root: Path, ref: str) -> bool:
@@ -414,7 +432,7 @@ def still_there(root: Path, name: str) -> bool:
     if refused:
         raise Failed(f"the changed file {name} cannot be examined: {refused}")
     try:
-        return is_present(root / name)
+        return TreeReader(root).present(root / name)
     except OSError as error:
         raise Failed(f"the changed file {name} cannot be examined: {error}") from None
 
@@ -424,9 +442,12 @@ def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> lis
     anything else by such a name is none, and so is every file of a folder that is not there. Raises Failed for a
     folder it cannot list, or such an entry it cannot examine, which could be one; it lists with iterdir, which raises
     there, where glob matches nothing. Such an entry that is a link leading outside `root` (`linked_out_refusal`) is
-    one it cannot examine, and is never stat, so a project or solution behind it is never read."""
+    one it cannot examine, and is never stat, so a project or solution behind it is never read. Its callers take
+    `folder` from `TreeReader.climb`, which judged the path the climb started from, and every folder above that path
+    inside `root` passes the same judgement."""
+    reader = TreeReader(root)
     try:
-        entries = sorted(folder.iterdir())
+        entries = reader.listing(folder)
     except ABSENT:
         return []
     except OSError as error:
@@ -439,7 +460,7 @@ def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> lis
         if refused:
             raise Failed(f"{path} cannot be examined: {refused}")
         try:
-            if is_present(path):
+            if reader.present(path):
                 found.append(path)
         except NotAFile:
             continue
@@ -457,22 +478,24 @@ def owning_projects(root: Path, file: Path) -> list[Path]:
     """The .csproj files in the nearest directory at or above the file, up to and including the root; a folder or
     project file it cannot examine, a project file that is a link leading outside the root included, fails, since
     passing it by could miss the ASP.NET project that owns the file, and reading it would leave the repository."""
-    for folder in folders_up(file.parent, root):
+    for folder in TreeReader(root).climb(file.parent):
         projects = listed_files(root, folder, is_project_name)
         if projects:
             return projects
     return []
 
 
-def is_web_project(project: Path) -> bool:
-    return bool(WEB_PROJECT.search(read_text(project)))
+def is_web_project(reader: TreeReader, project: Path) -> bool:
+    """Whether a project file is an ASP.NET project's, read through `reader`."""
+    return bool(WEB_PROJECT.search(reader.text(project)))
 
 
-def is_sdk_style(project: Path) -> bool:
+def is_sdk_style(reader: TreeReader, project: Path) -> bool:
     """Whether a project file is SDK-style, as ejryan89-skill-core's `msbuild_xml` reads one: its Project element names
-    an Sdk, or it holds an Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
+    an Sdk, or it holds an Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one, and
+    neither is one `reader` refuses."""
     try:
-        return msbuild_xml.is_sdk_style(read_xml(read_text(project)))
+        return msbuild_xml.is_sdk_style(read_xml(reader.text(project)))
     except (OSError, XmlRefused):
         return False
 
@@ -487,8 +510,9 @@ def formatter_for(root: Path, solution: Path) -> str:
     if has_suffix(solution.name, ".slnx"):
         return SDK_FORMATTER
     root, solution = lexical_absolute(root), lexical_absolute(solution)
+    reader = TreeReader(root)
     try:
-        listed = read_listed_projects(solution)
+        listed = listed_projects(reader.text(solution), solution)
     except (OSError, XmlRefused):
         return TOOL_FORMATTER
     projects = [
@@ -497,7 +521,7 @@ def formatter_for(root: Path, solution: Path) -> str:
         if has_suffix((project := project_path(solution.parent, entry)).name, FORMATTED_PROJECT_SUFFIXES)
     ]
     if projects and all(
-        refusal(project, root) is None and linked_out_refusal(root, project) is None and is_sdk_style(project)
+        refusal(project, root) is None and linked_out_refusal(root, project) is None and is_sdk_style(reader, project)
         for project in projects
     ):
         return SDK_FORMATTER
@@ -506,7 +530,8 @@ def formatter_for(root: Path, solution: Path) -> str:
 
 def web_project(root: Path, name: str) -> Path | None:
     """The ASP.NET project owning a file, of those `owning_projects` gives, or None."""
-    return next((project for project in owning_projects(root, root / name) if is_web_project(project)), None)
+    reader = TreeReader(root)
+    return next((project for project in owning_projects(root, root / name) if is_web_project(reader, project)), None)
 
 
 def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, Path]:
@@ -520,8 +545,7 @@ def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, P
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
     """Solutions in the nearest directory from cwd up to the root, or none; one that is a link leading outside the
     root fails, as `listed_files` says."""
-    inside = any(same_path(folder) == same_path(root) for folder in folders_up(cwd))
-    for folder in folders_up(cwd if inside else root, root):
+    for folder in TreeReader(root).climb(cwd if within(cwd, root) else root):
         found = listed_files(root, folder, lambda name: is_solution(Path(name)))
         if found:
             return found
@@ -538,7 +562,7 @@ def find_solutions(root: Path) -> list[Path]:
     walk is given the root as its tree, so it follows no link entry out of the repository, not even to learn what it
     is, and a solution that is a link leading out (`linked_out_refusal`) is one it cannot examine, never read.
     """
-    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS, tree=root)
+    walk = TreeReader(root).search(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS)
     for entry in walk.not_entered:
         if entry.kind not in (LINKED, LOOP, NESTED_CHECKOUT):
             raise Failed(f"{entry.path}: {entry.reason}")
@@ -549,21 +573,24 @@ def find_solutions(root: Path) -> list[Path]:
     return walk.files
 
 
-def owns(solution: Path, owned: list[Path]) -> bool:
+def owns(root: Path, solution: Path, owned: list[Path]) -> bool:
     """Whether the solution lists a project that owns the file; a solution that cannot be read fails, since taking
-    it for one that lists no project would name the wrong cause."""
+    it for one that lists no project would name the wrong cause. Each entry is keyed by ejryan89-skill-core's
+    `dotnet_solution.project_keys`, so an entry outside `root`, or that a link leads out of it, is compared by its
+    text, and no folder outside the root is listed to compare it."""
+    reader = TreeReader(root)
     try:
-        projects = solution_projects(solution)
+        projects = project_keys(reader.text(solution), solution, root)
     except XmlRefused as error:
         raise Failed(f"{solution} cannot be read: {error}") from None
-    return any(same_path(project) in projects for project in owned)
+    return any(reader.key(project) in projects for project in owned)
 
 
 def best_solution(root: Path, candidates: list[Path], owners: list[list[Path]]) -> tuple[Path, int]:
     """The solution owning the most changed files; ties go to the shallowest, then to a .sln over a .slnx (the
     dotnet-format global tool opens only a .sln), then by name."""
     ranked = sorted(
-        ((sum(1 for owned in owners if owns(solution, owned)), solution) for solution in candidates),
+        ((sum(1 for owned in owners if owns(root, solution, owned)), solution) for solution in candidates),
         key=lambda item: (
             -item[0],
             len(item[1].relative_to(root).parts),
@@ -607,11 +634,11 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     owners = [owning_projects(root, root / name) for name in kept]
     for name in kept:
         emit(fact_line("FILE", name))
-    solution, score = choose_solution(root, resolved_path(cwd), owners)
+    solution, score = choose_solution(root, given_folder(cwd), owners)
     formatter = formatter_for(root, solution)
     skipped = formatter_skips(root, formatter, kept)
     for name, owned in zip(kept, owners, strict=True):
-        if not owns(solution, owned):
+        if not owns(root, solution, owned):
             emit(fact_line("OUTSIDE_SOLUTION", name))
         elif name in skipped:
             emit(fact_line("SKIPPED_ASPNET", name, relative(skipped[name], root)))
