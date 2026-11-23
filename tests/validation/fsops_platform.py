@@ -1214,7 +1214,7 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # only by the module that defines it; a TREE_JUDGES function called with a tree other than the one the skill examines;
 # a function TREE_READ_ALLOWED sanctions, called from another scope on a path of the tree; and a core function defined
 # inside a module-level if or try, which core_reads never derives.
-TREE_READ_SKILLS = ("skills/dotnet-format/scripts", "skills/dotnet-dependencies/scripts")
+TREE_READ_SKILLS = ("skills/dotnet-format/scripts", "skills/dotnet-dependencies/scripts", "skills/audit-skill/scripts")
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.
 LOCAL_NAME = "<local>"
