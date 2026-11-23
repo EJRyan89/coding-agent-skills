@@ -1361,6 +1361,54 @@ class PullRequestTests(PipelineTestCase):
         self.assertEqual(LIMITS, (renamed / "base" / "docs" / "design" / "limits.md").read_bytes())
         self.assertIn("-Ten exports a day.\n+Twenty exports a day.\n", self.fixture_diff(renamed))
 
+    def test_no_changed_document_is_left_out_as_another_documents_apple_double_sidecar(self) -> None:
+        # A fixture walk leaves out a `._<name>` file that opens with the AppleDouble header beside `<name>`. A pull
+        # request that changes both could hide the first only if review-document wrote it into the fixture of the
+        # second. It never does: the header opens with a NUL byte, so the document is refused as not text and named
+        # in a SKIPPED line, and each document it reviews has a fixture of its own that holds no other document.
+        header = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+        self.assertTrue(review_runtime.is_binary(header), "every AppleDouble header reads as binary")
+        sidecar_shaped = header + b"\n# Hidden\n\nRetry forever.\n"
+        stub = StubGitHub(
+            [
+                [
+                    changed("docs/doc.md", "added"),
+                    changed("docs/._doc.md", "added"),
+                    changed("docs/notes.md", "added"),
+                    changed("docs/._notes.md", "added"),
+                ]
+            ],
+            {
+                MERGE_BASE: {},
+                HEAD: {
+                    "docs/doc.md": QUEUE_PLAN,
+                    "docs/._doc.md": sidecar_shaped,
+                    "docs/notes.md": b"# Notes\n\nKeep one queue.\n",
+                    "docs/._notes.md": b"# Notes beside\n\nRetry forever.\n",
+                },
+            },
+        )
+        lines = self.build_pull(stub)
+        added = "none the document is added in the pull request"
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/doc.md", added),
+                *self.block(2, "docs/notes.md", added),
+                *self.block(3, "docs/._notes.md", added),
+                "SKIPPED docs/._doc.md is not a text file, a Word document, or a PDF",
+            ],
+            lines,
+        )
+        fixtures = [self.output / str(index) / "fixture" for index in (1, 2, 3)]
+        for fixture, document in zip(fixtures, ("doc.md", "notes.md", "._notes.md"), strict=True):
+            self.assertEqual([document], [path.name for path in (fixture / "head" / "docs").iterdir()], fixture)
+        runs, _ = self.prepare_runs(*fixtures)
+        diffs = [(run / "work" / "design-review.diff").read_text(encoding="utf-8") for run in runs]
+        for diff, document in zip(diffs, ("doc.md", "notes.md", "._notes.md"), strict=True):
+            self.assertIn(f"+++ b/docs/{document}\n", diff, document)
+        self.assertNotIn("._notes.md", diffs[1], "the `._` document is never in its neighbour's review")
+
     def test_the_last_line_names_every_fixture_in_the_arguments_prepare_takes_as_printed(self) -> None:
         code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=self.stub().client())
         self.assertEqual(0, code, lines)
