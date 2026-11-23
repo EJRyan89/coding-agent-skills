@@ -151,8 +151,8 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None,
     )
 
 
-# The notes of the job each pool thread runs: _run_job starts the list, and run_process, which a job calls on the
-# thread that runs it, adds each note its passing program wrote.
+# The notes of the job each pool thread runs: _attempt starts the list afresh for each attempt, run_process, which a job
+# calls on the thread that runs it, adds each note its passing program wrote, and _run_job ends it.
 _JOB_NOTES = threading.local()
 
 
@@ -243,7 +243,9 @@ TERMINATION_RETRIES = 1
 
 
 def _attempt(job: Job) -> Failure | Terminated | None:
-    """Run a job once: None when it passes, the ending when its program was ended before any output, else a failure."""
+    """Run a job once: None when it passes, the ending when its program was ended before any output, else a failure.
+    The notes this thread keeps start empty, so only this attempt's programs add to them."""
+    _JOB_NOTES.kept = []
     try:
         job.run()
     except Terminated as exc:
@@ -295,10 +297,10 @@ def _attempts(job: Job, started: float) -> tuple[Failure | Terminated | None, li
 
 
 def _run_job(job: Job, verbose: bool) -> tuple[Failure | None, Retry | None, list[str]]:
-    """Run a job as _attempts does and return its failure, its retry, and, when it passes, the notes its programs kept.
-    A passing job with notes prints its line, as a verbose run prints every job's, and a NOTE line for each note."""
+    """Run a job as _attempts does and return its failure, its retry, and, when it passes, the notes its last attempt's
+    programs kept. A passing job with notes prints its line, as a verbose run prints every job's, and a NOTE line for
+    each note."""
     started = time.perf_counter()
-    _JOB_NOTES.kept = []
     try:
         outcome, endings = _attempts(job, started)
         notes: list[str] = _JOB_NOTES.kept

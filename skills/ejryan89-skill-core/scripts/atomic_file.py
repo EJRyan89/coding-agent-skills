@@ -204,13 +204,14 @@ def _link_new(copy: Path, target: Path, *, reserve: bool) -> bool:
 
 def _replace_reservation(copy: Path, target: Path) -> None:
     """Reserve `target` empty with an exclusive create, which raises FileExistsError where any entry is, then replace
-    the reservation with `copy`. Whatever is raised once the reservation is made, _remove_reservation removes what is
-    at `target` and the failure is raised as it was. An interrupt that lands as os.open returns, or as _reserve hands
-    back the checked reservation, is raised outside every clean-up, so it leaves the reservation, as a kill does."""
+    the reservation with `copy` as _replace_waiting does, since a reader may hold the empty reservation open. Whatever
+    is raised once the reservation is made, _remove_reservation removes what is at `target` and the failure is raised
+    as it was. An interrupt that lands as os.open returns, or as _reserve hands back the checked reservation, is raised
+    outside every clean-up, so it leaves the reservation, as a kill does."""
     descriptor = _reserve(target)
     try:
         os.close(descriptor)
-        copy.replace(target)
+        _replace_waiting(copy, target)
     except BaseException as failure:
         _remove_reservation(target, failure)
         raise

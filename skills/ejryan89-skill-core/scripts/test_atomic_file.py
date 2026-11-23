@@ -711,6 +711,42 @@ class ReservationTests(unittest.TestCase):
                     self.assertEqual(0o644, stat.S_IMODE(path.stat().st_mode))
                 self.assertEqual(["report.md"], names_in(str(path.parent)))
 
+    def test_a_reservation_whose_replace_is_refused_for_a_while_is_replaced_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals: a reader may hold the empty reservation open, which Windows
+        # refuses to replace as it refuses any target a reader holds, so the reservation's replace waits as
+        # replace_bytes' does, and one refused throughout is raised as it was with nothing left at the target.
+        real_replace = Path.replace
+        for refusals in (2, None):
+            tries: list[Path] = []
+            waits: list[float] = []
+
+            def replace(self: Path, target: Any, refusals: int | None = refusals, tries: list[Path] = tries) -> Path:
+                tries.append(self)
+                if refusals is None or len(tries) <= refusals:
+                    raise PermissionError(errno.EACCES, "the file is being used by another process", str(target))
+                return real_replace(self, target)
+
+            with self.subTest(refusals=refusals), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with (
+                    mock.patch.object(os, "link", side_effect=refused_link(errno.EPERM)),
+                    mock.patch.object(Path, "replace", replace),
+                    mock.patch.object(time, "sleep", waits.append),
+                ):
+                    if refusals is None:
+                        with self.assertRaises(PermissionError) as raised:
+                            create_bytes(path, REPORT, allow_empty_reservation=True)
+                        self.assertIs(PermissionError, type(raised.exception), "the refusal is raised as it was")
+                    else:
+                        create_bytes(path, REPORT, allow_empty_reservation=True)
+                if refusals is None:
+                    self.assertEqual(([0.01, 0.02, 0.04, 0.08, 0.16], 6), (waits, len(tries)))
+                    self.assertEqual([], names_in(temporary), "neither the reservation nor the copy is left")
+                else:
+                    self.assertEqual(([0.01, 0.02], 3), (waits, len(tries)))
+                    self.assertEqual(REPORT, path.read_bytes())
+                    self.assertEqual(["report.md"], names_in(temporary))
+
     def test_any_other_refusal_of_the_link_is_raised_without_a_reservation(self) -> None:
         for code in (errno.EACCES, errno.ENOSPC, errno.EMLINK):
             with self.subTest(errno=errno.errorcode[code]), tempfile.TemporaryDirectory() as temporary:

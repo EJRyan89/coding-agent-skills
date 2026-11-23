@@ -465,6 +465,37 @@ class NoteFixtures(unittest.TestCase):
         self.assertFalse([line for line in lines if "quiet suite" in line], "a quiet job prints nothing unless verbose")
         self.assertFalse([line for line in lines if line.startswith("NOTE failing suite")])
 
+    def test_a_retried_job_keeps_only_its_last_attempt_s_notes_and_prints_each_once(self) -> None:
+        # The first attempt passes one program with a note, then a program is ended before any output, so the job
+        # starts once more and passes both: the note is its retry's, once.
+        noting = [sys.executable, "-c", f"print({MARK + 'kept once'!r})"]
+        attempts: list[int] = []
+
+        def run() -> None:
+            attempts.append(1)
+            run_process(noting)
+            run_process(ENDED if len(attempts) == 1 else PASSES)
+
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([Job("retried suite", "retried suite", 1, run)], verbose=False, workers=1)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual(([], ["passed"]), (result.failures, [retry.result for retry in result.retries]))
+        self.assertEqual({"retried suite": ["kept once"]}, result.notes)
+        self.assertEqual(1, printed.getvalue().count("NOTE retried suite: kept once\n"), printed.getvalue())
+
+    def test_a_job_that_fails_after_a_program_kept_a_note_keeps_none(self) -> None:
+        noting = [sys.executable, "-c", f"print({MARK + 'from a program that passed'!r})"]
+
+        def run() -> None:
+            run_process(noting)
+            run_process(FAILS_AFTER_OUTPUT)
+
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([Job("failing suite", "failing suite", 1, run)], verbose=False, workers=1)
+        self.assertEqual(["failing suite"], [failure.job.label for failure in result.failures])
+        self.assertEqual({}, result.notes, "a failed job's report is its own; it keeps no notes")
+        self.assertNotIn("NOTE failing suite", printed.getvalue())
+
     def test_a_job_s_notes_stay_its_own_and_none_outlive_it(self) -> None:
         jobs = [
             job_running(f"suite {index}", [sys.executable, "-c", f"print({MARK + str(index)!r})"])[0]
