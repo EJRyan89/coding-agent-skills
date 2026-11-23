@@ -1995,6 +1995,8 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         "    return tree_reader.file_presence.is_present(path)\n"
     )
     judge = "from folder_walk import followed_inside\ndef read(path, other):\n    return followed_inside(path, other)\n"
+    # A reader in a sibling skill's scripts the module loads through sibling_scripts, which core_reads does not derive.
+    sibling = "from review_io import read_json\ndef read(path):\n    return read_json(path)\n"
     sanctioned = (
         "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
         "def given(path):\n    return path.resolve()\n"
@@ -2008,6 +2010,7 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         f"{SCRIPTS}/group.py": group,
         f"{SCRIPTS}/through.py": through,
         f"{SCRIPTS}/judge.py": judge,
+        f"{SCRIPTS}/sibling.py": sibling,
         f"{SCRIPTS}/sanctioned.py": sanctioned,
     }
     assert tree_read_findings(files) == []
@@ -2021,17 +2024,24 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}, filled=False) == expected
 
 
-def test_tree_read_policy_reads_audit_skills_scripts() -> None:
-    # audit-skill's inventory reads the skill folder it examines through the reader, so a direct read in its scripts
-    # fails, and one stated in TREE_READ_ALLOWED passes; its suite is not read.
-    folder = "skills/audit-skill/scripts"
+@pytest.mark.parametrize(
+    ("folder", "module"),
+    [
+        pytest.param("skills/audit-skill/scripts", "skill_inventory.py", id="audit-skill"),
+        pytest.param("skills/review-document/scripts", "review_document.py", id="review-document"),
+    ],
+)
+def test_tree_read_policy_reads_audit_skills_and_review_documents_scripts(folder: str, module: str) -> None:
+    # audit-skill's inventory reads the skill folder it examines through the reader, and review-document the document,
+    # the checkout around it, and the working directory resolve searches, so a direct read in either's scripts fails,
+    # and one stated in TREE_READ_ALLOWED passes; a suite is not read.
     direct = "def size(path):\n    return path.read_bytes()\n"
     allowed = f"TREE_READ_ALLOWED = {{'size': 'a place outside the examined folder'}}\n{direct}"
     placeholder = {f"{SCRIPTS}/placeholder.py": "VALUE = 1\n"}
-    assert tree_read_findings({**placeholder, f"{folder}/skill_inventory.py": direct}) == [
-        f"{folder}/skill_inventory.py:2 reads a path with Path.read_bytes; {TREE_READ_ADVICE}"
+    assert tree_read_findings({**placeholder, f"{folder}/{module}": direct}) == [
+        f"{folder}/{module}:2 reads a path with Path.read_bytes; {TREE_READ_ADVICE}"
     ]
-    files = {**placeholder, f"{folder}/skill_inventory.py": allowed, f"{folder}/test_x.py": direct}
+    files = {**placeholder, f"{folder}/{module}": allowed, f"{folder}/test_x.py": direct}
     assert tree_read_findings(files) == []
 
 
