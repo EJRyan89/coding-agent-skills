@@ -120,10 +120,17 @@ class TextRefusalTests(TreeReaderCase):
     def test_a_name_windows_reserves_as_a_device_is_judged_by_its_links_alone(self) -> None:
         # A listing or git may give `Con.cs` or a folder `Aux` on Linux and macOS; the reader judges such a name by
         # containment and links only, and a caller judging a path a file names asks dotnet_solution.refusal first.
-        for path in (self.root / "App" / "Con.cs", self.root / "Aux" / "Helper.cs", self.root / "NUL"):
+        # On Windows too, `Con.cs` and a folder `Aux` on the way are names its path parsing keeps, so the reader judges
+        # them by their links alone there as well, as CI's Windows legs show.
+        for path in (self.root / "App" / "Con.cs", self.root / "Aux" / "Helper.cs"):
             with self.subTest(path=path):
                 self.assertIsNone(self.reader.refusal(path))
                 self.assertIsNotNone(refusal(path, self.root))
+        # A bare `NUL` is the device itself on Windows, whose path parsing turns it into `\\.\NUL`, so the reader
+        # refuses it there unopened; elsewhere it is an ordinary name, judged by its links alone.
+        nul = self.root / "NUL"
+        expected = "the path names a device, which the reader does not open" if sys.platform == "win32" else None
+        self.assertEqual(expected, self.reader.refusal(nul))
 
 
 @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
