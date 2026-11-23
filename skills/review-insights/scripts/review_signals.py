@@ -27,7 +27,7 @@ from typing import TypedDict, cast
 from flat_text import flat_text
 from review_guidance import GuidanceOverlap, UnsuppliedReference
 from review_records import Finding, FindingReference, LedgerKey, ReviewRecord, finding_reference, source_parts
-from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline
+from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline, review_key
 from review_vocabularies import SEVERITIES, SEVERITY_RANK, Severity
 from typed_fields import FieldReader
 
@@ -293,12 +293,8 @@ def input_lines(signals: Signals) -> list[Mapping[str, object]]:
     return [{"kind": kind, **item} for name, (_, kind) in SIGNALS.items() for item in lists[name]]
 
 
-def _review_key(record: ReviewRecord) -> tuple[str, int, int]:
-    return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
-
-
 def _order(member: Member) -> FindingKey:
-    return *_review_key(member[0]), member[1]["id"]
+    return *review_key(member[0]), member[1]["id"]
 
 
 def _drift(basis: str, members: list[Member]) -> SeverityDrift:
@@ -332,7 +328,7 @@ def severity_drift(
     occurrences: dict[FindingKey, list[Member]] = {}
     for record in records:
         for finding in record["findings"]:
-            key: FindingKey = (*_review_key(record), finding["id"])
+            key: FindingKey = (*review_key(record), finding["id"])
             occurrences.setdefault(entries.get(key, key), []).append((record, finding))
     found = [
         _drift(basis, members)
@@ -369,7 +365,7 @@ def _held(record: ReviewRecord, by_version: Mapping[int, ReviewRecord]) -> list[
         source = by_version.get(latest["version"])
         findings = source["findings"] if source is not None else []
         finding = next((item for item in findings if item["id"] == latest["id"]), None)
-        repository, number, _ = _review_key(record)
+        repository, number, _ = review_key(record)
         held.append(
             _Held(
                 (entry["version"], entry["id"]),
@@ -424,7 +420,7 @@ def _flip(records: list[ReviewRecord], before: ReviewRecord, after: ReviewRecord
     pairs, gone, added = _matched(_held(before, by_version), _held(after, by_version))
     differences = [_difference(a, b) for a, b in pairs if a.severity != b.severity]
     differences += [_difference(item, None) for item in gone] + [_difference(None, item) for item in added]
-    repository, number, _ = _review_key(before)
+    repository, number, _ = review_key(before)
     flip: VerdictFlip = {
         "repository": repository,
         "pull_number": number,
@@ -448,7 +444,7 @@ def verdict_flips(records: Iterable[ReviewRecord]) -> list[VerdictFlip]:
     first (see flip_rank)."""
     pulls: dict[tuple[str, int], list[ReviewRecord]] = {}
     for record in records:
-        pulls.setdefault(_review_key(record)[:2], []).append(record)
+        pulls.setdefault(review_key(record)[:2], []).append(record)
     found: list[tuple[VerdictFlip, int]] = []
     for _, history in sorted(pulls.items()):
         history.sort(key=lambda record: record["review"]["version"])
@@ -523,7 +519,7 @@ def reviewer_disagreements(records: Iterable[ReviewRecord]) -> list[ReviewerDisa
     widest spread of severities comes first, then the place with the most findings, then by place."""
     heads: dict[tuple[str, int, str], list[Member]] = {}
     for record in records:
-        repository, number, _ = _review_key(record)
+        repository, number, _ = review_key(record)
         key = (repository, number, record["pull_request"]["head_sha"])
         heads.setdefault(key, []).extend((record, finding) for finding in record["findings"])
     found: list[tuple[tuple[int, int, str, int, str, str, int], ReviewerDisagreement]] = []

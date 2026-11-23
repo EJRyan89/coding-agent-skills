@@ -105,7 +105,7 @@ from review_records import (
     valid_analyzer,
     validate_record_pair,
 )
-from review_synthesis import FindingKey, Pair
+from review_synthesis import FindingKey, Pair, review_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError
 
@@ -141,8 +141,6 @@ EVIDENCE_RENDERED = 10
 BOUND_OPTIONS = {"--category": 1, "--synthesized": 1, "--note": 1, "--analyzer": 3}
 # Joins the analyzer's three bound values; no command-line argument can hold it.
 BOUND_SEPARATOR = "\0"
-
-ReviewKey = tuple[str, int, int]
 
 
 class InsightError(ValueError):
@@ -185,7 +183,7 @@ class Services:
         "--git-common-dir", directory=directory
     )
     guidance_reader: review_guidance.Reader = field(default_factory=review_guidance.Reader)
-    report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
+    report_lock: Callable[[Path], AbstractContextManager[object]] = lambda json_path: ResourceLock(
         json_path.parent / ".locks" / "insights.lock", place=REPORT_LOCK_PLACE
     )
 
@@ -280,12 +278,8 @@ def collect_records(
     return sorted(records, key=lambda item: str(item[0]).casefold())
 
 
-def _review_key(record: ReviewRecord) -> ReviewKey:
-    return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
-
-
 def _finding_key(record: ReviewRecord, finding: Finding) -> FindingKey:
-    return (*_review_key(record), finding["id"])
+    return (*review_key(record), finding["id"])
 
 
 def flags_by_entry(flags: list[dict[str, Any]], ledgers: Ledgers) -> dict[FindingKey, list[str]]:
@@ -449,7 +443,7 @@ def counted_pairs(records: list[tuple[Path, ReviewRecord]], ledgers: Ledgers) ->
     review in range that carries one."""
     counted: set[FindingKey] = set()
     pairs: list[Pair] = []
-    for _, record in sorted(records, key=lambda item: _review_key(item[1])):
+    for _, record in sorted(records, key=lambda item: review_key(item[1])):
         for finding in record["findings"]:
             entry = ledgers.entry(_finding_key(record, finding))
             if entry not in counted:
@@ -1097,7 +1091,7 @@ def synthesize(
         return added
 
 
-def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[Any]:
+def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[object]:
     """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
     instead of creating directories there. A report a stat cannot examine, or one that is not a file, is named so,
     never as missing."""

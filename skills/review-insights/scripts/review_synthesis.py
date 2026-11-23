@@ -65,8 +65,9 @@ from review_records import (
 )
 from review_vocabularies import SEVERITIES, SEVERITY_RANK
 
-# A finding by the repository, lowercase, the pull request, the review version, and its ID there; and an analyzed
-# finding with its record and the key of its ledger entry, the first review to raise it.
+# A review by the repository, lowercase, the pull request, and the review version; a finding by those and its ID
+# there; and an analyzed finding with its record and the key of its ledger entry, the first review to raise it.
+ReviewKey = tuple[str, int, int]
 FindingKey = tuple[str, int, int, str]
 Pair = tuple[ReviewRecord, Finding, FindingKey]
 
@@ -186,6 +187,10 @@ class SynthesisError(ValueError):
     def __init__(self, problems: list[str]) -> None:
         super().__init__(f"{len(problems)} problem(s) in the synthesis result: {problems[0]}")
         self.problems = problems
+
+
+def review_key(record: ReviewRecord) -> ReviewKey:
+    return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
 
 
 def finding_ref(record: ReviewRecord, finding: Finding) -> str:
@@ -354,7 +359,9 @@ def period_dates(name: str) -> tuple[date, date] | None:
     return (first, last) if first <= last else None
 
 
-def previous_period(set_root: Path, start: date, load: Any) -> tuple[Path, dict[str, Any]] | None:
+def previous_period(
+    set_root: Path, start: date, load: Callable[[Path], dict[str, Any]]
+) -> tuple[Path, dict[str, Any]] | None:
     """The report for the period that ends within a week before this one starts, the latest such. A folder whose name
     is no period is passed over, as one that holds no report is. A folder or report it cannot stat is the OSError
     file_presence raises, never a period with no report."""

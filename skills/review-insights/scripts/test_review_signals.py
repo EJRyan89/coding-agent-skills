@@ -107,8 +107,8 @@ class SignalFixture(InsightFixture):
         )
         commit_record(self.archive, "owner/repo", number, built, expected_latest_version=version - 1 or None)
 
-    def signal_lines(self) -> tuple[Path, list[str]]:
-        code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+    def signal_lines(self, start: str = "2026-01-01") -> tuple[Path, list[str]]:
+        code, out, err = self.run_main("report", "--start", start, "--end", "2026-01-31")
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         return Path(lines[0].removeprefix("REPORT ")), [line for line in lines if line.startswith(SIGNAL_PREFIXES)]
@@ -206,6 +206,21 @@ class VerdictFlipTests(SignalFixture):
                 "FLIP_DIFFERENCE V1 src/a.cs:3 MUST_FIX -> absent owner/repo#7 v1 F001",
             ],
             lines,
+        )
+
+    def test_a_held_finding_whose_raising_review_is_before_the_range_differs_with_no_location(self) -> None:
+        # The first review raised the finding and falls before the range, so the second holds the ledger entry with
+        # no finding to place it by: it is matched by its entry alone and printed with no location.
+        self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")], head=OTHER_HEAD)
+        self.review(7, 2, [], mode="re-review", dispositions=(("v1:F001", "still_present"),))
+        self.review(7, 3, [], mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        _, lines = self.signal_lines(start="2026-01-12")
+        self.assertEqual(
+            [
+                f"VERDICT_FLIP V1 owner/repo#7 head={HEAD[:12]} v2=CHANGES_REQUESTED v3=APPROVED",
+                "FLIP_DIFFERENCE V1 (no location) MUST_FIX -> absent owner/repo#7 v1 F001",
+            ],
+            [line for line in lines if line.startswith(("VERDICT_FLIP", "FLIP_DIFFERENCE"))],
         )
 
     def test_a_verdict_that_changes_with_the_code_is_no_flip(self) -> None:
