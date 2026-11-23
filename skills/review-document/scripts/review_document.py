@@ -90,6 +90,20 @@ The walk is bounded: it lists at most 10000 folders (RESOLVE_FOLDER_LIMIT), the 
 started in a large folder, such as a home folder, ends. Past the bound it stops and prints UNSEARCHED for the next
 folder it would have listed, which, with every folder after it in the walk's order, was not searched, and a single match
 found before it is printed as a CANDIDATE.
+
+Every read of a path goes through ejryan89-skill-core's `tree_reader`, bound to the tree it reads, which judges the path
+by its text and its links before touching it: the document build names, once its path is resolved, through a reader
+bound to the folder holding it, a document over the size a review reads refused by its status, unread; the checkout
+around it through one bound to that checkout, so a tracked spelling of its name whose link leads out of the checkout is
+never followed to compare it; a path in a fixture through one bound to that fixture's tree, so one that a link on its
+way leads out of is refused, `<path> is not a path a fixture can hold: <reason>` with the reader's reason, before
+anything is written; and the working directory resolve searches through one bound to it, so a linked folder or file
+leading out of it is never followed, not even to learn what it is. Deciding whether a path lies in its tree asks the
+tree's own folders and the folders above it how they compare names, which lists them, as the reader's limits state; the
+walk's bound counts none of those listings. The reads outside those trees by design are each stated in
+TREE_READ_ALLOWED with why: the document path the user names and the checkout git names around it, resolved before a
+reader is bound, the --output folder and the temporary folder the skill writes its own files in, and the fixture and
+the run folder report copies a report from.
 """
 
 from __future__ import annotations
@@ -100,6 +114,7 @@ import filecmp
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
@@ -120,7 +135,7 @@ import private_folder
 from atomic_file import TRACKED_FILE_MODE, create_bytes
 from console import run_main
 from flat_text import LINE_UNSAFE, flat_text, single_line
-from folder_walk import BOUNDED, UNEXAMINED, UNLISTABLE, Walk, is_hidden, walk_files
+from folder_walk import BOUNDED, UNEXAMINED, UNLISTABLE, Walk, is_hidden
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from link_probe import is_plain_file
@@ -145,6 +160,7 @@ from review_runtime import (
     unsafe_path_reason,
 )
 from review_specialists import reviewable_path
+from tree_reader import TreeReader, TreeRefused
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
 DESIGN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".adoc"})
@@ -179,6 +195,49 @@ LINE_SPLIT_ALLOWED = {
 PRESENCE_ALLOWED = {
     "output_root": "removes the folder it made, part way filled, before raising the failure that stopped it, which an "
     "error of the removal must not replace",
+}
+
+# The reads outside a tree a reader is bound to, each with why it lies outside: the module states which reads are
+# bound to which tree.
+TREE_READ_ALLOWED = {
+    "<module>": (
+        "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "
+        "scripts folder beside this skill's own, no path of a tree the skill examines"
+    ),
+    "given_path": (
+        "resolves, its links followed, the document path the user names and the checkout git names around it, before "
+        "a reader is bound to either, since each chooses the tree a reader is then bound to"
+    ),
+    "_is_a_path": (
+        "whether anything is at the path build is given, before it is read as a document's path or a pull request's "
+        "selector, so before any tree is chosen"
+    ),
+    "output_directory": (
+        "judges the --output folder the user names for the skill's own files new or empty before anything is written: "
+        "the skill's own output, wherever the user puts it"
+    ),
+    "output_root": (
+        "resolves the new temporary folder the skill makes for its own files under the private temporary directory: "
+        "the skill's own output"
+    ),
+    "report": (
+        "the fixture build wrote, which --fixture or the run list names, and the report finalize recorded in the run "
+        "folder under the home, each read where it is named, to copy the report beside the fixture: the skill's own "
+        "output and the pipeline's, no tree the skill examines"
+    ),
+    "_is_file": "whether a fixture's pull.json, a recorded report, or its record is a file: the files report copies",
+    "json_object": "a fixture's pull.json or a recorded report's record, which report compares: the files it copies",
+    "earlier_copy": "compares a report.md beside the fixture with the recorded report it would copy there",
+    "is_empty_file": "whether a report.md beside the fixture is the empty reservation a stopped copy left",
+    "folded": (
+        "name_key given no folder folds a name as text, composed and case-folded fully, and asks no folder; the policy "
+        "counts every call of it, since given a folder it asks that folder how it compares names"
+    ),
+    "opens_under": (
+        "asks the folder holding a file the reader's walk found, which the reader judged inside the working directory "
+        "first, whether it gives that file's entry for the name searched for (path_keys.opens_as), from the entries' "
+        "own metadata, following no link"
+    ),
 }
 
 
@@ -238,14 +297,23 @@ def over_limit(name: str) -> DocumentError:
     return DocumentError(f"{name} is over the {MAX_CHANGED_FILE_BYTES // (1024 * 1024)} MiB a review reads")
 
 
+def given_path(path: str | Path) -> Path:
+    """`path`, a path the user names or the checkout git names, made absolute with its links followed, as
+    TREE_READ_ALLOWED states, so a reader bound to the folder it names judges no link on its way again."""
+    return resolved_path(path)
+
+
 def document_bytes(path: Path, form: str | None) -> bytes:
-    """The document's bytes, as `checked_content` keeps them. Refused when it is not a file or is over the size a
-    review reads, read no further than one byte past it. A path with nothing at it is refused as missing, something
-    else as not a file, and one a stat cannot examine with the stat's reason."""
-    if reason := file_presence.refusal_reason(path):
+    """The document's bytes at `path`, already resolved, as `checked_content` keeps them, read through a reader bound
+    to the folder holding it. Refused when it is not a file or is over the size a review reads, which its status
+    shows before it is read. A path with nothing at it is refused as missing, something else as not a file, and one a
+    stat cannot examine with the stat's reason."""
+    reader = TreeReader(path.parent)
+    if reason := reader.missing_reason(path):
         raise DocumentError(f"{path} {reason}")
-    with path.open("rb") as source:
-        content = source.read(MAX_CHANGED_FILE_BYTES + 1)
+    if reader.status(path).st_size > MAX_CHANGED_FILE_BYTES:
+        raise over_limit(str(path))
+    content = reader.contents(path)
     if len(content) > MAX_CHANGED_FILE_BYTES:
         raise over_limit(str(path))
     return checked_content(str(path), content, form)
@@ -282,36 +350,41 @@ def normalized(content: bytes) -> bytes:
 def locate(path: Path, git: GitClient) -> Location:
     """The document's path in its checkout, as git tracks it, or its file name with no checkout. A path through the
     checkout's `.git` folder is refused in any spelling the checkout's file system takes for it, so `.GIT` is refused
-    where the checkout folds case."""
+    where the checkout folds case. The checkout is read through a reader bound to it."""
     try:
         top = git.rev_parse_path("--show-toplevel", directory=path.parent)
     except GitError as exc:
         raise DocumentError(f"git could not read the checkout around {path}: {exc}") from exc
     if top is None:
         return Location(path.name, None)
-    checkout = resolved_path(top)
+    checkout = given_path(top)
+    reader = TreeReader(checkout)
     relative = PurePosixPath(*path.relative_to(checkout).parts)
-    if name_key(relative.parts[0], checkout) == ".git":
+    if reader.key(checkout / relative.parts[0]) == reader.key(checkout / ".git"):
         raise DocumentError(f"{path} is inside the checkout's .git folder")
-    return Location(tracked_name(relative.as_posix(), path, checkout, git), checkout)
+    return Location(tracked_name(relative.as_posix(), path, reader, git), checkout)
 
 
-def same_file(candidate: Path, path: Path) -> bool:
+def same_file(reader: TreeReader, candidate: Path, path: Path) -> bool:
+    """Whether `candidate` and `path` lead to one file, each judged by `reader` first, so a name whose way leads out
+    of its tree, or that cannot be examined, is not the file."""
     try:
-        return candidate.samefile(path)
+        return os.path.samestat(reader.status(candidate), reader.status(path))
     except OSError:
         return False
 
 
-def tracked_name(relative: str, path: Path, checkout: Path, git: GitClient) -> str:
+def tracked_name(relative: str, path: Path, reader: TreeReader, git: GitClient) -> str:
     """The name git tracks the file at `path` by: `relative` itself, or the one spelling of it, differing only in
     case, that the index holds for the same file, as a file system that ignores case leaves a file renamed only by
-    case. `relative` when git tracks neither."""
+    case. `relative` when git tracks neither. Each spelling is looked at through `reader`, bound to the checkout, so a
+    tracked link leading out of it is never followed to compare it."""
+    checkout = reader.tree
     listed = git.output(["ls-files", "-z", "--full-name", "--", f":(icase,literal){relative}"], directory=checkout)
     names = [name for name in listed.split("\0") if name]
     if relative in names:
         return relative
-    same = [name for name in names if same_file(checkout.joinpath(*PurePosixPath(name).parts), path)]
+    same = [name for name in names if same_file(reader, checkout.joinpath(*PurePosixPath(name).parts), path)]
     if len(same) > 1:
         raise DocumentError(f"{relative} is tracked under several names that differ only in case: {', '.join(same)}")
     return same[0] if same else relative
@@ -433,11 +506,15 @@ def refuse_path(relative: str, room: PathRoom) -> None:
 
 def fixture_target(root: Path, relative: str) -> Path:
     """Where the fixture tree at `root` holds `relative`, refused before anything is written when the snapshot's
-    path rules refuse it in the room `root` leaves, or when it would land outside `root`."""
+    path rules refuse it in the room `root` leaves, or when a reader bound to `root` refuses it: as landing outside
+    the fixture when its text leaves `root`, and with the reader's reason when a link on its way leads out of `root`
+    or a name on its way cannot be examined, judged with nothing outside `root` followed."""
     refuse_path(relative, path_room(root))
     target = root.joinpath(*PurePosixPath(relative).parts)
-    if not within(resolved_path(target), resolved_path(root)):
+    if not within(target, root):
         raise DocumentError(f"{relative} is not a path a fixture can hold: it lands outside the fixture")
+    if (refused := TreeReader(root).refusal(target)) is not None:
+        raise DocumentError(f"{relative} is not a path a fixture can hold: {refused}")
     return target
 
 
@@ -613,7 +690,7 @@ def build(
     path: Path, requested: str | None, output: Path | None, git: GitClient, stage: str | None = None
 ) -> list[str]:
     directory = output_directory(output)
-    path = resolved_path(path)
+    path = given_path(path)
     form = document_format(path.name)
     content = document_bytes(path, form)
     location = locate(path, git)
@@ -1011,30 +1088,58 @@ def unsearched_lines(walk: Walk, top: Path, wanted: Callable[[str], bool]) -> li
     return lines
 
 
+def folded(name: str) -> str:
+    """`name` as a collision check compares it with no folder to ask (`path_keys.name_key`): composed and case-folded
+    fully, so a walk gives every entry a folder may open under it."""
+    return name_key(name)
+
+
+def opens_under(reader: TreeReader, path: Path, name: str) -> bool:
+    """Whether the folder holding `path`, judged inside `reader`'s tree first, gives `path`'s entry when a program opens
+    `name` there (`path_keys.opens_as`); a folder the reader refuses raises `TreeRefused`."""
+    reader.judged(path.parent)
+    return opens_as(path, name)
+
+
+def is_plain(reader: TreeReader, path: Path) -> bool:
+    """Whether `path` is a regular file that is no link or reparse point, judged by `reader`: from its own metadata
+    first, so a link is never followed, then its status. An `OSError` when either cannot be read, a reader refusal
+    included."""
+    return not reader.is_link(path) and stat.S_ISREG(reader.status(path).st_mode)
+
+
+def examined_reason(error: OSError) -> str:
+    """Why an entry could not be examined: a reader refusal's reason, or the operating system's."""
+    return error.reason if isinstance(error, TreeRefused) else str(error.strerror or error)
+
+
 def resolve(name: str, top: Path) -> list[str]:
-    """The lines naming the files under `top` a program opens as `name`, by the rule the module states."""
+    """The lines naming the files under `top` a program opens as `name`, by the rule the module states, each read
+    through a reader bound to `top`."""
     refuse_name(name)
-    if is_plain_file(top / name):
+    reader = TreeReader(top)
+    try:
+        here = is_plain(reader, top / name)
+    except OSError:
+        here = False
+    if here:
         return [f"FOUND {name}"]
-    key = name_key(name)
+    key = folded(name)
 
     def wanted(entry: str) -> bool:
-        return name_key(entry) == key
+        return folded(entry) == key
 
-    walk = walk_files(top, wanted, prune=is_hidden, limit=RESOLVE_FOLDER_LIMIT)
+    walk = reader.search(top, wanted, prune=is_hidden, limit=RESOLVE_FOLDER_LIMIT)
     unsearched = unsearched_lines(walk, top, wanted)
     found: list[Path] = []
     for path in walk.files:
         relative = path.relative_to(top)
-        if not opens_as(path, name):
-            continue
         try:
-            metadata = os.lstat(path)
+            if not opens_under(reader, path, name) or not is_plain(reader, path):
+                continue
         except OSError as error:
-            reason = flat_text(str(error.strerror or error))
+            reason = flat_text(examined_reason(error))
             unsearched.append(f"UNSEARCHED {flat_text(str(relative))} the file cannot be examined: {reason}")
-            continue
-        if not is_plain_file(path, metadata):
             continue
         folder = first_folder(relative.parts[:-1], unprintable)
         if folder is None:

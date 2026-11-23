@@ -2021,17 +2021,24 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}, filled=False) == expected
 
 
-def test_tree_read_policy_reads_audit_skills_scripts() -> None:
-    # audit-skill's inventory reads the skill folder it examines through the reader, so a direct read in its scripts
-    # fails, and one stated in TREE_READ_ALLOWED passes; its suite is not read.
-    folder = "skills/audit-skill/scripts"
+@pytest.mark.parametrize(
+    ("folder", "module"),
+    [
+        pytest.param("skills/audit-skill/scripts", "skill_inventory.py", id="audit-skill"),
+        pytest.param("skills/review-document/scripts", "review_document.py", id="review-document"),
+    ],
+)
+def test_tree_read_policy_reads_audit_skills_and_review_documents_scripts(folder: str, module: str) -> None:
+    # audit-skill's inventory reads the skill folder it examines through the reader, and review-document the document,
+    # the checkout around it, and the working directory resolve searches, so a direct read in either's scripts fails,
+    # and one stated in TREE_READ_ALLOWED passes; a suite is not read.
     direct = "def size(path):\n    return path.read_bytes()\n"
     allowed = f"TREE_READ_ALLOWED = {{'size': 'a place outside the examined folder'}}\n{direct}"
     placeholder = {f"{SCRIPTS}/placeholder.py": "VALUE = 1\n"}
-    assert tree_read_findings({**placeholder, f"{folder}/skill_inventory.py": direct}) == [
-        f"{folder}/skill_inventory.py:2 reads a path with Path.read_bytes; {TREE_READ_ADVICE}"
+    assert tree_read_findings({**placeholder, f"{folder}/{module}": direct}) == [
+        f"{folder}/{module}:2 reads a path with Path.read_bytes; {TREE_READ_ADVICE}"
     ]
-    files = {**placeholder, f"{folder}/skill_inventory.py": allowed, f"{folder}/test_x.py": direct}
+    files = {**placeholder, f"{folder}/{module}": allowed, f"{folder}/test_x.py": direct}
     assert tree_read_findings(files) == []
 
 
