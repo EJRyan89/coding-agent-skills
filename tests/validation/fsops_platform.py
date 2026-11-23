@@ -1215,8 +1215,10 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # instance, which names no class; a core reader reached through another core module that imports it, as
 # tree_reader.read_bounded, dotnet_solution.path_key, or tree_reader.file_presence.is_present, which core_reads names
 # only by the module that defines it; a TREE_JUDGES function called with a tree other than the one the skill examines;
-# a function TREE_READ_ALLOWED sanctions, called from another scope on a path of the tree; and a core function defined
-# inside a module-level if or try, which core_reads never derives.
+# a function TREE_READ_ALLOWED sanctions, called from another scope on a path of the tree; a core function defined
+# inside a module-level if or try, which core_reads never derives; and a reader in a sibling skill's scripts a policed
+# module loads through sibling_scripts, as ejryan89-code-review-core's review_io.read_json, which core_reads does not
+# derive, so a call of it is not read.
 TREE_READ_SKILLS = (
     "skills/dotnet-format/scripts",
     "skills/dotnet-dependencies/scripts",

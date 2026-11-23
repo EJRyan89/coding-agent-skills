@@ -103,7 +103,8 @@ tree's own folders and the folders above it how they compare names, which lists 
 walk's bound counts none of those listings. The reads outside those trees by design are each stated in
 TREE_READ_ALLOWED with why: the document path the user names and the checkout git names around it, resolved before a
 reader is bound, the --output folder and the temporary folder the skill writes its own files in, and the fixture and
-the run folder report copies a report from.
+the run folder report copies a report from; the run list report --runs reads through ejryan89-code-review-core, which
+the policy does not see, is stated in the comment above that table.
 """
 
 from __future__ import annotations
@@ -198,7 +199,11 @@ PRESENCE_ALLOWED = {
 }
 
 # The reads outside a tree a reader is bound to, each with why it lies outside: the module states which reads are
-# bound to which tree.
+# bound to which tree. One more is stated here, since the tree read policy cannot sanction it: report_runs reads the run
+# list prepare printed through ejryan89-code-review-core's review_batches.load_run_list, which reads it with
+# review_io.read_json, and the policy derives no reader from a sibling skill's scripts loaded through sibling_scripts,
+# its stated limit, so an entry for report_runs would sanction nothing it sees. The run list is the pipeline's own state
+# in the run folder, outside every tree the skill examines by design.
 TREE_READ_ALLOWED = {
     "<module>": (
         "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "

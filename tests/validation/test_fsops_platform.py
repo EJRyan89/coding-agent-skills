@@ -1995,6 +1995,8 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         "    return tree_reader.file_presence.is_present(path)\n"
     )
     judge = "from folder_walk import followed_inside\ndef read(path, other):\n    return followed_inside(path, other)\n"
+    # A reader in a sibling skill's scripts the module loads through sibling_scripts, which core_reads does not derive.
+    sibling = "from review_io import read_json\ndef read(path):\n    return read_json(path)\n"
     sanctioned = (
         "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
         "def given(path):\n    return path.resolve()\n"
@@ -2008,6 +2010,7 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         f"{SCRIPTS}/group.py": group,
         f"{SCRIPTS}/through.py": through,
         f"{SCRIPTS}/judge.py": judge,
+        f"{SCRIPTS}/sibling.py": sibling,
         f"{SCRIPTS}/sanctioned.py": sanctioned,
     }
     assert tree_read_findings(files) == []
