@@ -2671,13 +2671,13 @@ class OutputTests(DocumentTestCase):
         arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
         reported = [f"REPORT {target}", f"RECORD {recorded.with_suffix('.json')}"]
         real_unlink = Path.unlink
-        for name, refusals in (("refused once", 1), ("never removed", 2)):
+        for name, refusals in (("refused once", 1), ("never removed", None)):
             tries: list[Path] = []
 
             def unlink(
-                path: Path, missing_ok: bool = False, refusals: int = refusals, tries: list[Path] = tries
+                path: Path, missing_ok: bool = False, refusals: int | None = refusals, tries: list[Path] = tries
             ) -> None:
-                if path.name.startswith(".report.md.") and len(tries) < refusals:
+                if path.name.startswith(".report.md.") and (refusals is None or len(tries) < refusals):
                     tries.append(path)
                     raise OSError(16, "Device or resource busy")
                 real_unlink(path, missing_ok=missing_ok)
