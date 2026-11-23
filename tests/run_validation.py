@@ -95,6 +95,7 @@ import skill_layout
 import skill_scripts
 import suite_discovery
 import toolchain
+import tree_readers
 import upgrade_notes
 import workarounds
 import workflows
@@ -157,6 +158,7 @@ POLICY_MODULES = (
     skill_scripts,
     suite_discovery,
     toolchain,
+    tree_readers,
     upgrade_notes,
     workarounds,
     workflows,
