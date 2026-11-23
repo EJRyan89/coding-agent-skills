@@ -389,8 +389,8 @@ class CreateTests(unittest.TestCase):
     def test_a_copy_name_refused_for_a_while_is_removed_after_short_waits_and_one_refused_throughout_is_named(
         self,
     ) -> None:
-        # Holds on every platform, by injected refusals of the copy's removal: Windows refuses to remove the copy's
-        # name while another reader holds the new file open, and such a reader lets go after a moment.
+        # Holds on every platform, by injected refusals of the copy's removal, as a file system may refuse it while
+        # another reader holds the new file open, and such a reader lets go after a moment.
         real_unlink = Path.unlink
         cases: tuple[tuple[str, int | None, BaseException | None], ...] = (
             ("refused for a while", 5, None),
@@ -452,9 +452,9 @@ class CreateTests(unittest.TestCase):
 
     def test_a_reader_holding_the_new_file_open_for_a_moment_keeps_no_create_from_finishing(self) -> None:
         # The race of a reader that opens the new file as soon as the link puts it in place, with a real handle, which
-        # lets go at the create's first wait. Holds on every platform, but only Windows refuses to remove the copy's
-        # name while the reader holds the file, since Python opens a file without delete sharing, so only there does
-        # the create wait at all, and only there does it fail without its waits, the reader still holding the file.
+        # lets go at the create's first wait. Holds on every platform: where the file system removes the copy's name
+        # while the reader holds the file by the target's name, as Linux, macOS, and the NTFS of CI's Windows runner all
+        # do, the create never waits; where one refuses it, the create waits until the reader lets go.
         real_link, real_sleep = os.link, time.sleep
         reader = contextlib.ExitStack()
         read: list[Path] = []
@@ -482,7 +482,6 @@ class CreateTests(unittest.TestCase):
             self.assertEqual(REPORT, path.read_bytes())
             self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
             self.assertEqual(["report.md"], names_in(temporary))
-            self.assertEqual(os.name == "nt", bool(waits), "only Windows refuses the removal while the file is held")
 
     def test_a_mode_its_owner_may_not_write_is_refused_before_a_copy_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

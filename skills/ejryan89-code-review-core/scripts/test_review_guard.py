@@ -1187,8 +1187,8 @@ class ClaimTests(GuardFixture):
         self.assert_denied(self.decide("Write", agent=OTHER_AGENT, file_path=self.result()), "write only your own")
 
     def test_a_claim_whose_copy_a_reader_holds_past_every_try_is_allowed_and_the_copy_pruned_once_old(self) -> None:
-        # Holds on every platform, by injected refusals of every try to remove the copy's name, as Windows refuses it
-        # while another guard's prune or this agent's parallel first read holds the claim open throughout.
+        # Holds on every platform, by injected refusals of every try to remove the copy's name, as a file system may
+        # refuse it while another guard's prune or this agent's parallel first read holds the claim open throughout.
         refused: list[Path] = []
 
         def unlink(path: Path, missing_ok: bool = False) -> None:
@@ -1206,9 +1206,9 @@ class ClaimTests(GuardFixture):
         self,
     ) -> None:
         # The race of a claim made while another reader, another guard's prune or this agent's parallel first read,
-        # holds it open, with a real handle from the link until the call is decided. Holds on every platform, but only
-        # Windows refuses to remove the copy's name while a handle without delete sharing, as Python opens a file,
-        # holds the claim, so only there is the copy left and the call allowed by the claim being made, not removed.
+        # holds it open by its own name, as both do, with a real handle from the link until the call is decided. Holds
+        # on every platform: where the file system removes the copy's name meanwhile, as Linux, macOS, and the NTFS of
+        # CI's Windows runner all do, no copy is left; where one refuses it, the copy is left and pruned once old.
         reader = contextlib.ExitStack()
         held: list[Path] = []
 
@@ -1222,7 +1222,6 @@ class ClaimTests(GuardFixture):
             self.claim()
         self.assertEqual(1, len(held), "the reader held the claim from its link until the call was decided")
         left = sorted(self.claims.glob(f".{AGENT}.json.*.tmp"))
-        self.assertEqual(os.name == "nt", bool(left), "only Windows keeps the copy's name while the claim is held")
         self.assert_made_claim_with_its_copy_left(left)
 
     def assert_made_claim_with_its_copy_left(self, copies: list[Path]) -> None:

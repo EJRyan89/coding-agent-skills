@@ -29,19 +29,19 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   command, exactly as declared, and none of the reviewer commands above. The run's author is the script that made
   the run, which the guard already trusts to name the one file the role may write.
 
-Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
-event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
-reviewer can write: a folder named with the user's id that `private_folder.ensure` finds, before every read and write
-of a claim, to be one only the user owns and can write, so no other local account can remove a claim or plant one.
-A call is denied while it is not. A retry is a fresh agent that claims the same role. A claim is created whole or not
-at all, through `atomic_file.create_bytes`, so no reader, a parallel first call of the same agent included, ever sees
-part of one, and a write that fails leaves no claim behind and denies its call, naming why. A claim made whole whose
-copy the create cannot then remove, as on Windows while another reader holds the claim open, holds and allows its
-call, and the copy is pruned with the leftovers of failed claims. The create puts the claim in place by a hard link,
-so a claims folder whose file system has none denies every first read, naming that remedy; the create's empty
-reservation is never allowed, since a claim seen empty would deny its reviewer as unreadable. Each first read prunes,
-under a lock, the claims whose run is gone and the leftovers of failed claims, and removes only a file it judged, so
-a claim made after the judgment is never removed.
+Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook event
+of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no reviewer can
+write: a folder named with the user's id that `private_folder.ensure` finds, before every read and write of a claim, to
+be one only the user owns and can write, so no other local account can remove a claim or plant one. A call is denied
+while it is not. A retry is a fresh agent that claims the same role. A claim is created whole or not at all, through
+`atomic_file.create_bytes`, so no reader, a parallel first call of the same agent included, ever sees part of one, and a
+write that fails leaves no claim behind and denies its call, naming why. A claim made whole whose copy the create cannot
+then remove, as where a file system refuses it while another reader holds the claim open, holds and allows its call, and
+the copy is pruned with the leftovers of failed claims. The create puts the claim in place by a hard link, so a claims
+folder whose file system has none denies every first read, naming that remedy; the create's empty reservation is never
+allowed, since a claim seen empty would deny its reviewer as unreadable. Each first read prunes, under a lock, the
+claims whose run is gone and the leftovers of failed claims, and removes only a file it judged, so a claim made after
+the judgment is never removed.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
@@ -499,11 +499,11 @@ def _claim(agent: str, path: Path) -> None:
     A create that fails before its claim is in place leaves none and denies the call, naming the error, so the next
     first read claims anew; where the file system refuses the hard link the claim is put in place by, the denial names
     the remedy too. One that put its claim in place but could not remove the copy it wrote it through
-    (`UnfinishedCopyError` with `made` set), as on Windows while another reader, another guard's prune or this agent's
-    parallel first read, holds the claim open past the create's retries, holds as a claim made whole does: it starts
-    the role's read log and allows the call, and the copy, which no reader takes for a claim, is left for the prune of
-    leftover copies. One whose removal an interrupt ended rather than an OSError still denies the call, after starting
-    the log, since the claim holds and the reviewer's next read is judged against it."""
+    (`UnfinishedCopyError` with `made` set), as where a file system refuses that removal while another reader, another
+    guard's prune or this agent's parallel first read, holds the claim open past the create's retries, holds as a claim
+    made whole does: it starts the role's read log and allows the call, and the copy, which no reader takes for a claim,
+    is left for the prune of leftover copies. One whose removal an interrupt ended rather than an OSError still denies
+    the call, after starting the log, since the claim holds and the reviewer's next read is judged against it."""
     run = run_root(path)
     role = None if run is None else next((r for r in _roles(run) if _same(path, Path(r["prompt_file"]))), None)
     if run is None or role is None:
