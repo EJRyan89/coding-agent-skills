@@ -600,7 +600,9 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
         raise os_error(exc, "read the agents folder") from exc
     _reject_links(root)
     agents: dict[str, Path] = {}
-    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+    # file_presence.listed leaves out the AppleDouble sidecar `._<agent>.md` macOS writes beside each definition on a
+    # FAT, exFAT, or SMB volume, which is no entry of the folder's.
+    for entry in sorted(file_presence.listed(root), key=lambda path: path.name):
         shown = platform_support.normalize(entry)
         # An entry whose stat fails is refused with its reason, never as something other than an agent definition.
         try:
@@ -659,15 +661,17 @@ def discover(paths: Paths, source_id: str) -> Source:
 
 
 def _metadata_files(meta_dir: Path) -> list[Path]:
-    """deploy-meta's *.json files, sorted, or none when there is no deploy-meta. It is listed with iterdir, whose
-    listing error raises, where Path.glob answers a folder it cannot list with no entries, which would drop every skill
-    from the source and remove each deployed one. The suffix is matched in any case, and a file whose suffix is spelled
-    otherwise is refused, which one platform would read and the other pass over. An entry that is not a regular file is
-    passed over, and one whose stat fails raises its OSError."""
+    """deploy-meta's *.json files, sorted, or none when there is no deploy-meta. It is listed with
+    `file_presence.listed`, whose listing error raises, where Path.glob answers a folder it cannot list with no
+    entries, which would drop every skill from the source and remove each deployed one, and which leaves out the
+    AppleDouble sidecar `._<skill>.json` macOS writes beside a metadata file on a FAT, exFAT, or SMB volume. The suffix
+    is matched in any case, and a file whose suffix is spelled otherwise is refused, which one platform would read and
+    the other pass over. An entry that is not a regular file is passed over, and one whose stat fails raises its
+    OSError."""
     if not file_presence.is_directory(meta_dir):
         return []
     suffix = f"*{any_case(METADATA_SUFFIX)}"
-    found = sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatchcase(entry.name, suffix))
+    found = [entry for entry in file_presence.listed(meta_dir) if fnmatch.fnmatchcase(entry.name, suffix)]
     for entry in found:
         if not entry.name.endswith(METADATA_SUFFIX):
             spelled = f"{entry.name[: -len(METADATA_SUFFIX)]}{METADATA_SUFFIX}"
