@@ -1007,8 +1007,10 @@ removed fails validation until its pattern follows it.
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
   output a method's parameter takes through self, a file another module's process start writes, a log another
   process writes that no `OUTPUT_SOURCES` entry declares, or a field of another module's result type; `.split()[`
-  or `.partition(" ")` on a line the same module wrote,
-  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
+  or `.partition(" ")` on a fact line in a shape the fact-split policy does not read: a line another module built,
+  a split after an early `continue` or `return` rather than inside the `startswith("<FACT> ")` branch, a split no
+  `startswith` test guards, such as one that reads the fact's word from its own first field, a split of an attribute
+  such as `self.line`, or a line built from its word without the space, as `" ".join(("<FACT>", value))`;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one reached
   through another name, such as `emit = print`, in a script outside a shipped or repository skill, or under a `PRINT_ALLOWED`

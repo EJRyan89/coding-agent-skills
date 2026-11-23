@@ -137,10 +137,12 @@ class RuntimeCommandLinesTestCase(unittest.TestCase):
     def check(
         self, stub: StubRuntimes, runtimes: tuple[str, ...] = runtime_canary.RUNTIMES, run: str = "run"
     ) -> list[str]:
+        """The lines a run printed, each its fact's line; the facts themselves are left in self.facts."""
         printed: list[str] = []
-        found = lines.run(
+        self.facts = lines.run(
             runtimes, 5, self.root / run, runner=stub, which=lambda name: name, say=printed.append, samples=()
         )
+        found = [fact.line for fact in self.facts]
         self.assertEqual(printed, found)
         return found
 
@@ -158,7 +160,7 @@ class AcceptedTests(RuntimeCommandLinesTestCase):
         self.assertIn("ACCEPTED copilot review-host", outcomes)
         self.assertIn("ACCEPTED codex runtime-canary", outcomes)
         self.assertIn("ACCEPTED claude skill-evals-trigger", outcomes)
-        self.assertFalse(any(line.startswith(lines.FAILING) for line in found))
+        self.assertFalse(any(fact.kind in lines.FAILING for fact in self.facts))
 
     def test_a_command_that_finishes_with_status_zero_is_accepted(self) -> None:
         found = self.check(StubRuntimes(lambda arguments: Completed(0, "[]", "")), ("codex",))
@@ -169,7 +171,7 @@ class AcceptedTests(RuntimeCommandLinesTestCase):
         trigger = next(line for line in found if line.startswith("ACCEPTED claude skill-evals-trigger "))
         self.assertIn('UNLISTED "-p --model', trigger)
         self.assertIn("--max-turns", trigger)
-        self.assertFalse(any(line.startswith(lines.FAILING) for line in found))
+        self.assertFalse(any(fact.kind in lines.FAILING for fact in self.facts))
 
     def test_the_review_host_gets_its_prompt_on_stdin_and_the_others_nothing(self) -> None:
         stub = StubRuntimes()
@@ -198,7 +200,7 @@ class SearchBoundaryTests(RuntimeCommandLinesTestCase):
                 tops.setdefault(" ".join(arguments[:2]), set()).add(own)
             return stub(arguments, cwd, environment, timeout, stdin)
 
-        found = lines.run(
+        self.facts = lines.run(
             runtime_canary.RUNTIMES,
             5,
             self.root / "run",
@@ -207,6 +209,7 @@ class SearchBoundaryTests(RuntimeCommandLinesTestCase):
             say=lambda _: None,
             samples=(),
         )
+        found = [fact.line for fact in self.facts]
         self.assertTrue(any(line.startswith("ACCEPTED copilot skill-listing") for line in found), found)
         self.assertTrue(tops)
         self.assertEqual({}, {started: owns for started, owns in tops.items() if owns != {True}})
@@ -235,7 +238,7 @@ class UnboundedHomeTests(RuntimeCommandLinesTestCase):
         self.assertEqual([], [arguments for arguments, _ in stub.started if Path(arguments[0]).name == "codex"])
         self.assertIn("ACCEPTED claude skill-evals-trigger", found)
         self.assertTrue(any(line.startswith("ACCEPTED copilot skill-listing") for line in found), found)
-        self.assertTrue(lines.failed(found))
+        self.assertTrue(lines.failed(self.facts))
 
 
 def help_answering(answer: Completed) -> lines.Starter:
@@ -262,7 +265,7 @@ class HelpTests(RuntimeCommandLinesTestCase):
             )
         ):
             with self.subTest(reason=reason):
-                found = lines.run(
+                self.facts = lines.run(
                     ("codex",),
                     5,
                     self.root / str(index),
@@ -271,13 +274,14 @@ class HelpTests(RuntimeCommandLinesTestCase):
                     say=lambda line: None,
                     samples=(),
                 )
+                found = [fact.line for fact in self.facts]
                 failed = [line for line in found if line.startswith("HELP_FAILED codex ")]
                 self.assertEqual(len([line for line in found if line.startswith("ACCEPTED ")]), len(failed), found)
                 self.assertTrue(failed)
                 self.assertTrue(all(f' "{reason}' in line for line in failed), failed)
                 self.assertFalse(any("UNLISTED" in line for line in found), found)
-                self.assertTrue(lines.failed(found))
-                self.assertIn(f"{len(failed)} line(s) failed.", lines.summary(found))
+                self.assertTrue(lines.failed(self.facts))
+                self.assertIn(f"{len(failed)} line(s) failed.", lines.summary(self.facts))
 
     def test_a_help_that_ran_fails_nothing(self) -> None:
         self.assertEqual("", lines.help_failure(Completed(0, "Usage: codex exec", ""), 5))
@@ -357,7 +361,7 @@ class RefusedTests(RuntimeCommandLinesTestCase):
             found,
         )
         self.assertIn("ACCEPTED copilot skill-listing", found)
-        self.assertTrue(lines.failed(found))
+        self.assertTrue(lines.failed(self.facts))
 
     def test_an_unknown_option_is_named_whichever_parser_refuses_it(self) -> None:
         for runtime, message, flag in (
@@ -367,7 +371,7 @@ class RefusedTests(RuntimeCommandLinesTestCase):
             with self.subTest(runtime=runtime):
                 found = self.check(StubRuntimes(refusing(Completed(2, "", message))), (runtime,))
                 self.assertTrue(any(line.startswith(f"REMOVED {runtime} runtime-canary {flag} ") for line in found))
-                self.assertTrue(lines.failed(found))
+                self.assertTrue(lines.failed(self.facts))
 
     def test_a_command_line_that_does_not_parse_for_another_reason_is_refused(self) -> None:
         refusal = Completed(2, "", "error: invalid value 'workspace-write' for '--sandbox <SANDBOX_MODE>'\n")
@@ -377,7 +381,7 @@ class RefusedTests(RuntimeCommandLinesTestCase):
             "REFUSED codex runtime-canary \"error: invalid value 'workspace-write' for '--sandbox <SANDBOX_MODE>'\"",
             found,
         )
-        self.assertTrue(lines.failed(found))
+        self.assertTrue(lines.failed(self.facts))
 
 
 class CapturedTests(RuntimeCommandLinesTestCase):
@@ -400,7 +404,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             with self.subTest(sample=sample):
                 found = self.check(StubRuntimes(refusing(captured(sample, status))), (runtime,), f"run-{index}")
                 self.assertTrue(any(found_line.startswith(line) for found_line in found), found)
-                self.assertTrue(lines.failed(found))
+                self.assertTrue(lines.failed(self.facts))
 
     def test_each_runtimes_real_signed_out_start_is_accepted(self) -> None:
         for runtime, start in (
@@ -418,7 +422,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             captured_samples.Sample("codex/current.txt", {"codex": (0, 163, 0)}, "2026-10-01", "a start"),
             captured_samples.Sample("copilot/old.txt", {"copilot-cli": (1, 0, 1)}, "2026-10-01", "a start"),
         ]
-        found = lines.run(
+        self.facts = lines.run(
             ("codex", "copilot"),
             5,
             self.root / "run",
@@ -427,6 +431,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             say=lambda _: None,
             samples=samples,
         )
+        found = [fact.line for fact in self.facts]
         # Each line names the runtime as the tool does, copilot, though its sample records copilot-cli.
         self.assertEqual(
             [
@@ -437,8 +442,8 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             ],
             [line for line in found if line.startswith(("VERSION ", "SAMPLE_BEHIND "))],
         )
-        self.assertFalse(lines.failed(found))
-        self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(found))
+        self.assertFalse(lines.failed(self.facts))
+        self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(self.facts))
 
     def test_without_samples_given_a_run_ages_the_ones_this_checkout_records(self) -> None:
         # A release newer than every recorded Codex sample, so each is behind whatever versions the captures record.
@@ -453,7 +458,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             for path, sample in RECORDED.items()
             if "codex" in sample["versions"]
         ]
-        found = lines.run(
+        facts = lines.run(
             ("codex",),
             5,
             self.root / "run",
@@ -461,7 +466,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             which=lambda name: name,
             say=lambda _: None,
         )
-        self.assertEqual(expected, [line for line in found if line.startswith("SAMPLE_BEHIND ")])
+        self.assertEqual(expected, [fact.line for fact in facts if fact.kind == "SAMPLE_BEHIND"])
         self.assertTrue(expected)
 
 
@@ -487,12 +492,15 @@ class FailedTests(RuntimeCommandLinesTestCase):
 
     def test_a_runtime_that_is_not_installed_is_missing_and_fails(self) -> None:
         printed: list[str] = []
-        found = lines.run(("codex",), 5, self.root, runner=StubRuntimes(), which=lambda name: None, say=printed.append)
+        self.facts = lines.run(
+            ("codex",), 5, self.root, runner=StubRuntimes(), which=lambda name: None, say=printed.append
+        )
+        found = [fact.line for fact in self.facts]
         # The reason is the one the module's documentation promises for MISSING.
         promised = next(line for line in (lines.__doc__ or "").splitlines() if line.startswith('  MISSING <runtime> "'))
         reason = promised.split('"<reason>"', 1)[1].strip().removesuffix("; exit 1")
         self.assertEqual([f'MISSING codex "{reason}"'], found)
-        self.assertTrue(lines.failed(found))
+        self.assertTrue(lines.failed(self.facts))
 
 
 class BuilderTests(RuntimeCommandLinesTestCase):
@@ -614,12 +622,13 @@ class SignedOutTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as temporary,
             mock.patch.object(lines, "signed_out", side_effect=lines.Unsafe("GitHub CLI is in shared")),
         ):
-            found = lines.run(
+            self.facts = lines.run(
                 ("copilot",), 5, Path(temporary), runner=stub, which=lambda name: name, say=lambda _: None
             )
+            found = [fact.line for fact in self.facts]
         self.assertEqual(['UNSAFE copilot "GitHub CLI is in shared"'], found)
         self.assertEqual([], stub.started)
-        self.assertTrue(lines.failed(found))
+        self.assertTrue(lines.failed(self.facts))
 
 
 class SummaryTests(unittest.TestCase):
@@ -628,11 +637,13 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual("Every runtime accepted every command line.", lines.ALL_ACCEPTED)
 
     def test_the_summary_tables_each_fact_and_says_whether_any_failed(self) -> None:
-        passed = lines.summary(["VERSION codex 0.163.0", "ACCEPTED codex skill-listing"])
+        passed = lines.summary(
+            [lines.Fact("VERSION", ("codex", "0.163.0")), lines.Fact("ACCEPTED", ("codex", "skill-listing"))]
+        )
         self.assertIn("| codex | version | 0.163.0 |", passed)
         self.assertIn("| codex | skill-listing | ACCEPTED |", passed)
         self.assertIn(f"\n{lines.ALL_ACCEPTED}\n", passed)
-        failed = lines.summary(['REMOVED copilot review-host --no-remote "a | b"'])
+        failed = lines.summary([lines.Fact("REMOVED", ("copilot", "review-host", "--no-remote", "a | b"), (3,))])
         self.assertIn('| copilot | review-host | REMOVED --no-remote "a &#124; b" |', failed)
         self.assertIn("1 line(s) failed.", failed)
 
@@ -640,9 +651,11 @@ class SummaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             summary = Path(temporary) / "summary.md"
             summary.write_text("before\n", encoding="utf-8")
-            with mock.patch.object(lines, "run", return_value=["ACCEPTED codex skill-listing"]):
+            with mock.patch.object(lines, "run", return_value=[lines.Fact("ACCEPTED", ("codex", "skill-listing"))]):
                 self.assertEqual(0, lines.main(["--summary", str(summary)]))
-            with mock.patch.object(lines, "run", return_value=['FAILED codex skill-listing "x"']):
+            with mock.patch.object(
+                lines, "run", return_value=[lines.Fact("FAILED", ("codex", "skill-listing", "x"), (2,))]
+            ):
                 self.assertEqual(1, lines.main(["--runtime", "codex"]))
             self.assertTrue(summary.read_text(encoding="utf-8").startswith("before\n## Runtime command lines"))
 

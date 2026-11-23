@@ -123,6 +123,7 @@ from deployer.paths import Paths
 from deployer.render import CODEX_USER_ONLY
 from tools import captured_samples, runtime_command_lines
 from tools.runtime_canary import DECLARED_RUNTIME, REPOSITORY_ROOT, quote
+from tools.runtime_command_lines import Fact
 
 INDIRECTION_ALLOWED = {
     "path_terms": "reads each path property deployer/config.py's Paths derives, so a path added there is a term "
@@ -145,6 +146,8 @@ PAGE_WORKERS = 8
 GONE_STATUSES = (404, 410)
 # What the summary says of a runtime none of whose entries read mentions a watched term.
 NO_WATCHED_ENTRY = "No entry read mentions a watched term."
+# The facts about a guidance page, which the summary lists as their lines print them.
+PAGE_FACTS = frozenset({"MOVED", "GONE", "UNREADABLE"})
 # The Python the variables are read from, from the top of the repository, suites aside.
 PYTHON_ROOTS = ("deploy.py", "deployer", "tools", "skills")
 # The Markdown whose `${NAME}` placeholders a runtime fills in, such as `${CLAUDE_SKILL_DIR}`.
@@ -590,21 +593,21 @@ def latest_release(changelog: Changelog, releases: Sequence[Release]) -> tuple[i
     return max((release.release for release in releases), default=release_number(changelog.read_through))
 
 
-def changelog_lines(changelog: Changelog, releases: Sequence[Release], watched: Sequence[Term]) -> list[str]:
+def changelog_lines(changelog: Changelog, releases: Sequence[Release], watched: Sequence[Term]) -> list[Fact]:
     latest = latest_release(changelog, releases)
     ordered = sorted(releases, key=lambda release: release.release)
     unread = [
-        f"UNREAD {changelog.subject} {release.name} {quote(release.unread)}" for release in ordered if release.unread
+        Fact("UNREAD", (changelog.subject, release.name, release.unread), (2,)) for release in ordered if release.unread
     ]
-    entries: list[str] = []
+    entries: list[Fact] = []
     for release in ordered:
         for entry in release.entries:
             found = matching(entry, changelog.subject, watched)
             if found:
-                entries.append(f"ENTRY {changelog.subject} {release.name} {quote(' '.join(found))} {quote(entry)}")
+                entries.append(Fact("ENTRY", (changelog.subject, release.name, " ".join(found), entry), (2, 3)))
     read = sum(len(release.entries) for release in releases)
-    head = f"CHANGELOG {changelog.subject} {changelog.read_through} {'.'.join(map(str, latest))} {read} {len(entries)}"
-    return [head, *unread, *entries]
+    values = (changelog.subject, changelog.read_through, ".".join(map(str, latest)), str(read), str(len(entries)))
+    return [Fact("CHANGELOG", values), *unread, *entries]
 
 
 # --- the pages ----------------------------------------------------------------------------------------------------
@@ -614,18 +617,18 @@ def same_address(requested: str, reached: str) -> bool:
     return requested.split("#", 1)[0].rstrip("/") == reached.split("#", 1)[0].rstrip("/")
 
 
-def page_line(url: str, fetched: Fetched) -> str | None:
+def page_line(url: str, fetched: Fetched) -> Fact | None:
     """What a page's request shows, or None for a page that answered where it was asked."""
     if fetched.status in GONE_STATUSES:
-        return f"GONE {url} {fetched.status}"
+        return Fact("GONE", (url, str(fetched.status)))
     if fetched.status != 200:
-        return f"UNREADABLE {url} {quote(fetched.reason or f'HTTP {fetched.status}')}"
+        return Fact("UNREADABLE", (url, fetched.reason or f"HTTP {fetched.status}"), (1,))
     if not same_address(url, fetched.url):
-        return f"MOVED {url} {fetched.url}"
+        return Fact("MOVED", (url, fetched.url))
     return None
 
 
-def page_lines(urls: Sequence[str], fetcher: Fetcher, timeout: float) -> list[str]:
+def page_lines(urls: Sequence[str], fetcher: Fetcher, timeout: float) -> list[Fact]:
     with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as pool:
         results = list(pool.map(lambda url: page_line(url, fetcher(url, timeout)), urls))
     return [line for line in results if line is not None]
@@ -645,17 +648,17 @@ def read_record(top: Path) -> GuidanceRecord:
     return record
 
 
-def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] | None = None) -> list[str]:
-    """Every line of a run over the checkout at `top`, or WatchError."""
+def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] | None = None) -> list[Fact]:
+    """Every fact of a run over the checkout at `top`, or WatchError."""
     record = read_record(top)
     read: list[tuple[Changelog, list[Release]]] = []
-    unreadable: list[str] = []
+    unreadable: list[Fact] = []
     for changelog in record.changelogs:
         # A changelog that cannot be read is listed, and the others and the pages keep their watch.
         try:
             read.append((changelog, changelog_releases(changelog, fetcher, timeout)))
         except WatchError as exc:
-            unreadable.append(f"UNREADABLE_CHANGELOG {changelog.subject} {quote(single_line(str(exc)))}")
+            unreadable.append(Fact("UNREADABLE_CHANGELOG", (changelog.subject, single_line(str(exc))), (1,)))
     if watched is None:
         versions = {changelog.subject: [release_number(changelog.read_through)] for changelog in record.changelogs}
         versions.update({changelog.subject: versions_read(changelog, releases) for changelog, releases in read})
@@ -664,52 +667,55 @@ def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] |
         samples = captured_samples.read(top, SUBJECTS)
     except captured_samples.SampleError as exc:
         raise WatchError(str(exc)) from exc
-    lines = [f"TERMS {kind} {sum(1 for term in watched if term.kind == kind)}" for kind in KINDS] + unreadable
+    facts = [Fact("TERMS", (kind, str(sum(1 for term in watched if term.kind == kind)))) for kind in KINDS]
+    facts += unreadable
     for changelog, releases in read:
-        lines += changelog_lines(changelog, releases, watched)
+        facts += changelog_lines(changelog, releases, watched)
     for changelog, releases in read:
-        lines += captured_samples.behind(samples, changelog.subject, latest_release(changelog, releases))
-    return lines + page_lines([page.url for page in record.pages], fetcher, timeout)
+        latest = latest_release(changelog, releases)
+        facts += runtime_command_lines.behind_facts(samples, changelog.subject, latest, changelog.subject)
+    return facts + page_lines([page.url for page in record.pages], fetcher, timeout)
 
 
 def markdown_cell(text: str) -> str:
     return text.replace("|", "&#124;")
 
 
-def summary(lines: Sequence[str]) -> str:
-    """The findings as Markdown: each runtime's kept entries, then the pages that moved or are gone."""
+def summary(facts: Sequence[Fact]) -> str:
+    """The findings as Markdown: each runtime's kept entries, then the samples due to be captured again, then the
+    pages that moved or are gone, each value read from the fact that carries it."""
     rows = ["## Runtime changelogs and guidance pages", ""]
-    unread = {line.split(" ")[1] for line in lines if line.startswith("UNREAD ")}
-    for line in lines:
-        if line.startswith("UNREADABLE_CHANGELOG "):
-            _, subject, reason = line.split(" ", 2)
-            rows += ["", f"### {subject}: not read", "", markdown_cell(json_reader.loads(reason)), ""]
-        elif line.startswith("CHANGELOG "):
-            _, subject, since, latest, read, kept = line.split(" ")
+    unread = {fact.values[0] for fact in facts if fact.kind == "UNREAD"}
+    for fact in facts:
+        if fact.kind == "UNREADABLE_CHANGELOG":
+            subject, reason = fact.values
+            rows += ["", f"### {subject}: not read", "", markdown_cell(reason), ""]
+        elif fact.kind == "CHANGELOG":
+            subject, since, latest, read, kept = fact.values
             rows += ["", f"### {subject}: releases after {since}, up to {latest}", "", f"Entries read: {read}.", ""]
             rows += [NO_WATCHED_ENTRY, ""] if kept == "0" else []
             if kept != "0" or subject in unread:
                 rows += ["| Release | Terms | Entry |", "| --- | --- | --- |"]
-        elif line.startswith("UNREAD "):
-            _, _, release, reason = line.split(" ", 3)
-            rows.append(f"| {release} | none read | {markdown_cell(json_reader.loads(reason))} |")
-        elif line.startswith("ENTRY "):
-            _, _, release, rest = line.split(" ", 3)
-            found, end = json_reader.raw_decode(rest)
-            entry, _ = json_reader.raw_decode(rest, end + 1)
+        elif fact.kind == "UNREAD":
+            _, release, reason = fact.values
+            rows.append(f"| {release} | none read | {markdown_cell(reason)} |")
+        elif fact.kind == "ENTRY":
+            _, release, found, entry = fact.values
             rows.append(f"| {release} | {markdown_cell(found)} | {markdown_cell(entry)} |")
-    behind = [line for line in lines if line.startswith("SAMPLE_BEHIND ")]
+    behind = [fact for fact in facts if fact.kind == "SAMPLE_BEHIND"]
     rows += ["", "### Captured samples", ""]
     rows += (
         ["| Runtime | Sample | Recorded | Latest |", "| --- | --- | --- | --- |"]
-        + [f"| {' | '.join(line.split(' ')[1:])} |" for line in behind]
+        + [f"| {' | '.join(markdown_cell(value) for value in fact.values)} |" for fact in behind]
         if behind
         else ["No captured sample is older than its runtime's latest release."]
     )
-    pages = [line for line in lines if line.startswith(("MOVED ", "GONE ", "UNREADABLE "))]
+    pages = [fact for fact in facts if fact.kind in PAGE_FACTS]
     rows += ["", "### Guidance pages", ""]
     rows += (
-        [f"- {markdown_cell(line)}" for line in pages] if pages else ["Every page answered where the record names it."]
+        [f"- {markdown_cell(fact.line)}" for fact in pages]
+        if pages
+        else ["Every page answered where the record names it."]
     )
     return "\n".join(rows) + "\n"
 
@@ -720,21 +726,21 @@ def main(arguments: list[str] | None = None, fetcher: Fetcher = fetch, top: Path
     parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     namespace = parser.parse_args(arguments)
     try:
-        lines = watch(top, fetcher, namespace.timeout)
+        facts = watch(top, fetcher, namespace.timeout)
     except WatchError as exc:
         print(f"FAILED {single_line(str(exc))}")
         return 1
-    for line in lines:
-        print(line)
+    for fact in facts:
+        print(fact.line)
     if namespace.summary is not None:
-        written = summary(lines)
+        written = summary(facts)
         try:
             with namespace.summary.open("a", encoding="utf-8") as stream:
                 stream.write(written)
         except OSError as exc:
             print(f"FAILED {single_line(f'cannot append the findings to {namespace.summary}: {exc}')}")
             return 1
-    return 1 if any(line.startswith("UNREADABLE_CHANGELOG ") for line in lines) else 0
+    return 1 if any(fact.kind == "UNREADABLE_CHANGELOG" for fact in facts) else 0
 
 
 if __name__ == "__main__":
