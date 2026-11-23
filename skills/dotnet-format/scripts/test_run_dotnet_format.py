@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import run_dotnet_format as formatter
 from flat_text import flat_text
+from test_dotnet_format_targets import link_folder, recording_reaches, remove_link
+from test_folder_walk import reached
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 SDK_INSTALL_HINT = (
@@ -190,6 +192,37 @@ class ParseTests(unittest.TestCase):
         self.assertEqual("src/A.cs", formatter.display_path("src/A.cs", self.root))
         outside = Path(tempfile.gettempdir()).resolve().anchor + "elsewhere/B.cs"
         self.assertEqual(Path(outside).as_posix(), formatter.display_path(outside, self.root))
+
+    def test_a_diagnostic_outside_the_root_is_named_as_written_with_nothing_outside_reached(self) -> None:
+        # An MSBuild warning in a props file outside the repository names that file, through a folder link (a junction
+        # on Windows) that leads outside: it is shown as dotnet format wrote it, compared by its text, and nothing
+        # outside is stat, listed, or followed to name it.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        outside = Path(directory.name).resolve()
+        (outside / "Shared.props").write_text("<Project />\n", encoding="utf-8")
+        link = self.root / "Linked"
+        link_folder(outside, link)
+        self.addCleanup(remove_link, link)
+        log = "\n".join(
+            (
+                f"{outside / 'Shared.props'}(1,1): warning MSB4011: imported twice",
+                f"{link / 'Shared.props'}(1,1): warning MSB4011: imported twice",
+                f"{self.root / 'A.cs'}(2,3): warning IDE0055: Fix formatting",
+            )
+        )
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            found = formatter.parse_diagnostics(log, self.root)
+        self.assertEqual(
+            [
+                formatter.Diagnostic((outside / "Shared.props").as_posix(), 1, 1, "warning", "MSB4011"),
+                formatter.Diagnostic("Linked/Shared.props", 1, 1, "warning", "MSB4011"),
+                formatter.Diagnostic("A.cs", 2, 3, "warning", "IDE0055"),
+            ],
+            found,
+        )
+        self.assertEqual([], reached(touched, [link], outside))
 
     def test_diagnostics_are_distinct_in_first_seen_order_and_only_from_issue_lines(self) -> None:
         log = "\n".join(

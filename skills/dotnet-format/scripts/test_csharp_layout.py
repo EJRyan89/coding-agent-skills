@@ -26,12 +26,14 @@ import atomic_file
 import csharp_layout as layout
 import dotnet_format_targets as targets
 import dotnet_solution
+import tree_reader
 import whole_number
 from flat_text import flat_text
 from run_dotnet_format import Completed, Services
-from test_dotnet_format_targets import recording_reaches
+from test_dotnet_format_targets import link_folder, recording_reaches, remove_link
 from test_folder_walk import reached
 from test_path_containment import resolving_as_python_312
+from tree_reader import TreeReader
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 READ_ONLY_FILE = "the file is read-only; make it writable to fix it"
@@ -300,6 +302,29 @@ class FileTests(unittest.TestCase):
         path.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
         return path
 
+    def test_a_repo_root_given_through_a_link_is_resolved_and_the_reader_bound_to_its_target(self) -> None:
+        # The --repo-root the user names is resolved before any tree is bound, so a link to the repository (a junction
+        # on Windows) is followed once, and every reader is bound to the repository the link leads to.
+        (self.root / "Good.cs").write_bytes(b"class A\n{\n}\n")
+        file_list = self.file_list("Good.cs")
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        link = Path(holder.name).resolve() / "Repo"
+        link_folder(self.root, link)
+        self.addCleanup(remove_link, link)
+        trees: list[Path] = []
+
+        class Recording(TreeReader):
+            def __init__(self, tree: Path) -> None:
+                super().__init__(tree)
+                trees.append(self.tree)
+
+        with mock.patch.object(layout, "TreeReader", Recording), mock.patch.object(targets, "TreeReader", Recording):
+            status, lines = self.main("check", "--repo-root", str(link), "--file-list", str(file_list))
+        self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
+        self.assertTrue(trees)
+        self.assertEqual({self.root}, set(trees))
+
     def test_check_and_fix_preserve_bom_crlf_and_legacy_encoding(self) -> None:
         crlf = self.root / "Src" / "With Space.cs"
         crlf.parent.mkdir()
@@ -424,10 +449,10 @@ class FileTests(unittest.TestCase):
         path = self.root / "With Space.cs"
         path.write_bytes(b"class A {}\n")
         with (
-            mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")),
+            mock.patch.object(Path, "open", side_effect=PermissionError(13, "Permission denied")),
             self.assertRaises(layout.Unreadable) as raised,
         ):
-            layout.read_source(path)
+            layout.read_source(TreeReader(self.root), path)
         self.assertEqual("it cannot be read: Permission denied", str(raised.exception))
 
     def test_a_listed_file_that_cannot_be_read_is_unreadable_and_the_rest_are_checked_as_the_docstring_says(
@@ -441,14 +466,14 @@ class FileTests(unittest.TestCase):
         held.write_bytes(b"class A {}\n")
         (self.root / "Good.cs").write_bytes(b"#region R\n\n#endregion R\n")
         file_list = self.file_list("Held.cs", "Good.cs")
-        read_bytes = Path.read_bytes
+        path_open = Path.open
 
-        def locked(path: Path) -> bytes:
+        def locked(path: Path, *arguments: Any, **options: Any) -> Any:
             if path == held:
                 raise PermissionError(errno.EACCES, "The process cannot access the file")
-            return read_bytes(path)
+            return path_open(path, *arguments, **options)
 
-        with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=locked):
+        with mock.patch.object(Path, "open", autospec=True, side_effect=locked):
             status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
         self.assertEqual(1, status)
         self.assertEqual(
@@ -627,7 +652,7 @@ class FileTests(unittest.TestCase):
         file_list = self.file_list("Linked.cs", "Linked/Inner.cs", "Fixable.cs")
         # Links stand in through the stubbed test on every platform; the real-link test below makes one.
         with mock.patch.object(
-            targets, "is_link_or_junction", side_effect=lambda path: path.name in {"Linked.cs", "Linked"}
+            tree_reader, "is_link_or_junction", side_effect=lambda path: path.name in {"Linked.cs", "Linked"}
         ):
             status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual(1, status, "the violations a refused file keeps remain")
@@ -648,7 +673,7 @@ class FileTests(unittest.TestCase):
 
     def test_check_without_fix_reads_through_a_link_and_never_asks(self) -> None:
         (self.root / "Linked.cs").write_bytes(b"#region A\n\n#endregion A\n")
-        with mock.patch.object(targets, "is_link_or_junction", side_effect=AssertionError("asked without --fix")):
+        with mock.patch.object(tree_reader, "is_link_or_junction", side_effect=AssertionError("asked without --fix")):
             status, lines = self.main(
                 "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Linked.cs"))
             )
@@ -720,7 +745,7 @@ class FileTests(unittest.TestCase):
     def test_a_path_whose_link_state_cannot_be_read_is_not_written(self) -> None:
         (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
         denied = PermissionError(13, "Permission denied")
-        with mock.patch.object(targets, "is_link_or_junction", side_effect=denied):
+        with mock.patch.object(tree_reader, "is_link_or_junction", side_effect=denied):
             status, lines = self.main(
                 "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
             )
@@ -1279,7 +1304,7 @@ class ConfigTests(unittest.TestCase):
         for text, preamble in cases:
             with self.subTest(text=text):
                 path.write_bytes(text.encode("utf-8"))
-                config = layout.read_analyzer_config(path)
+                config = layout.read_analyzer_config(TreeReader(self.root), path)
                 self.assertEqual((preamble, []), (config.preamble, config.sections))
 
     def test_a_section_header_is_read_by_the_compilers_pattern(self) -> None:
@@ -1299,7 +1324,7 @@ class ConfigTests(unittest.TestCase):
         for header, preamble, sections in cases:
             with self.subTest(header=header):
                 path.write_bytes(f"{header}\nx = y\n".encode())
-                config = layout.read_analyzer_config(path)
+                config = layout.read_analyzer_config(TreeReader(self.root), path)
                 self.assertEqual((preamble, sections), (config.preamble, config.sections))
 
     def test_a_colon_separator_and_an_inline_comment_are_read_as_the_compiler_reads_them(self) -> None:
@@ -1560,10 +1585,35 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([], self.msbuild.calls)
         self.assertEqual([], reached(touched, [other, owner], outside))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_analyzer_configuration_that_is_a_link_leading_outside_fails_unread(self) -> None:
+        # src/.editorconfig and src/App/.globalconfig are each a link to a file outside the repository. Read
+        # through the link, either would set the file's settings from outside it; neither is stat or read, and the run
+        # fails naming it, as for a configuration it cannot examine, before anything is written.
+        outside = outside_directory(self)
+        for name, target in ((".editorconfig", "shared.editorconfig"), (".globalconfig", "shared.globalconfig")):
+            (outside / target).write_text("is_global = true\n", encoding="utf-8")
+            link = self.root / "src" / ("App" if name == ".globalconfig" else "") / name
+            link.symlink_to(outside / target)
+            touched: list[tuple[str, bool]] = []
+            with self.subTest(name=name), recording_reaches(touched):
+                status, grouped = self.run_config("--apply")
+            self.assertEqual(1, status)
+            reason = (
+                f"{link.as_posix()} is a link to {(outside / target).as_posix()}, outside the examined tree "
+                f"{self.root.as_posix()}, which the reader does not follow"
+            )
+            self.assertEqual(f"FAILED {link} cannot be examined: {reason}", list(grouped)[-1])
+            self.assertNotIn("ADDED", grouped)
+            self.assertEqual([], reached(touched, [link], outside))
+            link.unlink()
+
     def test_apply_never_writes_an_editorconfig_that_is_or_lies_below_a_link(self) -> None:
         editorconfig = self.root / ".editorconfig"
         editorconfig.write_text("# shared\n", encoding="utf-8")
-        with mock.patch.object(targets, "is_link_or_junction", side_effect=lambda path: path.name == ".editorconfig"):
+        with mock.patch.object(
+            tree_reader, "is_link_or_junction", side_effect=lambda path: path.name == ".editorconfig"
+        ):
             status, grouped = self.run_config("--apply")
         self.assertEqual(1, status, "the settings it did not add are still missing")
         self.assertEqual([[".editorconfig", LINKED_FILE]], grouped["REFUSED"])
