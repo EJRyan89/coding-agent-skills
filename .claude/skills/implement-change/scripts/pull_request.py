@@ -97,7 +97,7 @@ from closing_references import (
 )
 from console import run_main
 from file_presence import NotADirectory, is_directory, is_present
-from flat_text import flat_text
+from flat_text import LINE_UNSAFE, flat_text, single_line
 from forms_considered import forms_fault, forms_section, is_fix_title
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -395,10 +395,17 @@ def configured_paths(top: Path, reader: Callable[[Path], list[str] | None], what
 def run_command(jobs: Sequence[str]) -> str:
     """The validation runner's command that runs exactly `jobs`: a `-k` per job, each name in single quotes, which
     Bash and PowerShell both read literally, and none of which quotes a job's own `-k` pattern as a substring of
-    another's, since each name ends at its closing parenthesis."""
+    another's, since each name ends at its closing parenthesis. A name no single quotes or single line can hold is a
+    PullRequestError."""
     quoted = [name for name in jobs if "'" in name]
     if quoted:
         raise PullRequestError(f"a type-check job's name holds a single quote: {flat_text(quoted[0])}")
+    # Printed as it is, such a name would split the RUN line; flattened, the command would select another job.
+    broken = [name for name in jobs if LINE_UNSAFE.search(name)]
+    if broken:
+        raise PullRequestError(
+            f"a type-check job's name holds a line break or a control character: {flat_text(broken[0])}"
+        )
     return " ".join([VALIDATION_COMMAND, *(f"-k '{name}'" for name in jobs)])
 
 
@@ -477,22 +484,22 @@ def build_parser() -> argparse.ArgumentParser:
 def run(options: argparse.Namespace, git: GitClient, github: GitHubClient | None) -> int:
     repository: Path = options.repository
     if options.command == "draft":
-        print("\n".join(draft(git, repository, options.closes)))
+        print("\n".join(single_line(line) for line in draft(git, repository, options.closes)))
         return 0
     if options.command == "type-checks":
-        print("\n".join(type_checks(git, repository, options.base)))
+        print("\n".join(single_line(line) for line in type_checks(git, repository, options.base)))
         return 0
     title, facts, problems = check(git, repository, options.title_file, options.body_file, options.base)
     if options.command == "open":
         problems += upstream_problems(git, repository)
-    print("\n".join(facts + problems))
+    print("\n".join(single_line(line) for line in facts + problems))
     if problems:
         return 1
     if options.command == "check":
         print("READY")
         return 0
     client = github or GitHubClient(runner=partial(subprocess_runner, cwd=repository))
-    print(open_pull_request(client, title, options.body_file, options.base))
+    print(single_line(open_pull_request(client, title, options.body_file, options.base)))
     return 0
 
 

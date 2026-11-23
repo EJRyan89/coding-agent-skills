@@ -10,6 +10,8 @@ terminal, and each line separator `str.splitlines()` breaks on, so the text stay
 text's spaces as they are and trims only its end, for a line whose layout is its own, such as an aligned summary row.
 `fact_line` builds a tab-separated fact line whose every field goes through `flat_text`, so no field adds a line or a
 field of its own. `reason_line` gives what a failed command printed as the reason it failed, on one bounded line.
+`document_line` keeps a document's line as it is, its tabs, its spaces, and its length, and makes each other control
+character and line separator one space, for a script that prints a document's lines as their file holds them.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from __future__ import annotations
 import re
 
 LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+# One character LINE_UNSAFE matches, but the tab, which a document's line may hold as its own layout.
+DOCUMENT_UNSAFE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
 # The most of a failed command's output a one-line reason keeps; past it, the reason is cut and marked with "...".
 REASON_CHARACTERS = 500
 
@@ -37,6 +41,12 @@ def single_line(text: str) -> str:
     """`text` with each run of control characters and line separators made one space, its other whitespace kept, and
     none at its end."""
     return LINE_UNSAFE.sub(" ", text).rstrip()
+
+
+def document_line(text: str) -> str:
+    """`text` with each control character and line separator but the tab made one space, one for one, and nothing
+    trimmed, so a document's line prints as one line, keeping its tabs, its trailing spaces, and its length."""
+    return DOCUMENT_UNSAFE.sub(" ", text)
 
 
 def reason_line(output: str, *, end: bool = False) -> str:

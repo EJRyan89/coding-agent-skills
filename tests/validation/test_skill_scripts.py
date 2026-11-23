@@ -999,7 +999,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             self.assertEqual([], script_contract_problems(mark_skills(root)))
 
     def test_print_choke_point_policy_refuses_a_stdout_line_that_may_hold_a_break(self) -> None:
-        # Each print here carries a value that may hold a line break straight to stdout.
+        # Each print here carries a value that may hold a line break straight to stdout, in a shipped skill's script
+        # and in a repository skill's alike.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1019,6 +1020,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "    print(f'KEY {line}', file=sys.stdout)\n"
                     "    print(f'KEY {flat_text(line)}' if count else line)\n"
                     "    sys.__stdout__.writelines(lines)\n",
+                    ".claude/skills/beta/SKILL.md": "# beta\n",
+                    ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(f'KEY {line}')\n",
                 },
             )
             refusal = (
@@ -1026,7 +1029,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                 'single_line, or state why in PRINT_ALLOWED; see "Script results" in docs/adding-a-skill.md'
             )
             self.assertEqual(
-                [f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)],
+                [
+                    f".claude/skills/beta/scripts/run.py:2 {refusal}",
+                    *(f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)),
+                ],
                 skill_scripts.print_choke_point_problems(mark_skills(root)),
             )
 
@@ -1066,8 +1072,8 @@ class SkillScriptsFixtures(unittest.TestCase):
 
     def test_print_choke_point_policy_accepts_each_choke_point_and_what_is_no_fact_line(self) -> None:
         # Literals, a module's one-line constant, each choke point under any name its import gives it, an f-string or
-        # either-or of them, and a join of flattened lines pass; stderr, a file, a test, a module under another
-        # protocol, and a repository skill are not read.
+        # either-or of them, and a join of flattened lines pass, in a shipped skill's script and in a repository skill's
+        # alike; stderr, a file, a test, and a module under another protocol are not read.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1099,7 +1105,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skills/alpha/scripts/hook.py": "EXIT_CONTRACT_EXEMPT = 'answers a hook protocol'\n"
                     "def main(line):\n    print(line)\n",
                     ".claude/skills/beta/SKILL.md": "# beta\n",
-                    ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(line)\n",
+                    ".claude/skills/beta/scripts/run.py": "from flat_text import document_line, single_line\n"
+                    "def main(line):\n    print(single_line(f'KEY {line}'))\n    print(document_line(line))\n",
                 },
             )
             self.assertEqual([], skill_scripts.print_choke_point_problems(mark_skills(root)))
