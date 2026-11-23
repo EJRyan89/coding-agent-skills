@@ -138,6 +138,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",
     f"{SKILL_CORE}/analyzer_config.py",
+    f"{SKILL_CORE}/apple_double.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/command_wrappers.py",
     f"{SKILL_CORE}/device_names.py",
