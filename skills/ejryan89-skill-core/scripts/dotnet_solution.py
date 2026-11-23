@@ -21,7 +21,7 @@ import stat
 from pathlib import Path
 
 from device_names import is_reserved_device_name
-from folder_walk import SKIPPED_FOLDERS
+from folder_walk import SKIPPED_FOLDERS, outside_link_refusal
 from ordinal_case import has_suffix
 from path_containment import within
 from path_keys import path_key
@@ -145,8 +145,26 @@ def listed_projects(text: str, solution: Path) -> list[str]:
     return [match.group(1) for line in text_lines(text) if (match := SOLUTION_PROJECT.match(line))]
 
 
-def solution_projects(solution: Path) -> set[str]:
-    """Normalized absolute paths of the projects a solution lists; a .slnx that cannot be read raises `XmlRefused`,
-    and a file `read_bounded` refuses `FileRefused`, as `read_listed_projects` does, so it is never taken for a
-    solution that lists no project."""
-    return {same_path(solution.parent / path.replace("\\", "/")) for path in read_listed_projects(solution)}
+def entry_key(path: Path, tree: Path) -> str:
+    """What a collection compares a path a file names by: `same_path` for one inside `tree` that `refusal` keeps and
+    no link on its way, its own name included, leads out of (`folder_walk.outside_link_refusal`), and its text, made
+    absolute without reaching the file system, for any other, since `same_path`'s case probe lists each folder on the
+    path, so comparing a path outside the tree would list the folders outside it."""
+    absolute = lexical_absolute(path)
+    if refusal(absolute, tree) is None and outside_link_refusal(absolute, tree) is None:
+        return same_path(absolute)
+    return str(absolute)
+
+
+def solution_projects(solution: Path, tree: Path) -> set[str]:
+    """The `entry_key` in `tree` of each project a solution lists, as `project_keys` keys them; a .slnx that cannot be
+    read raises `XmlRefused`, and a file `read_bounded` refuses `FileRefused`, as `read_listed_projects` does, so it
+    is never taken for a solution that lists no project."""
+    return project_keys(read_text(solution), solution, tree)
+
+
+def project_keys(text: str, solution: Path, tree: Path) -> set[str]:
+    """The `entry_key` in `tree` of each project the text of `solution` lists, for a caller that read the text itself,
+    so an entry outside the tree, or that a link leads out of it, is compared by its text and no folder outside the
+    tree is listed to compare it."""
+    return {entry_key(project_path(solution.parent, entry), tree) for entry in listed_projects(text, solution)}

@@ -17,8 +17,10 @@ from dotnet_solution import (
     SEARCH_SKIPPED_FOLDERS,
     FileRefused,
     decode_text,
+    entry_key,
     is_solution,
     listed_projects,
+    project_keys,
     project_path,
     read_bounded,
     read_listed_projects,
@@ -27,6 +29,7 @@ from dotnet_solution import (
     same_path,
     solution_projects,
 )
+from test_folder_walk import link_folder, reached, recording, remove_link
 from xml_reader import XmlRefused
 
 SLN = (
@@ -87,7 +90,39 @@ class SolutionReaderTests(unittest.TestCase):
                 same_path(self.root / "Solution Items"),
                 same_path(self.root / "src/Harbor.Core/Harbor.Core.csproj"),
             },
-            solution_projects(solution),
+            solution_projects(solution, self.root),
+        )
+
+    def test_an_entry_outside_the_tree_is_keyed_by_its_text_listing_no_folder_outside(self) -> None:
+        # A solution in the tree lists a project inside it, one outside it by `..`, and one through a folder link
+        # that leads outside (a junction on Windows). Only the first is keyed as the file system compares it; the
+        # others are keyed by their text, so the key's case probe lists nothing outside the tree.
+        tree = self.root / "repo"
+        (tree / "App").mkdir(parents=True)
+        outside = self.root / "outside"
+        (outside / "Other").mkdir(parents=True)
+        link_folder(outside, tree / "Out")
+        self.addCleanup(remove_link, tree / "Out")
+        text = (
+            'Project("{F}") = "App", "App\\App.csproj", "{1}"\r\nEndProject\r\n'
+            'Project("{F}") = "Other", "..\\outside\\Other\\Other.csproj", "{2}"\r\nEndProject\r\n'
+            'Project("{F}") = "Linked", "Out\\Other\\Other.csproj", "{3}"\r\nEndProject\r\n'
+        )
+        solution = tree / "App.sln"
+        solution.write_text(text, encoding="utf-8")
+        touched: list[tuple[str, bool]] = []
+        with recording(touched):
+            keys = solution_projects(solution, tree)
+        expected = {
+            same_path(tree / "App" / "App.csproj"),
+            str(outside / "Other" / "Other.csproj"),
+            str(tree / "Out" / "Other" / "Other.csproj"),
+        }
+        self.assertEqual(expected, keys)
+        self.assertEqual(keys, project_keys(text, solution, tree))
+        self.assertEqual([], reached(touched, [tree / "Out"], outside))
+        self.assertEqual(
+            same_path(tree / "App" / "App.csproj"), entry_key(tree / "App" / ".." / "App" / "App.csproj", tree)
         )
 
     def test_utf16_sln_is_read(self) -> None:
@@ -129,7 +164,7 @@ class SolutionReaderTests(unittest.TestCase):
             ["src\\Harbor.Web\\Harbor.Web.csproj", "src/Harbor.Core/Harbor.Core.csproj"],
             read_listed_projects(solution),
         )
-        self.assertEqual(2, len(solution_projects(solution)))
+        self.assertEqual(2, len(solution_projects(solution, self.root)))
 
     def test_a_slnx_it_cannot_read_is_refused_and_an_empty_one_lists_nothing(self) -> None:
         solution = self.root / "Harbor.slnx"
@@ -139,12 +174,12 @@ class SolutionReaderTests(unittest.TestCase):
         ):
             with self.subTest(reason=reason or "malformed"):
                 solution.write_text(text, encoding="utf-8")
-                for reader in (read_listed_projects, solution_projects):
+                for reader in (read_listed_projects, lambda path: solution_projects(path, self.root)):
                     with self.assertRaises(XmlRefused) as refused:
                         reader(solution)
                     self.assertIn(reason, str(refused.exception))
         solution.write_text("<Solution />", encoding="utf-8")
-        self.assertEqual(([], set()), (read_listed_projects(solution), solution_projects(solution)))
+        self.assertEqual(([], set()), (read_listed_projects(solution), solution_projects(solution, self.root)))
 
     def test_is_solution_matches_either_suffix_in_any_case(self) -> None:
         self.assertTrue(is_solution(Path("Harbor.SLN")))
@@ -223,7 +258,7 @@ class BoundedReadTests(unittest.TestCase):
             solution = self.root / name
             solution.write_text(text, encoding="utf-8")
             with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 8):
-                for reader in (read_listed_projects, solution_projects):
+                for reader in (read_listed_projects, lambda path: solution_projects(path, self.root)):
                     with self.subTest(solution=name, reader=reader.__name__), self.assertRaises(FileRefused) as refused:
                         reader(solution)
                     self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)

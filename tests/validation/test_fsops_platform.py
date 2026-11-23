@@ -16,7 +16,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
+from fsops_platform import (
+    TREE_READ_SKILLS,
+    _platform_names,
+    filesystem_write_problems,
+    platform_code_problems,
+    tree_read_problems,
+)
 from validation_support import write_fixture_tree
 
 
@@ -1829,3 +1835,102 @@ def test_filesystem_write_policy_reads_a_write_called_through_any_lookup_by_name
     assert [f"deployer/lookups.py:{line} writes with shutil.rmtree{route}" for line in (6, 7)] == (
         filesystem_write_problems(tmp_path)
     )
+
+
+SCRIPTS = TREE_READ_SKILLS[0]
+TREE_READ_ADVICE = "read it through ejryan89-skill-core's tree_reader, or state why in TREE_READ_ALLOWED"
+
+
+def tree_read_findings(files: dict[str, str]) -> list[str]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        return tree_read_problems(root)
+
+
+def test_tree_read_policy_refuses_each_direct_read_and_each_helper_the_reader_stands_in_for() -> None:
+    source = (
+        "import glob\n"
+        "import os\n"
+        "import os.path as osp\n"
+        "from pathlib import Path\n"
+        "import file_presence\n"
+        "from dotnet_solution import same_path as key\n"
+        "from folder_walk import walk_files\n"
+        "def read(path, folder):\n"
+        "    os.stat(path)\n"
+        "    os.scandir(folder)\n"
+        "    os.walk(folder)\n"
+        "    osp.isfile(path)\n"
+        "    glob.glob('*.cs')\n"
+        "    open(path)\n"
+        "    path.read_text(encoding='utf-8')\n"
+        "    path.read_bytes()\n"
+        "    path.stat()\n"
+        "    path.exists()\n"
+        "    path.is_file()\n"
+        "    Path(folder).iterdir()\n"
+        "    folder.rglob('*.cs')\n"
+        "    file_presence.is_present(path)\n"
+        "    walk_files(folder, bool)\n"
+        "    return sorted([path], key=key)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/reads.py": source})
+    reads = [
+        (9, "os.stat"),
+        (10, "os.scandir"),
+        (11, "os.walk"),
+        (12, "os.path.isfile"),
+        (13, "glob.glob"),
+        (14, "open"),
+        (15, "Path.read_text"),
+        (16, "Path.read_bytes"),
+        (17, "Path.stat"),
+        (18, "Path.exists"),
+        (19, "Path.is_file"),
+        (20, "Path.iterdir"),
+        (21, "Path.rglob"),
+        (22, "file_presence.is_present"),
+        (23, "folder_walk.walk_files"),
+        (24, "dotnet_solution.same_path"),
+    ]
+    assert found == [f"{SCRIPTS}/reads.py:{line} reads a path with {read}; {TREE_READ_ADVICE}" for line, read in reads]
+
+
+def test_tree_read_policy_passes_the_reader_another_objects_method_a_module_function_and_the_suites() -> None:
+    # The reader's own calls, an evaluation's exists(text), which takes an argument no path's exists takes, ast.walk,
+    # the script's own Path(__file__), and a suite under the scripts, which is not read.
+    source = (
+        "import ast\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+        "from tree_reader import TreeReader\n"
+        "def read(root, files, tree):\n"
+        "    reader = TreeReader(root)\n"
+        "    reader.present(root / 'a.cs')\n"
+        "    reader.contents(root / 'a.cs')\n"
+        "    reader.search(root, bool)\n"
+        "    files.exists('$(Path)')\n"
+        "    return list(ast.walk(tree))\n"
+    )
+    suite = "from pathlib import Path\ndef test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n"
+    assert tree_read_findings({f"{SCRIPTS}/conforming.py": source, f"{SCRIPTS}/test_conforming.py": suite}) == []
+
+
+def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malformed_one() -> None:
+    allowed = (
+        "TREE_READ_ALLOWED = {'own_file': 'the skill wrote it under the temporary directory', 'gone': 'stale'}\n"
+        "def own_file(path):\n"
+        "    return path.read_bytes()\n"
+        "def other(path):\n"
+        "    return path.read_bytes()\n"
+    )
+    malformed = "TREE_READ_ALLOWED = {'own_file': ''}\ndef own_file(path):\n    return path.read_bytes()\n"
+    found = tree_read_findings({f"{SCRIPTS}/allowed.py": allowed, f"{SCRIPTS}/malformed.py": malformed})
+    assert found == [
+        f"{SCRIPTS}/allowed.py:5 reads a path with Path.read_bytes; {TREE_READ_ADVICE}",
+        f"{SCRIPTS}/allowed.py: TREE_READ_ALLOWED allows gone, which holds nothing it sanctions; remove the entry",
+        f"{SCRIPTS}/malformed.py: TREE_READ_ALLOWED must map each function, class, or assignment to its reason",
+        f"{SCRIPTS}/malformed.py:3 reads a path with Path.read_bytes; {TREE_READ_ADVICE}",
+    ]

@@ -234,6 +234,15 @@ def display_path(path: str, root: Path) -> str:
         return candidate.as_posix()
 
 
+# A path the formatter's log names, which the formatter itself opened, is resolved only to name it relative to the root.
+TREE_READ_ALLOWED = {
+    "display_path": (
+        "display only: a path the formatter's log names, which the formatter itself opened, is resolved to name it "
+        "relative to the root, and nothing is read from it"
+    ),
+}
+
+
 INT_PARSE_ALLOWED = {
     "parse_diagnostics": "dotnet format writes each diagnostic's line and column",
 }

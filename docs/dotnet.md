@@ -39,6 +39,10 @@ solution the same way and judge its entries by one rule:
 - An entry that a symbolic link or junction on its way, its own name included, leads outside the tree is refused the
   same way, judged from each name's own metadata and each link's text, so nothing outside the tree is stat, listed,
   or opened to decide; a link whose target stays inside the tree is read through.
+- `dotnet-format` reads every path through one reader bound to its tree, `tree_reader.py` in ejryan89-skill-core,
+  which judges each path by its text and its links that way before it stats, opens, lists, or searches it, and
+  validation refuses a direct read in the skill's scripts. A path outside the tree is compared with another by its
+  text, so no folder outside the tree is listed to compare it.
 - A solution, project, or settings file is read only when it is a regular file no larger than `READ_LIMIT_BYTES` in
   `dotnet_solution.py`; a larger file or a device is refused unread.
 - A search of the repository for solutions or projects skips version-control, dependency, build-output, and Visual
