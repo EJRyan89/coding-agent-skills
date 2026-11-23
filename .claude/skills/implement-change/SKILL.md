@@ -60,6 +60,14 @@ The user approves the plan and the model together, then chooses how to continue.
 
 Work test first: write the failing test, then make it pass. Update *Documentation* in the same change. Run the local checks *Validation* names for the files the change touches, in full only where it says the change's reach warrants it, and get them green without skipping, weakening, or suppressing a check; rerun them after anything that changes the tree. Continuous integration runs the full gate; the gates *Validation* names as calling a model are yours to run. Read the whole diff once more for personal paths, credentials, and generated artifacts, and leave no scratch file or background command behind.
 
+Where *Validation* names the type checks of a changed Python file, this prints them, from the files changed since the base *Pull requests* names, committed, uncommitted, or untracked:
+
+```bash
+python -B .claude/skills/implement-change/scripts/pull_request.py type-checks --base "<base>"
+```
+
+It prints `BASE <base> <commit>`, the base's tip after its fetch, then `TYPE_CHECK <job>` for each type-check job that reads a changed file, the strict run of each root included, and `RUN <command>`, the one command that runs those jobs and no other: run it as printed, from the top of the repository. `NO_TYPE_CHECK` in their place means no changed file is one a type check reads. A suite is checked by the strict run of its own root, whatever root the module it tests sits in, so a module and its suite name two strict runs. A last line `FAILED <reason>` is a stop to report.
+
 ## 8. Pull request
 
 `.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Any command of it that cannot finish prints a last line `FAILED <reason>`: report it and stop. Take these in order:

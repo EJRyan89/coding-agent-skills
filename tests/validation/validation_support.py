@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import python_reader
+import type_check_roots
 from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
@@ -37,6 +38,7 @@ from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
 from text_lines import LINE_BREAK
+from type_check_roots import REPOSITORY_SKILLS as REPOSITORY_SKILLS
 from typed_text import read_typed
 
 from deployer import platform_support
@@ -50,10 +52,6 @@ from tools.release_notes import git_output
 # The paths a repository skill's script also names: it runs from the checkout without the deployer, which every module
 # here imports, and validation imports no repository skill.
 DUPLICATION_ALLOWED = {
-    "REPOSITORY_SKILLS": (
-        ".claude/skills/change-skill/scripts/change_skill.py names the repository skills' folder to find what a change "
-        "touches, and cannot import this module, which needs the deployer"
-    ),
     "SKILL_GUIDE": (
         ".claude/skills/change-skill/scripts/change_skill.py prints sections of the skill contract, and cannot import "
         "this module, which needs the deployer"
@@ -66,7 +64,6 @@ INDIRECTION_ALLOWED = {
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
-REPOSITORY_SKILLS = ".claude/skills"
 # A skill's executable files are Bash, Python, and PowerShell, each run by a standard command in deployer/tools.py.
 SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": platform_support.PYTHON, ".ps1": "pwsh"}
 EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
@@ -1673,9 +1670,7 @@ def is_skill_file(relative_path: PurePath) -> bool:
 def skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """Each shipped skill's directory: skills/<name>, holding SKILL.md.
     skill_tree_problems reports any other directory under skills/."""
-    skills = root / "skills"
-    found = (path.parent for path in file_presence.matching(skills, "*/SKILL.md"))
-    return sorted(found, key=lambda path: path.relative_to(skills).as_posix().casefold())
+    return type_check_roots.skill_directories(root)
 
 
 def skills_by_name(root: Path = REPOSITORY_ROOT) -> dict[str, Path]:
@@ -1686,24 +1681,17 @@ def skills_by_name(root: Path = REPOSITORY_ROOT) -> dict[str, Path]:
 
 def repository_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """Each repository skill's directory under .claude/skills, which validation holds as it holds a shipped skill."""
-    return sorted(
-        (path.parent for path in file_presence.matching(root / REPOSITORY_SKILLS, "*/SKILL.md")),
-        key=lambda path: path.name,
-    )
+    return type_check_roots.repository_skill_directories(root)
 
 
 def all_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """Every shipped and repository skill's directory: validation finds, lays out, lints, and types their scripts/."""
-    return [*skill_directories(root), *repository_skill_directories(root)]
+    return type_check_roots.all_skill_directories(root)
 
 
 def skill_script_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """The scripts/ directory of every shipped and repository skill that has one."""
-    return [
-        skill / "scripts"
-        for skill in all_skill_directories(root)
-        if file_presence.is_directory(skill / "scripts", other_is_absent=True)
-    ]
+    return type_check_roots.skill_script_directories(root)
 
 
 def write_fixture_tree(root: Path, files: Mapping[str, str], newline: str | None = None) -> None:

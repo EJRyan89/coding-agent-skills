@@ -26,6 +26,7 @@ from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
 from test_time_in_proportion import assert_time_in_proportion
+from type_check_roots import file_type_check_jobs, strict_type_check_areas
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
@@ -579,6 +580,106 @@ class DraftCommandTests(Repository):
         body = Path(lines[3][len('BODY "') : -1])
         self.addCleanup(remove_tree, body.parent)
         self.assertIn("Closes #12\nCloses #1\n", body.read_text(encoding="utf-8"))
+
+
+# The job names validation gives the type checks, as literals.
+SHARED_JOB = "static type check (mypy deployer, tools, deploy.py, tests, conftest.py)"
+
+
+class TypeChecksCommandTests(Repository):
+    """The branch adds a skill's script and a module under tools/; its suite under tests/ is left untracked."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / "pyproject.toml").write_text(
+            '[tool.validation]\nmypy-strict = ["tools", "tests"]\n', encoding="utf-8"
+        )
+        for name in ("skills/alpha/SKILL.md", "skills/alpha/scripts/run.py", "tools/gate.py"):
+            path = self.root.joinpath(*name.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        self.commit("roots")
+        (self.root / "tests" / "tools").mkdir(parents=True)
+        (self.root / "tests" / "tools" / "test_gate.py").write_text("", encoding="utf-8")
+
+    def test_each_job_a_changed_python_file_reaches_is_named_and_one_command_runs_them_all(self) -> None:
+        code, lines = self.run_script("type-checks", "--base", "origin/main")
+        jobs = [
+            "static type check (mypy skills/alpha/scripts)",
+            SHARED_JOB,
+            "static type check (mypy --strict tests)",
+            "static type check (mypy --strict tools)",
+        ]
+        command = "python -B tests/run_validation.py " + " ".join(f"-k '{job}'" for job in jobs)
+        base = git(self.root, "rev-parse", "origin/main")
+        self.assertEqual(
+            (0, [f"BASE origin/main {base}", *(f"TYPE_CHECK {job}" for job in jobs), f"RUN {command}"]), (code, lines)
+        )
+
+    def test_a_python_file_the_base_holds_and_the_branch_does_not_reaches_nothing(self) -> None:
+        # Only the files changed since the merge base count, so a base that moved on adds none of its own.
+        git(self.root, "reset", "--quiet", "--hard", "origin/main")
+        remove_tree(self.root / "tests")
+        other = self.temporary / "other"
+        git(self.temporary, "clone", "--quiet", str(self.temporary / "origin.git"), str(other))
+        (other / "tools").mkdir()
+        (other / "tools" / "later.py").write_text("", encoding="utf-8")
+        git(other, "add", "--all")
+        git(other, "commit", "--quiet", "-m", "later")
+        git(other, "push", "--quiet", "origin", "main")
+        (self.root / "pyproject.toml").write_text('[tool.validation]\nmypy-strict = ["tools"]\n', encoding="utf-8")
+        code, lines = self.run_script("type-checks", "--base", "origin/main")
+        self.assertEqual(
+            (0, ["BASE origin/main " + git(self.root, "rev-parse", "origin/main"), "NO_TYPE_CHECK"]), (code, lines)
+        )
+
+    def test_a_strict_list_that_cannot_be_read_is_a_failed_line(self) -> None:
+        pyproject = self.root / "pyproject.toml"
+        for text, reason in (
+            ("[tool.validation\n", f'FAILED cannot read "{pyproject}": '),
+            (
+                '[tool.validation]\nmypy-strict = "tools"\n',
+                "FAILED pyproject.toml: [tool.validation] mypy-strict is not a list of paths",
+            ),
+        ):
+            with self.subTest(text=text):
+                pyproject.write_text(text, encoding="utf-8")
+                code, lines = self.run_script("type-checks", "--base", "origin/main")
+                self.assertEqual(1, code)
+                self.assertTrue(lines[-1].startswith(reason), lines)
+        pyproject.unlink()
+        code, lines = self.run_script("type-checks", "--base", "origin/main")
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith(f'FAILED cannot read "{pyproject}": '), lines)
+
+    def test_a_base_that_cannot_be_fetched_is_a_failed_line(self) -> None:
+        code, lines = self.run_script("type-checks", "--base", "nowhere/main")
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith("FAILED cannot fetch main from nowhere: "), lines)
+
+
+def test_a_job_name_holding_a_single_quote_is_refused_rather_than_quoted() -> None:
+    with pytest.raises(pull_request.PullRequestError, match="single quote"):
+        pull_request.run_command(["static type check (mypy skills/it's/scripts)"])
+
+
+def test_this_repository_s_roots_map_to_the_jobs_continuous_integration_runs() -> None:
+    # A module and its suite reach both strict runs, the one a suite reaching a name its module does not export fails.
+    strict = strict_type_check_areas(REPOSITORY / "pyproject.toml")
+    assert strict is not None
+    changed = [
+        "tools/mutation_gate.py",
+        "tests/tools/test_mutation_gate.py",
+        "deployer/plan.py",
+        "skills/repo-cleanup/scripts/repo_cleanup.py",
+    ]
+    assert file_type_check_jobs(REPOSITORY, changed, strict) == [
+        SHARED_JOB,
+        "static type check (mypy --strict tools)",
+        "static type check (mypy --strict tests)",
+        "static type check (mypy --strict deployer)",
+        "static type check (mypy skills/repo-cleanup/scripts)",
+    ]
 
 
 class CheckCommandTests(Repository):

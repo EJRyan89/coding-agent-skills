@@ -118,6 +118,12 @@ def pushed_branch(fixture: Fixture) -> None:
     write(formatted(fixture, BODY_FILE), "## Summary\n\nThe widget.\n")
 
 
+def strict_list_branch(fixture: Fixture) -> None:
+    """The pushed branch, with the pyproject.toml whose strict list type-checks reads."""
+    pushed_branch(fixture)
+    write(formatted(fixture, PYPROJECT), "[tool.validation]\nmypy-strict = []\n")
+
+
 def template_repository(fixture: Fixture) -> None:
     fixture.repository({".github/pull_request_template.md": TEMPLATE})
 
@@ -138,6 +144,7 @@ def shepherd_hub(fixture: Fixture) -> None:
 # open on Windows and elsewhere takes no stat the harness can fail, so the read succeeds and the command goes on.
 
 PR_TEMPLATE = "{work}/.github/pull_request_template.md"
+PYPROJECT = "{work}/pyproject.toml"
 # A pull request template is looked for by listing its folders, as GitHub reads one, so one that is not there is never
 # opened: the run refuses as its docstring says, with "no pull request template" naming the file it looked for.
 NO_TEMPLATE = "pull_request.py lists the template's folders, so a template that is not there is its documented refusal"
@@ -251,6 +258,15 @@ DRIVERS: list[Driver] = [
             ((TITLE_FILE, BODY_FILE), True, {STAT_RAISES: OPENED_ONLY}),
             ((PR_TEMPLATE,), False, {MISSING: NO_TEMPLATE}),
         )
+    ),
+    Driver(
+        PULL_REQUEST,
+        "type-checks",
+        ("--repository", "{work}", "type-checks", *BASE),
+        strict_list_branch,
+        (PYPROJECT,),
+        git=True,
+        not_run={STAT_RAISES: OPENED_ONLY},
     ),
     condition(DOC_PASSAGES, (DIFF,), stat_raises=OPENED_ONLY),
     condition(
