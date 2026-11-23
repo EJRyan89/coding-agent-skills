@@ -44,7 +44,7 @@ BOUNDARY_SECONDS = 120.0
 # The line a child prints on its standard output once it has made the change it stops after.
 STOPPED = "STOPPED"
 # What a child killed by its tree reports as its exit: TerminateJobObject's exit code on Windows, SIGKILL elsewhere.
-KILLED = 1 if sys.platform == "win32" else -signal.SIGKILL
+KILLED = 1 if sys.platform == "win32" else -signal.SIGKILL  # type: ignore[attr-defined, unused-ignore]  # Unix only
 # The exit of a deployment cancelled at its menu, which ends input reaches after recovery and before anything else.
 CANCELLED_EXIT = 130
 # Why a killed child, and the recovery after it, change the home.
@@ -254,6 +254,13 @@ def recover(deployed: Deployment, killed: int | None = None) -> Result:
     return result
 
 
+def assert_recovery_repeats(deployed: Deployment) -> None:
+    """A second recovery finds no run to recover and changes nothing in the home."""
+    recovered_home = tree_state(deployed.home)
+    assert recover(deployed).output.count("Recovering") == 0
+    assert tree_state(deployed.home) == recovered_home
+
+
 def items(directory: Path) -> Iterator[str]:
     """Each name in a managed root that is an item, not the deployer's own record or kept backups."""
     return (path.name for path in directory.iterdir() if not path.name.startswith("."))
@@ -301,8 +308,7 @@ def test_a_run_killed_before_its_commit_is_rolled_back_and_deployed_again(deploy
         recovered.output, f"Recovering uncommitted run {run} (rolling back)...", "  Recovery complete."
     )
     assert tree_state(deployer.home) == before.home
-    assert recover(deployer).output.count("Recovering") == 0
-    assert tree_state(deployer.home) == before.home
+    assert_recovery_repeats(deployer)
     redeployed = deployer.deploy_ok(*KILLED_RUN)
     groups = deployer.report_groups(redeployed.output, "DEPLOYED")
     assert {group: sorted(names) for group, names in groups.items() if group != "BACKED UP"} == {
@@ -328,9 +334,7 @@ def test_a_run_killed_after_its_commit_is_finished(deployer: Deployment, name: s
     assert deployer.manifest_file.read_bytes() == committed
     assert_deployed(deployer, before)
     assert (deployer.skills_dir / ".backups" / run / "beta").is_dir()
-    recovered_home = tree_state(deployer.home)
-    assert recover(deployer).output.count("Recovering") == 0
-    assert tree_state(deployer.home) == recovered_home
+    assert_recovery_repeats(deployer)
     redeployed = deployer.deploy_ok(*KILLED_RUN)
     assert list(deployer.report_groups(redeployed.output, "DEPLOYED")) == ["UNCHANGED"]
     assert_deployed(deployer, before)
@@ -348,11 +352,13 @@ def test_a_rollback_killed_partway_is_finished_by_the_next_recovery(deployer: De
         recovered.output, f"Recovering uncommitted run {run} (rolling back)...", "  Recovery complete."
     )
     assert tree_state(deployer.home) == before.home
+    assert_recovery_repeats(deployer)
 
 
 def test_a_finalization_killed_partway_is_finished_by_the_next_recovery(deployer: Deployment) -> None:
     before = prepare(deployer)
     run, _ = kill_at(deployer, AFTER_COMMIT["the manifest is committed"], *KILLED_RUN)
+    committed = deployer.manifest_file.read_bytes()
     # Recovery keeps the displaced copy of beta under .backups; this kill leaves it there with the journal unfinished.
     run_child(deployer, AFTER_COMMIT["the kept copy is moved under .backups"], changes_home=RECOVERS)
     assert [path.name for path in deployer.paths.staging_root.iterdir()] == [run]
@@ -360,4 +366,6 @@ def test_a_finalization_killed_partway_is_finished_by_the_next_recovery(deployer
     deployer.assert_lines(
         recovered.output, f"Recovering committed run {run} (completing finalization)...", "  Recovery complete."
     )
+    assert deployer.manifest_file.read_bytes() == committed
     assert_deployed(deployer, before)
+    assert_recovery_repeats(deployer)
