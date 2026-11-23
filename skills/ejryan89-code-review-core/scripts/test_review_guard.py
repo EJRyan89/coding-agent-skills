@@ -1139,10 +1139,12 @@ class ClaimTests(GuardFixture):
 
         return at_step
 
-    def test_a_claim_made_whose_copy_is_left_denies_and_holds_and_one_not_made_leaves_none(self) -> None:
+    def test_a_claim_made_whose_copy_is_left_holds_and_is_allowed_and_one_not_made_leaves_none(self) -> None:
+        # Holds on every platform. A claim made whose copy's name no try removed, as on Windows while another reader
+        # holds the claim open, is allowed; one whose removal an interrupt ended still denies, and holds.
         real_create = atomic_file.create_bytes
 
-        def unfinished(made: bool) -> Any:
+        def unfinished(made: bool, failure: BaseException | None = None) -> Any:
             def create(path: Path, data: bytes, **kwargs: Any) -> None:
                 copy = path.with_name(f".{path.name}.left.tmp")
                 if made:
@@ -1150,7 +1152,7 @@ class ClaimTests(GuardFixture):
                 raise atomic_file.UnfinishedCopyError(
                     target=path,
                     copy=copy,
-                    failure=OSError(errno.EIO, "I/O error"),
+                    failure=failure or OSError(errno.EIO, "I/O error"),
                     removal=PermissionError(errno.EACCES, "Permission denied"),
                     made=made,
                 )
@@ -1167,7 +1169,7 @@ class ClaimTests(GuardFixture):
             )
         self.assert_no_claim("a claim not made is no claim")
         self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
-        with mock.patch.object(atomic_file, "create_bytes", unfinished(made=True)):
+        with mock.patch.object(atomic_file, "create_bytes", unfinished(made=True, failure=KeyboardInterrupt())):
             self.assertEqual(
                 "Code-review reviewer boundary: this reviewer's claim is made, but the copy it was written through is "
                 "left; read the prompt file your task names first.",
@@ -1177,6 +1179,67 @@ class ClaimTests(GuardFixture):
         self.assertIsNone(self.decide("Read", file_path=self.prompt()))
         self.assertIsNone(self.decide("Write", file_path=self.result()))
         self.assert_denied(self.decide("Write", file_path=self.result("sql-review")), "write only your own result file")
+        with mock.patch.object(atomic_file, "create_bytes", unfinished(made=True)):
+            self.assertIsNone(self.decide("Read", agent=OTHER_AGENT, file_path=self.prompt("sql-review")))
+        self.assertTrue(guard.claimed(self.run_directory, "sql-review"), "the claim holds, so its log is started")
+        self.assertIsNone(self.decide("Write", agent=OTHER_AGENT, file_path=self.result("sql-review")))
+        self.assert_denied(self.decide("Write", agent=OTHER_AGENT, file_path=self.result()), "write only your own")
+
+    def test_a_claim_whose_copy_a_reader_holds_past_every_try_is_allowed_and_the_copy_pruned_once_old(self) -> None:
+        # Holds on every platform, by injected refusals of every try to remove the copy's name, as Windows refuses it
+        # while another guard's prune or this agent's parallel first read holds the claim open throughout.
+        refused: list[Path] = []
+
+        def unlink(path: Path, missing_ok: bool = False) -> None:
+            if path.name.startswith(f".{AGENT}.json."):
+                refused.append(path)
+                raise PermissionError(errno.EACCES, "the file is being used by another process", str(path))
+            REAL_UNLINK(path, missing_ok=missing_ok)
+
+        with mock.patch.object(Path, "unlink", unlink), mock.patch.object(atomic_file.time, "sleep"):
+            self.claim()
+        self.assertGreater(len(refused), 2, "the copy's removal was tried after waits, and refused each time")
+        self.assert_made_claim_with_its_copy_left(refused[:1])
+
+    def test_a_reader_holding_the_claim_open_while_its_create_removes_the_copy_keeps_no_read_from_its_claim(
+        self,
+    ) -> None:
+        # The race of a claim made while another reader, another guard's prune or this agent's parallel first read,
+        # holds it open, with a real handle from the link until the call is decided. Holds on every platform, but only
+        # Windows refuses to remove the copy's name while a handle without delete sharing, as Python opens a file,
+        # holds the claim, so only there is the copy left and the call allowed by the claim being made, not removed.
+        reader = contextlib.ExitStack()
+        held: list[Path] = []
+
+        def link_then_hold(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+            REAL_LINK(source, target, *args, **kwargs)
+            if Path(target).name == f"{AGENT}.json":
+                reader.callback(os.close, os.open(target, os.O_RDONLY))
+                held.append(Path(target))
+
+        with reader, mock.patch.object(os, "link", link_then_hold), mock.patch.object(atomic_file.time, "sleep"):
+            self.claim()
+        self.assertEqual(1, len(held), "the reader held the claim from its link until the call was decided")
+        left = sorted(self.claims.glob(f".{AGENT}.json.*.tmp"))
+        self.assertEqual(os.name == "nt", bool(left), "only Windows keeps the copy's name while the claim is held")
+        self.assert_made_claim_with_its_copy_left(left)
+
+    def assert_made_claim_with_its_copy_left(self, copies: list[Path]) -> None:
+        """The agent's claim of the csharp-review role holds, its copies, if any, are left beside it, and a later
+        claim prunes them once they are LEFTOVER_COPY_AGE old, keeping the claim they are names of."""
+        claim = {"run": str(self.run_directory), "role": "csharp-review"}
+        self.assertEqual(claim, json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")))
+        for copy in copies:
+            self.assertTrue(copy.is_file(), "the copy is left for the prune of leftover copies")
+        self.assertTrue(guard.claimed(self.run_directory, "csharp-review"), "the claim's read log is started")
+        self.assertIsNone(self.decide("Read", file_path=self.prompt()))
+        self.assertIsNone(self.decide("Write", file_path=self.result()))
+        self.assert_denied(self.decide("Write", file_path=self.result("sql-review")), "write only your own result file")
+        for copy in copies:
+            age_by(copy, LEFTOVER_COPY_AGE)
+        self.claim("sql-review", agent=OTHER_AGENT)
+        self.assertEqual([], sorted(self.claims.glob(f".{AGENT}.json.*.tmp")), "a later claim prunes the old copy")
+        self.assertEqual(claim, json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")))
 
     def test_an_older_guard_s_empty_or_partial_claim_denies_naming_the_remedy_and_is_pruned_once_old(self) -> None:
         # An older guard created a claim and then wrote it, so a write that failed or was killed left it empty or

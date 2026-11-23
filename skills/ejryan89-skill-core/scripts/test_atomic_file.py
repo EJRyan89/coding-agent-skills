@@ -10,7 +10,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -383,6 +385,99 @@ class CreateTests(unittest.TestCase):
                 self.assertEqual(b"the whole report\n", path.read_bytes())
                 self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
                 self.assertEqual(["report.md"], names_in(temporary))
+
+    def test_a_copy_name_refused_for_a_while_is_removed_after_short_waits_and_one_refused_throughout_is_named(
+        self,
+    ) -> None:
+        # Holds on every platform, by injected refusals of the copy's removal: Windows refuses to remove the copy's
+        # name while another reader holds the new file open, and such a reader lets go after a moment.
+        real_unlink = Path.unlink
+        cases: tuple[tuple[str, int | None, BaseException | None], ...] = (
+            ("refused for a while", 5, None),
+            ("refused throughout", None, None),
+            ("interrupted in a wait", 1, KeyboardInterrupt()),
+        )
+        for name, refusals, interrupt in cases:
+            removals: list[Path] = []
+            waits: list[float] = []
+
+            def unlink(
+                self: Path,
+                missing_ok: bool = False,
+                refusals: int | None = refusals,
+                removals: list[Path] = removals,
+            ) -> None:
+                removals.append(self)
+                if refusals is None or len(removals) <= refusals:
+                    raise PermissionError(errno.EACCES, "the file is being used by another process", str(self))
+                real_unlink(self, missing_ok=missing_ok)
+
+            def wait(seconds: float, waits: list[float] = waits, interrupt: BaseException | None = interrupt) -> None:
+                waits.append(seconds)
+                if interrupt is not None:
+                    raise interrupt
+
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "report.md"
+                with mock.patch.object(Path, "unlink", unlink), mock.patch.object(time, "sleep", wait):
+                    if refusals is None:
+                        with self.assertRaises(UnfinishedCopyError) as raised:
+                            create_bytes(path, REPORT)
+                    elif interrupt is not None:
+                        with self.assertRaises(KeyboardInterrupt):
+                            create_bytes(path, REPORT)
+                    else:
+                        create_bytes(path, REPORT)
+                self.assertEqual(REPORT, path.read_bytes(), "the file made keeps its bytes")
+                self.assertLess(sum(waits), 0.5, "the waits are short and few, well inside a hook's time limit")
+                if refusals is None:
+                    self.assertTrue(raised.exception.made)
+                    self.assertEqual(5, len(waits))
+                    self.assertEqual(7, len(removals), "a try after each wait, and the clean-up's")
+                    self.assertEqual([raised.exception.copy] * 7, removals)
+                    real_unlink(raised.exception.copy)
+                elif interrupt is not None:
+                    self.assertEqual(1, len(waits))
+                    self.assertEqual(2, len(removals), "the clean-up removes the copy once the wait is interrupted")
+                else:
+                    self.assertEqual(refusals, len(waits))
+                    self.assertEqual(refusals + 1, len(removals), "the try after the last wait removes the name")
+                self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
+                self.assertEqual(["report.md"], names_in(temporary))
+
+    def test_a_reader_holding_the_new_file_open_for_a_moment_keeps_no_create_from_finishing(self) -> None:
+        # The race of a reader that opens the new file as soon as the link puts it in place, with a real handle, which
+        # lets go at the create's first wait. Holds on every platform, but only Windows refuses to remove the copy's
+        # name while the reader holds the file, since Python opens a file without delete sharing, so only there does
+        # the create wait at all, and only there does it fail without its waits, the reader still holding the file.
+        real_link, real_sleep = os.link, time.sleep
+        reader = contextlib.ExitStack()
+        read: list[Path] = []
+        waits: list[float] = []
+
+        def link_then_read(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+            real_link(source, target, *args, **kwargs)
+            reader.callback(os.close, os.open(target, os.O_RDONLY))
+            read.append(Path(target))
+
+        def let_go_then_wait(seconds: float) -> None:
+            waits.append(seconds)
+            reader.close()
+            real_sleep(seconds)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.md"
+            with (
+                reader,
+                mock.patch.object(os, "link", link_then_read),
+                mock.patch.object(time, "sleep", let_go_then_wait),
+            ):
+                create_bytes(path, REPORT)
+            self.assertEqual([path], read, "the reader opened the new file once it was in place")
+            self.assertEqual(REPORT, path.read_bytes())
+            self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
+            self.assertEqual(["report.md"], names_in(temporary))
+            self.assertEqual(os.name == "nt", bool(waits), "only Windows refuses the removal while the file is held")
 
     def test_a_mode_its_owner_may_not_write_is_refused_before_a_copy_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -892,13 +987,84 @@ class LinkAtTheTargetTests(unittest.TestCase):
                 )
 
 
+# The exit status hdiutil gives a detach while the volume is busy, EBUSY's number on macOS, as a volume macOS is still
+# releasing is for a moment after a test's last file on it closes.
+HDIUTIL_BUSY = 16
+# The waits, in seconds, before each new try to detach a test volume hdiutil reports busy: a few, doubling, so a volume
+# that stays busy is given up on within about ten seconds.
+DETACH_BUSY_WAITS = (0.5, 1.0, 2.0, 4.0)
+
+
+def detach_volume(mount: Path) -> str | None:
+    """Detach the test volume at `mount`, trying again after each wait of DETACH_BUSY_WAITS while hdiutil reports it
+    busy, and return None once it is detached, or why it is not. It raises nothing hdiutil answers, so a teardown that
+    calls it neither fails a check that passed nor hides one that failed."""
+    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
+    for wait in (*DETACH_BUSY_WAITS, None):
+        try:
+            result = subprocess.run(detach, check=False, capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return "hdiutil detach did not finish within 120 seconds"
+        if result.returncode == 0:
+            return None
+        if result.returncode != HDIUTIL_BUSY or wait is None:
+            stderr = result.stderr.decode("utf-8", "replace").strip()
+            return f"hdiutil detach exited with status {result.returncode}: {stderr}"
+        time.sleep(wait)
+    raise AssertionError("unreachable: the last try returns")
+
+
+class DetachVolumeTests(unittest.TestCase):
+    """The teardown of RealFileSystemWithoutHardLinksTests, held on every platform by a stand-in for hdiutil."""
+
+    def detach(self, statuses: list[int | None]) -> tuple[str | None, list[float], int]:
+        """detach_volume where hdiutil answers each try with the next of `statuses`, None for a try that runs out
+        its time limit, and the waits it took and the tries it made."""
+        answers = iter(statuses)
+        tries: list[list[str]] = []
+        waits: list[float] = []
+
+        def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            tries.append(command)
+            status = next(answers)
+            if status is None:
+                raise subprocess.TimeoutExpired(command, 120)
+            return subprocess.CompletedProcess(command, status, b"", b"hdiutil: couldn't eject - Resource busy\n")
+
+        with mock.patch.object(subprocess, "run", run), mock.patch.object(time, "sleep", waits.append):
+            reason = detach_volume(Path("mount"))
+        self.assertEqual([["hdiutil", "detach", "-quiet", "-force", "mount"]] * len(tries), tries)
+        return reason, waits, len(tries)
+
+    def test_a_volume_busy_for_a_while_is_detached_once_it_is_free(self) -> None:
+        self.assertEqual((None, [0.5, 1.0], 3), self.detach([HDIUTIL_BUSY, HDIUTIL_BUSY, 0]))
+        self.assertEqual((None, [], 1), self.detach([0]))
+
+    def test_a_detach_that_never_succeeds_is_returned_as_a_reason_and_never_raised(self) -> None:
+        reason, waits, tries = self.detach([HDIUTIL_BUSY] * 5)
+        self.assertEqual("hdiutil detach exited with status 16: hdiutil: couldn't eject - Resource busy", reason)
+        self.assertEqual(([0.5, 1.0, 2.0, 4.0], 5), (waits, tries))
+        self.assertLessEqual(sum(waits), 10, "a volume that stays busy is given up on within about ten seconds")
+        reason, waits, tries = self.detach([1])
+        self.assertEqual("hdiutil detach exited with status 1: hdiutil: couldn't eject - Resource busy", reason)
+        self.assertEqual(([], 1), (waits, tries), "only a busy volume is tried again")
+        self.assertEqual(
+            ("hdiutil detach did not finish within 120 seconds", [0.5], 2), self.detach([HDIUTIL_BUSY, None])
+        )
+
+
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
 class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
     """create_bytes on a real FAT and exFAT volume, which refuse hard links, attached from a disk image."""
 
     def test_a_volume_without_hard_links_refuses_by_default_and_reserves_when_allowed(self) -> None:
+        # A volume that stays attached keeps its mount folder from being removed, so the folder's clean-up leaves what
+        # it cannot remove, and the warning names the volume.
         for file_system in ("MS-DOS", "ExFAT"):
-            with self.subTest(file_system=file_system), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(file_system=file_system),
+                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            ):
                 image = Path(temporary) / "volume.dmg"
                 mount = Path(temporary) / "mount"
                 mount.mkdir()
@@ -909,8 +1075,13 @@ class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
                 try:
                     self._check_volume(mount)
                 finally:
-                    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
-                    subprocess.run(detach, check=True, capture_output=True, timeout=120)
+                    # Reported apart from the checks, so a detach that fails neither fails the subtest nor hides
+                    # the failure of a check.
+                    reason = detach_volume(mount)
+                    if reason is not None:
+                        warnings.warn(
+                            f"the {file_system} test volume at {mount} stays attached: {reason}", stacklevel=1
+                        )
 
     def _check_volume(self, volume: Path) -> None:
         def names() -> set[str]:

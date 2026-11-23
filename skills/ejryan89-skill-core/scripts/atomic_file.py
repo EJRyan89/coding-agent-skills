@@ -28,6 +28,7 @@ import errno
 import os
 import stat
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -43,6 +44,12 @@ TRACKED_FILE_MODE = 0o644
 # FAT and exFAT, ENOTSUP on macOS's, EINVAL on Windows' (its ERROR_INVALID_FUNCTION), and EOPNOTSUPP or EXDEV from a
 # network share. A create that allows an empty reservation falls back to one on these alone.
 NO_HARD_LINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EXDEV})
+
+# The waits, in seconds, before each new try to remove a created copy's own name once a try fails: Windows refuses to
+# remove any name of a file another handle holds open without delete sharing, as a reader of the target briefly does,
+# and the copy and the target are one file once linked. Short and few, so a removal that keeps failing raises within
+# about a third of a second, well inside a hook's time limit.
+COPY_NAME_REMOVAL_WAITS = (0.01, 0.02, 0.04, 0.08, 0.16)
 
 
 class UnfinishedCopyError(OSError):
@@ -142,9 +149,11 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     A file, a folder, or a link already at `path`, one that leads nowhere included, raises FileExistsError and is left
     as it was. A failure before the link that puts the copy in place leaves nothing at `path`, removes the copy, and
     is raised as it was. Once the link is made, `path` holds `data` whatever follows: removing the copy's own name is
-    tried again after a first failure, and an OSError the second try overcomes is no failure, so the create returns;
-    an interrupt or a defect there is raised as it was, the copy removed; and a copy whose name the second try cannot
-    remove either raises UnfinishedCopyError with `made` set, whose message says `path` is made and names the copy.
+    tried again after each OSError, after each wait of COPY_NAME_REMOVAL_WAITS and then once more at once, so a reader
+    that holds the file open for a moment, which on Windows refuses the removal, keeps no create from finishing, and
+    an OSError a later try overcomes is no failure, so the create returns; an interrupt or a defect there, in a wait
+    included, is raised as it was, the copy removed; and a copy whose name no try can remove raises
+    UnfinishedCopyError with `made` set, whose message says `path` is made and names the copy.
 
     The copy is put in place by a hard link, so a folder whose file system has none, such as FAT or exFAT, or a
     network share that refuses them, cannot hold a file this creates unless the caller allows an empty reservation.
@@ -236,8 +245,9 @@ def _publish(
     `path`, then `place` the copy at `path`, and, for a create, whose `place` returns whether the copy's own name
     remains, as it does after a link, remove that name.
     Whatever fails, the copy is removed and the failure raised as it was, or UnfinishedCopyError raised for a copy
-    that cannot be removed. A create whose link was made is made: an OSError removing the copy's name that a second
-    try overcomes is no failure, and an UnfinishedCopyError says `path` is made.
+    that cannot be removed. A create whose link was made is made: _remove_copy_name tries removing the copy's name
+    through its waits, the clean-up here tries once more, an OSError a later try overcomes is no failure, and an
+    UnfinishedCopyError says `path` is made.
 
     A replace's copy is made writable before it is removed, since its mode may be read-only and Windows refuses to
     remove a read-only file. A created copy's mode is writable already, and is left alone: once linked, the copy and
@@ -260,7 +270,7 @@ def _publish(
         remains = place(temporary, path)
         made = creates
         if creates and remains:
-            temporary.unlink()
+            _remove_copy_name(temporary)
         temporary = None
     except BaseException as failure:
         if temporary is not None:
@@ -276,6 +286,20 @@ def _publish(
             if made and isinstance(failure, OSError):
                 return
         raise
+
+
+def _remove_copy_name(copy: Path) -> None:
+    """Remove `copy`, a created copy's own name, trying again after each wait of COPY_NAME_REMOVAL_WAITS once a try
+    raises an OSError, and raise the last try's OSError when every one fails. A name already gone is removed. Anything
+    else, an interrupt in a wait included, is raised as it was."""
+    for wait in COPY_NAME_REMOVAL_WAITS:
+        try:
+            copy.unlink(missing_ok=True)
+        except OSError:
+            time.sleep(wait)
+        else:
+            return
+    copy.unlink(missing_ok=True)
 
 
 def _reserve(target: Path) -> int:

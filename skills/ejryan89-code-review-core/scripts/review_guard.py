@@ -35,11 +35,13 @@ reviewer can write: a folder named with the user's id that `private_folder.ensur
 of a claim, to be one only the user owns and can write, so no other local account can remove a claim or plant one.
 A call is denied while it is not. A retry is a fresh agent that claims the same role. A claim is created whole or not
 at all, through `atomic_file.create_bytes`, so no reader, a parallel first call of the same agent included, ever sees
-part of one, and a write that fails leaves no claim behind and denies its call, naming why. The create puts the claim
-in place by a hard link, so a claims folder whose file system has none denies every first read, naming that remedy;
-the create's empty reservation is never allowed, since a claim seen empty would deny its reviewer as unreadable. Each
-first read prunes, under a lock, the claims whose run is gone and the leftovers of failed claims, and removes only a
-file it judged, so a claim made after the judgment is never removed.
+part of one, and a write that fails leaves no claim behind and denies its call, naming why. A claim made whole whose
+copy the create cannot then remove, as on Windows while another reader holds the claim open, holds and allows its
+call, and the copy is pruned with the leftovers of failed claims. The create puts the claim in place by a hard link,
+so a claims folder whose file system has none denies every first read, naming that remedy; the create's empty
+reservation is never allowed, since a claim seen empty would deny its reviewer as unreadable. Each first read prunes,
+under a lock, the claims whose run is gone and the leftovers of failed claims, and removes only a file it judged, so
+a claim made after the judgment is never removed.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
@@ -149,8 +151,9 @@ Claim = tuple[Path, dict[str, Any]]
 UNREADABLE_CLAIM_AGE = 600
 # How old, in seconds, a copy a create left beside a claim must be before a new claim prunes it. A copy lives only while
 # its create runs, inside one hook call, which Claude Code ends at the hook's timeout, so one past every guard's timeout
-# is a killed create's; the age is an unreadable claim's, many times that timeout. Pruning a copy sooner widens nothing,
-# since a create whose copy is gone before its link fails and leaves no claim, but it would fail that create.
+# is a killed create's, or one a made claim's create could not remove; the age is an unreadable claim's, many times
+# that timeout. Pruning a copy sooner widens nothing, since a create whose copy is gone before its link fails and
+# leaves no claim, but it would fail that create.
 LEFTOVER_COPY_AGE = UNREADABLE_CLAIM_AGE
 # The name `atomic_file.create_bytes` gives the copy it writes a claim through: `.<agent>.json.<random>.tmp`.
 LEFTOVER_COPY = ".*.json.*.tmp"
@@ -406,8 +409,9 @@ def _prune_claims(claims: Path) -> None:
     claim any role, another than the prompt it first asked for included. That widens no reviewer's reads, as
     `_load_claim` says: no call of that agent was ever let through, its claiming read included, so it has read nothing
     a pull request holds that could choose the role, just as a fresh agent has not. A younger one is kept, since an
-    older guard beside this one may still be writing it in two steps. A copy a killed create left beside a claim,
-    named `LEFTOVER_COPY`, is never read as one, and is removed once it is `LEFTOVER_COPY_AGE` old.
+    older guard beside this one may still be writing it in two steps. A copy a killed create left beside a claim, or
+    one a made claim's create could not remove, named `LEFTOVER_COPY`, is never read as one, and is removed once it
+    is `LEFTOVER_COPY_AGE` old.
 
     A prune removes only the file it judged, so a claim made after it judged the path is never removed. It holds the
     lock of `PRUNE_LOCK` throughout, so no other guard prunes meanwhile: only a prune removes a claim, and a create
@@ -495,8 +499,11 @@ def _claim(agent: str, path: Path) -> None:
     A create that fails before its claim is in place leaves none and denies the call, naming the error, so the next
     first read claims anew; where the file system refuses the hard link the claim is put in place by, the denial names
     the remedy too. One that put its claim in place but could not remove the copy it wrote it through
-    (`UnfinishedCopyError` with `made` set) still denies this call, after starting the role's read log, since the claim
-    holds: the reviewer's next read is judged against it."""
+    (`UnfinishedCopyError` with `made` set), as on Windows while another reader, another guard's prune or this agent's
+    parallel first read, holds the claim open past the create's retries, holds as a claim made whole does: it starts
+    the role's read log and allows the call, and the copy, which no reader takes for a claim, is left for the prune of
+    leftover copies. One whose removal an interrupt ended rather than an OSError still denies the call, after starting
+    the log, since the claim holds and the reviewer's next read is judged against it."""
     run = run_root(path)
     role = None if run is None else next((r for r in _roles(run) if _same(path, Path(r["prompt_file"]))), None)
     if run is None or role is None:
@@ -520,7 +527,11 @@ def _claim(agent: str, path: Path) -> None:
         if not exc.made:
             raise Denied(_unmade(target, exc)) from exc
         _start_log(run, role["id"])
-        raise Denied(f"this reviewer's claim is made, but the copy it was written through is left; {FIRST}") from exc
+        if not isinstance(exc.failure, OSError):
+            raise Denied(
+                f"this reviewer's claim is made, but the copy it was written through is left; {FIRST}"
+            ) from exc
+        return
     except OSError as exc:
         raise Denied(_unmade(target, exc)) from exc
     _start_log(run, role["id"])
