@@ -13,10 +13,20 @@ from itertools import pairwise
 from pathlib import Path
 
 import file_presence
-from call_tables import TEXT_OPENERS
+from call_tables import OTHER_OPENS, TEXT_METHODS, TEXT_OPENERS
+from python_checks import (
+    GLOB_FUNCTIONS,
+    GLOB_METHODS,
+    MODULE_WALKS,
+    PRESENCE_FUNCTIONS,
+    PRESENCE_PREDICATES,
+    sanctioned_problems,
+)
 from validation_support import (
     COMPUTED_NAME,
     MODULE_LOADERS,
+    MODULE_SCOPE,
+    PATH_MODULES,
     REPOSITORY_ROOT,
     CallableResolver,
     attribute_lookups,
@@ -29,6 +39,7 @@ from validation_support import (
     module_lookup,
     python_trees,
     qualified_name,
+    scoped_nodes,
 )
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
@@ -1177,6 +1188,208 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
+# The .NET skills promise to read only inside the tree they examine. dotnet-format keeps it through
+# ejryan89-skill-core's tree_reader, a reader bound to that tree which judges each path by its text and its links
+# before touching it, and dotnet-dependencies joins TREE_READ_SKILLS in a change of its own. Every stat, open, read,
+# listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a direct read there,
+# or a read through an ejryan89-skill-core helper the reader stands in for, is refused, and one that must stay, such
+# as of a file the skill itself wrote under the temporary directory or of the root a user names before any tree is
+# bound, states why beside the code in a module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's
+# scripts are not read. A call is read through the module's imports, and a callable passed as a value counts as a call
+# of it. A path method is read on any receiver that is not an imported module, since a reader cannot tell a path from
+# another value; the ones that take no positional argument count only when given none, so a method of another object
+# sharing the name and taking one, such as an evaluation's exists(text), does not, and none counts on Path(__file__),
+# the script's own file. A skill TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so
+# a renamed or emptied folder is never read as conforming. Stated limits: a read reached by a name computed at run
+# time, as getattr(path, name); a path method a module's own function wraps under another name; a path method called
+# unbound on its class with the path as its argument, as Path.exists(path); a call in a module that imports both os
+# and os.path, which the shared resolver leaves unnamed; a module read DIRECT_TREE_READS does not list, such as
+# zipfile.is_zipfile, zipfile.Path, shutil.disk_usage, shutil.unpack_archive, or os.pathconf; and an
+# ejryan89-skill-core helper that reads a path but is not in TREE_READ_HELPERS, such as path_containment.refusal,
+# until the list is derived from the core modules' own reads.
+TREE_READ_SKILLS = ("skills/dotnet-format/scripts",)
+TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
+# What the resolver names a name the module binds to anything but an import, such as a parameter.
+LOCAL_NAME = "<local>"
+# The module functions that read a path directly: the presence functions and globs python_checks reads, the walks, the
+# plain opens call_tables lists, os.open and the other opens that take a path, the compressed and archive files, the
+# stats, listings, and link reads, and the copies, comparisons, and line caches that read a file by its path.
+DIRECT_TREE_READS = (
+    PRESENCE_FUNCTIONS
+    | GLOB_FUNCTIONS
+    | MODULE_WALKS - {"ast.walk"}
+    | {name for name, opener in TEXT_OPENERS.items() if opener.plain_file}
+    | {"os.open", "io.FileIO"}
+    | {name for name in OTHER_OPENS if name != "webbrowser.open"}
+    | {name for name in TEXT_OPENERS if name.split(".")[0] in {"gzip", "bz2", "lzma"}}
+    | {"gzip.GzipFile", "bz2.BZ2File", "lzma.LZMAFile", "zipfile.ZipFile"}
+    | {f"os.{name}" for name in ("stat", "lstat", "scandir", "listdir", "readlink", "statvfs")}
+    | {f"shutil.{name}" for name in ("copy", "copy2", "copyfile", "copytree", "copymode", "copystat", "move")}
+    | {f"filecmp.{name}" for name in ("cmp", "cmpfiles", "dircmp")}
+    | {f"linecache.{name}" for name in ("getline", "getlines", "updatecache", "checkcache")}
+    | {
+        f"{module}.{name}"
+        for module in PATH_MODULES
+        for name in ("islink", "isjunction", "getsize", "getmtime", "getatime", "getctime", "realpath", "samefile")
+    }
+)
+# The ejryan89-skill-core helpers that stat, read, list, or walk a path, which the tree reader stands in for. Its own
+# judges, folder_walk's followed_inside and outside_link_refusal, read only inside the tree they are given, and are not
+# here.
+TREE_READ_HELPERS = frozenset(
+    {
+        *(
+            f"file_presence.{name}"
+            for name in (
+                "is_present",
+                "is_directory",
+                "is_there",
+                "is_occupied",
+                "refusal_reason",
+                "require",
+                "matching",
+                "link_to_nothing_on",
+            )
+        ),
+        *(
+            f"dotnet_solution.{name}"
+            for name in ("read_bounded", "read_text", "read_listed_projects", "solution_projects", "same_path")
+        ),
+        *(f"path_keys.{name}" for name in ("path_key", "folds_case", "name_key", "opens_as")),
+        *(f"link_probe.{name}" for name in ("is_link_or_junction", "is_plain_directory", "is_plain_file")),
+        *(f"folder_walk.{name}" for name in ("walk_files", "folder_identity", "is_folder_link")),
+        "path_containment.resolved_path",
+        "path_containment.strictly_resolved_path",
+        "json_reader.read_file",
+        "atomic_file.is_read_only",
+        "folders_up.folders_up",
+    }
+)
+# The path methods that read the path they are called on, counted on any receiver: the ones call_tables names that read,
+# with the presence tests and globs python_checks reads. Those that take no positional argument on a path count only
+# when given none.
+TREE_READ_METHODS = frozenset({"read_text", "open"} & TEXT_METHODS.keys()) | GLOB_METHODS | {"walk", "samefile"}
+BARE_TREE_READ_METHODS = PRESENCE_PREDICATES | frozenset(
+    {"read_bytes", "stat", "lstat", "is_symlink", "is_junction", "iterdir", "readlink", "owner", "group", "resolve"}
+)
+
+
+def _receiver_is_module(node: ast.Attribute, resolver: CallableResolver) -> bool:
+    """Whether a method call's receiver is a name the module imports, as ast in ast.walk, rather than a value."""
+    root = node.value
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    bound = resolver.aliases(root).get(root.id, "") if isinstance(root, ast.Name) else ""
+    return bool(bound) and not bound.startswith(LOCAL_NAME)
+
+
+def _of_this_script(node: ast.Attribute, resolver: CallableResolver) -> bool:
+    """Whether a method is called on `Path(__file__)`, the script's own file, as the statement putting its sibling
+    scripts on sys.path resolves it: no path of the tree."""
+    receiver = node.value
+    return (
+        isinstance(receiver, ast.Call)
+        and resolver.name(receiver.func) in {"Path", "pathlib.Path"}
+        and [ast.unparse(argument) for argument in receiver.args] == ["__file__"]
+    )
+
+
+def _tree_read(node: ast.AST, resolver: CallableResolver, references: set[int]) -> str | None:
+    """The read a call, or a callable passed as a value, makes of a path outside the tree reader, or None."""
+    if isinstance(node, ast.Call):
+        name = resolver.name(resolver.function(node))
+        if name in DIRECT_TREE_READS | TREE_READ_HELPERS:
+            return name
+        function = node.func
+        if (
+            isinstance(function, ast.Attribute)
+            and not _receiver_is_module(function, resolver)
+            and not _of_this_script(function, resolver)
+            and (function.attr in TREE_READ_METHODS or (function.attr in BARE_TREE_READ_METHODS and not node.args))
+        ):
+            return f"Path.{function.attr}"
+        return None
+    if id(node) in references and isinstance(node, (ast.Name, ast.Attribute)):
+        name = resolver.name(node)
+        if name in DIRECT_TREE_READS | TREE_READ_HELPERS:
+            return name
+        if (
+            isinstance(node, ast.Attribute)
+            and name.rsplit(".", 1)[0] in {"Path", "pathlib.Path"}
+            and node.attr in TREE_READ_METHODS | BARE_TREE_READ_METHODS
+        ):
+            return f"Path.{node.attr}"
+    return None
+
+
+def _value_references(tree: ast.Module) -> set[int]:
+    """The ids of the names and attributes a module reads as values: neither a call's callable nor an attribute's
+    receiver."""
+    excluded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            excluded.add(id(node.func))
+        elif isinstance(node, ast.Attribute):
+            excluded.add(id(node.value))
+    return {
+        id(node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and id(node) not in excluded
+    }
+
+
+def tree_reads(tree: ast.Module) -> list[tuple[int, str, str]]:
+    """Each read a module makes outside the tree reader, as its line, the scope holding it, and the read."""
+    resolver = CallableResolver(tree)
+    references = _value_references(tree)
+    found: list[tuple[int, str, str]] = []
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(node, ast.ImportFrom | ast.Import):
+            continue
+        if (read := _tree_read(node, resolver, references)) is not None:
+            found.append((getattr(node, "lineno", 0), scope or MODULE_SCOPE, read))
+    return found
+
+
+def _tree_read_scanned_files(root: Path) -> list[Path]:
+    """The scripts of each skill TREE_READ_SKILLS names, other than their suites."""
+    return [
+        path
+        for folder in TREE_READ_SKILLS
+        for path in file_presence.matching(root / folder, "*.py")
+        if not path.name.startswith("test_")
+    ]
+
+
+# Why a skill TREE_READ_SKILLS names is a problem when its scripts folder holds nothing to read.
+TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to read; name the skill's scripts folder"
+
+
+def tree_read_problems(root: Path) -> list[str]:
+    """Report each read of a path in the .NET skills' scripts that does not go through ejryan89-skill-core's
+    tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions nothing."""
+    problems: list[str] = []
+    scanned = _tree_read_scanned_files(root)
+    problems += [
+        f"{folder}: {TREE_READ_SKILLS_PROBLEM}"
+        for folder in TREE_READ_SKILLS
+        if not any(path.parent == root / folder for path in scanned)
+    ]
+    ordered = sorted(scanned, key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
+        found = [
+            (
+                line,
+                scope,
+                f"reads a path with {read}; read it through ejryan89-skill-core's tree_reader, or state why in "
+                f"{TREE_READ_ALLOWANCE}",
+            )
+            for line, scope, read in tree_reads(tree)
+        ]
+        problems += sanctioned_problems(name, tree, TREE_READ_ALLOWANCE, found)
+    return problems
+
+
 class FsopsPlatformPolicies(unittest.TestCase):
     def test_os_specific_code_stays_in_platform_support(self) -> None:
         # The macOS and Linux port then changes one module: deployer/platform_support.py.
@@ -1185,3 +1398,7 @@ class FsopsPlatformPolicies(unittest.TestCase):
     def test_deployer_filesystem_writes_go_through_fsops(self) -> None:
         # Tests inject failures by replacing deployer/fsops.py's functions, which reach only writes made through it.
         self.assertEqual([], filesystem_write_problems(REPOSITORY_ROOT))
+
+    def test_dotnet_skills_read_paths_only_through_the_tree_reader(self) -> None:
+        # The skills promise to read only inside the tree they examine; a read that bypasses the reader breaks it.
+        self.assertEqual([], tree_read_problems(REPOSITORY_ROOT))

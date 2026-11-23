@@ -50,25 +50,26 @@ same way, its `..` segments taken by text as MSBuild takes them: an entry outsid
 or a device, or that a link on its way, its own name included, leads out of the root, prints `REFUSED <entry> <reason>`,
 which is reported and is no finding, and is never stat, read, or evaluated. A project file in the folder of a listed
 file, or the nearest folder above it holding one, that is a link leading out of the root is never stat or read: `config`
-fails naming it, as for a project it cannot examine. A link is judged from each name's own metadata and each link's text
-(ejryan89-skill-core's `folder_walk.followed_inside`), so nothing outside the root is touched to decide, and a link
-whose target stays inside the root is read through. A --solution that is absolute or lies outside the root, judged as a
-FILE_LIST entry is, fails as `FAILED the solution <solution> is refused: <reason>` before the solution is read. Limits:
-a FILE_LIST entry or --solution holding a `..` is judged both by its text, as Windows opens it, and as written, taking
-each `..` after following the link before it, as Linux and macOS open it, on every platform, so one that either reading
-leads out of the root through a link is refused wherever it runs; a link whose absolute target names a place inside the
-root through another spelling of it, such as macOS's /tmp for /private/tmp, is refused, though it leads inside;
-MSBuild's evaluation of a project, like the formatter's own load of the solution, reads the imports it names, a
-Directory.Build.props above the repository included, wherever they lead, which the script does not judge; and the look
-at a path's links and its read are two steps, so a name replaced by a link between them is read through, and a hard
-link, being the file itself, is read as a file of the repository wherever its other names lie. Neither writes a file
-that is read-only, or one that is a symbolic link or a Windows junction or lies below one inside the repository, since
-the write would land wherever the link points. Each judges and reads every file it would write before it writes any, so
-a refusal never stops it part way: `check --fix` prints `REFUSED <file> <reason>` for each file with a fix pending that
-is a link, lies below one, or is read-only, checks it unfixed, and fixes the rest, and `config --apply` prints `REFUSED
-<.editorconfig> <reason>`, adds nothing there, and adds the rest, leaving that setting missing. Each replaces a file it
-writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way leaves the file as
-it was.
+fails naming it, as for a project it cannot examine, and so does an `.editorconfig` or `.globalconfig` it reads for the
+settings that is such a link, though the compiler reads one through the link. A link is judged from each name's own
+metadata and each link's text (ejryan89-skill-core's `folder_walk.followed_inside`), so nothing outside the root is
+touched to decide, and a link whose target stays inside the root is read through. A --solution that is absolute or lies
+outside the root, judged as a FILE_LIST entry is, fails as `FAILED the solution <solution> is refused: <reason>` before
+the solution is read. Limits: a FILE_LIST entry or --solution holding a `..` is judged both by its text, as Windows
+opens it, and as written, taking each `..` after following the link before it, as Linux and macOS open it, on every
+platform, so one that either reading leads out of the root through a link is refused wherever it runs; a link whose
+absolute target names a place inside the root through another spelling of it, such as macOS's /tmp for /private/tmp, is
+refused, though it leads inside; MSBuild's evaluation of a project, like the formatter's own load of the solution, reads
+the imports it names, a Directory.Build.props above the repository included, wherever they lead, which the script does
+not judge; and the look at a path's links and its read are two steps, so a name replaced by a link between them is read
+through, and a hard link, being the file itself, is read as a file of the repository wherever its other names lie.
+Neither writes a file that is read-only, or one that is a symbolic link or a Windows junction or lies below one inside
+the repository, since the write would land wherever the link points. Each judges and reads every file it would write
+before it writes any, so a refusal never stops it part way: `check --fix` prints `REFUSED <file> <reason>` for each file
+with a fix pending that is a link, lies below one, or is read-only, checks it unfixed, and fixes the rest, and `config
+--apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and adds the rest, leaving that setting missing.
+Each replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part
+way leaves the file as it was.
 
 A failure, such as a listed entry that names no regular file, a FILE_LIST, solution, or analyzer configuration it cannot
 read, or a write that fails, prints `FAILED <reason>` as the last line; a listed file it cannot read is
@@ -109,6 +110,7 @@ from dotnet_format_targets import (
     Failed as TargetsFailed,
 )
 from dotnet_format_targets import (
+    given_folder,
     inside_root,
     linked_out_refusal,
     owning_projects,
@@ -116,13 +118,11 @@ from dotnet_format_targets import (
     solution_refusal,
     write_refusal,
 )
-from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
-from file_presence import is_present, require
+from dotnet_solution import FileRefused, listed_projects, project_path, refusal
 from flat_text import fact_line, flat_text
-from folders_up import folders_up
-from path_containment import resolved_path
 from run_dotnet_format import Completed, Services
 from text_lines import text_lines
+from tree_reader import TreeReader, TreeRefused
 from xml_reader import XmlRefused
 
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
@@ -549,14 +549,18 @@ class Unreadable(ValueError):
     bytes are not in; the message says why, or where the bytes stop."""
 
 
-def read_source(path: Path) -> Source:
-    """Decode a source file so that it can be written back byte-for-byte except where it was changed.
+def read_source(reader: TreeReader, path: Path) -> Source:
+    """Decode a source file, read through `reader`, so that it can be written back byte-for-byte except where it was
+    changed.
 
     A file with a byte order mark is decoded strictly in the encoding the mark names, and raises `Unreadable` when its
     bytes are not in it: reading it any other way would write it back changed. A file that cannot be read raises
-    `Unreadable` too."""
+    `Unreadable` too, and so does one `reader` refuses or does not read, such as one that is no regular file or is
+    larger than its bound."""
     try:
-        data = path.read_bytes()
+        data = reader.contents(path)
+    except (FileRefused, TreeRefused) as error:
+        raise Unreadable(f"it cannot be read: {error.reason}") from None
     except OSError as error:
         raise Unreadable(f"it cannot be read: {error.strerror or error}") from None
     for bom, encoding in ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
@@ -574,12 +578,12 @@ def read_source(path: Path) -> Source:
         return Source(data.decode("latin-1"), b"", "latin-1")
 
 
-def write_source(path: Path, source: Source, text: str) -> None:
+def write_source(reader: TreeReader, path: Path, source: Source, text: str) -> None:
     """Replace `path` with `text` in the encoding and byte order mark it was read in, through ejryan89-skill-core's
     `atomic_file`, so a write that fails part way leaves the file as it was. The file keeps its permissions, and a new
     one, such as an .editorconfig the script adds, takes ejryan89-skill-core's `TRACKED_FILE_MODE`."""
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        mode = stat.S_IMODE(reader.status(path).st_mode)
     except FileNotFoundError:
         mode = TRACKED_FILE_MODE
     replace_bytes(path, source.bom + text.encode(source.encoding, errors="surrogatepass"), mode=mode)
@@ -597,15 +601,16 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
     stops the run part way. A listed file that is missing, a link to nothing included, is not a file, or cannot be
     examined fails the run before any is read, named as each."""
     names = inside_root(root, listed, emit)
+    reader = TreeReader(root)
     for name in names:
-        require(root / name, Failed, f"{root / name} does not exist", str(root / name))
+        reader.require(root / name, Failed, f"{root / name} does not exist", str(root / name))
     checked: list[tuple[str, str]] = []
     pending: list[tuple[str, Source, str, list[Violation]]] = []
     unreadable = False
     for name in names:
         path = root / name
         try:
-            source = read_source(path)
+            source = read_source(reader, path)
         except Unreadable as error:
             emit(fact_line("UNREADABLE", name, error))
             unreadable = True
@@ -619,7 +624,7 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
             pending.append((name, source, text, fixed))
         checked.append((name, text))
     for name, source, text, fixed in pending:
-        write_source(root / name, source, text)
+        write_source(reader, root / name, source, text)
         for violation in fixed:
             emit(fact_line("FIXED", name, violation.line + 1, violation.rule))
     remaining = [(name, violation) for name, text in checked for violation in check_text(text)]
@@ -840,14 +845,14 @@ class AnalyzerConfig:
         return NAMED_GLOBAL_LEVEL if self.named_global else 0
 
 
-def read_analyzer_config(path: Path) -> AnalyzerConfig:
+def read_analyzer_config(reader: TreeReader, path: Path) -> AnalyzerConfig:
     """The file's preamble and sections as Roslyn's AnalyzerConfig.Parse reads them: a line ends where
     `analyzer_config_lines` ends it; a blank line or one whose first other character is `#` or `;` is a comment; a
     section header and a property line are read by the compiler's patterns, and any other line sets nothing."""
     preamble: dict[str, str] = {}
     sections: list[tuple[str, dict[str, str]]] = []
     current = preamble
-    for terminated in analyzer_config_lines(read_text(path)):
+    for terminated in analyzer_config_lines(reader.text(path)):
         line = read_line(terminated)
         if line.kind == "section":
             current = {}
@@ -857,20 +862,21 @@ def read_analyzer_config(path: Path) -> AnalyzerConfig:
     return AnalyzerConfig(path, preamble, sections)
 
 
-def names_file(section: str, probe: Path) -> bool:
-    """Whether a global config's section applies to the file: its name is the file's absolute path."""
+def names_file(reader: TreeReader, section: str, probe: Path) -> bool:
+    """Whether a global config's section applies to the file: its name is the file's absolute path, compared by
+    `TreeReader.key`, so a name outside the repository is compared by its text, listing no folder outside it."""
     named = Path(section.replace("\\", "/"))
-    return named.is_absolute() and same_path(named) == same_path(probe)
+    return named.is_absolute() and reader.key(named) == reader.key(probe)
 
 
-def global_settings(configs: list[AnalyzerConfig], probe: Path) -> dict[str, str]:
+def global_settings(reader: TreeReader, configs: list[AnalyzerConfig], probe: Path) -> dict[str, str]:
     """The values the global configs give a file: each one's preamble, and after it each section naming the file;
     between files the higher global_level wins, and a key two files at one level both set is unset."""
     chosen: dict[str, tuple[int, str | None]] = {}
     for config in configs:
         values = {key: value for key, value in config.preamble.items() if key not in ("is_global", "global_level")}
         for section, properties in config.sections:
-            if names_file(section, probe):
+            if names_file(reader, section, probe):
                 values.update(properties)
         level = config.global_level
         for key, value in values.items():
@@ -884,24 +890,25 @@ def global_settings(configs: list[AnalyzerConfig], probe: Path) -> dict[str, str
 
 class AnalyzerConfigs:
     """The analyzer configuration the compiler reads for files in the repository, each file read once, and none
-    above the repository root."""
+    above the repository root or through a link leading out of it."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.reader = TreeReader(root)
         self.read: dict[Path, AnalyzerConfig | None] = {}
 
     def config(self, path: Path) -> AnalyzerConfig | None:
-        """The configuration file at `path`, or None when nothing is there; one whose stat fails, or a folder in its
-        place, raises OSError, which ends the run as FAILED before any file is written."""
+        """The configuration file at `path`, or None when nothing is there; one whose stat fails, a folder in its
+        place, or one a link on its way, its own name included, leads outside the repository root, which is never stat
+        or read, raises OSError, which ends the run as FAILED before any file is written."""
         if path not in self.read:
-            self.read[path] = read_analyzer_config(path) if is_present(path) else None
+            present = self.reader.present(path)
+            self.read[path] = read_analyzer_config(self.reader, path) if present else None
         return self.read[path]
 
     def above(self, directory: Path, name: str) -> list[AnalyzerConfig]:
         """The files named `name` in directory and each folder above it up to the root, nearest first."""
-        return [
-            config for folder in folders_up(directory, self.root) if (config := self.config(folder / name)) is not None
-        ]
+        return [config for folder in self.reader.climb(directory) if (config := self.config(folder / name)) is not None]
 
     def chain(self, probe: Path) -> list[AnalyzerConfig]:
         """The .editorconfig files that configure the file, nearest first, up to the root or the first root file."""
@@ -925,7 +932,7 @@ class AnalyzerConfigs:
     def settings(self, probe: Path) -> dict[str, str]:
         """The file's settings: the global configs' values, which every .editorconfig section that applies overrides,
         a nearer file's over a farther one's and a later section's over an earlier one's."""
-        settings = global_settings(self.global_configs(probe), probe)
+        settings = global_settings(self.reader, self.global_configs(probe), probe)
         for config in reversed(self.chain(probe)):
             relative_path = Path(os.path.relpath(probe, config.path.parent)).as_posix()
             for section, properties in config.sections:
@@ -940,12 +947,13 @@ class AnalyzerConfigs:
 
 
 def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], None]) -> dict[str, Path]:
-    """The projects a solution lists, by `same_path`; a solution that cannot be read fails. An entry
+    """The projects a solution lists, by `TreeReader.key`; a solution that cannot be read fails. An entry
     ejryan89-skill-core's `refusal` refuses, outside `root` or a network-share or device form, or one a link on its
     way, its own name included, leads outside `root` (`linked_out_refusal`), is reported and never stat, opened, or
     evaluated."""
+    reader = TreeReader(root)
     try:
-        listed = read_listed_projects(solution)
+        listed = listed_projects(reader.text(solution), solution)
     except XmlRefused as error:
         raise Failed(f"{solution} cannot be read: {error}") from None
     projects: dict[str, Path] = {}
@@ -955,7 +963,7 @@ def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], Non
         if refused:
             emit(fact_line("REFUSED", entry, refused))
         else:
-            projects.setdefault(same_path(project), project)
+            projects.setdefault(reader.key(project), project)
     return projects
 
 
@@ -1006,11 +1014,12 @@ def package_state(
     """The package's state for the projects of the solution that own a listed file, and why when it is unknown:
     missing as soon as one evaluation lacks it, unknown when none lacks it but one could not be evaluated."""
     listed = listed_projects_inside(root, solution, emit)
+    reader = TreeReader(root)
     projects: dict[str, Path] = {}
     for name in files:
         for project in owning_projects(root, root / name):
-            if same_path(project) in listed:
-                projects.setdefault(same_path(project), project)
+            if reader.key(project) in listed:
+                projects.setdefault(reader.key(project), project)
     if projects and not services.which("dotnet"):
         return "unknown", "dotnet is not installed, so MSBuild cannot evaluate the projects"
     unknown = ""
@@ -1083,6 +1092,7 @@ def configure(
     if not apply:
         return bool(gaps) or left_out
     still_missing = False
+    reader = configs.reader
     pending: list[tuple[Path, Source, list[tuple[str, str]]]] = []
     for target, missing in gaps.items():
         refused = write_refusal(root, target)
@@ -1091,14 +1101,14 @@ def configure(
             still_missing = True
             continue
         try:
-            source = read_source(target) if is_present(target) else Source("", b"", "utf-8")
+            source = read_source(reader, target) if reader.present(target) else Source("", b"", "utf-8")
         except Unreadable as error:
             emit(fact_line("UNREADABLE", target.relative_to(root).as_posix(), error))
             still_missing = True
             continue
         pending.append((target, source, missing))
     for target, source, missing in pending:
-        write_source(target, source, insert_settings(source, missing))
+        write_source(reader, target, source, insert_settings(source, missing))
         for key, value in missing:
             emit(fact_line("ADDED", target.relative_to(root).as_posix(), key, value))
     return still_missing or left_out
@@ -1120,7 +1130,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     config_parser.add_argument("--file-list", required=True, type=Path, help="FILE_LIST from dotnet_format_targets.py")
     config_parser.add_argument("--apply", action="store_true", help="add the settings the changed files lack")
     arguments = parser.parse_args(argv)
-    root = resolved_path(arguments.repo_root)
+    root = given_folder(arguments.repo_root)
     try:
         try:
             names = read_file_list(arguments.file_list)

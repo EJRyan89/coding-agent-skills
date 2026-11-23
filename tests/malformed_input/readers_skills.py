@@ -61,6 +61,7 @@ from pr_change import CHANGED, UNCHANGED, Query
 from review_config import DASHBOARD_END_MARKER, DASHBOARD_START_MARKER
 from review_flags import FlagError
 from review_io import PersistenceError
+from tree_reader import TreeReader
 
 UTF8_SIG = "the file is decoded as UTF-8 with an optional byte-order mark"
 TEXT = "the reader's contract is the file's text, and this is text"
@@ -374,7 +375,7 @@ def _pull_request_base(path: Path) -> object:
 
 
 def _sdk_style(path: Path) -> object:
-    if not dotnet_format_targets.is_sdk_style(path):
+    if not dotnet_format_targets.is_sdk_style(TreeReader(path.parent), path):
         raise Refused("the project does not read as SDK-style")
     return True
 
@@ -519,7 +520,7 @@ READERS = [
         "csharp_layout.read_source",
         "text",
         b"class Example\n{\n}\n",
-        csharp_layout.read_source,
+        lambda path: csharp_layout.read_source(TreeReader(path.parent), path),
         (csharp_layout.Unreadable,),
         filename="Example.cs",
         accepts={
