@@ -665,6 +665,43 @@ class LoaderTests(unittest.TestCase):
                     skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
                 self.assertIn(message, str(raised.exception))
 
+    def test_a_document_scenario_s_scoped_expectation_names_the_path_its_document_is_reviewed_by(self) -> None:
+        # review-document routes exactly the document to design-review, by its name, or by BY_NAME_FOLDER/<name> for
+        # a by-name one, and the generic reviewer takes nothing.
+        found = {"kind": "finding", "lines": [1], "severity": "SHOULD_FIX"}
+        never = "case: {} never reviews {}: of the scenario's changed files, its route reaches {}"
+        for fields, expectation, refused in (
+            ({}, {**found, "source": "design-review", "path": "draft.md"}, None),
+            ({"by_name": True}, {**found, "source": "design-review", "path": "drafts/draft.md"}, None),
+            ({}, {**found, "path": "other.md"}, None),
+            (
+                {},
+                {**found, "source": "design-review", "path": "other.md"},
+                never.format("design-review", "other.md", "draft.md"),
+            ),
+            (
+                {"by_name": True},
+                {**found, "source": "design-review", "path": "draft.md"},
+                never.format("design-review", "draft.md", "drafts/draft.md"),
+            ),
+            (
+                {},
+                {**found, "source": "generic-review", "path": "draft.md"},
+                never.format("generic-review", "draft.md", "none of them"),
+            ),
+        ):
+            with self.subTest(fields=fields, expectation=expectation):
+                directory = write_scenario(
+                    self.root, "case", {**scenario_spec(expectation, document="draft.md"), **fields}
+                )
+                (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+                if refused is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refused, str(raised.exception))
+
     def test_a_fixture_scenario_names_no_document(self) -> None:
         write_scenario(self.root, "case", scenario_spec())
         (scenario,) = skill_evals_scenarios.load_scenarios("demo", root=self.root)
@@ -2053,9 +2090,11 @@ class ReviewerScenarioTests(unittest.TestCase):
     def test_a_source_that_is_no_reviewer_of_the_scenario_is_refused(self) -> None:
         listed = {"kind": "finding", "path": "tools/a.sh", "lines": [1], "severity": "SHOULD_FIX"}
         spec = reviewer_spec()
-        for source in ("sibling-spellings", "generic-review"):
+        for source in ("sibling-search", "generic-review"):
             spec["expectations"] = [{**listed, "source": source}]
-            write_reviewer_scenario(self.root, spec)
+            directory = write_reviewer_scenario(self.root, spec)
+            (directory / "head" / "tools").mkdir(exist_ok=True)
+            (directory / "head" / "tools" / "a.sh").write_text("echo a\n", encoding="utf-8")
             with self.subTest(source=source):
                 self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
         spec["expectations"] = [{**listed, "source": "sibling-spelling"}]
@@ -2072,6 +2111,111 @@ class ReviewerScenarioTests(unittest.TestCase):
         spec["expectations"] = [{**clean, "source": "sibling-spelling"}]
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: source "sibling-spelling" is not a reviewer of the scenario', self.refusal())
+
+    def scoped_case(self, *expectations: dict[str, Any], title: str | None = None) -> Path:
+        """A copy of the open-spelling fixture, which changes review_reporting.py and its suite, expecting these."""
+        directory = self.root / "review-repository" / "case"
+        shutil.rmtree(directory, ignore_errors=True)
+        shutil.copytree(REVIEW_REPOSITORY / "open-spelling", directory)
+        spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
+        (directory / "scenario.json").write_text(json.dumps({**spec, "expectations": list(expectations)}), "utf-8")
+        if title is not None:
+            pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+            (directory / "pull.json").write_text(json.dumps({**pull, "title": title}), encoding="utf-8")
+        return directory
+
+    def test_a_scoped_expectation_names_only_files_its_reviewer_s_route_reaches(self) -> None:
+        # A path its reviewer never reviews is one nothing it raises is judged on, so the expectation passes unjudged.
+        module = "skills/ejryan89-code-review-core/scripts/review_reporting.py"
+        suite = "skills/ejryan89-code-review-core/scripts/test_review_reporting.py"
+        clean = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        found = {"kind": "finding", "lines": [13], "severity": "SHOULD_FIX"}
+        never = "case: {} never reviews {}: of the scenario's changed files, its route reaches {}"
+        for expectation, refused in (
+            ({**clean, "source": "sibling-spellings"}, None),
+            ({**clean, "source": "sibling-spellings", "paths": [module]}, None),
+            ({**found, "source": "sibling-spellings", "path": module}, None),
+            ({**found, "source": "skill-scripts", "path": module}, None),
+            ({**found, "source": "generic-review", "path": suite}, None),
+            # A route a `when` condition gates reaches its files, since the run decides the condition.
+            ({**found, "source": "documentation-drift", "path": suite}, None),
+            ({**found, "path": "README.md"}, None),
+            # Outside sibling-spellings' include, which names the trust-boundary and validation-policy files.
+            (
+                {**clean, "source": "sibling-spellings", "paths": [module, suite]},
+                never.format("sibling-spellings", suite, module),
+            ),
+            ({**found, "source": "sibling-spellings", "path": suite}, never.format("sibling-spellings", suite, module)),
+            # Inside skill-scripts' exclude, which leaves a suite to the others.
+            ({**found, "source": "skill-scripts", "path": suite}, never.format("skill-scripts", suite, module)),
+            # A file a specialist covers, which the generic reviewer never takes.
+            ({**found, "source": "generic-review", "path": module}, never.format("generic-review", module, suite)),
+            # A file the change leaves as it was, which no reviewer reviews.
+            (
+                {**clean, "source": "sibling-spellings", "paths": ["README.md"]},
+                never.format("sibling-spellings", "README.md", module),
+            ),
+        ):
+            with self.subTest(expectation=expectation):
+                self.scoped_case(expectation)
+                if refused is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+                else:
+                    self.assertEqual(refused, self.refusal())
+
+    def test_a_scoped_expectation_s_reviewer_is_routed_on_the_fixture_s_title(self) -> None:
+        # sibling-spellings routes only a fix, so on any other title it reviews nothing.
+        module = "skills/ejryan89-code-review-core/scripts/review_reporting.py"
+        found = {"kind": "finding", "path": module, "lines": [13], "severity": "SHOULD_FIX"}
+        self.scoped_case({**found, "source": "sibling-spellings"}, title="docs(code-review): flatten a status line")
+        self.assertEqual(
+            f"case: sibling-spellings never reviews {module}: of the scenario's changed files, its route reaches "
+            "none of them",
+            self.refusal(),
+        )
+        self.scoped_case({**found, "source": "trust-boundary"}, title="docs(code-review): flatten a status line")
+        self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+
+    def test_a_scoped_expectation_reaches_a_renamed_file_by_its_earlier_path(self) -> None:
+        # Routing matches a renamed file by either of its paths, as the diff git computes between the trees names them.
+        policy = "".join(f"SPELLING_{number} = {number}\n" for number in range(20))
+        spec = reviewer_spec()
+        spec["expectations"] = [
+            {"kind": "finding", "path": path, "lines": [1], "severity": "SHOULD_FIX", "source": "sibling-spellings"}
+            for path in ("tools/spelling_policy.py", "tools/other_policy.py")
+        ]
+        directory = write_reviewer_scenario(self.root, spec)
+        pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+        (directory / "pull.json").write_text(json.dumps({**pull, "title": "fix: move a policy"}), encoding="utf-8")
+        (directory / "base" / "tests" / "validation").mkdir(parents=True)
+        (directory / "base" / "tests" / "validation" / "spelling_policy.py").write_text(policy, encoding="utf-8")
+        (directory / "head" / "tools").mkdir()
+        (directory / "head" / "tools" / "spelling_policy.py").write_text(policy, encoding="utf-8")
+        (directory / "head" / "tools" / "other_policy.py").write_text("OTHER = 'unrelated'\n", encoding="utf-8")
+        self.assertEqual(
+            "case: sibling-spellings never reviews tools/other_policy.py: of the scenario's changed files, its route "
+            "reaches tools/spelling_policy.py",
+            self.refusal(),
+        )
+        spec["expectations"] = spec["expectations"][:1]
+        (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+
+    def test_every_committed_scoped_expectation_loads(self) -> None:
+        scoped = {
+            f"{skill.name}/{folder.name}"
+            for skill in skill_evals_scenarios.SCENARIO_ROOT.iterdir()
+            for folder in skill.iterdir()
+            if (folder / "scenario.json").is_file()
+            and skill_evals_scenarios.scoped_paths(
+                json.loads((folder / "scenario.json").read_text(encoding="utf-8")).get("expectations", [])
+            )
+        }
+        assert "review-repository/open-spelling" in scoped
+        for name in sorted(scoped):
+            skill, scenario = name.split("/")
+            with self.subTest(scenario=name):
+                self.assertEqual(1, len(skill_evals_scenarios.load_scenarios(skill, [scenario])))
 
     def test_a_held_file_is_restored_in_the_copy_and_kept_in_the_fixture(self) -> None:
         (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["write-before-refusal"])

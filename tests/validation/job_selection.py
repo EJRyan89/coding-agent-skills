@@ -21,7 +21,7 @@ from path_containment import posix_within
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
-from type_check_roots import DEVELOPMENT_DEPENDENCIES, PYTHON_CHECK_FILES
+from type_check_roots import DEVELOPMENT_DEPENDENCIES, PYTHON_CHECK_FILES, REPOSITORY_SKILLS
 from validation_support import REPOSITORY_ROOT, UnreadablePython, parse_python, repository_files
 
 from deployer import platform_support
@@ -70,7 +70,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ),
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
-SKILL_PARENTS = ("skills", ".claude/skills")
+SKILL_PARENTS = ("skills", REPOSITORY_SKILLS)
 # What each job took on CI's runners, by platform and then by job name (a suite's path, summed over its shards, or a
 # static check's label), the median across several completed validate runs' logs. A job's cost differs between the
 # platforms by up to an order of magnitude, so each platform's legs are dealt by that platform's seconds.

@@ -103,7 +103,10 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   that could not read every changed file (its coverage lists unavailable sources), whatever its verdict, since
   another reviewer's blocking finding records `CHANGES_REQUESTED` over `INCOMPLETE` and that reviewer's silence there
   shows nothing. So it stands in for the verdict a scenario expecting no finding otherwise names. `open-spelling` likewise expects the specialist's own catch and no verdict,
-  since other reviewers' findings could bring `CHANGES_REQUESTED` without it.
+  since other reviewers' findings could bring `CHANGES_REQUESTED` without it. A scoped expectation's `path`, or each
+  of its `paths`, must be a changed file its reviewer's route reaches, decided by the pipeline's own routing on the
+  scenario's changed files and title with every `when` condition taken as open; a scenario naming a file that
+  reviewer never reviews fails to load, since nothing the reviewer raises would ever be judged there.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double

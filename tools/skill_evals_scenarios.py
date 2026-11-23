@@ -33,10 +33,12 @@ import file_presence
 import json_reader
 import private_folder
 import skill_inventory
+import type_check_roots
 import whole_number
 from bash_syntax import BashSyntaxError
-from git_client import NO_HOOKS, GitClient
+from git_client import NO_HOOKS, GitClient, GitError, subprocess_runner
 from path_containment import resolved_path, within
+from review_canary import FixtureError, fixture_change
 from review_config import ConfigurationError, validate_repository_identity
 from review_document import specialists_manifest
 from review_flags import FlagError, load_store
@@ -49,6 +51,7 @@ from review_runtime import (
     declared_reviewer_files,
     validate_adapter_manifest,
 )
+from review_specialists import parse_unified_diff, renamed_from, route, uncovered
 from review_synthesis import TYPES as RECOMMENDATION_TYPES
 from review_vocabularies import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_vocabularies import SEVERITY_RANK
@@ -114,7 +117,7 @@ DOCUMENT_SCRIPT = r"review_document\.py[\"']?\s+"
 # A repository reviewer's scenario: the skill that runs a reviewer manifest on a fixture, where this repository's own
 # skills are, and the folders of a reviewer whose files are placed, besides its SKILL.md and what its manifest declares.
 REVIEWER_SKILL = "review-prs"
-REPOSITORY_SKILLS = PurePosixPath(".claude", "skills")
+REPOSITORY_SKILLS = PurePosixPath(type_check_roots.REPOSITORY_SKILLS)
 REVIEWER_FOLDERS = ("references", "scripts")
 # The ending a repository reviewer's fixture holds a file under, which the run's copy drops.
 HELD = ".fixture"
@@ -896,6 +899,74 @@ def _listed_sources(expectations: Sequence[Mapping[str, Any]], sources: Sequence
             )
 
 
+def scoped_paths(expectations: Sequence[Mapping[str, Any]]) -> list[tuple[str, tuple[str, ...]]]:
+    """Each expectation that names both its source and the paths it judges, as that reviewer and those paths: a
+    `finding` that names its source, and a `no_finding_above` that names its source and its paths."""
+    scoped: list[tuple[str, tuple[str, ...]]] = []
+    for item in expectations:
+        if "source" not in item:
+            continue
+        if item["kind"] == "finding":
+            scoped.append((item["source"].strip(), (item["path"],)))
+        elif item["kind"] == "no_finding_above" and "paths" in item:
+            scoped.append((item["source"].strip(), tuple(item["paths"])))
+    return scoped
+
+
+def _fixture_changes(scenario: Scenario) -> tuple[list[str], dict[str, list[str]], str]:
+    """A fixture scenario's changed files, each renamed one's earlier paths, and its pull request's title, as the
+    pipeline reads them: from the diff git computes between the fixture's two trees, a repository reviewer's with its
+    held files restored and its reviewer's files placed, as a run reviews it."""
+    try:
+        with reviewed_fixture(scenario) as fixture, fixture_change(fixture, subprocess_runner) as change:
+            diff = parse_unified_diff(change.diff)
+            return list(diff), renamed_from(diff), str(change.pull["title"])
+    except (FixtureError, GitError, OSError) as exc:
+        raise ScenarioError(f"cannot read the fixture's change: {exc}") from exc
+
+
+def reviewer_reach(
+    manifest: dict[str, Any] | None, changed: list[str], renamed: Mapping[str, Sequence[str]], title: str | None
+) -> dict[str, list[str]]:
+    """The changed files each reviewer could ever review, by the pipeline's own routing, with every `when` condition
+    taken as open, since a run decides those: each specialist `route` routes on the pull request's title, and the
+    generic reviewer's, the files no specialist covers (`uncovered`), every changed file without a manifest."""
+    if manifest is None:
+        return {GENERIC_SPECIALIST: changed}
+    reach = route(manifest, changed, lambda _condition: True, renamed, title=title)
+    return {**reach, GENERIC_SPECIALIST: uncovered(manifest, changed, renamed)}
+
+
+def scenario_reach(scenario: Scenario, spec: Mapping[str, object], checkout: Path) -> dict[str, list[str]]:
+    """The changed files each reviewer of a review scenario could ever review. A document scenario changes its document
+    alone, under the path review-document reviews it by, BY_NAME_FOLDER/<name> for a by-name one, routed by the
+    manifest review-document writes for that path; a fixture scenario's come from its trees and the manifest its
+    reviewers follow."""
+    if scenario.document is not None:
+        name = scenario.document.name
+        reviewed = f"{BY_NAME_FOLDER}/{name}" if scenario.by_name else name
+        return reviewer_reach(specialists_manifest(reviewed), [reviewed], {}, None)
+    changed, renamed, title = _fixture_changes(scenario)
+    return reviewer_reach(scenario_manifest(spec, scenario.directory, checkout), changed, renamed, title)
+
+
+def _reached(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None:
+    """Refuse an expectation that names its source and a path that reviewer can never review, which nothing that
+    reviewer raises is ever judged on, so the expectation could pass with no verdict on it."""
+    scoped = scoped_paths(spec["expectations"])
+    if not scoped:
+        return
+    reach = scenario_reach(scenario, spec, checkout)
+    for source, paths in scoped:
+        files = reach.get(source, [])
+        for path in paths:
+            if path not in files:
+                reached = ", ".join(files) if files else "none of them"
+                raise ScenarioError(
+                    f"{source} never reviews {path}: of the scenario's changed files, its route reaches {reached}"
+                )
+
+
 def _listed_categories(expectations: Sequence[Mapping[str, Any]], categories: Sequence[str] | None) -> None:
     """Refuse a finding expectation's category its manifest does not list, ignoring case, as the judge matches it."""
     if categories is None:
@@ -1197,7 +1268,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
     _clean_verdict(spec["expectations"], mode)
     _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     _listed_sources(spec["expectations"], finding_sources(spec, directory, checkout))
-    return Scenario(
+    scenario = Scenario(
         skill=str(spec["skill"]),
         name=directory.name,
         directory=directory,
@@ -1214,6 +1285,8 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
         held=held,
         pins=route_pins(spec, directory, checkout),
     )
+    _reached(scenario, spec, checkout)
+    return scenario
 
 
 def prepare_arguments(scenario: Scenario, fixture: Path | None = None) -> list[str]:
