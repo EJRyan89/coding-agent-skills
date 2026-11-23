@@ -1190,8 +1190,10 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
-# The .NET skills promise to read only inside the tree they examine. Each keeps it through ejryan89-skill-core's
-# tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
+# The .NET skills promise to read only inside the tree they examine, and audit-skill reads the skill folder it audits
+# through a reader bound to that folder, the places outside it stated in TREE_READ_ALLOWED. Each keeps it through
+# ejryan89-skill-core's tree_reader, a reader bound to that tree which judges each path by its text and its links
+# before touching it. Every
 # stat, open, read, listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a
 # direct read there, or a read through an ejryan89-skill-core function that reads a path, which core_reads derives
 # from the core modules' own reads, transitively, is refused, and one that must stay, such as of a file the skill
@@ -1473,8 +1475,9 @@ TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to
 
 
 def tree_read_problems(root: Path) -> list[str]:
-    """Report each read of a path in the .NET skills' scripts that does not go through ejryan89-skill-core's
-    tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions nothing."""
+    """Report each read of a path in the .NET skills' and audit-skill's scripts that does not go through
+    ejryan89-skill-core's tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions
+    nothing."""
     problems: list[str] = []
     scanned = _tree_read_scanned_files(root)
     problems += [
