@@ -62,6 +62,7 @@ from test_review_documents import (
     without_pdftotext,
     word_document,
 )
+from tree_reader import TreeReader, TreeRefused
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
@@ -538,6 +539,26 @@ class CheckoutTests(DocumentTestCase):
                         located = review_document.locate(note, GitClient(runner=runner))
                         self.assertEqual(review_document.Location(".GIT/note.md", checkout), located)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_tracked_spelling_whose_link_leads_out_of_the_checkout_is_never_followed_to_compare_it(self) -> None:
+        # Holds on Linux and macOS. The link leads out of the checkout and, through a second link, back to the document
+        # itself, so following it would take it for the document's own name; the reader bound to the checkout refuses
+        # it unfollowed, and the name the document is reviewed under stays its own.
+        checkout = self.root / "checkout"
+        (checkout / "docs").mkdir(parents=True)
+        document = checkout / "docs" / "plan.md"
+        document.write_bytes(QUEUE_PLAN)
+        outside = self.root / "outside"
+        outside.symlink_to(checkout / "docs", target_is_directory=True)
+        tracked = checkout / "docs" / "elsewhere.md"
+        tracked.symlink_to(outside / "plan.md")
+        self.assertTrue(tracked.samefile(document))
+        git = mock.Mock(spec=GitClient)
+        git.output.return_value = "docs/elsewhere.md\0"
+        reader = TreeReader(checkout)
+        self.assertFalse(review_document.same_file(reader, tracked, document))
+        self.assertEqual("docs/plan.md", review_document.tracked_name("docs/plan.md", document, reader, git))
+
     def test_a_document_in_a_folder_the_review_keeps_is_refused_before_any_fixture(self) -> None:
         checkout = self.checkout()
         for relative, reason in (
@@ -823,6 +844,39 @@ class LooseFileTests(DocumentTestCase):
         at.write_bytes(b"a\n" * (limit // 2))
         self.assertEqual("at.md", self.build(at)["DOCUMENT"])
         self.assertEqual(limit, (self.output / "fixture" / "head" / "at.md").stat().st_size)
+
+    def test_a_document_over_the_limit_is_sized_by_its_status_and_never_opened(self) -> None:
+        # The reader's status shows the size first, so a document over 16 MiB is refused without a byte of it read.
+        over = self.root / "sparse.md"
+        with over.open("wb") as stream:
+            stream.truncate(16 * 1024 * 1024 + 1)
+        real_open = Path.open
+
+        def opened(path: Path, *arguments: Any, **options: Any) -> Any:
+            if path == over:
+                raise AssertionError(f"{over} was opened")
+            return real_open(path, *arguments, **options)
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=opened):
+            code, lines = run_main("build", str(over), "--output", str(self.output))
+        self.assertEqual((1, [f"FAILED {over} is over the 16 MiB a review reads"]), (code, lines))
+
+    def test_a_document_that_cannot_be_opened_is_named_with_the_readers_words(self) -> None:
+        # The reader names a file it could not read `<path> cannot be read: <reason>`, as `chmod 200` leaves one on
+        # Linux and macOS; the open is refused here so the line holds on every platform.
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        real_open = Path.open
+
+        def opened(path: Path, *arguments: Any, **options: Any) -> Any:
+            if path == document:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *arguments, **options)
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=opened):
+            code, lines = run_main("build", str(document), "--output", str(self.output))
+        self.assertEqual((1, [f"FAILED {document} cannot be read: Permission denied"]), (code, lines))
+        self.assertFalse(self.output.exists())
 
     def test_a_file_name_holding_a_line_break_is_refused_on_one_line_before_any_fixture(self) -> None:
         # A file system may allow any of them in a name; the pipeline's rule refuses the path, which printed raw
@@ -2989,6 +3043,29 @@ class JsonObjectTests(unittest.TestCase):
 
 
 class FixtureRefusalTests(DocumentTestCase):
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_link_in_the_fixture_leading_out_of_it_is_refused_with_the_readers_reason_and_never_followed(
+        self,
+    ) -> None:
+        # Holds on Linux and macOS. A link on the document's way that leads out of the fixture is judged from its
+        # text, so nothing is written where it leads; one leading inside the fixture is no refusal.
+        root = self.root / "fixture" / "head"
+        (root / "kept").mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (root / "docs").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(review_document.DocumentError) as caught:
+            review_document.write_file(root, "docs/plan.md", QUEUE_PLAN)
+        self.assertEqual(
+            f"docs/plan.md is not a path a fixture can hold: {(root / 'docs').as_posix()} is a link to "
+            f"{outside.as_posix()}, outside the examined tree {root.as_posix()}, which the reader does not follow",
+            str(caught.exception),
+        )
+        self.assertEqual([], list(outside.iterdir()))
+        (root / "inner").symlink_to(root / "kept", target_is_directory=True)
+        review_document.write_file(root, "inner/plan.md", QUEUE_PLAN)
+        self.assertEqual(QUEUE_PLAN, (root / "kept" / "plan.md").read_bytes())
+
     def test_a_value_no_json_file_can_hold_is_refused_before_anything_of_the_fixture_is_written(self) -> None:
         # json_reader reads an escaped lone surrogate in a GitHub response, which no UTF-8 file can hold.
         fixture = self.output / "fixture"
@@ -3103,6 +3180,10 @@ class ResolveTests(unittest.TestCase):
 
         def scandir(path: str | os.PathLike[str]) -> Any:
             folder = Path(path)
+            # The reader asks the folders above the working directory how they compare names, as tree_reader's limits
+            # state, which lists them; that is no search, so only the folders below it are the walk's.
+            if not folder.is_relative_to(self.top):
+                return listing(path)
             hidden = [part for part in folder.relative_to(self.top).parts if part.startswith(".")]
             self.assertEqual([], hidden, f"resolve listed the hidden folder {folder}")
             listed.append(folder)
@@ -3198,6 +3279,57 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(["NOT_FOUND design.md"], self.resolve())
         (self.top / "design.md").symlink_to(outside / "design.md")
         self.assertEqual(["NOT_FOUND design.md"], self.resolve())
+
+    def test_a_match_whose_folder_the_reader_refuses_is_named_unsearched_with_the_readers_reason(self) -> None:
+        # The folder holding a walked match is judged by the reader before it is asked how it opens the name; a refusal
+        # there names the match unsearched with the reader's own reason, never the path twice, and the command exits 1.
+        self.write("docs/design.md", "notes/design.md")
+        refused = self.top / "docs"
+        real = TreeReader.judged
+
+        def judged(reader: TreeReader, path: Path) -> Path:
+            if path == refused:
+                raise TreeRefused(path, "a refusal the test makes")
+            return real(reader, path)
+
+        asked: list[Path] = []
+        real_opens_as = path_keys.opens_as
+
+        def opens_as(path: Path, name: str) -> bool:
+            asked.append(path.parent)
+            return real_opens_as(path, name)
+
+        expected = [
+            f"UNSEARCHED {Path('docs/design.md')} the file cannot be examined: a refusal the test makes",
+            f"CANDIDATE {Path('notes/design.md')}",
+        ]
+        with (
+            mock.patch.object(TreeReader, "judged", judged),
+            mock.patch.object(review_document, "opens_as", opens_as),
+            mock.patch.object(Path, "cwd", return_value=self.top),
+        ):
+            self.assertEqual((1, expected), run_main("resolve", "design.md"))
+        self.assertNotIn(refused, asked)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_link_leading_out_of_the_working_directory_is_never_followed_to_learn_what_it_is(self) -> None:
+        # Holds on Linux and macOS. The reader's walk judges a link from its text, so neither a linked folder nor a
+        # linked file leading out is followed, not even to ask whether it leads to a folder.
+        outside = self.top.parent / "outside"
+        outside.mkdir()
+        (outside / "design.md").write_text("# Elsewhere\n", encoding="utf-8")
+        (self.top / "linked").symlink_to(outside, target_is_directory=True)
+        (self.top / "docs").mkdir()
+        (self.top / "docs" / "notes.md").symlink_to(outside / "design.md")
+        self.write("docs/design.md")
+        real = folder_walk.is_folder_link
+
+        def is_folder_link(entry: os.DirEntry[str]) -> bool:
+            self.assertFalse(entry.is_symlink(), f"the walk followed {entry.path} to learn what it is")
+            return real(entry)
+
+        with mock.patch.object(folder_walk, "is_folder_link", is_folder_link):
+            self.assertEqual([f"FOUND {Path('docs/design.md')}"], self.resolve())
 
     def test_a_folder_that_cannot_be_listed_is_named_and_turns_a_single_match_into_a_candidate(self) -> None:
         self.write("docs/design.md", "locked/design.md", ".cache/locked/design.md")
