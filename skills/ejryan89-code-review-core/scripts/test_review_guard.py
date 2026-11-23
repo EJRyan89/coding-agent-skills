@@ -1387,6 +1387,28 @@ class PruneTests(GuardFixture):
             {"run": str(self.other_run), "role": "csharp-review"}, json.loads(claim.read_text(encoding="utf-8"))
         )
 
+    def test_a_copy_gone_before_its_age_is_read_is_kept_and_the_claim_is_made(self) -> None:
+        # Holds on every platform: a create removes its copy's name right after linking it into place, so a copy the
+        # prune listed is often gone by the time its age is read. It is kept unjudged, never opened, and the read
+        # claims as if it were not there.
+        self.claims.mkdir()
+        vanished = self.claims / f".{OTHER_AGENT}.json.g0n3xx.tmp"
+        vanished.write_bytes(b'{"run": ')
+        age_by(vanished, LEFTOVER_COPY_AGE)
+
+        def gone(path: Path) -> os.stat_result:
+            if path == vanished:
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+            return REAL_LSTAT(path)
+
+        with mock.patch.object(Path, "lstat", gone):
+            self.claim()
+        self.assertTrue(vanished.exists(), "a copy whose age cannot be read is kept")
+        self.assertEqual(
+            {"run": str(self.run_directory), "role": "csharp-review"},
+            json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")),
+        )
+
     def test_a_claims_folder_whose_file_system_refuses_hard_links_denies_naming_the_cause_and_the_remedy(self) -> None:
         # Holds on every platform: os.link refuses as a file system without hard links does on each of them.
         target = self.claims / f"{AGENT}.json"
