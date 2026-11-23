@@ -129,10 +129,12 @@ the search finds or a solution lists, an import, the nearest Directory.Build.pro
 restore's assets, a packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec,
 that a link on its way, its own name included, leads outside the tree is an UNREADABLE line naming the link and its
 target; and an Exists() condition below such a link is reported and unsettled. A link whose target stays inside the tree
-is read through. The NuGet cache lies outside the tree and is read where it is. A path a file names outside the tree is
-compared with another by its text, never by asking its folders how they compare names, so no folder outside the tree is
-listed to compare it. Limits: the names of the assemblies below a package's lib folder are listed with a glob, which may
-list through a link below that folder, reading no file's contents; a wildcard Import is judged as text and by its folder
+is read through. The NuGet cache lies outside the tree and is read where it is, resolved first, through a reader bound
+to the cache folder, so a link inside it that leads out of it is reported, not followed. A path a file names outside the
+tree is compared with another by its text, never by asking its folders how they compare names, so no folder outside the
+tree is listed to compare it. Limits: the names of the assemblies below a package's lib folder are found by the reader's
+search, which enters no folder link, so the assemblies below one that stays inside are not named, reading no file's
+contents; a wildcard Import is judged as text and by its folder
 before the wildcard, since the reader expands none, so a link a wildcard matches is not judged, nor a link named after a
 `..` that follows a wildcard, as in `../*/../Shared/Common.props`, and so, of the restore's files, only the NuGet ones
 are judged, though MSBuild imports every <project file>.*.props and .targets in that folder; the restore's folder no
@@ -813,7 +815,8 @@ def nuget_cache() -> list[Path]:
 
 
 def packages_folder(project_dir: Path, stop: Path, tree: Path) -> Path | None:
-    """The nearest `packages` folder from the project's directory up to the solution's, or None; `Unreadable` naming
+    """The nearest `packages` folder from the project's directory up to the solution's, or up to `tree`'s top when
+    that comes first, so no `packages` folder above the tree is read; None when there is none, and `Unreadable` naming
     a candidate whose stat fails, or one a link leads outside `tree` (`outside_link_refusal`), which is never stat."""
     reader = TreeReader(tree)
     for folder in reader.climb(project_dir, stop):
@@ -881,8 +884,9 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         return None
     if directory is None:
         return None
-    # A package unpacked in the NuGet cache is read through a reader bound to its own folder.
-    reader = packages_reader(directory, graph.tree)
+    # A package is read through the reader of the packages folder, or the NuGet cache folder, it was found in.
+    holder = next((folder for folder in folders if within(directory, folder)), directory)
+    reader = packages_reader(holder, graph.tree)
     try:
         nuspecs = [
             path

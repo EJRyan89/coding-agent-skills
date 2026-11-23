@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import file_presence
 import msbuild_reader
+from folder_walk import LINKED_OUT_REASON
 from msbuild_reader import (
     PackageRef,
     Unreadable,
@@ -39,6 +40,7 @@ from msbuild_reader import (
     read_solution,
     same_framework,
 )
+from test_folder_walk import link_folder, reached, recording, remove_link
 from tree_reader import TreeReader
 
 PACKAGES_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
@@ -321,6 +323,43 @@ class ReaderTests(unittest.TestCase):
         for stem in ("beta", "Alpha", "Gamma"):
             self.write(f"pkg/lib/net45/{stem}.dll", "")
         self.assertEqual(("Alpha", "beta", "Gamma"), package_assemblies(self.root / "pkg", TreeReader(self.root)))
+
+    def test_a_folder_link_below_lib_that_leads_outside_is_unreadable_and_never_listed(self) -> None:
+        # lib/net45 is a folder link to a folder outside the tree: a junction on Windows, a symbolic link elsewhere.
+        # The reader's search judges it from its own metadata and its text, so it is reported naming the link and
+        # nothing outside is listed or stat; the package's other assemblies are not taken for its whole set.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        outside = Path(holder.name).resolve()
+        (outside / "Evil.dll").write_text("", encoding="utf-8")
+        self.write("pkg/lib/net8.0/Good.dll", "")
+        link = self.root / "pkg" / "lib" / "net45"
+        link_folder(outside, link)
+        self.addCleanup(remove_link, link)
+        touched: list[tuple[str, bool]] = []
+        with recording(touched), self.assertRaises(Unreadable) as refused:
+            package_assemblies(self.root / "pkg", TreeReader(self.root))
+        self.assertEqual((link, LINKED_OUT_REASON), (refused.exception.file, refused.exception.reason))
+        self.assertEqual([], reached(touched, [link], outside))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_assembly_below_lib_that_is_a_file_link_leading_outside_is_unreadable(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        outside = Path(holder.name).resolve()
+        (outside / "Evil.dll").write_text("", encoding="utf-8")
+        self.write("pkg/lib/net8.0/Good.dll", "")
+        link = self.root / "pkg" / "lib" / "net8.0" / "Evil.dll"
+        link.symlink_to(outside / "Evil.dll")
+        reason = (
+            f"{link.as_posix()} is a link to {(outside / 'Evil.dll').as_posix()}, outside the examined tree "
+            f"{self.root.as_posix()}, which the reader does not follow"
+        )
+        touched: list[tuple[str, bool]] = []
+        with recording(touched), self.assertRaises(Unreadable) as refused:
+            package_assemblies(self.root / "pkg", TreeReader(self.root))
+        self.assertEqual((link, reason), (refused.exception.file, refused.exception.reason))
+        self.assertEqual([], reached(touched, [link], outside))
 
     def test_a_lib_that_is_no_folder_or_cannot_be_looked_at_is_unreadable_rather_than_empty(self) -> None:
         lib = self.write("file/lib", "")

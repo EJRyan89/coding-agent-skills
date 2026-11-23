@@ -81,12 +81,11 @@ class InsideTests(TreeReaderCase):
         self.assertEqual([project], self.reader.search(self.root, lambda name: name.endswith(".csproj")).files)
         self.assertEqual([self.root / "Lib", self.root], list(self.reader.climb(self.root / "Lib")))
 
-    def test_a_climb_ends_at_its_stop_or_the_trees_top_and_a_glob_names_what_it_matches(self) -> None:
+    def test_a_climb_ends_at_its_stop_or_at_the_trees_top(self) -> None:
         deep = self.root / "Lib" / "Deep"
         deep.mkdir()
         self.assertEqual([deep, self.root / "Lib"], list(self.reader.climb(deep, self.root / "Lib")))
         self.assertEqual([deep, self.root / "Lib", self.root], list(self.reader.climb(deep)))
-        self.assertEqual([self.root / "Lib" / "Lib.csproj"], self.reader.matches(self.root, "**/*.csproj"))
 
     def test_a_missing_path_inside_the_tree_is_absent_as_file_presence_answers_it(self) -> None:
         missing = self.root / "Gone" / "Gone.csproj"
@@ -210,8 +209,6 @@ class FolderLinkTests(TreeReaderCase):
                 self.reader.present(out / "Deep.csproj")
             with self.assertRaises(TreeRefused):
                 self.reader.occupied(out / "Deep.csproj")
-            with self.assertRaises(TreeRefused):
-                self.reader.matches(out, "*.csproj")
             self.assertEqual(str(out / "Deep.csproj"), self.reader.key(out / "Deep.csproj"))
         self.assertEqual([], reached(touched, [out], self.outside))
 

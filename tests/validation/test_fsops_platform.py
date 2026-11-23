@@ -1985,12 +1985,30 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
     unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
     # Path.group shares its name with a regular expression match's group(), which no reader can tell apart.
     group = "def read(path):\n    return path.group()\n"
+    # A core reader reached through another core module that imports it, a judge given another tree, and a
+    # sanctioned function called from another scope.
+    through = (
+        "import dotnet_solution\nimport tree_reader\nfrom tree_reader import read_bounded\n"
+        "def read(path):\n"
+        "    read_bounded(path)\n"
+        "    dotnet_solution.path_key(path)\n"
+        "    return tree_reader.file_presence.is_present(path)\n"
+    )
+    judge = "from folder_walk import followed_inside\ndef read(path, other):\n    return followed_inside(path, other)\n"
+    sanctioned = (
+        "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
+        "def given(path):\n    return path.resolve()\n"
+        "def use(path):\n    return given(path)\n"
+    )
     files = {
         f"{SCRIPTS}/unbound.py": unbound,
         f"{SCRIPTS}/both.py": both,
         f"{SCRIPTS}/helper.py": helper,
         f"{SCRIPTS}/unlisted.py": unlisted,
         f"{SCRIPTS}/group.py": group,
+        f"{SCRIPTS}/through.py": through,
+        f"{SCRIPTS}/judge.py": judge,
+        f"{SCRIPTS}/sanctioned.py": sanctioned,
     }
     assert tree_read_findings(files) == []
 
@@ -2080,6 +2098,8 @@ def test_core_reads_derives_each_reading_function_transitively_but_judges_other_
         "users.py": f"from {judge_module} import {judge_name}\nfrom {other_module} import {other_name}\n"
         f"def judged(path):\n    return {judge_name}(path)\ndef elsewhere(path):\n    return {other_name}(path)\n",
         "holder.py": "class Holder:\n    def read(self, path):\n        return path.read_bytes()\n",
+        # A function defined inside a module-level try, which the derivation never reads: a stated limit.
+        "guarded.py": "try:\n    def hidden(path):\n        return path.read_bytes()\nexcept ImportError:\n    pass\n",
         "tree_reader.py": "def present(path):\n    return path.exists()\n",
         "test_paths.py": "def test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n",
     }
@@ -2115,3 +2135,27 @@ def test_core_reads_marks_the_helpers_the_reader_stands_in_for_in_the_real_core(
     }
     assert expected <= found
     assert not (TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()) & found
+
+
+def test_tree_read_policy_counts_a_path_method_on_self_its_class_does_not_define() -> None:
+    # Only a method the enclosing class defines, called on self or cls, is the class's own: one it does not define, a
+    # call on another receiver, and a method another class defines are each read as a path's.
+    source = (
+        "class Evaluation:\n"
+        "    def walk(self, element):\n"
+        "        return element\n"
+        "    def check(self, other):\n"
+        "        self.exists()\n"
+        "        other.walk(1)\n"
+        "        return None\n"
+        "class Other:\n"
+        "    def stat(self):\n"
+        "        return 1\n"
+        "    def run(self):\n"
+        "        return self.walk(1)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/own.py": source})
+    assert found == [
+        f"{SCRIPTS}/own.py:{line} reads a path with {read}; {TREE_READ_ADVICE}"
+        for line, read in ((5, "Path.exists"), (6, "Path.walk"), (12, "Path.walk"))
+    ]

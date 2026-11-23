@@ -30,6 +30,7 @@ link is the file itself, with no link to judge, so a hard link to a file elsewhe
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import sys
 from collections.abc import Callable, Iterable, Sequence
@@ -43,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
 from file_presence import is_directory, is_occupied
-from folder_walk import outside_link_refusal
+from folder_walk import LINKED_OUT_REASON, outside_link_refusal
 from link_probe import is_link_or_junction
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
@@ -398,19 +399,30 @@ def read_nuspec(path: Path, reader: TreeReader, assemblies: tuple[str, ...] = ()
 
 
 def package_assemblies(package_dir: Path, reader: TreeReader) -> tuple[str, ...]:
-    """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
-    something other than a folder stands at lib/, whether one is there cannot be told, a folder below it cannot be
-    listed, or `reader` refuses it: a link on its way leads outside the reader's tree, which is never stat."""
+    """The stems of the assemblies a package folder ships under lib/ and every folder below it, each once, in name
+    order, found by the reader's search, which judges each link entry from its own metadata and its text; or
+    `Unreadable` when something other than a folder stands at lib/, whether one is there cannot be told, a folder below
+    it cannot be listed or an entry examined, or a link at lib/ or below it, a symbolic link or a junction alike, leads
+    outside the reader's tree, which is never listed or stat. A folder link that stays inside the tree is not entered,
+    as the search enters none, and its assemblies are not named."""
     lib = package_dir / "lib"
     if (refused := reader.refusal(lib)) is not None:
         raise Unreadable(lib, refused)
     try:
         if not reader.folder(lib):
             return ()
-        found = reader.matches(lib, "**/*.dll")
+        walk = reader.search(lib, lambda name: fnmatch.fnmatch(name, "*.dll"), skipped=frozenset())
     except OSError as error:
         raise os_unreadable(error, lib) from None
-    return tuple(sorted({path.stem for path in found}, key=ordinal_fold))
+    for entry in walk.not_entered:
+        if entry.error is not None:
+            raise os_unreadable(entry.error, entry.path)
+        if entry.reason == LINKED_OUT_REASON:
+            raise Unreadable(entry.path, entry.reason)
+    for found in walk.files:
+        if (refused := reader.refusal(found)) is not None:
+            raise Unreadable(found, refused)
+    return tuple(sorted({path.stem for path in walk.files}, key=ordinal_fold))
 
 
 def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[str, ...]:

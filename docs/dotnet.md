@@ -58,7 +58,8 @@ git names, and every file it formats lies under it. `dotnet-dependencies` examin
 or the directory searched, the nearest folder at or above it holding `.git`, else that directory, since a solution
 in a subfolder routinely names projects in sibling folders of the same checkout. Its searches for
 `Directory.Build.props`, `Directory.Build.targets`, `Directory.Packages.props`, and the `packages` folder start only
-from a project it accepted, and a file one of them finds is read only inside that tree.
+from a project it accepted, and a file one of them finds is read only inside that tree; the search for the `packages`
+folder ends at the tree's top.
 
 ## Requirements
 

@@ -191,12 +191,6 @@ class TreeReader:
 
         return until_stop()
 
-    def matches(self, folder: Path, pattern: str) -> list[Path]:
-        """`file_presence.matching` below a judged folder: the paths a relative glob pattern matches, in path order,
-        entering no symbolic link to a folder on a `**` part. A match is only named, never examined: a caller judges
-        each one it reads through the reader again."""
-        return file_presence.matching(self.judged(folder), pattern)
-
     def key(self, path: Path) -> str:
         """What a collection compares `path` by, `dotnet_solution.entry_key` in the tree: `same_path` for a path inside
         it that no link leads out of, and its text, made absolute without reaching the file system, for any other,

@@ -5786,6 +5786,34 @@ class PresenceReadTests(Fixture):
             dependency_graph.package_directory(folders, "Lantern.Core", "1.0.0", self.root / "solution"),
         )
 
+    def test_a_cache_package_whose_lib_links_elsewhere_inside_the_cache_is_read_through_the_cache_s_reader(
+        self,
+    ) -> None:
+        # The package's lib is a folder link (a junction on Windows) to another folder of the same cache: the package
+        # is read through the cache folder's reader, so a link that stays inside the cache is followed and its
+        # assemblies read, as the docs state, never refused as leading out of the package's own folder.
+        cache = self.root / "home" / ".nuget" / "packages"
+        package = cache / "Lantern.Core" / "1.0.0"
+        package.mkdir(parents=True)
+        (package / "lantern.core.nuspec").write_text(
+            "<package><metadata><id>Lantern.Core</id><version>1.0.0</version></metadata></package>", encoding="utf-8"
+        )
+        shared = cache / "shared" / "lib"
+        (shared / "net8.0").mkdir(parents=True)
+        (shared / "net8.0" / "Lantern.Core.dll").write_text("", encoding="utf-8")
+        link_folder(shared, package / "lib")
+        self.addCleanup(remove_link, package / "lib")
+        tree = self.root / "solution"
+        tree.mkdir()
+        graph = dependency_graph.Graph(tree, tree, tree)
+        node = dependency_graph.nuspec_node(
+            graph, [cache], msbuild_reader.PackageRef("Lantern.Core", "1.0.0", "central")
+        )
+        self.assertEqual([], graph.unreadable)
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(("Lantern.Core", "1.0.0", ("Lantern.Core",)), (node.id, node.version, node.assemblies))
+
     def test_a_package_in_the_nuget_cache_that_a_link_leads_out_of_the_cache_is_unreadable_and_never_followed(
         self,
     ) -> None:

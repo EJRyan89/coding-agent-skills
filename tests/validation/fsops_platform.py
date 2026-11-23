@@ -1208,8 +1208,12 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # wraps under another name; a path method called unbound on its class with the path as its argument, as
 # Path.exists(path); a call in a module that imports both os and os.path, which the shared resolver leaves unnamed; a
 # module read DIRECT_TREE_READS does not list, such as zipfile.is_zipfile, zipfile.Path, shutil.disk_usage,
-# shutil.unpack_archive, or os.pathconf; and a read in a method of an ejryan89-skill-core class, reached through an
-# instance, which names no class.
+# shutil.unpack_archive, or os.pathconf; a read in a method of an ejryan89-skill-core class, reached through an
+# instance, which names no class; a core reader reached through another core module that imports it, as
+# tree_reader.read_bounded, dotnet_solution.path_key, or tree_reader.file_presence.is_present, which core_reads names
+# only by the module that defines it; a TREE_JUDGES function called with a tree other than the one the skill examines;
+# a function TREE_READ_ALLOWED sanctions, called from another scope on a path of the tree; and a core function defined
+# inside a module-level if or try, which core_reads never derives.
 TREE_READ_SKILLS = ("skills/dotnet-format/scripts", "skills/dotnet-dependencies/scripts")
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.
