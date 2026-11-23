@@ -41,6 +41,7 @@ from path_containment import resolved_path, within
 from review_canary import FixtureError, fixture_change
 from review_config import ConfigurationError, validate_repository_identity
 from review_document import specialists_manifest
+from review_documents import document_format
 from review_flags import FlagError, load_store
 from review_io import PersistenceError
 from review_records import LEDGER_ID, source_parts
@@ -913,14 +914,34 @@ def scoped_paths(expectations: Sequence[Mapping[str, Any]]) -> list[tuple[str, t
     return scoped
 
 
-def _fixture_changes(scenario: Scenario) -> tuple[list[str], dict[str, list[str]], str]:
-    """A fixture scenario's changed files, each renamed one's earlier paths, and its pull request's title, as the
-    pipeline reads them: from the diff git computes between the fixture's two trees, a repository reviewer's with its
-    held files restored and its reviewer's files placed, as a run reviews it."""
+def judged_paths(expectations: Sequence[Mapping[str, Any]]) -> list[tuple[str, str, tuple[int, ...] | None]]:
+    """Each path an expectation judges findings on, scoped or not, as its kind, the path, and the lines it names
+    there, or None for any line of it: a `finding`'s or a `repeats`' path and lines, and each path a `no_finding_above`
+    names, with its lines, which it names only for one path."""
+    judged: list[tuple[str, str, tuple[int, ...] | None]] = []
+    for item in expectations:
+        if item["kind"] in ("finding", "repeats"):
+            judged.append((item["kind"], item["path"], tuple(sorted(item["lines"]))))
+        elif item["kind"] == "no_finding_above" and "paths" in item:
+            lines = tuple(sorted(item["lines"])) if "lines" in item else None
+            judged.extend((item["kind"], path, lines) for path in item["paths"])
+    return judged
+
+
+@dataclass(frozen=True)
+class ScenarioChange:
+    """A fixture scenario's change as the pipeline parses it (`parse_unified_diff`), and its pull request's title."""
+
+    diff: dict[str, dict[str, Any]]
+    title: str
+
+
+def fixture_diff(scenario: Scenario) -> ScenarioChange:
+    """A fixture scenario's change as the pipeline reads it: from the diff git computes between the fixture's two
+    trees, a repository reviewer's with its held files restored and its reviewer's files placed, as a run reviews it."""
     try:
         with reviewed_fixture(scenario) as fixture, fixture_change(fixture, subprocess_runner) as change:
-            diff = parse_unified_diff(change.diff)
-            return list(diff), renamed_from(diff), str(change.pull["title"])
+            return ScenarioChange(parse_unified_diff(change.diff), str(change.pull["title"]))
     except (FixtureError, OSError) as exc:
         raise ScenarioError(f"cannot read the fixture's change: {exc}") from exc
 
@@ -937,12 +958,15 @@ def reviewer_reach(
     return {**reach, GENERIC_SPECIALIST: uncovered(manifest, changed, renamed)}
 
 
-def scenario_reach(scenario: Scenario, spec: Mapping[str, object], checkout: Path) -> dict[str, list[str]]:
+def scenario_reach(
+    scenario: Scenario, spec: Mapping[str, object], checkout: Path, change: ScenarioChange | None = None
+) -> dict[str, list[str]]:
     """The changed files each reviewer of a review scenario could ever review. A document scenario changes its document
     alone, under the path review-document reviews it by, BY_NAME_FOLDER/<name> for a by-name one, routed by the
-    manifest review-document writes for that path; a fixture scenario's come from its trees and the manifest its
-    reviewers follow. Raise ScenarioError for an entrypoint manifest, which routes nothing: its one reviewer reviews
-    the whole change under the name the configuration gives the adapter, which no `source` names."""
+    manifest review-document writes for that path; a fixture scenario's come from its change, `change` when given and
+    otherwise read from its trees, and the manifest its reviewers follow. Raise ScenarioError for an entrypoint
+    manifest, which routes nothing: its one reviewer reviews the whole change under the name the configuration gives
+    the adapter, which no `source` names."""
     if scenario.document is not None:
         name = scenario.document.name
         reviewed = f"{BY_NAME_FOLDER}/{name}" if scenario.by_name else name
@@ -954,17 +978,66 @@ def scenario_reach(scenario: Scenario, spec: Mapping[str, object], checkout: Pat
             "reviewer reviews the whole change under the adapter's configured name, which no source names; scope "
             "expectations only with a specialists manifest"
         )
-    changed, renamed, title = _fixture_changes(scenario)
-    return reviewer_reach(manifest, changed, renamed, title)
+    if change is None:
+        change = fixture_diff(scenario)
+    return reviewer_reach(manifest, list(change.diff), renamed_from(change.diff), change.title)
 
 
-def _reached(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None:
+def _spans(numbers: Sequence[int]) -> str:
+    """Line numbers as sorted runs of consecutive numbers, as `3-5, 9`."""
+    runs: list[list[int]] = []
+    for number in sorted(numbers):
+        if runs and number == runs[-1][-1] + 1:
+            runs[-1].append(number)
+        else:
+            runs.append([number])
+    return ", ".join(str(run[0]) if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs)
+
+
+def _judged(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None:
+    """Refuse an expectation no review could ever judge: one that names its source and a path that reviewer can never
+    review (`_reached`), and one whose path, or whose lines of it, hold no added line of a fixture scenario's change
+    (`_added`). The change is read once, for both."""
+    scoped = scoped_paths(spec["expectations"])
+    judged = judged_paths(spec["expectations"])
+    if not scoped and not judged:
+        return
+    # A document scenario's added lines come from review-document's extraction of its document, not a diff of trees.
+    change = None if scenario.document is not None else fixture_diff(scenario)
+    if scoped:
+        _reached(scoped, scenario_reach(scenario, spec, checkout, change))
+    if change is not None:
+        _added(judged, change.diff)
+
+
+def _added(judged: Sequence[tuple[str, str, tuple[int, ...] | None]], diff: Mapping[str, Mapping[str, Any]]) -> None:
+    """Refuse an expectation whose path holds no added line of the change, or whose lines are none of the path's added
+    lines. A reviewer anchors a finding only on an added line of a file it reviews, so a `finding` there is never
+    met, and a `no_finding_above` or a `repeats` there never fails. A document file, one `document_format` names a
+    format for, is passed over: `prepare` replaces its diff with the diff of its extracted text, which the loader does
+    not extract. `review_specialists`' result check holds that rule inline in
+    `_check_finding`, a private function that names no predicate to import, so this reads the same record it reads, the
+    `added` lines `parse_unified_diff` keeps for each file."""
+    for kind, path, lines in judged:
+        if document_format(path) is not None:
+            continue
+        added = sorted(diff.get(path, {}).get("added", {}))
+        if not added:
+            raise ScenarioError(
+                f"{kind} {path} judges no added line: the scenario's change adds no line to {path}, and a reviewer "
+                "anchors a finding only on an added line"
+            )
+        if lines is not None and not set(lines) & set(added):
+            raise ScenarioError(
+                f"{kind} {_where(path, lines)} judges no added line: the scenario's change adds "
+                f"{'line' if len(added) == 1 else 'lines'} {_spans(added)} to {path}, and a reviewer anchors a finding "
+                "only on an added line"
+            )
+
+
+def _reached(scoped: Sequence[tuple[str, tuple[str, ...]]], reach: Mapping[str, list[str]]) -> None:
     """Refuse an expectation that names its source and a path that reviewer can never review, which nothing that
     reviewer raises is ever judged on, so the expectation could pass with no verdict on it."""
-    scoped = scoped_paths(spec["expectations"])
-    if not scoped:
-        return
-    reach = scenario_reach(scenario, spec, checkout)
     for source, paths in scoped:
         files = reach.get(source, [])
         for path in paths:
@@ -1293,7 +1366,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
         held=held,
         pins=route_pins(spec, directory, checkout),
     )
-    _reached(scenario, spec, checkout)
+    _judged(scenario, spec, checkout)
     return scenario
 
 
