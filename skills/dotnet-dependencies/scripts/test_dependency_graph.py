@@ -5440,7 +5440,7 @@ class PresenceReadTests(Fixture):
         self.write("App/App.csproj", LEGACY_APP_PROJECT)
         listed = self.write("Listed.sln", solution("App\\App.csproj"))
         for owner, name, target in (
-            (Path, "iterdir", self.root),
+            (os, "scandir", self.root),
             (file_presence, "is_present", listed),
             (file_presence, "is_present", self.root),
         ):
@@ -5901,7 +5901,7 @@ class PresenceReadTests(Fixture):
             ["Beacon.App", "Lantern.Json", "Quill.Http", "Ghost.Assembly"],
             [redirect.name for redirect in web.file.redirects],
         )
-        rows = self.answered(root, failing_without_a_file(Path, "iterdir", project))
+        rows = self.answered(root, failing_without_a_file(os, "scandir", project))
         self.assertIn(["src/Harbor.Web", "Access is denied"], self.lines(rows, "UNREADABLE"))
         # A config whose stat fails naming no file is reported against itself, never the folder, and the other config's
         # redirects are still read.
@@ -5920,10 +5920,10 @@ class PresenceReadTests(Fixture):
         packages = unpacked(self.root / "solution", "Lantern.Core.1.0.0")
         cache = unpacked(self.root / "home", "Lantern.Core/1.0.0")
         for folder, owner, name, target in (
-            (packages, Path, "iterdir", packages),
+            (packages, os, "scandir", packages),
             (packages, file_presence, "is_directory", packages / "Lantern.Core.1.0.0"),
             (cache, file_presence, "is_directory", cache / "Lantern.Core"),
-            (cache, Path, "iterdir", cache / "Lantern.Core"),
+            (cache, os, "scandir", cache / "Lantern.Core"),
             (cache, file_presence, "is_directory", cache / "Lantern.Core" / "1.0.0"),
         ):
             with (

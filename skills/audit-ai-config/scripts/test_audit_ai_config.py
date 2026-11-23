@@ -6290,6 +6290,11 @@ def _names(target: Path, argument: object) -> bool:
     return isinstance(argument, (str, os.PathLike)) and Path(argument) == target
 
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so a listing is
+# held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
 @contextlib.contextmanager
 def listing_denied(target: Path) -> Iterator[None]:
     """`target`, a folder, cannot be listed: os.scandir and os.listdir, and so Path.iterdir and every walk, raise the
@@ -6694,6 +6699,19 @@ class UnexaminedPathTests(unittest.TestCase):
         self.assertEqual([folder / "parity.yml"], audit.list_directory(self.root, folder, "*.yml").paths)
         with listing_denied(folder), self.assertRaises(PermissionError):
             audit.list_directory(self.root, folder, "*.yml")
+
+    def test_a_listing_leaves_out_the_sidecar_beside_a_workflow_and_keeps_any_other_dot_underscore_file(self) -> None:
+        # Holds on every platform: the sidecar is planted with the bytes macOS writes on a FAT, exFAT, or SMB volume.
+        folder = self.root / ".github/workflows"
+        _write_fixture(self.root, {".github/workflows/ci.yml": "x", ".github/workflows/lint.yml": "x"})
+        (folder / "._ci.yml").write_bytes(SIDECAR_BYTES)
+        # One with no header beside its file, and one with the header and no sibling, are the repository's own files.
+        (folder / "._lint.yml").write_text("x", encoding="utf-8")
+        (folder / "._gone.yml").write_bytes(SIDECAR_BYTES)
+        self.assertEqual(
+            [folder / name for name in ("._gone.yml", "._lint.yml", "ci.yml", "lint.yml")],
+            audit.list_directory(self.root, folder, "*.yml").paths,
+        )
 
     def test_an_import_it_cannot_examine_is_a_warning_saying_so_never_a_missing_file(self) -> None:
         _write_fixture(self.root, {"docs/guide.md": "x"})

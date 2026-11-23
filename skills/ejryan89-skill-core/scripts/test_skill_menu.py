@@ -122,6 +122,26 @@ def test_read_menu_reads_the_source_document_and_each_skills_metadata(tmp_path: 
     assert skill_menu.carriers(read, "core") == (["fixture-skills", "fixture-skills-dotnet"], {})
 
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume: the header, written out so the
+# menu is held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
+def test_read_menu_leaves_out_the_sidecar_beside_a_metadata_file_and_reads_any_other_dot_underscore_file(
+    tmp_path: Path,
+) -> None:
+    # Holds on every platform: the sidecar is planted with the bytes macOS writes.
+    root = write_source(tmp_path / "source", {"id": "owner/repo"}, {"alpha": {}, "beta": {}})
+    (root / "deploy-meta" / "._alpha.json").write_bytes(SIDECAR_BYTES)
+    # One with no header, beside its file, and one with the header and no sibling, are the source's own files.
+    (root / "deploy-meta" / "._beta.json").write_text("{}", encoding="utf-8")
+    (root / "deploy-meta" / "._gamma.json").write_bytes(SIDECAR_BYTES)
+    with pytest.raises(skill_menu.MenuError, match=r"\._gamma\.json"):
+        skill_menu.read_menu(root)
+    (root / "deploy-meta" / "._gamma.json").unlink()
+    assert sorted(skill_menu.read_menu(root).skills) == ["._beta", "alpha", "beta"]
+
+
 @pytest.mark.parametrize(
     ("document", "metadata", "problem"),
     [
