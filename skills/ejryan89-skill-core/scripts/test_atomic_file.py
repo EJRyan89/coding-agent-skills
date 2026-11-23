@@ -450,6 +450,27 @@ class CreateTests(unittest.TestCase):
                 self.assertEqual(1, path.stat().st_nlink, "the copy's own name is gone")
                 self.assertEqual(["report.md"], names_in(temporary))
 
+    def test_a_copy_name_already_gone_after_the_link_is_removed_at_once_without_a_wait(self) -> None:
+        # Holds on every platform: another process removed the copy's name between the link and its removal, so the
+        # removal finds nothing to remove, which is no failure and no reason to wait.
+        real_link = os.link
+        waits: list[float] = []
+
+        def link_then_lose_the_copy(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+            real_link(source, target, *args, **kwargs)
+            Path(source).unlink()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.md"
+            with (
+                mock.patch.object(os, "link", link_then_lose_the_copy),
+                mock.patch.object(time, "sleep", waits.append),
+            ):
+                create_bytes(path, REPORT)
+            self.assertEqual([], waits, "a name already gone is removed at once")
+            self.assertEqual(REPORT, path.read_bytes())
+            self.assertEqual(["report.md"], names_in(temporary))
+
     def test_a_reader_holding_the_new_file_open_for_a_moment_keeps_no_create_from_finishing(self) -> None:
         # The race of a reader that opens the new file as soon as the link puts it in place, with a real handle, which
         # lets go at the create's first wait. Holds on every platform: where the file system removes the copy's name

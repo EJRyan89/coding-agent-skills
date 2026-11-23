@@ -45,12 +45,6 @@ TRACKED_FILE_MODE = 0o644
 # network share. A create that allows an empty reservation falls back to one on these alone.
 NO_HARD_LINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EXDEV})
 
-# The waits, in seconds, before each new try to remove a created copy's own name once a try fails: a file system may
-# refuse that removal for a moment, as Windows does a name of a file another handle holds open without delete sharing,
-# and the copy and the target are one file once linked. Short and few, so a removal that keeps failing raises within
-# about a third of a second, well inside a hook's time limit.
-COPY_NAME_REMOVAL_WAITS = (0.01, 0.02, 0.04, 0.08, 0.16)
-
 
 class UnfinishedCopyError(OSError):
     """A replace or a create that failed and could not remove the copy it wrote beside its target, or a create that
@@ -149,7 +143,7 @@ def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_rese
     A file, a folder, or a link already at `path`, one that leads nowhere included, raises FileExistsError and is left
     as it was. A failure before the link that puts the copy in place leaves nothing at `path`, removes the copy, and
     is raised as it was. Once the link is made, `path` holds `data` whatever follows: removing the copy's own name is
-    tried again after each OSError, after each wait of COPY_NAME_REMOVAL_WAITS and then once more at once, so a reader
+    tried again after each OSError, after each of _remove_copy_name's waits and then once more at once, so a reader
     or a file system that refuses the removal for a moment keeps no create from finishing, and
     an OSError a later try overcomes is no failure, so the create returns; an interrupt or a defect there, in a wait
     included, is raised as it was, the copy removed; and a copy whose name no try can remove raises
@@ -289,10 +283,15 @@ def _publish(
 
 
 def _remove_copy_name(copy: Path) -> None:
-    """Remove `copy`, a created copy's own name, trying again after each wait of COPY_NAME_REMOVAL_WAITS once a try
-    raises an OSError, and raise the last try's OSError when every one fails. A name already gone is removed. Anything
-    else, an interrupt in a wait included, is raised as it was."""
-    for wait in COPY_NAME_REMOVAL_WAITS:
+    """Remove `copy`, a created copy's own name, trying again after each of its waits once a try raises an OSError,
+    and raise the last try's OSError when every one fails. A name already gone is removed at once. Anything else, an
+    interrupt in a wait included, is raised as it was.
+
+    The waits, in seconds, are for a file system that refuses the removal for a moment, as Windows does a name of a file
+    another handle holds open without delete sharing, since the copy and the target are one file once linked. They are
+    short and few, so a removal that keeps failing raises within about a third of a second, well inside a hook's time
+    limit, and are kept here rather than at module level so only the suites that run a create reach them."""
+    for wait in (0.01, 0.02, 0.04, 0.08, 0.16):
         try:
             copy.unlink(missing_ok=True)
         except OSError:
