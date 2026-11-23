@@ -806,11 +806,12 @@ class LoaderTests(unittest.TestCase):
 
     def test_an_expectation_whose_path_or_lines_hold_no_added_line_is_refused(self) -> None:
         # A reviewer anchors a finding only on an added line of a file it reviews, so a finding expected off them is
-        # never met, and a no_finding_above there never fails. The head deletes gone.go, only removes lines from
-        # trimmed.go, and adds lines 2 and 3 of kept.go.
+        # never met, and a no_finding_above or a repeats there never fails. The head deletes gone.go, only removes
+        # lines from trimmed.go, adds lines 2 and 3 of kept.go, line 2 of one.go, and lines 2, 3, and 6 of runs.go,
+        # and adds report.docx, which git reads as binary, and report.pdf, three lines of text to git.
         found = {"kind": "finding", "severity": "SHOULD_FIX"}
         clean = {"kind": "no_finding_above", "severity": "SUGGESTION"}
-        verdict = {"kind": "verdict", "verdict": "APPROVED"}
+        repeats = {"kind": "repeats", "entry": "v1:F001"}
         anchors = "and a reviewer anchors a finding only on an added line"
         none_to = "case: {} judges no added line: the scenario's change adds no line to {}, " + anchors
         kept_adds = "case: {} judges no added line: the scenario's change adds lines 2-3 to kept.go, " + anchors
@@ -820,6 +821,15 @@ class LoaderTests(unittest.TestCase):
             ({**found, "path": "absent.go", "lines": [1]}, none_to.format("finding absent.go", "absent.go")),
             ({**found, "path": "kept.go", "lines": [1]}, kept_adds.format("finding kept.go:1")),
             ({**found, "path": "kept.go", "lines": [4, 1]}, kept_adds.format("finding kept.go:1,4")),
+            (
+                {**found, "path": "one.go", "lines": [1]},
+                f"case: finding one.go:1 judges no added line: the scenario's change adds line 2 to one.go, {anchors}",
+            ),
+            (
+                {**found, "path": "runs.go", "lines": [4, 5]},
+                "case: finding runs.go:4,5 judges no added line: the scenario's change adds lines 2-3, 6 to runs.go, "
+                + anchors,
+            ),
             # A scoped expectation on a file its reviewer reaches still needs an added line there.
             (
                 {**found, "path": "trimmed.go", "lines": [1], "source": "generic-review"},
@@ -830,25 +840,41 @@ class LoaderTests(unittest.TestCase):
                 none_to.format("no_finding_above gone.go", "gone.go"),
             ),
             ({**clean, "paths": ["kept.go"], "lines": [1, 4]}, kept_adds.format("no_finding_above kept.go:1,4")),
+            ({**repeats, "path": "gone.go", "lines": [1, 2]}, none_to.format("repeats gone.go", "gone.go")),
+            ({**repeats, "path": "kept.go", "lines": [1]}, kept_adds.format("repeats kept.go:1")),
             # One added line of those named is one a finding may sit on.
             ({**found, "path": "kept.go", "lines": [1, 3]}, None),
             ({**found, "path": "kept.go", "lines": [2]}, None),
             ({**found, "path": "kept.go", "lines": [3], "source": "generic-review"}, None),
+            ({**found, "path": "runs.go", "lines": [5, 6]}, None),
             ({**clean, "paths": ["kept.go"]}, None),
             ({**clean, "paths": ["kept.go"], "lines": [1, 2]}, None),
+            ({**repeats, "path": "kept.go", "lines": [1, 2]}, None),
             # One that names no path judges every file.
             (clean, None),
+            # A run diffs a Word document's or a PDF's extracted text, which the loader does not extract.
+            ({**found, "path": "report.docx", "lines": [12]}, None),
+            ({**found, "path": "report.pdf", "lines": [12]}, None),
         ):
             with self.subTest(expectation=expectation):
-                directory = write_scenario(self.root, "case", scenario_spec(expectation, verdict), added=False)
+                again = {"mode": "re-review", "prior": "prior.json"} if expectation["kind"] == "repeats" else {}
+                spec = scenario_spec(expectation, {"kind": "verdict", "verdict": "APPROVED"}, **again)
+                directory = write_scenario(self.root, "case", spec, added=False)
                 for tree, path, text in (
                     ("base", "gone.go", "a\nb\n"),
                     ("base", "trimmed.go", "a\nb\nc\n"),
                     ("head", "trimmed.go", "a\n"),
                     ("base", "kept.go", "a\nb\n"),
                     ("head", "kept.go", "a\nB\nc\n"),
+                    ("base", "one.go", "a\n"),
+                    ("head", "one.go", "a\nb\n"),
+                    ("base", "runs.go", "a\nd\ne\n"),
+                    ("head", "runs.go", "a\nb\nc\nd\ne\nf\n"),
+                    ("head", "report.pdf", "a\nb\nc\n"),
                 ):
                     (directory / tree / path).write_text(text, encoding="utf-8")
+                (directory / "prior.json").write_text("{}", encoding="utf-8")
+                (directory / "head" / "report.docx").write_bytes(b"PK\x03\x04\x00\x00 a zipped document")
                 if refused is None:
                     self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
                 else:

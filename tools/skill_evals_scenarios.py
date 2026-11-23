@@ -41,6 +41,7 @@ from path_containment import resolved_path, within
 from review_canary import FixtureError, fixture_change
 from review_config import ConfigurationError, validate_repository_identity
 from review_document import specialists_manifest
+from review_documents import document_format
 from review_flags import FlagError, load_store
 from review_io import PersistenceError
 from review_records import LEDGER_ID, source_parts
@@ -915,11 +916,11 @@ def scoped_paths(expectations: Sequence[Mapping[str, Any]]) -> list[tuple[str, t
 
 def judged_paths(expectations: Sequence[Mapping[str, Any]]) -> list[tuple[str, str, tuple[int, ...] | None]]:
     """Each path an expectation judges findings on, scoped or not, as its kind, the path, and the lines it names
-    there, or None for any line of it: a `finding`'s path and lines, and each path a `no_finding_above` names, with its
-    lines, which it names only for one path."""
+    there, or None for any line of it: a `finding`'s or a `repeats`' path and lines, and each path a `no_finding_above`
+    names, with its lines, which it names only for one path."""
     judged: list[tuple[str, str, tuple[int, ...] | None]] = []
     for item in expectations:
-        if item["kind"] == "finding":
+        if item["kind"] in ("finding", "repeats"):
             judged.append((item["kind"], item["path"], tuple(sorted(item["lines"]))))
         elif item["kind"] == "no_finding_above" and "paths" in item:
             lines = tuple(sorted(item["lines"])) if "lines" in item else None
@@ -1012,10 +1013,14 @@ def _judged(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None
 def _added(judged: Sequence[tuple[str, str, tuple[int, ...] | None]], diff: Mapping[str, Mapping[str, Any]]) -> None:
     """Refuse an expectation whose path holds no added line of the change, or whose lines are none of the path's added
     lines. A reviewer anchors a finding only on an added line of a file it reviews, so a `finding` there is never
-    met and a `no_finding_above` there never fails. `review_specialists`' result check holds that rule inline in
+    met, and a `no_finding_above` or a `repeats` there never fails. A document file, one `document_format` names a
+    format for, is passed over: `prepare` replaces its diff with the diff of its extracted text, which the loader does
+    not extract. `review_specialists`' result check holds that rule inline in
     `_check_finding`, a private function that names no predicate to import, so this reads the same record it reads, the
     `added` lines `parse_unified_diff` keeps for each file."""
     for kind, path, lines in judged:
+        if document_format(path) is not None:
+            continue
         added = sorted(diff.get(path, {}).get("added", {}))
         if not added:
             raise ScenarioError(
