@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import file_presence
+import folder_walk
 import path_containment
 import path_keys
 from file_presence import (
@@ -726,3 +727,96 @@ class MatchingTests(unittest.TestCase):
         (self.root / "linked").symlink_to(self.root / "sub", target_is_directory=True)
         self.assertEqual(sorted(self.root.glob("**/c.py")), matching(self.root, "**/c.py"))
         self.assertIn(self.root / "linked" / "c.py", matching(self.root, "*/c.py"))
+
+
+# The AppleDouble header, written out so the listings are held to the bytes macOS writes, not to the constant they use,
+# and a sidecar's first bytes as macOS writes them on a FAT or exFAT volume.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
+
+
+class SidecarTests(unittest.TestCase):
+    """`listed` and `matching` leave out the AppleDouble sidecars macOS writes beside a file or folder on a FAT, exFAT,
+    or SMB volume, planted here with the bytes macOS writes, so these hold on every platform; any other `._` entry is
+    the caller's."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def plant(self, relative: str, content: bytes = SIDECAR_BYTES) -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def names(self, paths: list[Path]) -> list[str]:
+        return [path.relative_to(self.root).as_posix() for path in paths]
+
+    def test_a_sidecar_beside_its_file_or_folder_is_neither_listed_nor_matched(self) -> None:
+        for name in ("note.md", "docs/inner.md", "deploy-meta/skill.json"):
+            self.plant(name, b"text\n")
+        for sidecar in ("._note.md", "._docs", "docs/._inner.md", "deploy-meta/._skill.json"):
+            self.plant(sidecar)
+        self.assertEqual(["deploy-meta", "docs", "note.md"], self.names(file_presence.listed(self.root)))
+        self.assertEqual(["note.md"], self.names(matching(self.root, "*.md")))
+        self.assertEqual(["deploy-meta", "docs", "note.md"], self.names(matching(self.root, "*")))
+        self.assertEqual(["docs/inner.md", "note.md"], self.names(matching(self.root, "**/*.md")))
+        self.assertEqual(["deploy-meta/skill.json"], self.names(matching(self.root, "*/*.json")))
+
+    def test_any_other_dot_underscore_entry_is_listed_and_matched(self) -> None:
+        for name in ("plain.md", "short.md", "empty.md", "Other.md", "._folder/inside.md"):
+            self.plant(name, b"text\n")
+        kept = {
+            "._alone.md": SIDECAR_BYTES,
+            "._plain.md": b"plain text, long enough to hold a header\n",
+            "._short.md": APPLE_DOUBLE_HEADER[:7],
+            "._empty.md": b"",
+            "._": SIDECAR_BYTES,
+        }
+        for name, content in kept.items():
+            self.plant(name, content)
+        # A sibling only in another case is no sibling where names keep their case; where they fold it, the listing
+        # still gives `Other.md`, never `other.md`, so the sidecar is kept on every platform.
+        self.plant("._other.md")
+        expected = ["._", "._alone.md", "._empty.md", "._folder", "._other.md", "._plain.md", "._short.md"]
+        expected += ["Other.md", "empty.md", "plain.md", "short.md"]
+        self.assertEqual(sorted(expected), sorted(self.names(file_presence.listed(self.root))))
+        self.assertEqual(
+            sorted(name for name in expected if name.endswith(".md")),
+            sorted(self.names(matching(self.root, "*.md"))),
+        )
+
+    def test_a_dot_underscore_entry_whose_header_or_metadata_cannot_be_read_is_listed(self) -> None:
+        self.plant("note.md", b"text\n")
+        self.plant("._note.md")
+        with mock.patch.object(Path, "open", side_effect=PermissionError(13, "Permission denied")):
+            self.assertEqual(["._note.md", "note.md"], self.names(file_presence.listed(self.root)))
+            self.assertEqual(["._note.md", "note.md"], self.names(matching(self.root, "*.md")))
+        # An entry whose own metadata cannot be read, as `folder_walk.is_sidecar_entry` raises for one.
+        with mock.patch.object(folder_walk, "is_sidecar_entry", side_effect=PermissionError(13, "Permission denied")):
+            self.assertEqual(["._note.md", "note.md"], self.names(file_presence.listed(self.root)))
+            self.assertEqual(["._note.md", "note.md"], self.names(matching(self.root, "*.md")))
+
+    def test_only_a_dot_underscore_name_with_its_sibling_listed_is_opened(self) -> None:
+        self.plant("note.md", b"text\n")
+        self.plant("._alone.md")
+        self.plant("._note.md")
+        opened: list[str] = []
+        real_open = Path.open
+
+        def watched(path: Path, *args: Any, **kwargs: Any) -> Any:
+            opened.append(path.name)
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=watched):
+            self.assertEqual(["._alone.md", "note.md"], self.names(file_presence.listed(self.root)))
+        self.assertEqual(["._note.md"], opened)
+
+    def test_a_folder_it_cannot_list_raises_as_iterdir_raises(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            file_presence.listed(self.root / "missing")
+        self.plant("file.md", b"text\n")
+        with self.assertRaises(NotADirectoryError if sys.platform != "win32" else OSError):
+            file_presence.listed(self.root / "file.md")

@@ -46,6 +46,11 @@ from deployer.render import CODEX_METADATA
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so the deployer is
+# held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
 def denied(path: Path) -> PermissionError:
     return PermissionError(13, "Access is denied", str(path))
 
@@ -672,22 +677,35 @@ class DeployerPresenceTests(DeployerTestCase):
         self.assertIn(f"ERROR: Could not read the skill source: {forward(orphan)}: Access is denied\n", result.output)
 
     def test_a_metadata_folder_it_cannot_list_is_refused_never_read_as_no_skills(self) -> None:
-        # The listing fails as a denied one does: iterdir raises, and Path.glob answers with no entries, which read as
-        # the source's skills would remove every deployed one.
+        # The listing fails as a denied one does: os.scandir and iterdir raise, and Path.glob answers with no entries,
+        # which read as the source's skills would remove every deployed one.
         self.deployed()
         meta = self.source / "deploy-meta"
-        real_iterdir, real_glob = Path.iterdir, Path.glob
+        real_iterdir, real_glob, real_scandir = Path.iterdir, Path.glob, os.scandir
 
         def iterdir(self: Path) -> Iterator[Path]:
             if self == meta:
                 raise denied(meta)
             return real_iterdir(self)
 
+        def scandir(path: Any = ".") -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == meta:
+                raise denied(meta)
+            return real_scandir(path)
+
         def glob(self: Path, *arguments: Any, **options: Any) -> Iterator[Path]:
             return iter([]) if self == meta else real_glob(self, *arguments, **options)
 
-        with mock.patch.object(Path, "iterdir", iterdir), mock.patch.object(Path, "glob", glob):
-            result = self.deploy_fails("--all", pattern="Could not read the skill source")
+        with (
+            mock.patch.object(Path, "iterdir", iterdir),
+            mock.patch.object(os, "scandir", scandir),
+            mock.patch.object(Path, "glob", glob),
+        ):
+            result = self.deploy_fails(
+                "--all",
+                pattern="Could not read the skill source",
+                unreadable={meta: "the test denies the metadata folder's listing to the deployment"},
+            )
         self.assertIn(f"ERROR: Could not read the skill source: {forward(meta)}: Access is denied\n", result.output)
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
         # The folder's *.json entries are listed in order, a file where the folder stands is refused, and no folder at
@@ -699,6 +717,41 @@ class DeployerPresenceTests(DeployerTestCase):
         meta.write_text("", encoding="utf-8")
         with self.assertRaises(file_presence.NotADirectory):
             source._metadata_files(meta)
+
+    def test_the_metadata_listing_and_the_tree_read_leave_out_a_sidecar_and_keep_any_other_dot_underscore_file(
+        self,
+    ) -> None:
+        # Holds on every platform: the sidecars are planted with the bytes macOS writes on a FAT, exFAT, or SMB volume.
+        meta = self.root / "deploy-meta"
+        meta.mkdir()
+        for name in ("alpha.json", "beta.json"):
+            (meta / name).write_text("{}", encoding="utf-8")
+        (meta / "._alpha.json").write_bytes(SIDECAR_BYTES)
+        # One with no header beside its file, and one with the header and no sibling, are the source's own files.
+        (meta / "._beta.json").write_text("{}", encoding="utf-8")
+        (meta / "._gamma.json").write_bytes(SIDECAR_BYTES)
+        self.assertEqual(
+            [meta / name for name in ("._beta.json", "._gamma.json", "alpha.json", "beta.json")],
+            source._metadata_files(meta),
+        )
+        tree = self.root / "tree"
+        (tree / "scripts").mkdir(parents=True)
+        for relative in ("SKILL.md", "notes.md", "scripts/run.py"):
+            (tree / relative).write_text("x\n", encoding="utf-8")
+        for sidecar in ("._SKILL.md", "._scripts", "scripts/._run.py"):
+            (tree / sidecar).write_bytes(SIDECAR_BYTES)
+        (tree / "._notes.md").write_text("x\n", encoding="utf-8")
+        (tree / "._gone.md").write_bytes(SIDECAR_BYTES)
+        self.assertEqual(
+            {
+                "._gone.md": SIDECAR_BYTES,
+                "._notes.md": b"x\n",
+                "SKILL.md": b"x\n",
+                "notes.md": b"x\n",
+                "scripts/run.py": b"x\n",
+            },
+            hashing.read_tree(tree),
+        )
 
     def test_a_managed_root_component_it_cannot_stat_is_refused_not_passed(self) -> None:
         component = self.home / ".claude"

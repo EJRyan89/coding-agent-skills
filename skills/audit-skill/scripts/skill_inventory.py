@@ -273,7 +273,7 @@ from bash_syntax import BashSyntaxError, Simple
 from console import run_main
 from dotnet_solution import FileRefused, lexical_absolute
 from executable_locator import RelativeEnvironmentPath, absolute_home, program_name
-from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there
+from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, listed
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_destinations import link_destinations
@@ -1404,9 +1404,10 @@ def opened_path(path: Path) -> Path:
 
 def listed_entries(folder: Path, pattern: str) -> list[Path]:
     """The entries of `folder` whose names match the one-segment glob `pattern`, in path order, as Path.glob matches
-    them, but listed with iterdir, which raises for a folder it cannot list, where glob matches nothing there and the
-    audit would answer as though the folder were empty."""
-    return sorted(path for path in folder.iterdir() if fnmatch.fnmatch(path.name, pattern))
+    them, but listed with `file_presence.listed`, which raises for a folder it cannot list, where glob matches nothing
+    there and the audit would answer as though the folder were empty, and leaves out the AppleDouble sidecars macOS
+    writes beside a file on a FAT, exFAT, or SMB volume."""
+    return [path for path in listed(folder) if fnmatch.fnmatch(path.name, pattern)]
 
 
 def listed_in_folders(folder: Path, name: str) -> list[Path]:
@@ -2943,7 +2944,7 @@ def outside_scripts(folder: Path) -> list[Path]:
     TREE_READ_ALLOWED states, following its links."""
     if not is_directory(folder):
         return []
-    return [opened_path(path) for path in sorted(folder.iterdir()) if is_script_name(path) and is_outside_file(path)]
+    return [opened_path(path) for path in listed(folder) if is_script_name(path) and is_outside_file(path)]
 
 
 def passed_over(skill: Path, script: Path) -> bool:

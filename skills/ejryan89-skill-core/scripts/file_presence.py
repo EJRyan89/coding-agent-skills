@@ -25,6 +25,12 @@ reader takes no pattern it never looked for as matching nothing. It matches the 
 short alias matches no name, and a class that can spell a device name matches only listed names, never a device
 Windows opens.
 
+`listed` lists one folder as `Path.iterdir` does, raising as it raises, and both it and `matching` leave out the
+AppleDouble `._<name>` sidecars macOS writes beside a file or folder on a FAT, exFAT, or SMB volume, each recognized as
+`folder_walk.is_sidecar_entry` recognizes one: by its sibling in the same listing and its header, read only from a
+regular file, never through a link, a pipe, or a device. Any other `._` entry is the caller's, one whose metadata or
+header cannot be read included, so a `._` file can hide only itself.
+
 A stat it cannot make is a fourth answer, that it could not tell, and reaches the caller as the `OSError` the stat
 raised: `Path.is_file`, `os.path.exists`, and `os.path.lexists` return False on every `OSError` from Python 3.14 on,
 and `os.path.lexists` on a `ValueError` too, so none of them is called here. Only `FileNotFoundError` and
@@ -41,6 +47,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
 
+import folder_walk
 from device_names import is_reserved_device_name
 from path_containment import resolved_path
 
@@ -210,6 +217,9 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
     one elsewhere still raises. A skipped folder is still a match of a final part, as an entry of the folder above
     it.
 
+    A final part never matches an AppleDouble sidecar, as `listed` leaves one out, so `*.md` gives no `._note.md`
+    that sits beside `note.md` and opens with the AppleDouble header.
+
     Each path is kept once by its spelling as the listing gave it, never by `Path` equality, which on Windows lowers
     each name with `str.lower` and so takes two names the file system keeps apart, such as the Kelvin sign and K, for
     one.
@@ -232,7 +242,7 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
         found = [
             Path(entry.path)
             for base in found
-            for entry in _entries(base)
+            for entry in (_without_sidecars(_entries(base)) if last else _entries(base))
             if fnmatch.fnmatch(entry.name, part) and (last or (entry.is_dir() and not skip(Path(entry.path))))
         ]
     return sorted({os.fspath(path): path for path in found}.values())
@@ -258,6 +268,29 @@ def _is_one_name(part: str) -> bool:
     a stream of a file, and no NUL, which no name holds; it ends in no dot or space, which Windows drops, so it is
     neither `.` nor `..`; and it is no device name, which Windows opens in every folder."""
     return ":" not in part and "\0" not in part and not part.endswith((".", " ")) and not is_reserved_device_name(part)
+
+
+def listed(folder: Path) -> list[Path]:
+    """The entries of `folder`, in path order, as `Path.iterdir` lists them, raising its `OSError` for a folder it
+    cannot list, a missing one included, but the AppleDouble sidecars the module names, which are the system's, not
+    the folder's. An entry is examined only when its name starts with `._` and its sibling is listed."""
+    return sorted(Path(entry.path) for entry in _without_sidecars(_entries(folder)))
+
+
+def _without_sidecars(entries: list[os.DirEntry[str]]) -> list[os.DirEntry[str]]:
+    """`entries`, one folder's listing, but each that `folder_walk.is_sidecar_entry` takes for an AppleDouble sidecar
+    given the listing's names."""
+    names = frozenset(entry.name for entry in entries)
+    return [entry for entry in entries if not _is_sidecar(entry, names)]
+
+
+def _is_sidecar(entry: os.DirEntry[str], names: frozenset[str]) -> bool:
+    """`folder_walk.is_sidecar_entry`, but False for an entry whose own metadata cannot be read, which stays the
+    caller's to examine and report, so a `._` entry hides only itself, and only as a sidecar."""
+    try:
+        return folder_walk.is_sidecar_entry(entry, names)
+    except OSError:
+        return False
 
 
 def _entries(folder: Path) -> list[os.DirEntry[str]]:
