@@ -191,7 +191,13 @@ def guard() -> int:
 
 
 def current_hub() -> Path:
-    checkout = checkout_of(Path.cwd())
+    """The hub of the checkout holding the working directory. A checkout git cannot read, of any kind of GitError, is an
+    unknown place, refused naming git's reason, never read as no checkout."""
+    directory = Path.cwd()
+    try:
+        checkout = checkout_of(directory)
+    except GitError as exc:
+        raise UsageError(f"git could not tell which checkout holds {directory}: {flat_text(str(exc))}") from exc
     if checkout is None:
         raise UsageError("Run this inside the repository or one of its worktrees.")
     return checkout.hub
