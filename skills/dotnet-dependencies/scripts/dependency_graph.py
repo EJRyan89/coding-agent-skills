@@ -547,8 +547,9 @@ def unsearched(root: Path, narrowed: Path | None, passed_over: Sequence[NotEnter
 # does not judge: the root, the project, and the graph file, and the NuGet cache folders the environment names.
 TREE_READ_ALLOWED = {
     "given_path": (
-        "a --root, a --project, or the graph file the user names or the skill wrote, resolved with its links followed "
-        "to find the checkout it lies in, before any tree is bound, or to name the file written"
+        "a --root, a --project, a NuGet cache folder, or the graph file the user names or the skill wrote, resolved "
+        "with its links followed to find where it lies, before any tree or reader is bound to it, or to name the file "
+        "written"
     ),
     "given_key": (
         "a --project's leading parts and the root's, keyed as the file system compares them to find the root among "
@@ -560,8 +561,8 @@ TREE_READ_ALLOWED = {
     ),
     "root_reason": "why the --root the user names is no solution or folder, after as_given judged its links",
     "nuget_cache": (
-        "whether each NuGet cache folder the environment and the home name is a folder, before a reader is bound "
-        "to it (packages_reader)"
+        "whether each NuGet cache folder the environment and the home name is a folder, through any link to it, "
+        "before it is resolved and a reader is bound to it (packages_reader)"
     ),
     "write_graph": "the mode of the graph file the user names with --output, which the skill replaces",
 }
@@ -788,9 +789,11 @@ def read_configs(graph: Graph, project: Project) -> None:
 
 
 def nuget_cache() -> list[Path]:
-    """The folders the NuGet cache may be in: NUGET_PACKAGES where it names an absolute path, and ~/.nuget/packages;
-    `Unreadable` naming one whose stat fails, and `Failed` naming the home's variable where the home is not an
-    absolute path, so no cache is looked for under the working directory."""
+    """The folders the NuGet cache may be in: NUGET_PACKAGES where it names an absolute path, and ~/.nuget/packages,
+    each that is a folder resolved with its links followed, so a cache named through a link is read where it lies and
+    only a link inside it that leads out of it is refused (`packages_reader`); `Unreadable` naming one whose stat
+    fails, and `Failed` naming the home's variable where the home is not an absolute path, so no cache is looked for
+    under the working directory."""
     folders: list[Path] = []
     configured = environment_path("NUGET_PACKAGES")
     if configured is not None:
@@ -803,7 +806,7 @@ def nuget_cache() -> list[Path]:
     for folder in folders:
         try:
             if file_presence.is_directory(folder, other_is_absent=True):
-                found.append(folder)
+                found.append(given_path(folder))
         except OSError as error:
             raise os_unreadable(error, folder) from None
     return found

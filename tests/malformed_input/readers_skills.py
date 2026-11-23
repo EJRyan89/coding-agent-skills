@@ -582,7 +582,7 @@ READERS = [
         "msbuild_reader.read_assets",
         "json",
         b'{"version": 3, "targets": {"net8.0": {}}, "project": {"frameworks": {"net8.0": {}}}}',
-        msbuild_reader.read_assets,
+        lambda path: msbuild_reader.read_assets(path, TreeReader(path.parent)),
         (msbuild_reader.Unreadable,),
         filename="project.assets.json",
         accepts={
@@ -594,7 +594,7 @@ READERS = [
         "msbuild_reader.read_packages_config",
         "xml",
         b'<?xml version="1.0" encoding="utf-8"?><packages><package id="Example" version="1.0.0" /></packages>',
-        msbuild_reader.read_packages_config,
+        lambda path: msbuild_reader.read_packages_config(path, TreeReader(path.parent)),
         (msbuild_reader.Unreadable,),
         filename="packages.config",
         accepts={

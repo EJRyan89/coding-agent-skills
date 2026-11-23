@@ -21,6 +21,7 @@ from python_checks import (
     MODULE_WALKS,
     PRESENCE_FUNCTIONS,
     PRESENCE_PREDICATES,
+    SKILL_CORE_SCRIPTS,
     sanctioned_problems,
 )
 from validation_support import (
@@ -1235,9 +1236,8 @@ DIRECT_TREE_READS = (
         for name in ("islink", "isjunction", "getsize", "getmtime", "getatime", "getctime", "realpath", "samefile")
     }
 )
-# Where the ejryan89-skill-core modules live, whose functions that read a path the policy derives (core_reads), and the
-# module of the reader itself, the route the scripts take, which is not derived.
-TREE_READ_CORE = "skills/ejryan89-skill-core/scripts"
+# The module of the reader itself, the route the scripts take, which core_reads does not derive; the core modules are
+# read from SKILL_CORE_SCRIPTS.
 TREE_READER_MODULE = "tree_reader"
 # The ejryan89-skill-core functions that read only to judge a path against the tree they are given, which the reader is
 # built on, so a call of one is no read and a function calling one reads nothing by it.
@@ -1415,7 +1415,7 @@ def core_table_problems(core: Path) -> list[str]:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
     return [
-        f"{TREE_READ_CORE}: {table} names {name}, which ejryan89-skill-core does not define"
+        f"{SKILL_CORE_SCRIPTS}: {table} names {name}, which ejryan89-skill-core does not define"
         for table, entries in (("TREE_JUDGES", TREE_JUDGES), ("OTHER_PLACE_READS", OTHER_PLACE_READS))
         for name in sorted(entries.keys() - defined)
     ]
@@ -1478,7 +1478,7 @@ def tree_read_problems(root: Path) -> list[str]:
         for folder in TREE_READ_SKILLS
         if not any(path.parent == root / folder for path in scanned)
     ]
-    core = REPOSITORY_ROOT / TREE_READ_CORE
+    core = REPOSITORY_ROOT / SKILL_CORE_SCRIPTS
     helpers = core_reads(core)
     problems += core_table_problems(core)
     ordered = sorted(scanned, key=lambda path: path.relative_to(root).as_posix())

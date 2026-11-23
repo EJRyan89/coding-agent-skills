@@ -5766,6 +5766,26 @@ class PresenceReadTests(Fixture):
             _, _, projects = dependency_graph.resolve_root(listed, unreadable)
         self.assertEqual(([second], [(first, "the stat gave up")]), (projects, unreadable))
 
+    def test_a_nuget_cache_named_through_a_link_is_resolved_and_its_packages_read_where_it_lies(self) -> None:
+        # NUGET_PACKAGES names a link (a junction on Windows) to the cache, as a CI cache often is: the cache folder is
+        # resolved before a reader is bound to it, so its packages are found and read, and only a link inside the
+        # cache that leads out of it would be refused.
+        real = self.root / "caches" / "packages"
+        (real / "Lantern.Core" / "1.0.0").mkdir(parents=True)
+        linked = self.root / "linked-cache"
+        link_folder(real, linked)
+        self.addCleanup(remove_link, linked)
+        with (
+            mock.patch.object(Path, "home", return_value=self.root / "home"),
+            mock.patch.dict(os.environ, {"NUGET_PACKAGES": str(linked)}),
+        ):
+            folders = dependency_graph.nuget_cache()
+        self.assertEqual([real], folders)
+        self.assertEqual(
+            real / "Lantern.Core" / "1.0.0",
+            dependency_graph.package_directory(folders, "Lantern.Core", "1.0.0", self.root / "solution"),
+        )
+
     def test_a_package_in_the_nuget_cache_that_a_link_leads_out_of_the_cache_is_unreadable_and_never_followed(
         self,
     ) -> None:
