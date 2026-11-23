@@ -419,10 +419,12 @@ class CreateTests(unittest.TestCase):
 
             with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "report.md"
+                unfinished: list[UnfinishedCopyError] = []
                 with mock.patch.object(Path, "unlink", unlink), mock.patch.object(time, "sleep", wait):
                     if refusals is None:
                         with self.assertRaises(UnfinishedCopyError) as raised:
                             create_bytes(path, REPORT)
+                        unfinished.append(raised.exception)
                     elif interrupt is not None:
                         with self.assertRaises(KeyboardInterrupt):
                             create_bytes(path, REPORT)
@@ -430,12 +432,14 @@ class CreateTests(unittest.TestCase):
                         create_bytes(path, REPORT)
                 self.assertEqual(REPORT, path.read_bytes(), "the file made keeps its bytes")
                 self.assertLess(sum(waits), 0.5, "the waits are short and few, well inside a hook's time limit")
-                if refusals is None:
-                    self.assertTrue(raised.exception.made)
+                for error in unfinished:
+                    self.assertTrue(error.made)
                     self.assertEqual(5, len(waits))
                     self.assertEqual(7, len(removals), "a try after each wait, and the clean-up's")
-                    self.assertEqual([raised.exception.copy] * 7, removals)
-                    real_unlink(raised.exception.copy)
+                    self.assertEqual([error.copy] * 7, removals)
+                    real_unlink(error.copy)
+                if refusals is None:
+                    self.assertEqual(1, len(unfinished), "a name no try removes raises UnfinishedCopyError")
                 elif interrupt is not None:
                     self.assertEqual(1, len(waits))
                     self.assertEqual(2, len(removals), "the clean-up removes the copy once the wait is interrupted")

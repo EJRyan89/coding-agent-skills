@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -1196,7 +1197,7 @@ class ClaimTests(GuardFixture):
                 raise PermissionError(errno.EACCES, "the file is being used by another process", str(path))
             REAL_UNLINK(path, missing_ok=missing_ok)
 
-        with mock.patch.object(Path, "unlink", unlink), mock.patch.object(atomic_file.time, "sleep"):
+        with mock.patch.object(Path, "unlink", unlink), mock.patch.object(time, "sleep"):
             self.claim()
         self.assertGreater(len(refused), 2, "the copy's removal was tried after waits, and refused each time")
         self.assert_made_claim_with_its_copy_left(refused[:1])
@@ -1217,7 +1218,7 @@ class ClaimTests(GuardFixture):
                 reader.callback(os.close, os.open(target, os.O_RDONLY))
                 held.append(Path(target))
 
-        with reader, mock.patch.object(os, "link", link_then_hold), mock.patch.object(atomic_file.time, "sleep"):
+        with reader, mock.patch.object(os, "link", link_then_hold), mock.patch.object(time, "sleep"):
             self.claim()
         self.assertEqual(1, len(held), "the reader held the claim from its link until the call was decided")
         left = sorted(self.claims.glob(f".{AGENT}.json.*.tmp"))
