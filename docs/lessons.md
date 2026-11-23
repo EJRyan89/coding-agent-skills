@@ -1616,6 +1616,29 @@ removed fails validation until its pattern follows it.
   `link_probe`, or `device_names`; a hand-kept list of modules or suites a platform leg runs.
 - **Examples:** #1932, #1948, #1960
 
+### A local check is the job continuous integration runs, not a cousin of it
+
+- **Rule:** Before a push, run locally every job continuous integration may fail for the change, named by the same
+  reading that builds those jobs, never a command that checks the same files another way. A change that another root's
+  run reads too, such as a module other roots import or the checkers' configuration, runs every job.
+- **Why:** mypy on one file, or the roots checked together at their default strictness, passes a suite that reaches a
+  name its module does not export, which the strict run of `tests` refuses, so the pull request learns of it from a red
+  Validation run, a test-only push, and a restarted mutation gate.
+- **Use:** `type_check_roots:file_type_check_jobs`, the jobs whose roots hold the changed files, and
+  `type_check_roots:every_job_reasons`, the changed files that reach every job instead.
+  `pull_request:type_checks` prints them with the runner's command that runs them.
+- **Guard:** `.claude/skills/implement-change/scripts/test_pull_request.py::TypeChecksCommandTests`,
+  `.claude/skills/implement-change/scripts/test_pull_request.py::test_this_repository_s_roots_map_to_the_jobs_continuous_integration_runs`,
+  `.claude/skills/implement-change/scripts/test_pull_request.py::test_this_repository_s_shared_modules_and_checker_files_reach_every_job`,
+  `skills/ejryan89-skill-core/scripts/test_type_check_roots.py::FileJobTests`,
+  `skills/ejryan89-skill-core/scripts/test_type_check_roots.py::EveryJobTests`,
+  `.claude/skills/implement-change/SKILL.md#7-implement`
+- **Search for:** `python -m mypy --strict <file>` or `-k '*mypy*'` as the local type check in a pull request or a
+  session's report; a CI failure of `static type check (mypy --strict <root>)` on a pull request whose author reports a
+  passing local mypy run; `does not explicitly export attribute` in a strict run's log; a CI failure of a root's run
+  that a pull request changing only another root's module hit.
+- **Examples:** #2019, #2021
+
 ### A fixture derives what it copies from the source
 
 - **Rule:** A suite that builds a throwaway copy of ejryan89-skill-core's modules copies a module with every module it

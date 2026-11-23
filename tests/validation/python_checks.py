@@ -30,6 +30,7 @@ from typing import Any, NamedTuple
 
 import file_presence
 import python_reader
+import type_check_roots
 from bounded_process import REPOSITORY_VARIABLES
 from call_tables import (
     EVENT_LOOP,
@@ -47,10 +48,19 @@ from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_client import GLOBAL_VALUE_OPTIONS
 from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
-from path_containment import posix_within, relative_within, within
+from path_containment import posix_within, relative_within
 from runtime_support import names_git
 from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
+from type_check_roots import (
+    PYPROJECT,
+    TYPE_CHECK_ROOTS,
+    shared_job_name,
+    skill_job_name,
+    strict_job_name,
+    strict_type_check_areas,
+    type_check_root,
+)
 from validation_support import (
     BUILTIN_NAMES,
     COMMON_PATH_FUNCTIONS,
@@ -125,9 +135,6 @@ NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*
 NOQA_CODES = re.compile(r"#\s*noqa:\s*((?:[A-Z]+[0-9]+[\s,]*)+)", re.IGNORECASE)
 # Function complexity and length take no noqa: a function over either ceiling is split instead.
 CEILING_CODES = frozenset({"C901", "PLR0915"})
-# mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
-# the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
-TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
 # The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Every type-check
 # root is one, and none leaves, so each one here must stay listed there; a pull request that adds a root, such as a new
 # skill's scripts, lists it there and here.
@@ -372,24 +379,13 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
     return found
 
 
-def _type_check_root(root: Path, path: Path, skill_scripts: list[Path]) -> Path | None:
-    """The folder mypy collects a file from: its skill's scripts/, or the root of TYPE_CHECK_ROOTS holding it."""
-    for scripts in skill_scripts:
-        if within(path, scripts):
-            return scripts
-    for top in TYPE_CHECK_ROOTS:
-        if within(path, root / top):
-            return root / top
-    return None
-
-
 def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
     """Each Python file under a root mypy checks that it would pass over: one in a folder named like a cache, an
     installed package, or a Node module, or in a folder whose name starts with a dot, which mypy never reads."""
     skill_scripts = skill_script_directories(root)
     problems: list[str] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
-        checked_from = _type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
+        checked_from = type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
         if checked_from is None or path == checked_from:
             continue
         relative = relative_within(path.parent, checked_from)
@@ -451,20 +447,11 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def strict_type_check_areas(root: Path) -> list[str] | None:
-    """The areas pyproject.toml's [tool.validation] mypy-strict lists, or None when it holds no list of paths."""
-    configured = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    areas = configured.get("tool", {}).get("validation", {}).get("mypy-strict")
-    if not isinstance(areas, list) or not all(isinstance(area, str) for area in areas):
-        return None
-    return areas
-
-
 def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK_AREAS) -> list[str]:
     """The strict list must be a list of type-check roots, each a skill's scripts/ directory or one of
     TYPE_CHECK_ROOTS, holding every pinned area, since an area never leaves it, and every root the tree has, since
     every root is checked in strict mode."""
-    areas = strict_type_check_areas(root)
+    areas = strict_type_check_areas(root / PYPROJECT)
     if areas is None:
         return ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
     skill_roots = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)}
@@ -6180,15 +6167,16 @@ def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: b
 
 
 def type_check_skill_roots(root: Path = REPOSITORY_ROOT) -> list[Path]:
-    """The scripts directory of each shipped or repository skill that holds a Python module or regression suite."""
-    return [scripts for scripts in skill_script_directories(root) if any(file_presence.matching(scripts, "*.py"))]
+    """The scripts directory of each shipped or repository skill that holds a Python module or regression suite, by
+    ejryan89-skill-core's type_check_roots, which the implement-change script reads too."""
+    return type_check_roots.type_check_skill_roots(root)
 
 
 def type_check_jobs() -> list[Job]:
     configuration = REPOSITORY_ROOT / "pyproject.toml"
     # A list strict_area_problems refuses checks no area in strict mode until it is fixed.
-    strict = set(strict_type_check_areas(REPOSITORY_ROOT) or ())
-    core = f"static type check (mypy {', '.join(TYPE_CHECK_ROOTS)})"
+    strict = set(strict_type_check_areas(REPOSITORY_ROOT / PYPROJECT) or ())
+    core = shared_job_name()
     jobs = [
         Job(
             core,
@@ -6201,12 +6189,12 @@ def type_check_jobs() -> list[Job]:
     # the others; a strict one also gets a run of its own, which adds --strict.
     for top in TYPE_CHECK_ROOTS:
         if top in strict:
-            name = f"static type check (mypy --strict {top})"
+            name = strict_job_name(top)
             check = functools.partial(mypy_type_check, REPOSITORY_ROOT, [top], configuration, strict=True)
             jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, check))
     # A skill's job keeps its name in strict mode, so the seconds recorded for it still weigh it.
     for root in type_check_skill_roots():
-        name = f"static type check (mypy {relative(root)})"
+        name = skill_job_name(relative(root))
         check = functools.partial(mypy_type_check, root, ["."], configuration, strict=relative(root) in strict)
         jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, check))
     return jobs

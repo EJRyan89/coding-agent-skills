@@ -60,6 +60,19 @@ The user approves the plan and the model together, then chooses how to continue.
 
 Work test first: write the failing test, then make it pass. Update *Documentation* in the same change. Run the local checks *Validation* names for the files the change touches, in full only where it says the change's reach warrants it, and get them green without skipping, weakening, or suppressing a check; rerun them after anything that changes the tree. Continuous integration runs the full gate; the gates *Validation* names as calling a model are yours to run. Read the whole diff once more for personal paths, credentials, and generated artifacts, and leave no scratch file or background command behind.
 
+Where *Validation* names the type checks of a changed Python file, this prints them, from the files changed since the base *Pull requests* names, committed, uncommitted, or untracked:
+
+```bash
+python -B .claude/skills/implement-change/scripts/pull_request.py type-checks --base "<base>"
+```
+
+It prints `BASE <base> <commit>`, the base's tip after its fetch, then one of three things.
+- When a changed file reaches every type-check job, it prints `TYPE_CHECK_ALL <path> <why>` for each such file, then a `RUN` line that runs every type check. A file reaches every job when it configures or pins the checks, such as `pyproject.toml` or the development dependencies, or when it is a Python file in a folder other roots import, such as `deployer/`, `tools/`, or a `mypy_path` folder like ejryan89-skill-core's `scripts/`.
+- Otherwise it prints `TYPE_CHECK <job>` for each job whose own root holds a changed Python file, the strict run of each root included, then `RUN <command>`, which runs those jobs and no other. A suite is checked by the strict run of its own root, whatever root the module it tests sits in, so a module and its suite name two strict runs.
+- `NO_TYPE_CHECK` means no changed file is one a type check reads, or one that configures the checks.
+
+Run the `RUN` command as printed, from the top of the repository. A last line `FAILED <reason>` is a stop to report.
+
 ## 8. Pull request
 
 `.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Any command of it that cannot finish prints a last line `FAILED <reason>`: report it and stop. Take these in order:
