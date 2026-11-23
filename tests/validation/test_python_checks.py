@@ -5525,6 +5525,62 @@ OUTPUT_SOURCE = (
             ["tools/parts.py:9"],
             id="a line program_lines gives of output",
         ),
+        # The modules are read in path order, the reader first, so only reading them again reaches it.
+        pytest.param(
+            {
+                "tools/a_reader.py": OUTPUT_READER,
+                "tools/b_middle.py": "from a_reader import events\n\n\ndef relay(output):\n    return events(output)\n",
+                "tools/c_caller.py": "import subprocess\n\nfrom b_middle import relay\n\n\n"
+                "def f(command):\n    return relay(subprocess.check_output(command, text=True))\n",
+            },
+            ["tools/a_reader.py:8"],
+            id="a parameter a call two modules away fills with output",
+        ),
+        pytest.param(
+            {
+                "tools/returns.py": OUTPUT_IMPORTS + "def run(command):\n    def inner():\n"
+                "        return subprocess.run(command).stdout\n\n    return inner\n\n\n"
+                "def f(command):\n    return text_lines(run(command))\n"
+            },
+            [],
+            id="a module function whose nested function returns output",
+        ),
+        # The stated limits: each passes.
+        *(
+            pytest.param(
+                {
+                    "tools/streams.py": "from bounded_process import streaming\nfrom text_lines import text_lines\n\n\n"
+                    f"def f(command):\n    with streaming(command) as running:\n        return text_lines({read})\n"
+                },
+                [],
+                id=f"a bounded_process.streaming handle's {form}",
+            )
+            for form, read in (("read()", "running.read(10).decode()"), ("errors()", "running.errors().decode()"))
+        ),
+        *(
+            pytest.param(
+                {
+                    "tools/runner.py": "import subprocess\n\n\n"
+                    "def run(command):\n    return subprocess.run(command, text=True).stdout\n",
+                    "tools/caller.py": f"{imports}\nfrom text_lines import text_lines\n\n\n"
+                    f"def f(command):\n    return text_lines({call}(command))\n",
+                },
+                [],
+                id=f"the return of a function another module defines, called as {call}",
+            )
+            for imports, call in (("from runner import run", "run"), ("import runner", "runner.run"))
+        ),
+        # A call through the or form of a function another module defines is not followed, a declared source's
+        # included, so the declaration it would read is refused as unread: the check fails closed.
+        pytest.param(
+            {
+                "tools/source.py": OUTPUT_SOURCE,
+                "tools/caller.py": "from source import talk_to\nfrom text_lines import text_lines\n\n\n"
+                "def f(command, talk=None):\n    talk = talk or talk_to\n    return text_lines(talk(command))\n",
+            },
+            ["tools/source.py:"],
+            id="a declared source of another module a parameter holds in the or form",
+        ),
     ],
 )
 def test_output_split_policy_follows_output_across_functions_and_modules(

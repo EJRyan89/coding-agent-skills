@@ -4737,9 +4737,11 @@ def line_split_problems(root: Path, files: list[Path]) -> list[str]:
 # file at a commit have, gives a file's text, and a document a program carries, as gh's JSON carries a release's or a
 # pull request's body or git log a commit message, is split where its own program ends a line, which the module states.
 # Stated limits, not traced: a value a callable the module is given returns, but through the or form; the return of a
-# function another module defines, but a declared source's; a call of any other function, GitHubClient.json among them;
-# a bounded_process.streaming handle; a method's parameter a call through self fills; and a parameter an argument after
-# a starred one fills. A split that must stay states why in a module-level OUTPUT_SPLIT_ALLOWED = {scope: reason}.
+# function another module defines, but a declared source's; a call through the or form of a function another module
+# defines, a declared source's included, which leaves that source's declaration unread and so refused; a call of any
+# other function, GitHubClient.json among them; a bounded_process.streaming handle; a method's parameter a call through
+# self fills; and a parameter an argument after a starred one fills. A split that must stay states why in a module-level
+# OUTPUT_SPLIT_ALLOWED = {scope: reason}.
 OUTPUT_SPLIT_OWNERS = frozenset({LINE_SPLIT_OWNER, GIT_SEPARATOR_OWNER})
 OUTPUT_SPLIT_ALLOWANCE = "OUTPUT_SPLIT_ALLOWED"
 # A run result's streams, by any name of its type, and the output the deployer's run_tool and a skill's Completed give.
