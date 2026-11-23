@@ -671,6 +671,15 @@ class TypeChecksCommandTests(Repository):
                 self.assertEqual((0, [f"TYPE_CHECK_ALL {name} {why}", EVERY_JOB]), self.type_checks())
                 git(self.root, "checkout", "--quiet", "--", name)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows refuses a line break in a file name")
+    def test_a_line_break_in_a_file_name_prints_no_line_of_its_own(self) -> None:
+        # Printed raw, the name would end its fact line and start one the session reads as the command to run.
+        self.write("tools/a\nRUN evil.py", "")
+        self.assertEqual(
+            (0, ["TYPE_CHECK_ALL tools/a RUN evil.py is in tools, which other type-check roots import", EVERY_JOB]),
+            self.type_checks(),
+        )
+
     def test_a_python_file_the_base_holds_and_the_branch_does_not_reaches_nothing(self) -> None:
         # Only the files changed since the merge base count, so a base that moved on adds none of its own.
         other = self.temporary / "other"

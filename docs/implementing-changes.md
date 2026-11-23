@@ -53,10 +53,10 @@ which runs it anyway:
 3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
    take seconds over the whole tree, and the type checks the `implement-change` repository skill's
    `pull_request.py type-checks --base origin/main` names, by running its `RUN` line as printed. For a file whose own
-   root nothing else imports, such as a skill's `scripts/` outside `mypy_path` or a suite under `tests/`, that line
-   runs exactly the jobs that read it: the run of the roots checked together and, for each root `mypy-strict` lists
-   under `[tool.validation]` in `pyproject.toml`, its own strict run, `static type check (mypy --strict <root>)`, or a
-   skill's own run. A suite is checked by the strict run of its own root, `tests`, whatever root the module it tests
+   root nothing else imports, such as a skill's `scripts/` outside `mypy_path`, or a suite directly under `tests/` or in
+   a `tests/` folder `mypy_path` does not list, that line runs exactly the jobs that read it: the run of the roots
+   checked together and, for each root `mypy-strict` lists under `[tool.validation]` in `pyproject.toml`, its own strict
+   run, `static type check (mypy --strict <root>)`, or a skill's own run. A suite is checked by the strict run of its own root, `tests`, whatever root the module it tests
    sits in. A change that can break another root's run selects every type check, `-k 'static type check'`, and says
    why on a `TYPE_CHECK_ALL` line: a change to `pyproject.toml` or the development dependencies, which configure and
    pin every check, or a Python file in a folder other roots import, `deployer/`, `tools/`, or a folder `mypy_path`

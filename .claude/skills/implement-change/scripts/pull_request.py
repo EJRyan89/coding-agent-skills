@@ -415,7 +415,8 @@ def type_checks(git: GitClient, repository: Path, base: Base) -> list[str]:
     reasons = every_job_reasons(changed, imported)
     if reasons:
         # Every job's name starts with the prefix, so the runner's pattern of it alone selects them all.
-        widened = [f"TYPE_CHECK_ALL {path} {why}" for path, why in reasons]
+        # A file name may hold a line break, which would start a line of its own, so each is printed flat.
+        widened = [f"TYPE_CHECK_ALL {flat_text(path)} {flat_text(why)}" for path, why in reasons]
         return [*facts, *widened, f"RUN {VALIDATION_COMMAND} -k '{JOB_PREFIX}'"]
     jobs = file_type_check_jobs(top, changed, strict)
     if not jobs:
