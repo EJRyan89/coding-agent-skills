@@ -549,6 +549,183 @@ class OutsideLinkTests(WalkTestCase):
         self.assertNotEqual([], reached(touched, links, outside))
 
 
+# The header macOS writes at the start of an AppleDouble sidecar, written out so the walk is held to it, not to the
+# constant: the magic number 0x00051607, then the version 0x00020000, big-endian.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
+
+
+@contextlib.contextmanager
+def recording_opens(opened: list[str]) -> Iterator[None]:
+    """Record the name of each file `Path.open` opens, the open `apple_double.is_sidecar` makes."""
+    real = Path.open
+
+    def recorded(path: Path, *arguments: Any, **keywords: Any) -> Any:
+        opened.append(path.name)
+        return real(path, *arguments, **keywords)
+
+    with mock.patch.object(Path, "open", recorded):
+        yield
+
+
+class SidecarTests(WalkTestCase):
+    """A walk leaves out the AppleDouble sidecars macOS writes beside a file or folder on a FAT, exFAT, or SMB volume,
+    planted here with the bytes macOS writes, so these hold on every platform; any other `._` entry is the caller's."""
+
+    def plant(self, relative: str, content: bytes = SIDECAR_BYTES) -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def test_a_sidecar_beside_its_file_or_folder_is_left_out_unreported_with_or_without_a_tree(self) -> None:
+        self.write("doc.md", "docs/inner.md", "src/Lib.csproj")
+        for sidecar in ("._doc.md", "._docs", "._src", "src/._Lib.csproj", "docs/._inner.md"):
+            self.plant(sidecar)
+        self.plant("._exact", APPLE_DOUBLE_HEADER)
+        self.write("exact")
+        for tree in (None, self.root):
+            with self.subTest(tree=tree):
+                walk = walk_files(self.root, every_file, tree=tree)
+                self.assertEqual(["doc.md", "exact", "docs/inner.md", "src/Lib.csproj"], self.files(walk))
+                self.assertEqual([], walk.not_entered)
+                projects = walk_files(self.root, lambda name: name.endswith(".csproj"), tree=tree)
+                self.assertEqual(["src/Lib.csproj"], self.files(projects))
+
+    def test_any_other_dot_underscore_entry_is_the_callers(self) -> None:
+        self.write("plain.md", "short.md", "doc.md", "Other.md", "._folder/inside.md", "folder/kept.md")
+        kept = {
+            "._alone.md": SIDECAR_BYTES,
+            "._plain.md": b"plain text, long enough to hold a header\n",
+            "._short.md": APPLE_DOUBLE_HEADER[:7],
+            "._other.md": SIDECAR_BYTES,
+            "._empty.md": b"",
+            "._": SIDECAR_BYTES,
+        }
+        for name, content in kept.items():
+            self.plant(name, content)
+        walk = walk_files(self.root, every_file)
+        self.assertEqual(
+            [
+                "._",
+                "._alone.md",
+                "._empty.md",
+                "._other.md",
+                "._plain.md",
+                "._short.md",
+                "Other.md",
+                "doc.md",
+                "plain.md",
+                "short.md",
+                "._folder/inside.md",
+                "folder/kept.md",
+            ],
+            self.files(walk),
+        )
+        self.assertEqual([], walk.not_entered)
+
+    def test_a_dot_underscore_file_whose_header_cannot_be_read_is_the_callers(self) -> None:
+        self.write("doc.md")
+        self.plant("._doc.md")
+        with mock.patch.object(Path, "open", side_effect=PermissionError(13, "Permission denied")):
+            walk = walk_files(self.root, every_file)
+        self.assertEqual(["._doc.md", "doc.md"], self.files(walk))
+        self.assertEqual([], walk.not_entered)
+
+    def test_a_dot_underscore_entry_whose_metadata_cannot_be_read_is_reported_and_the_walk_goes_on(self) -> None:
+        self.write("doc.md", "kept.md", "later/inside.md")
+        self.plant("._doc.md")
+        listing = os.scandir
+        failure = OSError(5, "Input/output error")
+
+        class FailingEntry:
+            def __init__(self, entry: os.DirEntry[str]) -> None:
+                self.entry, self.name, self.path = entry, entry.name, entry.path
+
+            def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+                if self.name == "._doc.md":
+                    raise failure
+                return self.entry.stat(follow_symlinks=follow_symlinks)
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+        @contextlib.contextmanager
+        def scandir(path: Any = ".") -> Iterator[Iterator[FailingEntry]]:
+            with listing(path) as entries:
+                yield (FailingEntry(entry) for entry in entries)
+
+        with mock.patch.object(os, "scandir", scandir):
+            walk = walk_files(self.root, every_file)
+        self.assertEqual(["doc.md", "kept.md", "later/inside.md"], self.files(walk))
+        self.assertEqual(
+            [NotEntered(self.root / "._doc.md", UNEXAMINED, "the entry cannot be examined: Input/output error")],
+            walk.not_entered,
+        )
+        self.assertIs(failure, walk.not_entered[0].error)
+
+    def test_only_a_wanted_regular_file_named_beside_its_sibling_is_opened(self) -> None:
+        self.write("doc.md", "App.csproj", "readme.txt")
+        for sidecar in ("._doc.md", "._App.csproj", "._alone.csproj"):
+            self.plant(sidecar)
+        opened: list[str] = []
+        with recording_opens(opened):
+            walk = walk_files(self.root, lambda name: name.endswith(".csproj"))
+        self.assertEqual(["._alone.csproj", "App.csproj"], self.files(walk))
+        self.assertEqual(["._App.csproj"], opened, "neither an unwanted name nor one with no sibling is opened")
+
+    def test_an_entry_that_is_not_a_regular_file_by_its_own_metadata_is_never_opened(self) -> None:
+        # A link, a reparse point of any kind, a pipe, and a device are kept unopened, judged from the entry's own
+        # metadata, as link_probe judges a link, so these hold on every platform.
+        reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        cases = (
+            ("a symbolic link", stat.S_IFLNK, 0, False),
+            ("a file that is a reparse point", stat.S_IFREG, reparse, False),
+            ("a pipe", stat.S_IFIFO, 0, False),
+            ("a character device", stat.S_IFCHR, 0, False),
+            ("a regular file", stat.S_IFREG, 0, True),
+        )
+        path = self.plant("._doc.md")
+        for case, mode, attributes, sidecar in cases:
+            with self.subTest(case=case):
+                entry = mock.Mock(spec=os.DirEntry, path=str(path))
+                entry.name = path.name
+                entry.stat.return_value = mock.Mock(st_mode=mode, st_file_attributes=attributes)
+                opened: list[str] = []
+                with recording_opens(opened):
+                    self.assertEqual(sidecar, folder_walk.is_sidecar_entry(entry, {"doc.md"}))
+                self.assertEqual(["._doc.md"] if sidecar else [], opened)
+                entry.stat.assert_called_once_with(follow_symlinks=False)
+        plain = mock.Mock(spec=os.DirEntry, path=str(self.root / "doc.md"))
+        plain.name = "doc.md"
+        self.assertFalse(folder_walk.is_sidecar_entry(plain, {"doc.md", "oc.md"}))
+        plain.stat.assert_not_called()
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows, which has no pipes")
+class RealSidecarEntryTests(WalkTestCase):
+    """A real link and a real pipe named like a sidecar beside their sibling are given unopened, on Linux and macOS."""
+
+    def test_a_link_or_a_pipe_named_like_a_sidecar_is_given_and_never_opened(self) -> None:
+        self.write("doc.md", "pipe.md", "out.md")
+        header = self.base / "header"
+        header.write_bytes(SIDECAR_BYTES)
+        (self.root / "._doc.md").symlink_to(self.root / "doc.md")
+        (self.root / "inside").write_bytes(SIDECAR_BYTES)
+        (self.root / "._inside").symlink_to(self.root / "inside")
+        (self.root / "._out.md").symlink_to(header)
+        os.mkfifo(self.root / "._pipe.md")  # type: ignore[attr-defined, unused-ignore]  # Unix only
+        opened: list[str] = []
+        for tree in (None, self.root):
+            with self.subTest(tree=tree), recording_opens(opened):
+                walk = walk_files(self.root, every_file, tree=tree)
+                self.assertEqual(
+                    ["._doc.md", "._inside", "._out.md", "._pipe.md", "doc.md", "inside", "out.md", "pipe.md"],
+                    self.files(walk),
+                )
+        self.assertEqual([], opened)
+
+
 class FailureTests(WalkTestCase):
     def test_a_folder_that_cannot_be_listed_is_reported_and_the_walk_goes_on(self) -> None:
         self.write("a/locked/hidden.txt", "a/open.txt", "b/open.txt")
