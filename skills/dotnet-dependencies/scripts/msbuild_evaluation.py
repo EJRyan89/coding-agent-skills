@@ -71,8 +71,7 @@ from xml.etree.ElementTree import Element
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from dotnet_solution import project_path, refusal, same_path
-from file_presence import is_occupied, is_present
+from dotnet_solution import entry_key, project_path, refusal
 from folder_walk import outside_link_refusal
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
@@ -93,6 +92,7 @@ from msbuild_reader import (
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name
 from ordinal_case import ordinal_fold
+from tree_reader import TreeReader
 
 BUILD_PROPS = "Directory.Build.props"
 BUILD_TARGETS = "Directory.Build.targets"
@@ -156,17 +156,17 @@ Decision = bool | str
 
 PRESENCE_ALLOWED = {
     "Evaluation.__init__": (
-        "hands the evaluation's own Exists() reader, which reads through file_presence and reports a stat that "
+        "hands the evaluation's own Exists() reader, which reads through the tree reader and reports a stat that "
         "fails, to the FileSystem its conditions read"
     ),
 }
 
 
-def evaluation_root(path: Path) -> Element:
-    """The root of the MSBuild file at `path`, `Unreadable` when it cannot be read or MSBuild refuses its Choose. The
-    evaluation walks into each Choose it enters, a few frames a level, and `parse_xml` refuses elements nested past
-    the shared depth limit, so no file it returns nests deeper than that walk can follow."""
-    root = parse_xml(path)
+def evaluation_root(path: Path, reader: TreeReader) -> Element:
+    """The root of the MSBuild file at `path`, read through `reader`, `Unreadable` when it cannot be read or MSBuild
+    refuses its Choose. The evaluation walks into each Choose it enters, a few frames a level, and `parse_xml` refuses
+    elements nested past the shared depth limit, so no file it returns nests deeper than that walk can follow."""
+    root = parse_xml(path, reader)
     if any(local_name(element) == "When" and not (element.get("Condition") or "").strip() for element in root.iter()):
         raise Unreadable(path, "a When has no Condition, which MSBuild refuses, so the file does not evaluate")
     return root
@@ -181,14 +181,19 @@ class Sources:
     tree: Path
     solution: Path | None = None
     roots: dict[str, Element | Unreadable] = field(default_factory=dict)
+    # The examined tree's reader, through which every file of the run is stat and read.
+    reader: TreeReader = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.reader = TreeReader(self.tree)
 
     def root(self, path: Path) -> Element:
-        key = same_path(path)
+        key = self.reader.key(path)
         if key not in self.roots:
             try:
                 if (linked := outside_link_refusal(path, self.tree)) is not None:
                     raise Unreadable(path, linked)
-                self.roots[key] = evaluation_root(path)
+                self.roots[key] = evaluation_root(path, self.reader)
             except Unreadable as error:
                 self.roots[key] = error
         found = self.roots[key]
@@ -209,11 +214,11 @@ class Sources:
 
 
 def tree_key(path: Path, tree: Path) -> str:
-    """The key a collection compares `path` by: `same_path` for a path inside `tree`, where the case of its names may
-    matter and its case probe lists only folders a reader may reach, and its text for one `refusal` refuses, so
-    comparing a path outside the tree lists no folder outside it. Every such path comes from `project_path`, made
-    absolute and normalized by text, so one path has one text."""
-    return str(path) if refusal(path, tree) is not None else same_path(path)
+    """The key a collection compares `path` by, ejryan89-skill-core's `entry_key`: `same_path` for a path inside
+    `tree` that no link on its way leads out of, where the case of its names may matter, and its text for any other,
+    so comparing a path outside the tree, or through a link out of it, lists no folder outside it. Every such path
+    comes from `project_path`, made absolute and normalized by text, so one path has one text."""
+    return entry_key(path, tree)
 
 
 @dataclass(frozen=True)
@@ -400,7 +405,7 @@ class Evaluation:
             self.refuse(Refused(path, linked))
             return None
         try:
-            return is_occupied(path)
+            return self.project.sources.reader.occupied(path)
         except OSError as error:
             self.reports.append(os_unreadable(error, path))
             return None
@@ -414,7 +419,7 @@ class Evaluation:
             self.refused.append(directory)
             return None
         try:
-            found = nearest_file(directory, name, self.project.sources.tree)
+            found = nearest_file(directory, name, self.project.sources.reader)
         except Unreadable as error:
             # A candidate it cannot stat leaves the folder unsettled, never read as none above.
             self.refuse(error)
@@ -427,7 +432,7 @@ class Evaluation:
         return condition_value(text, self.value_of, self.files) if text else True
 
     def run(self, root: Element) -> None:
-        self.imported.add(same_path(self.project.path))
+        self.imported.add(self.project.sources.reader.key(self.project.path))
         implicit = implicit_sdk(root)
         if implicit:
             self.props_point()
@@ -581,13 +586,14 @@ class Evaluation:
             self.refused.append(path)
             self.not_read(written, refused)
             return
-        key = same_path(path)
+        reader = self.project.sources.reader
+        key = reader.key(path)
         if key in self.imported:
             return
         try:
-            present = is_present(path)
+            present = reader.present(path)
             # .NET's File.Exists finds a link to nothing, so MSBuild imports it and its load fails.
-            dangling = not present and is_occupied(path)
+            dangling = not present and reader.occupied(path)
         except OSError as error:
             # A file it cannot stat, or something other than a file, such as a folder, is reported with the stat's
             # reason or as not a file, as import_nearest reports one, never as not found.
@@ -704,7 +710,7 @@ class Evaluation:
         """Import the nearest file named `name` at or above the project; a candidate it cannot stat is reported and
         unsettles what follows, as an import it cannot read does."""
         try:
-            found = nearest_file(self.project.path.parent, name, self.project.sources.tree)
+            found = nearest_file(self.project.path.parent, name, self.project.sources.reader)
         except Unreadable as error:
             self.refuse(error)
             self.state.unsettle()

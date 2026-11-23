@@ -17,9 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from fsops_platform import (
+    OTHER_PLACE_READS,
+    TREE_JUDGES,
     TREE_READ_SKILLS,
     TREE_READ_SKILLS_PROBLEM,
     _platform_names,
+    core_reads,
+    core_table_problems,
     filesystem_write_problems,
     platform_code_problems,
     tree_read_problems,
@@ -1842,10 +1846,13 @@ SCRIPTS = TREE_READ_SKILLS[0]
 TREE_READ_ADVICE = "read it through ejryan89-skill-core's tree_reader, or state why in TREE_READ_ALLOWED"
 
 
-def tree_read_findings(files: dict[str, str]) -> list[str]:
+def tree_read_findings(files: dict[str, str], *, filled: bool = True) -> list[str]:
+    """The tree read policy's problems for a fixture tree of `files`; `filled` gives every other folder
+    TREE_READ_SKILLS names a module that reads nothing, so a fixture speaks only of the folder it writes."""
+    placeholders = {f"{folder}/placeholder.py": "VALUE = 1\n" for folder in TREE_READ_SKILLS[1:]} if filled else {}
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        write_fixture_tree(root, files)
+        write_fixture_tree(root, {**placeholders, **files})
         return tree_read_problems(root)
 
 
@@ -1936,7 +1943,16 @@ def test_tree_read_policy_passes_the_reader_another_objects_method_a_module_func
         "    return list(ast.walk(tree))\n"
     )
     suite = "from pathlib import Path\ndef test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n"
-    assert tree_read_findings({f"{SCRIPTS}/conforming.py": source, f"{SCRIPTS}/test_conforming.py": suite}) == []
+    # A class's own method named as a path's, called on self, is the class's: an evaluation's walk of its elements.
+    own = (
+        "class Evaluation:\n"
+        "    def walk(self, element):\n"
+        "        return element\n"
+        "    def run(self, root):\n"
+        "        return self.walk(root)\n"
+    )
+    files = {f"{SCRIPTS}/conforming.py": source, f"{SCRIPTS}/test_conforming.py": suite, f"{SCRIPTS}/own.py": own}
+    assert tree_read_findings(files) == []
 
 
 def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malformed_one() -> None:
@@ -1959,16 +1975,40 @@ def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malfor
 
 def test_tree_read_policy_states_what_it_does_not_read() -> None:
     # Stated limits, each passing: a path method called unbound on its class, a module importing both os and os.path,
-    # which the shared resolver leaves unnamed, and a skill-core reader TREE_READ_HELPERS does not list yet.
+    # which the shared resolver leaves unnamed, a read in a skill-core class's method reached through an instance, and
+    # a module read the policy does not list.
     unbound = "from pathlib import Path\ndef read(path):\n    return Path.exists(path)\n"
     both = "import os\nimport os.path\ndef read(path):\n    return os.stat(path)\n"
-    helper = "import path_containment\ndef read(entry, tree):\n    return path_containment.refusal(entry, tree)\n"
+    helper = (
+        "from git_client import GitClient\ndef read(root):\n    return GitClient().run(['status'], directory=root)\n"
+    )
     unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
+    # Path.group shares its name with a regular expression match's group(), which no reader can tell apart.
+    group = "def read(path):\n    return path.group()\n"
+    # A core reader reached through another core module that imports it, a judge given another tree, and a
+    # sanctioned function called from another scope.
+    through = (
+        "import dotnet_solution\nimport tree_reader\nfrom tree_reader import read_bounded\n"
+        "def read(path):\n"
+        "    read_bounded(path)\n"
+        "    dotnet_solution.path_key(path)\n"
+        "    return tree_reader.file_presence.is_present(path)\n"
+    )
+    judge = "from folder_walk import followed_inside\ndef read(path, other):\n    return followed_inside(path, other)\n"
+    sanctioned = (
+        "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
+        "def given(path):\n    return path.resolve()\n"
+        "def use(path):\n    return given(path)\n"
+    )
     files = {
         f"{SCRIPTS}/unbound.py": unbound,
         f"{SCRIPTS}/both.py": both,
         f"{SCRIPTS}/helper.py": helper,
         f"{SCRIPTS}/unlisted.py": unlisted,
+        f"{SCRIPTS}/group.py": group,
+        f"{SCRIPTS}/through.py": through,
+        f"{SCRIPTS}/judge.py": judge,
+        f"{SCRIPTS}/sanctioned.py": sanctioned,
     }
     assert tree_read_findings(files) == []
 
@@ -1977,5 +2017,145 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     # A renamed, emptied, or missing scripts folder is a problem, never read as one that reads nothing outside the
     # reader; a folder holding only its suites is one too.
     expected = [f"{folder}: {TREE_READ_SKILLS_PROBLEM}" for folder in TREE_READ_SKILLS]
-    assert tree_read_findings({"README.md": "no scripts\n"}) == expected
-    assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}) == expected
+    assert tree_read_findings({"README.md": "no scripts\n"}, filled=False) == expected
+    assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}, filled=False) == expected
+
+
+# Every path method that reads, named as literals rather than taken from the policy's tables, so a change to those
+# tables or to call_tables' TEXT_METHODS that drops one fails here. Those taking an argument are called with one.
+READING_PATH_METHODS_WITH_ARGUMENT = ("read_text", "open", "glob", "rglob", "walk", "samefile")
+READING_PATH_METHODS_BARE = (
+    "open",
+    "read_text",
+    "read_bytes",
+    "stat",
+    "lstat",
+    "exists",
+    "is_file",
+    "is_dir",
+    "is_mount",
+    "is_symlink",
+    "is_junction",
+    "is_socket",
+    "is_fifo",
+    "is_block_device",
+    "is_char_device",
+    "iterdir",
+    "readlink",
+    "owner",
+    "resolve",
+)
+
+
+def test_tree_read_policy_refuses_each_path_method_that_reads_on_any_receiver() -> None:
+    calls = [f"    path.{method}('x')\n" for method in READING_PATH_METHODS_WITH_ARGUMENT]
+    calls += [f"    path.{method}()\n" for method in READING_PATH_METHODS_BARE]
+    # A path built from anything but __file__ is no exemption, so its resolve() is a read.
+    calls.append("    Path(folder).resolve()\n")
+    source = "from pathlib import Path\ndef read(path, folder):\n" + "".join(calls)
+    found = tree_read_findings({f"{SCRIPTS}/methods.py": source})
+    methods = [*READING_PATH_METHODS_WITH_ARGUMENT, *READING_PATH_METHODS_BARE, "resolve"]
+    assert found == [
+        f"{SCRIPTS}/methods.py:{line} reads a path with Path.{method}; {TREE_READ_ADVICE}"
+        for line, method in enumerate(methods, start=3)
+    ]
+
+
+def test_tree_read_policy_refuses_a_read_passed_as_a_value_and_passes_another_callable() -> None:
+    # A read handed to another call reads each path it is given: a module function, one imported by name, and a path
+    # method named unbound on its class. A callable that reads no path, passed the same way, passes.
+    source = (
+        "import os\n"
+        "from os import stat\n"
+        "from pathlib import Path\n"
+        "def read(paths):\n"
+        "    list(map(os.stat, paths))\n"
+        "    sorted(paths, key=stat)\n"
+        "    list(map(Path.exists, paths))\n"
+        "    return sorted(map(str, paths), key=len)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/values.py": source})
+    assert found == [
+        f"{SCRIPTS}/values.py:{line} reads a path with {read}; {TREE_READ_ADVICE}"
+        for line, read in ((5, "os.stat"), (6, "os.stat"), (7, "Path.exists"))
+    ]
+
+
+def test_core_reads_derives_each_reading_function_transitively_but_judges_other_places_and_methods() -> None:
+    # paths.read reads directly; wrap.carry reads through it, by call and by value; a judge and another-place read,
+    # named by the policy's own tables, neither count nor carry; a class's method is not followed; and the tree
+    # reader's module is the route, never derived.
+    judge = next(iter(TREE_JUDGES))
+    other = next(iter(OTHER_PLACE_READS))
+    judge_module, judge_name = judge.split(".")
+    other_module, other_name = other.split(".")
+    files = {
+        "paths.py": "def read(path):\n    return path.read_bytes()\n",
+        "wrap.py": "from paths import read\ndef carry(path):\n    return read(path)\n"
+        "def hand(paths):\n    return list(map(read, paths))\n",
+        f"{judge_module}.py": f"def {judge_name}(path):\n    return path.stat()\n",
+        f"{other_module}.py": f"def {other_name}(path):\n    return path.stat()\n",
+        "users.py": f"from {judge_module} import {judge_name}\nfrom {other_module} import {other_name}\n"
+        f"def judged(path):\n    return {judge_name}(path)\ndef elsewhere(path):\n    return {other_name}(path)\n",
+        "holder.py": "class Holder:\n    def read(self, path):\n        return path.read_bytes()\n",
+        # A function defined inside a module-level try, which the derivation never reads: a stated limit.
+        "guarded.py": "try:\n    def hidden(path):\n        return path.read_bytes()\nexcept ImportError:\n    pass\n",
+        "tree_reader.py": "def present(path):\n    return path.exists()\n",
+        "test_paths.py": "def test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n",
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        core = Path(temporary)
+        write_fixture_tree(core, files)
+        assert core_reads(core) == frozenset({"paths.read", "wrap.carry", "wrap.hand"})
+        assert core_table_problems(core) == [
+            f"skills/ejryan89-skill-core/scripts: {table} names {name}, which ejryan89-skill-core does not define"
+            for table, entries in (("TREE_JUDGES", TREE_JUDGES), ("OTHER_PLACE_READS", OTHER_PLACE_READS))
+            for name in sorted(entries.keys() - {judge, other})
+        ]
+
+
+def test_core_reads_marks_the_helpers_the_reader_stands_in_for_in_the_real_core() -> None:
+    # The derivation over the repository's own ejryan89-skill-core finds the readers the skills used before the tree
+    # reader, named here as literals, and none of the tables' judges or other-place reads.
+    found = core_reads(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts")
+    expected = {
+        "file_presence.is_present",
+        "file_presence.is_directory",
+        "file_presence.is_occupied",
+        "file_presence.matching",
+        "dotnet_solution.read_text",
+        "dotnet_solution.same_path",
+        "link_probe.is_link_or_junction",
+        "folder_walk.walk_files",
+        "folders_up.folders_up",
+        "path_containment.resolved_path",
+        "path_containment.refusal",
+        "json_reader.read_file",
+        "atomic_file.is_read_only",
+    }
+    assert expected <= found
+    assert not (TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()) & found
+
+
+def test_tree_read_policy_counts_a_path_method_on_self_its_class_does_not_define() -> None:
+    # Only a method the enclosing class defines, called on self or cls, is the class's own: one it does not define, a
+    # call on another receiver, and a method another class defines are each read as a path's.
+    source = (
+        "class Evaluation:\n"
+        "    def walk(self, element):\n"
+        "        return element\n"
+        "    def check(self, other):\n"
+        "        self.exists()\n"
+        "        other.walk(1)\n"
+        "        return None\n"
+        "class Other:\n"
+        "    def stat(self):\n"
+        "        return 1\n"
+        "    def run(self):\n"
+        "        return self.walk(1)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/own.py": source})
+    assert found == [
+        f"{SCRIPTS}/own.py:{line} reads a path with {read}; {TREE_READ_ADVICE}"
+        for line, read in ((5, "Path.exists"), (6, "Path.walk"), (12, "Path.walk"))
+    ]
