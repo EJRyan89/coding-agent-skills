@@ -434,7 +434,8 @@ class CreateTests(unittest.TestCase):
                 self.assertLess(sum(waits), 0.5, "the waits are short and few, well inside a hook's time limit")
                 for error in unfinished:
                     self.assertTrue(error.made)
-                    self.assertEqual(5, len(waits))
+                    self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits, "the back-off is bounded")
+                    self.assertAlmostEqual(0.31, sum(waits), msg="about a third of a second in all")
                     self.assertEqual(7, len(removals), "a try after each wait, and the clean-up's")
                     self.assertEqual([error.copy] * 7, removals)
                     real_unlink(error.copy)
