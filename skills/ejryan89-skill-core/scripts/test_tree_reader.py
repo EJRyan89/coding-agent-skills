@@ -50,6 +50,37 @@ class TreeReaderCase(unittest.TestCase):
         )
 
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so the reader is
+# held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
+class SidecarListingTests(TreeReaderCase):
+    """A listing leaves out the AppleDouble sidecars macOS writes, planted here with the bytes macOS writes, so these
+    hold on every platform; any other `._` entry is listed."""
+
+    def test_a_sidecar_beside_its_file_or_folder_is_not_listed(self) -> None:
+        lib = self.root / "Lib"
+        (lib / "._Lib.csproj").write_bytes(SIDECAR_BYTES)
+        (self.root / "._Lib").write_bytes(SIDECAR_BYTES)
+        self.assertEqual([lib / "Lib.csproj"], self.reader.listing(lib))
+        self.assertEqual([lib], self.reader.listing(self.root))
+
+    def test_any_other_dot_underscore_entry_is_listed(self) -> None:
+        lib = self.root / "Lib"
+        (lib / "App.sln").write_bytes(b"solution\n")
+        # One with no header beside its file, and one with the header and no sibling, are the tree's own files.
+        (lib / "._App.sln").write_bytes(b"solution\n")
+        (lib / "._Gone.csproj").write_bytes(SIDECAR_BYTES)
+        self.assertEqual(
+            [lib / name for name in ("._App.sln", "._Gone.csproj", "App.sln", "Lib.csproj")], self.reader.listing(lib)
+        )
+
+    def test_a_listing_of_a_folder_it_cannot_list_raises(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            self.reader.listing(self.root / "Gone")
+
+
 class RefusalWordingTests(unittest.TestCase):
     def test_a_refusal_names_the_path_and_the_reason_as_the_skills_word_a_path_they_do_not_touch(self) -> None:
         # Pinned contract value: both .NET skills name a path they do not stat or read as `<path> cannot be examined:

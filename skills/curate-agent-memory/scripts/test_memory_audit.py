@@ -3410,6 +3410,29 @@ def test_memory_entries_lists_the_memory_files_and_names_what_is_none(tmp_path: 
     assert others == [("folder.md", "not a regular file")]
 
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so the listing is
+# held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
+def test_memory_entries_leaves_out_the_sidecar_beside_a_memory_and_keeps_any_other_dot_underscore_file(
+    tmp_path: Path,
+) -> None:
+    # Holds on every platform: the sidecars are planted with the bytes macOS writes.
+    store = tmp_path / "memory"
+    store.mkdir()
+    for name in ("MEMORY.md", "alpha.md", "beta.md"):
+        (store / name).write_text("", encoding="utf-8")
+    for sidecar in ("._MEMORY.md", "._alpha.md"):
+        (store / sidecar).write_bytes(SIDECAR_BYTES)
+    # One with no header beside its file, and one with the header and no sibling, are the store's own files.
+    (store / "._beta.md").write_text("notes\n", encoding="utf-8")
+    (store / "._gamma.md").write_bytes(SIDECAR_BYTES)
+    files, others = memory_audit.memory_entries(store)
+    assert [path.name for path in files] == ["._beta.md", "._gamma.md", "alpha.md", "beta.md"]
+    assert others == []
+
+
 def test_memory_entries_refuses_a_store_it_cannot_list_never_reads_it_as_empty(tmp_path: Path) -> None:
     store = tmp_path / "memory"
     store.mkdir()

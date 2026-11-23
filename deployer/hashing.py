@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+import apple_double
 import file_presence
 
 from . import platform_support
@@ -99,6 +100,12 @@ def read_tree(root: Path) -> dict[str, bytes]:
 
     Python bytecode caches are ignored: running a deployed script creates them, and they
     must not make an untouched skill look locally modified.
+
+    So are the AppleDouble `._<name>` sidecars macOS writes beside a file or folder on a FAT, exFAT, or SMB volume, as
+    `apple_double.is_sidecar` recognizes one, by its sibling in the same folder and its header: one in a source
+    checkout there is no file of the skill, and is not deployed, and one macOS writes beside a deployed file there
+    must not make the skill look locally modified. The header is read only once `find_link` found no link in the tree,
+    so it is never read through one; any other `._` file is read and hashed as the skill's own.
     """
     link = find_link(root)
     if link is not None:
@@ -108,12 +115,15 @@ def read_tree(root: Path) -> dict[str, bytes]:
         )
     files: dict[str, bytes] = {}
     for directory, subdirectories, names in _walk(root):
+        listing = frozenset((*subdirectories, *names))
         subdirectories[:] = [name for name in subdirectories if name != "__pycache__"]
         base = Path(directory)
         for name in names:
             if name.endswith(".pyc"):
                 continue
             path = base / name
+            if apple_double.is_sidecar(path, listing):
+                continue
             files[_hashable_name(root, path)] = path.read_bytes()
     return files
 
