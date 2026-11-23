@@ -1846,10 +1846,13 @@ SCRIPTS = TREE_READ_SKILLS[0]
 TREE_READ_ADVICE = "read it through ejryan89-skill-core's tree_reader, or state why in TREE_READ_ALLOWED"
 
 
-def tree_read_findings(files: dict[str, str]) -> list[str]:
+def tree_read_findings(files: dict[str, str], *, filled: bool = True) -> list[str]:
+    """The tree read policy's problems for a fixture tree of `files`; `filled` gives every other folder
+    TREE_READ_SKILLS names a module that reads nothing, so a fixture speaks only of the folder it writes."""
+    placeholders = {f"{folder}/placeholder.py": "VALUE = 1\n" for folder in TREE_READ_SKILLS[1:]} if filled else {}
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        write_fixture_tree(root, files)
+        write_fixture_tree(root, {**placeholders, **files})
         return tree_read_problems(root)
 
 
@@ -1940,7 +1943,16 @@ def test_tree_read_policy_passes_the_reader_another_objects_method_a_module_func
         "    return list(ast.walk(tree))\n"
     )
     suite = "from pathlib import Path\ndef test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n"
-    assert tree_read_findings({f"{SCRIPTS}/conforming.py": source, f"{SCRIPTS}/test_conforming.py": suite}) == []
+    # A class's own method named as a path's, called on self, is the class's: an evaluation's walk of its elements.
+    own = (
+        "class Evaluation:\n"
+        "    def walk(self, element):\n"
+        "        return element\n"
+        "    def run(self, root):\n"
+        "        return self.walk(root)\n"
+    )
+    files = {f"{SCRIPTS}/conforming.py": source, f"{SCRIPTS}/test_conforming.py": suite, f"{SCRIPTS}/own.py": own}
+    assert tree_read_findings(files) == []
 
 
 def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malformed_one() -> None:
@@ -1971,11 +1983,14 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         "from git_client import GitClient\ndef read(root):\n    return GitClient().run(['status'], directory=root)\n"
     )
     unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
+    # Path.group shares its name with a regular expression match's group(), which no reader can tell apart.
+    group = "def read(path):\n    return path.group()\n"
     files = {
         f"{SCRIPTS}/unbound.py": unbound,
         f"{SCRIPTS}/both.py": both,
         f"{SCRIPTS}/helper.py": helper,
         f"{SCRIPTS}/unlisted.py": unlisted,
+        f"{SCRIPTS}/group.py": group,
     }
     assert tree_read_findings(files) == []
 
@@ -1984,8 +1999,8 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     # A renamed, emptied, or missing scripts folder is a problem, never read as one that reads nothing outside the
     # reader; a folder holding only its suites is one too.
     expected = [f"{folder}: {TREE_READ_SKILLS_PROBLEM}" for folder in TREE_READ_SKILLS]
-    assert tree_read_findings({"README.md": "no scripts\n"}) == expected
-    assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}) == expected
+    assert tree_read_findings({"README.md": "no scripts\n"}, filled=False) == expected
+    assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}, filled=False) == expected
 
 
 # Every path method that reads, named as literals rather than taken from the policy's tables, so a change to those
@@ -2010,7 +2025,6 @@ READING_PATH_METHODS_BARE = (
     "iterdir",
     "readlink",
     "owner",
-    "group",
     "resolve",
 )
 

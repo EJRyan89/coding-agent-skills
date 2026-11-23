@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import dotnet_solution
+import file_presence
 import msbuild_reader
 from msbuild_reader import (
     PackageRef,
@@ -38,6 +39,7 @@ from msbuild_reader import (
     read_solution,
     same_framework,
 )
+from tree_reader import TreeReader
 
 PACKAGES_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <packages>
@@ -151,7 +153,7 @@ class ReaderTests(unittest.TestCase):
         }
         path = self.write("obj/project.assets.json", json.dumps(document))
         names = ["net8.0", "net472", "net8.0-windows"]
-        assets = read_assets(path)
+        assets = read_assets(path, TreeReader(self.root))
         self.assertEqual(names, list(assets.nodes))
         self.assertEqual(["Lantern.Tuple"], list(assets.nodes["net472"]))
         self.assertEqual(
@@ -166,12 +168,12 @@ class ReaderTests(unittest.TestCase):
         path = self.write("obj/project.assets.json", json.dumps({**document, "project": {}}))
         self.assertEqual(
             ["NET8.0", "net472", "net8.0-windows"],
-            list(read_assets(path, ["NET8.0", "net472", "net8.0-windows"]).nodes),
+            list(read_assets(path, TreeReader(self.root), ["NET8.0", "net472", "net8.0-windows"]).nodes),
         )
         # A target no name matches keeps the name the restore wrote.
         self.assertEqual(
             [".NETCoreApp,Version=v8.0", ".NETFramework,Version=v4.7.2", "net8.0-windows7.0"],
-            list(read_assets(path).nodes),
+            list(read_assets(path, TreeReader(self.root)).nodes),
         )
 
     def test_a_project_naming_one_platform_with_and_without_a_version_keeps_both_targets(self) -> None:
@@ -198,7 +200,7 @@ class ReaderTests(unittest.TestCase):
                 for project in ({"frameworks": sections}, {}):
                     document = {"version": 3, "targets": targets, "project": project}
                     path = self.write("obj/project.assets.json", json.dumps(document))
-                    assets = read_assets(path, declared)
+                    assets = read_assets(path, TreeReader(self.root), declared)
                     self.assertEqual(
                         {name: [package] for name, package in zip(declared, packages, strict=True)},
                         {name: list(nodes) for name, nodes in assets.nodes.items()},
@@ -222,18 +224,24 @@ class ReaderTests(unittest.TestCase):
         # As MSBuild searches for Directory.Build.props and Directory.Packages.props: past the folder a run starts in.
         props = self.write("Directory.Packages.props", "<Project />")
         (self.root / "src" / "App").mkdir(parents=True)
-        self.assertEqual(props, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
+        self.assertEqual(
+            props, nearest_file(self.root / "src" / "App", "Directory.Packages.props", TreeReader(self.root))
+        )
         nearer = self.write("src/Directory.Packages.props", "<Project />")
-        self.assertEqual(nearer, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
-        self.assertIsNone(nearest_file(self.root / "src" / "App", "Nothing.Above.props"))
+        self.assertEqual(
+            nearer, nearest_file(self.root / "src" / "App", "Directory.Packages.props", TreeReader(self.root))
+        )
+        self.assertIsNone(nearest_file(self.root / "src" / "App", "Nothing.Above.props", TreeReader(self.root)))
 
     def test_the_nearest_file_passes_over_a_folder_of_its_name_and_refuses_one_it_cannot_stat(self) -> None:
         props = self.write("Directory.Packages.props", "<Project />")
         (self.root / "src" / "App" / "Directory.Packages.props").mkdir(parents=True)
-        self.assertEqual(props, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
+        self.assertEqual(
+            props, nearest_file(self.root / "src" / "App", "Directory.Packages.props", TreeReader(self.root))
+        )
         nearer = self.root / "src" / "Directory.Packages.props"
         with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
-            nearest_file(self.root / "src" / "App", "Directory.Packages.props")
+            nearest_file(self.root / "src" / "App", "Directory.Packages.props", TreeReader(self.root))
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows, which makes no FIFO")
@@ -248,24 +256,24 @@ class ReaderTests(unittest.TestCase):
         app.mkdir(parents=True)
         candidate = app / "Directory.Packages.props"
         candidate.symlink_to(self.root / "folder", target_is_directory=True)
-        self.assertEqual(props, nearest_file(app, "Directory.Packages.props"))
+        self.assertEqual(props, nearest_file(app, "Directory.Packages.props", TreeReader(self.root)))
         candidate.unlink()
         candidate.symlink_to(self.root / "nowhere")
-        self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
+        self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props", TreeReader(self.root)))
         candidate.unlink()
         if hasattr(os, "mkfifo"):
             os.mkfifo(candidate)
-            self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
+            self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props", TreeReader(self.root)))
 
     def test_a_stat_error_naming_no_file_is_refused_against_the_candidate_the_search_checked(self) -> None:
         self.write("Directory.Packages.props", "<Project />")
         (self.root / "src" / "App").mkdir(parents=True)
         nearer = self.root / "src" / "Directory.Packages.props"
         with (
-            failing_without_a_file(msbuild_reader, "is_occupied", nearer),
+            failing_without_a_file(file_presence, "is_occupied", nearer),
             self.assertRaises(msbuild_reader.Unreadable) as raised,
         ):
-            nearest_file(self.root / "src" / "App", "Directory.Packages.props")
+            nearest_file(self.root / "src" / "App", "Directory.Packages.props", TreeReader(self.root))
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
@@ -274,24 +282,29 @@ class ReaderTests(unittest.TestCase):
                 PackageRef("Lantern.Core", "2.0.0", "packages.config", "net472"),
                 PackageRef("Lantern.Json", "13.0.1", "packages.config", "net472"),
             ],
-            read_packages_config(self.write("packages.config", PACKAGES_CONFIG)),
+            read_packages_config(self.write("packages.config", PACKAGES_CONFIG), TreeReader(self.root)),
         )
 
     def test_redirects_name_the_assembly_and_both_versions_and_skip_one_without_an_identity(self) -> None:
         config = self.write("web.config", WEB_CONFIG)
         self.assertEqual(
             [("Lantern.Json", "0.0.0.0-13.0.0.0", "13.0.0.0"), ("Quill.Http", "0.0.0.0-2.0.0.0", "2.0.0.0")],
-            [(item.name, item.old_version, item.new_version) for item in read_redirects(config)],
+            [(item.name, item.old_version, item.new_version) for item in read_redirects(config, TreeReader(self.root))],
         )
-        self.assertEqual(config, read_redirects(config)[0].config)
+        self.assertEqual(config, read_redirects(config, TreeReader(self.root))[0].config)
 
     def test_nuspec_gives_the_package_and_every_dependency_once_across_groups(self) -> None:
-        node = read_nuspec(self.write("Lantern.Core.2.0.0/Lantern.Core.nuspec", NUSPEC), ("Lantern.Core",))
+        node = read_nuspec(
+            self.write("Lantern.Core.2.0.0/Lantern.Core.nuspec", NUSPEC), TreeReader(self.root), ("Lantern.Core",)
+        )
         self.assertEqual(("Lantern.Core", "2.0.0"), (node.id, node.version))
         self.assertEqual({"Lantern.Json": "[12.0.0, )", "Quill.Http": "1.2.0"}, node.dependencies)
         self.assertEqual(("Lantern.Core",), node.assemblies)
         with self.assertRaises(Unreadable) as refused:
-            read_nuspec(self.write("bad/bad.nuspec", "<package><metadata><id>x</id></metadata></package>"))
+            read_nuspec(
+                self.write("bad/bad.nuspec", "<package><metadata><id>x</id></metadata></package>"),
+                TreeReader(self.root),
+            )
         self.assertIn("names no package id and version", refused.exception.reason)
 
     def test_package_assemblies_are_the_dll_stems_under_lib(self) -> None:
@@ -299,18 +312,20 @@ class ReaderTests(unittest.TestCase):
         self.write("pkg/lib/netstandard2.0/Lantern.Json.dll", "")
         self.write("pkg/lib/net45/Lantern.Json.Extras.dll", "")
         self.write("pkg/tools/Other.dll", "")
-        self.assertEqual(("Lantern.Json", "Lantern.Json.Extras"), package_assemblies(self.root / "pkg"))
-        self.assertEqual((), package_assemblies(self.root / "nowhere"))
+        self.assertEqual(
+            ("Lantern.Json", "Lantern.Json.Extras"), package_assemblies(self.root / "pkg", TreeReader(self.root))
+        )
+        self.assertEqual((), package_assemblies(self.root / "nowhere", TreeReader(self.root)))
 
     def test_package_assemblies_are_in_the_order_of_their_ordinal_fold_whatever_their_case(self) -> None:
         for stem in ("beta", "Alpha", "Gamma"):
             self.write(f"pkg/lib/net45/{stem}.dll", "")
-        self.assertEqual(("Alpha", "beta", "Gamma"), package_assemblies(self.root / "pkg"))
+        self.assertEqual(("Alpha", "beta", "Gamma"), package_assemblies(self.root / "pkg", TreeReader(self.root)))
 
     def test_a_lib_that_is_no_folder_or_cannot_be_looked_at_is_unreadable_rather_than_empty(self) -> None:
         lib = self.write("file/lib", "")
         with self.assertRaises(Unreadable) as refused:
-            package_assemblies(self.root / "file")
+            package_assemblies(self.root / "file", TreeReader(self.root))
         self.assertEqual((lib, "not a directory"), (refused.exception.file, refused.exception.reason))
         locked = self.root / "locked" / "lib"
         self.write("locked/lib/net45/Lantern.Json.dll", "")
@@ -331,11 +346,11 @@ class ReaderTests(unittest.TestCase):
                 mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
                 self.assertRaises(Unreadable) as refused,
             ):
-                package_assemblies(self.root / "locked")
+                package_assemblies(self.root / "locked", TreeReader(self.root))
             self.assertEqual((locked, reason), (refused.exception.file, refused.exception.reason))
 
     def test_assets_give_each_frameworks_packages_and_direct_dependencies(self) -> None:
-        assets = read_assets(self.write("obj/project.assets.json", json.dumps(ASSETS)))
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(ASSETS)), TreeReader(self.root))
         self.assertEqual(["net8.0"], list(assets.nodes))
         self.assertEqual(["Lantern.Json", "Quill.Http"], sorted(assets.nodes["net8.0"]))
         quill = assets.nodes["net8.0"]["Quill.Http"]
@@ -352,7 +367,7 @@ class ReaderTests(unittest.TestCase):
             "Lantern.Json": {"target": "", "version": "12.0.3"},
             "Harbor.Core": {"target": "Project"},
         }
-        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)), TreeReader(self.root))
         self.assertEqual(
             [
                 PackageRef("Quill.Http", "[1.2.0, )", "PackageReference"),
@@ -363,10 +378,10 @@ class ReaderTests(unittest.TestCase):
 
     def test_an_unreadable_assets_file_names_the_file_and_the_reason(self) -> None:
         with self.assertRaises(Unreadable):
-            read_assets(self.write("obj/project.assets.json", "{not json"))
+            read_assets(self.write("obj/project.assets.json", "{not json"), TreeReader(self.root))
         path = self.write("obj/project.assets.json", "{}")
         with self.assertRaises(Unreadable) as refused:
-            read_assets(path)
+            read_assets(path, TreeReader(self.root))
         self.assertEqual((path, "the assets file has no targets"), (refused.exception.file, refused.exception.reason))
 
     def test_a_section_of_another_kind_makes_the_assets_file_unreadable_by_name(self) -> None:
@@ -422,7 +437,7 @@ class ReaderTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 path = self.write("obj/project.assets.json", json.dumps(document))
                 with self.assertRaises(Unreadable) as refused:
-                    read_assets(path)
+                    read_assets(path, TreeReader(self.root))
                 # The UNREADABLE line names the file a user fixes, and why.
                 self.assertEqual((path, reason), (refused.exception.file, refused.exception.reason))
 
@@ -434,7 +449,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(f"net8.0-windows1{digits}.0", framework_key(f"net8.0-windows1{digits}.0.0"))
         self.assertEqual("net8.0-windows10.0", framework_key(f"net8.0-windows10.0.{'0' * 5000}"))
         document = {"version": 3, "targets": {f".NETCoreApp,Version=v{digits}": {}}, "project": {}}
-        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)), TreeReader(self.root))
         self.assertEqual([f".NETCoreApp,Version=v{digits}"], list(assets.nodes))
 
     def test_a_restore_records_each_frameworks_project_references_where_the_project_now_is(self) -> None:
@@ -464,7 +479,7 @@ class ReaderTests(unittest.TestCase):
             "project": {"restore": restore, "frameworks": {"net8.0": {}, "net472": {}}},
         }
         path = self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(document))
-        assets = read_assets(path)
+        assets = read_assets(path, TreeReader(self.root))
         api = self.root / "src" / "Harbor.Api"
         self.assertEqual(
             {
@@ -481,7 +496,7 @@ class ReaderTests(unittest.TestCase):
         # A restore that does not name the project it ran for records none.
         del restore["projectPath"]
         path = self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(document))
-        self.assertEqual({}, read_assets(path).project_refs)
+        self.assertEqual({}, read_assets(path, TreeReader(self.root)).project_refs)
 
     def test_module_names_the_files_it_reads(self) -> None:
         self.assertEqual(("web.config", "app.config"), msbuild_reader.CONFIG_FILES)
@@ -634,23 +649,23 @@ class PathBoundTests(unittest.TestCase):
         path = self.root / "Lib.csproj"
         path.write_bytes(b"x" * 16)
         with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 16):
-            self.assertEqual(b"x" * 16, read_bounded(path))
+            self.assertEqual(b"x" * 16, read_bounded(path, TreeReader(self.root)))
             path.write_bytes(b"x" * 17)
             with self.assertRaises(Unreadable) as refused:
-                read_bounded(path)
+                read_bounded(path, TreeReader(self.root))
             self.assertEqual(
                 "the file is larger than the reader's bound of 16 bytes, so it is not read", refused.exception.reason
             )
             # A file whose size the system understates, as a growing file's or a special file's, is cut at the bound.
             small = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 1, 0, 0, 0))
             with mock.patch.object(Path, "stat", return_value=small), self.assertRaises(Unreadable) as refused:
-                read_bounded(path)
+                read_bounded(path, TreeReader(self.root))
             self.assertIn("larger than the reader's bound", refused.exception.reason)
         with self.assertRaises(Unreadable) as refused:
-            read_bounded(self.root)
+            read_bounded(self.root, TreeReader(self.root))
         self.assertEqual("not a regular file, so the reader does not open it", refused.exception.reason)
         with self.assertRaises(Unreadable) as refused:
-            read_bounded(self.root / "Missing.csproj")
+            read_bounded(self.root / "Missing.csproj", TreeReader(self.root))
         self.assertEqual(self.root / "Missing.csproj", refused.exception.file)
 
     def test_an_assets_file_or_solution_above_the_bound_is_unreadable(self) -> None:
@@ -658,13 +673,13 @@ class PathBoundTests(unittest.TestCase):
         assets.write_text(json.dumps({"targets": {"net8.0": {}}}), encoding="utf-8")
         listed = self.root / "Harbor.slnx"
         listed.write_text('<Solution><Project Path="a.csproj" /></Solution>', encoding="utf-8")
-        self.assertEqual(["a.csproj"], read_solution(listed))
+        self.assertEqual(["a.csproj"], read_solution(listed, TreeReader(self.root)))
         with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 8):
             with self.assertRaises(Unreadable) as refused:
-                read_assets(assets)
+                read_assets(assets, TreeReader(self.root))
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
             with self.assertRaises(Unreadable) as refused:
-                read_solution(listed)
+                read_solution(listed, TreeReader(self.root))
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
 
 
@@ -754,7 +769,7 @@ def nuspec_dependencies(root: Path) -> list[str]:
         "</dependencies></metadata></package>",
         encoding="utf-8",
     )
-    return list(read_nuspec(path).dependencies)
+    return list(read_nuspec(path, TreeReader(path.parent)).dependencies)
 
 
 def shipped_assemblies(root: Path) -> tuple[str, ...]:
@@ -769,7 +784,7 @@ def shipped_assemblies(root: Path) -> tuple[str, ...]:
         lib.mkdir(parents=True)
         for name in names:
             (lib / f"{name}.dll").write_text("", encoding="utf-8")
-    return package_assemblies(root / "Lantern.Core.1.0.0")
+    return package_assemblies(root / "Lantern.Core.1.0.0", TreeReader(root))
 
 
 def restored_assemblies(root: Path) -> tuple[str, ...]:

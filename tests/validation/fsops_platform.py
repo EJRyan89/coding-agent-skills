@@ -1189,26 +1189,27 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
-# The .NET skills promise to read only inside the tree they examine. dotnet-format keeps it through
-# ejryan89-skill-core's tree_reader, a reader bound to that tree which judges each path by its text and its links
-# before touching it, and dotnet-dependencies joins TREE_READ_SKILLS in a change of its own. Every stat, open, read,
-# listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a direct read there,
-# or a read through an ejryan89-skill-core function that reads a path, which core_reads derives from the core modules'
-# own reads, transitively, is refused, and one that must stay, such as of a file the skill itself wrote under the
-# temporary directory or of the root a user names before any tree is bound, states why beside the code in a
-# module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's scripts are not read. A call is read
-# through the module's imports, and a callable passed as a value counts as a call of it. A path method is read on any
-# receiver that is not an imported module, since a reader cannot tell a path from another value; the ones that take no
-# positional argument count only when given none, so a method of another object sharing the name and taking one, such
-# as an evaluation's exists(text), does not, and none counts on Path(__file__), the script's own file. A skill
+# The .NET skills promise to read only inside the tree they examine. Each keeps it through ejryan89-skill-core's
+# tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
+# stat, open, read, listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a
+# direct read there, or a read through an ejryan89-skill-core function that reads a path, which core_reads derives
+# from the core modules' own reads, transitively, is refused, and one that must stay, such as of a file the skill
+# itself wrote under the temporary directory or of the root a user names before any tree is bound, states why beside
+# the code in a module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's scripts are not read. A
+# call is read through the module's imports, and a callable passed as a value counts as a call of it. A path method is
+# read on any receiver that is not an imported module, since a reader cannot tell a path from another value; the ones
+# that take no positional argument count only when given none, so a method of another object sharing the name and
+# taking one, such as an evaluation's exists(text), does not, none counts on Path(__file__), the script's own file,
+# and none on self or cls naming a method the enclosing class defines, as an evaluation's own walk. A skill
 # TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so a renamed or emptied folder is
-# never read as conforming. Stated limits: a read reached by a name computed at run time, as getattr(path, name); a
-# path method a module's own function wraps under another name; a path method called unbound on its class with the
-# path as its argument, as Path.exists(path); a call in a module that imports both os and os.path, which the shared
-# resolver leaves unnamed; a module read DIRECT_TREE_READS does not list, such as zipfile.is_zipfile, zipfile.Path,
-# shutil.disk_usage, shutil.unpack_archive, or os.pathconf; and a read in a method of an ejryan89-skill-core class,
-# reached through an instance, which names no class.
-TREE_READ_SKILLS = ("skills/dotnet-format/scripts",)
+# never read as conforming. Stated limits: Path.group, which a regular expression's match shares by name, so it is not
+# read; a read reached by a name computed at run time, as getattr(path, name); a path method a module's own function
+# wraps under another name; a path method called unbound on its class with the path as its argument, as
+# Path.exists(path); a call in a module that imports both os and os.path, which the shared resolver leaves unnamed; a
+# module read DIRECT_TREE_READS does not list, such as zipfile.is_zipfile, zipfile.Path, shutil.disk_usage,
+# shutil.unpack_archive, or os.pathconf; and a read in a method of an ejryan89-skill-core class, reached through an
+# instance, which names no class.
+TREE_READ_SKILLS = ("skills/dotnet-format/scripts", "skills/dotnet-dependencies/scripts")
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.
 LOCAL_NAME = "<local>"
@@ -1274,7 +1275,7 @@ OTHER_PLACE_READS: dict[str, str] = {
 # when given none.
 TREE_READ_METHODS = frozenset({"read_text", "open"} & TEXT_METHODS.keys()) | GLOB_METHODS | {"walk", "samefile"}
 BARE_TREE_READ_METHODS = PRESENCE_PREDICATES | frozenset(
-    {"read_bytes", "stat", "lstat", "is_symlink", "is_junction", "iterdir", "readlink", "owner", "group", "resolve"}
+    {"read_bytes", "stat", "lstat", "is_symlink", "is_junction", "iterdir", "readlink", "owner", "resolve"}
 )
 
 
@@ -1285,6 +1286,28 @@ def _receiver_is_module(node: ast.Attribute, resolver: CallableResolver) -> bool
         root = root.value
     bound = resolver.aliases(root).get(root.id, "") if isinstance(root, ast.Name) else ""
     return bool(bound) and not bound.startswith(LOCAL_NAME)
+
+
+def _own_methods(tree: ast.Module) -> dict[str, frozenset[str]]:
+    """The methods each module-level class defines, by the class's name."""
+    return {
+        node.name: frozenset(
+            child.name for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _calls_own_method(node: ast.Call, scope: str, methods: dict[str, frozenset[str]]) -> bool:
+    """Whether a call is a method the enclosing class defines, called on self or cls, as an evaluation's own walk."""
+    function = node.func
+    return (
+        isinstance(function, ast.Attribute)
+        and isinstance(function.value, ast.Name)
+        and function.value.id in {"self", "cls"}
+        and function.attr in methods.get(scope.split(".")[0], frozenset())
+    )
 
 
 def _of_this_script(node: ast.Attribute, resolver: CallableResolver) -> bool:
@@ -1419,9 +1442,12 @@ def tree_reads(tree: ast.Module, helpers: frozenset[str] = frozenset()) -> list[
     ejryan89-skill-core functions `helpers` names counting as reads."""
     resolver = CallableResolver(tree)
     references = _value_references(tree)
+    methods = _own_methods(tree)
     found: list[tuple[int, str, str]] = []
     for node, scope in scoped_nodes(tree.body):
         if isinstance(node, ast.ImportFrom | ast.Import):
+            continue
+        if isinstance(node, ast.Call) and _calls_own_method(node, scope, methods):
             continue
         if (read := _tree_read(node, resolver, references, helpers)) is not None:
             found.append((getattr(node, "lineno", 0), scope or MODULE_SCOPE, read))

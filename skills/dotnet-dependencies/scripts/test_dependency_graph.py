@@ -32,6 +32,7 @@ import link_probe
 import msbuild_evaluation
 import msbuild_reader
 import path_containment
+import tree_reader
 from dependency_graph import main
 from dotnet_solution import same_path
 from flat_text import flat_text
@@ -3585,7 +3586,7 @@ class PathBoundTests(Fixture):
         touched: list[str] = []
         named = repo / ".tools/In/In.csproj"
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(dependency_graph, "is_link_or_junction", is_link_or_junction))
+            stack.enter_context(mock.patch.object(tree_reader, "is_link_or_junction", is_link_or_junction))
             for name in FILE_SYSTEM_METHODS:
                 stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
             code, rows = self.run_main("why", "Lib.Pkg", "--root", str(repo), "--project", str(named))
@@ -4924,7 +4925,7 @@ class ProjectSearchTests(Fixture):
             raise AssertionError("a root holding a solution is never searched")
 
         with (
-            mock.patch.object(dependency_graph, "walk_files", walk_files),
+            mock.patch.object(tree_reader, "walk_files", walk_files),
             mock.patch.object(dependency_graph, "PROJECT_SEARCH_FOLDER_LIMIT", 0),
         ):
             for root in (self.root, self.root / "Listed.sln"):
@@ -5661,7 +5662,7 @@ class PresenceReadTests(Fixture):
         failed: list[Path] = []
 
         def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-            if path == assets and sys._getframe(1).f_code is dependency_graph.closure_from_assets.__code__:
+            if path == assets and sys._getframe(1).f_code is tree_reader.TreeReader.status.__code__:
                 failed.append(path)
                 raise PermissionError(13, "Access is denied", str(path))
             return real(path, follow_symlinks=follow_symlinks)
@@ -5764,6 +5765,30 @@ class PresenceReadTests(Fixture):
         with mock.patch.object(file_presence, "is_there", is_there):
             _, _, projects = dependency_graph.resolve_root(listed, unreadable)
         self.assertEqual(([second], [(first, "the stat gave up")]), (projects, unreadable))
+
+    def test_a_package_in_the_nuget_cache_that_a_link_leads_out_of_the_cache_is_unreadable_and_never_followed(
+        self,
+    ) -> None:
+        # The NuGet cache lies outside the examined tree, so it is read through a reader bound to the cache folder:
+        # Lantern.Core there is a folder link (a junction on Windows) to a folder outside the cache, which is reported
+        # naming the link and never listed or stat, where it was read through before.
+        cache = self.root / "home" / ".nuget" / "packages"
+        cache.mkdir(parents=True)
+        elsewhere = self.root / "elsewhere"
+        (elsewhere / "1.0.0").mkdir(parents=True)
+        (elsewhere / "1.0.0" / "lantern.core.nuspec").write_text("<package />", encoding="utf-8")
+        linked = cache / "Lantern.Core"
+        link_folder(elsewhere, linked)
+        self.addCleanup(remove_link, linked)
+        reason = (
+            f"{linked.as_posix()} is a link to {elsewhere.as_posix()}, outside the examined tree {cache.as_posix()}, "
+            "which the reader does not follow"
+        )
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.package_directory([cache], "Lantern.Core", "1.0.0", self.root / "solution")
+        self.assertEqual((linked, reason), (raised.exception.file, raised.exception.reason))
+        self.assertEqual([], followed_through(touched, [linked], elsewhere))
 
     def test_a_stat_error_naming_no_file_is_refused_against_the_folder_checked(self) -> None:
         home = self.root / "home"

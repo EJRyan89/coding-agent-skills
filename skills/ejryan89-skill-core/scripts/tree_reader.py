@@ -1,10 +1,11 @@
 """The one reader of a tree a skill promises to read only inside, for the .NET skills.
 
-dotnet-format promises to read only inside the repository, and keeps the promise through a `TreeReader` bound to the
-repository root: every stat, open, read, listing, and walk of a path in its scripts goes through one, and validation
-refuses a direct read there (the tree read policy in `tests/validation/fsops_platform.py`), so a caller that bypasses
-the reader fails validation rather than waiting for a review to find it. dotnet-dependencies, which promises to read
-only inside the tree it examines, is brought to the reader and the policy in a change of its own.
+dotnet-dependencies promises to read only inside the tree it examines, and dotnet-format only inside the repository.
+Each keeps the promise through a `TreeReader` bound to that tree: every stat, open, read, listing, and walk of a path in
+their scripts goes through one, and validation refuses a direct read there (the tree read policy in
+`tests/validation/fsops_platform.py`), so a caller that bypasses the reader fails validation rather than waiting for a
+review to find it. dotnet-dependencies reads a package unpacked in the NuGet cache, which lies outside the examined
+tree, through a reader bound to the cache folder, so no link is followed out of that either.
 
 Each call judges its path before it touches it (`refusal`), from the path's text and then by its links:
 
@@ -172,11 +173,29 @@ class TreeReader:
         even to learn what it is."""
         return walk_files(self.judged(top), wanted, skipped=skipped, prune=prune, limit=limit, tree=self.tree)
 
-    def climb(self, start: Path) -> Iterator[Path]:
+    def climb(self, start: Path, stop: Path | None = None) -> Iterator[Path]:
         """`start`, a judged path inside the tree, and each folder above it up to the tree's top, nearest first, as
-        `folders_up` gives them, so the climb never leaves the tree; keying each folder asks `path_keys` about the
-        folders on its way, as the module's first limit states."""
-        return folders_up(self.judged(start), self.tree)
+        `folders_up` gives them, so the climb never leaves the tree; with `stop`, it ends at that folder too when it
+        meets it first, compared by `key`. Keying each folder asks `path_keys` about the folders on its way, as the
+        module's first limit states."""
+        folders = folders_up(self.judged(start), self.tree)
+        if stop is None:
+            return folders
+        end = self.key(stop)
+
+        def until_stop() -> Iterator[Path]:
+            for folder in folders:
+                yield folder
+                if self.key(folder) == end:
+                    return
+
+        return until_stop()
+
+    def matches(self, folder: Path, pattern: str) -> list[Path]:
+        """`file_presence.matching` below a judged folder: the paths a relative glob pattern matches, in path order,
+        entering no symbolic link to a folder on a `**` part. A match is only named, never examined: a caller judges
+        each one it reads through the reader again."""
+        return file_presence.matching(self.judged(folder), pattern)
 
     def key(self, path: Path) -> str:
         """What a collection compares `path` by, `dotnet_solution.entry_key` in the tree: `same_path` for a path inside
