@@ -1265,13 +1265,17 @@ class PruneTests(GuardFixture):
                     path: Path, missing_ok: bool = False, *, stale: Path = stale, reads: dict[str, str | None] = reads
                 ) -> None:
                     if path == stale and not reads:
+                        # Marked first, so a prune B or X makes, had it no lock to wait on, removes for real.
+                        reads["started"] = None
                         reads["B"] = self.decide("Read", agent=THIRD_AGENT, file_path=self.prompt("sql-review"))
                         reads["X"] = self.decide("Read", agent=OTHER_AGENT, file_path=self.prompt("sql-review"))
                     REAL_UNLINK(path, missing_ok=missing_ok)
 
                 with mock.patch.object(Path, "unlink", unlink_after_the_race):
                     self.claim()
-                self.assertEqual({"B": None, "X": denied}, reads, "X's read is judged against the claim A holds")
+                self.assertEqual(
+                    {"started": None, "B": None, "X": denied}, reads, "X's read is judged against the claim A holds"
+                )
                 self.assertFalse(stale.exists(), "A removes the claim it judged")
                 self.claim("sql-review", agent=OTHER_AGENT)
                 self.assertEqual(
@@ -1363,7 +1367,19 @@ class PruneTests(GuardFixture):
         for copy in (linked, unlinked):
             age_by(copy, LEFTOVER_COPY_AGE)
         age_by(young, LEFTOVER_COPY_AGE - 60)
-        self.claim()
+        opened: list[Path] = []
+        real_open = Path.open
+
+        def recording_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        # Windows refuses to remove a name of a file a handle without delete sharing holds open, so a prune that
+        # opened a copy a create is still using would keep that create from removing its copy's name.
+        with mock.patch.object(Path, "open", recording_open):
+            self.claim()
+        self.assertNotIn(young, opened, "a copy younger than LEFTOVER_COPY_AGE is never opened")
+        self.assertIn(unlinked, opened, "an old copy is judged open")
         self.assertEqual(
             sorted([f"{AGENT}.json", claim.name, young.name]), sorted(path.name for path in self.claims.iterdir())
         )
@@ -1395,6 +1411,19 @@ class PruneTests(GuardFixture):
                 )
                 self.assert_no_claim("no claim and no copy is left")
                 self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
+
+        # The same errno raised naming another path than the claim, such as the claims folder, is no refusal of the
+        # claim's link, so it names its error alone.
+        def elsewhere(*args: Any, **kwargs: Any) -> None:
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), str(self.claims))
+
+        with mock.patch.object(atomic_file, "create_bytes", elsewhere):
+            self.assertEqual(
+                "Code-review reviewer boundary: this reviewer's claim could not be made: "
+                f"[Errno {errno.EXDEV}] {os.strerror(errno.EXDEV)}: {str(self.claims)!r}.",
+                self.decide("Read", file_path=self.prompt()),
+            )
+        self.assert_no_claim()
         # Any other refusal of the link names its error alone.
         with mock.patch.object(os, "link", refusing(errno.EACCES)):
             self.assertEqual(

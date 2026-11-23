@@ -177,6 +177,7 @@ PRESENCE_ALLOWED = {
     "writer refuses does, and never turns the read into a denial",
     "_prune": "a claim, a copy, or a run.json it cannot open, stat, or read is kept, never pruned as one whose run is "
     "gone or removed unjudged",
+    "_is_old_copy": "a copy it cannot stat is kept, never opened or removed unjudged",
 }
 
 
@@ -416,7 +417,12 @@ def _prune_claims(claims: Path) -> None:
     system that offers no lock at all lets no guard hold it, so each prunes unlocked there. Each removal is checked
     too: `_prune` removes a file only while its path still names the one judged. Where no lock holds, as on such a
     file system or beside an older guard, which prunes unlocked, that check is all that keeps a newer claim, and a
-    claim removed and remade at the path between the check and the removal is still removed."""
+    claim removed and remade at the path between the check and the removal is still removed; an older guard's own
+    prune, which checks nothing, can still remove a newer claim at any time after it judged the path.
+
+    A copy is judged by its age from its path's status before it is opened, and a younger one is never opened: Windows
+    refuses to remove a file's name while a handle without delete sharing holds it open, so opening a copy a create is
+    still using would keep that create from removing its copy's name, and deny its call."""
     lock = claims / PRUNE_LOCK
     descriptor: int | None = None
     try:
@@ -436,7 +442,8 @@ def _prune_claims(claims: Path) -> None:
         for path in file_presence.matching(claims, "*.json"):
             _prune(path, _stale_claim)
         for path in file_presence.matching(claims, LEFTOVER_COPY):
-            _prune(path, _leftover_copy)
+            if _is_old_copy(path):
+                _prune(path, _leftover_copy)
     finally:
         if descriptor is not None:
             file_lock.release(descriptor, lock)
@@ -466,7 +473,16 @@ def _stale_claim(status: os.stat_result, content: BinaryIO) -> bool:
     return not file_presence.is_present(Path(run) / RUN_FILE)
 
 
-def _leftover_copy(status: os.stat_result, _content: BinaryIO) -> bool:
+def _is_old_copy(path: Path) -> bool:
+    """Whether the copy at `path`, by its own status, without opening it, is `LEFTOVER_COPY_AGE` old; one that cannot
+    be statted is not."""
+    try:
+        return _leftover_copy(path.lstat())
+    except OSError:
+        return False
+
+
+def _leftover_copy(status: os.stat_result, _content: BinaryIO | None = None) -> bool:
     """Whether a copy beside the claims is one a killed create left: `LEFTOVER_COPY_AGE` old."""
     return time.time() - status.st_mtime >= LEFTOVER_COPY_AGE
 
