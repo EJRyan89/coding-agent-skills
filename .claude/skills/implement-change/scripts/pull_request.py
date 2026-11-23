@@ -9,12 +9,16 @@
     type-checks
            name each type-check job validation runs that reads a Python file changed since --base, committed,
            uncommitted, or untracked, and print the validation runner's command that runs those jobs and no other,
-           so the strict run continuous integration fails is run before the push
+           so the strict run continuous integration fails is run before the push; a change that reaches every job
+           prints why, and the command that runs them all
 
 The type-check jobs come from ejryan89-skill-core's type_check_roots, the reading validation builds its jobs from:
 the shared run of the roots checked together and, for a root `[tool.validation] mypy-strict` in `pyproject.toml`
 lists, its own strict run, or a skill's own run for a file under its `scripts/`. A suite under `tests/` is checked by
-the strict run of `tests`, whatever root the module it tests sits in.
+the strict run of `tests`, whatever root the module it tests sits in. A change to a file that configures or pins every
+check (`pyproject.toml`, `requirements-dev.in`, `requirements-dev.txt`), or to a Python file in a folder other roots
+import (`deployer/`, `tools/`, and each folder `[tool.mypy] mypy_path` lists), reaches every type-check job, since a
+module that imports it may sit in any root.
 
 The template is `pull_request_template.md`, in any case, in `.github/`, the top folder, or `docs/`, as GitHub reads
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
@@ -55,7 +59,8 @@ Every line is one fact:
     PULL_REQUEST <url>             open: the pull request opened
     BASE <remote>/<branch> <sha>   type-checks: the base's tip after the fetch, which the changed files are read from
     TYPE_CHECK <job>               type-checks: each job that reads a changed Python file
-    RUN <command>                  type-checks: the command that runs those jobs, to run as printed
+    TYPE_CHECK_ALL <path> <why>    type-checks: a changed file that reaches every type-check job, and why
+    RUN <command>                  type-checks: the command that runs those jobs, or all of them, to run as printed
     NO_TYPE_CHECK                  type-checks: no changed Python file sits where a type check reads it
 
 Exit status:
@@ -70,7 +75,7 @@ import argparse
 import re
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -99,7 +104,15 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import hidden_spans
 from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
 from text_lines import line_index, line_starts, text_lines
-from type_check_roots import PYPROJECT, file_type_check_jobs, strict_type_check_areas
+from type_check_roots import (
+    JOB_PREFIX,
+    MYPY_PATH_PREFIX,
+    PYPROJECT,
+    every_job_reasons,
+    file_type_check_jobs,
+    imported_folders,
+    strict_type_check_areas,
+)
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -365,17 +378,18 @@ def changed_files(git: GitClient, top: Path, commit: str) -> list[str]:
     return sorted(names)
 
 
-def strict_areas(top: Path) -> list[str]:
-    """The roots `pyproject.toml`'s [tool.validation] mypy-strict lists, as validation reads them."""
+def configured_paths(top: Path, reader: Callable[[Path], list[str] | None], what: str) -> list[str]:
+    """The paths `reader` reads from `pyproject.toml` at `top`, as validation reads them, or a PullRequestError naming
+    `what` it lacks."""
     pyproject = top / PYPROJECT
     try:
-        areas = strict_type_check_areas(pyproject)
+        paths = reader(pyproject)
     except (OSError, ValueError, RecursionError) as exc:
         # tomllib's TOMLDecodeError and a UnicodeDecodeError are ValueErrors, and tomllib recurses per level.
         raise PullRequestError(f'cannot read "{pyproject}": {flat_text(str(exc))}') from exc
-    if areas is None:
-        raise PullRequestError(f"{PYPROJECT}: [tool.validation] mypy-strict is not a list of paths")
-    return areas
+    if paths is None:
+        raise PullRequestError(f"{PYPROJECT}: {what}")
+    return paths
 
 
 def run_command(jobs: Sequence[str]) -> str:
@@ -392,10 +406,21 @@ def type_checks(git: GitClient, repository: Path, base: Base) -> list[str]:
     """The base's tip, each type-check job a changed Python file reaches, and the command that runs them."""
     top = top_of(git, repository)
     commit = fetched_base(git, repository, base)
-    jobs = file_type_check_jobs(top, changed_files(git, top, commit), strict_areas(top))
+    changed = changed_files(git, top, commit)
+    strict = configured_paths(top, strict_type_check_areas, "[tool.validation] mypy-strict is not a list of paths")
+    imported = configured_paths(
+        top, imported_folders, f"[tool.mypy] mypy_path is not a list of paths starting {MYPY_PATH_PREFIX}"
+    )
+    facts = [f"BASE {base} {commit}"]
+    reasons = every_job_reasons(changed, imported)
+    if reasons:
+        # Every job's name starts with the prefix, so the runner's pattern of it alone selects them all.
+        widened = [f"TYPE_CHECK_ALL {path} {why}" for path, why in reasons]
+        return [*facts, *widened, f"RUN {VALIDATION_COMMAND} -k '{JOB_PREFIX}'"]
+    jobs = file_type_check_jobs(top, changed, strict)
     if not jobs:
-        return [f"BASE {base} {commit}", "NO_TYPE_CHECK"]
-    return [f"BASE {base} {commit}", *(f"TYPE_CHECK {job}" for job in jobs), f"RUN {run_command(jobs)}"]
+        return [*facts, "NO_TYPE_CHECK"]
+    return [*facts, *(f"TYPE_CHECK {job}" for job in jobs), f"RUN {run_command(jobs)}"]
 
 
 def upstream_problems(git: GitClient, repository: Path) -> list[str]:

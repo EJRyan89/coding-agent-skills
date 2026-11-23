@@ -66,7 +66,12 @@ Where *Validation* names the type checks of a changed Python file, this prints t
 python -B .claude/skills/implement-change/scripts/pull_request.py type-checks --base "<base>"
 ```
 
-It prints `BASE <base> <commit>`, the base's tip after its fetch, then `TYPE_CHECK <job>` for each type-check job that reads a changed file, the strict run of each root included, and `RUN <command>`, the one command that runs those jobs and no other: run it as printed, from the top of the repository. `NO_TYPE_CHECK` in their place means no changed file is one a type check reads. A suite is checked by the strict run of its own root, whatever root the module it tests sits in, so a module and its suite name two strict runs. A last line `FAILED <reason>` is a stop to report.
+It prints `BASE <base> <commit>`, the base's tip after its fetch, then one of three things.
+- When a changed file reaches every type-check job, it prints `TYPE_CHECK_ALL <path> <why>` for each such file, then a `RUN` line that runs every type check. A file reaches every job when it configures or pins the checks, such as `pyproject.toml` or the development dependencies, or when it is a Python file in a folder other roots import, such as `deployer/`, `tools/`, or a `mypy_path` folder like ejryan89-skill-core's `scripts/`.
+- Otherwise it prints `TYPE_CHECK <job>` for each job whose own root holds a changed Python file, the strict run of each root included, then `RUN <command>`, which runs those jobs and no other. A suite is checked by the strict run of its own root, whatever root the module it tests sits in, so a module and its suite name two strict runs.
+- `NO_TYPE_CHECK` means no changed file is one a type check reads, or one that configures the checks.
+
+Run the `RUN` command as printed, from the top of the repository. A last line `FAILED <reason>` is a stop to report.
 
 ## 8. Pull request
 

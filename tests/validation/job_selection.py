@@ -21,6 +21,7 @@ from path_containment import posix_within
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
+from type_check_roots import DEVELOPMENT_DEPENDENCIES, PYTHON_CHECK_FILES
 from validation_support import REPOSITORY_ROOT, UnreadablePython, parse_python, repository_files
 
 from deployer import platform_support
@@ -31,11 +32,6 @@ MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences ou
 SHELL_JOB = "static shell checks (bash -n and ShellCheck on skill scripts)"
 FORMAT_JOB = "static format check (ruff format --check)"
 LINT_JOB = "static lint check (ruff check)"
-# The development dependencies' pins and their hash lock, which pin the ruff, mypy, and pytest every Python check and
-# suite runs on, so a bump reaches the format, lint, and type checks and every Python suite.
-DEVELOPMENT_DEPENDENCIES = ("requirements-dev.in", "requirements-dev.txt")
-# The files besides Python's own that set how the format, lint, and type checks read it.
-PYTHON_CHECK_FILES = ("pyproject.toml", *DEVELOPMENT_DEPENDENCIES)
 # What a change reaches beyond the suites that name, import, or sit in the skill of a changed file, as pairs of
 # changed-path patterns and the suite patterns they add, both fnmatch patterns over repository-relative paths, where *
 # crosses folders. A suite pattern is matched against the suites alone, so it names a folder or a suite and never

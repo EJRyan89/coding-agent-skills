@@ -119,9 +119,9 @@ def pushed_branch(fixture: Fixture) -> None:
 
 
 def strict_list_branch(fixture: Fixture) -> None:
-    """The pushed branch, with the pyproject.toml whose strict list type-checks reads."""
+    """The pushed branch, with the pyproject.toml whose strict list and mypy_path type-checks reads."""
     pushed_branch(fixture)
-    write(formatted(fixture, PYPROJECT), "[tool.validation]\nmypy-strict = []\n")
+    write(formatted(fixture, PYPROJECT), "[tool.validation]\nmypy-strict = []\n\n[tool.mypy]\nmypy_path = []\n")
 
 
 def template_repository(fixture: Fixture) -> None:
