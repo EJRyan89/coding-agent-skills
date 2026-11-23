@@ -4711,43 +4711,48 @@ def line_split_problems(root: Path, files: list[Path]) -> list[str]:
 # start is handed as its stdout or stderr, by any name the module names that file by, as discovery's _close reads back
 # the temporary file a runtime's stderr goes to, a read(), readline(), or errors() of a bounded_process.streaming
 # handle, a field of a class the module defines with annotated fields that a call of the class fills with output, by
-# position or by keyword, read on any receiver in the module, as sdk_why's Completed.text, and the return of a function
-# a module-level OUTPUT_SOURCES = {function: reason} declares, for a function that gathers a program's output where no
-# reading can follow it, as discovery's converse does through a reader thread and a queue. A file a program writes is
-# its output: where a process start the module makes is handed the file it is followed, and where another process writes
-# it, as the reviewer guard's hook writes its read log and the canary's recorders their records, no reading can tell
-# from the path which program wrote it, so an entry `function.parameter` of the same declaration names the parameter its
-# reader is given the path by. An entry naming no function the module defines at its top level, or no parameter of one,
-# one whose return no call reads, or one whose file no read in the module reads, is refused. A name names the same file
-# as each name an assignment, an assignment expression, a with target, or a parameter a call in the module fills binds
-# it to, through each branch of a conditional expression or of `and` or `or`, the path an open() or a Path() is given,
-# and the receiver of an open() method, as `with listing.open('wb') as output` names listing's file. A handle is a
-# streaming() call, a name a scope binds to one, a parameter annotated Streaming, or an attribute of self a method of
-# the class binds to one. Output is followed through a name a scope binds to it, through what keeps its text as that
-# policy reads it, a decode() among it, through an index, a get(), or a part of a split or a partition, through a JSON
-# parse by json.loads or json_reader.loads, through a regular expression's sub(), subn(), or split() of it, by re or by
-# a pattern an re.compile() call gives or a name a scope binds to one, through a line program_lines or output_lines
-# gives, through a loop or a comprehension over any of them and a literal sequence of them looped over, through the
-# return of a function the module defines once by its name, whichever call reads it, through a parameter of such a
-# function a call in the module fills by position or by keyword, and through a parameter of a function another module
-# defines at its top level that a call fills, the call naming it through the module's imports by a qualified name that
-# ends in that module's stem and the function's name. A call through a parameter calls the function the parameter's
-# scope binds it to in exactly the form `name = name or function`, and through no other. A file's or a document's own
-# text is not a program's output, even where a program prints or carries it: a file read from disk that no process start
-# of the module is handed and no declaration names is not traced, a call whose function's name has the word file among
-# its words, as GitClient.file_at and a reader of a file at a commit have, gives a file's text, and a document a program
-# carries, as gh's JSON carries a release's or a pull request's body or git log a commit message, is split where its own
-# program ends a line, which the module states. Stated limits, not traced: a value a callable the module is given
-# returns, but through the or form; the return of a function another module defines, but a declared source's; a call
-# through the or form of a function another module defines, a declared source's included, which leaves that source's
-# declaration unread and so refused; a call of any other function, GitHubClient.json among them; a method's parameter a
-# call through self fills; a parameter an argument after a starred one fills; a file a process start in another module
-# or in a callable the module is given writes, or one a process is handed as its stdin or by a path among its arguments,
-# but a declared log; a streaming handle a function returns, one an attribute of anything but self holds, and one an
-# attribute of self holds in another class than the one that binds it; a field of a class another module defines, but
-# stdout, stderr, or output, and one a class does not annotate in its body; a pattern a parameter or an attribute holds;
-# and the replacement an re.sub() is given. A split that must stay states why in a module-level OUTPUT_SPLIT_ALLOWED =
-# {scope: reason}.
+# position or by keyword, read by its name on any receiver in the module, so an unrelated attribute of that name reads
+# as output too, as sdk_why's Completed.text, and the return of a function a module-level OUTPUT_SOURCES = {function:
+# reason} declares, for a function that gathers a program's output where no reading can follow it, as discovery's
+# converse does through a reader thread and a queue. A file a program writes is its output: where a process start the
+# module makes is handed the file it is followed, and where another process writes it, as the reviewer guard's hook
+# writes its read log and the canary's recorders their records, no reading can tell from the path which program wrote
+# it, so an entry `function.parameter` of the same declaration names the parameter its reader is given the path by. An
+# entry naming no function the module defines at its top level, or no parameter of one, one whose return no call reads,
+# or one whose file no read in the module reads, is refused. A name names the same file as each name an assignment, an
+# assignment expression, a with target, or a parameter a call in the module fills binds it to, through each branch of a
+# conditional expression or of `and` or `or`, the path an open(), an io.open(), or a Path() is given, resolved through
+# the module's imports, and otherwise the receiver of an open() method, as `with listing.open('wb') as output` names
+# listing's file. A handle is a streaming() call, a name a scope binds to one, a parameter annotated Streaming, or an
+# attribute of self a method of the class binds to one. Output is followed through a name a scope binds to it, through
+# what keeps its text as that policy reads it, a decode() among it, through an index, a get(), or a part of a split or a
+# partition, through a JSON parse by json.loads or json_reader.loads, through a regular expression's sub(), subn(), or
+# split() of it, by re or by a pattern an re.compile() call gives or a name a scope binds to one, through a line
+# program_lines or output_lines gives, through a loop or a comprehension over any of them and a literal sequence of them
+# looped over, through the return of a function the module defines once by its name, whichever call reads it, through a
+# parameter of such a function a call in the module fills by position or by keyword, and through a parameter of a
+# function another module defines at its top level that a call fills, the call naming it through the module's imports by
+# a qualified name that ends in that module's stem and the function's name. A call through a parameter calls the
+# function the parameter's scope binds it to in exactly the form `name = name or function`, and through no other. A
+# file's or a document's own text is not a program's output, even where a program prints or carries it: a file read from
+# disk that no process start of the module is handed and no declaration names is not traced, a call whose function's
+# name has the word file among its words, as GitClient.file_at and a reader of a file at a commit have, gives a file's
+# text, and a document a program carries, as gh's JSON carries a release's or a pull request's body or git log a commit
+# message, is split where its own program ends a line, which the module states. Stated limits, not traced: a value a
+# callable the module is given returns, but through the or form; the return of a function another module defines, but a
+# declared source's; a call through the or form of a function another module defines, a declared source's included,
+# which leaves that source's declaration unread and so refused; a call of any other function, GitHubClient.json among
+# them; a method's parameter a call through self fills; a parameter an argument after a starred one fills; a file a
+# process start in another module or in a callable the module is given writes, or one a process is handed as its stdin
+# or by a path among its arguments, but a declared log; a file an attribute holds, as stdout=self.log, and one named
+# again by an expression rather than a name, as (folder / 'out.log').read_text(); a streaming handle a function returns,
+# one an attribute of anything but self holds, one an attribute of self holds in another class than the one that binds
+# it, one an annotated assignment binds to an attribute of self, and one a parameter annotated other than Streaming
+# alone holds, as Streaming | None; a field of a class another module defines, but stdout, stderr, or output, one a
+# class does not annotate in its body, and one a call fills through a starred argument or a mapping unpacked; a pattern
+# a parameter or an attribute holds, and one another module compiles, imported by name; the replacement an re.sub() is
+# given; and a regular expression's match(), search(), findall(), or finditer() of output, and a group of its match. A
+# split that must stay states why in a module-level OUTPUT_SPLIT_ALLOWED = {scope: reason}.
 OUTPUT_SPLIT_OWNERS = frozenset({LINE_SPLIT_OWNER, GIT_SEPARATOR_OWNER})
 OUTPUT_SPLIT_ALLOWANCE = "OUTPUT_SPLIT_ALLOWED"
 # A run result's streams, by any name of its type, and the output the deployer's run_tool and a skill's Completed give.
@@ -5104,7 +5109,7 @@ class _OutputFiles:
     stderr, and each file an OUTPUT_SOURCES entry `function.parameter` declares a program's log, by every name the
     module names the same file by. An assignment, an annotated assignment, an assignment expression, a with target,
     and a parameter a call in the module fills join a name to the names its value names a file by: a name, each branch
-    of a conditional expression or of `and` or `or`, the path an open() or a Path() is given, and the receiver of an
+    of a conditional expression or of `and` or `or`, the path an opener is given, and otherwise the receiver of an
     open() method, as `with listing.open("wb") as output` joins output to listing."""
 
     def __init__(self, outputs: _ProgramOutputs, tree: ast.Module, declared: Mapping[str, str]) -> None:
@@ -5143,17 +5148,19 @@ class _OutputFiles:
         }
 
     def _named(self, node: ast.expr) -> list[tuple[int, str]]:
+        """Each name an expression names a file by: a name, each branch of a conditional expression or of `and` or
+        `or`, the path an opener such as open(), io.open(), or a Path() is given, resolved through the module's imports
+        first, and otherwise the receiver of an open() method."""
         found: list[tuple[int, str]] = []
         for branch in _branches(node):
             if isinstance(branch, ast.Name):
                 found.append(self.outputs.git._key(branch, branch.id))
-            elif isinstance(branch, ast.Call) and isinstance(branch.func, ast.Attribute):
-                if branch.func.attr == FILE_OPEN_METHOD:
-                    found += self._named(branch.func.value)
-            elif (
-                isinstance(branch, ast.Call) and branch.args and self.outputs.resolver.name(branch.func) in FILE_OPENERS
-            ):
-                found += self._named(branch.args[0])
+            elif not isinstance(branch, ast.Call):
+                continue
+            elif self.outputs.resolver.name(branch.func) in FILE_OPENERS:
+                found += self._named(branch.args[0]) if branch.args else []
+            elif isinstance(branch.func, ast.Attribute) and branch.func.attr == FILE_OPEN_METHOD:
+                found += self._named(branch.func.value)
         return found
 
     def _root(self, key: tuple[int, str]) -> tuple[int, str]:
