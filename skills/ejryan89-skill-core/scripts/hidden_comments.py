@@ -65,6 +65,11 @@ from markdown_sections import (
 )
 from text_lines import LINE_BREAK, line_index, line_starts
 
+OUTPUT_SPLIT_ALLOWED = {
+    "read_comments": (
+        "reads a Markdown document as GitHub does; a commit message git log carries is that document's text"
+    ),
+}
 # The blockquote and list item markers a line opens with, read as markdown_sections' FENCE_OPENER reads the ones that
 # hold a fence, each followed by its spaces and tabs once, so the match stays linear.
 CONTAINER_MARKERS = rf"[ \t]*(?:(?:>|{LIST_MARKER}[ \t])[ \t]*)*"

@@ -100,6 +100,7 @@ from bounded_process import Streaming, isolated_git_environment, run_bounded, st
 from executable_locator import Found, located_command
 from flat_text import flat_text
 from job_tree import TreeNotEnded, process_tree
+from text_lines import output_lines as output_lines
 from text_lines import text_lines
 
 T = TypeVar("T")
@@ -680,13 +681,6 @@ def output_line(output: str) -> str:
     """The one line git wrote, with only the "\\n" that ends it taken off: never the spaces, tabs, or other
     characters str.strip() also drops, such as U+00A0 and U+2028, which a ref name or a path can hold."""
     return output.removesuffix("\n")
-
-
-def output_lines(output: str) -> list[str]:
-    """The lines git wrote, split on "\\n" alone, the one byte that ends a line of its output: never on the other
-    characters str.splitlines() breaks on, such as U+0085 and U+2028, which a ref name or a path can hold. A last
-    "\\n" ends the last line rather than starting an empty one."""
-    return output.removesuffix("\n").split("\n") if output else []
 
 
 def command_name(arguments: Sequence[str]) -> str:
