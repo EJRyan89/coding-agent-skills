@@ -2529,13 +2529,19 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
 # file's content, a model's result, or git's or gh's error text may hold a line break, and the line after it reads as a
 # fact of its own. So every stdout print in a shipped or repository skill's scripts prints text that cannot hold one: a
 # literal on one line, a name the module binds once to such a literal, or what a choke point returns,
-# ejryan89-skill-core's flat_text, fact_line, single_line, or console's failed_line; an f-string whose every value is
-# one of those; an either-or of two of them; or a join of a comprehension whose every item is one, the final pass over
-# every line. A print that must print something else, such as a Markdown report the skill shows as it is, is sanctioned
-# beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another protocol, under
-# EXIT_CONTRACT_EXEMPT, is not read.
+# ejryan89-skill-core's flat_text, fact_line, single_line, document_line, or console's failed_line; an f-string whose
+# every value is one of those; an either-or of two of them; or a join of a comprehension whose every item is one, the
+# final pass over every line. A print that must print something else, such as a Markdown report the skill shows as it
+# is, is sanctioned beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another
+# protocol, under EXIT_CONTRACT_EXEMPT, is not read.
 OUTPUT_CHOKE_POINTS = frozenset(
-    {"flat_text.flat_text", "flat_text.fact_line", "flat_text.single_line", "console.failed_line"}
+    {
+        "flat_text.flat_text",
+        "flat_text.fact_line",
+        "flat_text.single_line",
+        "flat_text.document_line",
+        "console.failed_line",
+    }
 )
 PRINT_ALLOWANCE = "PRINT_ALLOWED"
 LOCAL_PREFIX = "<local>."

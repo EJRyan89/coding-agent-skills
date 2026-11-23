@@ -66,7 +66,7 @@ import frontmatter
 import json_reader
 from console import run_main
 from file_presence import NotAFile, is_directory, is_present, matching
-from flat_text import flat_text, single_line
+from flat_text import document_line, flat_text, single_line
 from git_client import GitClient, GitError, output_line
 from markdown_sections import document_headings
 from path_containment import resolved_path, within
@@ -198,8 +198,9 @@ def print_section(root: Path, document: str, title: str) -> int:
     print(single_line(f'SECTION "{shown}" {heading.index + 1}-{heading.index + 1 + len(body)} {heading.shown()}'))
     # A document's line ends only at CR or LF, so a line separator, a form feed, or another control character it holds
     # would start a line of its own for a reader that splits at each, and the section would run past its stated range.
+    # Its tabs and trailing spaces, such as a Markdown hard break, are the document's own and print as they are.
     for line in body:
-        print(single_line(line))
+        print(document_line(line))
     return 0
 
 

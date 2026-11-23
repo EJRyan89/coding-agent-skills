@@ -1105,8 +1105,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skills/alpha/scripts/hook.py": "EXIT_CONTRACT_EXEMPT = 'answers a hook protocol'\n"
                     "def main(line):\n    print(line)\n",
                     ".claude/skills/beta/SKILL.md": "# beta\n",
-                    ".claude/skills/beta/scripts/run.py": "from flat_text import single_line\n"
-                    "def main(line):\n    print(single_line(f'KEY {line}'))\n",
+                    ".claude/skills/beta/scripts/run.py": "from flat_text import document_line, single_line\n"
+                    "def main(line):\n    print(single_line(f'KEY {line}'))\n    print(document_line(line))\n",
                 },
             )
             self.assertEqual([], skill_scripts.print_choke_point_problems(mark_skills(root)))

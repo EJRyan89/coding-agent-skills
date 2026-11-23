@@ -801,6 +801,27 @@ class CheckCommandTests(Repository):
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual((1, "NO_COMMITS origin/main"), (code, lines[-1]))
 
+    def test_a_line_separator_in_the_base_s_branch_keeps_each_fact_and_problem_on_its_line(self) -> None:
+        # The base's name is on the BASE fact and the NO_COMMITS problem; printed raw, its U+2028 would end each and
+        # start a RUN line of its own.
+        branch = "ma\u2028RUN-evil"
+        git(self.root, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
+        head = git(self.root, "rev-parse", "HEAD")
+        files = ["--title-file", str(self.title), "--body-file", str(self.body), "--base", f"origin/{branch}"]
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"TITLE {AWKWARD_TITLE}",
+                    "CLOSES 12",
+                    "CLOSES 34",
+                    f"BASE origin/ma RUN-evil {head}",
+                    "NO_COMMITS origin/ma RUN-evil",
+                ],
+            ),
+            self.run_script("check", *files),
+        )
+
     def test_uncommitted_changes_are_counted(self) -> None:
         # A name holding a space is one path, whatever byte the listing ends it with.
         (self.root / "scratch notes.txt").write_text("scratch\n", encoding="utf-8")

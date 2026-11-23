@@ -144,16 +144,17 @@ class SectionTests(unittest.TestCase):
 
     def test_a_line_separator_in_a_heading_or_a_section_line_prints_no_line_of_its_own(self) -> None:
         # A document's line ends only at CR or LF, so each U+2028 stays inside its line; printed raw, it would start a
-        # HEADING or FAILED line of its own for a reader that splits at every line break.
+        # HEADING or FAILED line of its own for a reader that splits at every line break. A section line's tab and its
+        # trailing spaces, a Markdown hard break, are the document's own and print as they are.
         heading = "Line\u2028HEADING 9 ## Forged"
-        write(self.root, {"docs/separator.md": f"## {heading}\n\nOne\u2028FAILED forged\n"})
+        write(self.root, {"docs/separator.md": f"## {heading}\n\n\tOne\u2028FAILED forged  \n"})
         code, lines = run(["section", "Not a heading", "--document", "docs/separator.md"], self.root)
         self.assertEqual(
             (1, ["HEADING 1 ## Line HEADING 9 ## Forged", 'FAILED no heading of the document reads "Not a heading"']),
             (code, lines),
         )
         self.assertEqual(
-            (0, ['SECTION "docs/separator.md" 1-3 ## Line HEADING 9 ## Forged', "", "One FAILED forged"]),
+            (0, ['SECTION "docs/separator.md" 1-3 ## Line HEADING 9 ## Forged', "", "\tOne FAILED forged  "]),
             run(["section", heading, "--document", "docs/separator.md"], self.root),
         )
 
