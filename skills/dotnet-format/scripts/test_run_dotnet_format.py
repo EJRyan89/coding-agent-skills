@@ -578,10 +578,11 @@ class MainTests(unittest.TestCase):
 
     def test_the_skill_reports_no_issues_only_when_no_file_was_refused(self) -> None:
         # A list every entry of which is refused prints `SUMMARY 0 0 -`, as below, so a zero count alone is not a clean
-        # result: the step that reports one must also see that nothing was REFUSED or UNREADABLE.
+        # result: the step that reports one must also see that nothing was REFUSED or UNREADABLE, by resolve, which
+        # refuses a changed file named as a Windows device, as by the two checks.
         skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
         (step,) = [line for line in skill.splitlines() if "no formatting issues found" in line]
-        self.assertIn("neither command printed a `REFUSED` or `UNREADABLE` line", step)
+        self.assertIn("no command printed a `REFUSED` or `UNREADABLE` line", step)
 
     def test_a_list_every_entry_of_which_is_refused_runs_nothing(self) -> None:
         self.file_list.write_text("../Outside.cs\0", encoding="utf-8")
