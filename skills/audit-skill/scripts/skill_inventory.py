@@ -46,21 +46,23 @@ that the skill's own Markdown links, directly or through another file so linked,
 loads it all the same. A skill folder whose files the audit measures, the one examined or one it depends on or invokes,
 is read through ejryan89-skill-core's tree_reader, a reader bound to that folder, which judges each path by its text and
 its links before touching it: a file or folder the folder holds through a link that leads out of it is passed over
-unread, never followed; a path it refuses otherwise ends the command with FAILED <path> cannot be examined: <reason>,
-and a file it measures that is larger than the reader's bound with FAILED cannot read <path>: <reason>. The reads the
-audit makes outside the folder by design are each stated in TREE_READ_ALLOWED with why. A linked path that leads out of
-the folder, through `..` at its start or later or through a link, to a folder or a file, that leads out of it, is an
-outside read, OUTSIDE_READ or OUTSIDE_MISSING, and so is an absolute one. A link's destination is read as CommonMark
-reads it, through ejryan89-skill-core's link_destinations: percent-decoded, between < and > with spaces, or with a
-backslash, read as the platform reads a path: a separator on Windows, part of the name elsewhere. A Markdown path named
-in prose or a code span is read as written, from where it starts to its `.md`. It starts at a line's start, after a
-blank, `(`, `[`, or `<`, or after a quote or a backtick that follows no path character, and a relative one also after an
-emphasis `*` that follows none and closes right after the `.md`, as in `*a.md*`; it may begin with ${CLAUDE_SKILL_DIR}/,
-and an absolute one opens with its root, `/`, `\\`, or a drive such as `C:\\`. Its first character, or the one after the
-root, is a word character, `.`, `%`, or `-`; the rest are those, `/`, `\\`, `+`, `@`, `~`, or `&`; and it ends at `.md`
-that is followed by none of those characters other than `.`, and by no `.` followed by one. Its `%` is part of the name,
-its backslash is read as a link's is, and an absolute one is an outside read. So a path holding another character, such
-as `'`, `=`, `#`, `;`, `,`, `:`, or `!`, is not read, nor is an absolute one that starts anywhere else, as after `=` in
+unread, never followed, a script a command runs through one included; a path it refuses otherwise ends the command with
+FAILED <path> cannot be examined: <reason>. A Markdown file it loads that is larger than the reader's bound ends it with
+FAILED cannot read <path>: <reason>, and a helper or data file so large is sized from its status and counts 0. A folder
+or file the user names through a `..` is resolved before a reader is bound to it, and named so. The reads the audit
+makes outside the folder by design are each stated in TREE_READ_ALLOWED with why. A linked path that leads out of the
+folder, through `..` at its start or later or through a link, to a folder or a file, that leads out of it, is an outside
+read, OUTSIDE_READ or OUTSIDE_MISSING, and so is an absolute one. A link's destination is read as CommonMark reads it,
+through ejryan89-skill-core's link_destinations: percent-decoded, between < and > with spaces, or with a backslash, read
+as the platform reads a path: a separator on Windows, part of the name elsewhere. A Markdown path named in prose or a
+code span is read as written, from where it starts to its `.md`. It starts at a line's start, after a blank, `(`, `[`,
+or `<`, or after a quote or a backtick that follows no path character, and a relative one also after an emphasis `*`
+that follows none and closes right after the `.md`, as in `*a.md*`; it may begin with ${CLAUDE_SKILL_DIR}/, and an
+absolute one opens with its root, `/`, `\\`, or a drive such as `C:\\`. Its first character, or the one after the root,
+is a word character, `.`, `%`, or `-`; the rest are those, `/`, `\\`, `+`, `@`, `~`, or `&`; and it ends at `.md` that
+is followed by none of those characters other than `.`, and by no `.` followed by one. Its `%` is part of the name, its
+backslash is read as a link's is, and an absolute one is an outside read. So a path holding another character, such as
+`'`, `=`, `#`, `;`, `,`, `:`, or `!`, is not read, nor is an absolute one that starts anywhere else, as after `=` in
 `--doc=/abs/a.md`; and since prose separates words with spaces, a path holding one, such as `/opt/my notes/a.md`, is
 read from after its last space. In a shell or PowerShell fence below the frontmatter, a path is read only where a file
 command, one of SHELL_FILE_COMMANDS (cat, head, tail, find, grep, rg, sed, awk, wc, or ls), reads it for the model. A
@@ -207,25 +209,25 @@ fixed rule, or a printed value taken apart), carried-state (a count, summary, or
 steps), owed-by-rules (the regenerations, gates, or follow-ups a change owes, decided by listed rules), and
 hand-drafted (a file or message written by hand from a template or from printed lines).
 
-Status lines: for a skill folder, scan reads the skill's own scripts, every script its Markdown's commands run,
-through ${CLAUDE_SKILL_DIR} or from the repository root (the nearest folder above with a .git entry), the scripts
-beside each of those, and ejryan89-skill-core's; it skips regression suites. A status word is an upper-case name of
-three or more characters, such as SKILL_FILE. A script prints every status word its strings hold, outside docstrings,
-and the FAILED line ejryan89-skill-core's run_main adds; it prints a line starting with a word when the word leads an
-f-string, a string a print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a
-word, a space, and more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with
-run_main, and 2 with argparse. A Bash script, read through the Bash grammar, holds the status words of its commands'
-words, its functions' names, and its here-documents' bodies, but none of a comment's; prints a line starting with the
-word an echo or printf command's first word after its options starts with; and exits with each code an exit command
-names, one in a trap's action included. A PowerShell script is read line by line, outside comment lines. UNPRINTED
-<file> <line> <word> is a word that leads a code span on a prose line about output (one that says print, line, output,
-report, ends with, or exit) that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file>
-<line> <code> is an exit code the prose states that no script uses.
-UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts with a word the Markdown never names,
-for a script in the skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script
-is that skill's to explain. A skill with no script of its own that runs none prints none of these.
-SCRIPT_MISSING <file> <line> <script> is a command that runs, through ${CLAUDE_SKILL_DIR} or from the repository root,
-a script that does not exist, so nothing it would print is compared.
+Status lines: for a skill folder, scan reads the skill's own scripts, every script its Markdown's commands run, through
+${CLAUDE_SKILL_DIR} or from the repository root (the nearest folder above with a .git entry), the scripts beside each of
+those, and ejryan89-skill-core's; it skips regression suites, and passes over a script named in the skill folder that a
+link leads out of, as the Files paragraph says. A status word is an upper-case name of three or more characters, such as
+SKILL_FILE. A script prints every status word its strings hold, outside docstrings, and the FAILED line
+ejryan89-skill-core's run_main adds; it prints a line starting with a word when the word leads an f-string, a string a
+print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a word, a space, and
+more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with run_main, and 2 with
+argparse. A Bash script, read through the Bash grammar, holds the status words of its commands' words, its functions'
+names, and its here-documents' bodies, but none of a comment's; prints a line starting with the word an echo or printf
+command's first word after its options starts with; and exits with each code an exit command names, one in a trap's
+action included. A PowerShell script is read line by line, outside comment lines. UNPRINTED <file> <line> <word> is a
+word that leads a code span on a prose line about output (one that says print, line, output, report, ends with, or exit)
+that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code
+the prose states that no script uses. UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts
+with a word the Markdown never names, for a script in the skill's folder or outside every skills folder, such as a
+repository tool; a sibling skill's script is that skill's to explain. A skill with no script of its own that runs none
+prints none of these. SCRIPT_MISSING <file> <line> <script> is a command that runs, through ${CLAUDE_SKILL_DIR} or from
+the repository root, a script that does not exist, so nothing it would print is compared.
 
 Runtime needs: in a skill source tree, tools derives what the skill needs through ejryan89-skill-core's
 runtime_support, as repository validation does, and prints RUNTIME_NEEDS <capability> <evidence> for each: grant
@@ -255,6 +257,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import bash_syntax
 import check_provenance
 import command_wrappers
+import dotnet_solution
 import exit_calls
 import frontmatter
 import git_subcommands
@@ -267,7 +270,7 @@ import whole_number
 from agent_skills import is_skill_file
 from bash_syntax import BashSyntaxError, Simple
 from console import run_main
-from dotnet_solution import FileRefused
+from dotnet_solution import FileRefused, lexical_absolute
 from executable_locator import RelativeEnvironmentPath, absolute_home, program_name
 from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there
 from flat_text import flat_text, single_line
@@ -783,6 +786,10 @@ TREE_READ_ALLOWED = {
         "the skill folder inventory is given, the file tools is given, or locate's plugin folder: a path the user "
         "names, asked whether it is there before any reader is bound to it, since it chooses the folder"
     ),
+    "given_path": (
+        "resolves a path the user names that holds a `..`, the skill folder, file, repository, home, or plugin folder, "
+        "before any reader is bound to it, since it chooses the folder"
+    ),
     "is_given_folder": "whether a path the user names to scan is a folder, which then has a reader bound to it",
     "not_a_file": "whether something other than a file is at a path the user names to scan, before reading it as named",
     "is_given_file": "whether a file is at a path the user names to scan, read as named, the user's own choice",
@@ -896,6 +903,18 @@ def outside_bytes(path: Path) -> bytes:
 def file_text(reader: TreeReader, path: Path) -> str | None:
     """The UTF-8 text of a file of the folder `reader` is bound to, or None for binary or undecodable content."""
     return utf8_text(reader.contents(path))
+
+
+def measured(reader: TreeReader, path: Path, kind: str) -> tuple[int, str | None]:
+    """The size and UTF-8 text of a file of the folder `reader` is bound to, of the inventory's category `kind`: a
+    helper or data file larger than the reader's bound is sized from its status, through the reader, and counts as no
+    text, since it is measured rather than loaded; a main or doc file is read whole, within the bound, or not at all."""
+    if kind not in ("main", "doc"):
+        size = reader.status(path).st_size
+        if size > dotnet_solution.READ_LIMIT_BYTES:
+            return size, None
+    data = reader.contents(path)
+    return len(data), utf8_text(data)
 
 
 def outside_text(path: Path) -> str | None:
@@ -1071,7 +1090,8 @@ def runs_repository_code(script: Path, skill: Path | None = None) -> bool:
     nothing, which validation refuses. The script is read where the runtime opens it (`named_bytes`), of the skill
     folder holding it when no skill is given."""
     folder = skill if skill is not None else script.parent
-    text = utf8_text(named_bytes(folder, opened_path(script))) if script_is_present(script) else None
+    present = not passed_over(folder, script) and script_is_present(script)
+    text = utf8_text(named_bytes(folder, opened_path(script))) if present else None
     try:
         tree = python_reader.parse(text or "")
     except python_reader.CONTENT_ERRORS:
@@ -1809,9 +1829,7 @@ def inventory(directory: Path) -> list[str]:
         relative = path.relative_to(directory)
         kind = category(relative, directory)
         has_main = has_main or kind == "main"
-        data = reader.contents(path)
-        size = len(data)
-        text = utf8_text(data)
+        size, text = measured(reader, path, kind)
         if text is None and kind in ("main", "doc"):
             # The runtime still loads it, so it has no measured cost: no FILE line, and nothing in TOTAL.
             unreadable.append(f"UNREADABLE {posix(relative)} {NOT_UTF8}")
@@ -2340,6 +2358,14 @@ def decomposes_a_value(line: str) -> bool:
         if sum(part in match.group(1) for part in VALUE_PART.findall(match.group(2))) >= 2:
             return True
     return False
+
+
+def given_path(path: Path) -> Path:
+    """A path the user names, resolved as the system opens it (`path_containment.resolved_path`) when it holds a `..`,
+    the user's own choice of where to look, before any reader is bound to it: a reader judges each path below its tree
+    as written, so a folder named through a `..` would hold no path it lets through. Any other is kept as named, so the
+    lines it prints name it as the user did."""
+    return resolved_path(path) if ".." in path.parts else path
 
 
 def is_given_folder(path: Path) -> bool:
@@ -2914,6 +2940,18 @@ def outside_scripts(folder: Path) -> list[Path]:
     return [opened_path(path) for path in sorted(folder.iterdir()) if is_script_name(path) and is_outside_file(path)]
 
 
+def passed_over(skill: Path, script: Path) -> bool:
+    """Whether a script a command names lies in the skill folder by its text, as named, which the folder's reader does
+    not touch, as when a link on its way leads out of the folder: such a script is passed over unread, as the walk
+    passes one, never read where the link leads. The folder is judged as the audit names it and as it opens."""
+    named = lexical_absolute(script)
+    for folder in dict.fromkeys((skill, opened_path(skill))):
+        reader = TreeReader(folder)
+        if within(named, reader.tree):
+            return reader.refusal(script) is not None
+    return False
+
+
 def in_skill(skill: Path, path: Path) -> Path | None:
     """`path`, as the runtime opens it (`opened_path`), named under the skill folder `skill` as the audit names it,
     when it lies in the folder, or None outside it."""
@@ -2959,9 +2997,10 @@ def command_scripts(
     folder: Path, root: Path | None, markdown: list[tuple[Path, list[str]]]
 ) -> tuple[list[Path], list[str]]:
     """The scripts the Markdown's commands run, through the skill-directory variable or from the repository root, as a
-    repository skill runs a tool: those that exist, and a SCRIPT_MISSING line for each command naming one that does
-    not. A directory in a script's place raises file_presence's NotAFile, and a stat that fails raises its OSError; a
-    name the platform cannot hold, such as one with a `?` on Windows, names no file, so it is missing."""
+    repository skill runs a tool: those that exist, and a SCRIPT_MISSING line for each command naming one that does not.
+    A script named in the skill folder that a link leads out of is passed over (`passed_over`). A directory in a
+    script's place raises file_presence's NotAFile, and a stat that fails raises its OSError; a name the platform cannot
+    hold, such as one with a `?` on Windows, names no file, so it is missing."""
     found: list[Path] = []
     missing: list[str] = []
     for path, lines in markdown:
@@ -2978,6 +3017,8 @@ def command_scripts(
                 elif root is not None and not text.startswith(("$", "~", "/")):
                     script = root / text
                 else:
+                    continue
+                if passed_over(folder, script):
                     continue
                 if script_is_present(script):
                     found.append(opened_path(script))
@@ -3522,7 +3563,7 @@ def data_settings(folders: list[Path]) -> list[tuple[str, Path, int, str]]:
             kind = category(relative, folder)
             if kind == "main" or is_suite_name(path.name):
                 continue
-            text = require_text(path, reader) if kind == "doc" else file_text(reader, path)
+            text = require_text(path, reader) if kind == "doc" else measured(reader, path, kind)[1]
             if text is None:
                 continue
             if kind == "doc":
@@ -3645,16 +3686,20 @@ def own_needs(folder: Path) -> set[str]:
     them for the skill audited."""
     path = folder / "SKILL.md"
     try:
-        # The entry the folder gives for SKILL.md, read under the name it is listed by, through the folder's reader.
+        # The entry the folder gives for SKILL.md, read under the name it is listed by.
         path = next(iter(main_files(folder)), path)
-        text = TreeReader(folder).contents(path).decode("utf-8-sig")
+    except OSError as exc:
+        raise InputError(f"cannot read {posix(path)}: {exc}") from exc
+    # Read through the folder's reader, a path it refuses or a file it does not read named as required_text names one.
+    text = required_text(path, TreeReader(folder).contents)
+    try:
         found = frontmatter.split(text_lines(text))
         if found is None:
             raise frontmatter.FrontmatterError("no frontmatter")
         document = frontmatter.Frontmatter(found[0])
         granted = parse_allowed_tools(document.value("allowed-tools")) or []
         listed = listing(document)
-    except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
+    except frontmatter.FrontmatterError as exc:
         raise InputError(f"cannot read {posix(path)}: {exc}") from exc
     metadata = read_metadata(folder.parent.parent, folder.name)
     if metadata is None and unreadable_metadata(folder.parent.parent, folder.name):
@@ -3767,19 +3812,19 @@ def main(arguments: list[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     try:
         if args.command == "locate":
-            repo = args.repo if args.repo is not None else git_toplevel(Path.cwd())
+            repo = given_path(args.repo) if args.repo is not None else git_toplevel(Path.cwd())
             # The argument as the user gave it: a name, then a plugin folder after the first space.
             name, _, folder = args.name.strip().partition(" ")
-            home = args.home if args.home is not None else user_home()
-            output = locate(name, home, repo, Path(folder.strip()) if folder.strip() else None)
+            home = given_path(args.home) if args.home is not None else user_home()
+            output = locate(name, home, repo, given_path(Path(folder.strip())) if folder.strip() else None)
         elif args.command == "inventory":
-            output = inventory(args.directory)
+            output = inventory(given_path(args.directory))
         elif args.command == "tools":
-            output = tools(args.file)
+            output = tools(given_path(args.file))
         elif args.command == "provenance":
             output = provenance(args.checks)
         else:
-            output = scan(args.paths)
+            output = scan([given_path(path) for path in args.paths])
     except InputError as exc:
         print(single_line(f"FAILED {exc}"))
         return 1

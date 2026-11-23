@@ -1,4 +1,4 @@
-"""The one reader of a tree a skill promises to read only inside, for the .NET skills.
+"""The one reader of a tree a skill promises to read only inside, for the .NET skills and audit-skill.
 
 dotnet-dependencies promises to read only inside the tree it examines, and dotnet-format only inside the repository.
 Each keeps the promise through a `TreeReader` bound to that tree: every stat, open, read, listing, and walk of a path in

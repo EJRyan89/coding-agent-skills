@@ -4213,8 +4213,10 @@ def test_scan_reads_no_file_of_the_skill_through_a_link_leading_out(tmp_path: Pa
     code, lines, error = run("scan", str(skill))
     assert (code, error) == (0, "")
     assert not [line for line in lines if "secret.md" in line or "For each item" in line]
-    # The command runs the script the link leads to, so its lines are compared as a script outside the folder's.
-    assert f"UNEXPLAINED {(outside / 'tool.py').as_posix()} 1 OUTSIDE_WORD" in lines
+    # The command names the script inside the folder, where a link leads out, so it is passed over, never read where
+    # the link leads: main compared the outside script's lines as UNEXPLAINED.
+    assert not [line for line in lines if "OUTSIDE_WORD" in line or (outside / "tool.py").as_posix() in line]
+    assert not skill_inventory.runs_repository_code(skill / "scripts" / "tool.py", skill)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
@@ -4226,29 +4228,103 @@ def test_a_skill_md_that_is_a_link_leading_out_of_its_folder_is_no_main_file(tmp
     assert skill_inventory.main_files(skill) == []
     code, lines, _ = run("inventory", str(skill))
     assert (code, "NO_MAIN" in lines) == (0, True)
+    assert run("scan", str(skill))[:2] == (1, [f"FAILED no SKILL.md in {skill.as_posix()}"])
+    assert run("tools", str(skill / "SKILL.md"))[1][-1].startswith(
+        f"FAILED {(skill / 'SKILL.md').as_posix()} cannot be examined: "
+    )
+    home = tmp_path / "home"
+    write(home / ".claude" / "skills" / "alpha" / "README.md", "")
+    (home / ".claude" / "skills" / "alpha" / "SKILL.md").symlink_to(tmp_path / "outside" / "SKILL.md")
+    code, lines, _ = run("locate", "alpha", "--home", str(home), "--repo", str(tmp_path / "skills"))
+    assert (code, lines[1], lines[-1].startswith("STOP skill 'alpha' not found")) == (1, "NOT_FOUND alpha", True)
 
 
 def test_a_scripts_folder_that_is_a_link_leading_out_is_passed_over(tmp_path: Path) -> None:
-    # link_folder makes a junction on Windows, so this runs on every platform.
+    # link_folder makes a junction on Windows, so this runs on every platform. main read the script a command runs
+    # through the link, and listed and read every script beside it there.
     write(tmp_path / "outside" / "tool.py", 'print("OUTSIDE_WORD here")\n')
+    write(tmp_path / "outside" / "other.py", 'print("BESIDE_WORD here")\n')
     skill = tmp_path / "skills" / "alpha"
-    write(skill / "SKILL.md", "---\nname: alpha\n---\nBody.\n")
+    write(skill / "SKILL.md", '---\nname: alpha\n---\n```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n')
     link_folder(tmp_path / "outside", skill / "scripts")
     assert skill_inventory.skill_scripts(skill, skill / "scripts") == []
-    assert skill_inventory.status_lines(skill) == []
+    with mock.patch.object(skill_inventory, "outside_bytes", side_effect=AssertionError("read outside")):
+        assert skill_inventory.status_lines(skill) == []
+        assert skill_inventory.command_scripts(skill, None, skill_inventory.skill_markdown(skill)) == ([], [])
 
 
-def test_a_file_of_the_skill_over_the_readers_bound_fails_naming_it(tmp_path: Path) -> None:
+def test_a_helper_or_data_file_over_the_readers_bound_is_sized_unread(tmp_path: Path) -> None:
+    # It is measured rather than loaded, so its size comes from its status through the reader, and it counts no text.
     skill = tmp_path / "skill"
     write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
-    big = write(skill / "data.bin", b"0" * 41)
+    write(skill / "data.bin", b"0" * 41)
+    write(skill / "scripts" / "big.py", 'MODEL = "haiku"\n' + "#" * 41 + "\n")
     with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
         code, lines, error = run("inventory", str(skill))
-    assert (code, error) == (1, "")
-    assert lines == [
-        f"FAILED cannot read {big.as_posix()}: the file is larger than the reader's bound of 40 bytes, "
-        "so it is not read"
+        tools_code, tools_lines, _ = run("tools", str(skill / "SKILL.md"))
+    assert (code, error, tools_code) == (0, "", 0)
+    assert [line for line in lines if line.startswith(("FILE data", "FILE helper"))] == [
+        "FILE data 41 0 data.bin",
+        "FILE helper 58 0 scripts/big.py",
     ]
+    assert not [line for line in tools_lines if line.startswith("PINNED_SUBAGENT")]
+
+
+def test_a_doc_over_the_readers_bound_fails_with_the_readers_reason(tmp_path: Path) -> None:
+    # A Markdown file the skill loads is read whole or not at all, and the reader's own reason names why.
+    skill = tmp_path / "skill"
+    write(skill / "SKILL.md", "---\nname: skill\n---\nBody.\n")
+    doc = write(skill / "references" / "big.md", "x" * 41)
+    reason = "the file is larger than the reader's bound of 40 bytes, so it is not read"
+    with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 40):
+        with pytest.raises(skill_inventory.InputError) as caught:
+            skill_inventory.require_text(doc)
+        assert str(caught.value) == f"cannot read {doc.as_posix()}: {reason}"
+        assert run("inventory", str(skill))[:2] == (1, [f"FAILED cannot read {doc.as_posix()}: {reason}"])
+        assert run("scan", str(skill))[:2] == (1, [f"FAILED cannot read {doc.as_posix()}: {reason}"])
+
+
+def test_own_needs_names_a_path_the_reader_refuses_once(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "alpha"
+    main = write(skill / "SKILL.md", "---\nname: alpha\n---\nBody.\n")
+    refused = tree_reader.TreeRefused(main, "a reason")
+    with (
+        mock.patch.object(tree_reader.TreeReader, "contents", side_effect=refused),
+        pytest.raises(skill_inventory.InputError) as caught,
+    ):
+        skill_inventory.own_needs(skill)
+    assert str(caught.value) == f"{main.as_posix()} cannot be examined: a reason"
+
+
+def test_a_path_the_user_names_through_a_dot_dot_is_resolved_before_the_reader_reads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reader judges a path below its tree as written, so each of these failed with a `..` in the folder's name.
+    repo = tmp_path / "repo"
+    write(repo / "deploy-meta" / "alpha.json", "{}")
+    skill = write(repo / "skills" / "alpha" / "SKILL.md", "---\nname: alpha\n---\nBody.\n").parent
+    write(repo / "skills" / "beta" / "SKILL.md", "---\nname: beta\n---\nBody.\n")
+    plugin = tmp_path / "out" / "demo"
+    write(plugin / skill_menu.PLUGIN_MANIFEST, json.dumps({"name": "demo"}))
+    write(plugin / "skills" / "gamma" / "SKILL.md", "---\nname: gamma\n---\nBody.\n")
+    (tmp_path / "home").mkdir()
+    monkeypatch.chdir(repo / "skills" / "beta")
+    for arguments in (
+        ("inventory", "../alpha"),
+        ("inventory", str(repo / "skills" / "beta" / ".." / "alpha")),
+        ("tools", "../alpha/SKILL.md"),
+        ("scan", "../alpha"),
+    ):
+        code, lines, _ = run(*arguments)
+        assert (code, [line for line in lines if line.startswith("FAILED")]) == (0, []), arguments
+    home = str(tmp_path / "home")
+    code, lines, _ = run("locate", "alpha", "--repo", "../..", "--home", home)
+    assert (code, lines[1:]) == (
+        0,
+        [f"SKILL_FILE {(skill / 'SKILL.md').as_posix()}", f"SKILL_DIR {skill.as_posix()}", "SCOPE source"],
+    )
+    code, lines, _ = run("locate", "demo:gamma ../../../out", "--repo", str(repo), "--home", home)
+    assert (code, lines[-1]) == (0, f"PLUGIN demo {plugin.as_posix()}")
 
 
 def test_a_refusal_of_the_reader_fails_naming_the_path_and_why(tmp_path: Path) -> None:
