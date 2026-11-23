@@ -680,6 +680,16 @@ class TypeChecksCommandTests(Repository):
             self.type_checks(),
         )
 
+    def test_a_line_separator_in_the_base_s_branch_prints_no_line_of_its_own(self) -> None:
+        # Git takes U+2028 in a branch's name; printed raw, it would end the BASE line and start a RUN line of its own.
+        branch = "ma\u2028RUN-evil"
+        git(self.root, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
+        base = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(
+            (0, [f"BASE origin/ma RUN-evil {base}", "NO_TYPE_CHECK"]),
+            self.run_script("type-checks", "--base", f"origin/{branch}"),
+        )
+
     def test_a_python_file_the_base_holds_and_the_branch_does_not_reaches_nothing(self) -> None:
         # Only the files changed since the merge base count, so a base that moved on adds none of its own.
         other = self.temporary / "other"
@@ -728,6 +738,15 @@ class TypeChecksCommandTests(Repository):
 def test_a_job_name_holding_a_single_quote_is_refused_rather_than_quoted() -> None:
     with pytest.raises(pull_request.PullRequestError, match="single quote"):
         pull_request.run_command(["static type check (mypy skills/it's/scripts)"])
+
+
+@pytest.mark.parametrize("character", ["\n", "\u2028", "\t", "\x1b"])
+def test_a_job_name_holding_a_line_break_or_a_control_character_is_refused_rather_than_flattened(
+    character: str,
+) -> None:
+    # Flattened onto the RUN line, the name would select another job, or none.
+    with pytest.raises(pull_request.PullRequestError, match="line break or a control character"):
+        pull_request.run_command([f"static type check (mypy skills/a{character}b/scripts)"])
 
 
 def test_this_repository_s_roots_map_to_the_jobs_continuous_integration_runs() -> None:
@@ -781,6 +800,27 @@ class CheckCommandTests(Repository):
         git(self.root, "reset", "--quiet", "--hard", "origin/main")
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual((1, "NO_COMMITS origin/main"), (code, lines[-1]))
+
+    def test_a_line_separator_in_the_base_s_branch_keeps_each_fact_and_problem_on_its_line(self) -> None:
+        # The base's name is on the BASE fact and the NO_COMMITS problem; printed raw, its U+2028 would end each and
+        # start a RUN line of its own.
+        branch = "ma\u2028RUN-evil"
+        git(self.root, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
+        head = git(self.root, "rev-parse", "HEAD")
+        files = ["--title-file", str(self.title), "--body-file", str(self.body), "--base", f"origin/{branch}"]
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"TITLE {AWKWARD_TITLE}",
+                    "CLOSES 12",
+                    "CLOSES 34",
+                    f"BASE origin/ma RUN-evil {head}",
+                    "NO_COMMITS origin/ma RUN-evil",
+                ],
+            ),
+            self.run_script("check", *files),
+        )
 
     def test_uncommitted_changes_are_counted(self) -> None:
         # A name holding a space is one path, whatever byte the listing ends it with.

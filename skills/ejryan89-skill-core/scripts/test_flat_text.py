@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from flat_text import REASON_CHARACTERS, fact_line, flat_text, reason_line, single_line
+from flat_text import REASON_CHARACTERS, document_line, fact_line, flat_text, reason_line, single_line
 
 
 def code_points(text: str) -> str:
@@ -100,3 +101,25 @@ def test_a_control_character_never_reaches_the_terminal(text: str, expected: str
 )
 def test_each_run_of_line_breaks_and_controls_becomes_one_space(text: str, expected: str) -> None:
     assert expected == single_line(text)
+
+
+class DocumentLineTests(unittest.TestCase):
+    def test_tabs_spaces_and_trailing_spaces_are_kept(self) -> None:
+        # Two trailing spaces are a Markdown hard break, and a tab may indent a code block.
+        self.assertEqual("\tcode  x\t  ", document_line("\tcode  x\t  "))
+        self.assertEqual("", document_line(""))
+
+    def test_each_line_break_and_other_control_but_the_tab_is_one_space_and_the_length_is_kept(self) -> None:
+        # Every character str.splitlines breaks at, and every C0 and C1 control but the tab, named by Unicode's own
+        # tables rather than by the pattern under test.
+        unsafe = [
+            chr(code)
+            for code in range(0x3000)
+            if code != 0x09 and (unicodedata.category(chr(code)) == "Cc" or len(f"a{chr(code)}b".splitlines()) == 2)
+        ]
+        self.assertIn("\u2028", unsafe)
+        self.assertIn("\x1b", unsafe)
+        for character in unsafe:
+            with self.subTest(character=code_points(character)):
+                self.assertEqual("a b", document_line(f"a{character}b"))
+        self.assertEqual("a    b ", document_line("a\r\n\u2028\x1bb\x85"))
