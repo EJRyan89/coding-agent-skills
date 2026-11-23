@@ -1541,6 +1541,28 @@ removed fails validation until its pattern follows it.
   as `_version_from_name(path)` in a comprehension over `iterdir()`.
 - **Examples:** #2716, #2771
 
+### A walk of a folder a user names leaves out what the operating system writes there itself
+
+- **Rule:** A walk or listing of a folder a user names leaves out the files the operating system writes beside the
+  user's own, recognizing each by its place and its content, never by its name alone, and keeps any other file of that
+  name as the user's.
+- **Why:** macOS writes an AppleDouble `._<name>` sidecar beside each file and folder it sets an attribute on, on a
+  FAT, exFAT, or SMB volume, so a walk that reads every name it matches reads a binary file as a project, an
+  instruction file, or a part of a skill; and `._<name>` is a legal name everywhere, so a skip by name alone drops the
+  user's own file.
+- **Use:** `apple_double:is_sidecar`, the one test of a sidecar given its folder's listing, and
+  `folder_walk:is_sidecar_entry`, which applies it to a listed entry that is a regular file by its own metadata, so no
+  link, pipe, or device is opened to decide.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_folder_walk.py::SidecarTests`,
+  `skills/ejryan89-skill-core/scripts/test_apple_double.py::SidecarTests`, and
+  `skills/ejryan89-code-review-core/scripts/test_review_canary.py::FixtureChangeTests::test_an_apple_double_sidecar_beside_its_file_or_folder_is_left_out_and_any_other_dot_underscore_file_kept`
+- **Search for:** `os.scandir(`, `.iterdir()`, `os.walk(`, `.rglob(`, and `file_presence.matching(` over a folder a
+  user names, whose names are matched by `fnmatch.fnmatch(`, `.endswith(`, or a `lambda _name: True`, with no
+  `is_sidecar` beside it, as `file_presence.matching`'s `*.md` and `*.json` globs, audit-skill's `listed_entries` and
+  `folder_scripts`, and audit-ai-config's `list_directory` still do (#3131); and a skip of `name.startswith("._")`
+  with no header read, which drops the user's own file.
+- **Examples:** #3109, #3111, #3131
+
 ### A grant is earned by a step that names its tool
 
 - **Rule:** A skill's `allowed-tools` grant counts only for a tool one of its steps names.
