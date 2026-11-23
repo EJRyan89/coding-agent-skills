@@ -11,7 +11,7 @@ import itertools
 import re
 import unittest
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -65,8 +65,11 @@ from powershell_commands import command_words as powershell_command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from python_checks import (
     PRINTS,
+    _arguments_by_parameter,
+    _called_key,
     _environment_argument,
     _process_start,
+    _top_functions,
     git_client_classes,
     reaches,
     sanctioned_problems,
@@ -85,6 +88,7 @@ from validation_support import (
     AttributeLookup,
     CallableResolver,
     UnreadablePython,
+    _NameScope,
     attribute_lookups,
     bound_values,
     call_argument,
@@ -2533,10 +2537,19 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
 # every value is one of those; an either-or of two of them; or a join of a comprehension whose every item is one, the
 # final pass over every line. A print that must print something else, such as a Markdown report the skill shows as it
 # is, is sanctioned beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another
-# protocol, under EXIT_CONTRACT_EXEMPT, is not read. Two limits: a print passed as an argument and called through the
-# parameter that takes it is not read; and document_line keeps a tab, so a tab-separated fact line printed through it
-# may gain a field, which this policy cannot tell from a document's own line, so document_line is for a document's own
-# lines alone.
+# protocol, under EXIT_CONTRACT_EXEMPT, is not read. A print passed as an argument, by position or by keyword, is
+# followed into the parameter that takes it of a function, or of a class's __init__, that the module or another module
+# defines at its top level, the other module's named through the module's imports, and on through each call that passes
+# that parameter on and each attribute of self a method of the class binds to it; a call through any of them is a stdout
+# print. A module a call names by its stem is the one in the caller's own scripts folder, in ejryan89-skill-core's, or
+# in a skill_deps dependency's, in that order, as Python's import finds it, and each module of that stem where none
+# holds it. Limits: a print a function returns, a container holds, or functools.partial binds is not followed, nor one a
+# method's parameter takes, a call through self or any other receiver filling it, one an __init__ the class's own body
+# does not define takes, as a dataclass's generated one or a base class's, one **kwargs takes, one a nested function's
+# parameter takes, or one a name binds conditionally, as emit = emit or print, nor an attribute stored on or read on
+# anything but a method's own self, nor sys.stdout.write passed as a value; and document_line keeps a tab, so a
+# tab-separated fact line printed through it may gain a field, which this policy cannot tell from a document's own line,
+# so document_line is for a document's own lines alone.
 OUTPUT_CHOKE_POINTS = frozenset(
     {
         "flat_text.flat_text",
@@ -2559,12 +2572,205 @@ def _one_line_literal(node: ast.expr) -> bool:
 
 
 @dataclass(frozen=True)
+class _Callee:
+    """A callable a call fills: a function a module defines at its top level, or the __init__ of a class it defines
+    there, which a call of the class fills from its second parameter on, after self."""
+
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+    bound: bool
+
+    def filled(self, call: ast.Call) -> Iterator[tuple[ast.arg, ast.expr]]:
+        """Each parameter a call fills, with the argument it fills it with."""
+        if not self.bound:
+            return _arguments_by_parameter(self.function, call)
+        receiver = ast.Constant(None)
+        shifted = ast.Call(func=call.func, args=[receiver, *call.args], keywords=call.keywords)
+        return (pair for pair in _arguments_by_parameter(self.function, shifted) if pair[1] is not receiver)
+
+
+def _callees(tree: ast.Module) -> dict[str, _Callee]:
+    """Each function a module defines at its top level, and each class there whose own body defines __init__, by
+    name."""
+    found = {name: _Callee(function, bound=False) for name, function in _top_functions(tree).items()}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            for method in node.body:
+                if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef) and method.name == "__init__":
+                    found[node.name] = _Callee(method, bound=True)
+    return found
+
+
+class _PassedPrints:
+    """Where a module's calls reach print by a parameter or an attribute rather than by a name the module's imports
+    and bindings give print: each parameter of a callable the module defines at its top level that a call passes
+    print, and each attribute of self a method of a class the module defines binds to print. print is what the
+    module's resolver reads as print, a name the module binds once to a name or an attribute that holds it, or a
+    parameter or an attribute this reader has found holds it."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver, name: str) -> None:
+        self.resolver = resolver
+        self.stem = PurePosixPath(name).stem
+        self.folder = PurePosixPath(name).parent
+        self.callees = _callees(tree)
+        self.parameters: set[tuple[int, str]] = set()
+        self.attributes: set[tuple[int, str]] = set()
+        # Each method's own receiver, its first parameter, by the scope that binds it, with the class it belongs to.
+        self.receivers: dict[tuple[int, str], int] = {}
+        nodes = list(ast.walk(tree))
+        for node in nodes:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for method in node.body:
+                if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef) and (
+                    positional := [*method.args.posonlyargs, *method.args.args]
+                ):
+                    self.receivers[(id(resolver.scopes[id(positional[0])]), positional[0].arg)] = id(node)
+        self.calls = [node for node in nodes if isinstance(node, ast.Call)]
+        self.stores = [
+            (target, node.value)
+            for node in nodes
+            if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            if isinstance(target, ast.Attribute)
+        ]
+
+    def _owner(self, node: ast.Name) -> _NameScope | None:
+        """The scope that owns the name a node reads, or None."""
+        scope = self.resolver.scopes.get(id(node))
+        return scope.owner(node.id) if scope is not None else None
+
+    def _holder(self, node: ast.Attribute) -> int | None:
+        """The class whose method's own receiver an attribute is read on, or None for any other receiver."""
+        receiver = node.value
+        if not isinstance(receiver, ast.Name) or (owner := self._owner(receiver)) is None:
+            return None
+        return self.receivers.get((id(owner), receiver.id))
+
+    def prints(self, node: ast.expr) -> bool:
+        """Whether an expression stands for print."""
+        if self.resolver.name(node) in PRINTS:
+            return True
+        seen: set[int] = set()
+        while isinstance(node, ast.Name) and id(node) not in seen:
+            seen.add(id(node))
+            owner = self._owner(node)
+            if owner is None:
+                return False
+            if (id(owner), node.id) in self.parameters:
+                return True
+            values = owner.bindings[node.id]
+            if len(values) != 1 or not isinstance(values[0], ast.Name | ast.Attribute):
+                return False
+            node = values[0]
+        if not isinstance(node, ast.Attribute):
+            return False
+        holder = self._holder(node)
+        return holder is not None and (holder, node.attr) in self.attributes
+
+    def seed(self, function: str, parameter: str) -> bool:
+        """Record that a parameter of a callable the module defines holds print, and whether it was not yet known."""
+        callee = self.callees.get(function)
+        arguments = callee.function.args if callee is not None else None
+        found = [] if arguments is None else [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        for argument in found:
+            if argument.arg == parameter:
+                key = (id(self.resolver.scopes[id(argument)]), parameter)
+                if key in self.parameters:
+                    return False
+                self.parameters.add(key)
+                return True
+        return False
+
+    def _called(
+        self, call: ast.Call, imported: Callable[[str], Sequence[_PassedPrints]]
+    ) -> list[tuple[_PassedPrints, str, _Callee]]:
+        """The callable a call names, with the module that defines it at its top level and its name: the module's own,
+        or another module's, named through the module's imports by a qualified name that ends in that module's stem
+        and the callable's name, as `imported` finds the module of that stem; none for a call of anything else."""
+        qualified = self.resolver.name(call.func)
+        local = qualified.removeprefix(LOCAL_PREFIX)
+        if local != qualified:
+            key = None if "." in local else (self.stem, local)
+            owners: Sequence[_PassedPrints] = [self]
+        else:
+            key = _called_key(qualified)
+            owners = imported(key[0]) if key is not None else []
+        if key is None:
+            return []
+        return [(owner, key[1], callee) for owner in owners if (callee := owner.callees.get(key[1])) is not None]
+
+    def settle(self, imported: Callable[[str], Sequence[_PassedPrints]]) -> list[tuple[_PassedPrints, str, str]]:
+        """Follow print through the module's calls and stores until they find nothing new, and return each parameter
+        of a callable another module defines that a call here passes print, as that module's reader, the callable's
+        name, and the parameter's."""
+        passed: list[tuple[_PassedPrints, str, str]] = []
+        changed = True
+        while changed:
+            changed = False
+            for call in self.calls:
+                for owner, name, callee in self._called(call, imported):
+                    for parameter, given in callee.filled(call):
+                        if not self.prints(given):
+                            continue
+                        if owner is self:
+                            changed = self.seed(name, parameter.arg) or changed
+                        else:
+                            passed.append((owner, name, parameter.arg))
+            for target, value in self.stores:
+                holder = self._holder(target)
+                if holder is not None and (holder, target.attr) not in self.attributes and self.prints(value):
+                    self.attributes.add((holder, target.attr))
+                    changed = True
+        return passed
+
+
+def _import_folders(root: Path, folder: PurePosixPath) -> list[PurePosixPath]:
+    """The folders a skill's script imports a module from by its bare name, in the order Python finds it: the script's
+    own folder, ejryan89-skill-core's scripts, which every dependent puts on its path, and the scripts of each skill
+    its skill_deps reach."""
+    core = PurePosixPath("skills", SKILL_CORE, "scripts")
+    skill = folder.parent
+    dependencies = skill_dependency_closure(root, skill.name) if skill.parent == PurePosixPath("skills") else []
+    return [folder, core, *(PurePosixPath("skills", name, "scripts") for name in dependencies)]
+
+
+def _passed_prints(root: Path, modules: Sequence[tuple[str, ast.Module, CallableResolver]]) -> dict[str, _PassedPrints]:
+    """Each module's passed prints by its name, each parameter a call in another module passes print seeded, read
+    again until no module seeds a parameter of another's it had not. A module another names by its stem is the one
+    the first of _import_folders holding that stem holds, or, where none does, each module of that stem."""
+    readers = {name: _PassedPrints(tree, resolver, name) for name, tree, resolver in modules}
+    placed = {(reader.folder, reader.stem): reader for reader in readers.values()}
+    by_stem: dict[str, list[_PassedPrints]] = defaultdict(list)
+    for reader in readers.values():
+        by_stem[reader.stem].append(reader)
+    folders = {folder: _import_folders(root, folder) for folder in {reader.folder for reader in readers.values()}}
+
+    def importer(reader: _PassedPrints) -> Callable[[str], Sequence[_PassedPrints]]:
+        def imported(stem: str) -> Sequence[_PassedPrints]:
+            found = next((placed[key] for folder in folders[reader.folder] if (key := (folder, stem)) in placed), None)
+            return [found] if found is not None else by_stem.get(stem, [])
+
+        return imported
+
+    pending = list(readers.values())
+    while pending:
+        stale: dict[int, _PassedPrints] = {}
+        for reader in pending:
+            for other, function, parameter in reader.settle(importer(reader)):
+                if other.seed(function, parameter):
+                    stale[id(other)] = other
+        pending = list(stale.values())
+    return readers
+
+
+@dataclass(frozen=True)
 class _OutputReader:
-    """Reads what a module's stdout prints print: its imports and bindings, and the module's own stem, so a choke
-    point's own module calls it by its bare name."""
+    """Reads what a module's stdout prints print: its imports and bindings, the module's own stem, so a choke point's
+    own module calls it by its bare name, and the parameters and attributes print is passed into."""
 
     resolver: CallableResolver
     stem: str
+    passed: _PassedPrints
 
     def name(self, node: ast.expr) -> str:
         qualified = self.resolver.name(node)
@@ -2612,7 +2818,7 @@ class _OutputReader:
     def printed(self, node: ast.Call) -> list[ast.expr] | None:
         """What a call prints on stdout, or None when it is no stdout print: print, under either name the builtins
         give it, given no file or sys.stdout, with its separator and its end, or a write to sys.stdout."""
-        if self.resolver.name(node.func) in PRINTS:
+        if self.passed.prints(node.func):
             stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
             if (
                 stream is not None
@@ -2641,10 +2847,12 @@ def print_choke_point_problems(root: Path) -> list[str]:
         for path in file_presence.matching(scripts, "*.py")
         if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
     )
-    for path, name, tree in python_trees(paths, root, problems):
+    modules = [(name, tree, CallableResolver(tree)) for _, name, tree in python_trees(paths, root, problems)]
+    passed = _passed_prints(root, modules)
+    for name, tree, resolver in modules:
         if _contract_exemption(tree):
             continue
-        reader = _OutputReader(CallableResolver(tree), path.stem)
+        reader = _OutputReader(resolver, PurePosixPath(name).stem, passed[name])
         found = [
             (
                 node.lineno,

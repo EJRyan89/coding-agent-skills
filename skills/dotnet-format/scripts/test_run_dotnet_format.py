@@ -1165,10 +1165,9 @@ class OneLineFactTests(unittest.TestCase):
             formatter.parse_diagnostics(log, self.root),
         )
         runs = formatter.Runs([names, ["src/Later.cs"]], [log.encode()], 1, "stopped")
-        self.assertEqual(
-            [*(f"SAVED\t{flat_text(name)}" for name in names), "UNFINISHED\tsrc/Later.cs"],
-            formatter.unfinished_fix_lines(runs, self.root),
-        )
+        reported: list[str] = []
+        formatter.report_unfinished_fix(runs, self.root, reported.append)
+        self.assertEqual([*(f"SAVED\t{flat_text(name)}" for name in names), "UNFINISHED\tsrc/Later.cs"], reported)
         status, lines = self.run_formatter("check", file_list, FakeRunner(2, log))
         self.assertEqual(1, status)
         self.assertEqual(
@@ -1183,10 +1182,9 @@ class OneLineFactTests(unittest.TestCase):
         runs = formatter.Runs(
             [["src/A.cs", "src/Clean.cs"], ["src/B.cs"], ["src/C.cs"]], [found("src/A.cs"), found("src/B.cs")], 2, "x"
         )
-        self.assertEqual(
-            ["SAVED\tsrc/A.cs", "SAVED\tsrc/B.cs", "UNFINISHED\tsrc/C.cs"],
-            formatter.unfinished_fix_lines(runs, self.root),
-        )
+        reported: list[str] = []
+        formatter.report_unfinished_fix(runs, self.root, reported.append)
+        self.assertEqual(["SAVED\tsrc/A.cs", "SAVED\tsrc/B.cs", "UNFINISHED\tsrc/C.cs"], reported)
 
     def test_a_file_list_path_holding_a_line_separator_fails_on_one_line(self) -> None:
         file_list = self.root / "files\u2028STOP.txt"
