@@ -1979,3 +1979,64 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     expected = [f"{folder}: {TREE_READ_SKILLS_PROBLEM}" for folder in TREE_READ_SKILLS]
     assert tree_read_findings({"README.md": "no scripts\n"}) == expected
     assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}) == expected
+
+
+# Every path method that reads, named as literals rather than taken from the policy's tables, so a change to those
+# tables or to call_tables' TEXT_METHODS that drops one fails here. Those taking an argument are called with one.
+READING_PATH_METHODS_WITH_ARGUMENT = ("read_text", "open", "glob", "rglob", "walk", "samefile")
+READING_PATH_METHODS_BARE = (
+    "open",
+    "read_text",
+    "read_bytes",
+    "stat",
+    "lstat",
+    "exists",
+    "is_file",
+    "is_dir",
+    "is_mount",
+    "is_symlink",
+    "is_junction",
+    "is_socket",
+    "is_fifo",
+    "is_block_device",
+    "is_char_device",
+    "iterdir",
+    "readlink",
+    "owner",
+    "group",
+    "resolve",
+)
+
+
+def test_tree_read_policy_refuses_each_path_method_that_reads_on_any_receiver() -> None:
+    calls = [f"    path.{method}('x')\n" for method in READING_PATH_METHODS_WITH_ARGUMENT]
+    calls += [f"    path.{method}()\n" for method in READING_PATH_METHODS_BARE]
+    # A path built from anything but __file__ is no exemption, so its resolve() is a read.
+    calls.append("    Path(folder).resolve()\n")
+    source = "from pathlib import Path\ndef read(path, folder):\n" + "".join(calls)
+    found = tree_read_findings({f"{SCRIPTS}/methods.py": source})
+    methods = [*READING_PATH_METHODS_WITH_ARGUMENT, *READING_PATH_METHODS_BARE, "resolve"]
+    assert found == [
+        f"{SCRIPTS}/methods.py:{line} reads a path with Path.{method}; {TREE_READ_ADVICE}"
+        for line, method in enumerate(methods, start=3)
+    ]
+
+
+def test_tree_read_policy_refuses_a_read_passed_as_a_value_and_passes_another_callable() -> None:
+    # A read handed to another call reads each path it is given: a module function, one imported by name, and a path
+    # method named unbound on its class. A callable that reads no path, passed the same way, passes.
+    source = (
+        "import os\n"
+        "from os import stat\n"
+        "from pathlib import Path\n"
+        "def read(paths):\n"
+        "    list(map(os.stat, paths))\n"
+        "    sorted(paths, key=stat)\n"
+        "    list(map(Path.exists, paths))\n"
+        "    return sorted(map(str, paths), key=len)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/values.py": source})
+    assert found == [
+        f"{SCRIPTS}/values.py:{line} reads a path with {read}; {TREE_READ_ADVICE}"
+        for line, read in ((5, "os.stat"), (6, "os.stat"), (7, "Path.exists"))
+    ]
