@@ -1158,10 +1158,11 @@ class ResolveTests(unittest.TestCase):
         self.assertNotIn(str(outside), [name for name, _ in touched])
 
     @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
-    def test_a_changed_file_or_folder_named_as_a_windows_device_is_formatted_where_the_system_allows_it(self) -> None:
+    def test_a_changed_file_or_folder_named_as_a_windows_device_is_resolved_where_the_system_allows_it(self) -> None:
         # Con.cs and the folder Aux are ordinary names on Linux and macOS. A name git lists or the search finds is
-        # judged by its links alone, so neither the changed files nor the solution in Tools/Aux ends the run; the
-        # device-name rule is for a path a file names, such as a solution's entry.
+        # judged by its links alone, so resolve lists the changed files and chooses the solution in Tools/Aux, as on
+        # main; the device-name rule is for a path a file names, such as a solution's entry. The formatter and the
+        # layout checker still refuse such a FILE_LIST entry or --solution, as on main.
         repo = self.repository
         repo.write("App/App.csproj", SDK_PROJECT)
         repo.write("App/Con.cs")

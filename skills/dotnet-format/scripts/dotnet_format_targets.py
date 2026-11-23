@@ -88,7 +88,7 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from ordinal_case import has_suffix, ordinal_fold
 from path_containment import resolved_path, within
-from tree_reader import TreeReader, TreeRefused
+from tree_reader import TreeReader
 from xml_reader import XmlRefused, read_xml
 
 # An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
@@ -433,8 +433,6 @@ def still_there(root: Path, name: str) -> bool:
         raise Failed(f"the changed file {name} cannot be examined: {refused}")
     try:
         return TreeReader(root).present(root / name)
-    except TreeRefused as error:
-        raise Failed(f"the changed file {name} cannot be examined: {error.reason}") from None
     except OSError as error:
         raise Failed(f"the changed file {name} cannot be examined: {error}") from None
 
@@ -444,15 +442,14 @@ def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> lis
     anything else by such a name is none, and so is every file of a folder that is not there. Raises Failed for a
     folder it cannot list, or such an entry it cannot examine, which could be one; it lists with iterdir, which raises
     there, where glob matches nothing. Such an entry that is a link leading outside `root` (`linked_out_refusal`) is
-    one it cannot examine, and is never stat, so a project or solution behind it is never read; so is the folder itself
-    when a link on its way leads outside `root`, which is never listed."""
+    one it cannot examine, and is never stat, so a project or solution behind it is never read. Its callers take
+    `folder` from `TreeReader.climb`, which judged the path the climb started from, and every folder above that path
+    inside `root` passes the same judgement."""
     reader = TreeReader(root)
     try:
         entries = reader.listing(folder)
     except ABSENT:
         return []
-    except TreeRefused as error:
-        raise Failed(str(error)) from None
     except OSError as error:
         raise Failed(f"{folder} cannot be listed: {error}") from None
     found = []
@@ -467,8 +464,6 @@ def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> lis
                 found.append(path)
         except NotAFile:
             continue
-        except TreeRefused as error:
-            raise Failed(str(error)) from None
         except OSError as error:
             raise Failed(f"{path} cannot be examined: {error}") from None
     return found

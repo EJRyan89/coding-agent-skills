@@ -1203,9 +1203,10 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # a renamed or emptied folder is never read as conforming. Stated limits: a read reached by a name computed at run
 # time, as getattr(path, name); a path method a module's own function wraps under another name; a path method called
 # unbound on its class with the path as its argument, as Path.exists(path); a call in a module that imports both os
-# and os.path, which the shared resolver leaves unnamed; and an ejryan89-skill-core helper that reads a path but is
-# not in TREE_READ_HELPERS, such as path_containment.refusal, until the list is derived from the core modules' own
-# reads.
+# and os.path, which the shared resolver leaves unnamed; a module read DIRECT_TREE_READS does not list, such as
+# zipfile.is_zipfile, zipfile.Path, shutil.disk_usage, shutil.unpack_archive, or os.pathconf; and an
+# ejryan89-skill-core helper that reads a path but is not in TREE_READ_HELPERS, such as path_containment.refusal,
+# until the list is derived from the core modules' own reads.
 TREE_READ_SKILLS = ("skills/dotnet-format/scripts",)
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.

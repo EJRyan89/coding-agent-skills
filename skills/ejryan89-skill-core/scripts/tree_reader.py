@@ -31,12 +31,12 @@ and examine the name from its own metadata, as MSBuild's `Exists()` and a writer
 leading out, and its text otherwise, since the key's case probe lists each folder on the path.
 
 Limits: deciding whether a path lies in the tree asks `path_keys` how the tree's own folders and the folders above them
-compare names, which lists each of those folders, the tree's parent included, and looks up one entry's own metadata
-without following it, so a sibling of the tree may be looked up but is never followed, listed, or read; every `within`
-call does this, before the reader as after it; the look at a path's links and its read are two steps, so a name replaced
-by a link between them is read through; a hard link is the file itself, read as a file of the tree wherever its other
-names lie; and a link whose absolute target names a place inside the tree through another spelling of it, such as
-macOS's /tmp for /private/tmp, is refused, though it leads inside.
+compare names, which lists each of those folders, the tree's parent included, and looks up one entry and its
+case-swapped name, from their own metadata without following either, so a sibling of the tree may be looked up but is
+never followed, listed, or read; every `within` call does this, before the reader as after it; the look at a path's
+links and its read are two steps, so a name replaced by a link between them is read through; a hard link is the file
+itself, read as a file of the tree wherever its other names lie; and a link whose absolute target names a place inside
+the tree through another spelling of it, such as macOS's /tmp for /private/tmp, is refused, though it leads inside.
 """
 
 from __future__ import annotations
@@ -173,8 +173,9 @@ class TreeReader:
         return walk_files(self.judged(top), wanted, skipped=skipped, prune=prune, limit=limit, tree=self.tree)
 
     def climb(self, start: Path) -> Iterator[Path]:
-        """`start`, a judged path inside the tree, and each folder above it up to the tree's top, nearest first, keyed
-        as `folders_up` keys them, so no folder above the tree is listed to compare it."""
+        """`start`, a judged path inside the tree, and each folder above it up to the tree's top, nearest first, as
+        `folders_up` gives them, so the climb never leaves the tree; keying each folder asks `path_keys` about the
+        folders on its way, as the module's first limit states."""
         return folders_up(self.judged(start), self.tree)
 
     def key(self, path: Path) -> str:

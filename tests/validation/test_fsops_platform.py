@@ -1963,7 +1963,13 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
     unbound = "from pathlib import Path\ndef read(path):\n    return Path.exists(path)\n"
     both = "import os\nimport os.path\ndef read(path):\n    return os.stat(path)\n"
     helper = "import path_containment\ndef read(entry, tree):\n    return path_containment.refusal(entry, tree)\n"
-    files = {f"{SCRIPTS}/unbound.py": unbound, f"{SCRIPTS}/both.py": both, f"{SCRIPTS}/helper.py": helper}
+    unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
+    files = {
+        f"{SCRIPTS}/unbound.py": unbound,
+        f"{SCRIPTS}/both.py": both,
+        f"{SCRIPTS}/helper.py": helper,
+        f"{SCRIPTS}/unlisted.py": unlisted,
+    }
     assert tree_read_findings(files) == []
 
 
