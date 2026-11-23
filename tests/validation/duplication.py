@@ -1372,6 +1372,9 @@ PATH_FORM_METHODS = frozenset({"resolve", "absolute", "as_posix", "expanduser"})
 # The calls that tell whether two paths are one, by their last name: a function given both, or a path's own method
 # given the other.
 PATH_SAMENESS = frozenset({"same_path", "samefile"})
+# The functions that walk up a path's parents, by their last name: ejryan89-skill-core's `folders_up`, which gives its
+# start first, then each folder above it.
+PARENT_WALKS = frozenset({"folders_up"})
 
 
 def _last_item(value: ast.expr) -> ast.expr | None:
@@ -1418,11 +1421,6 @@ def _never(_: ast.expr) -> bool:
 def _last_name(dotted: str) -> str:
     """The last name of a dotted name, as `fspath` of `os.fspath`."""
     return dotted.rpartition(".")[2]
-
-
-def _names_parents(value: ast.expr) -> bool:
-    """Whether `value` reads a path's `parents`."""
-    return any(isinstance(node, ast.Attribute) and node.attr == "parents" for node in ast.walk(value))
 
 
 def _returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.expr]:
@@ -1536,6 +1534,20 @@ class _ContainmentReader:
             return self._each(held, read)
 
         return self._follow(iterable, each, each)
+
+    def _walk_start(self, node: ast.AST) -> ast.expr | None:
+        """The start a call of a walk up a path's parents, such as `folders_up(start, stop)`, is given, which the walk
+        gives first, or None for any other node; a walk whose start cannot be told is given itself."""
+        if not (isinstance(node, ast.Call) and _last_name(self.name(node.func)) in PARENT_WALKS):
+            return None
+        return call_argument(node, 0, "start") or node
+
+    def _names_parents(self, value: ast.expr) -> bool:
+        """Whether `value` reads a path's `parents`, or walks up them through a call such as `folders_up`."""
+        return any(
+            (isinstance(node, ast.Attribute) and node.attr == "parents") or self._walk_start(node) is not None
+            for node in ast.walk(value)
+        )
 
     def name(self, node: ast.AST) -> str:
         """The dotted name an expression stands for, through the names the module binds once, or else through its
@@ -1752,17 +1764,19 @@ class _ContainmentReader:
 
     def test(self, node: ast.AST) -> str | None:
         """The containment test `node` writes, or None: an is_relative_to, a commonpath or commonprefix of any path
-        module, a search of a path's parents, by a set or sequence method, `in`, `&`, or `==` with a name a loop or a
-        comprehension takes from them, a startswith, find, index, regular expression, glob, or path's `match` or
-        `full_match` of a text built to end in a separator, a comparison of what a removeprefix of one leaves, a check
-        for a separator after a prefix, a relpath or a relative_to that walks up checked for a parent segment, a
-        comparison of a path's leading parts, or of a leading slice with a folder and its separator, or a `try` or a
-        `with` whose body calls relative_to and whose handler catches, or whose `contextlib.suppress` suppresses, the
-        ValueError it raises for a path outside the folder, which turns that error into an answer.
+        module, a search of a path's parents, or of the folders a walk up them such as `folders_up` gives, by a set or
+        sequence method, `in`, `&`, or `==` with a name a loop or a comprehension takes from them, a startswith, find,
+        index, regular expression, glob, or path's `match` or `full_match` of a text built to end in a separator, a
+        comparison of what a removeprefix of one leaves, a check for a separator after a prefix, a relpath or a
+        relative_to that walks up checked for a parent segment, a comparison of a path's leading parts, or of a leading
+        slice with a folder and its separator, or a `try` or a `with` whose body calls relative_to and whose handler
+        catches, or whose `contextlib.suppress` suppresses, the ValueError it raises for a path outside the folder,
+        which turns that error into an answer.
 
         One comparison of a parent by `==` is no search: one with the very expression whose `parents` the loop takes,
         as `(path, *path.parents)` compared with `path` to spot its first item, since a path is never among its own
-        parents. A comparison with any other expression is read as containment."""
+        parents, and one with the start a walk such as `folders_up` is given, which it gives first. A comparison with
+        any other expression is read as containment."""
         if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
             return "is_relative_to"
         if (
@@ -1783,7 +1797,7 @@ class _ContainmentReader:
             return function.rpartition(".")[2]
         if isinstance(node, ast.Call):
             return self._call_test(node)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd) and _names_parents(node):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd) and self._names_parents(node):
             return "a search of a path's parents"
         if isinstance(node, ast.Compare):
             return self._comparison_test(node)
@@ -1839,9 +1853,10 @@ class _ContainmentReader:
 
     def _parent_taken(self, side: ast.expr, other: ast.expr) -> bool:
         """Whether a comparison's side is, in any of its forms, a name a loop or a comprehension takes from what reads
-        a path's `parents`, directly or through a name the module binds to it, so comparing it by `==` with `other`
-        searches them. A path is never among its own parents, so comparing with the path itself, in any of its forms,
-        as a walk over `(path, *path.parents)` does to spot its first item, searches nothing."""
+        a path's `parents`, or from a walk up them such as `folders_up`, directly or through a name the module binds
+        to it, so comparing it by `==` with `other` searches them. A path is never among its own parents, so comparing
+        with the path itself, in any of its forms, as a walk over `(path, *path.parents)` does to spot its first item,
+        or with a walk's start, which it gives first, searches nothing."""
         side = self._path_itself(side)
         if not isinstance(side, ast.Name):
             return False
@@ -1850,6 +1865,7 @@ class _ContainmentReader:
         def reads(value: ast.expr) -> bool:
             return any(
                 (isinstance(node, ast.Attribute) and node.attr == "parents" and ast.dump(node.value) != own)
+                or ((start := self._walk_start(node)) is not None and ast.dump(self._path_itself(start)) != own)
                 or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and self._follow(node, reads, _never))
                 for node in ast.walk(value)
             )
@@ -1880,7 +1896,7 @@ class _ContainmentReader:
     def _call_test(self, call: ast.Call) -> str | None:
         method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
         subjects = [call.func.value, *call.args] if isinstance(call.func, ast.Attribute) else []
-        if method in PARENT_SEARCHES and any(map(_names_parents, subjects)):
+        if method in PARENT_SEARCHES and any(map(self._names_parents, subjects)):
             return "a search of a path's parents"
         compared = self._compared_paths(call)
         if len(compared) == 2 and (self._searches(*compared) or self._searches(*reversed(compared))):
@@ -1918,7 +1934,7 @@ class _ContainmentReader:
             if isinstance(op, ast.Eq | ast.NotEq)
             for pair in ((sides[index], sides[index + 1]), (sides[index + 1], sides[index]))
         ]
-        if any(map(_names_parents, searched)) or any(self._searches(*pair) for pair in equated):
+        if any(map(self._names_parents, searched)) or any(self._searches(*pair) for pair in equated):
             return "a search of a path's parents"
         if any(map(self._parent, sides)) and any(map(self._relative, sides)):
             return "a relpath checked for a parent segment"

@@ -24,14 +24,14 @@ The formatter is the one dotnet_format_targets.py chooses: the .NET SDK's `dotne
 one layout, and both exit 2 from a check that finds changes. The global tool is not run on a file of an ASP.NET project,
 which `resolve` reports as SKIPPED_ASPNET; when it leaves no file to format, nothing runs and no LOG line is printed. An
 entry is passed only when it lies inside the repository root, judged from its text before anything touches it and then
-by its links, as dotnet_format_targets' `listed_refusal` judges it: an absolute entry, one whose `..` segments leave
-the root, one written as a network share or a device, and one a symbolic link or junction on its way leads out of the
-root is REFUSED. A --solution judged the same way to be absolute or
-lie outside the root fails as `FAILED the solution <solution> is refused: <reason>` before anything reads it. FILE
-paths are relative to the repository root when they are inside it. A changed file whose name starts with `@` or `-` is
-passed to the formatter as `./<name>`, since either formatter would read the bare name as a response file or an option.
-Files too many for one command line, which Windows limits to 32,767 characters, are formatted in several runs within
-the one time limit, and the log holds every run's output in order.
+by its links, as dotnet_format_targets' `listed_refusal` judges it: an absolute entry, one whose `..` segments leave the
+root, one written as a network share or a device, one with a segment Windows reserves as a device, such as `Con.cs`, on
+every platform, and one a symbolic link or junction on its way leads out of the root is REFUSED. A --solution judged the
+same way to be absolute or lie outside the root fails as `FAILED the solution <solution> is refused: <reason>` before
+anything reads it. FILE paths are relative to the repository root when they are inside it. A changed file whose name
+starts with `@` or `-` is passed to the formatter as `./<name>`, since either formatter would read the bare name as a
+response file or an option. Files too many for one command line, which Windows limits to 32,767 characters, are
+formatted in several runs within the one time limit, and the log holds every run's output in order.
 
 `fix` judges every file it would pass before the formatter writes any, as the layout fixer does through
 dotnet_format_targets' `write_refusal`: a file that is a symbolic link or junction, lies below one inside the root, or

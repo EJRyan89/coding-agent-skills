@@ -9,6 +9,10 @@ Output, one fact per line, tab separated:
     FETCH_FAILED    <reason>                      `git fetch origin` failed; BASE is origin as last fetched
     BASE            <base ref the branch is compared with>
     FILE            <file>                        a changed C# file to format
+    REFUSED         <path> <reason>               a changed file, or a solution the search of the repository
+                                                  finds, that the formatter and the layout checker refuse by its
+                                                  name, such as one with a segment Windows reserves as a device;
+                                                  it is neither a FILE nor chosen
     OUTSIDE_SOLUTION <file>                       a FILE no project of SOLUTION owns; the formatter skips it
     SKIPPED_ASPNET  <file> <owning .csproj>       a FILE of an ASP.NET project, which the global tool is not run on
     FILE_LIST       <temporary file>              the FILE paths in UTF-8, each ended by a NUL, for --include-file
@@ -36,6 +40,15 @@ FILE_LIST ends each name with a NUL, the one character no path holds, so every n
 leading space or a line separator inside it included. A printed line holds each value as ejryan89-skill-core's
 `fact_line` flattens it, so a tab, a control character, or a line break in a name or a reason prints as a space and one
 fact stays one line; the exact names are FILE_LIST's.
+
+A changed file git lists, or a solution the search finds, is judged by its name as `listed_refusal` judges a FILE_LIST
+entry or a --solution, before anything stats it, so resolve never lists a file or chooses a solution that
+run_dotnet_format.py and csharp_layout.py then refuse: a name with a segment Windows reserves as a device, such as
+`Con.cs` or a folder `Aux`, is REFUSED on every platform, though Linux and macOS hold it as an ordinary name, as the
+runner and the layout checker refuse it there. A solution so named is passed over: the nearest solution is the nearest
+one not refused, and one the search of the repository finds is reported as REFUSED. A changed name is judged before
+anything looks for it, so a deleted file so named is REFUSED too. Only refused or deleted changed files, or only
+refused solutions found, is a STOP.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
@@ -223,19 +236,28 @@ def linked_out_refusal(root: Path, path: Path) -> str | None:
     return None
 
 
+def named_refusal(root: Path, name: str) -> str | None:
+    """Why a script does not read the file a FILE_LIST entry or a --solution names, judged by its text alone, through
+    ejryan89-skill-core's `refusal`, or None: one whose `..` segments leave `root`, a network-share or device form, or
+    a segment Windows reserves as a device, on every platform. resolve judges each name it lists or chooses by it, so
+    it never gives one that `listed_refusal` then refuses by its text."""
+    base = lexical_absolute(root)
+    return refusal(project_path(base, name), base)
+
+
 def listed_refusal(root: Path, name: str) -> str | None:
     """Why a script does not read or write the file a FILE_LIST entry names, or None when it lies inside `root`.
 
     The entry is judged first as written, before anything touches it, so an absolute entry, even one naming a file
-    inside the root, is refused unopened, and so, through ejryan89-skill-core's `refusal`, are one whose `..`
-    segments leave the root and a network-share or device form; then by its links (`linked_out_refusal`), so an entry
-    inside the root that a symbolic link or junction leads out of it is refused too, with nothing outside the root
-    touched to decide. An entry holding a `..` is judged by its links both as its text reads it, as Windows opens it,
-    and as written, as Linux and macOS open it, taking each `..` after following the link before it, on every
-    platform, so an entry either reading leads out of the root is refused wherever it runs."""
+    inside the root, is refused unopened, and so, through `named_refusal`, are one whose `..` segments leave the root, a
+    network-share or device form, and one with a segment Windows reserves as a device; then by its links
+    (`linked_out_refusal`), so an entry inside the root that a symbolic link or junction leads out of it is refused too,
+    with nothing outside the root touched to decide. An entry holding a `..` is judged by its links both as its text
+    reads it, as Windows opens it, and as written, as Linux and macOS open it, taking each `..` after following the link
+    before it, on every platform, so an entry either reading leads out of the root is refused wherever it runs."""
     base = lexical_absolute(root)
     path = project_path(base, name)
-    refused = refusal(path, base)
+    refused = named_refusal(base, name)
     if refused:
         return refused
     if Path(name.replace("\\", "/")).anchor:
@@ -412,16 +434,29 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
     raise Failed("no base ref: none of the pull request base, origin/HEAD, origin/main, or origin/master exists")
 
 
-def changed_files(services: Services, root: Path, base: str) -> list[str]:
-    """Committed, uncommitted, and untracked C# files changed on this branch that still exist. Raises Failed for one
-    it cannot examine, a link leading outside the repository included, or that is something other than a file, which
-    it cannot tell from a deleted one."""
+def changed_files(services: Services, root: Path, base: str, emit: Callable[[str], None]) -> list[str]:
+    """Committed, uncommitted, and untracked C# files changed on this branch that still exist. One `named_refusal`
+    refuses prints `REFUSED <file> <reason>` and is left out unstat'd, so a name Windows opens as a device is never
+    opened; its name is judged before anything looks for it, so a deleted file so named is refused too, and a STOP ends
+    the run when every changed file is so named or deleted. Raises Failed for one it cannot examine, a link leading
+    outside the repository included, or that is something other than a file, which it cannot tell from a deleted one."""
     names = set(
         git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
     )
     names |= set(git_paths(services, root, "diff", "-z", "--name-only", "HEAD", "--", "*.cs"))
     names |= set(git_paths(services, root, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.cs"))
-    return sorted(name for name in names if still_there(root, name))
+    kept: list[str] = []
+    refused_any = False
+    for name in sorted(names):
+        refused = named_refusal(root, name)
+        if refused:
+            emit(fact_line("REFUSED", name, refused))
+            refused_any = True
+        elif still_there(root, name):
+            kept.append(name)
+    if not kept and refused_any:
+        raise Stop(f"no C# file changed vs {base} is left to format: each is REFUSED by its name or deleted")
+    return kept
 
 
 def still_there(root: Path, name: str) -> bool:
@@ -542,13 +577,19 @@ def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, P
     return {name: project for name in names if (project := web_project(root, name)) is not None}
 
 
+def solution_name_refusal(root: Path, solution: Path) -> str | None:
+    """`named_refusal` of the --solution resolve would print for `solution`, a solution inside `root`."""
+    return named_refusal(root, relative(solution, root))
+
+
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
-    """Solutions in the nearest directory from cwd up to the root, or none; one that is a link leading outside the
-    root fails, as `listed_files` says."""
+    """Solutions in the nearest directory from cwd up to the root that holds one `solution_name_refusal` does not
+    refuse, those alone, or none; one that is a link leading outside the root fails, as `listed_files` says."""
     for folder in TreeReader(root).climb(cwd if within(cwd, root) else root):
         found = listed_files(root, folder, lambda name: is_solution(Path(name)))
-        if found:
-            return found
+        kept = [solution for solution in found if solution_name_refusal(root, solution) is None]
+        if kept:
+            return kept
     return []
 
 
@@ -602,18 +643,28 @@ def best_solution(root: Path, candidates: list[Path], owners: list[list[Path]]) 
     return best, best_score
 
 
-def choose_solution(root: Path, cwd: Path, owners: list[list[Path]]) -> tuple[Path, int]:
+def choose_solution(root: Path, cwd: Path, owners: list[list[Path]], emit: Callable[[str], None]) -> tuple[Path, int]:
     """The nearest solution that owns a changed file, else the repository solution owning the most.
 
     A solution that owns none of the changed files is never chosen: the formatter would skip every file and
-    report a clean result.
+    report a clean result. Nor is one `solution_name_refusal` refuses, which the runner would refuse; each the search
+    of the repository finds prints `REFUSED <solution> <reason>`.
     """
     nearest = nearest_solutions(root, cwd)
     if nearest:
         best, score = best_solution(root, nearest, owners)
         if score:
             return best, score
-    everything = find_solutions(root)
+    found = find_solutions(root)
+    everything: list[Path] = []
+    for solution in found:
+        refused = solution_name_refusal(root, solution)
+        if refused:
+            emit(fact_line("REFUSED", relative(solution, root), refused))
+        else:
+            everything.append(solution)
+    if found and not everything:
+        raise Stop(f"every .sln or .slnx found under {root} is REFUSED")
     if not everything:
         raise Stop(f"no .sln or .slnx found under {root}")
     best, score = best_solution(root, everything, owners)
@@ -628,13 +679,13 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     emit(fact_line("REPO_ROOT", root))
     base = base_ref(services, root, emit)
     emit(fact_line("BASE", base))
-    kept = changed_files(services, root, base)
+    kept = changed_files(services, root, base, emit)
     if not kept:
         raise Stop(f"no C# files changed vs {base}")
     owners = [owning_projects(root, root / name) for name in kept]
     for name in kept:
         emit(fact_line("FILE", name))
-    solution, score = choose_solution(root, given_folder(cwd), owners)
+    solution, score = choose_solution(root, given_folder(cwd), owners, emit)
     formatter = formatter_for(root, solution)
     skipped = formatter_skips(root, formatter, kept)
     for name, owned in zip(kept, owners, strict=True):
