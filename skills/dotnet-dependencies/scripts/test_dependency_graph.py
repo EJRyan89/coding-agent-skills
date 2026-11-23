@@ -5838,6 +5838,27 @@ class PresenceReadTests(Fixture):
         self.assertEqual((linked, reason), (raised.exception.file, raised.exception.reason))
         self.assertEqual([], followed_through(touched, [linked], elsewhere))
 
+    def test_a_packages_search_from_a_project_folder_a_link_leads_out_of_is_unreadable_never_raised_past_it(
+        self,
+    ) -> None:
+        # The climb starts at the project's folder, here reached through a folder link (a junction on Windows) that
+        # leads outside the tree: the reader refuses it before anything is stat, and the search reports it as
+        # Unreadable, which build_closure reports, never an error that ends the run.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        outside = Path(holder.name).resolve()
+        (outside / "App").mkdir()
+        link = self.root / "Out"
+        link_folder(outside, link)
+        self.addCleanup(remove_link, link)
+        reason = (
+            f"{link.as_posix()} is a link to {outside.as_posix()}, outside the examined tree {self.root.as_posix()}, "
+            "which the reader does not follow"
+        )
+        with self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.packages_folder(link / "App", self.root, self.root)
+        self.assertEqual((link / "App", reason), (raised.exception.file, raised.exception.reason))
+
     def test_a_stat_error_naming_no_file_is_refused_against_the_folder_checked(self) -> None:
         home = self.root / "home"
         cache = home / ".nuget" / "packages"

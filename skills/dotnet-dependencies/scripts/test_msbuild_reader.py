@@ -342,6 +342,32 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual((link, LINKED_OUT_REASON), (refused.exception.file, refused.exception.reason))
         self.assertEqual([], reached(touched, [link], outside))
 
+    def test_a_folder_below_lib_it_cannot_list_is_unreadable_with_the_listing_s_reason(self) -> None:
+        # Its assemblies cannot be named, so the package's set is never taken from what the other folders hold.
+        self.write("pkg/lib/net8.0/Good.dll", "")
+        self.write("pkg/lib/net45/Old.dll", "")
+        target = self.root / "pkg" / "lib" / "net45"
+        real = os.scandir
+
+        def scandir(path: Any = ".") -> Any:
+            if Path(path) == target:
+                raise PermissionError(errno.EACCES, "Access is denied")
+            return real(path)
+
+        with mock.patch.object(os, "scandir", scandir), self.assertRaises(Unreadable) as refused:
+            package_assemblies(self.root / "pkg", TreeReader(self.root))
+        self.assertEqual((target, "Access is denied"), (refused.exception.file, refused.exception.reason))
+
+    def test_a_folder_link_below_lib_that_stays_inside_is_passed_over_and_the_rest_are_named(self) -> None:
+        # The stated limit: the search enters no folder link, so the assemblies below one that stays inside the tree are
+        # not named, and the package's other assemblies still are. A junction on Windows, a symbolic link elsewhere.
+        self.write("pkg/lib/net8.0/Good.dll", "")
+        self.write("elsewhere/Inside.dll", "")
+        link = self.root / "pkg" / "lib" / "net45"
+        link_folder(self.root / "elsewhere", link)
+        self.addCleanup(remove_link, link)
+        self.assertEqual(("Good",), package_assemblies(self.root / "pkg", TreeReader(self.root)))
+
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_an_assembly_below_lib_that_is_a_file_link_leading_outside_is_unreadable(self) -> None:
         holder = tempfile.TemporaryDirectory()

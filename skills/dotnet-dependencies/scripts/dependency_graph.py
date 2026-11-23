@@ -133,8 +133,9 @@ is read through. The NuGet cache lies outside the tree and is read where it is, 
 to the cache folder, so a link inside it that leads out of it is reported, not followed. A path a file names outside the
 tree is compared with another by its text, never by asking its folders how they compare names, so no folder outside the
 tree is listed to compare it. Limits: the names of the assemblies below a package's lib folder are found by the reader's
-search, which enters no folder link, so the assemblies below one that stays inside are not named, reading no file's
-contents; a wildcard Import is judged as text and by its folder
+search, which enters no folder link, so the assemblies below one that stays inside are not named, a Windows junction
+among them, and no folder holding a `.git` entry, which it takes for a nested checkout, reading no file's contents; a
+wildcard Import is judged as text and by its folder
 before the wildcard, since the reader expands none, so a link a wildcard matches is not judged, nor a link named after a
 `..` that follows a wildcard, as in `../*/../Shared/Common.props`, and so, of the restore's files, only the NuGet ones
 are judged, though MSBuild imports every <project file>.*.props and .targets in that folder; the restore's folder no
@@ -817,9 +818,14 @@ def nuget_cache() -> list[Path]:
 def packages_folder(project_dir: Path, stop: Path, tree: Path) -> Path | None:
     """The nearest `packages` folder from the project's directory up to the solution's, or up to `tree`'s top when
     that comes first, so no `packages` folder above the tree is read; None when there is none, and `Unreadable` naming
-    a candidate whose stat fails, or one a link leads outside `tree` (`outside_link_refusal`), which is never stat."""
+    a candidate whose stat fails, or one a link leads outside `tree` (`outside_link_refusal`), which is never stat,
+    and so does a project folder the climb cannot start from, one the reader refuses or whose key it cannot take."""
     reader = TreeReader(tree)
-    for folder in reader.climb(project_dir, stop):
+    try:
+        folders = list(reader.climb(project_dir, stop))
+    except OSError as error:
+        raise os_unreadable(error, project_dir) from None
+    for folder in folders:
         if (linked := outside_link_refusal(candidate := folder / "packages", tree)) is not None:
             raise Unreadable(candidate, linked)
         try:

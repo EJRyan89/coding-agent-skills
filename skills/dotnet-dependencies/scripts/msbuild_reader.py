@@ -404,7 +404,8 @@ def package_assemblies(package_dir: Path, reader: TreeReader) -> tuple[str, ...]
     `Unreadable` when something other than a folder stands at lib/, whether one is there cannot be told, a folder below
     it cannot be listed or an entry examined, or a link at lib/ or below it, a symbolic link or a junction alike, leads
     outside the reader's tree, which is never listed or stat. A folder link that stays inside the tree is not entered,
-    as the search enters none, and its assemblies are not named."""
+    as the search enters none, a Windows junction among them, nor a folder holding a `.git` entry, which the search
+    takes for a nested checkout, and the assemblies below either are not named."""
     lib = package_dir / "lib"
     if (refused := reader.refusal(lib)) is not None:
         raise Unreadable(lib, refused)
