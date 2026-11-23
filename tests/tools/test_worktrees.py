@@ -300,7 +300,7 @@ class ListTests(WorktreesTestCase):
         self.assertFalse((self.worktrees / "fix-unread").exists())
 
     def test_a_checkout_git_cannot_read_is_named_on_one_line_whatever_its_directory_holds(self) -> None:
-        directory = Path(self.root, "line\nbreak")
+        directory = Path(self.root, "\n".join(("line", "break")))
         failure = git_client.GitError("git said no")
         with (
             mock.patch.object(Path, "cwd", return_value=directory),

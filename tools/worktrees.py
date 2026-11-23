@@ -95,8 +95,9 @@ def git(cwd: Path, *arguments: str, timeout: float | None = GUARD_GIT_TIMEOUT_SE
     """Runs git on the checkout at cwd through CLIENT, within timeout seconds, or the client's own limit for None.
 
     Raises GitError when git is missing, cannot start, or does not finish in time; the hub guard then allows an edit
-    with a note, refuses a command that names git while a guarded hub is in view, and allows any other with a note,
-    and new and list end with a FAILED line.
+    with a note, refuses a command that names git while a guarded hub is in view, and allows any other with a note.
+    new and list end with an ERROR line when it fails the lookup of the checkout that holds the working directory, and
+    with a FAILED line when a later git call fails.
     """
     return CLIENT.run(arguments, directory=cwd, timeout=timeout)
 

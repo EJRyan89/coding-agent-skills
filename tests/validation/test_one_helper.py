@@ -155,6 +155,20 @@ REFUSED_PLACE_LOOKUPS: dict[str, tuple[str, str, str, str]] = {
         "    except GitError as exc:\n        raise exc",
         "lets the GitError of a place lookup that view raises escape",
     ),
+    "a lookup in a try's else": (
+        GUARD,
+        "    try:\n        return lookup(path)\n    except (GitError, OSError):\n        return None",
+        "    try:\n        found = None\n    except (GitError, OSError):\n        return None\n    else:\n"
+        "        return lookup(path)",
+        "lets the GitError of a place lookup that view raises escape",
+    ),
+    "a lookup in a try's finally": (
+        GUARD,
+        "    try:\n        return lookup(path)\n    except (GitError, OSError):\n        return None",
+        "    try:\n        found = None\n    except (GitError, OSError):\n        return None\n    finally:\n"
+        "        lookup(path)",
+        "lets the GitError of a place lookup that view raises escape",
+    ),
     "a handler for another class only": (
         GUARD,
         "    except (GitError, OSError):\n        return None",
@@ -234,7 +248,14 @@ class PlaceLookupTests(PlaceLookupCase):
                 self.assertIn("PLACE_LOOKUP_SANCTIONS", problems[0])
 
     def test_a_handler_that_catches_a_class_git_error_derives_from_or_every_error_passes(self) -> None:
-        for handler in ("except RuntimeError:", "except Exception:", "except BaseException:", "except:"):
+        handlers = (
+            "except RuntimeError:",
+            "except Exception:",
+            "except BaseException:",
+            "except:",
+            "except (OSError, GitError):",
+        )
+        for handler in handlers:
             with self.subTest(handler):
                 files = _modules({GUARD: ("    except (GitError, OSError):", f"    {handler}")})
                 self.assertEqual([], self.problems(files))
@@ -358,6 +379,38 @@ class PlaceLookupTests(PlaceLookupCase):
                 "type(exc) is GitError",
                 [],
             ),
+            # A kind read through an alias of the caught error is not read.
+            "a kind read through an alias": (
+                "    except (GitError, OSError):\n        return None",
+                "    except GitError as exc:\n        error = exc\n        return error.kind",
+                [],
+            ),
+            # A handler that raises a new GitError from the one it caught converts every kind alike.
+            "a new GitError raised from the caught one": (
+                "    except (GitError, OSError):\n        return None",
+                "    except GitError as exc:\n        raise GitError('unknown place') from exc",
+                [],
+            ),
+            # Whether a handler tells kinds apart is read, never what it makes of the place.
+            "a place read as no hub": (
+                "    except (GitError, OSError):\n        return None",
+                "    except GitError:\n        hub = None\n        return hub",
+                [],
+            ),
+            # A git call a scope makes itself, rather than through a lookup, is not followed.
+            "a git call of a scope's own": (
+                "def view(path):",
+                "def own(path):\n    return CLIENT.output(path)\n\n\ndef view(path):",
+                [],
+            ),
+            # A handler for a class derived from GitError alone is read as not catching, so the error is followed to the
+            # next handler, here guard's catch-all.
+            "a handler for a class derived from GitError": (
+                "class Judge:\n    def judge(self, path):\n        return reached(path)",
+                "class Gone(GitError):\n    pass\n\n\nclass Judge:\n    def judge(self, path):\n        try:\n"
+                "            return reached(path)\n        except Gone:\n            return None",
+                [],
+            ),
             # An error kept and raised after its handler is read as caught.
             "an error raised after its handler": (
                 "    except (GitError, OSError):\n        return None",
@@ -459,6 +512,10 @@ REFUSED_CLOSING: dict[str, tuple[str, str]] = {
         f"{READER_IMPORT}def f(p):\n    return pull_request_references(*p)\n",
         NOT_BOTH,
     ),
+    "a title beside unpacked parts": (
+        f"{READER_IMPORT}def f(t, rest):\n    return pull_request_references(t, *rest)\n",
+        NOT_BOTH,
+    ),
     "a joined text with no body": (
         "from closing_references import pull_request_text\n\n\ndef f(t):\n    return pull_request_text(t, None)\n",
         NOT_BOTH,
@@ -490,6 +547,7 @@ PASSED_CLOSING: dict[str, str] = {
     "a keyword that stops before the reference": 'import re\nP = re.compile(r"resolve\\s+([\\"\']?)")\n',
     "a state compared": 'def f(state):\n    return state == "closed"\n',
     "a pattern that does not compile": 'import re\nP = re.compile(r"closes #(")\n',
+    "a pattern that matches with the keyword replaced": 'import re\nP = re.compile(r"(?:closes|\\S+) #(\\d+)")\n',
 }
 
 
@@ -567,6 +625,16 @@ class ClosingReferenceTests(unittest.TestCase):
             "text before the keyword": 'import re\nP = re.compile(r"^- closes #(\\d+)")\n',
             # A keyword compared alone is not read.
             "a keyword compared alone": 'def f(word):\n    return word == "closes"\n',
+            # A keyword written as a character class is not read.
+            "a keyword as a character class": 'import re\nP = re.compile(r"[Cc]loses #(\\d+)")\n',
+            # A pattern bound to a name inside a function, or given by keyword, is not read.
+            "a pattern bound in a function": 'import re\n\n\ndef f(t):\n    p = r"closes #(\\d+)"\n'
+            "    return re.search(p, t)\n",
+            "a pattern given by keyword": 'import re\nP = re.compile(pattern=r"closes #(\\d+)")\n',
+            # A pattern joined with + is not read.
+            "a pattern joined with +": 'import re\nP = re.compile(r"closes " + r"#(\\d+)")\n',
+            # A title or a body given as a literal empty string is read as given.
+            "an empty literal for the body": f"{READER_IMPORT}def f(t):\n    return pull_request_references(t, '')\n",
             # The helper's own patterns are read through the helper.
             "the helper's own pattern": "from closing_references import BARE_CLOSING_LINE\n\n\ndef f(line):\n"
             "    return BARE_CLOSING_LINE.fullmatch(line)\n",

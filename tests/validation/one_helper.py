@@ -43,14 +43,23 @@ Stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A place lookup handed on as a value, as `map(checkout_of, paths)`, is not followed, and neither is a call from a
   module PLACE_LOOKUPS does not name. A method reached through a receiver whose method name more than one class of the
   module defines is not followed, so that method reads as an entry point.
-- A handler that reads a kind through a function it hands the error to, or tests the error's class other than by
-  isinstance, as `type(error) is GitError`, is read as treating every kind alike.
+- A handler that reads a kind through a function it hands the error to, or through an alias of the error it caught, as
+  `error = exc; error.kind`, or tests the error's class other than by isinstance, as `type(error) is GitError`, is read
+  as treating every kind alike, and so is a handler that raises a new GitError from the one it caught.
+- A handler that catches only a class derived from GitError is read as not catching, so the error is followed to the
+  next handler, and where that is guard's `except Exception`, nothing is refused; the repository defines no such class.
+- The rule reads whether a handler tells kinds apart, never what it makes of the place: `except GitError: hub = None`
+  passes, and so does a lookup whose error reaches guard's `except Exception`.
+- Only the lookups PLACE_LOOKUPS names are followed: a git call a scope makes itself, as own_paths and
+  git_directory_holding make theirs, is not.
 - A GitError that `contextlib.suppress` catches is not read as caught, so its scope reads as letting it out.
-- An error kept and raised after its handler, as reached_hubs raises its first failure once every place is looked up,
-  is read as caught; reached_hubs is a lookup, so its callers are held all the same.
-- A pattern built from names or formatted values, or a pattern that needs text before the keyword, as
-  `^- closes #(\\d+)`, is not read, and neither is a keyword compared alone, as `word == "closes"`, since a state such
-  as `"closed"` or a subcommand such as `resolve` is compared the same way.
+- An error kept and raised after its handler, as reached_hubs raises its first failure once every place is looked up, is
+  read as caught; reached_hubs is a lookup, so its callers are held all the same.
+- A pattern built from names or formatted values, joined with `+`, bound to a name inside a function, or given by
+  keyword as `pattern=`, a keyword written as a character class, as `[Cc]loses`, and a pattern that needs text before
+  the keyword, as `^- closes #(\\d+)`, are not read, and neither is a keyword compared alone, as `word == "closes"`,
+  since a state such as `"closed"` or a subcommand such as `resolve` is compared the same way.
+- A title or a body given as a literal empty string is read as given.
 - A module that applies the helper's own patterns, as implement-change's pull_request.py applies BARE_CLOSING_LINE to a
   body line, reads the keywords through the helper, and is not refused.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
