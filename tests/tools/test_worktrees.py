@@ -299,6 +299,18 @@ class ListTests(WorktreesTestCase):
                     self.assertEqual(expected, stderr.getvalue())
         self.assertFalse((self.worktrees / "fix-unread").exists())
 
+    def test_a_checkout_git_cannot_read_is_named_on_one_line_whatever_its_directory_holds(self) -> None:
+        directory = Path(self.root, "line\nbreak")
+        failure = git_client.GitError("git said no")
+        with (
+            mock.patch.object(Path, "cwd", return_value=directory),
+            mock.patch.object(worktrees, "checkout_of", side_effect=failure),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            self.assertEqual(1, worktrees.main(["list"]))
+        flat = str(directory).replace("\n", " ")
+        self.assertEqual(f"ERROR: git could not tell which checkout holds {flat}: git said no\n", stderr.getvalue())
+
 
 class CheckoutTests(WorktreesTestCase):
     def test_a_checkout_git_cannot_read_raises_and_a_place_outside_every_checkout_is_none(self) -> None:

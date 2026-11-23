@@ -2,26 +2,28 @@
 
 Outside review passes kept finding one concept implemented twice, with one copy fixed and the other left behind. The
 duplication policy catches a copied definition, not a concept implemented again with other code, so this policy holds
-two such concepts to their one helper.
+the hub guard's place lookups and closing references to their helpers.
 
-Place lookups. PLACE_LOOKUPS names them: checkout_of, guarded_hub_of_repository, and reached_hubs in
-tools/hub_guard.py, and checkout_of in tools/worktrees.py. Each raises git_client's GitError where git cannot say where
-a call acts, and a place git cannot read may be a guarded hub's, so every path that reaches one treats any GitError, of
-any kind, as an unknown place. The policy reads both modules and follows each call in them that reaches a lookup: a
-function of the same module called by its name, a method called through self or cls in its class, or through any other
-receiver when one class of the module alone defines a method by that name, and a function of the other module called
-through that module's name. A call is caught where it stands in the body of a try whose first handler for a GitError,
-an except naming GitError or a class GitError derives from, or a bare except, does not raise the error it caught again;
-a handler that raises another error converts every kind alike and catches it. A scope with a call of a lookup, or of a
-scope that lets a lookup's GitError out, that is not caught lets that GitError out itself. It fails:
+Place lookups. PLACE_LOOKUPS names them: checkout_of, guarded_hub_of_repository, and reached_hubs in tools/hub_guard.py,
+and checkout_of in tools/worktrees.py. Each raises git_client's GitError where git cannot say where a call acts, and a
+place git cannot read may be a guarded hub's, so every path that reaches one treats any GitError, of any kind, as an
+unknown place. The policy reads tools/hub_guard.py and tools/worktrees.py and follows each call in them that reaches a
+lookup: a function of the same module called by its name, a method called through self or cls in its class, or through
+any other receiver when one class of the module alone defines a method by that name, and a function of the other module
+called through that module's name. A call is caught where it stands in the body of a try whose first handler for a
+GitError, an except naming GitError or a class GitError derives from, or a bare except, does not raise the error it
+caught again; a handler that raises another error converts every kind alike and catches it. A scope with a call of a
+lookup, or of a scope that lets a lookup's GitError out, that is not caught lets that GitError out itself. It fails:
 - a handler that catches such a GitError and treats its kinds apart: one that reads, of the error it caught, an
   attribute that tells one GitError from another, each one a GitError holds that a RuntimeError does not, as git_client
   defines them, such as `kind` or `answered`, or that tests it with isinstance against no class GitError derives from,
   as a handler that counts only a ReadingTimeout as cut short would;
-- a scope nothing calls that lets one escape: a function no function of the two modules calls, and a module's own
+- a scope nothing calls that lets one escape: a function no function of those modules calls, and a module's own
   statements, such as its `__main__` block, so every entry point ends a place lookup's GitError in a handler.
 PLACE_LOOKUP_SANCTIONS names a scope held to neither, by its module and its scope, with the reason; an entry that
-sanctions nothing, one with no reason, and a lookup PLACE_LOOKUPS names that its module does not define, fail.
+sanctions nothing, one with no reason, a module PLACE_LOOKUPS names that is not there or does not parse, and a lookup it
+names that its module does not define or no call in those modules reaches, fail, so a path the policy cannot measure
+never passes.
 
 Closing references. ejryan89-skill-core's closing_references.py is the one reader of the issues a pull request closes,
 and holds the one copy of GitHub's closing keywords, CLOSING_KEYWORDS, which this policy reads from it. In every
@@ -39,8 +41,8 @@ non-test module ruff formats but the helper, it fails:
 
 Stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A place lookup handed on as a value, as `map(checkout_of, paths)`, is not followed, and neither is a call from a
-  module other than the two. A method reached through a receiver whose method name more than one class of the module
-  defines is not followed, so that method reads as an entry point.
+  module PLACE_LOOKUPS does not name. A method reached through a receiver whose method name more than one class of the
+  module defines is not followed, so that method reads as an entry point.
 - A handler that reads a kind through a function it hands the error to, or tests the error's class other than by
   isinstance, as `type(error) is GitError`, is read as treating every kind alike.
 - A GitError that `contextlib.suppress` catches is not read as caught, so its scope reads as letting it out.
@@ -65,6 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import closing_references
+import file_presence
 import git_client
 from python_checks import formatted_modules
 from validation_support import (
@@ -288,12 +291,20 @@ def place_lookup_problems(
     allowed: Mapping[str, Mapping[str, str]] = PLACE_LOOKUP_SANCTIONS,
 ) -> list[str]:
     """Report each handler on a path to a place lookup that treats a GitError's kinds apart, each scope nothing calls
-    that lets a place lookup's GitError escape, each lookup its module does not define, and each entry of `allowed` that
-    sanctions nothing or gives no reason."""
+    that lets a place lookup's GitError escape, each lookup module that is not there or does not parse, each lookup its
+    module does not define or no call in the modules reaches, and each entry of `allowed` that sanctions nothing or
+    gives no reason. A module the policy cannot read is named, never measured as one whose paths pass."""
     problems: list[str] = []
-    modules = {
-        name: _module(name, tree) for _, name, tree in python_trees([root / path for path in lookups], root, problems)
-    }
+    readable: list[Path] = []
+    for path in sorted(lookups):
+        reason = file_presence.refusal_reason(root / path)
+        if reason is None:
+            readable.append(root / path)
+        else:
+            problems.append(
+                f"{POLICY}: PLACE_LOOKUPS names {path}, which {reason}, so no path to its lookups can be measured"
+            )
+    modules = {name: _module(name, tree) for _, name, tree in python_trees(readable, root, problems)}
     problems += [
         f"{POLICY}: PLACE_LOOKUPS names {path} {name}, which its module does not define; remove it or name the lookup "
         "by its scope"
@@ -325,6 +336,13 @@ def place_lookup_problems(
                 f"unknown place, or name the scope with its reason in {POLICY}'s PLACE_LOOKUP_SANCTIONS"
             )
     called = {call.callee for call in calls}
+    problems += [
+        f"{POLICY}: PLACE_LOOKUPS names {path} {name}, which no call in {' or '.join(sorted(modules))} reaches, so no "
+        "path to it is measured; remove it, or name the lookup its callers call"
+        for path, names in sorted(lookups.items())
+        for name in sorted(names)
+        if path in modules and name in modules[path].functions and (path, name) not in called
+    ]
     for call in sorted(calls, key=lambda each: (each.caller, each.node.lineno)):
         caller = call.caller
         handler = caught[id(call.node)]

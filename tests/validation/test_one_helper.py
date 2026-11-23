@@ -26,6 +26,7 @@ from one_helper import (
     HELPER,
     KIND_ATTRIBUTES,
     PATTERN_FUNCTIONS,
+    POLICY,
     REFERENCE_PATTERN,
     SAMPLE_REFERENCES,
     closing_reference_problems,
@@ -238,9 +239,67 @@ class PlaceLookupTests(PlaceLookupCase):
                 files = _modules({GUARD: ("    except (GitError, OSError):", f"    {handler}")})
                 self.assertEqual([], self.problems(files))
 
-    def test_a_handler_that_raises_another_error_converts_every_kind_alike(self) -> None:
-        # The conforming entry point in trees.py raises UsageError from the GitError, which main catches.
-        self.assertEqual([], self.problems(_modules()))
+    def test_a_handler_that_raises_another_error_converts_every_kind_alike_unless_it_reads_the_kind(self) -> None:
+        # The conforming entry point in trees.py raises UsageError from the GitError, which main catches; a conversion
+        # without `from`, or of a message of its own, converts every kind alike too.
+        old = "        raise UsageError(str(exc)) from exc"
+        for new in (old, "        raise UsageError(str(exc))", '        raise UsageError("an unknown place")'):
+            with self.subTest(new):
+                self.assertEqual([], self.problems(_modules({TREES: (old, new)})))
+        # One that reads the kind to choose what it raises treats the kinds apart.
+        reading = '        raise UsageError("gone" if exc.kind == "not_repository" else str(exc)) from exc'
+        problems = self.problems(_modules({TREES: (old, reading)}))
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn(
+            "current catches the GitError of a place lookup that find raises and treats its kinds apart (reads "
+            "exc.kind)",
+            problems[0],
+        )
+
+    def test_a_function_nested_in_another_is_followed_and_a_nested_name_shadows_a_top_level_one(self) -> None:
+        end = "\n\nif __name__"
+        # A helper nested in a function calls the lookup; the function that calls the helper treats the kinds apart.
+        apart = (
+            "\n\ndef wrap(path):\n    def inner():\n        return lookup(path)\n\n    try:\n        return inner()\n"
+            f"    except GitError as exc:\n        return exc.kind{end}"
+        )
+        problems = self.problems(_modules({GUARD: (end, apart)}))
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn(
+            "wrap catches the GitError of a place lookup that wrap.inner raises and treats its kinds apart (reads "
+            "exc.kind)",
+            problems[0],
+        )
+        # A function nothing calls lets out the GitError of the helper nested in it.
+        escaping = f"\n\ndef outer(path):\n    def inner():\n        return lookup(path)\n\n    return inner(){end}"
+        problems = self.problems(_modules({GUARD: (end, escaping)}))
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn(
+            "outer, which nothing in tools/guard.py or tools/trees.py calls, lets the GitError of a place lookup that "
+            "outer.inner raises escape",
+            problems[0],
+        )
+        # A nested function named as a top-level lookup is the one its enclosing function calls.
+        shadowing = f"\n\ndef safe(path):\n    def lookup(p):\n        return p\n\n    return lookup(path){end}"
+        self.assertEqual([], self.problems(_modules({GUARD: (end, shadowing)})))
+
+    def test_a_lookup_module_the_policy_cannot_read_or_a_lookup_no_call_reaches_is_named(self) -> None:
+        self.assertEqual(
+            [f"{POLICY}: PLACE_LOOKUPS names {GUARD}, which is missing, so no path to its lookups can be measured"],
+            self.problems({TREES: CONFORMING_TREES}),
+        )
+        problems = self.problems({TREES: CONFORMING_TREES, GUARD: "def lookup(:\n"})
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith(f"{GUARD} does not parse"), problems)
+        unreached = {**LOOKUPS, GUARD: frozenset({"lookup", "unused"})}
+        files = _modules({GUARD: ("\n\nif __name__", "\n\ndef unused(path):\n    return path\n\n\nif __name__")})
+        self.assertEqual(
+            [
+                f"{POLICY}: PLACE_LOOKUPS names {GUARD} unused, which no call in tools/guard.py or tools/trees.py "
+                "reaches, so no path to it is measured; remove it, or name the lookup its callers call"
+            ],
+            self.problems(files, unreached),
+        )
 
     def test_a_scope_allowed_with_its_reason_passes_and_a_stale_or_bare_entry_fails(self) -> None:
         name = "a handler that reads whether git answered"
@@ -337,7 +396,7 @@ class PlaceLookupTests(PlaceLookupCase):
         self.assertEqual(1, len(problems), problems)
         self.assertIn("Judge.denied, which nothing in tools/guard.py or tools/trees.py calls", problems[0])
 
-    def test_a_call_from_a_module_other_than_the_two_is_not_read(self) -> None:
+    def test_a_call_from_a_module_place_lookups_does_not_name_is_not_read(self) -> None:
         files = {**_modules(), "tools/other.py": "import guard\n\n\ndef run():\n    return guard.lookup('.')\n"}
         self.assertEqual([], self.problems(files))
 

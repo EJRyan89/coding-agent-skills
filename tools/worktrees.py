@@ -197,7 +197,7 @@ def current_hub() -> Path:
     try:
         checkout = checkout_of(directory)
     except GitError as exc:
-        raise UsageError(f"git could not tell which checkout holds {directory}: {flat_text(str(exc))}") from exc
+        raise UsageError(flat_text(f"git could not tell which checkout holds {directory}: {exc}")) from exc
     if checkout is None:
         raise UsageError("Run this inside the repository or one of its worktrees.")
     return checkout.hub
