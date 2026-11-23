@@ -313,16 +313,18 @@ def run_batches(
     return Runs(runs, outputs, len(outputs), None)
 
 
-def unfinished_fix_lines(runs: Runs, root: Path) -> list[str]:
-    """The SAVED and UNFINISHED lines of a fix whose runs stopped early: a run saves its fixes when it finishes, so
-    the files the finished runs found something to fix in hold them, and no file of a later run does."""
-    lines: list[str] = []
+def report_unfinished_fix(runs: Runs, root: Path, emit: Callable[[str], None]) -> None:
+    """Print the SAVED and UNFINISHED lines of a fix whose runs stopped early through `emit`: a run saves its fixes
+    when it finishes, so the files the finished runs found something to fix in hold them, and no file of a later run
+    does."""
     for run_files, output in zip(runs.batches[: runs.finished], runs.outputs, strict=False):
         found = {diagnostic.path for diagnostic in parse_diagnostics(output.decode("utf-8", errors="replace"), root)}
-        lines += [fact_line("SAVED", name) for name in run_files if Path(name).as_posix() in found]
+        for name in run_files:
+            if Path(name).as_posix() in found:
+                emit(fact_line("SAVED", name))
     for run_files in runs.batches[runs.finished :]:
-        lines += [fact_line("UNFINISHED", name) for name in run_files]
-    return lines
+        for name in run_files:
+            emit(fact_line("UNFINISHED", name))
 
 
 def unwritable_refused(root: Path, files: list[str], emit: Callable[[str], None]) -> list[str]:
@@ -393,8 +395,7 @@ def run(
     file_count = len({diagnostic.path for diagnostic in diagnostics})
     emit(fact_line("SUMMARY", len(diagnostics), file_count, ",".join(rules) or "-"))
     if runs.failure and mode == "fix":
-        for line in unfinished_fix_lines(runs, root):
-            emit(line)
+        report_unfinished_fix(runs, root, emit)
     emit(fact_line("LOG", log_path))
     if runs.failure:
         raise Failed(runs.failure)
