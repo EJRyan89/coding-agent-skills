@@ -150,7 +150,8 @@ removed fails validation until its pattern follows it.
   `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`
 - **Search for:** `rg -n "os\.walk\(" | rg -v onerror`, a walk that skips what it cannot read; `if not <input>:`
   followed by `return True` or `return 0`; a count, verdict, or summary computed over a list that is empty because its
-  step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
+  step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`, which the unscoped form
+  needs, while a `no_finding_above` that names its `source` is accepted in place of one; `"timeout"` in a hook
   of `.claude/settings.json` whose program has no bound of its own below it, or reads a part of its input more than
   once per level of nesting, as `for _ in range(2)` over a child does; in `update.sh`, a `git_quiet` lookup whose
   quiet no (status 1) skips a list of commits rather than printing an `UNLISTED` line, and a `log_lines` range whose

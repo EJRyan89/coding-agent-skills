@@ -210,8 +210,14 @@ def record(
     verdict: str = "APPROVED",
     version: int = 1,
     ledger: Sequence[dict[str, Any]] | None = None,
+    reviewers: Sequence[str] = (),
+    unavailable: Sequence[str] = (),
 ) -> dict[str, Any]:
     value: dict[str, Any] = {"review": {"version": version, "verdict": verdict}, "findings": list(findings)}
+    if reviewers:
+        value["review"]["reviewers"] = [{"id": reviewer} for reviewer in reviewers]
+    if unavailable:
+        value["review"]["coverage"] = {"unavailable_sources": list(unavailable)}
     if ledger is not None:
         value["ledger"] = list(ledger)
     return value
@@ -561,6 +567,15 @@ class LoaderTests(unittest.TestCase):
                 (scenario,) = skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
                 self.assertEqual(len(expectations), len(scenario.expectations))
 
+    def test_a_no_finding_above_that_names_its_source_stands_in_for_the_verdict(self) -> None:
+        # It fails an INCOMPLETE review itself, so a scenario that holds it alone needs no verdict to.
+        scoped = {"kind": "no_finding_above", "severity": "SUGGESTION", "source": "generic-review"}
+        write_scenario(self.root, "case", scenario_spec(scoped))
+        (scenario,) = skill_evals_scenarios.load_scenarios("demo", ["case"], root=self.root)
+        self.assertEqual(["no_finding_above SUGGESTION * by generic-review"], [e.label for e in scenario.expectations])
+        unscoped = {"kind": "no_finding_above", "severity": "SUGGESTION"}
+        self.assertIn("names its verdict", self.load_error(scenario_spec(unscoped)))
+
     def test_other_scenario_faults(self) -> None:
         self.assertIn("names skill", self.load_error({**scenario_spec(), "skill": "other"}))
         self.assertIn("mode must be one of", self.load_error(scenario_spec(mode="partial")))
@@ -779,6 +794,82 @@ class NoFindingAboveTests(unittest.TestCase):
                 )
         with self.assertRaisesRegex(ScenarioError, "lines must be distinct positive line numbers"):
             skill_evals_scenarios.expectation({**spec, "lines": [0]}, "initial")
+
+    def test_a_source_counts_only_that_reviewer_s_findings_alone_or_with_others(self) -> None:
+        # Another reviewer's finding above the limit is not the named one's, so it fails nothing.
+        spec = {"kind": "no_finding_above", "severity": "SHOULD_FIX", "source": "sibling-spellings"}
+        ran = ["generic-review", "sibling-spellings", "trust-boundary"]
+        for source, passes in (
+            ("trust-boundary", True),
+            ("generic-review + trust-boundary", True),
+            ("sibling-spellings-two", True),
+            ("", True),
+            ("sibling-spellings", False),
+            ("trust-boundary + sibling-spellings", False),
+        ):
+            with self.subTest(source=source):
+                found = finding("a.py", 3, "MUST_FIX", source=source)
+                self.assertIs(passes, check(spec, record([found], reviewers=ran), "initial") is None)
+        below = finding("a.py", 3, "SHOULD_FIX", source="sibling-spellings")
+        self.assertIsNone(check(spec, record([below], reviewers=ran), "initial"))
+        failure = check(
+            spec,
+            record(
+                [
+                    finding("a.py", 3, "MUST_FIX", source="trust-boundary"),
+                    finding("b.py", 4, "MUST_FIX", source="sibling-spellings"),
+                ],
+                reviewers=ran,
+            ),
+            "initial",
+        )
+        self.assertEqual("found MUST_FIX by sibling-spellings at b.py:4", failure)
+        self.assertEqual(
+            "no_finding_above SHOULD_FIX * by sibling-spellings",
+            skill_evals_scenarios.expectation(spec, "initial").label,
+        )
+        unscoped = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        other = record([finding("a.py", 3, "MUST_FIX", source="trust-boundary")], reviewers=ran)
+        self.assertEqual("found MUST_FIX at a.py:3", check(unscoped, other, "initial"))
+        for malformed in ("", "  ", 5, None):
+            with self.subTest(malformed=malformed):
+                self.assertEqual(
+                    "source must be a reviewer's id; leave it out for any reviewer",
+                    refusal({**spec, "source": malformed}, "initial"),
+                )
+
+    def test_a_source_s_silence_is_no_pass_when_it_did_not_run_or_the_review_is_incomplete(self) -> None:
+        # Nothing raised by a reviewer that never ran, or that could not read every changed file, shows nothing.
+        spec = {"kind": "no_finding_above", "severity": "SHOULD_FIX", "source": "sibling-spellings"}
+        self.assertEqual(
+            "sibling-spellings did not run; the review ran generic-review, trust-boundary",
+            check(spec, record(reviewers=["generic-review", "trust-boundary"]), "initial"),
+        )
+        self.assertEqual("sibling-spellings did not run; the review ran no reviewer", check(spec, record(), "initial"))
+        incomplete = record(verdict="INCOMPLETE", reviewers=["sibling-spellings"], unavailable=["a.py", "b.py"])
+        self.assertEqual(
+            "sibling-spellings could not read every changed file: "
+            "the review's coverage lists unavailable sources a.py, b.py",
+            check(spec, incomplete, "initial"),
+        )
+        self.assertIsNone(check(spec, record(verdict="CHANGES_REQUESTED", reviewers=["sibling-spellings"]), "initial"))
+        unscoped = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        self.assertIsNone(check(unscoped, incomplete, "initial"))
+
+    def test_a_source_s_silence_is_no_pass_when_another_reviewer_s_block_hides_an_unread_file(self) -> None:
+        # Another reviewer's blocking finding records CHANGES_REQUESTED over INCOMPLETE, so the verdict alone does not
+        # show that a changed file went unread; the coverage does.
+        spec = {"kind": "no_finding_above", "severity": "SHOULD_FIX", "source": "sibling-spellings"}
+        blocked = record(
+            [finding("a.py", 3, "MUST_FIX", source="trust-boundary")],
+            "CHANGES_REQUESTED",
+            reviewers=["sibling-spellings", "trust-boundary"],
+            unavailable=["b.py"],
+        )
+        self.assertEqual(
+            "sibling-spellings could not read every changed file: the review's coverage lists unavailable sources b.py",
+            check(spec, blocked, "initial"),
+        )
 
 
 class OnlyAtTests(unittest.TestCase):
@@ -1927,6 +2018,38 @@ class ReviewerScenarioTests(unittest.TestCase):
                 found = finding(path, line, "MUST_FIX", category="Missed sibling", source=source)
                 self.assertIs(passes, check(caught, record([found]), "initial") is None)
 
+    def test_the_closed_spellings_control_fails_only_on_a_sibling_spellings_finding_above_should_fix(self) -> None:
+        # The fixture keeps a private flattener that other reviewers may flag as a copy of a shared helper; what they
+        # raise, whatever its severity, and the verdict it brings, judge them, not the specialist the control is for.
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["closed-spellings"])
+        ran = REVIEW_REPOSITORY_ROLES["closed-spellings"].split(",")
+        path = "skills/ejryan89-code-review-core/scripts/review_reporting.py"
+        for source, severity, passes in (
+            ("trust-boundary", "MUST_FIX", True),
+            ("sibling-search + skill-scripts", "MUST_FIX", True),
+            ("sibling-spellings", "SHOULD_FIX", True),
+            ("sibling-spellings", "MUST_FIX", False),
+            ("sibling-search + sibling-spellings", "MUST_FIX", False),
+        ):
+            with self.subTest(source=source, severity=severity):
+                found = record([finding(path, 13, severity, source=source)], "CHANGES_REQUESTED", reviewers=ran)
+                failures = [expected.check(found) for expected in scenario.expectations]
+                self.assertIs(passes, failures == [None] * len(failures), failures)
+
+    def test_the_open_spelling_catch_alone_decides_its_scenario(self) -> None:
+        # Other reviewers asking for changes on their own, with the specialist silent, pass no expectation of it.
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["open-spelling"])
+        ran = REVIEW_REPOSITORY_ROLES["open-spelling"].split(",")
+        path = "skills/ejryan89-code-review-core/scripts/review_reporting.py"
+        others = [finding(path, 13, "MUST_FIX", category="Missed sibling", source="trust-boundary")]
+        self.assertEqual(
+            [False] * len(scenario.expectations),
+            [
+                expected.check(record(others, "CHANGES_REQUESTED", reviewers=ran)) is None
+                for expected in scenario.expectations
+            ],
+        )
+
     def test_a_source_that_is_no_reviewer_of_the_scenario_is_refused(self) -> None:
         listed = {"kind": "finding", "path": "tools/a.sh", "lines": [1], "severity": "SHOULD_FIX"}
         spec = reviewer_spec()
@@ -1936,6 +2059,17 @@ class ReviewerScenarioTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
         spec["expectations"] = [{**listed, "source": "sibling-spelling"}]
+        write_reviewer_scenario(self.root, spec)
+        self.assertIn('case: source "sibling-spelling" is not a reviewer of the scenario', self.refusal())
+
+    def test_a_no_finding_above_source_that_is_no_reviewer_of_the_scenario_is_refused(self) -> None:
+        # A reviewer the scenario never starts never runs, so no run could pass it.
+        clean = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        spec = reviewer_spec()
+        spec["expectations"] = [{**clean, "source": "sibling-spellings"}]
+        write_reviewer_scenario(self.root, spec)
+        self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+        spec["expectations"] = [{**clean, "source": "sibling-spelling"}]
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: source "sibling-spelling" is not a reviewer of the scenario', self.refusal())
 
@@ -4163,11 +4297,11 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
 REVIEW_REPOSITORY_EXPECTATIONS = {
     "branch-name-command": 1,
     "build-grant": 1,
-    "closed-spellings": 2,
+    "closed-spellings": 1,
     "drifted-guide": 2,
     "missed-sibling": 1,
     "misstated-exit-status": 1,
-    "open-spelling": 2,
+    "open-spelling": 1,
     "tested-change": 2,
     "text-read-policy": 1,
     "undocumented-change": 2,
@@ -4247,10 +4381,10 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
 
 def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_whole_rows() -> None:
     # Each sweep's cases together are its skill's whole run: every scenario once, whose counts are the totals a full
-    # run's row gives, 28 for review-document and 18 for review-repository on each model.
+    # run's row gives, 28 for review-document and 16 for review-repository on each model.
     for skill, cases, total in (
         ("review-document", REVIEW_DOCUMENT_EXPECTATIONS, 28),
-        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 18),
+        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 16),
     ):
         assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
         assert sum(cases.values()) == total
@@ -5221,13 +5355,25 @@ def test_the_clean_scenarios_include_each_reviewer_s_clean_change() -> None:
 
 @pytest.mark.parametrize("folder", COMMITTED_CLEAN, ids=lambda folder: f"{folder.parent.name}/{folder.name}")
 def test_every_committed_clean_scenario_fails_an_incomplete_review_that_raised_nothing(folder: Path) -> None:
+    # A verdict fails such a review, and so does a no_finding_above that names its source, which fails it itself.
+    spec = json.loads((folder / "scenario.json").read_text(encoding="utf-8"))
+    sources = [item["source"] for item in spec["expectations"] if "source" in item]
     (scenario,) = skill_evals_scenarios.load_scenarios(folder.parent.name, [folder.name])
-    approved = skill_evals_judging.judge([scenario], ["haiku"], constant(record()))
+    approved = skill_evals_judging.judge([scenario], ["haiku"], constant(record(reviewers=sources)))
     assert [outcome.failure for outcome in approved] == [None] * len(scenario.expectations)
-    incomplete = skill_evals_judging.judge([scenario], ["haiku"], constant(record(verdict="INCOMPLETE")))
-    assert [(outcome.label, outcome.failure) for outcome in incomplete if outcome.failure] == [
+    incomplete = skill_evals_judging.judge(
+        [scenario], ["haiku"], constant(record(verdict="INCOMPLETE", reviewers=sources, unavailable=["a.py"]))
+    )
+    unread = "could not read every changed file: the review's coverage lists unavailable sources a.py"
+    expected = [
         ("verdict APPROVED", "verdict is INCOMPLETE")
+        if item["kind"] == "verdict"
+        else (label, f"{item['source']} {unread}")
+        for item, label in zip(spec["expectations"], (outcome.label for outcome in incomplete), strict=True)
+        if item["kind"] == "verdict" or "source" in item
     ]
+    assert expected
+    assert [(outcome.label, outcome.failure) for outcome in incomplete if outcome.failure] == expected
 
 
 def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
