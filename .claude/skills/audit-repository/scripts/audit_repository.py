@@ -121,7 +121,7 @@ import versions
 import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, command_name, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
@@ -1670,7 +1670,8 @@ def main(
     except AuditError as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
-    print("\n".join(lines))
+    # A ref --since names, such as v0.1.0^{/<pattern>}, is printed as typed and may hold a line break.
+    print("\n".join(single_line(line) for line in lines))
     return 0
 
 
