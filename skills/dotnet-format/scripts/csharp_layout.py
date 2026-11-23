@@ -121,7 +121,7 @@ from dotnet_format_targets import (
 from dotnet_solution import FileRefused, listed_projects, project_path, refusal
 from flat_text import fact_line, flat_text
 from run_dotnet_format import Completed, Services
-from text_lines import text_lines
+from text_lines import program_lines, text_lines
 from tree_reader import TreeReader, TreeRefused
 from xml_reader import XmlRefused
 
@@ -972,7 +972,7 @@ def msbuild_failure(result: Completed) -> str:
     all it printed when it printed none, flattened and cut to MSBUILD_REASON_CHARACTERS; the exit code alone when it
     printed nothing."""
     text = result.output.decode("utf-8", errors="replace")
-    errors = [line for line in text_lines(text) if MSBUILD_ERROR.search(line)]
+    errors = [line for line in program_lines(text) if MSBUILD_ERROR.search(line)]
     reason = flat_text("\n".join(errors) or text)
     stated = f"it exited with code {result.returncode}"
     if not reason:

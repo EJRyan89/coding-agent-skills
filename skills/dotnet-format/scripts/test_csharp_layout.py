@@ -1692,6 +1692,12 @@ class ConfigTests(unittest.TestCase):
         self.changed("src/Top.cs")
         self.assertEqual({"present"}, set(self.states(self.config()).values()))
 
+    def test_a_failed_evaluation_keeps_a_project_path_holding_a_lone_cr_whole(self) -> None:
+        # MSBuild ends a line of its output at LF, or CRLF on Windows; a CR alone is part of the path it names.
+        reason = layout.msbuild_failure(Completed(1, b"/src/a\rb.csproj : error MSB4025: ...\n"))
+        self.assertTrue(reason.startswith("it exited with code 1: /src/a"), reason)
+        self.assertIn("b.csproj : error MSB4025: ...", reason)
+
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
 def test_line_endings_are_counted_alike(newline: str) -> None:
