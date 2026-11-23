@@ -632,6 +632,38 @@ class SidecarTests(WalkTestCase):
         self.assertEqual(["._doc.md", "doc.md"], self.files(walk))
         self.assertEqual([], walk.not_entered)
 
+    def test_a_dot_underscore_entry_whose_metadata_cannot_be_read_is_reported_and_the_walk_goes_on(self) -> None:
+        self.write("doc.md", "kept.md", "later/inside.md")
+        self.plant("._doc.md")
+        listing = os.scandir
+        failure = OSError(5, "Input/output error")
+
+        class FailingEntry:
+            def __init__(self, entry: os.DirEntry[str]) -> None:
+                self.entry, self.name, self.path = entry, entry.name, entry.path
+
+            def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+                if self.name == "._doc.md":
+                    raise failure
+                return self.entry.stat(follow_symlinks=follow_symlinks)
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+        @contextlib.contextmanager
+        def scandir(path: Any = ".") -> Iterator[Iterator[FailingEntry]]:
+            with listing(path) as entries:
+                yield (FailingEntry(entry) for entry in entries)
+
+        with mock.patch.object(os, "scandir", scandir):
+            walk = walk_files(self.root, every_file)
+        self.assertEqual(["doc.md", "kept.md", "later/inside.md"], self.files(walk))
+        self.assertEqual(
+            [NotEntered(self.root / "._doc.md", UNEXAMINED, "the entry cannot be examined: Input/output error")],
+            walk.not_entered,
+        )
+        self.assertIs(failure, walk.not_entered[0].error)
+
     def test_only_a_wanted_regular_file_named_beside_its_sibling_is_opened(self) -> None:
         self.write("doc.md", "App.csproj", "readme.txt")
         for sidecar in ("._doc.md", "._App.csproj", "._alone.csproj"):
