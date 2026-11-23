@@ -553,11 +553,7 @@ class LoaderTests(unittest.TestCase):
         clean: dict[str, Any] = {"kind": "no_finding_above", "severity": "SUGGESTION"}
         finding: dict[str, Any] = {"kind": "finding", "path": "a.go", "lines": [3], "severity": "MUST_FIX"}
         refused: list[list[dict[str, Any]]] = [[clean], [{"kind": "only_at", "path": "a.go", "lines": [3]}]]
-        accepted: list[list[dict[str, Any]]] = [
-            [clean, {"kind": "verdict", "verdict": "APPROVED"}],
-            [finding],
-            [{**clean, "source": "generic-review"}],
-        ]
+        accepted: list[list[dict[str, Any]]] = [[clean, {"kind": "verdict", "verdict": "APPROVED"}], [finding]]
         message = "a scenario that expects no finding names its verdict, or an INCOMPLETE review that raised nothing"
         for expectations in refused:
             with self.subTest(expectations=expectations):
@@ -567,6 +563,15 @@ class LoaderTests(unittest.TestCase):
                 write_scenario(self.root, f"case{number}", scenario_spec(*expectations))
                 (scenario,) = skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
                 self.assertEqual(len(expectations), len(scenario.expectations))
+
+    def test_a_no_finding_above_that_names_its_source_stands_in_for_the_verdict(self) -> None:
+        # It fails an INCOMPLETE review itself, so a scenario that holds it alone needs no verdict to.
+        scoped = {"kind": "no_finding_above", "severity": "SUGGESTION", "source": "generic-review"}
+        write_scenario(self.root, "case", scenario_spec(scoped))
+        (scenario,) = skill_evals_scenarios.load_scenarios("demo", ["case"], root=self.root)
+        self.assertEqual(["no_finding_above SUGGESTION * by generic-review"], [e.label for e in scenario.expectations])
+        unscoped = {"kind": "no_finding_above", "severity": "SUGGESTION"}
+        self.assertIn("names its verdict", self.load_error(scenario_spec(unscoped)))
 
     def test_other_scenario_faults(self) -> None:
         self.assertIn("names skill", self.load_error({**scenario_spec(), "skill": "other"}))
@@ -2033,7 +2038,11 @@ class ReviewerScenarioTests(unittest.TestCase):
         spec["expectations"] = [{**listed, "source": "sibling-spelling"}]
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: source "sibling-spelling" is not a reviewer of the scenario', self.refusal())
+
+    def test_a_no_finding_above_source_that_is_no_reviewer_of_the_scenario_is_refused(self) -> None:
+        # A reviewer the scenario never starts never runs, so no run could pass it.
         clean = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        spec = reviewer_spec()
         spec["expectations"] = [{**clean, "source": "sibling-spellings"}]
         write_reviewer_scenario(self.root, spec)
         self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))

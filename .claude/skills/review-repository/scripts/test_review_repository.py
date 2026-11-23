@@ -1299,7 +1299,6 @@ class SiblingSpellingsTests(unittest.TestCase):
                     # The reviewer given only the issue made the catch, not one that read the body's claim.
                     "source": "sibling-spellings",
                 },
-                {"kind": "verdict", "verdict": "CHANGES_REQUESTED"},
             ],
             expectations,
         )
@@ -1320,7 +1319,7 @@ class SiblingSpellingsTests(unittest.TestCase):
             "a fix as the route reads one",
         )
         self.assertEqual(
-            [{"kind": "no_finding_above", "severity": "SHOULD_FIX"}, {"kind": "verdict", "verdict": "APPROVED"}],
+            [{"kind": "no_finding_above", "severity": "SHOULD_FIX", "source": "sibling-spellings"}],
             json.loads((directory / "scenario.json").read_text(encoding="utf-8"))["expectations"],
         )
 
