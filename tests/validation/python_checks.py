@@ -1569,9 +1569,10 @@ def _raises_anew(block: list[ast.stmt]) -> bool:
     return bool(block) and isinstance(block[-1], ast.Raise) and block[-1].exc is not None
 
 
-def _text(node: ast.expr) -> str | None:
-    """The text a string expression renders, each part it formats in read as one word: a string literal, an f-string,
-    a `%` or `+` of one, or a `format` of one; None for any other expression."""
+def rendered_text(node: ast.expr) -> str | None:
+    """The text a string expression renders, each part it formats in read as one word, "x": a string literal, an
+    f-string, a `%` or `+` of one, or a `format` of one; None for any other expression. _message reads through it
+    whether an expression is a message, and tree_readers the GitHub endpoints a module writes."""
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
     if isinstance(node, ast.JoinedStr):
@@ -1580,10 +1581,10 @@ def _text(node: ast.expr) -> str | None:
             for value in node.values
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mod, ast.Add)):
-        left, right = _text(node.left), _text(node.right)
+        left, right = rendered_text(node.left), rendered_text(node.right)
         return None if left is None and right is None else (left or "x") + (right or "x")
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-        return _text(node.func.value)
+        return rendered_text(node.func.value)
     return None
 
 
@@ -1593,7 +1594,7 @@ def _message(node: ast.expr | None) -> bool:
     holds one."""
     if isinstance(node, ast.Tuple):
         return any(_message(element) for element in node.elts)
-    if node is None or (text := _text(node)) is None:
+    if node is None or (text := rendered_text(node)) is None:
         return False
     constants = [part.value for part in ast.walk(node) if isinstance(part, ast.Constant)]
     own = "".join(value for value in constants if isinstance(value, str))
