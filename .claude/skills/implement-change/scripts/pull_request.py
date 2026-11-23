@@ -6,6 +6,19 @@
            origin/main, which it fetches first
     open   check as `check` does, check that the branch's upstream holds HEAD, then open the pull request with the
            title read from its file, so no title is ever pasted into a shell command
+    type-checks
+           name each type-check job validation runs that reads a Python file changed since --base, committed,
+           uncommitted, or untracked, and print the validation runner's command that runs those jobs and no other,
+           so the strict run continuous integration fails is run before the push; a change that reaches every job
+           prints why, and the command that runs them all
+
+The type-check jobs come from ejryan89-skill-core's type_check_roots, the reading validation builds its jobs from:
+the shared run of the roots checked together and, for a root `[tool.validation] mypy-strict` in `pyproject.toml`
+lists, its own strict run, or a skill's own run for a file under its `scripts/`. A suite under `tests/` is checked by
+the strict run of `tests`, whatever root the module it tests sits in. A change to a file that configures or pins every
+check (`pyproject.toml`, `requirements-dev.in`, `requirements-dev.txt`), or to a Python file in a folder other roots
+import (`deployer/`, `tools/`, and each folder `[tool.mypy] mypy_path` lists), reaches every type-check job, since a
+module that imports it may sit in any root.
 
 The template is `pull_request_template.md`, in any case, in `.github/`, the top folder, or `docs/`, as GitHub reads
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
@@ -44,9 +57,14 @@ Every line is one fact:
     UNPUSHED <upstream>            open: the upstream does not hold HEAD: push it
     READY                          check: nothing to fix
     PULL_REQUEST <url>             open: the pull request opened
+    BASE <remote>/<branch> <sha>   type-checks: the base's tip after the fetch, which the changed files are read from
+    TYPE_CHECK <job>               type-checks: each job that reads a changed Python file
+    TYPE_CHECK_ALL <path> <why>    type-checks: a changed file that reaches every type-check job, and why
+    RUN <command>                  type-checks: the command that runs those jobs, or all of them, to run as printed
+    NO_TYPE_CHECK                  type-checks: no changed Python file sits where a type check reads it
 
 Exit status:
-  0  the body was drafted, the check found nothing, or the pull request opened
+  0  the body was drafted, the check found nothing, the pull request opened, or the type checks were named
   1  one line per problem, and open opens nothing, or a last line FAILED <reason>
   2  a usage error
 """
@@ -57,7 +75,7 @@ import argparse
 import re
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -86,6 +104,15 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import hidden_spans
 from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
 from text_lines import line_index, line_starts, text_lines
+from type_check_roots import (
+    JOB_PREFIX,
+    MYPY_PATH_PREFIX,
+    PYPROJECT,
+    every_job_reasons,
+    file_type_check_jobs,
+    imported_folders,
+    strict_type_check_areas,
+)
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -94,6 +121,8 @@ TEMPLATE_FOLDERS = (".github", "", "docs")
 # A list item with no text: its marker, as markdown_sections reads one, alone between spaces and tabs.
 EMPTY_LIST_ITEM = re.compile(rf"[{MARKDOWN_SPACE}]*{LIST_MARKER}[{LINE_END}]*")
 HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*")
+# The validation runner's command, from the top of the repository, that a `-k` per job follows.
+VALIDATION_COMMAND = "python -B tests/run_validation.py"
 
 
 class PullRequestError(Exception):
@@ -292,16 +321,21 @@ def draft(git: GitClient, repository: Path, closes: Sequence[int]) -> list[str]:
     ]
 
 
-def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str], list[str]]:
-    """The base's tip after a fetch, and whether the branch holds it, adds to it, and has nothing uncommitted."""
+def fetched_base(git: GitClient, repository: Path, base: Base) -> str:
+    """The base's tip after a fetch."""
     try:
         git.output(["fetch", "--quiet", base.remote, base.branch], directory=repository)
     except GitError as exc:
         raise PullRequestError(f"cannot fetch {base.branch} from {base.remote}: {flat_text(str(exc))}") from exc
-    reference = f"refs/remotes/{base}"
-    commit = commit_of(git, repository, reference)
+    commit = commit_of(git, repository, f"refs/remotes/{base}")
     if commit is None:
         raise PullRequestError(f"{base} names no commit after the fetch")
+    return commit
+
+
+def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str], list[str]]:
+    """The base's tip after a fetch, and whether the branch holds it, adds to it, and has nothing uncommitted."""
+    commit = fetched_base(git, repository, base)
     problems = []
     # merge-base --is-ancestor exits 1 saying nothing when HEAD does not hold the base; any other failure is git's.
     if quiet_output(git, repository, ["merge-base", "--is-ancestor", commit, "HEAD"]) is None:
@@ -328,6 +362,66 @@ def check(
     body_lines = body_problems(body, template_text) + forms_lines(title, body, template_text)
     problems = title_problems + body_lines + branch_problems
     return title, facts + base_facts, problems
+
+
+def changed_files(git: GitClient, top: Path, commit: str) -> list[str]:
+    """Each file changed since the merge base with `commit`, committed, uncommitted, or untracked, as a path from `top`
+    with `/` between its parts, read NUL-separated so a name git would quote is read as itself. A rename counts as
+    the deletion and the addition, so a module moved out of a root still reaches that root's jobs."""
+    names: set[str] = set()
+    for arguments in (
+        ["diff", "-z", "--name-only", "--no-renames", f"{commit}...HEAD"],
+        ["diff", "-z", "--name-only", "--no-renames", "HEAD"],
+        ["ls-files", "-z", "--others", "--exclude-standard"],
+    ):
+        names.update(name for name in git_output(git, top, arguments).split("\0") if name)
+    return sorted(names)
+
+
+def configured_paths(top: Path, reader: Callable[[Path], list[str] | None], what: str) -> list[str]:
+    """The paths `reader` reads from `pyproject.toml` at `top`, as validation reads them, or a PullRequestError naming
+    `what` it lacks."""
+    pyproject = top / PYPROJECT
+    try:
+        paths = reader(pyproject)
+    except (OSError, ValueError, RecursionError) as exc:
+        # tomllib's TOMLDecodeError and a UnicodeDecodeError are ValueErrors, and tomllib recurses per level.
+        raise PullRequestError(f'cannot read "{pyproject}": {flat_text(str(exc))}') from exc
+    if paths is None:
+        raise PullRequestError(f"{PYPROJECT}: {what}")
+    return paths
+
+
+def run_command(jobs: Sequence[str]) -> str:
+    """The validation runner's command that runs exactly `jobs`: a `-k` per job, each name in single quotes, which
+    Bash and PowerShell both read literally, and none of which quotes a job's own `-k` pattern as a substring of
+    another's, since each name ends at its closing parenthesis."""
+    quoted = [name for name in jobs if "'" in name]
+    if quoted:
+        raise PullRequestError(f"a type-check job's name holds a single quote: {flat_text(quoted[0])}")
+    return " ".join([VALIDATION_COMMAND, *(f"-k '{name}'" for name in jobs)])
+
+
+def type_checks(git: GitClient, repository: Path, base: Base) -> list[str]:
+    """The base's tip, each type-check job a changed Python file reaches, and the command that runs them."""
+    top = top_of(git, repository)
+    commit = fetched_base(git, repository, base)
+    changed = changed_files(git, top, commit)
+    strict = configured_paths(top, strict_type_check_areas, "[tool.validation] mypy-strict is not a list of paths")
+    imported = configured_paths(
+        top, imported_folders, f"[tool.mypy] mypy_path is not a list of paths starting {MYPY_PATH_PREFIX}"
+    )
+    facts = [f"BASE {base} {commit}"]
+    reasons = every_job_reasons(changed, imported)
+    if reasons:
+        # Every job's name starts with the prefix, so the runner's pattern of it alone selects them all.
+        # A file name may hold a line break, which would start a line of its own, so each is printed flat.
+        widened = [f"TYPE_CHECK_ALL {flat_text(path)} {flat_text(why)}" for path, why in reasons]
+        return [*facts, *widened, f"RUN {VALIDATION_COMMAND} -k '{JOB_PREFIX}'"]
+    jobs = file_type_check_jobs(top, changed, strict)
+    if not jobs:
+        return [*facts, "NO_TYPE_CHECK"]
+    return [*facts, *(f"TYPE_CHECK {job}" for job in jobs), f"RUN {run_command(jobs)}"]
 
 
 def upstream_problems(git: GitClient, repository: Path) -> list[str]:
@@ -371,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
     files.add_argument("--base", type=base_argument, required=True, help="a remote's branch, such as origin/main")
     commands.add_parser("check", parents=[files], help="check the title, the body, and the branch")
     commands.add_parser("open", parents=[files], help="check, then open the pull request")
+    type_check_parser = commands.add_parser(
+        "type-checks", help="print the command that runs the type checks of the Python files changed since --base"
+    )
+    type_check_parser.add_argument(
+        "--base", type=base_argument, required=True, help="a remote's branch, such as origin/main"
+    )
     return parser
 
 
@@ -378,6 +478,9 @@ def run(options: argparse.Namespace, git: GitClient, github: GitHubClient | None
     repository: Path = options.repository
     if options.command == "draft":
         print("\n".join(draft(git, repository, options.closes)))
+        return 0
+    if options.command == "type-checks":
+        print("\n".join(type_checks(git, repository, options.base)))
         return 0
     title, facts, problems = check(git, repository, options.title_file, options.body_file, options.base)
     if options.command == "open":

@@ -51,8 +51,18 @@ which runs it anyway:
    `-k <suite path>`.
 2. Each new regression test with the fix reverted, to see it fail without the fix, then again with the fix restored.
 3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
-   take seconds over the whole tree, and the type check of each root a changed file sits in, as in
-   `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
+   take seconds over the whole tree, and the type checks the `implement-change` repository skill's
+   `pull_request.py type-checks --base origin/main` names, by running its `RUN` line as printed. For a file whose own
+   root nothing else imports, such as a skill's `scripts/` outside `mypy_path`, or a suite directly under `tests/` or in
+   a `tests/` folder `mypy_path` does not list, that line runs exactly the jobs that read it: the run of the roots
+   checked together and, for each root `mypy-strict` lists under `[tool.validation]` in `pyproject.toml`, its own strict
+   run, `static type check (mypy --strict <root>)`, or a skill's own run. A suite is checked by the strict run of its own root, `tests`, whatever root the module it tests
+   sits in. A change that can break another root's run selects every type check, `-k 'static type check'`, and says
+   why on a `TYPE_CHECK_ALL` line: a change to `pyproject.toml` or the development dependencies, which configure and
+   pin every check, or a Python file in a folder other roots import, `deployer/`, `tools/`, or a folder `mypy_path`
+   lists. That covers ejryan89-skill-core's `scripts/` and a `tools/` module whose suite reaches a name the module
+   stops exporting. The strict runs are the ones continuous integration fails, so run that line rather than `mypy` on
+   a file or the roots together.
 4. Once the title and the body are written, the checks that read them, and only those. Given without `-k`,
    `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, closing-line,
    upgrade-note, forms-considered, silent-revert, and known-failure closing checks, start no suite, and say so:

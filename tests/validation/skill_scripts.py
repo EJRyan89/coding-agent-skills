@@ -2713,6 +2713,13 @@ TEMPORARY_LOOKUPS = frozenset({"tempfile.gettempdir", "tempfile.gettempdirb"})
 TEMPORARY_VALUE = "tempfile.tempdir"
 ENVIRONMENT_GETTERS = frozenset({"os.getenv", "os.getenvb"})
 EXPANDED_TEMPORARY_VARIABLE = re.compile(r"\$\{?(?:TMPDIR|TEMP|TMP)\b|%(?:TMPDIR|TEMP|TMP)%")
+DUPLICATION_ALLOWED = {
+    "TEMPORARY_FOLDER_ROOTS": (
+        "the folders whose Python the temporary-folder policy reads, a different fact from PACKAGE_ROOTS in "
+        "skills/ejryan89-skill-core/scripts/type_check_roots.py, the folders other type-check roots import, which "
+        "coincides with it in value today; importing one would move the other with it"
+    ),
+}
 # The folders, besides each skill's scripts, whose Python the policy reads: the deployer's and the repository tools'.
 TEMPORARY_FOLDER_ROOTS = ("deployer", "tools")
 WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
