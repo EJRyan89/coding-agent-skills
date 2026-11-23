@@ -964,6 +964,8 @@ removed fails validation until its pattern follows it.
   tab-separated fact line; and the choke points every stdout line of a shipped or repository skill's scripts passes,
   `flat_text:flat_text`, `flat_text:fact_line`, `console:failed_line`, and `flat_text:single_line`, given a whole
   line or each line of a newline join, as `review_pipeline:_run_enumerate` and `memory_audit:main` print it, and
+  `flat_text:document_line`, for a document's own line kept as its file holds it, as `change_skill:print_section`
+  prints it, and
   `repo_cleanup:fields_line`, which flattens each field of a line it keeps tab-separated.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
@@ -995,6 +997,7 @@ removed fails validation until its pattern follows it.
   which refuses a stdout print in a shipped or repository skill's scripts whose text may hold a line break, unless its module's
   allowance states why,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_print_choke_point_policy_refuses_a_stdout_line_that_may_hold_a_break`,
+  `skills/ejryan89-skill-core/scripts/test_flat_text.py::DocumentLineTests`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::CommandTests::test_a_match_or_a_failure_holding_a_line_break_prints_on_one_line`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::OneLineFactTests`,
   `skills/review-document/scripts/test_review_document.py::test_a_document_line_holding_a_line_break_prints_on_one_line`,

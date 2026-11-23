@@ -2533,7 +2533,10 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
 # every value is one of those; an either-or of two of them; or a join of a comprehension whose every item is one, the
 # final pass over every line. A print that must print something else, such as a Markdown report the skill shows as it
 # is, is sanctioned beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another
-# protocol, under EXIT_CONTRACT_EXEMPT, is not read.
+# protocol, under EXIT_CONTRACT_EXEMPT, is not read. Two limits: a print passed as an argument and called through the
+# parameter that takes it is not read; and document_line keeps a tab, so a tab-separated fact line printed through it
+# may gain a field, which this policy cannot tell from a document's own line, so document_line is for a document's own
+# lines alone.
 OUTPUT_CHOKE_POINTS = frozenset(
     {
         "flat_text.flat_text",
