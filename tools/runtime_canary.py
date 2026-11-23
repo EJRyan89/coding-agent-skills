@@ -503,6 +503,11 @@ class RecordRefused(ValueError):
         self.reason = reason
 
 
+# A records file is what the canary's recorders write while a runtime runs, which no reading can tell from its path,
+# so validation reads it as a program's output only by this declaration.
+OUTPUT_SOURCES = {"read_records.path": "the JSON Lines records the recorders write, each ended with a line feed"}
+
+
 def read_records(path: Path) -> list[dict[str, Any]]:
     """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete. The canary creates
     each records file empty before the run, so an empty or missing file is a run that recorded nothing, which the

@@ -4703,32 +4703,51 @@ def line_split_problems(root: Path, files: list[Path]) -> list[str]:
 # a name or a path the program prints can hold it. str.splitlines() breaks at all of them, and bytes.splitlines() and
 # text_lines.text_lines, lines_and_breaks, and line_starts given no breaks of their own or LINE_BREAK at a lone CR, so
 # no module splits a program's output with them, whatever the line-split policy allows it. A program's output is what a
-# process the module starts writes, as the module receives it: a run result's stdout, stderr, or output, on any
-# receiver, as subprocess.run, bounded_process.run_bounded, GitClient.run, GitHubClient.run, the deployer's run_tool,
-# and a skill's Completed give them, a check_output() or a getoutput(), a communicate(), an output() or a quiet_output()
-# as GitClient and GitHubClient give it, a read() of what is already a program's output, as process.stdout.read(), git's
-# output as the git separator policy reads a call of git, and the return of a function a module-level OUTPUT_SOURCES =
-# {function: reason} declares, for a function that gathers a program's output where no reading can follow it, as
-# discovery's converse does through a reader thread and a queue; an entry naming no function the module defines at its
-# top level, or one whose return no call reads, is refused. It is followed through a name a scope binds to it, through
-# what keeps its text as that policy reads it, a decode() among it, through an index, a get(), or a part of a split or a
-# partition, through a JSON parse by json.loads or json_reader.loads, through a line program_lines or output_lines
+# process writes, as the module receives it: a run result's stdout, stderr, or output, on any receiver, as
+# subprocess.run, bounded_process.run_bounded, GitClient.run, GitHubClient.run, the deployer's run_tool, and a skill's
+# Completed give them, a check_output() or a getoutput(), a communicate(), an output() or a quiet_output() as GitClient
+# and GitHubClient give it, a read() of what is already a program's output, as process.stdout.read(), git's output as
+# the git separator policy reads a call of git, a read(), read_bytes(), read_text(), or readline() of a file a process
+# start is handed as its stdout or stderr, by any name the module names that file by, as discovery's _close reads back
+# the temporary file a runtime's stderr goes to, a read(), readline(), or errors() of a bounded_process.streaming
+# handle, a field of a class the module defines with annotated fields that a call of the class fills with output, by
+# position or by keyword, read on any receiver in the module, as sdk_why's Completed.text, and the return of a function
+# a module-level OUTPUT_SOURCES = {function: reason} declares, for a function that gathers a program's output where no
+# reading can follow it, as discovery's converse does through a reader thread and a queue. A file a program writes is
+# its output: where a process start the module makes is handed the file it is followed, and where another process writes
+# it, as the reviewer guard's hook writes its read log and the canary's recorders their records, no reading can tell
+# from the path which program wrote it, so an entry `function.parameter` of the same declaration names the parameter its
+# reader is given the path by. An entry naming no function the module defines at its top level, or no parameter of one,
+# one whose return no call reads, or one whose file no read in the module reads, is refused. A name names the same file
+# as each name an assignment, an assignment expression, a with target, or a parameter a call in the module fills binds
+# it to, through each branch of a conditional expression or of `and` or `or`, the path an open() or a Path() is given,
+# and the receiver of an open() method, as `with listing.open('wb') as output` names listing's file. A handle is a
+# streaming() call, a name a scope binds to one, a parameter annotated Streaming, or an attribute of self a method of
+# the class binds to one. Output is followed through a name a scope binds to it, through what keeps its text as that
+# policy reads it, a decode() among it, through an index, a get(), or a part of a split or a partition, through a JSON
+# parse by json.loads or json_reader.loads, through a regular expression's sub(), subn(), or split() of it, by re or by
+# a pattern an re.compile() call gives or a name a scope binds to one, through a line program_lines or output_lines
 # gives, through a loop or a comprehension over any of them and a literal sequence of them looped over, through the
 # return of a function the module defines once by its name, whichever call reads it, through a parameter of such a
 # function a call in the module fills by position or by keyword, and through a parameter of a function another module
 # defines at its top level that a call fills, the call naming it through the module's imports by a qualified name that
 # ends in that module's stem and the function's name. A call through a parameter calls the function the parameter's
 # scope binds it to in exactly the form `name = name or function`, and through no other. A file's or a document's own
-# text is not a program's output, even where a program prints or carries it: a file read from disk, whoever wrote it, is
-# not traced, a call whose function's name has the word file among its words, as GitClient.file_at and a reader of a
-# file at a commit have, gives a file's text, and a document a program carries, as gh's JSON carries a release's or a
-# pull request's body or git log a commit message, is split where its own program ends a line, which the module states.
-# Stated limits, not traced: a value a callable the module is given returns, but through the or form; the return of a
-# function another module defines, but a declared source's; a call through the or form of a function another module
-# defines, a declared source's included, which leaves that source's declaration unread and so refused; a call of any
-# other function, GitHubClient.json among them; a bounded_process.streaming handle; a method's parameter a call through
-# self fills; and a parameter an argument after a starred one fills. A split that must stay states why in a module-level
-# OUTPUT_SPLIT_ALLOWED = {scope: reason}.
+# text is not a program's output, even where a program prints or carries it: a file read from disk that no process start
+# of the module is handed and no declaration names is not traced, a call whose function's name has the word file among
+# its words, as GitClient.file_at and a reader of a file at a commit have, gives a file's text, and a document a program
+# carries, as gh's JSON carries a release's or a pull request's body or git log a commit message, is split where its own
+# program ends a line, which the module states. Stated limits, not traced: a value a callable the module is given
+# returns, but through the or form; the return of a function another module defines, but a declared source's; a call
+# through the or form of a function another module defines, a declared source's included, which leaves that source's
+# declaration unread and so refused; a call of any other function, GitHubClient.json among them; a method's parameter a
+# call through self fills; a parameter an argument after a starred one fills; a file a process start in another module
+# or in a callable the module is given writes, or one a process is handed as its stdin or by a path among its arguments,
+# but a declared log; a streaming handle a function returns, one an attribute of anything but self holds, and one an
+# attribute of self holds in another class than the one that binds it; a field of a class another module defines, but
+# stdout, stderr, or output, and one a class does not annotate in its body; a pattern a parameter or an attribute holds;
+# and the replacement an re.sub() is given. A split that must stay states why in a module-level OUTPUT_SPLIT_ALLOWED =
+# {scope: reason}.
 OUTPUT_SPLIT_OWNERS = frozenset({LINE_SPLIT_OWNER, GIT_SEPARATOR_OWNER})
 OUTPUT_SPLIT_ALLOWANCE = "OUTPUT_SPLIT_ALLOWED"
 # A run result's streams, by any name of its type, and the output the deployer's run_tool and a skill's Completed give.
@@ -4754,6 +4773,24 @@ LINE_STARTS = "text_lines.line_starts"
 TEXT_LINES_BREAK = "text_lines.LINE_BREAK"
 # The word a function that gives a file's text, a file at a commit among them, has in its name.
 FILE_WORD = "file"
+# The keywords a process start is handed a file by that the program writes its output to.
+OUTPUT_FILE_KEYWORDS = frozenset({"stdout", "stderr"})
+# The reads whose result is what a file holds, on the file object or on its path.
+FILE_READS = frozenset({"read", "read_bytes", "read_text", "readline"})
+# The calls that name a file by their first argument, and the method that opens the file its receiver names.
+FILE_OPENERS = frozenset({"open", "builtins.open", "io.open", "pathlib.Path"})
+FILE_OPEN_METHOD = "open"
+# bounded_process's streaming start, the type of the handle it gives, and the handle's reads of the program's output.
+STREAMING_START = "bounded_process.streaming"
+STREAMING_HANDLE = "bounded_process.Streaming"
+HANDLE_READS = frozenset({"read", "readline", "errors"})
+# The re functions whose result holds the text of the string they are given, by its position, and a compiled
+# pattern's methods, by the string's position after the receiver.
+REGEX_TRANSFORMS = {"re.sub": 2, "re.subn": 2, "re.split": 1}
+PATTERN_TRANSFORMS = {"sub": 1, "subn": 1, "split": 0}
+REGEX_COMPILE = "re.compile"
+# The name a method's receiver has, whose attributes a method of the class binds and reads.
+SELF = "self"
 
 
 # One function of a module, by the module's stem and the function's name, as another module's call names it.
@@ -4824,21 +4861,94 @@ class _ProgramOutputs:
                 if argument.arg == parameter:
                     self.names.setdefault(self.git._key(argument, parameter), given)
         nodes = list(ast.walk(tree))
+        # Each binding a node makes, with the name it binds by the scope that binds it, read once.
+        self.bound = [
+            (node, self.git._key(place, name), value) for node in nodes for place, name, value in self._bindings(node)
+        ]
+        self.enclosing, self.classes = _class_shapes(nodes)
+        self.patterns = {key for _, key, value in self.bound if self._compiles(value)}
+        self.handles: set[tuple[int, str]] = set()
+        self.handle_attributes: set[tuple[int, str]] = set()
+        self._find_handles(nodes)
+        self.files = _OutputFiles(self, tree, declared)
+        self.fields: set[str] = set()
+        self._follow(nodes)
+
+    def _follow(self, nodes: list[ast.AST]) -> None:
+        """Read each name a binding binds to a program's output, each field of a class the module defines that a call
+        of the class fills with one, and each function whose return is one."""
+        built = [
+            (node, self.classes[node.func.id])
+            for node in nodes
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.classes
+        ]
         # A binding may read a name another binds later in the walk, so they are read until they add no name.
         while True:
-            known = len(self.names) + len(self.returns)
-            for node in nodes:
-                for place, name, value in self._bindings(node):
-                    key = self.git._key(place, name)
-                    if key not in self.names and (program := self.program(value)) is not None:
-                        self.names[key] = program
+            known = len(self.names) + len(self.returns) + len(self.fields)
+            for _, key, value in self.bound:
+                if key not in self.names and (program := self.program(value)) is not None:
+                    self.names[key] = program
+            for call, fields in built:
+                self.fields.update(
+                    field_name
+                    for field_name, given in _fields_filled(fields, call)
+                    if field_name not in self.fields and self.program(given) is not None
+                )
             for defined_name, definition in self.functions.items():
                 if defined_name not in self.returns:
                     found = next(filter(None, map(self.program, _own_returns(definition))), None)
                     if found is not None:
                         self.returns[defined_name] = found
-            if len(self.names) + len(self.returns) == known:
+            if len(self.names) + len(self.returns) + len(self.fields) == known:
                 break
+
+    def _find_handles(self, nodes: list[ast.AST]) -> None:
+        """Each name bound to a streaming handle, a parameter annotated as one among them, and each attribute of self an
+        assignment in a class binds to one, read until they add no name."""
+        self.handles.update(
+            self.git._key(node, node.arg)
+            for node in nodes
+            if isinstance(node, ast.arg)
+            and node.annotation is not None
+            and resolves_to(self.resolver.name(node.annotation), STREAMING_HANDLE)
+        )
+        held = [
+            (node, target.attr)
+            for node in nodes
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == SELF
+        ]
+        while True:
+            known = len(self.handles) + len(self.handle_attributes)
+            self.handles.update(key for _, key, value in self.bound if self._handle(value))
+            self.handle_attributes.update(
+                (self.enclosing.get(id(node), 0), attribute) for node, attribute in held if self._handle(node.value)
+            )
+            if len(self.handles) + len(self.handle_attributes) == known:
+                break
+
+    def _compiles(self, node: ast.expr) -> bool:
+        """Whether an expression is an re.compile() call."""
+        return isinstance(node, ast.Call) and resolves_to(self.resolver.name(node.func), REGEX_COMPILE)
+
+    def _handle(self, node: ast.expr) -> bool:
+        """Whether an expression is a bounded_process.streaming handle: a streaming() call, a name bound to one, or an
+        attribute of self a method of the class binds to one."""
+        if isinstance(node, ast.Call):
+            return resolves_to(self.resolver.name(node.func), STREAMING_START)
+        if isinstance(node, ast.Name):
+            return self.git._key(node, node.id) in self.handles
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == SELF
+            and (self.enclosing.get(id(node), 0), node.attr) in self.handle_attributes
+        )
+
+    def _pattern(self, node: ast.expr) -> bool:
+        """Whether an expression is a compiled regular expression: an re.compile() call or a name bound to one."""
+        return self._compiles(node) or (isinstance(node, ast.Name) and self.git._key(node, node.id) in self.patterns)
 
     def _parameters(self, name: str) -> list[ast.arg]:
         function = self.functions.get(name)
@@ -4859,6 +4969,8 @@ class _ProgramOutputs:
                         yield from ((name, name.id, node.value) for name in _target_names(target))
         elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
             yield from ((name, name.id, node.iter) for name in _target_names(node.target))
+        elif isinstance(node, ast.withitem) and isinstance(node.optional_vars, ast.Name):
+            yield node.optional_vars, node.optional_vars.id, node.context_expr
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.functions:
             for parameter, given in _arguments_by_parameter(self.functions[node.func.id], node):
                 yield parameter, parameter.arg, given
@@ -4902,7 +5014,7 @@ class _ProgramOutputs:
             return "git" if command == ANY_SUBCOMMAND else f"git {command}"
         if isinstance(node, ast.Name):
             return self.names.get(self.git._key(node, node.id))
-        if isinstance(node, ast.Attribute) and node.attr in PROCESS_STREAMS:
+        if isinstance(node, ast.Attribute) and (node.attr in PROCESS_STREAMS or node.attr in self.fields):
             return self.program(node.value) or "a program"
         if isinstance(node, ast.Subscript):
             return self.program(node.value)
@@ -4925,10 +5037,22 @@ class _ProgramOutputs:
         if any(resolves_to(called, splitter) for splitter in OUTPUT_SPLITTERS):
             given = call_argument(node, 0, "output")
             return self.program(given) if given is not None else None
-        if isinstance(node.func, ast.Attribute) and node.func.attr in PROGRAM_OUTPUT_METHODS:
-            return "a program"
-        if isinstance(node.func, ast.Attribute) and node.func.attr in STREAM_READS | OUTPUT_HOLDING_METHODS:
-            return self.program(node.func.value)
+        if called in REGEX_TRANSFORMS:
+            given = call_argument(node, REGEX_TRANSFORMS[called], "string")
+            return self.program(given) if given is not None else None
+        if isinstance(node.func, ast.Attribute):
+            method, receiver = node.func.attr, node.func.value
+            if method in PROGRAM_OUTPUT_METHODS:
+                return "a program"
+            if method in PATTERN_TRANSFORMS and self._pattern(receiver):
+                given = call_argument(node, PATTERN_TRANSFORMS[method], "string")
+                return self.program(given) if given is not None else None
+            if (method in HANDLE_READS and self._handle(receiver)) or (
+                method in FILE_READS and self.files.read(receiver)
+            ):
+                return "a program"
+            if method in STREAM_READS | OUTPUT_HOLDING_METHODS:
+                return self.program(receiver)
         function = self.called_function(node)
         if function is not None and function in self.returns:
             self.read.add(function)
@@ -4973,6 +5097,115 @@ class _ProgramOutputs:
                 program = self.program(given)
                 if program is not None:
                     yield key[0], key[1], parameter.arg, program
+
+
+class _OutputFiles:
+    """The files a module's processes write their output to: each file a process start is handed as its stdout or
+    stderr, and each file an OUTPUT_SOURCES entry `function.parameter` declares a program's log, by every name the
+    module names the same file by. An assignment, an annotated assignment, an assignment expression, a with target,
+    and a parameter a call in the module fills join a name to the names its value names a file by: a name, each branch
+    of a conditional expression or of `and` or `or`, the path an open() or a Path() is given, and the receiver of an
+    open() method, as `with listing.open("wb") as output` joins output to listing."""
+
+    def __init__(self, outputs: _ProgramOutputs, tree: ast.Module, declared: Mapping[str, str]) -> None:
+        self.outputs = outputs
+        self.parent: dict[tuple[int, str], tuple[int, str]] = {}
+        self.logs: dict[str, tuple[int, str]] = {}
+        top = _top_functions(tree)
+        for entry in declared:
+            name, dot, parameter = entry.partition(".")
+            function = top.get(name) if dot else None
+            arguments = function.args if function is not None else None
+            every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs] if arguments is not None else []
+            self.logs.update(
+                (entry, outputs.git._key(argument, parameter)) for argument in every if argument.arg == parameter
+            )
+        seeds = list(self.logs.values())
+        for node, key, value in outputs.bound:
+            if not isinstance(node, ast.For | ast.AsyncFor | ast.comprehension | ast.AugAssign):
+                for named in self._named(value):
+                    self._join(key, named)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        for node in calls:
+            if _process_start(node, outputs.resolver) is not None:
+                seeds += [
+                    named
+                    for keyword in node.keywords
+                    if keyword.arg in OUTPUT_FILE_KEYWORDS
+                    for named in self._named(keyword.value)
+                ]
+        self.written = {self._root(seed) for seed in seeds}
+        self.reads = {
+            root
+            for node in calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr in FILE_READS
+            for root in self._roots(node.func.value)
+        }
+
+    def _named(self, node: ast.expr) -> list[tuple[int, str]]:
+        found: list[tuple[int, str]] = []
+        for branch in _branches(node):
+            if isinstance(branch, ast.Name):
+                found.append(self.outputs.git._key(branch, branch.id))
+            elif isinstance(branch, ast.Call) and isinstance(branch.func, ast.Attribute):
+                if branch.func.attr == FILE_OPEN_METHOD:
+                    found += self._named(branch.func.value)
+            elif (
+                isinstance(branch, ast.Call) and branch.args and self.outputs.resolver.name(branch.func) in FILE_OPENERS
+            ):
+                found += self._named(branch.args[0])
+        return found
+
+    def _root(self, key: tuple[int, str]) -> tuple[int, str]:
+        while (parent := self.parent.get(key, key)) != key:
+            key = parent
+        return key
+
+    def _join(self, one: tuple[int, str], other: tuple[int, str]) -> None:
+        first, second = self._root(one), self._root(other)
+        if first != second:
+            self.parent[first] = second
+
+    def _roots(self, receiver: ast.expr) -> set[tuple[int, str]]:
+        """The file a process writes its output to that an expression names, as the name each file is known by."""
+        return {self._root(named) for named in self._named(receiver)} & self.written
+
+    def read(self, receiver: ast.expr) -> bool:
+        """Whether a read of `receiver` reads a file a process writes its output to."""
+        return bool(self._roots(receiver))
+
+    def unread_logs(self) -> list[str]:
+        """Each OUTPUT_SOURCES entry declaring a parameter's file a program's log that no read in the module reads."""
+        return sorted(entry for entry, key in self.logs.items() if self._root(key) not in self.reads)
+
+
+def _class_shapes(nodes: list[ast.AST]) -> tuple[dict[int, int], dict[str, list[str]]]:
+    """The innermost class each node of a module lies in, by the nodes' ids, and the fields each class the module
+    defines annotates in its body, in order, by the class's name."""
+    enclosing: dict[int, int] = {}
+    classes: dict[str, list[str]] = {}
+    for node in nodes:
+        if isinstance(node, ast.ClassDef):
+            # The walk reaches an outer class first, so a nested class's nodes are its own.
+            enclosing.update((id(inner), id(node)) for inner in ast.walk(node))
+            classes[node.name] = [
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            ]
+    return enclosing, classes
+
+
+def _fields_filled(fields: Sequence[str], call: ast.Call) -> Iterator[tuple[str, ast.expr]]:
+    """Each field of a class a call of it fills, in the order the class annotates them, by position up to the first
+    starred argument and by keyword."""
+    for field_name, given in zip(fields, call.args, strict=False):
+        if isinstance(given, ast.Starred):
+            break
+        yield field_name, given
+    for keyword in call.keywords:
+        if keyword.arg is not None and keyword.arg in fields:
+            yield keyword.arg, keyword.value
 
 
 def _top_functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -5030,9 +5263,20 @@ def _source_problems(name: str, tree: ast.Module, outputs: Mapping[str, _Program
     functions = _top_functions(tree)
     stem = PurePosixPath(name).stem
     read = {function for held in outputs.values() for function in held.read}
-    problems: list[str] = []
+    logs = outputs[name].files.logs
+    problems: list[str] = [
+        f"{name}: {OUTPUT_SOURCE_DECLARATION} names {entry}, whose file no read in the module reads as a program's "
+        "log; remove the entry"
+        for entry in outputs[name].files.unread_logs()
+    ]
     for source in sorted(declared):
-        if source not in functions:
+        if "." in source:
+            if source not in logs:
+                problems.append(
+                    f"{name}: {OUTPUT_SOURCE_DECLARATION} names {source}, which names no parameter of a function the "
+                    "module defines at its top level"
+                )
+        elif source not in functions:
             problems.append(
                 f"{name}: {OUTPUT_SOURCE_DECLARATION} names {source}, which the module defines no function by"
             )

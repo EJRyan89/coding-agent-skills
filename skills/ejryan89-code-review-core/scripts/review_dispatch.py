@@ -199,6 +199,11 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     return bool(read)
 
 
+# A read log is what the reviewer guard's hook and the source scripts write, which no reading can tell from its path,
+# so validation reads it as a program's output only by this declaration.
+OUTPUT_SOURCES = {"_read_log.log": "the read log the guard's hook and the source scripts write, one JSON line each"}
+
+
 def _read_log(log: Path, source: Path) -> tuple[dict[str, int], int]:
     """A read log's distinct snapshot files with their bytes, keyed as the file system compares paths, and the count
     of its searches.
