@@ -622,7 +622,7 @@ class FixtureChangeTests(unittest.TestCase):
         self.assertNotIn("._doc.md", diff)
         self.assertNotIn("._docs", diff)
 
-    def test_a_dot_underscore_file_whose_header_cannot_be_read_is_refused_by_name_as_the_tree_is_walked(self) -> None:
+    def test_a_dot_underscore_file_whose_header_cannot_be_read_stays_and_its_read_refuses_the_fixture(self) -> None:
         tree = self.root / "tree"
         write_tree(tree, {"doc.md": b"new\n", "._doc.md": APPLE_DOUBLE, "._alone.md": APPLE_DOUBLE})
         real = Path.open
@@ -634,12 +634,15 @@ class FixtureChangeTests(unittest.TestCase):
                 raise PermissionError("synthetic refusal")
             return real(path, *arguments, **keywords)
 
-        with (
-            mock.patch.object(Path, "open", refusing),
-            self.assertRaisesRegex(FixtureError, r"^Cannot read the fixture file \._doc\.md: synthetic refusal$"),
-        ):
-            review_canary._tree_files(tree)
+        with mock.patch.object(Path, "open", refusing):
+            files = review_canary._tree_files(tree)
+        self.assertEqual(["._alone.md", "._doc.md", "doc.md"], [relative for relative, _ in files])
         self.assertEqual(["._doc.md"], opened, "only a dot-underscore file with a file beside it is opened")
+        with (
+            mock.patch.object(Path, "read_bytes", side_effect=PermissionError("synthetic refusal")),
+            self.assertRaisesRegex(FixtureError, r"^Cannot read the fixture file \._alone\.md: synthetic refusal$"),
+        ):
+            review_canary._blob_stream(files)
 
     def test_an_invalid_pull_json_is_refused_before_any_repository_exists(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"}, pull={"number": 1})

@@ -69,7 +69,7 @@ reviewer, and a stage given for one is refused. The default output is a new temp
 written to a checkout unless `--output` names a folder inside one; `--output` must name a new or empty directory, so
 nothing already there is mixed with the review's files or replaced. On a FAT, exFAT, or SMB volume, macOS writes an
 AppleDouble `._<name>` sidecar beside each file and folder written there, which the fixture canary's walk of the two
-trees leaves out (`_is_apple_double` in ejryan89-code-review-core's review_canary.py), so it is never a document.
+trees leaves out (ejryan89-skill-core's `apple_double.is_sidecar`), so it is never a document.
 
 `resolve` takes a file name alone, with no folder, drive, or colon in it, and finds the files a program opens under that
 name: a file of that name in the working directory itself is the one found, and only otherwise is the tree below it
