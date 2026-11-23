@@ -94,6 +94,15 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   model and judges every run. Each line about one run names it as `run=<run>`, and a `RUNS` line per scenario and
   model gives the runs that passed every expectation, of the runs, and whether that is all of them (the pass^k of k
   runs), some, which is an inconsistent result, or none. `--records` judges `<model>-<run>.json` records the same way.
+- **An expectation scoped to one reviewer:** a `finding` or `no_finding_above` expectation that names a `source`
+  counts only findings that reviewer raised, alone or with others, so a scenario built to judge one specialist is not
+  decided by what other reviewers notice in its fixture. `review-repository`'s `closed-spellings` control expects no
+  finding above SHOULD_FIX from `sibling-spellings` and names no verdict: other reviewers may flag the fixture's
+  private flattener as a copy of a shared helper and request changes, which says nothing about whether the
+  specialist blocks a complete fix. A scoped `no_finding_above` fails a review that names no run of its reviewer, or
+  that is INCOMPLETE, since that reviewer's silence there shows nothing, so it stands in for the verdict a scenario
+  expecting no finding otherwise names. `open-spelling` likewise expects the specialist's own catch and no verdict,
+  since other reviewers' findings could bring `CHANGES_REQUESTED` without it.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double

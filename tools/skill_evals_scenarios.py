@@ -238,6 +238,20 @@ def _rank(severity: str) -> int:
     return SEVERITIES.index(severity)
 
 
+def _source(spec: Mapping[str, object]) -> str | None:
+    """The reviewer an expectation names in `source`, or None when it names none and any reviewer counts."""
+    if "source" not in spec:
+        return None
+    if not isinstance(spec["source"], str) or not spec["source"].strip():
+        raise ScenarioError("source must be a reviewer's id; leave it out for any reviewer")
+    return spec["source"].strip()
+
+
+def _raised_by(finding: Mapping[str, Any], source: str | None) -> bool:
+    """Whether the reviewer `source` is one of those the finding's `source` names, or any reviewer counts."""
+    return source is None or source in source_parts(str(finding.get("source", "")))
+
+
 def finding_expectation(spec: Mapping[str, object]) -> Expectation:
     _fields(spec, {"kind", "path", "lines", "severity"}, frozenset({"category", "source"}))
     path, lines = _path(spec["path"]), _lines(spec["lines"])
@@ -247,14 +261,10 @@ def finding_expectation(spec: Mapping[str, object]) -> Expectation:
         if not isinstance(spec["category"], str) or not spec["category"].strip():
             raise ScenarioError("category must be a category name; leave it out for any category")
         category = spec["category"].strip()
-    source: str | None = None
-    if "source" in spec:
-        if not isinstance(spec["source"], str) or not spec["source"].strip():
-            raise ScenarioError("source must be a reviewer's id; leave it out for any reviewer")
-        source = spec["source"].strip()
+    source = _source(spec)
 
     def matches(finding: Mapping[str, Any]) -> bool:
-        if source is not None and source not in source_parts(str(finding.get("source", ""))):
+        if not _raised_by(finding, source):
             return False
         return category is None or str(finding.get("category", "")).casefold() == category.casefold()
 
@@ -279,7 +289,7 @@ def finding_expectation(spec: Mapping[str, object]) -> Expectation:
 
 
 def no_finding_above_expectation(spec: Mapping[str, object]) -> Expectation:
-    _fields(spec, {"kind", "severity"}, frozenset({"paths", "lines"}))
+    _fields(spec, {"kind", "severity"}, frozenset({"paths", "lines", "source"}))
     severity = _choice(spec["severity"], SEVERITIES, "severity")
     if severity == SEVERITIES[-1]:
         raise ScenarioError(f"no_finding_above {severity} holds for every record: no severity ranks above it")
@@ -293,19 +303,37 @@ def no_finding_above_expectation(spec: Mapping[str, object]) -> Expectation:
         if paths is None or len(paths) != 1:
             raise ScenarioError("lines are lines of one path: give exactly one path in paths")
         lines = _lines(spec["lines"])
+    source = _source(spec)
 
     def check(record: Record) -> str | None:
+        unseen = None if source is None else _unseen(record, source)
+        if unseen is not None:
+            return unseen
+        raised = "" if source is None else f" by {source}"
         above = [
-            f"{finding['severity']} at {finding['path']}:{finding['line']}"
+            f"{finding['severity']}{raised} at {finding['path']}:{finding['line']}"
             for finding in findings(record)
             if _rank(finding["severity"]) > _rank(severity)
             and (paths is None or finding["path"] in paths)
             and (lines is None or finding["line"] in lines)
+            and _raised_by(finding, source)
         ]
         return f"found {', '.join(above)}" if above else None
 
     where = _where(paths[0], lines) if paths and lines else ",".join(paths) if paths else "*"
-    return Expectation(f"no_finding_above {severity} {where}", check)
+    by = "" if source is None else f" by {source}"
+    return Expectation(f"no_finding_above {severity} {where}{by}", check)
+
+
+def _unseen(record: Record, source: str) -> str | None:
+    """Why the record cannot show what the reviewer `source` would have raised, or None: the review names no run of
+    that reviewer, or it is INCOMPLETE, so changed source went unread. Either way its silence is no evidence."""
+    ran = [str(reviewer.get("id")) for reviewer in review(record).get("reviewers", [])]
+    if source not in ran:
+        return f"{source} did not run; the review ran {', '.join(ran) or 'no reviewer'}"
+    if review(record)["verdict"] == "INCOMPLETE":
+        return f"the review is INCOMPLETE, so {source} did not read every changed file"
+    return None
 
 
 def only_at_expectation(spec: Mapping[str, object]) -> Expectation:
@@ -854,9 +882,9 @@ def route_pins(spec: Mapping[str, object], directory: Path, checkout: Path) -> t
 
 
 def _listed_sources(expectations: Sequence[Mapping[str, Any]], sources: Sequence[str]) -> None:
-    """Refuse a finding expectation's source no reviewer of the scenario is, which no run could ever pass."""
+    """Refuse an expectation's source no reviewer of the scenario is, which no run could ever pass."""
     for item in expectations:
-        if item["kind"] == "finding" and "source" in item and item["source"].strip() not in sources:
+        if "source" in item and item["source"].strip() not in sources:
             raise ScenarioError(
                 f"source {quote(item['source'])} is not a reviewer of the scenario: {', '.join(sources)}"
             )
@@ -877,9 +905,10 @@ def _listed_categories(expectations: Sequence[Mapping[str, Any]], categories: Se
 
 def _clean_verdict(expectations: Sequence[Mapping[str, Any]], mode: str) -> None:
     """Refuse an initial review's scenario that expects no finding and names no verdict, which an INCOMPLETE review
-    that raised nothing would pass."""
+    that raised nothing would pass. A `no_finding_above` that names its source fails such a review itself."""
     kinds = {item["kind"] for item in expectations}
-    if mode == "initial" and "finding" not in kinds and "verdict" not in kinds:
+    scoped = any(item["kind"] == "no_finding_above" and "source" in item for item in expectations)
+    if mode == "initial" and "finding" not in kinds and "verdict" not in kinds and not scoped:
         raise ScenarioError(
             "a scenario that expects no finding names its verdict, "
             "or an INCOMPLETE review that raised nothing passes it"

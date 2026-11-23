@@ -137,10 +137,12 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       reviewer R, one of those its `source` names, when `source` is given, so another reviewer's catch alone does not
       pass. A finding several reviewers raised keeps its most severe wording, so `source` shows R raised the finding,
       not that R alone rated it S
-  {"kind": "no_finding_above", "severity": S, "paths": [P, ...], "lines": [N, ...]}
+  {"kind": "no_finding_above", "severity": S, "paths": [P, ...], "lines": [N, ...], "source": R}
       no finding more severe than S on the paths, or on any path when `paths` is left out; with `lines`, which takes
       exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere; S is
-      below the highest severity, above which nothing ranks
+      below the highest severity, above which nothing ranks. With `source`, only findings whose `source` names the
+      reviewer R count, so another reviewer's finding fails nothing, and the expectation fails a review that names
+      no run of R or is INCOMPLETE, since R's silence there shows nothing
   {"kind": "only_at", "path": P, "lines": [N, ...]}
       every finding, whatever its severity, is at P on one of the lines, as a review of one edited line should be
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}
@@ -186,10 +188,11 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       catalogue names, so one behind `parallel`, `watch`, `flock`, or `busybox` is not
 
 An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
-verdict, which an INCOMPLETE review that raised nothing would pass, or a `category` the scenario's manifest does not
-list, ignoring case, fails the whole run before anything is judged. The manifest is the one the fixture's pull.json
-names in its base tree, the checkout's for a repository reviewer's scenario, or review-document's design manifest for
-a document scenario.
+verdict, which an INCOMPLETE review that raised nothing would pass, unless it holds a `no_finding_above` with a
+`source`, which fails such a review itself, a `category` the scenario's manifest does not list, ignoring case, or a
+`source` that is no reviewer of the scenario fails the whole run before anything is judged. The manifest is the one
+the fixture's pull.json names in its base tree, the checkout's for a repository reviewer's scenario, or
+review-document's design manifest for a document scenario.
 
 Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
