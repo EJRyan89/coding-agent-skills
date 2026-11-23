@@ -72,16 +72,13 @@ from markdown_sections import document_headings
 from path_containment import resolved_path, within
 from skill_menu import closure, name_list
 from text_lines import text_lines
+from type_check_roots import REPOSITORY_SKILLS as REPOSITORY
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
 # deployer, which tests/validation and tools/skill_shims.py import.
 DUPLICATION_ALLOWED = {
     "CONTRACT": (
         "tests/validation/validation_support.py cites the skill contract in its problems, and this script "
-        "cannot import it, which needs the deployer"
-    ),
-    "REPOSITORY": (
-        "tests/validation/validation_support.py names the repository skills' folder, and this script "
         "cannot import it, which needs the deployer"
     ),
     "SKILL_SHIMS": (
@@ -96,7 +93,6 @@ CONTRACT = "docs/adding-a-skill.md"
 SKILL_DIR_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/[^\s\"'`)<>]*")
 
 SHIPPED = "skills"
-REPOSITORY = ".claude/skills"
 METADATA = "deploy-meta"
 AGENTS = "agents"
 SCENARIOS = "tests/fixtures/skill-evals"

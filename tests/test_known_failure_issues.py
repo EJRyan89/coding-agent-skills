@@ -59,6 +59,7 @@ LOADED = sorted(
                 "skill_menu",
                 "suite_names",
                 "text_lines",
+                "type_check_roots",
                 "typed_fields",
                 "typed_text",
                 "versions",
