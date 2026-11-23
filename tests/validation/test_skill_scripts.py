@@ -1002,8 +1002,9 @@ class SkillScriptsFixtures(unittest.TestCase):
         # Each print here carries a value that may hold a line break straight to stdout, in a shipped skill's script
         # and in a repository skill's alike, print passed as an argument included: into a parameter by keyword or by
         # position, passed on again or bound to another name, into another module's function, and into an attribute
-        # of self that __init__ binds. A module a call imports by its stem is its own skill's, or a declared
-        # dependency's, and another skill's of the same stem is not read as it.
+        # of self that __init__ binds. A module a call imports by its stem is its own skill's, else
+        # ejryan89-skill-core's, else a declared dependency's, and another skill's of the same stem is not read as it;
+        # where none of those holds the stem, each module of it is read as the one imported, which fails closed.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1045,6 +1046,16 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "def main(value):\n    report(value, print)\n",
                     "deploy-meta/delta.json": '{"skill_deps": ["epsilon"]}\n',
                     "skills/epsilon/scripts/sink.py": "def report(value, sink):\n    sink(value)\n",
+                    "skills/ejryan89-skill-core/scripts/note.py": "def tell(value, out):\n    out(value)\n",
+                    "skills/lambda/scripts/plain.py": "from note import tell\n"
+                    "def main(value):\n    tell(value, print)\n",
+                    "skills/iota/scripts/uses.py": "from note import tell\ndef main(value):\n    tell(value, print)\n",
+                    "deploy-meta/iota.json": '{"skill_deps": ["kappa"]}\n',
+                    "skills/kappa/scripts/note.py": "def tell(value, out):\n    out(value)\n",
+                    "skills/zeta/scripts/caller.py": "from relay import pass_on\n"
+                    "def main(value):\n    pass_on(value, print)\n",
+                    "skills/eta/scripts/relay.py": "def pass_on(value, out):\n    out(value)\n",
+                    "skills/theta/scripts/relay.py": "def pass_on(value, out):\n    out(value)\n",
                     ".claude/skills/beta/SKILL.md": "# beta\n",
                     ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(f'KEY {line}')\n",
                 },
@@ -1059,7 +1070,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                     *(f"skills/alpha/scripts/passed.py:{line} {refusal}" for line in (6, 8, 12)),
                     *(f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)),
                     f"skills/alpha/scripts/sink.py:2 {refusal}",
+                    f"skills/ejryan89-skill-core/scripts/note.py:2 {refusal}",
                     f"skills/epsilon/scripts/sink.py:2 {refusal}",
+                    f"skills/eta/scripts/relay.py:2 {refusal}",
+                    f"skills/theta/scripts/relay.py:2 {refusal}",
                 ],
                 skill_scripts.print_choke_point_problems(mark_skills(root)),
             )
