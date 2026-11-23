@@ -33,9 +33,10 @@ solution the same way and judge its entries by one rule:
 - A path a solution's entry or a project's `ProjectReference` names is made absolute from its text alone, without
   reaching the file system.
 - An entry that lies outside the tree the skill works in, or that names a network share (`\\host\share` or `//host`)
-  or a device (`\\?\` or `\\.\`), is refused and never opened or looked up, so a path a repository writes cannot make
-  Windows contact another host as you. `dotnet-format` reports it as a `REFUSED` line; `dotnet-dependencies` as an
-  `UNREADABLE` line naming the path and the reason.
+  or a device (`\\?\` or `\\.\`), or that holds a segment Windows reserves as a device, such as `Con.cs`, on every
+  platform, is refused and never opened or looked up, so a path a repository writes cannot make Windows contact another
+  host as you. `dotnet-format` reports it as a `REFUSED` line; `dotnet-dependencies` as an `UNREADABLE` line naming the
+  path and the reason.
 - An entry that a symbolic link or junction on its way, its own name included, leads outside the tree is refused the
   same way, judged from each name's own metadata and each link's text, so nothing outside the tree is stat, listed,
   or opened to decide; a link whose target stays inside the tree is read through.

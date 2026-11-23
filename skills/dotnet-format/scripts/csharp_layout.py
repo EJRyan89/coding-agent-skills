@@ -42,12 +42,13 @@ skill cannot act on.
 
 Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
 from its text before anything touches it and then by its links: an absolute entry, one whose `..` segments leave the
-root, one written as a network share or a device, and one a symbolic link or junction on its way, its own name included,
-leads out of the root, or whose `..` climbs above the root once the links before it are followed, as after a link to the
-root itself, prints `REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is
-left. `config` evaluates a project the solution lists only when the entry lies inside the repository root, judged the
-same way, its `..` segments taken by text as MSBuild takes them: an entry outside the root, written as a network share
-or a device, or that a link on its way, its own name included, leads out of the root, prints `REFUSED <entry> <reason>`,
+root, one written as a network share or a device, one with a segment Windows reserves as a device, such as `Con.cs`, on
+every platform, and one a symbolic link or junction on its way, its own name included, leads out of the root, or whose
+`..` climbs above the root once the links before it are followed, as after a link to the root itself, prints `REFUSED
+<entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is left. `config` evaluates a
+project the solution lists only when the entry lies inside the repository root, judged the same way, its `..` segments
+taken by text as MSBuild takes them: an entry outside the root, written as a network share or a device, or that a link
+on its way, its own name included, leads out of the root, prints `REFUSED <entry> <reason>`,
 which is reported and is no finding, and is never stat, read, or evaluated. A project file in the folder of a listed
 file, or the nearest folder above it holding one, that is a link leading out of the root is never stat or read: `config`
 fails naming it, as for a project it cannot examine, and so does an `.editorconfig` or `.globalconfig` it reads for the

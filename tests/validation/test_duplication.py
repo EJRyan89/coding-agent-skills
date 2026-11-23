@@ -1882,6 +1882,30 @@ async def climbs(path: Path, root: Path, top: str, steps: list[int]) -> None:
         higher = higher.parent
 
 
+def walks_up(path: Path, root: Path, top: str) -> list[object]:
+    from dotnet_solution import same_path
+    from folders_up import folders_up
+
+    walk = folders_up(path, root)
+    found: list[object] = [
+        any(same_path(folder) == same_path(root) for folder in folders_up(path)),
+        [folder == root for folder in folders_up(path, root)],
+        any(str(each) != str(root) for each in walk),
+        any(same_path(each, root) for each in folders_up(start=path)),
+        root in folders_up(path),
+        {root} & set(folders_up(path)),
+        list(folders_up(path)).count(root),
+        any(folder == path for folder in folders_up(path)),  # The walk's start, which it gives first.
+        any(same_path(folder) == same_path(path) for folder in folders_up(path, root)),  # The start, in another form.
+        any(folder.name == top for folder in folders_up(path)),  # A folder's name, not the folder.
+        [folder for folder in folders_up(path, root)],  # A walk compared with nothing.
+    ]
+    for above in folders_up(path):
+        if above == root:
+            break
+    return found
+
+
 def fields_of(top: str) -> dict[str, str]:
     return {"top": top, "sep": "/"}
 
@@ -1961,6 +1985,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (478, 483, *range(486, 493))),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(493, 498)),
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (518, 526, 529, 534, 537, 549, 552)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (*range(562, 569), 575)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

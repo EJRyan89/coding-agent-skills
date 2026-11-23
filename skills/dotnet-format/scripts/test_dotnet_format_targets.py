@@ -51,6 +51,8 @@ WINFORMS_PROJECT = (
     '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Reference Include="System.Web" /></ItemGroup></Project>\n'
 )
 CSHARP_PROJECT_TYPE = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
+# The reason ejryan89-skill-core's `dotnet_solution.refusal` gives a path with a segment Windows reserves as a device.
+DEVICE_SEGMENT = "the path names a reserved device as a segment, which the reader does not open"
 
 
 def solution(*projects: str) -> str:
@@ -213,9 +215,16 @@ class Repository:
 
 
 class Services(targets.Services):
-    """Real Git, the .NET SDK, no gh unless its output is given, and no network fetch."""
+    """Real Git, the .NET SDK, no gh unless its output is given, and no network fetch. Git's list of untracked files
+    also names `untracked`, names the working tree need not hold, as one a commit made elsewhere may name."""
 
-    def __init__(self, pull_base: str | None = None, gh_output: bytes | None = None, dotnet: bool = True) -> None:
+    def __init__(
+        self,
+        pull_base: str | None = None,
+        gh_output: bytes | None = None,
+        dotnet: bool = True,
+        untracked: Sequence[str] = (),
+    ) -> None:
         self.calls: list[list[str]] = []
         if gh_output is None and pull_base:
             gh_output = json.dumps({"baseRefName": pull_base}).encode() + b"\n"
@@ -227,7 +236,10 @@ class Services(targets.Services):
             self.calls.append([command[0], *command[3:]])
             if command[3] == "fetch":
                 return GitResult(128, "", "")
-            return git_client.subprocess_runner(command, timeout)
+            result = git_client.subprocess_runner(command, timeout)
+            if command[3] == "ls-files" and "--others" in command:
+                return GitResult(result.returncode, result.stdout + "".join(f"{name}\0" for name in untracked), "")
+            return result
 
         def gh(arguments: Sequence[str]) -> CommandResult:
             self.calls.append(list(arguments))
@@ -1157,22 +1169,80 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([], reached(touched, [], outside))
         self.assertNotIn(str(outside), [name for name, _ in touched])
 
+    def test_a_changed_name_windows_opens_as_a_device_is_refused_before_anything_stats_it(self) -> None:
+        # Holds on every platform. Git may list a name Windows opens as a device, such as a file a commit made on Linux
+        # adds. resolve judges it by its name, as the formatter and the layout checker judge a FILE_LIST entry, before
+        # anything stats it, so on Windows the device is never opened, and the other files are resolved.
+        repo = self.repository
+        repo.write("App/App.csproj", SDK_PROJECT)
+        repo.write("App/Code.cs")
+        repo.write("App.sln", solution("App\\App.csproj"))
+        repo.commit("code")
+        device_file, device_folder = repo.root / "App" / "Con.cs", repo.root / "Lib" / "Aux"
+        touched: list[tuple[str, bool]] = []
+        with recording_reaches(touched):
+            lines = self.resolve(services=Services(untracked=["App/Con.cs", "Lib/Aux/Helper.cs"]))
+        self.assertEqual(
+            [["App/Con.cs", DEVICE_SEGMENT], ["Lib/Aux/Helper.cs", DEVICE_SEGMENT]], self.values(lines, "REFUSED")
+        )
+        self.assertEqual([["App/Code.cs"]], self.values(lines, "FILE"))
+        self.assertEqual([["App.sln", "1"]], self.values(lines, "SOLUTION"))
+        self.assertEqual(
+            [],
+            [name for name, _ in touched if Path(name) == device_file or Path(name).is_relative_to(device_folder)],
+        )
+
+    def test_stops_when_every_changed_file_is_refused(self) -> None:
+        # Holds on every platform: the one changed file is named as a Windows device, so nothing is left to format.
+        lines = self.resolve(services=Services(untracked=["Con.cs"]))
+        self.assertEqual([["Con.cs", DEVICE_SEGMENT]], self.values(lines, "REFUSED"))
+        self.assertEqual([["every C# file changed vs origin/main is REFUSED"]], self.values(lines, "STOP"))
+        self.assertEqual([], self.values(lines, "FILE_LIST"))
+
     @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
-    def test_a_changed_file_or_folder_named_as_a_windows_device_is_resolved_where_the_system_allows_it(self) -> None:
-        # Con.cs and the folder Aux are ordinary names on Linux and macOS. A name git lists or the search finds is
-        # judged by its links alone, so resolve lists the changed files and chooses the solution in Tools/Aux, as on
-        # main; the device-name rule is for a path a file names, such as a solution's entry. The formatter and the
-        # layout checker still refuse such a FILE_LIST entry or --solution, as on main.
+    def test_a_changed_file_or_solution_named_as_a_windows_device_is_refused_as_the_runner_refuses_it(self) -> None:
+        # Holds on Linux and macOS, where Con.cs and the folder Aux are ordinary names. The formatter and the layout
+        # checker refuse a FILE_LIST entry or a --solution with such a segment on every platform, so resolve refuses
+        # them too: it lists neither changed file, and passes over Tools/Aux/All.sln, the nearest solution from
+        # Tools/Aux, for Apps/App.sln. Every FILE and the SOLUTION it gives pass the runner's judgement.
         repo = self.repository
         repo.write("App/App.csproj", SDK_PROJECT)
         repo.write("App/Con.cs")
+        repo.write("App/Code.cs")
         repo.write("Lib/Lib.csproj", SDK_PROJECT)
         repo.write("Lib/Aux/Helper.cs")
         repo.write("Tools/Aux/All.sln", solution("..\\..\\App\\App.csproj", "..\\..\\Lib\\Lib.csproj"))
+        repo.write("Apps/App.sln", solution("..\\App\\App.csproj"))
+        repo.commit("code")
+        for cwd in (repo.root, repo.root / "Tools" / "Aux"):
+            with self.subTest(cwd=cwd):
+                lines = self.resolve(cwd=cwd)
+                self.assertEqual(
+                    [
+                        ["App/Con.cs", DEVICE_SEGMENT],
+                        ["Lib/Aux/Helper.cs", DEVICE_SEGMENT],
+                        ["Tools/Aux/All.sln", DEVICE_SEGMENT],
+                    ],
+                    self.values(lines, "REFUSED"),
+                )
+                self.assertEqual([["App/Code.cs"]], self.values(lines, "FILE"))
+                self.assertEqual([["Apps/App.sln", "1"]], self.values(lines, "SOLUTION"))
+                for (name,) in self.values(lines, "FILE"):
+                    self.assertIsNone(targets.listed_refusal(repo.root, name))
+                self.assertIsNone(targets.solution_refusal(repo.root, "Apps/App.sln"))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
+    def test_stops_when_every_solution_found_is_refused(self) -> None:
+        # Holds on Linux and macOS, where a folder Aux is an ordinary name: the one solution lies in one, which the
+        # formatter would refuse as a --solution, so resolve stops rather than choose it.
+        repo = self.repository
+        repo.write("App/App.csproj", SDK_PROJECT)
+        repo.write("App/Code.cs")
+        repo.write("Aux/All.sln", solution("..\\App\\App.csproj"))
         repo.commit("code")
         lines = self.resolve()
-        self.assertEqual([["App/Con.cs"], ["Lib/Aux/Helper.cs"]], self.values(lines, "FILE"))
-        self.assertEqual([["Tools/Aux/All.sln", "2"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([["Aux/All.sln", DEVICE_SEGMENT]], self.values(lines, "REFUSED"))
+        self.assertEqual([[f"every .sln or .slnx found under {repo.root} is REFUSED"]], self.values(lines, "STOP"))
 
     def test_a_folder_the_search_upward_climbs_that_links_outside_is_refused_unlisted(self) -> None:
         # Out is a folder link (a junction on Windows) leading outside the repository. resolve takes the invocation
