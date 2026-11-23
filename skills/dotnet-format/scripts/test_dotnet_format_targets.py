@@ -1188,10 +1188,11 @@ class ResolveTests(unittest.TestCase):
             "which the reader does not follow"
         )
         touched: list[tuple[str, bool]] = []
-        for search in (
+        searches: tuple[Callable[[], object], ...] = (
             lambda: targets.owning_projects(repo.root, link / "E" / "Code.cs"),
             lambda: targets.nearest_solutions(repo.root, link),
-        ):
+        )
+        for search in searches:
             with recording_reaches(touched), self.assertRaises(TreeRefused) as refused:
                 search()
             self.assertEqual(reason, refused.exception.reason)

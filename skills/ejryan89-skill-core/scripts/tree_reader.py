@@ -30,11 +30,12 @@ and examine the name from its own metadata, as MSBuild's `Exists()` and a writer
 `dotnet_solution.entry_key`: the path as the file system compares it (`same_path`) only inside the tree with no link
 leading out, and its text otherwise, since the key's case probe lists each folder on the path.
 
-Limits: deciding whether a path lies in the tree asks the tree's own folders, and the folders above it, how they compare
-names (`path_keys`), which lists each and looks up one entry's own metadata without following it, so a sibling of the
-tree, or of a folder above it, may be looked up; the look at a path's links and its read are two steps, so a name
-replaced by a link between them is read through; a hard link is the file itself, read as a file of the tree wherever its
-other names lie; and a link whose absolute target names a place inside the tree through another spelling of it, such as
+Limits: deciding whether a path lies in the tree asks `path_keys` how the tree's own folders and the folders above them
+compare names, which lists each of those folders, the tree's parent included, and looks up one entry's own metadata
+without following it, so a sibling of the tree may be looked up but is never followed, listed, or read; every `within`
+call does this, before the reader as after it; the look at a path's links and its read are two steps, so a name replaced
+by a link between them is read through; a hard link is the file itself, read as a file of the tree wherever its other
+names lie; and a link whose absolute target names a place inside the tree through another spelling of it, such as
 macOS's /tmp for /private/tmp, is refused, though it leads inside.
 """
 

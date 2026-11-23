@@ -116,7 +116,6 @@ class TextRefusalTests(TreeReaderCase):
                 # Deciding whether the path lies in the tree asks the tree's own folders how they compare names, which
                 # may look up a sibling folder's own entry, never following it; nothing below or through one is reached.
                 self.assertEqual([], reached(touched, [], self.outside))
-                self.assertNotIn(str(path), [name for name, _ in touched])
 
     def test_a_name_windows_reserves_as_a_device_is_judged_by_its_links_alone(self) -> None:
         # A listing or git may give `Con.cs` or a folder `Aux` on Linux and macOS; the reader judges such a name by
