@@ -43,6 +43,8 @@ Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows
 - A list, a tuple, or a call's arguments whose words are exactly a NOT_READERS entry is passed over wherever it sits,
   except in the catalogue's own NOT_READERS assignment, which is never read,
   so a literal `("archive", "checkout")` meant as `git archive checkout` would be excused anywhere.
+- A NOT_READERS entry added in another statement than the catalogue's own assignment, as `NOT_READERS[words] = reason`
+  or `NOT_READERS.update(...)`, is read, so it excuses itself.
 - A commit's tree read through GitHub's API, as the tarball snapshot and the contents, blobs, and trees calls do, is not
   read.
 """

@@ -140,6 +140,20 @@ class TreeReaderFixtures(unittest.TestCase):
         self.assertEqual(
             [], self.problems({**policy, "scenarios.py": "FOLDERS = ('archive', 'checkout')\n"}, {}, excused)
         )
+        name = "tests/validation/tree_readers.py"
+        assignment = policy[name]
+        with self.subTest("the rest of the policy module is still read"):
+            self.assertEqual([], self.problems({name: f"{assignment}WORDS = ('archive', 'checkout')\n"}, {}, excused))
+            reader = f"{assignment}\n\ndef export(git):\n    return git.output(['archive', 'HEAD'])\n"
+            problems = self.problems({name: reader}, {}, excused)
+            self.assertEqual(2, len(problems), problems)
+            self.assertTrue(problems[0].startswith(f"{name}:5 export reads a commit's tree with git archive,"))
+        with self.subTest("an entry added in another statement excuses itself, as its stated limit says"):
+            for addition in (
+                "NOT_READERS[('archive', 'checkout')] = \"a fixture's folders\"\n",
+                "NOT_READERS.update({('archive', 'checkout'): \"a fixture's folders\"})\n",
+            ):
+                self.assertEqual([], self.problems({name: f"NOT_READERS = {{}}\n{addition}"}, {}, excused))
 
     def test_an_excused_sequence_is_passed_over_wherever_it_sits_as_its_stated_limit_says(self) -> None:
         excused: dict[tuple[str, ...], str] = {("archive", "checkout"): "a fixture's folders"}
