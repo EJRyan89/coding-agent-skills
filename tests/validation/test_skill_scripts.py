@@ -1000,7 +1000,9 @@ class SkillScriptsFixtures(unittest.TestCase):
 
     def test_print_choke_point_policy_refuses_a_stdout_line_that_may_hold_a_break(self) -> None:
         # Each print here carries a value that may hold a line break straight to stdout, in a shipped skill's script
-        # and in a repository skill's alike.
+        # and in a repository skill's alike, print passed as an argument included: into a parameter by keyword or by
+        # position, passed on again or bound to another name, into another module's function, and into an attribute
+        # of self that __init__ binds.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1020,6 +1022,23 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "    print(f'KEY {line}', file=sys.stdout)\n"
                     "    print(f'KEY {flat_text(line)}' if count else line)\n"
                     "    sys.__stdout__.writelines(lines)\n",
+                    "skills/alpha/scripts/passed.py": "from sink import report\n"
+                    "class Out:\n"
+                    "    def __init__(self, write):\n"
+                    "        self.write = write\n"
+                    "    def line(self, value):\n"
+                    "        self.write(f'KEY {value}')\n"
+                    "def tick(value, emit):\n"
+                    "    emit(f'KEY {value}')\n"
+                    "    relay(value, emit)\n"
+                    "def relay(value, out):\n"
+                    "    again = out\n"
+                    "    again(value)\n"
+                    "def main(value):\n"
+                    "    tick(value, emit=print)\n"
+                    "    Out(print).line(value)\n"
+                    "    report(value, print)\n",
+                    "skills/alpha/scripts/sink.py": "def report(value, sink):\n    sink(value)\n",
                     ".claude/skills/beta/SKILL.md": "# beta\n",
                     ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(f'KEY {line}')\n",
                 },
@@ -1031,7 +1050,9 @@ class SkillScriptsFixtures(unittest.TestCase):
             self.assertEqual(
                 [
                     f".claude/skills/beta/scripts/run.py:2 {refusal}",
+                    *(f"skills/alpha/scripts/passed.py:{line} {refusal}" for line in (6, 8, 12)),
                     *(f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)),
+                    f"skills/alpha/scripts/sink.py:2 {refusal}",
                 ],
                 skill_scripts.print_choke_point_problems(mark_skills(root)),
             )
@@ -1073,7 +1094,8 @@ class SkillScriptsFixtures(unittest.TestCase):
     def test_print_choke_point_policy_accepts_each_choke_point_and_what_is_no_fact_line(self) -> None:
         # Literals, a module's one-line constant, each choke point under any name its import gives it, an f-string or
         # either-or of them, and a join of flattened lines pass, in a shipped skill's script and in a repository skill's
-        # alike; stderr, a file, a test, and a module under another protocol are not read.
+        # alike, print passed as an argument and called with them included; stderr, a file, a test, a module under
+        # another protocol, and a parameter or an attribute no call passes print are not read.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1099,6 +1121,25 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "    print(line, file=handle)\n"
                     "    sys.stderr.write(line)\n",
                     "skills/alpha/scripts/test_run.py": "def test(line):\n    print(line)\n",
+                    "skills/alpha/scripts/passed.py": "import sys\n"
+                    "from flat_text import fact_line\n"
+                    "from sink import report\n"
+                    "class Out:\n"
+                    "    def __init__(self, write):\n"
+                    "        self.write = write\n"
+                    "    def line(self, value):\n"
+                    "        self.write(fact_line('KEY', value))\n"
+                    "        self.raw(value)\n"
+                    "def tick(value, emit, keep):\n"
+                    "    emit(fact_line('KEY', value))\n"
+                    "    emit(value, file=sys.stderr)\n"
+                    "    keep(value)\n"
+                    "def main(value, lines):\n"
+                    "    tick(value, print, keep=lines.append)\n"
+                    "    Out(print).line(value)\n"
+                    "    report(value, print)\n",
+                    "skills/alpha/scripts/sink.py": "from flat_text import flat_text\n"
+                    "def report(value, sink):\n    sink(f'KEY {flat_text(value)}')\n",
                     "skills/ejryan89-skill-core/scripts/console.py": "from flat_text import flat_text\n"
                     "def failed_line(error):\n    return f'FAILED {flat_text(str(error))}'\n"
                     "def report(error):\n    print(failed_line(error), end='')\n",

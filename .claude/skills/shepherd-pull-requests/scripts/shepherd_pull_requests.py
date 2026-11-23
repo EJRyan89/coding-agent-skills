@@ -144,7 +144,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import whole_number
 from console import run_main
-from flat_text import flat_text, reason_line
+from flat_text import flat_text, reason_line, single_line
 from git_client import GitClient, GitError, output_line, output_lines
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
@@ -336,11 +336,11 @@ def locate(git: GitClient, directory: Path) -> Place:
 
 def hub_line(git: GitClient, place: Place, dry_run: bool) -> tuple[str, bool]:
     """The HUB line, and whether it names a hub this tick runs in and could not bring to origin's main."""
-    where = f'HUB "{place.hub.as_posix()}"'
+    where = f'HUB "{flat_text(place.hub.as_posix())}"'
     if not same_path(place.top, place.hub):
         line = (
-            f'{where} not fast-forwarded: this tick runs in the linked worktree "{place.top.as_posix()}", so the '
-            "hub's own session fast-forwards it"
+            f'{where} not fast-forwarded: this tick runs in the linked worktree "{flat_text(place.top.as_posix())}", '
+            "so the hub's own session fast-forwards it"
         )
         return line, False
     try:
@@ -355,7 +355,7 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     # None only for a detached HEAD; a HEAD git cannot read raises, which the HUB line names.
     name = output_line(git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "")
     if name != BASE:
-        return f"not fast-forwarded: it is on {name or 'a detached HEAD'}, not {BASE}"
+        return f"not fast-forwarded: it is on {flat_text(name) or 'a detached HEAD'}, not {BASE}"
     if git.names(["status", "--porcelain", "--untracked-files=no"], directory=hub):
         return "not fast-forwarded: it has uncommitted changes"
     before = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
@@ -392,7 +392,7 @@ def hub_differences(git: GitClient, place: Place, dry_run: bool) -> list[str]:
     which the HUB line covers, then for each way its git configuration changed since the previous tick, whose record
     the tick then replaces unless `dry_run`; one naming git's reason where the hub could not be read, once when both
     checks fail for the same reason."""
-    where = f'HUB_DIFFERS "{place.hub.as_posix()}"'
+    where = f'HUB_DIFFERS "{flat_text(place.hub.as_posix())}"'
     lines: list[str] = []
     checks: tuple[Callable[[], list[Difference]], ...] = (
         lambda: differences(git, place.hub, BASE, REMOTE),
@@ -406,7 +406,7 @@ def hub_differences(git: GitClient, place: Place, dry_run: bool) -> list[str]:
             unread = f"{where} could not be read: {flat_text(str(exc))}"
             lines += [] if unread in lines else [unread]
             continue
-        lines += [f"{where} {difference.text}" for difference in found if difference.kind != "behind"]
+        lines += [f"{where} {flat_text(difference.text)}" for difference in found if difference.kind != "behind"]
     return lines
 
 
@@ -1030,7 +1030,7 @@ def merged_lines(
                 branches.append(each.branch)
         named = "".join(f" branch {flat_text(branch)}" for branch in branches)
         number = max(each.number for each in found)
-        lines.append(f'MERGED #{number} worktree "{Path(worktree.path).as_posix()}"{named}')
+        lines.append(f'MERGED #{number} worktree "{flat_text(Path(worktree.path).as_posix())}"{named}')
     return lines
 
 
@@ -1102,12 +1102,12 @@ def tick(
         return 1
     if dry_run:
         emit("DRY_RUN the hub is not fetched, and nothing is armed, disarmed, updated, or rerun")
-    emit(f"REPOSITORY {place.repository}")
+    emit(single_line(f"REPOSITORY {place.repository}"))
     hub, flagged = hub_line(git, place, dry_run)
-    emit(hub)
+    emit(single_line(hub))
     differing = hub_differences(git, place, dry_run)
     for line in differing:
-        emit(line)
+        emit(single_line(line))
     flagged = flagged or bool(differing)
     try:
         listed = read_pulls(client, place.repository)
@@ -1122,14 +1122,14 @@ def tick(
     pulls = [pull for pull in listed if not pull.draft]
     flagged = shepherd_pulls(git, client, place, pulls, heads, dry_run, emit) or flagged
     for line in premerge_reviews(client, place, pulls, heads, reviews) if reviews is not None else []:
-        emit(line)
+        emit(single_line(line))
     try:
         for line in merged_lines(git, client, place, listed, heads.get(BASE)):
-            emit(line)
+            emit(single_line(line))
     except (GitError, GitHubError, ShepherdError) as exc:
         emit(f"MERGED_FAILED {flat_text(str(exc))}")
         flagged = True
-    emit(f"REMAINING {len(pulls)}")
+    emit(single_line(f"REMAINING {len(pulls)}"))
     return 1 if flagged else 0
 
 
@@ -1147,7 +1147,7 @@ def shepherd_pulls(
     acted_on = [pull for pull in pulls if admitted(pull)]
     holds = {pull.number: path for pull in acted_on if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
-        emit(f"HOLD #{number} changes {flat_text(path)}")
+        emit(single_line(f"HOLD #{number} changes {flat_text(path)}"))
     outcomes = {pull.number: Outcome() for pull in pulls}
     stale = {pull.number: branch for pull in pulls if (branch := out_of_step(pull, heads)) is not None}
     behind = {
@@ -1160,9 +1160,9 @@ def shepherd_pulls(
         act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
     update(client, place.repository, acted_on, (behind, blocked), holds, outcomes, dry_run)
     for pull in pulls:
-        emit(pull_line(pull, outcomes[pull.number]))
+        emit(single_line(pull_line(pull, outcomes[pull.number])))
         for line in outcomes[pull.number].lines:
-            emit(line)
+            emit(single_line(line))
     return any(outcome.flagged for outcome in outcomes.values())
 
 

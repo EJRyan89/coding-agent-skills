@@ -154,6 +154,10 @@ GH_JSON_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
 ODD_BRANCH = "fix/odd\x85name\u2028here"
 FLAT_BRANCH = "fix/odd name here"
 ODD_STEP = "Run\x85repository\u2028validation"
+# A folder's name holding line separators that would start a fact line of its own, and what each line prints for it:
+# flat_text's form, each run of whitespace one space.
+ODD_FOLDER = "odd\u2028 \u2028MERGED #1 worktree"
+FLAT_FOLDER = "odd MERGED #1 worktree"
 
 
 def check_run(name: str, run: int = RUN, **fields: str) -> dict[str, Any]:
@@ -1398,15 +1402,54 @@ class FlatTextTest(FixtureTestCase):
             self.assertEqual([line], line.splitlines(), repr(line))
             self.assertIsNone(re.search(r"[\x00-\x1f\x7f-\x9f]", line), repr(line))
 
-    def test_a_merged_branch_name_is_flattened(self) -> None:
-        worktree = self.root / "odd"
+    def test_a_merged_branch_name_and_worktree_path_are_flattened(self) -> None:
+        worktree = self.root / ODD_FOLDER
         git("worktree", "add", "-q", "-b", ODD_BRANCH, str(worktree), directory=self.hub)
         head = git("rev-parse", "HEAD", directory=worktree)
         merged = [{"number": 9, "headRefName": ODD_BRANCH, "headRefOid": head}]
         _, lines = self.tick(StubGh(merged=merged), dry_run=True)
         self.assertEqual(
-            f'MERGED #9 worktree "{worktree.as_posix()}" branch {FLAT_BRANCH}', self.line(lines, "MERGED ")
+            f'MERGED #9 worktree "{(self.root / FLAT_FOLDER).as_posix()}" branch {FLAT_BRANCH}',
+            self.line(lines, "MERGED "),
         )
+        self.assert_one_line_each(lines)
+
+    def test_a_hub_s_path_and_branch_are_flattened_onto_its_hub_lines(self) -> None:
+        # git takes a line separator in a folder's name and in a branch's; the hub is on such a branch, and the record
+        # of the previous tick, whose path hub_state names as it is, cannot be read.
+        root = self.root / ODD_FOLDER
+        HUB_TEMPLATE.copy(root)
+        hub = root / "hub"
+        git("switch", "-q", "-c", ODD_BRANCH, directory=hub)
+        (hub / ".git" / "hub-state.json").write_text("not a record\n", encoding="utf-8")
+        flat = (self.root / FLAT_FOLDER / "hub").as_posix()
+        line = f'HUB "{flat}" not fast-forwarded: it is on {FLAT_BRANCH}, not main'
+        self.assertEqual((line, True), shepherd.hub_line(GitClient(), shepherd.locate(GitClient(), hub), True))
+        status, lines = self.tick(StubGh(), directory=hub, dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(line, self.line(lines, "HUB "))
+        differing = [line for line in lines if line.startswith("HUB_DIFFERS")]
+        self.assertEqual(f'HUB_DIFFERS "{flat}" it is on {FLAT_BRANCH}, not main', differing[0])
+        self.assertTrue(
+            differing[1].startswith(
+                f'HUB_DIFFERS "{flat}" its record of the previous tick, {flat}/.git/hub-state.json, could not be read: '
+            ),
+            differing,
+        )
+        self.assertEqual(2, len(differing), differing)
+        self.assert_one_line_each(lines)
+
+    def test_a_linked_worktree_s_path_is_flattened_onto_the_hub_line(self) -> None:
+        worktree = self.root / ODD_FOLDER
+        git("worktree", "add", "-q", "-b", "fix/elsewhere", str(worktree), directory=self.hub)
+        _, lines = self.tick(StubGh(), directory=worktree, dry_run=True)
+        self.assertIn(f'linked worktree "{(self.root / FLAT_FOLDER).as_posix()}", so', self.line(lines, "HUB "))
+        self.assert_one_line_each(lines)
+
+    def assert_one_line_each(self, lines: Sequence[str]) -> None:
+        for line in lines:
+            self.assertEqual([line], line.splitlines(), repr(line))
+            self.assertIsNone(re.search(r"[\x00-\x1f\x7f-\x9f]", line), repr(line))
 
 
 def legs_finished(finished: int, legs: int, run: int = RUN) -> list[dict[str, Any]]:
