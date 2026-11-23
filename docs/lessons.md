@@ -949,14 +949,15 @@ removed fails validation until its pattern follows it.
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
-  joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
-  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
+  joined by %x00; and `text_lines:output_lines`, which git_client gives its callers under the same name and which
+  splits git's output on a newline alone, the one byte that ends a line of it, where splitlines() also breaks on
+  U+0085, U+2028, and other characters a ref name or a path holds;
   `git_client:output_line`, which takes off only the newline ending a one-line answer, where strip() also drops
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
-  `text_lines:program_lines`, which splits a program's output, a runtime's skill catalog and the canary's records
-  among it, on a newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
+  `text_lines:program_lines`, built on output_lines, which splits a program's output, a runtime's skill catalog and
+  the canary's records among it, on a newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
   stream-json output through it for the canaries and the skill evaluations; `flat_text:fact_line`, which flattens every field of a
   tab-separated fact line; and the choke points every stdout line of a shipped skill's scripts passes,
   `flat_text:flat_text`, `flat_text:fact_line`, `console:failed_line`, and `flat_text:single_line`, given a whole
@@ -964,8 +965,12 @@ removed fails validation until its pattern follows it.
   `repo_cleanup:fields_line`, which flattens each field of a line it keeps tab-separated.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
-  split of git's output with splitlines(), or a strip() or split() of it given no argument, unless its module
-  states why,
+  strip() or split() of git's output given no argument, unless its module states why,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_every_program_output_is_split_at_its_line_feeds_alone`,
+  which refuses a split of any program's output, git's among it, at anything but a line feed, by splitlines() of its
+  text or its bytes or by text_lines, unless its module states why,
+  `tests/validation/test_python_checks.py::test_output_split_policy_refuses_a_split_of_any_programs_output_but_at_its_line_feeds`,
+  `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_an_output_line_keeps_every_character_splitlines_breaks_at_but_lf`,
   `tests/validation/test_python_checks.py::test_each_policy_refuses_every_form_its_documentation_names`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests::test_a_path_holding_a_character_splitlines_breaks_on_is_one_path`,

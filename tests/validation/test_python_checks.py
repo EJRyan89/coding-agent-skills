@@ -59,6 +59,7 @@ from python_checks import (
     mypy_path_problems,
     mypy_type_check,
     noqa_without_reason,
+    output_split_problems,
     python_suppression_problems,
     ratchet_problems,
     ruff_format_check,
@@ -1270,11 +1271,11 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(run):\n    return run(['git', 'for-each-ref', '--format=%(refname)%00%(objectname)'])\n",
         refused=False,
     ),
-    # "no split of git's output with `splitlines()`, bound or unbound as `str.splitlines(out)`, and after a string
-    # method, a `str()`, or a slice that keeps the text, as `out.strip().splitlines()`".
+    # "no split of a program's output, git's among it, with `splitlines()`, bound or unbound as
+    # `str.splitlines(out)`, and after what keeps the text, as `out.strip().splitlines()` does".
     **{
         f"a split of git's output by {form}": _form(
-            git_separator_problems, f"def f(client):\n    out = client.output(['describe', 'HEAD'])\n    {split}\n"
+            output_split_problems, f"def f(client):\n    out = client.output(['describe', 'HEAD'])\n    {split}\n"
         )
         for form, split in (
             ("splitlines()", "return out.splitlines()"),
@@ -1356,7 +1357,7 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         git_separator_problems, "def f(git_output):\n    return git_output('update-index', '--verbose').split()\n"
     ),
     "a splitlines() of a git-named call's update-index": _form(
-        git_separator_problems,
+        output_split_problems,
         "def f(self):\n    return self.git('update-index', '--verbose', '-z', '--add').splitlines()\n",
     ),
     "a trim of a subcommand not catalogued, through a wrapper named otherwise": _form(
@@ -1658,7 +1659,7 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     # does, through each place git's output is read: a name bound to client.output, a run result's stdout, and the call.
     **{
         f"a split of {source} through {form} {place}": _form(
-            git_separator_problems, _placed("", f"{binding}\n({wrapper.replace('X', held)}).splitlines()", place)
+            output_split_problems, _placed("", f"{binding}\n({wrapper.replace('X', held)}).splitlines()", place)
         )
         for form, wrapper in TEXT_WRAPPERS
         for source, binding, held in GIT_OUTPUT_SOURCES
@@ -1667,7 +1668,7 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     # "an assignment expression" binds as an assignment does, and so do the other ways a name is bound.
     **{
         f"a split of git's output through {form} {place}": _form(
-            git_separator_problems, _placed("", f"out = client.output(['describe', 'HEAD'])\n{body}", place)
+            output_split_problems, _placed("", f"out = client.output(['describe', 'HEAD'])\n{body}", place)
         )
         for form, body in (
             ("a walrus", "if (text := str(out, 'utf-8')):\n    text.splitlines()"),
@@ -1682,26 +1683,127 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     },
     # A module-level binding is read by a function that reads the module's name.
     "a split in a function of git's output a module-level name holds": _form(
-        git_separator_problems,
+        output_split_problems,
         "OUT = client.output(['tag'])\n\n\ndef f():\n    return OUT.splitlines()\n",
     ),
     # A count of git's output holds none of its text.
     "a split of a count of git's output": _form(
-        git_separator_problems,
+        output_split_problems,
         "def f(client):\n    out = client.output(['tag'])\n    return str(len(out)).splitlines()\n",
         refused=False,
     ),
     # A name is git's output only in the scope that binds it: g's parameter is not f's output.
     "a split of a parameter another function's output shares the name of": _form(
-        git_separator_problems,
+        output_split_problems,
         "def f(client):\n    out = client.output(['tag'])\n    return out\n\n\n"
         "def g(out):\n    return out.splitlines()\n",
         refused=False,
     ),
     "a split of git's output on a newline alone": _form(
-        git_separator_problems,
+        output_split_problems,
         "from git_client import output_lines\n\n\n"
         "def f(client):\n    return output_lines(client.output(['describe', 'HEAD']))\n",
+        refused=False,
+    ),
+    # "any program's output": a run result's stdout or stderr, a check_output(), a communicate() or a read() of a
+    # stream, a call result's output, through a name, a decode(), an index, a get(), a JSON parse, a loop or a
+    # comprehension, a literal sequence looped over, and a parameter a call in the module fills, by position or by
+    # keyword, split by splitlines() of str or bytes, or by text_lines, lines_and_breaks, or line_starts.
+    **{
+        f"a split of a program's output by {form}": _form(
+            output_split_problems,
+            "import json\nimport subprocess\n\nimport json_reader\n"
+            "from text_lines import LINE_BREAK, line_starts, lines_and_breaks, text_lines\n\n\n"
+            f"def f(command, process, run_tool):\n    {body}\n",
+        )
+        for form, body in (
+            ("splitlines() of a stdout", "return subprocess.run(command, capture_output=True).stdout.splitlines()"),
+            ("splitlines() of a stderr", "return subprocess.run(command, capture_output=True).stderr.splitlines()"),
+            (
+                "splitlines() of a stdout's bytes",
+                "result = subprocess.run(command, capture_output=True)\n    return bytes(result.stdout).splitlines()",
+            ),
+            ("splitlines() of check_output()", "return subprocess.check_output(command).splitlines()"),
+            ("splitlines() of getoutput()", "return subprocess.getoutput('x').splitlines()"),
+            ("splitlines() of communicate()", "out, err = process.communicate()\n    return out.splitlines()"),
+            ("splitlines() of a stream's read()", "return process.stdout.read().splitlines()"),
+            ("splitlines() of a call's output", "return run_tool(command).output.splitlines()"),
+            (
+                "splitlines() of a bound call's output",
+                "result = run_tool(command)\n    return result.output.splitlines()",
+            ),
+            ("text_lines of a stdout", "return text_lines(subprocess.run(command, text=True).stdout)"),
+            (
+                "text_lines of a decoded stdout",
+                "return text_lines(subprocess.run(command, capture_output=True).stdout.decode())",
+            ),
+            ("text_lines by keyword", "return text_lines(text=subprocess.check_output(command, text=True))"),
+            ("lines_and_breaks of a stdout", "return lines_and_breaks(subprocess.run(command).stdout)"),
+            ("line_starts of a stdout", "return line_starts(subprocess.run(command).stdout)"),
+            ("line_starts at LINE_BREAK", "return line_starts(subprocess.run(command).stdout, LINE_BREAK)"),
+            (
+                "text_lines of a JSON parse's field",
+                "return text_lines(json.loads(subprocess.check_output(command))['text'])",
+            ),
+            (
+                "text_lines of a json_reader parse's get()",
+                "data = json_reader.loads(subprocess.check_output(command))\n    return text_lines(data.get('text'))",
+            ),
+            (
+                "text_lines of an item looped over",
+                "for item in json_reader.loads(subprocess.check_output(command)):\n        text_lines(item['text'])",
+            ),
+            (
+                "text_lines in a comprehension",
+                "data = json.loads(subprocess.check_output(command))\n"
+                "    return [text_lines(item) for item in data.values()]",
+            ),
+            (
+                "text_lines of a literal sequence looped over",
+                "result = subprocess.run(command, text=True)\n"
+                "    for stream in (result.stderr, result.stdout):\n        text_lines(stream)",
+            ),
+        )
+    },
+    **{
+        f"a split of a program's output a parameter takes {form}": _form(
+            output_split_problems,
+            "import subprocess\n\nfrom text_lines import text_lines\n\n\n"
+            f"def read(name, output):\n    return text_lines(output)\n\n\n"
+            f"def f(command):\n    return read('x', {given})\n",
+        )
+        for form, given in (
+            ("by position", "subprocess.check_output(command, text=True)"),
+            ("by keyword", "output=subprocess.check_output(command, text=True)"),
+        )
+    },
+    **{
+        f"a split of {form}": _form(
+            output_split_problems,
+            "import subprocess\n\nfrom git_client import output_lines\n"
+            "from text_lines import LINE_FEED, line_starts, program_lines, text_lines\n\n\n"
+            f"def f(command, client, path, run_tool):\n    {body}\n",
+            refused=False,
+        )
+        for form, body in (
+            ("a program's output by program_lines", "return program_lines(subprocess.run(command).stdout)"),
+            ("git's output by output_lines", "return output_lines(client.run(['log']).stdout)"),
+            ("a program's output at LINE_FEED", "return line_starts(subprocess.run(command).stdout, LINE_FEED)"),
+            ("a program's output on a newline", "return subprocess.run(command).stdout.split('\\n')"),
+            ("a file's text", "return text_lines(path.read_text(encoding='utf-8'))"),
+            ("a file at a commit", "return text_lines(client.file_at('HEAD', 'a.md', directory='.').decode())"),
+            (
+                "a file at a commit a git-named reader gives",
+                "text = _read_git_file(client, 'HEAD', 'a.md').decode('utf-8')\n    return text_lines(text)",
+            ),
+            ("what another function returns", "return text_lines(run_tool(command).text())"),
+            ("an output's count", "return text_lines(str(len(subprocess.run(command).stdout)))"),
+        )
+    },
+    "a split of a parameter no call in the module fills with a program's output": _form(
+        output_split_problems,
+        "from text_lines import text_lines\n\n\ndef read(output):\n    return text_lines(output)\n\n\n"
+        "def f(path):\n    return read(path.read_text(encoding='utf-8'))\n",
         refused=False,
     ),
     # "a one-argument `int()` ... that converts a regular-expression group, a stripped one and a `findall` result's
@@ -4739,6 +4841,18 @@ def listings(client, git_output, root):
     client.output(["archive", "--format=tar", "HEAD"])
 
 
+def sanctioned(client):
+    client.output(["ls-files"])
+
+
+GIT_SEPARATOR_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+OUTPUT_SPLIT_SOURCE = """\
+import subprocess
+
+from text_lines import program_lines, text_lines
+
+
 def splits(client, git, run_tool, root):
     client.output(["rev-parse", "--show-toplevel"]).splitlines()
     listed = client.output(["for-each-ref", "--format=%(refname)", "refs/tags"])
@@ -4753,23 +4867,27 @@ def splits(client, git, run_tool, root):
     client.output(["rev-parse", "HEAD"]).split("\\n")
     run_tool(["python", "-c", "print()"]).stdout.splitlines()
     root.read_text().splitlines()
-    client.output(["archive", "--format=tar", "HEAD"]).splitlines()
+    text_lines(subprocess.run(["python", "-V"], capture_output=True, text=True).stderr)
+    program_lines(subprocess.run(["python", "-V"], capture_output=True, text=True).stderr)
+    read(subprocess.check_output(["python", "-V"], text=True))
+
+
+def read(output):
+    return text_lines(output)
 
 
 def sanctioned(client):
-    client.output(["ls-files"])
     client.output(["rev-parse", "HEAD"]).splitlines()
 
 
-GIT_SEPARATOR_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+OUTPUT_SPLIT_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
 
 
 def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a_byte_but_nul() -> None:
     # A call's positional arguments and a list's or a tuple's items start a git command, after git itself and its own
-    # options; GitClient.names adds -z, and text before the first field or after the last joins none. splitlines() of
-    # a git call's result, its stdout or output, or a name bound to either is refused; a split on a newline, another
-    # program's output, and a command that prints no names are not.
+    # options; GitClient.names adds -z, and text before the first field or after the last joins none. A command that
+    # prints no names is not refused.
     alpha = "skills/alpha/scripts/alpha.py"
     found = run_claim_policy(
         python_checks.git_separator_problems,
@@ -4790,13 +4908,6 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
             "them with NUL, %00 for for-each-ref or %x00 for log, or state why in GIT_SEPARATOR_ALLOWED"
         )
 
-    def split(command: str) -> str:
-        return (
-            f"splits the output of git {command} with splitlines(), which also breaks on U+0085, U+2028, and other "
-            'characters a ref name or a path can hold; split on "\\n", or on NUL with -z or a %00 format, or state '
-            "why in GIT_SEPARATOR_ALLOWED"
-        )
-
     assert found == [
         f"{alpha}:2 {listing('diff')}",
         f"{alpha}:3 {listing('status')}",
@@ -4806,14 +4917,47 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
         f"{alpha}:7 {joined('log', '%x1f')}",
         f"{alpha}:8 {joined('log', '%n')}",
         f"{alpha}:9 {joined('for-each-ref', '%0a')}",
-        f"{alpha}:21 {split('rev-parse')}",
-        f"{alpha}:23 {split('for-each-ref')}",
-        f"{alpha}:25 {split('rev-parse')}",
-        f"{alpha}:26 {split('rev-parse')}",
-        f"{alpha}:28 {split('rev-parse')}",
-        f"{alpha}:30 {split('rev-parse')}",
         f"{alpha}: GIT_SEPARATOR_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GIT_SEPARATOR_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+def test_output_split_policy_refuses_a_split_of_any_programs_output_but_at_its_line_feeds() -> None:
+    # splitlines() of a git call's result, its stdout or output, or a name bound to either, of another program's
+    # stdout, text_lines of a stderr, and a parameter a call fills with a check_output() are refused; a split on a
+    # newline, program_lines, a file's text, and an output the allowance sanctions are not, and neither owner is read.
+    alpha = "skills/alpha/scripts/alpha.py"
+    owners = sorted(python_checks.OUTPUT_SPLIT_OWNERS)
+    assert len(owners) == 2
+    found = run_claim_policy(
+        python_checks.output_split_problems, "OUTPUT_SPLIT_ALLOWED", OUTPUT_SPLIT_SOURCE, owners[0]
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {owners[1]: OUTPUT_SPLIT_SOURCE})
+        assert python_checks.output_split_problems(root, sorted(root.rglob("*.py"))) == []
+
+    def split(program: str) -> str:
+        return (
+            f"splits the output of {program} where a line feed does not end its line: splitlines() also breaks at "
+            "U+0085, U+2028, U+2029, a vertical tab, a form feed, and the file, group, and record separators, and "
+            "splitlines() of bytes and text_lines at a lone CR, any of which a name or a path the program prints can "
+            "hold; split it with text_lines.program_lines, or git_client.output_lines for git's, or state why in "
+            "OUTPUT_SPLIT_ALLOWED, as for a document the program carries"
+        )
+
+    assert found == [
+        f"{alpha}:7 {split('git rev-parse')}",
+        f"{alpha}:9 {split('git for-each-ref')}",
+        f"{alpha}:11 {split('git rev-parse')}",
+        f"{alpha}:12 {split('git rev-parse')}",
+        f"{alpha}:14 {split('git rev-parse')}",
+        f"{alpha}:16 {split('git rev-parse')}",
+        f"{alpha}:18 {split('a program')}",
+        f"{alpha}:20 {split('a program')}",
+        f"{alpha}:26 {split('a program')}",
+        f"{alpha}: OUTPUT_SPLIT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: OUTPUT_SPLIT_ALLOWED must map each function, class, or assignment to its reason",
     ]
 
 
@@ -5223,16 +5367,17 @@ def test_ctypes_policy_reads_each_form_resolved_call_follows(body: str) -> None:
     assert resolved_rows(python_checks.ctypes_declaration_problems, body) == marked_rows(body)
 
 
-# Each name listing GIT_NAME_LISTINGS adds is also a command whose output the splitlines() check reads, -z or not.
+# Each name listing GIT_NAME_LISTINGS adds is also a command whose output the output split check names as git's, -z or
+# not.
 @pytest.mark.parametrize("command", ["diff-tree", "diff-index", "diff-files", "check-ignore", "check-attr"])
-def test_git_separator_policy_reads_a_split_of_each_listing_command(command: str) -> None:
+def test_output_split_policy_names_git_in_a_split_of_each_listing_command(command: str) -> None:
     source = f"def split(client):\n    client.output([{command!r}, '-z', 'HEAD']).splitlines()\n"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
-        found = python_checks.git_separator_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.output_split_problems(root, sorted(root.rglob("*.py")))
     assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:2"]
-    assert f"splits the output of git {command} with splitlines()" in found[0]
+    assert f"splits the output of git {command} where a line feed does not end its line" in found[0]
 
 
 TIME_OPTION_SOURCE = """\

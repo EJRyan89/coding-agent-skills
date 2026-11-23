@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from text_lines import LINE_FEED, line_index, line_starts, lines_and_breaks, program_lines, text_lines
+from text_lines import LINE_FEED, line_index, line_starts, lines_and_breaks, output_lines, program_lines, text_lines
 
 # Every character str.splitlines breaks at besides CR and LF, written out rather than derived from it.
 KEPT = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -93,6 +93,30 @@ class ProgramLinesTests(unittest.TestCase):
         self.assertEqual(["a"], program_lines("a\r\n"))
         self.assertEqual([], program_lines(""))
         self.assertEqual([""], program_lines("\n"))
+
+
+class OutputLinesTests(unittest.TestCase):
+    def test_it_breaks_at_lf_alone_and_keeps_every_cr(self) -> None:
+        # git ends a line with LF alone, so a CR before it is the last character of a name or a message.
+        self.assertEqual(["a\r", "b"], output_lines("a\r\nb\n"))
+        self.assertEqual(["10%\r20%", "done"], output_lines("10%\r20%\ndone"))
+
+    def test_a_last_break_ends_the_last_line_and_empty_output_has_none(self) -> None:
+        self.assertEqual(["a", ""], output_lines("a\n\n"))
+        self.assertEqual([], output_lines(""))
+        self.assertEqual([""], output_lines("\n"))
+
+    def test_program_lines_is_output_lines_without_the_cr_before_each_lf(self) -> None:
+        for output in ("", "\n", "a\r\n", "a\r\r\nb", "a\rb\r\n\r\n", "a\u2028b\r\nc\r"):
+            with self.subTest(output=output):
+                self.assertEqual([line.removesuffix("\r") for line in output_lines(output)], program_lines(output))
+
+
+@pytest.mark.parametrize("character", [*KEPT, "\r"], ids=[f"U+{ord(character):04X}" for character in [*KEPT, "\r"]])
+def test_an_output_line_keeps_every_character_splitlines_breaks_at_but_lf(character: str) -> None:
+    output = f"refs/heads/a{character}b\nnext"
+    assert len(output.splitlines()) == 3  # the premise: str.splitlines breaks here
+    assert output_lines(output) == [f"refs/heads/a{character}b", "next"]
 
 
 @pytest.mark.parametrize("character", KEPT, ids=[f"U+{ord(character):04X}" for character in KEPT])
