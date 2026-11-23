@@ -2021,6 +2021,20 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}, filled=False) == expected
 
 
+def test_tree_read_policy_reads_audit_skills_scripts() -> None:
+    # audit-skill's inventory reads the skill folder it examines through the reader, so a direct read in its scripts
+    # fails, and one stated in TREE_READ_ALLOWED passes; its suite is not read.
+    folder = "skills/audit-skill/scripts"
+    direct = "def size(path):\n    return path.read_bytes()\n"
+    allowed = f"TREE_READ_ALLOWED = {{'size': 'a place outside the examined folder'}}\n{direct}"
+    placeholder = {f"{SCRIPTS}/placeholder.py": "VALUE = 1\n"}
+    assert tree_read_findings({**placeholder, f"{folder}/skill_inventory.py": direct}) == [
+        f"{folder}/skill_inventory.py:2 reads a path with Path.read_bytes; {TREE_READ_ADVICE}"
+    ]
+    files = {**placeholder, f"{folder}/skill_inventory.py": allowed, f"{folder}/test_x.py": direct}
+    assert tree_read_findings(files) == []
+
+
 # Every path method that reads, named as literals rather than taken from the policy's tables, so a change to those
 # tables or to call_tables' TEXT_METHODS that drops one fails here. Those taking an argument are called with one.
 READING_PATH_METHODS_WITH_ARGUMENT = ("read_text", "open", "glob", "rglob", "walk", "samefile")
