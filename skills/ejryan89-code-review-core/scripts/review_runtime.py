@@ -2151,6 +2151,11 @@ def materialize_source_snapshot(
 ) -> dict[str, Any]:
     """Snapshot the exact commit from a local checkout's object store (no worktree or branch change).
 
+    It promises the committed bytes: each file's blob as the object store holds it, read with `git ls-tree` and
+    `git cat-file`, with no .gitattributes entry, Git setting, or filter applied, so the reviewer reads exactly what
+    the author committed. `deploy.py --at` promises a checkout's bytes instead, on purpose, through `git archive`, and
+    tests/validation/tree_readers.py names each reader of a commit's tree with the bytes it promises.
+
     With `upfront`, the snapshot is lazy: it holds the changed files and the paths `upfront` accepts, and its
     manifest lists every other path it would hold, with its blob id, under `fetchable`, for `fetch_source_file`.
     A path one of the `exclude` globs matches is a `configured` exclusion, never written or fetchable. A changed

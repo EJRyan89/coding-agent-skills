@@ -17,6 +17,7 @@ import msbuild_evaluation
 from msbuild_evaluation import ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import PackageRef, Unreadable, parse_xml
 from test_msbuild_reader import failing_without_a_file
+from tree_reader import TreeReader
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -445,7 +446,7 @@ class EvaluationTests(unittest.TestCase):
         # Nothing a reader meets is there, but whether a link takes the place cannot be told, so the Import is
         # reported with the stat's reason.
         target = self.root / "src" / "App" / "Local.props"
-        with failing_without_a_file(msbuild_evaluation, "is_occupied", target):
+        with failing_without_a_file(file_presence, "is_occupied", target):
             project = self.read(
                 "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" /></Project>'
             )
@@ -485,7 +486,7 @@ class EvaluationTests(unittest.TestCase):
             target = self.root / "src" / "App" / name
             with self.subTest(name):
                 reader = "is_present" if name == "Local.props" else "is_occupied"
-                with failing_without_a_file(msbuild_evaluation, reader, target):
+                with failing_without_a_file(file_presence, reader, target):
                     project = self.read("src/App/App.csproj", text)
                 self.assertEqual([(target, "Access is denied")], [(item.file, item.reason) for item in project.reports])
 
@@ -905,9 +906,9 @@ class EvaluationTests(unittest.TestCase):
         parse = parse_xml
         evaluation = msbuild_evaluation.Evaluation.__init__
 
-        def parse_counting(path: Path) -> object:
+        def parse_counting(path: Path, reader: TreeReader) -> object:
             parsed.append(path)
-            return parse(path)
+            return parse(path, reader)
 
         def evaluate_counting(self: object, *arguments: object) -> None:
             evaluated.append(arguments)

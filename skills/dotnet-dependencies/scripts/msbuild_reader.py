@@ -18,14 +18,19 @@ ProjectReference, or a project a restore recorded, is made absolute without reac
 looks it up: one outside the tree (`examined_tree`), or in a device or network form, is refused unread. A file inside
 the tree is stat or read only when ejryan89-skill-core's `folder_walk.outside_link_refusal` finds no link on its way,
 its own name included, that leads outside the tree, judging each name from its own metadata and each link from its text,
-so a link out of the tree is reported, never followed. A read opens only a regular file and refuses one holding more
-than ejryan89-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`). Two limits: the
+so a link out of the tree is reported, never followed. Every read goes through ejryan89-skill-core's `TreeReader`, bound
+to the examined tree, or to a NuGet cache folder for a package unpacked there, which judges each path so before it
+touches it. A read opens only a regular file and refuses one holding more than ejryan89-skill-core's `READ_LIMIT_BYTES`
+in `dotnet_solution.py`, the one bound (`read_bounded`). The two reads outside a reader are `examined_tree`, which finds
+the tree before any is bound, and `exists_above_tree`, MSBuild's search for the nearest file going on above the tree,
+which asks only whether a file is there and never reads it. Two limits: the
 look at the links and the read are two steps, so a name replaced by a link between them is read through; and a hard
 link is the file itself, with no link to judge, so a hard link to a file elsewhere is read as a file of the tree.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import sys
 from collections.abc import Callable, Iterable, Sequence
@@ -36,15 +41,15 @@ from xml.etree.ElementTree import Element
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, is_occupied, matching
-from folder_walk import outside_link_refusal
-from folders_up import folders_up
+from file_presence import is_directory, is_occupied
+from folder_walk import LINKED_OUT_REASON, outside_link_refusal
 from link_probe import is_link_or_junction
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
+from path_containment import within
+from tree_reader import TreeReader, TreeRefused
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
@@ -138,31 +143,34 @@ def children(element: Element, name: str) -> list[Element]:
 
 def os_unreadable(error: OSError, fallback: Path) -> Unreadable:
     """An OSError as the `Unreadable` its caller reports against one file or package: the path the error names, else
-    `fallback`, with the error's reason."""
+    `fallback`, with the error's reason; a path a `TreeReader` refused is named with its refusal."""
+    if isinstance(error, TreeRefused):
+        return Unreadable(error.path, error.reason)
     return Unreadable(Path(error.filename) if error.filename else fallback, error.strerror or str(error))
 
 
-def read_bounded(path: Path) -> bytes:
-    """The bytes of the regular file at `path`, read by ejryan89-skill-core's `read_bounded`, or `Unreadable` with its
-    reason when it refuses the file: it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
+def read_bounded(path: Path, reader: TreeReader) -> bytes:
+    """The bytes of the regular file at `path`, read through `reader` within ejryan89-skill-core's `read_bounded`, or
+    `Unreadable` with its reason when either refuses the file: the reader for where it lies or a link on its way leads,
+    the bound because it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
     try:
-        return dotnet_solution.read_bounded(path)
-    except FileRefused as error:
+        return reader.contents(path)
+    except (FileRefused, TreeRefused) as error:
         raise Unreadable(path, error.reason) from None
 
 
-def parse_xml(path: Path) -> Element:
-    """The root of the XML file at `path`, or `Unreadable` when it cannot be read or parsed."""
+def parse_xml(path: Path, reader: TreeReader) -> Element:
+    """The root of the XML file at `path`, read through `reader`, or `Unreadable` when it cannot be read or parsed."""
     try:
-        return read_xml(decode_text(read_bounded(path)))
+        return read_xml(decode_text(read_bounded(path, reader)))
     except XmlRefused as error:
         raise Unreadable(path, str(error)) from None
 
 
-def read_solution(path: Path) -> list[str]:
+def read_solution(path: Path, reader: TreeReader) -> list[str]:
     """The project paths the solution at `path` lists, as written, or `Unreadable` when it cannot be read or parsed."""
     try:
-        return listed_projects(decode_text(read_bounded(path)), path)
+        return listed_projects(decode_text(read_bounded(path, reader)), path)
     except XmlRefused as error:
         raise Unreadable(path, str(error)) from None
 
@@ -207,6 +215,21 @@ def examined_tree(base: Path) -> Path:
         except OSError as error:
             raise os_unreadable(error, marker) from None
     return base if found is None else found
+
+
+# The reads made before a tree is bound, or above it, which ejryan89-skill-core's tree_reader does not judge.
+TREE_READ_ALLOWED = {
+    "examined_tree": (
+        "finds the tree a run reads in, from the top down, before any tree is bound; it follows a link only while no "
+        "checkout lies above it, the user's own choice of where to look, and judges each marker from its own metadata"
+    ),
+    "exists_above_tree": (
+        "MSBuild's search for the nearest file goes on above the examined tree, as the dotnet-dependencies row of "
+        "docs/design.md states (the searches may go on above the tree on the local drive, as MSBuild's do, and a file "
+        "one finds is read only inside the tree), so whether a file is there is asked of each folder above it, from "
+        "the place's own metadata and its target's kind, and no file there is read"
+    ),
+}
 
 
 def platform_version(version: str) -> str:
@@ -284,7 +307,7 @@ def item_specs(text: str) -> list[str]:
     return [part.strip() for part in text.split(";") if part.strip()]
 
 
-def msbuild_file_exists(path: Path) -> bool:
+def msbuild_file_exists(path: Path, reader: TreeReader) -> bool:
     """MSBuild's file system's FileExists: whether anything but a folder, or a link to one, is at `path`, a link to
     nothing and a FIFO included; the stat's `OSError` when it cannot tell.
 
@@ -292,25 +315,36 @@ def msbuild_file_exists(path: Path) -> bool:
     File.Exists, which reads the path with lstat, follows a link whose target is there, and is true for anything but a
     folder. A link to a folder that no longer exists, which Windows marks as a folder itself, is read here as a link to
     nothing, as File.Exists reads it elsewhere."""
+    return reader.occupied(path) and not reader.folder(path, other_is_absent=True)
+
+
+def exists_above_tree(path: Path) -> bool:
+    """`msbuild_file_exists` of a candidate above the examined tree, where no reader is bound: whether anything but a
+    folder is there, asked of the place's own metadata and its target's kind, never reading it."""
     return is_occupied(path) and not is_directory(path, other_is_absent=True)
 
 
-def nearest_file(project_dir: Path, name: str, tree: Path | None = None) -> Path | None:
+def nearest_file(project_dir: Path, name: str, reader: TreeReader) -> Path | None:
     """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
     for Directory.Build.props and Directory.Packages.props: the first where `msbuild_file_exists` is true, so a link to
     nothing or a FIFO stops the search, as it stops MSBuild's, and its reader reports it as one it cannot read; None
-    when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there, or, inside
-    `tree`, `Refused` naming one that `outside_link_refusal` refuses, which is never stat."""
-    for directory in folders_up(project_dir):
+    when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there, or, inside the
+    reader's tree, `Refused` naming one that `outside_link_refusal` refuses, which is never stat. The folders are taken
+    by text, a candidate inside the tree asked through `reader` and one above it by `exists_above_tree`."""
+    directory = project_dir
+    while True:
         candidate = directory / name
-        if tree is not None and (linked := outside_link_refusal(candidate, tree)) is not None:
+        inside = within(candidate, reader.tree)
+        if inside and (linked := outside_link_refusal(candidate, reader.tree)) is not None:
             raise Refused(candidate, linked)
         try:
-            if msbuild_file_exists(candidate):
+            if msbuild_file_exists(candidate, reader) if inside else exists_above_tree(candidate):
                 return candidate
         except OSError as error:
             raise os_unreadable(error, candidate) from None
-    return None
+        if directory.parent == directory:
+            return None
+        directory = directory.parent
 
 
 def child_text_anywhere(root: Element, name: str) -> str | None:
@@ -322,9 +356,9 @@ def child_text_anywhere(root: Element, name: str) -> str | None:
     return None
 
 
-def read_packages_config(path: Path) -> list[PackageRef]:
+def read_packages_config(path: Path, reader: TreeReader) -> list[PackageRef]:
     """Each package entry of a packages.config with its version and target framework."""
-    root = parse_xml(path)
+    root = parse_xml(path, reader)
     return [
         PackageRef(package, element.get("version"), PACKAGES_CONFIG, element.get("targetFramework"))
         for element in children(root, "package")
@@ -332,9 +366,9 @@ def read_packages_config(path: Path) -> list[PackageRef]:
     ]
 
 
-def read_redirects(path: Path) -> list[Redirect]:
+def read_redirects(path: Path, reader: TreeReader) -> list[Redirect]:
     """Each bindingRedirect of a web.config or app.config, with the assembly its dependentAssembly names."""
-    root = parse_xml(path)
+    root = parse_xml(path, reader)
     found: list[Redirect] = []
     for dependent in children(root, "dependentAssembly"):
         identity = next((element for element in dependent if local_name(element) == "assemblyIdentity"), None)
@@ -349,9 +383,9 @@ def read_redirects(path: Path) -> list[Redirect]:
     return found
 
 
-def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
+def read_nuspec(path: Path, reader: TreeReader, assemblies: tuple[str, ...] = ()) -> PackageNode:
     """A package's id, version, and dependencies from its .nuspec, every dependency group together."""
-    root = parse_xml(path)
+    root = parse_xml(path, reader)
     package = child_text_anywhere(root, NUSPEC_DEPENDENCY_ID)
     version = child_text_anywhere(root, "version")
     if not package or not version:
@@ -364,20 +398,32 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
     return PackageNode(package, version, dependencies, assemblies)
 
 
-def package_assemblies(package_dir: Path, tree: Path | None = None) -> tuple[str, ...]:
-    """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
-    something other than a folder stands at lib/, whether one is there cannot be told, a folder below it cannot be
-    listed, or, inside `tree`, a link on its way leads outside it (`outside_link_refusal`), which is never stat."""
+def package_assemblies(package_dir: Path, reader: TreeReader) -> tuple[str, ...]:
+    """The stems of the assemblies a package folder ships under lib/ and every folder below it, each once, in name
+    order, found by the reader's search, which judges each link entry from its own metadata and its text; or
+    `Unreadable` when something other than a folder stands at lib/, whether one is there cannot be told, a folder below
+    it cannot be listed or an entry examined, or a link at lib/ or below it, a symbolic link or a junction alike, leads
+    outside the reader's tree, which is never listed or stat. A folder link that stays inside the tree is not entered,
+    as the search enters none, a Windows junction among them, nor a folder holding a `.git` entry, which the search
+    takes for a nested checkout, and the assemblies below either are not named."""
     lib = package_dir / "lib"
-    if tree is not None and (linked := outside_link_refusal(lib, tree)) is not None:
-        raise Unreadable(lib, linked)
+    if (refused := reader.refusal(lib)) is not None:
+        raise Unreadable(lib, refused)
     try:
-        if not is_directory(lib):
+        if not reader.folder(lib):
             return ()
-        found = matching(lib, "**/*.dll")
+        walk = reader.search(lib, lambda name: fnmatch.fnmatch(name, "*.dll"), skipped=frozenset())
     except OSError as error:
         raise os_unreadable(error, lib) from None
-    return tuple(sorted({path.stem for path in found}, key=ordinal_fold))
+    for entry in walk.not_entered:
+        if entry.error is not None:
+            raise os_unreadable(entry.error, entry.path)
+        if entry.reason == LINKED_OUT_REASON:
+            raise Unreadable(entry.path, entry.reason)
+    for found in walk.files:
+        if (refused := reader.refusal(found)) is not None:
+            raise Unreadable(found, refused)
+    return tuple(sorted({path.stem for path in walk.files}, key=ordinal_fold))
 
 
 def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[str, ...]:
@@ -428,7 +474,7 @@ def assets_direct(frameworks: dict[str, Any], path: Path) -> dict[str, list[Pack
     return direct
 
 
-def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
+def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) -> Assets:
     """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
     the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, repeats its
     framework's packages and is passed over.
@@ -438,7 +484,7 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
     version to the default (`matching_framework`), else the target's name as written."""
     try:
-        document = json_reader.loads(read_bounded(path).decode("utf-8-sig"))
+        document = json_reader.loads(read_bounded(path, reader).decode("utf-8-sig"))
     except ValueError as error:
         raise Unreadable(path, str(error)) from None
     targets = document.get("targets") if isinstance(document, dict) else None

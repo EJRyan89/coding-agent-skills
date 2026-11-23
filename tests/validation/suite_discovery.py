@@ -51,6 +51,7 @@ from path_containment import posix_within, relative_within, within
 from shell_targets import run_bash_suite
 from skill_scripts import STANDARD_STREAMS
 from toolchain import find_powershell
+from type_check_roots import MYPY_PATH_PREFIX
 from validation_support import (
     COMPUTED_NAME,
     REPOSITORY_ROOT,
@@ -909,7 +910,6 @@ def unsuited_script_problems(root: Path) -> list[str]:
     return problems
 
 
-MYPY_PATH_PREFIX = "$MYPY_CONFIG_FILE_DIR/"
 # The calls that load a module from a file by its path, by their last name, and the position and keyword of the path.
 PATH_LOADERS = {
     "spec_from_file_location": (1, "location"),

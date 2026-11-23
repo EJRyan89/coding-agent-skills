@@ -16,7 +16,9 @@ that author's input until the user has read it, as the pull request's code is, a
 stays its author's input whatever the fixture says. It still takes the real path from the commits on. `fixture_change`
 commits both trees, byte for byte, to a throwaway repository whose origin names the fixture's repository, so `prepare`
 snapshots the head from that repository's objects as it snapshots a checkout's, with the same exclusions, and reads the
-diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub.
+diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub. The trees' files are
+committed but for the AppleDouble `._<name>` sidecars macOS writes beside `<name>` on a FAT, exFAT, or SMB volume,
+which ejryan89-skill-core's `apple_double` recognizes and `_tree_files` leaves out.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import apple_double
 import file_presence
 import private_folder
 from git_client import GitClient, GitError, Runner, command_name, output_line, output_lines
@@ -167,10 +170,13 @@ def validate_prior_record(value: object, *, repository: str, number: int) -> Rev
 
 def _tree_files(root: Path) -> list[tuple[str, Path]]:
     """Each file under `root` as (its POSIX path, its path), sorted. A link or another entry that is not a regular
-    file or folder has no place in a fixture and is refused.
+    file or folder has no place in a fixture and is refused. An AppleDouble sidecar beside its file or folder, which
+    macOS writes on a FAT, exFAT, or SMB volume on its own and the fixture's author never did, is left out, as
+    ejryan89-skill-core's `apple_double.is_sidecar` judges it; any other `._` file, one it cannot read included, stays.
 
     Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
-    makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
+    makes no file-system call per entry, but for opening the header of a `._<name>` file beside `<name>`, and the
+    POSIX path is built as a string rather than through pathlib."""
     file_presence.require(
         root, FixtureError, f"The fixture has no {root.name}/ tree", f"The fixture's {root.name}/ tree", folder=True
     )
@@ -180,18 +186,21 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
     folders = [("", str(root))]
     while folders:
         prefix, folder = folders.pop()
-        with os.scandir(folder) as entries:
-            for entry in entries:
-                relative = prefix + entry.name
-                path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
-                if is_link_or_junction(path, metadata):
-                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
-                if stat.S_ISDIR(metadata.st_mode):
-                    folders.append((relative + "/", entry.path))
-                elif stat.S_ISREG(metadata.st_mode):
+        with os.scandir(folder) as listing:
+            entries = list(listing)
+        names = {entry.name for entry in entries}
+        for entry in entries:
+            relative = prefix + entry.name
+            path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
+            if is_link_or_junction(path, metadata):
+                raise FixtureError(f"The fixture holds a link or special file: {relative}")
+            if stat.S_ISDIR(metadata.st_mode):
+                folders.append((relative + "/", entry.path))
+            elif stat.S_ISREG(metadata.st_mode):
+                if not apple_double.is_sidecar(path, names):
                     files.append((relative, path))
-                else:
-                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
+            else:
+                raise FixtureError(f"The fixture holds a link or special file: {relative}")
     return sorted(files)
 
 

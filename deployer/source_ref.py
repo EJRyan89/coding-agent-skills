@@ -273,12 +273,14 @@ def recorded_ref(source_dir: Path, pin: Pin | None, ref: str | None, commit: str
 def export(source_dir: Path, commit: str) -> Path:
     """A fresh directory under the system temporary directory whose `tree` folder holds the commit's files.
 
-    git archive writes the files as a checkout of the commit would, line endings, `ident`, and filters included, so
-    the tree is the one a deployment from a checkout of the commit reads. Only the attributes git archive applies and
-    a checkout does not, export-ignore and export-subst, would make it another tree, so a commit on any path of whose
-    tree git archive would act on either is refused before the export is made (see `archive_attributes`). A tree holding
-    a link or a special file is refused before anything is extracted, and the extraction's data filter refuses any
-    member that would land outside the folder; either refusal names the member.
+    It promises a checkout's bytes, never the committed ones: git archive writes the files as a checkout of the commit
+    would, line endings, `ident`, and filters included, so the tree is the one a deployment from a checkout of the
+    commit reads. The code-review snapshot promises the committed bytes instead, on purpose, and
+    tests/validation/tree_readers.py names each reader of a commit's tree with the bytes it promises. Only the
+    attributes git archive applies and a checkout does not, export-ignore and export-subst, would make it another tree,
+    so a commit on any path of whose tree git archive would act on either is refused before the export is made (see
+    `archive_attributes`). A tree holding a link or a special file is refused before anything is extracted, and the
+    extraction's data filter refuses any member that would land outside the folder; either refusal names the member.
     """
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ValueError(f"not a full commit name: {commit!r}")

@@ -108,6 +108,9 @@ class ListingError(Exception):
 # Starts a program in a directory with an environment, writes each request as a line on its stdin, and returns its
 # stdout lines up to and including the first one `answered` accepts, or to the end when there is none.
 Converse = Callable[[list[str], Path, Mapping[str, str], list[str], "Callable[[str], bool] | None", float], list[str]]
+# converse returns the lines a runtime wrote on stdout, which a reader thread hands it through a queue, so validation
+# reads its return as a program's output only by this declaration.
+OUTPUT_SOURCES = {"converse": "the lines a runtime wrote on stdout, read through a reader thread and a queue"}
 
 
 def converse(
