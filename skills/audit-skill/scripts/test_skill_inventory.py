@@ -5514,3 +5514,36 @@ def test_the_shell_file_cue_reads_each_code_span_whole(tmp_path: Path) -> None:
 )
 def test_a_line_s_agents_are_its_code_spans_read_whole(line: str, expected: list[str]) -> None:
     assert skill_inventory.line_agents(line, {"helper", "x", "y"}) == expected
+
+
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so the listings are
+# held to the bytes macOS writes, not to the constant they use.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
+
+def test_the_one_folder_listings_leave_out_a_sidecar_beside_its_file_and_keep_any_other_dot_underscore_file(
+    tmp_path: Path,
+) -> None:
+    # Holds on every platform: the sidecars are planted with the bytes macOS writes.
+    folder = tmp_path / "Folder With Spaces"
+    for name in ("run.py", "check.py", "notes.md", "agent.md"):
+        write(folder / name, "x\n")
+    for sidecar in ("._run.py", "._notes.md"):
+        write(folder / sidecar, SIDECAR_BYTES)
+    # One with no header beside its file, and one with the header and no sibling, are the folder's own files.
+    write(folder / "._check.py", "x\n")
+    write(folder / "._gone.md", SIDECAR_BYTES)
+    assert [path.name for path in skill_inventory.listed_entries(folder, "*.md")] == [
+        "._gone.md",
+        "agent.md",
+        "notes.md",
+    ]
+    assert [path.name for path in skill_inventory.outside_scripts(folder)] == ["._check.py", "check.py", "run.py"]
+    # The skill's own scripts, listed through the reader bound to the skill folder.
+    skill = tmp_path / "skill"
+    for name in ("run.py", "check.py"):
+        write(skill / "scripts" / name, "x\n")
+    write(skill / "scripts" / "._run.py", SIDECAR_BYTES)
+    write(skill / "scripts" / "._check.py", "x\n")
+    scripts = skill_inventory.skill_scripts(skill, skill / "scripts")
+    assert [path.name for path in scripts] == ["._check.py", "check.py", "run.py"]

@@ -65,7 +65,7 @@ from agent_skills import (
 )
 from check_provenance import Source
 from console import run_main
-from file_presence import NotAFile, is_directory, is_present, is_there
+from file_presence import NotAFile, is_directory, is_present, is_there, listed
 from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
@@ -342,13 +342,14 @@ class Listing:
 def list_directory(root: Path, directory: Path, pattern: str | None = None) -> Listing:
     """The entries of `directory`, or those `pattern` matches, sorted, never listing or naming one through a link
     that leads out of the root, which goes in `outside`, the directory's own link when it lies behind one; raises
-    OSError when the directory cannot be listed. It lists with iterdir, which raises there, where glob matches
-    nothing."""
+    OSError when the directory cannot be listed. It lists with `file_presence.listed`, which raises there, where glob
+    matches nothing, and leaves out the AppleDouble sidecars macOS writes beside a file on a FAT, exFAT, or SMB
+    volume."""
     listing = Listing()
     if leaves_root(root, directory):
         listing.outside.append(outside_link(root, directory) or directory)
         return listing
-    for path in sorted(directory.iterdir()):
+    for path in listed(directory):
         if pattern is None or fnmatch.fnmatch(path.name, pattern):
             listing.add(root, path)
     return listing

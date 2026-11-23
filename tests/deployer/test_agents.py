@@ -14,6 +14,10 @@ from harness import DeployerTestCase, backup_entry, install_entry, journal_line
 
 from deployer import fsops, platform_support
 
+# The first bytes macOS writes in an AppleDouble sidecar on a FAT, exFAT, or SMB volume, written out so the deployer is
+# held to the bytes macOS writes, not to the constant it uses.
+SIDECAR_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02"
+
 
 def sha256(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
@@ -45,6 +49,26 @@ class AgentDeploymentTests(DeployerTestCase):
         self.assertIn("reviewer.md (agent)", self.report_groups(again.output, "DEPLOYED")["UNCHANGED"])
         dry = self.deploy_ok("--all", "--dry-run")
         self.assertIn("reviewer.md (agent)", self.report_groups(dry.output, "DRY RUN")["UNCHANGED"])
+
+    def test_a_sidecar_macos_wrote_in_the_source_or_beside_a_deployed_file_is_neither_read_nor_deployed(self) -> None:
+        # Holds on every platform: the sidecars are planted with the bytes macOS writes on a FAT, exFAT, or SMB volume,
+        # beside an agent, a metadata file, a skill's folder, and a skill's file.
+        for sidecar in (
+            "agents/._reviewer.md",
+            "deploy-meta/._alpha.json",
+            "skills/._alpha",
+            "skills/alpha/._SKILL.md",
+        ):
+            (self.source / sidecar).write_bytes(SIDECAR_BYTES)
+        result = self.deploy_ok("--all")
+        self.assertEqual(["alpha"], sorted(self.owned("skills")))
+        self.assertEqual(["reviewer.md"], sorted(self.owned("agents")))
+        self.assertNotIn("._SKILL.md", [path.name for path in (self.skills_dir / "alpha").iterdir()])
+        self.assertIn("alpha", self.report_groups(result.output, "DEPLOYED")["INSTALLED"])
+        # One macOS writes beside a deployed file leaves the skill unmodified.
+        (self.skills_dir / "alpha" / "._SKILL.md").write_bytes(SIDECAR_BYTES)
+        again = self.deploy_ok("--all")
+        self.assertIn("alpha", self.report_groups(again.output, "DEPLOYED")["UNCHANGED"])
 
     def test_an_updated_agent_replaces_the_owned_copy(self) -> None:
         self.deploy_ok("--all")
