@@ -62,8 +62,13 @@ Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows
 - A contents or readme endpoint is read as giving a file's committed bytes, even for a folder, whose entries it lists.
 - A gh command other than gh api that reads a commit's tree, as `gh release download --archive=zip` or `gh repo clone`,
   is not read, and neither is a GitHub endpoint in a Bash or PowerShell script or a Markdown fence.
+- An endpoint after a repository path a name holds, as `f"{base}/contents/{path}"` or `base + f"/contents/{path}"`, is
+  not read.
+- A file read through GraphQL's `object(expression:)`, or through github.com's `blob/<commit>/<path>?raw=true`, is not
+  read.
 - A check is held by the name a call in its scope gives it, so a call of the function its module defines by that name
-  counts wherever in the scope it is made and whatever it is given.
+  counts wherever in the scope it is made, in a branch that never runs or before the download, and whatever it is
+  given, and it holds every archive its scope reads, a second archive beside the one it checks included.
 """
 
 from __future__ import annotations

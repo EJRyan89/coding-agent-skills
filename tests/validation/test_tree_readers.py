@@ -482,6 +482,19 @@ class GitHubTreeReaderFixtures(TreeReaderCase):
             "an endpoint in a Bash script": ("sh", "gh api repos/o/r/tarball/HEAD > tree.tar", None),
             "an endpoint in a PowerShell script": ("ps1", "gh api repos/o/r/tarball/HEAD", None),
             "an endpoint in a Markdown fence": ("md", "```bash\ngh api repos/o/r/tarball/HEAD\n```", None),
+            "a repository path a name holds": ("py", "return f'{base}/contents/{path}'", None),
+            "a repository path a name holds, then a +": ("py", "return base + f'/contents/{path}'", None),
+            "a file read through GraphQL": (
+                "py",
+                "return client.json(['api', 'graphql', '-f', 'query=query($e: String!) "
+                "{ repository(owner: $o, name: $r) { object(expression: $e) { ... on Blob { text } } } }'])",
+                None,
+            ),
+            "a file read through a blob page's raw view": (
+                "py",
+                "return f'https://github.com/{repository}/blob/{commit}/{path}?raw=true'",
+                None,
+            ),
         }
         for label, (kind, code, scopes) in rows.items():
             name = f"limit.{kind}"
@@ -490,6 +503,19 @@ class GitHubTreeReaderFixtures(TreeReaderCase):
                 text = f"#!/usr/bin/env bash\n{text}"
             with self.subTest(label):
                 self.assertEqual([], self.problems({name: text}, {} if scopes is None else {name: scopes}))
-        with self.subTest("a check is held by the name its scope calls, whatever it is given"):
-            module = GITHUB.replace("verify_tarball(target, tree)\n", "verify_tarball(None, None)\n")
-            self.assertEqual([], self.problems({"github.py": module}, GITHUB_CATALOGUE, checks=GITHUB_CHECKS))
+        call = "    verify_tarball(target, tree)\n"
+        download = "    client.download(['api', f'repos/{repository}/tarball/{commit}'], target)\n"
+        checks = {
+            "a check given other values": GITHUB.replace(call, "    verify_tarball(None, None)\n"),
+            "a check in a branch that never runs": GITHUB.replace(
+                call, "    if False:\n        verify_tarball(target, tree)\n"
+            ),
+            "a check before the download": GITHUB.replace(call, "").replace(download, call + download),
+            "a second archive beside the one it checks": GITHUB.replace(
+                download, download + "    client.download(['api', f'repos/{repository}/zipball/{commit}'], target)\n"
+            ),
+        }
+        for label, module in checks.items():
+            with self.subTest(f"a check is held by the name its scope calls: {label}"):
+                self.assertNotEqual(GITHUB, module)
+                self.assertEqual([], self.problems({"github.py": module}, GITHUB_CATALOGUE, checks=GITHUB_CHECKS))
