@@ -2208,6 +2208,7 @@ def tools(path: Path) -> list[str]:
         allowed = parse_allowed_tools(document.value("allowed-tools"))
         entries = allowed_entries(document.value("allowed-tools"))
         listed = listing(document)
+        invoked = invocation(document)
     except frontmatter.FrontmatterError as exc:
         raise InputError(f"{posix(path)}: {exc}") from exc
     start = found[1] if found else 0
@@ -2225,12 +2226,11 @@ def tools(path: Path) -> list[str]:
             for name in allowed or []:
                 if name in IMPLIED_BY and affirmed(IMPLIED_BY[name], line):
                     first_implied.setdefault(name, start + offset + 1)
-    invocation = next(line.split()[1] for line in listed if line.startswith("INVOCATION "))
     output = [f"MODEL {model or 'none'}"]
     if is_main_name(path):
         output += setting_lines(path.parent)
-    output += [*listed, *trigger_scenario_lines(path.parent, invocation)]
-    output += runtime_lines(path.parent, allowed or [], invocation != "model")
+    output += [*listed, *trigger_scenario_lines(path.parent, invoked)]
+    output += runtime_lines(path.parent, allowed or [], invoked != "model")
     output += [f"ALLOWED {name}" for name in allowed] if allowed is not None else ["NO_ALLOWED_TOOLS"]
     used = sorted(first_use.items(), key=lambda item: (item[1], item[0]))
     output += [f"USED {name} {line}" for name, line in used]
@@ -2250,17 +2250,20 @@ def tools(path: Path) -> list[str]:
     return output
 
 
+def invocation(document: frontmatter.Frontmatter) -> str:
+    """Who may start the skill: model, user-only (disable-model-invocation: true), or hidden (also
+    user-invocable: false). The INVOCATION line prints it, and a caller takes it from here, never by splitting that
+    line back into fields."""
+    if not document.user_only():
+        return "model"
+    return "hidden" if (document.string("user-invocable") or "").strip().casefold() == "false" else "user-only"
+
+
 def listing(document: frontmatter.Frontmatter) -> list[str]:
     """What every session loads for this skill: its description, unless model invocation is disabled."""
     text = (document.string("description") or "").strip()
-
-    def flag(key: str) -> str:
-        return (document.string(key) or "").strip().casefold()
-
     model_invocable = not document.user_only()
-    user_invocable = flag("user-invocable") != "false"
-    invocation = "model" if model_invocable else ("user-only" if user_invocable else "hidden")
-    lines = [f"DESCRIPTION {len(text)} {-(-len(text) // 4)}", f"INVOCATION {invocation}"]
+    lines = [f"DESCRIPTION {len(text)} {-(-len(text) // 4)}", f"INVOCATION {invocation(document)}"]
     if model_invocable and text:
         lines.append(f"DESCRIPTION_LEAD {description_lead(text)}")
     if model_invocable and INTERNAL_WORDING.search(text):

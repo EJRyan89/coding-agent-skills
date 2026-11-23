@@ -70,14 +70,28 @@ def sample(path: str, entry: object, runtimes: tuple[str, ...]) -> Sample:
     return Sample(path, read, captured, how)
 
 
-def behind(samples: list[Sample], runtime: str, version: tuple[int, ...], label: str | None = None) -> list[str]:
-    """SAMPLE_BEHIND <label> <sample> <recorded> <version> for each sample of `runtime` older than `version`, the
-    runtime named by `label` where the caller names it otherwise."""
-    lines = []
+@dataclass(frozen=True)
+class Behind:
+    """A sample whose runtime has moved past its recorded version, with each value a summary reads carried here, never
+    read back from the line, since a sample's path may hold a space."""
+
+    label: str
+    path: str
+    recorded: str
+    latest: str
+
+    @property
+    def line(self) -> str:
+        """SAMPLE_BEHIND <label> <sample> <recorded> <latest>, as the watches print it."""
+        return f"SAMPLE_BEHIND {self.label} {self.path} {self.recorded} {self.latest}"
+
+
+def behind(samples: list[Sample], runtime: str, version: tuple[int, ...], label: str | None = None) -> list[Behind]:
+    """Each sample of `runtime` older than `version`, the runtime named by `label` where the caller names it
+    otherwise."""
+    found = []
     for item in samples:
         recorded = item.versions.get(runtime)
         if recorded is not None and recorded < version:
-            lines.append(
-                f"SAMPLE_BEHIND {label or runtime} {item.path} {versions.text(recorded)} {versions.text(version)}"
-            )
-    return lines
+            found.append(Behind(label or runtime, item.path, versions.text(recorded), versions.text(version)))
+    return found

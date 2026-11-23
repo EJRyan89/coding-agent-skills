@@ -967,7 +967,7 @@ FACT_SPLIT_PASSES = (
         "return [value for line, value in lines if line.startswith('FACT ')]",
         FACT_BUILD,
     ),
-    ("built nowhere in the module", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append(value)"),
+    ("built only in another module", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append(value)"),
     ("under a not", "if not line.startswith('FACT '):\n    return line.split()[1]", FACT_BUILD),
     (
         "in the else branch",

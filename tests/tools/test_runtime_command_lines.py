@@ -445,6 +445,21 @@ class CapturedTests(RuntimeCommandLinesTestCase):
         self.assertFalse(lines.failed(self.facts))
         self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(self.facts))
 
+    def test_a_sample_whose_path_holds_a_space_is_named_whole_in_the_summary(self) -> None:
+        # The summary reads the values the run carries, so a space in the path moves no later field.
+        samples = [captured_samples.Sample("codex/old run.txt", {"codex": (0, 162, 0)}, "2026-10-01", "a start")]
+        found = lines.run(
+            ("codex",),
+            5,
+            self.root / "run",
+            runner=StubRuntimes(versions=FIXED_VERSIONS),
+            which=lambda name: name,
+            say=lambda _: None,
+            samples=samples,
+        )
+        self.assertIn("SAMPLE_BEHIND codex codex/old run.txt 0.162.0 0.163.0", [fact.line for fact in found])
+        self.assertIn("| codex | codex/old run.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(found))
+
     def test_without_samples_given_a_run_ages_the_ones_this_checkout_records(self) -> None:
         # A release newer than every recorded Codex sample, so each is behind whatever versions the captures record.
         newest = max(

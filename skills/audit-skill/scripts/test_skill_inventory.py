@@ -1133,6 +1133,25 @@ class ToolsTests(TemporaryTestCase):
                     expected, [line for line in lines if line.startswith(("DESCRIPTION", "INVOCATION", "INTERNAL"))]
                 )
 
+    def test_tools_takes_each_invocation_from_the_frontmatter_it_prints(self) -> None:
+        # The trigger scenario and the runtime lines are given the invocation the frontmatter states, never one read
+        # back from the printed INVOCATION line.
+        cases = {
+            "description: Run.": "model",
+            "description: Run.\ndisable-model-invocation: true": "user-only",
+            "description: Run.\ndisable-model-invocation: true\nuser-invocable: false": "hidden",
+        }
+        for frontmatter, expected in cases.items():
+            with (
+                self.subTest(invocation=expected),
+                mock.patch.object(skill_inventory, "trigger_scenario_lines", return_value=[]) as scenarios,
+                mock.patch.object(skill_inventory, "runtime_lines", return_value=[]) as runtimes,
+            ):
+                lines = self.tools(f"---\n{frontmatter}\n---\nBody.\n")
+                self.assertIn(f"INVOCATION {expected}", lines)
+                self.assertEqual(expected, scenarios.call_args.args[1])
+                self.assertEqual(expected != "model", runtimes.call_args.args[2])
+
     def test_the_description_lead_is_its_first_sentence_where_a_late_use_case_shows(self) -> None:
         # Claude Code and Codex both shorten a long listing, so a description whose use case comes last leads with
         # words that say nothing of when to start the skill; the lead shows it, and the audit judges it.

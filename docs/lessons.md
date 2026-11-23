@@ -973,6 +973,10 @@ removed fails validation until its pattern follows it.
   `tests/validation/python_checks.py::PythonChecksPolicies::test_every_program_output_is_split_at_its_line_feeds_alone`,
   which refuses a split of any program's output, git's among it, at anything but a line feed, by splitlines() of its
   text or its bytes or by text_lines, unless its module states why,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_no_module_splits_a_fact_line_it_builds_back_into_fields`,
+  which refuses a split of a fact line the module builds, read back into fields inside a branch or a comprehension
+  that tests the line for its word, unless its module states why,
+  `tests/validation/test_python_checks.py::test_fact_split_policy_refuses_an_unsanctioned_split_and_a_stale_or_self_kept_entry`,
   `tests/validation/test_python_checks.py::test_output_split_policy_refuses_a_split_of_any_programs_output_but_at_its_line_feeds`,
   `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_an_output_line_keeps_every_character_splitlines_breaks_at_but_lf`,
   `tests/validation/test_python_checks.py::test_each_policy_refuses_every_form_its_documentation_names`,
@@ -1017,7 +1021,7 @@ removed fails validation until its pattern follows it.
   reason; `.strip()` or `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248, #2564
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2242, #2248, #2564
 
 ### A folder that holds items by their own names keeps its own files under names no item can take
 

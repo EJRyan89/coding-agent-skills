@@ -29,8 +29,8 @@ from presence_denial import denied
 from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_time_in_proportion import assert_time_in_proportion
 
+from tools import captured_samples, runtime_command_lines
 from tools import runtime_changelogs as watch
-from tools import runtime_command_lines
 from tools.runtime_canary import quote
 from tools.runtime_changelogs import Fetched, Term
 from tools.runtime_command_lines import Fact
@@ -766,6 +766,13 @@ class MainTests(unittest.TestCase):
         self.assertEqual(
             "### Captured samples\n\nNo captured sample is older than its runtime's latest release.\n\n", section([])
         )
+
+    def test_a_sample_whose_path_holds_a_space_keeps_each_value_in_its_own_column(self) -> None:
+        # The summary reads the values the watch carries, so a space in the path moves no later field.
+        samples = [captured_samples.Sample("codex/old run.txt", {"codex": (0, 163, 0)}, "2026-10-01", "a start")]
+        facts = runtime_command_lines.behind_facts(samples, "codex", (0, 164, 0), "codex")
+        self.assertEqual(["SAMPLE_BEHIND codex codex/old run.txt 0.163.0 0.164.0"], printed(facts))
+        self.assertIn("| codex | codex/old run.txt | 0.163.0 | 0.164.0 |\n", watch.summary(facts))
 
     def test_a_blank_line_ends_the_releases_table_before_the_samples_heading(self) -> None:
         # A line that is not blank there would join the releases table and break its rendering in the step summary.
