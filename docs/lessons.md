@@ -996,8 +996,7 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::CommandTests::test_a_match_or_a_failure_holding_a_line_break_prints_on_one_line`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::OneLineFactTests`,
   `skills/review-document/scripts/test_review_document.py::test_a_document_line_holding_a_line_break_prints_on_one_line`,
-  `skills/curate-agent-memory/scripts/test_memory_audit.py::test_a_skill_file_holding_a_line_break_prints_on_one_line`;
-  one refusing splitlines() of any program's output, not git's alone, is #2329's
+  `skills/curate-agent-memory/scripts/test_memory_audit.py::test_a_skill_file_holding_a_line_break_prints_on_one_line`
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as

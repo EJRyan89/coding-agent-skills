@@ -4712,30 +4712,31 @@ def line_split_problems(root: Path, files: list[Path]) -> list[str]:
 
 # A program's output is split into lines where that program ends one, as text_lines.program_lines and
 # git_client.output_lines split it, at a line feed and nowhere else: every other character, U+0085, U+2028, U+2029, a
-# vertical tab, a form feed, a lone CR, and the file, group, and record separators among them, is part of a line,
-# since a name or a path the program prints can hold it. str.splitlines() breaks at all of them, and bytes.splitlines()
-# and text_lines.text_lines, lines_and_breaks, and line_starts given no breaks of their own or LINE_BREAK at a lone CR,
-# so no module splits a program's output with them, whatever the line-split policy allows it. A program's output is
-# what a process the module starts writes, as the module receives it: a run result's stdout or stderr, as
-# subprocess.run, bounded_process.run_bounded, GitClient.run, and GitHubClient.run give it, a call result's output, as
-# the deployer's run_tool gives it, a check_output() or a getoutput(), a communicate(), an output() or a
-# quiet_output() as GitClient and GitHubClient give it, a read() of a stream, and git's output as the git separator
-# policy reads a call of git, and a name a scope binds to one, read through what keeps its text as that policy reads
-# it, a decode() among it, through an index or a get(), through a JSON parse by json.loads or json_reader.loads,
-# through a loop or a comprehension over any of them, through a literal sequence of them looped over, and through a
-# parameter of a function the module defines once by its name, wherever the module calls it with one by position or
-# by keyword. A file's or a document's own text is not a program's output, even where a program prints or carries it:
-# a file read from disk, whoever wrote it, is not traced, a call whose function's name has the word file among its
-# words, as GitClient.file_at and a reader of a file at a commit have, gives a file's text, and a document a program
-# carries, as gh's JSON carries a release's or a pull request's body, is split where its own program ends a line,
-# which the module states. Stated limits: a value a callable the module is given returns, as a Converse callable
-# returns a runtime's messages, a call of any other function, GitHubClient.json among them, a parameter only a call in
-# another module fills, and a method's parameter a call through self fills are not traced. A split that must stay
-# states why in a module-level OUTPUT_SPLIT_ALLOWED = {scope: reason}.
+# vertical tab, a form feed, a lone CR, and the file, group, and record separators among them, is part of a line, since
+# a name or a path the program prints can hold it. str.splitlines() breaks at all of them, and bytes.splitlines() and
+# text_lines.text_lines, lines_and_breaks, and line_starts given no breaks of their own or LINE_BREAK at a lone CR, so
+# no module splits a program's output with them, whatever the line-split policy allows it. A program's output is what a
+# process the module starts writes, as the module receives it: a run result's stdout, stderr, or output, on any
+# receiver, as subprocess.run, bounded_process.run_bounded, GitClient.run, GitHubClient.run, the deployer's run_tool,
+# and a skill's Completed give them, a check_output() or a getoutput(), a communicate(), an output() or a quiet_output()
+# as GitClient and GitHubClient give it, a read() of what is already a program's output, as process.stdout.read(), and
+# git's output as the git separator policy reads a call of git, and a name a scope binds to one, read through what keeps
+# its text as that policy reads it, a decode() among it, through an index or a get(), through a JSON parse by json.loads
+# or json_reader.loads, through a loop or a comprehension over any of them, through a literal sequence of them looped
+# over, and through a parameter of a function the module defines once by its name, wherever the module calls it with one
+# by position or by keyword. A file's or a document's own text is not a program's output, even where a program prints or
+# carries it: a file read from disk, whoever wrote it, is not traced, a call whose function's name has the word file
+# among its words, as GitClient.file_at and a reader of a file at a commit have, gives a file's text, and a document a
+# program carries, as gh's JSON carries a release's or a pull request's body, is split where its own program ends a
+# line, which the module states. Stated limits, not traced: a value a callable the module is given returns, as a
+# Converse callable returns a runtime's messages; a call of any other function, a module function's return and
+# GitHubClient.json among them; a bounded_process.streaming handle; a parameter only a call in another module fills; a
+# method's parameter a call through self fills; and a parameter an argument after a starred one fills. A split that must
+# stay states why in a module-level OUTPUT_SPLIT_ALLOWED = {scope: reason}.
 OUTPUT_SPLIT_OWNERS = frozenset({LINE_SPLIT_OWNER, GIT_SEPARATOR_OWNER})
 OUTPUT_SPLIT_ALLOWANCE = "OUTPUT_SPLIT_ALLOWED"
-# A run result's streams, by any name of its type.
-PROCESS_STREAMS = frozenset({"stdout", "stderr"})
+# A run result's streams, by any name of its type, and the output the deployer's run_tool and a skill's Completed give.
+PROCESS_STREAMS = frozenset({"stdout", "stderr", "output"})
 # The calls whose result is a program's output itself.
 PROGRAM_OUTPUT_CALLS = frozenset({"subprocess.check_output", "subprocess.getoutput"})
 # The methods whose result is a program's output, given any receiver: a Popen's communicate(), and GitClient's and
@@ -4827,8 +4828,6 @@ class _ProgramOutputs:
             return self.names.get(self.git._key(node, node.id))
         if isinstance(node, ast.Attribute) and node.attr in PROCESS_STREAMS:
             return self.program(node.value) or "a program"
-        if isinstance(node, ast.Attribute) and node.attr == "output" and isinstance(node.value, ast.Call | ast.Name):
-            return self.program(node.value) or ("a program" if self._called(node.value) else None)
         if isinstance(node, ast.Subscript):
             return self.program(node.value)
         if isinstance(node, ast.Tuple | ast.List | ast.Set):
@@ -4847,16 +4846,6 @@ class _ProgramOutputs:
         if isinstance(node.func, ast.Attribute) and node.func.attr in STREAM_READS | PARSED_HOLDING_METHODS:
             return self.program(node.func.value)
         return None
-
-    def _called(self, node: ast.expr) -> bool:
-        """Whether an expression is a call's result: a call, or a name its scope binds to one alone."""
-        if isinstance(node, ast.Call):
-            return True
-        if not isinstance(node, ast.Name):
-            return False
-        owner = self.resolver.scopes[id(node)].owner(node.id)
-        values = owner.bindings.get(node.id, []) if owner is not None else []
-        return bool(values) and all(isinstance(value, ast.Call) for value in values)
 
     def split(self, node: ast.Call) -> str | None:
         """What program's output a call splits at a character other than a line feed, or None: a splitlines(), bound

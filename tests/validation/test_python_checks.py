@@ -1714,10 +1714,26 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             output_split_problems,
             "import json\nimport subprocess\n\nimport json_reader\n"
             "from text_lines import LINE_BREAK, line_starts, lines_and_breaks, text_lines\n\n\n"
-            f"def f(command, process, run_tool):\n    {body}\n",
+            f"def f(command, process, run_tool, client, result, units, results):\n    {body}\n",
         )
         for form, body in (
             ("splitlines() of a stdout", "return subprocess.run(command, capture_output=True).stdout.splitlines()"),
+            ("str.splitlines() of a stdout", "return str.splitlines(subprocess.run(command, text=True).stdout)"),
+            ("bytes.splitlines() of a stdout", "return bytes.splitlines(subprocess.run(command).stdout)"),
+            ("splitlines() of a quiet_output()", "return client.quiet_output(['config', '--list']).splitlines()"),
+            (
+                "splitlines() of a starred unpack of communicate()",
+                "first, *rest = process.communicate()\n    return first.splitlines()",
+            ),
+            (
+                "splitlines() of the starred part of communicate()",
+                "first, *rest = process.communicate()\n    return rest[0].splitlines()",
+            ),
+            ("text_lines of a parameter's output", "return text_lines(result.output.decode('utf-8'))"),
+            (
+                "text_lines of a looped result's output",
+                "for unit, result in zip(units, results):\n        text_lines(result.output)",
+            ),
             ("splitlines() of a stderr", "return subprocess.run(command, capture_output=True).stderr.splitlines()"),
             (
                 "splitlines() of a stdout's bytes",
@@ -1797,9 +1813,26 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
                 "text = _read_git_file(client, 'HEAD', 'a.md').decode('utf-8')\n    return text_lines(text)",
             ),
             ("what another function returns", "return text_lines(run_tool(command).text())"),
+            ("what a callable the module is given returns", "return text_lines(run_tool(command)[0])"),
+            ("a field of what GitHubClient.json gives", "return text_lines(client.json(['pr', 'view'])['body'])"),
             ("an output's count", "return text_lines(str(len(subprocess.run(command).stdout)))"),
         )
     },
+    # An argument after a starred one fills a parameter no reading can place, so none is seeded.
+    "a split of a parameter an argument after a starred one fills": _form(
+        output_split_problems,
+        "import subprocess\n\nfrom text_lines import text_lines\n\n\ndef read(name, output):\n"
+        "    return text_lines(output)\n\n\n"
+        "def f(command, names):\n    return read(*names, subprocess.check_output(command, text=True))\n",
+        refused=False,
+    ),
+    "a split of a method's parameter a call through self fills": _form(
+        output_split_problems,
+        "import subprocess\n\nfrom text_lines import text_lines\n\n\nclass Reader:\n"
+        "    def read(self, output):\n        return text_lines(output)\n\n"
+        "    def run(self, command):\n        return self.read(subprocess.check_output(command, text=True))\n",
+        refused=False,
+    ),
     "a split of a parameter no call in the module fills with a program's output": _form(
         output_split_problems,
         "from text_lines import text_lines\n\n\ndef read(output):\n    return text_lines(output)\n\n\n"
