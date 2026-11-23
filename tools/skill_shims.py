@@ -40,6 +40,7 @@ import frontmatter
 from console import run_main
 from file_presence import is_directory, is_occupied, is_present
 from text_lines import text_lines
+from type_check_roots import REPOSITORY_SKILLS
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -54,7 +55,7 @@ DUPLICATION_ALLOWED = {
 }
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SKILLS = Path(".claude") / "skills"
+SKILLS = Path(REPOSITORY_SKILLS)
 SHIMS = Path(".agents") / "skills"
 SKILL_FILE = "SKILL.md"
 # The keys a runtime reads from a shim to choose the skill, each read through the shared reader before it is copied.

@@ -28,6 +28,7 @@ from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog
 from job_selection import job_seconds
 from known_failures import KnownFailuresUnreadable, read_known_failures
 from runtime_support import RUNTIMES
+from type_check_roots import REPOSITORY_SKILLS as REPOSITORY_SKILLS_FOLDER
 
 from deployer.errors import DeployError
 from tools import (
@@ -51,7 +52,7 @@ from tools import (
 )
 from tools.skill_evals_records import MODELS, RecordError
 
-REPOSITORY_SKILLS = REPOSITORY / ".claude" / "skills"
+REPOSITORY_SKILLS = REPOSITORY / REPOSITORY_SKILLS_FOLDER
 audit_repository = module_at(REPOSITORY_SKILLS / "audit-repository" / "scripts" / "audit_repository.py")
 change_skill = module_at(REPOSITORY_SKILLS / "change-skill" / "scripts" / "change_skill.py")
 conditions = module_at(REPOSITORY_SKILLS / "review-repository" / "scripts" / "conditions.py")
