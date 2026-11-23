@@ -30,6 +30,7 @@ LOADED = sorted(
         *(
             f"skills/ejryan89-skill-core/scripts/{module}.py"
             for module in (
+                "apple_double",
                 "bounded_process",
                 "closing_references",
                 "console",
@@ -37,6 +38,7 @@ LOADED = sorted(
                 "executable_locator",
                 "file_presence",
                 "flat_text",
+                "folder_walk",
                 "gh_shorthands",
                 "git_client",
                 "github_client",

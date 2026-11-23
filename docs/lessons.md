@@ -1568,13 +1568,13 @@ removed fails validation until its pattern follows it.
   `folder_walk:is_sidecar_entry`, which applies it to a listed entry that is a regular file by its own metadata, so no
   link, pipe, or device is opened to decide.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_folder_walk.py::SidecarTests`,
-  `skills/ejryan89-skill-core/scripts/test_apple_double.py::SidecarTests`, and
+  `skills/ejryan89-skill-core/scripts/test_apple_double.py::SidecarTests`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::SidecarTests`,
+  `skills/ejryan89-skill-core/scripts/test_tree_reader.py::SidecarListingTests`, and
   `skills/ejryan89-code-review-core/scripts/test_review_canary.py::FixtureChangeTests::test_an_apple_double_sidecar_beside_its_file_or_folder_is_left_out_and_any_other_dot_underscore_file_kept`
 - **Search for:** `os.scandir(`, `.iterdir()`, `os.walk(`, `.rglob(`, and `file_presence.matching(` over a folder a
   user names, whose names are matched by `fnmatch.fnmatch(`, `.endswith(`, or a `lambda _name: True`, with no
-  `is_sidecar` beside it, as `file_presence.matching`'s `*.md` and `*.json` globs, audit-skill's `listed_entries` and
-  `folder_scripts`, and audit-ai-config's `list_directory` still do (#3131); and a skip of `name.startswith("._")`
-  with no header read, which drops the user's own file.
+  `is_sidecar` beside it; and a skip of `name.startswith("._")` with no header read, which drops the user's own file.
 - **Examples:** #3109, #3111, #3131
 
 ### A grant is earned by a step that names its tool
