@@ -159,9 +159,11 @@ class TreeReader:
         return decode_text(self.contents(path))
 
     def listing(self, folder: Path) -> list[Path]:
-        """The entries of a judged folder, in path order; a folder it cannot list raises the listing's `OSError`. An
-        entry is only named, never examined: a caller judges each one it reads through the reader again."""
-        return sorted(self.judged(folder).iterdir())
+        """The entries of a judged folder, in path order, as `file_presence.listed` lists them; a folder it cannot list
+        raises the listing's `OSError`. It leaves out the AppleDouble sidecars macOS writes, as `search` does, opening
+        only a `._` regular file whose sibling the folder lists, never through a link. Any other entry is only named,
+        never examined: a caller judges each one it reads through the reader again."""
+        return file_presence.listed(self.judged(folder))
 
     def search(
         self,
