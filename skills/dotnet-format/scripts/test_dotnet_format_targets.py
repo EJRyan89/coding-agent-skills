@@ -1196,7 +1196,10 @@ class ResolveTests(unittest.TestCase):
         # Holds on every platform: the one changed file is named as a Windows device, so nothing is left to format.
         lines = self.resolve(services=Services(untracked=["Con.cs"]))
         self.assertEqual([["Con.cs", DEVICE_SEGMENT]], self.values(lines, "REFUSED"))
-        self.assertEqual([["every C# file changed vs origin/main is REFUSED"]], self.values(lines, "STOP"))
+        self.assertEqual(
+            [["no C# file changed vs origin/main is left to format: each is REFUSED by its name or deleted"]],
+            self.values(lines, "STOP"),
+        )
         self.assertEqual([], self.values(lines, "FILE_LIST"))
 
     @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
@@ -1230,6 +1233,22 @@ class ResolveTests(unittest.TestCase):
                 for (name,) in self.values(lines, "FILE"):
                     self.assertIsNone(targets.listed_refusal(repo.root, name))
                 self.assertIsNone(targets.solution_refusal(repo.root, "Apps/App.sln"))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
+    def test_a_deleted_file_named_as_a_windows_device_is_refused_by_its_name_never_looked_for(self) -> None:
+        # Holds on Linux and macOS, where Con.cs can be committed and then deleted. Its name is judged before anything
+        # looks for it, as Windows needs, so it is REFUSED by its name, though it is gone, and the STOP says every
+        # changed file is refused or deleted rather than that one is there.
+        repo = self.repository
+        repo.write("App/Con.cs")
+        repo.commit("device")
+        (repo.root / "App" / "Con.cs").unlink()
+        lines = self.resolve()
+        self.assertEqual([["App/Con.cs", DEVICE_SEGMENT]], self.values(lines, "REFUSED"))
+        self.assertEqual(
+            [["no C# file changed vs origin/main is left to format: each is REFUSED by its name or deleted"]],
+            self.values(lines, "STOP"),
+        )
 
     @unittest.skipIf(sys.platform == "win32", "Windows creates no file or folder under a name it reserves as a device")
     def test_stops_when_every_solution_found_is_refused(self) -> None:

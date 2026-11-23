@@ -46,8 +46,9 @@ entry or a --solution, before anything stats it, so resolve never lists a file o
 run_dotnet_format.py and csharp_layout.py then refuse: a name with a segment Windows reserves as a device, such as
 `Con.cs` or a folder `Aux`, is REFUSED on every platform, though Linux and macOS hold it as an ordinary name, as the
 runner and the layout checker refuse it there. A solution so named is passed over: the nearest solution is the nearest
-one not refused, and one the search of the repository finds is reported as REFUSED. Only refused changed files left,
-or only refused solutions found, is a STOP.
+one not refused, and one the search of the repository finds is reported as REFUSED. A changed name is judged before
+anything looks for it, so a deleted file so named is REFUSED too. Only refused or deleted changed files, or only
+refused solutions found, is a STOP.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
@@ -436,9 +437,9 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
 def changed_files(services: Services, root: Path, base: str, emit: Callable[[str], None]) -> list[str]:
     """Committed, uncommitted, and untracked C# files changed on this branch that still exist. One `named_refusal`
     refuses prints `REFUSED <file> <reason>` and is left out unstat'd, so a name Windows opens as a device is never
-    opened, and a STOP ends the run when only such files changed. Raises Failed for one it cannot examine, a link
-    leading outside the repository included, or that is something other than a file, which it cannot tell from a deleted
-    one."""
+    opened; its name is judged before anything looks for it, so a deleted file so named is refused too, and a STOP ends
+    the run when every changed file is so named or deleted. Raises Failed for one it cannot examine, a link leading
+    outside the repository included, or that is something other than a file, which it cannot tell from a deleted one."""
     names = set(
         git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
     )
@@ -454,7 +455,7 @@ def changed_files(services: Services, root: Path, base: str, emit: Callable[[str
         elif still_there(root, name):
             kept.append(name)
     if not kept and refused_any:
-        raise Stop(f"every C# file changed vs {base} is REFUSED")
+        raise Stop(f"no C# file changed vs {base} is left to format: each is REFUSED by its name or deleted")
     return kept
 
 

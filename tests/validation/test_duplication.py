@@ -1887,6 +1887,7 @@ def walks_up(path: Path, root: Path, top: str) -> list[object]:
     from folders_up import folders_up
 
     walk = folders_up(path, root)
+    ups = list(folders_up(path))
     found: list[object] = [
         any(same_path(folder) == same_path(root) for folder in folders_up(path)),
         [folder == root for folder in folders_up(path, root)],
@@ -1895,10 +1896,12 @@ def walks_up(path: Path, root: Path, top: str) -> list[object]:
         root in folders_up(path),
         {root} & set(folders_up(path)),
         list(folders_up(path)).count(root),
+        any(folder == path for folder in folders_up(stop=root)),  # A walk whose start cannot be told.
         any(folder == path for folder in folders_up(path)),  # The walk's start, which it gives first.
         any(same_path(folder) == same_path(path) for folder in folders_up(path, root)),  # The start, in another form.
         any(folder.name == top for folder in folders_up(path)),  # A folder's name, not the folder.
         [folder for folder in folders_up(path, root)],  # A walk compared with nothing.
+        root in ups,  # A walk's folders held under a name before `in` searches them, a stated limit.
     ]
     for above in folders_up(path):
         if above == root:
@@ -1985,7 +1988,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (478, 483, *range(486, 493))),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in range(493, 498)),
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (518, 526, 529, 534, 537, 549, 552)),
-        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (*range(562, 569), 575)),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in (*range(563, 571), 578)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
