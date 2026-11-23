@@ -1011,9 +1011,11 @@ removed fails validation until its pattern follows it.
   beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one passed on
-  as a value it does not follow, returned by a function, held in a container, bound by `functools.partial`, taken by a
-  method's parameter, or stored on anything but a method's own `self`, one in a script outside a shipped or repository
-  skill, or one under a `PRINT_ALLOWED` reason; `.strip()` or `.split()` with no
+  as a value it does not follow, returned by a function, held in a container, bound by `functools.partial` or bound
+  conditionally, taken by a method's parameter, a nested function's, `**kwargs`, or an `__init__` the class's own
+  body does not define, or stored on, or read on, anything but a method's own `self`, `sys.stdout.write` passed as a
+  value, one in a script outside a shipped or repository skill, or one under a `PRINT_ALLOWED` reason; `.strip()` or
+  `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
 - **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248, #2564

@@ -2539,13 +2539,17 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
 # is, is sanctioned beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another
 # protocol, under EXIT_CONTRACT_EXEMPT, is not read. A print passed as an argument, by position or by keyword, is
 # followed into the parameter that takes it of a function, or of a class's __init__, that the module or another module
-# defines at its top level, the other module's named through the module's imports, and on through each call that
-# passes that parameter on and each attribute of self a method of the class binds to it; a call through any of them is
-# a stdout print. Limits: a print a function returns, a container holds, or functools.partial binds is not followed,
-# nor one a method's parameter takes, a call through self or any other receiver filling it, nor an attribute read on
-# anything but a method's own self; and document_line keeps a tab, so a tab-separated fact line printed through it may
-# gain a field, which this policy cannot tell from a document's own line, so document_line is for a document's own lines
-# alone.
+# defines at its top level, the other module's named through the module's imports, and on through each call that passes
+# that parameter on and each attribute of self a method of the class binds to it; a call through any of them is a stdout
+# print. A module a call names by its stem is the one in the caller's own scripts folder, in ejryan89-skill-core's, or
+# in a skill_deps dependency's, in that order, as Python's import finds it, and each module of that stem where none
+# holds it. Limits: a print a function returns, a container holds, or functools.partial binds is not followed, nor one a
+# method's parameter takes, a call through self or any other receiver filling it, one an __init__ the class's own body
+# does not define takes, as a dataclass's generated one or a base class's, one **kwargs takes, one a nested function's
+# parameter takes, or one a name binds conditionally, as emit = emit or print, nor an attribute stored on or read on
+# anything but a method's own self, nor sys.stdout.write passed as a value; and document_line keeps a tab, so a
+# tab-separated fact line printed through it may gain a field, which this policy cannot tell from a document's own line,
+# so document_line is for a document's own lines alone.
 OUTPUT_CHOKE_POINTS = frozenset(
     {
         "flat_text.flat_text",
@@ -2603,9 +2607,10 @@ class _PassedPrints:
     module's resolver reads as print, a name the module binds once to a name or an attribute that holds it, or a
     parameter or an attribute this reader has found holds it."""
 
-    def __init__(self, tree: ast.Module, resolver: CallableResolver, stem: str) -> None:
+    def __init__(self, tree: ast.Module, resolver: CallableResolver, name: str) -> None:
         self.resolver = resolver
-        self.stem = stem
+        self.stem = PurePosixPath(name).stem
+        self.folder = PurePosixPath(name).parent
         self.callees = _callees(tree)
         self.parameters: set[tuple[int, str]] = set()
         self.attributes: set[tuple[int, str]] = set()
@@ -2677,40 +2682,40 @@ class _PassedPrints:
         return False
 
     def _called(
-        self, call: ast.Call, others: Mapping[str, Mapping[str, _Callee]]
-    ) -> tuple[str, str, _Callee | None] | None:
-        """The stem and the name of the callable a call names, the module's own stem for its own, with the callable
-        when the module or another module defines it at its top level; None for a call of anything else. Another
-        module's is named through the module's imports by a qualified name that ends in its stem and its name."""
+        self, call: ast.Call, imported: Callable[[str], Sequence[_PassedPrints]]
+    ) -> list[tuple[_PassedPrints, str, _Callee]]:
+        """The callable a call names, with the module that defines it at its top level and its name: the module's own,
+        or another module's, named through the module's imports by a qualified name that ends in that module's stem
+        and the callable's name, as `imported` finds the module of that stem; none for a call of anything else."""
         qualified = self.resolver.name(call.func)
         local = qualified.removeprefix(LOCAL_PREFIX)
         if local != qualified:
-            return (self.stem, local, self.callees.get(local)) if "." not in local else None
-        key = _called_key(qualified)
-        return None if key is None else (*key, others.get(key[0], {}).get(key[1]))
+            key = None if "." in local else (self.stem, local)
+            owners: Sequence[_PassedPrints] = [self]
+        else:
+            key = _called_key(qualified)
+            owners = imported(key[0]) if key is not None else []
+        if key is None:
+            return []
+        return [(owner, key[1], callee) for owner in owners if (callee := owner.callees.get(key[1])) is not None]
 
-    def settle(self, others: Mapping[str, Mapping[str, _Callee]]) -> set[tuple[str, str, str]]:
+    def settle(self, imported: Callable[[str], Sequence[_PassedPrints]]) -> list[tuple[_PassedPrints, str, str]]:
         """Follow print through the module's calls and stores until they find nothing new, and return each parameter
-        of a callable another module defines that a call here passes print, as that module's stem, the callable's
+        of a callable another module defines that a call here passes print, as that module's reader, the callable's
         name, and the parameter's."""
-        passed: set[tuple[str, str, str]] = set()
+        passed: list[tuple[_PassedPrints, str, str]] = []
         changed = True
         while changed:
             changed = False
             for call in self.calls:
-                called = self._called(call, others)
-                if called is None:
-                    continue
-                stem, name, callee = called
-                if callee is None:
-                    continue
-                for parameter, given in callee.filled(call):
-                    if not self.prints(given):
-                        continue
-                    if stem == self.stem and callee is self.callees.get(name):
-                        changed = self.seed(name, parameter.arg) or changed
-                    else:
-                        passed.add((stem, name, parameter.arg))
+                for owner, name, callee in self._called(call, imported):
+                    for parameter, given in callee.filled(call):
+                        if not self.prints(given):
+                            continue
+                        if owner is self:
+                            changed = self.seed(name, parameter.arg) or changed
+                        else:
+                            passed.append((owner, name, parameter.arg))
             for target, value in self.stores:
                 holder = self._holder(target)
                 if holder is not None and (holder, target.attr) not in self.attributes and self.prints(value):
@@ -2719,23 +2724,41 @@ class _PassedPrints:
         return passed
 
 
-def _passed_prints(modules: Sequence[tuple[str, ast.Module, CallableResolver]]) -> dict[str, _PassedPrints]:
+def _import_folders(root: Path, folder: PurePosixPath) -> list[PurePosixPath]:
+    """The folders a skill's script imports a module from by its bare name, in the order Python finds it: the script's
+    own folder, ejryan89-skill-core's scripts, which every dependent puts on its path, and the scripts of each skill
+    its skill_deps reach."""
+    core = PurePosixPath("skills", SKILL_CORE, "scripts")
+    skill = folder.parent
+    dependencies = skill_dependency_closure(root, skill.name) if skill.parent == PurePosixPath("skills") else []
+    return [folder, core, *(PurePosixPath("skills", name, "scripts") for name in dependencies)]
+
+
+def _passed_prints(root: Path, modules: Sequence[tuple[str, ast.Module, CallableResolver]]) -> dict[str, _PassedPrints]:
     """Each module's passed prints by its name, each parameter a call in another module passes print seeded, read
-    again until no module seeds a parameter of another's it had not."""
-    readers = {name: _PassedPrints(tree, resolver, PurePosixPath(name).stem) for name, tree, resolver in modules}
-    callees: dict[str, dict[str, _Callee]] = {}
+    again until no module seeds a parameter of another's it had not. A module another names by its stem is the one
+    the first of _import_folders holding that stem holds, or, where none does, each module of that stem."""
+    readers = {name: _PassedPrints(tree, resolver, name) for name, tree, resolver in modules}
+    placed = {(reader.folder, reader.stem): reader for reader in readers.values()}
+    by_stem: dict[str, list[_PassedPrints]] = defaultdict(list)
     for reader in readers.values():
-        callees.setdefault(reader.stem, {}).update(reader.callees)
+        by_stem[reader.stem].append(reader)
+    folders = {folder: _import_folders(root, folder) for folder in {reader.folder for reader in readers.values()}}
+
+    def importer(reader: _PassedPrints) -> Callable[[str], Sequence[_PassedPrints]]:
+        def imported(stem: str) -> Sequence[_PassedPrints]:
+            found = next((placed[key] for folder in folders[reader.folder] if (key := (folder, stem)) in placed), None)
+            return [found] if found is not None else by_stem.get(stem, [])
+
+        return imported
+
     pending = list(readers.values())
     while pending:
         stale: dict[int, _PassedPrints] = {}
         for reader in pending:
-            for stem, function, parameter in sorted(reader.settle(callees)):
-                stale.update(
-                    (id(other), other)
-                    for other in readers.values()
-                    if other.stem == stem and other.seed(function, parameter)
-                )
+            for other, function, parameter in reader.settle(importer(reader)):
+                if other.seed(function, parameter):
+                    stale[id(other)] = other
         pending = list(stale.values())
     return readers
 
@@ -2825,7 +2848,7 @@ def print_choke_point_problems(root: Path) -> list[str]:
         if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
     )
     modules = [(name, tree, CallableResolver(tree)) for _, name, tree in python_trees(paths, root, problems)]
-    passed = _passed_prints(modules)
+    passed = _passed_prints(root, modules)
     for name, tree, resolver in modules:
         if _contract_exemption(tree):
             continue

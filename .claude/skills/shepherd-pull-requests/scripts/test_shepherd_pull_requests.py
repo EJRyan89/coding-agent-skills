@@ -1446,6 +1446,16 @@ class FlatTextTest(FixtureTestCase):
         self.assertIn(f'linked worktree "{(self.root / FLAT_FOLDER).as_posix()}", so', self.line(lines, "HUB "))
         self.assert_one_line_each(lines)
 
+    def test_a_line_separator_in_origin_s_url_prints_no_repository_line(self) -> None:
+        # A GitHub repository's name holds no line separator, so a URL holding one names none, and the tick stops
+        # on one FAILED line before any REPOSITORY line.
+        git("remote", "set-url", "origin", "https://github.com/owner/re\u2028REPOSITORY forged", directory=self.hub)
+        status, lines = self.tick(StubGh())
+        self.assertEqual(
+            (1, ["FAILED origin names no GitHub repository: https://github.com/owner/re REPOSITORY forged"]),
+            (status, lines),
+        )
+
     def assert_one_line_each(self, lines: Sequence[str]) -> None:
         for line in lines:
             self.assertEqual([line], line.splitlines(), repr(line))

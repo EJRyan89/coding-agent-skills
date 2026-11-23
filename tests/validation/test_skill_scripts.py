@@ -1002,7 +1002,8 @@ class SkillScriptsFixtures(unittest.TestCase):
         # Each print here carries a value that may hold a line break straight to stdout, in a shipped skill's script
         # and in a repository skill's alike, print passed as an argument included: into a parameter by keyword or by
         # position, passed on again or bound to another name, into another module's function, and into an attribute
-        # of self that __init__ binds.
+        # of self that __init__ binds. A module a call imports by its stem is its own skill's, or a declared
+        # dependency's, and another skill's of the same stem is not read as it.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1039,6 +1040,11 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "    Out(print).line(value)\n"
                     "    report(value, print)\n",
                     "skills/alpha/scripts/sink.py": "def report(value, sink):\n    sink(value)\n",
+                    "skills/gamma/scripts/sink.py": "def report(value, sink):\n    sink(value)\n",
+                    "skills/delta/scripts/caller.py": "from sink import report\n"
+                    "def main(value):\n    report(value, print)\n",
+                    "deploy-meta/delta.json": '{"skill_deps": ["epsilon"]}\n',
+                    "skills/epsilon/scripts/sink.py": "def report(value, sink):\n    sink(value)\n",
                     ".claude/skills/beta/SKILL.md": "# beta\n",
                     ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(f'KEY {line}')\n",
                 },
@@ -1053,6 +1059,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     *(f"skills/alpha/scripts/passed.py:{line} {refusal}" for line in (6, 8, 12)),
                     *(f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)),
                     f"skills/alpha/scripts/sink.py:2 {refusal}",
+                    f"skills/epsilon/scripts/sink.py:2 {refusal}",
                 ],
                 skill_scripts.print_choke_point_problems(mark_skills(root)),
             )
@@ -1095,7 +1102,9 @@ class SkillScriptsFixtures(unittest.TestCase):
         # Literals, a module's one-line constant, each choke point under any name its import gives it, an f-string or
         # either-or of them, and a join of flattened lines pass, in a shipped skill's script and in a repository skill's
         # alike, print passed as an argument and called with them included; stderr, a file, a test, a module under
-        # another protocol, and a parameter or an attribute no call passes print are not read.
+        # another protocol, and a parameter or an attribute no call passes print are not read, nor are the stated
+        # limits in unfollowed.py: an __init__ a class's own body does not define, a dataclass's or a base class's,
+        # sys.stdout.write passed as a value, **kwargs, a nested function's parameter, and a conditional binding.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -1138,6 +1147,36 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "    tick(value, print, keep=lines.append)\n"
                     "    Out(print).line(value)\n"
                     "    report(value, print)\n",
+                    "skills/alpha/scripts/unfollowed.py": "import sys\n"
+                    "from collections.abc import Callable\n"
+                    "from dataclasses import dataclass\n"
+                    "@dataclass\n"
+                    "class Sink:\n"
+                    "    emit: Callable[[str], None]\n"
+                    "    def line(self, value):\n"
+                    "        self.emit(value)\n"
+                    "class Base:\n"
+                    "    def __init__(self, emit):\n"
+                    "        self.emit = emit\n"
+                    "class Derived(Base):\n"
+                    "    def line(self, value):\n"
+                    "        self.emit(value)\n"
+                    "def stream(value, write):\n"
+                    "    write(value)\n"
+                    "def spread(value, **options):\n"
+                    "    options['emit'](value)\n"
+                    "def either(value, emit=None):\n"
+                    "    emit = emit or print\n"
+                    "    emit(value)\n"
+                    "def main(value):\n"
+                    "    Sink(print).line(value)\n"
+                    "    Derived(print).line(value)\n"
+                    "    stream(value, sys.stdout.write)\n"
+                    "    spread(value, emit=print)\n"
+                    "    either(value)\n"
+                    "    def inner(emit):\n"
+                    "        emit(value)\n"
+                    "    inner(print)\n",
                     "skills/alpha/scripts/sink.py": "from flat_text import flat_text\n"
                     "def report(value, sink):\n    sink(f'KEY {flat_text(value)}')\n",
                     "skills/ejryan89-skill-core/scripts/console.py": "from flat_text import flat_text\n"
