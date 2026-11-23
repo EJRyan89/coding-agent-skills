@@ -391,7 +391,7 @@ def pool_report(*attempts: Callable[[], None]) -> str:
     remaining = iter(attempts)
     suite = job_pool.Job("tests/x.py", "tests/x.py", 1, lambda: next(remaining)())
     with contextlib.redirect_stdout(io.StringIO()):
-        failures, _ = job_pool.run_jobs([suite], verbose=False, workers=1)
+        failures = job_pool.run_jobs([suite], verbose=False, workers=1).failures
     return str(failures[0].report)
 
 
@@ -2211,6 +2211,22 @@ class SourceTest(unittest.TestCase):
         self.assertEqual(["tests/x.py"], [label for label, _ in blocks])
         self.assertEqual("E   boom", [line for line in blocks[0][1] if line][-1])
         self.assertTrue(any(shepherd.CLOSING.search(line) for line in lines), lines)
+
+    def test_a_passing_job_s_noted_block_is_never_read_as_a_failure(self) -> None:
+        # The runner prints a passing job's notes between rules too, under NOTED, before any failed job's block.
+        out = io.StringIO()
+        result = run_validation.run_policies(unittest.TestSuite(), False, out)
+        failed = job_pool.Job("tests/x.py", "tests/x.py", 1, lambda: None)
+        failures = [job_pool.Failure(failed, "Command failed with exit code 1: python -B tests/x.py\nE   boom")]
+        notes = {"tests/a.py": ["FAILED a volume stays attached", "ERROR: busy"]}
+        run = run_validation.Run("Full run.", "1/4", {}, 1.0)
+        run_validation.report_run(result, job_pool.PoolResult(failures, [], notes), 1, run, out, {})
+        self.assertIn("\nNOTED tests/a.py\n", out.getvalue())
+        lines = shepherd.log_lines("".join(PREFIX + line + "\n" for line in out.getvalue().split("\n")))
+        self.assertEqual("tests/x.py", shepherd.first_failing_check(lines))
+        blocks = shepherd.failure_blocks(lines)
+        self.assertEqual(["tests/x.py"], [label for label, _ in blocks])
+        self.assertEqual("E   boom", [line for line in blocks[0][1] if line][-1])
 
     def test_the_validation_steps_are_the_workflow_s_steps_that_run_the_runner(self) -> None:
         # The runner's steps, and the known-failure issues' query, which runs as a program of its own.

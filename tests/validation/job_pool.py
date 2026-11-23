@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 # ejryan89-skill-core's bounded runner is imported before validation_support, which puts ejryan89-skill-core on sys.path
@@ -21,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from bounded_process import run_bounded
 from credentials import without_credentials
+from text_lines import program_lines
+from validation_notes import NOTE_MARKER
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support, tools
@@ -52,10 +55,11 @@ def step_summary(
     details: Mapping[str, str] | None = None,
     shard: str | None = None,
     retried: Mapping[str, str] | None = None,
+    notes: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """The Markdown GitHub Actions shows on the run's summary page: the report of each job that raised or whose
     program was ended before its first line of output, each job started once more after such an ending with how that
-    ended, and the shard, as `<index>/<count>`, of a run split across runners."""
+    ended, each note a job's program kept, and the shard, as `<index>/<count>`, of a run split across runners."""
     found = [f"Python {tools.format_version(python)}"] + [
         f"{label} {tools.format_version(version) if version else 'unknown'}" for label, version in versions.items()
     ]
@@ -74,6 +78,8 @@ def step_summary(
             lines += _text_block(detail)
     for label, note in (retried or {}).items():
         lines += [f"- Retried once: `{label}`", *_text_block(note)]
+    for label, kept in (notes or {}).items():
+        lines += [f"- Noted: `{label}`", *_text_block("\n".join(kept))]
     return "\n".join(lines) + "\n"
 
 
@@ -118,6 +124,9 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None,
     of a run that passes or fails, ends every process the program started that stays in its tree, such as a git,
     PowerShell, or Python a suite left holding its temporary home, and its output goes to real files, since MSYS tools
     can reject inherited anonymous pipes with a spurious "failed to set file descriptor text/binary mode" error.
+
+    What a program that passes writes after NOTE_MARKER on a line, on either stream, is kept as a note of the job the
+    pool runs on this thread; the rest of its output is dropped.
     """
     merged = without_credentials({**os.environ, **(environment or {})})
     command = " ".join(arguments)
@@ -130,14 +139,36 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None,
             f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s and was ended with every process it started: "
             f"{command}\n{_text(exc.stdout)}\n{_text(exc.stderr)}"
         ) from None
-    if finished.returncode != 0:
-        refuse_termination(arguments, finished.returncode, finished.stdout + finished.stderr)
-        status = platform_support.termination_status(finished.returncode)
-        ended = f" (status {status}, ended after its output began)" if status else ""
-        raise AssertionError(
-            f"Command failed with exit code {finished.returncode}{ended}: {command}\n"
-            f"{_text(finished.stdout)}\n{_text(finished.stderr)}"
-        )
+    if finished.returncode == 0:
+        _keep_notes(_text(finished.stdout), _text(finished.stderr))
+        return
+    refuse_termination(arguments, finished.returncode, finished.stdout + finished.stderr)
+    status = platform_support.termination_status(finished.returncode)
+    ended = f" (status {status}, ended after its output began)" if status else ""
+    raise AssertionError(
+        f"Command failed with exit code {finished.returncode}{ended}: {command}\n"
+        f"{_text(finished.stdout)}\n{_text(finished.stderr)}"
+    )
+
+
+# The notes of the job each pool thread runs: _run_job starts the list, and run_process, which a job calls on the
+# thread that runs it, adds each note its passing program wrote.
+_JOB_NOTES = threading.local()
+
+
+def program_notes(*outputs: str) -> list[str]:
+    """What follows NOTE_MARKER on each line of `outputs` that holds it, to the line's end and without trailing
+    whitespace, in order, leaving out a marker with nothing after it. The marker need not start its line: pytest writes
+    a test's progress before what the test prints, on the same line."""
+    notes = (line.partition(NOTE_MARKER)[2].rstrip() for output in outputs for line in program_lines(output))
+    return [note for note in notes if note]
+
+
+def _keep_notes(*outputs: str) -> None:
+    """Add each note in a passing program's `outputs` to the notes of the job this thread runs, if it runs one."""
+    kept: list[str] | None = getattr(_JOB_NOTES, "kept", None)
+    if kept is not None:
+        kept.extend(program_notes(*outputs))
 
 
 def _text(written: bytes | str | None) -> str:
@@ -196,10 +227,12 @@ class Retry:
 
 
 class PoolResult(NamedTuple):
-    """The failed jobs and the retried ones, each in label order."""
+    """The failed jobs and the retried ones, each in label order, and the notes each passing job's programs kept, by
+    the job's label in label order."""
 
     failures: list[Failure]
     retries: list[Retry]
+    notes: Mapping[str, list[str]] = MappingProxyType({})
 
 
 # The times a job is started again when its program was ended with a termination status before its first line of
@@ -244,9 +277,9 @@ def _settle(job: Job, outcome: Failure | Terminated | None, endings: list[Termin
     return outcome
 
 
-def _run_job(job: Job, verbose: bool) -> tuple[Failure | None, Retry | None]:
-    """Run a job, starting it again up to TERMINATION_RETRIES times while its program is ended before any output."""
-    started = time.perf_counter()
+def _attempts(job: Job, started: float) -> tuple[Failure | Terminated | None, list[Terminated]]:
+    """Run a job, starting it again up to TERMINATION_RETRIES times while its program is ended before any output, and
+    return its last attempt's outcome and the endings that started it again."""
     endings: list[Terminated] = []
     outcome = _attempt(job)
     while isinstance(outcome, Terminated) and len(endings) < TERMINATION_RETRIES:
@@ -258,40 +291,64 @@ def _run_job(job: Job, verbose: bool) -> tuple[Failure | None, Retry | None]:
                 flush=True,
             )
         outcome = _attempt(job)
+    return outcome, endings
+
+
+def _run_job(job: Job, verbose: bool) -> tuple[Failure | None, Retry | None, list[str]]:
+    """Run a job as _attempts does and return its failure, its retry, and, when it passes, the notes its programs kept.
+    A passing job with notes prints its line, as a verbose run prints every job's, and a NOTE line for each note."""
+    started = time.perf_counter()
+    _JOB_NOTES.kept = []
+    try:
+        outcome, endings = _attempts(job, started)
+        notes: list[str] = _JOB_NOTES.kept
+    finally:
+        del _JOB_NOTES.kept
     failure = _settle(job, outcome, endings)
+    if failure is not None:
+        notes = []
     retry = None
     if endings:
         result = "passed" if failure is None else "was ended again" if failure.terminated else "failed"
         retry = Retry(job, str(endings[0]), result)
-    if verbose or failure is not None or endings:
+    if verbose or failure is not None or endings or notes:
         note = f" (retried after status {endings[0].status})" if endings else ""
         with OUTPUT_LOCK:
             print(f"{'FAIL' if failure else 'ok'} {time.perf_counter() - started:6.1f}s {job.label}{note}", flush=True)
-    return failure, retry
+            for kept in notes:
+                print(f"NOTE {job.label}: {kept}", flush=True)
+    return failure, retry, notes
 
 
 def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> PoolResult:
-    """Run every job in one pool, heaviest first, and return the failures and the retries in label order.
+    """Run every job in one pool, heaviest first, and return the failures, the retries, and the passing jobs' notes in
+    label order.
 
     A job fails by raising: an AssertionError is a check that failed and reports its message, and any other exception,
     such as an OSError, reports its traceback, so one broken job never stops the pool or the summary. A job that raises
-    Terminated is started once more, and fails only when it is ended again or its retry fails.
+    Terminated is started once more, and fails only when it is ended again or its retry fails. A failed job keeps no
+    notes: its report holds its programs' whole output.
     """
     failures: list[Failure] = []
     retries: list[Retry] = []
+    notes: dict[str, list[str]] = {}
 
     def run(job: Job) -> None:
-        failure, retry = _run_job(job, verbose)
+        failure, retry, kept = _run_job(job, verbose)
         with OUTPUT_LOCK:
             if failure is not None:
                 failures.append(failure)
             if retry is not None:
                 retries.append(retry)
+            if kept:
+                notes[job.label] = kept
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(run, sorted(jobs, key=lambda job: -job.weight)))
     return PoolResult(
-        sorted(failures, key=lambda failure: failure.job.label), sorted(retries, key=lambda retry: retry.job.label)
+        sorted(failures, key=lambda failure: failure.job.label),
+        sorted(retries, key=lambda retry: retry.job.label),
+        dict(sorted(notes.items())),
     )
 
 

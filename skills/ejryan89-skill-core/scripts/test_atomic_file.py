@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import io
 import os
 import re
 import stat
@@ -31,7 +32,9 @@ from atomic_file import (
     replace_text,
 )
 from file_presence import is_occupied
+from flat_text import flat_text
 from path_containment import without_extended_prefix
+from validation_notes import NOTE_MARKER, note_line
 
 SKIP_ALLOWED = {
     "LinkAtTheTargetTests.setUp": "the races it holds are a symbolic link put at the target, which Windows makes only "
@@ -220,6 +223,138 @@ class ReplaceTests(unittest.TestCase):
                 self.assertRegex(str(error.removal), re.escape("synthetic unlink"))
                 self.assertIs(failure, error.removal.__context__)
                 self.assertEqual(b"previous\n", path.read_bytes())
+
+
+# A reader in a process of its own, as a reviewer guard reads a run's run.json: it opens the file its first argument
+# names through Python's open, which never shares delete access on Windows, says so, and holds it until a line arrives.
+READER = "import sys\nwith open(sys.argv[1], 'rb') as held:\n    print('held', flush=True)\n    sys.stdin.readline()\n"
+
+
+@contextlib.contextmanager
+def held_open(path: Path) -> Iterator[Callable[[], None]]:
+    """Hold `path` open in another process through Python's open, and yield what lets go of it, which returns once
+    that process has ended. Leaving the block lets go too."""
+    reader = subprocess.Popen(
+        [sys.executable, "-c", READER, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    assert reader.stdin is not None
+    assert reader.stdout is not None
+    stdin, stdout = reader.stdin, reader.stdout
+
+    def let_go() -> None:
+        if reader.poll() is None:
+            with contextlib.suppress(OSError):
+                stdin.write("\n")
+                stdin.flush()
+            reader.wait(timeout=30)
+
+    try:
+        if stdout.readline() != "held\n":
+            raise AssertionError("the reader did not open the file")
+        yield let_go
+    finally:
+        let_go()
+        stdin.close()
+        stdout.close()
+
+
+class ReplaceRefusedForAMomentTests(unittest.TestCase):
+    """A replace whose target another process holds open for a moment, as Windows refuses one while a handle holds the
+    target without delete sharing."""
+
+    def replace(
+        self, refusals: int | None, failure: BaseException | None = None, interrupt: BaseException | None = None
+    ) -> tuple[BaseException | None, list[float], int, str]:
+        """replace_text over a target whose replace is refused with PermissionError `refusals` times, or every time
+        for None, then fails with `failure` if given, with each wait raising `interrupt` if given. Returns what it
+        raised, the waits, the tries, and the target's text, after holding that no copy is left."""
+        real_replace = Path.replace
+        tries: list[Path] = []
+        waits: list[float] = []
+
+        def replace(self: Path, target: Any) -> Path:
+            tries.append(self)
+            if refusals is None or len(tries) <= refusals:
+                raise PermissionError(errno.EACCES, "the file is being used by another process", str(target))
+            if failure is not None:
+                raise failure
+            return real_replace(self, target)
+
+        def wait(seconds: float) -> None:
+            waits.append(seconds)
+            if interrupt is not None:
+                raise interrupt
+
+        raised: BaseException | None = None
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "run.json"
+            path.write_text("previous\n", encoding="utf-8")
+            with mock.patch.object(Path, "replace", replace), mock.patch.object(time, "sleep", wait):
+                try:
+                    replace_text(path, "next\n")
+                except (OSError, KeyboardInterrupt) as error:
+                    raised = error
+            self.assertEqual(["run.json"], names_in(temporary), "no copy is left")
+            self.assertEqual(1, len(set(tries)), "every try replaces with the one copy")
+            return raised, waits, len(tries), path.read_text(encoding="utf-8")
+
+    def test_a_replace_refused_for_a_while_is_made_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals.
+        self.assertEqual((None, [0.01, 0.02, 0.04], 4, "next\n"), self.replace(3))
+        self.assertEqual((None, [], 1, "next\n"), self.replace(0), "a replace not refused never waits")
+
+    def test_a_replace_refused_throughout_raises_the_last_refusal_after_a_bounded_back_off(self) -> None:
+        # Holds on every platform. The back-off is pinned against literals: five waits of 10, 20, 40, 80, and 160 ms,
+        # 0.31 s in all, and a try after each.
+        raised, waits, tries, text = self.replace(None)
+        self.assertIs(PermissionError, type(raised), "the refusal is raised as it was")
+        self.assertEqual("the file is being used by another process", getattr(raised, "strerror", None))
+        self.assertEqual(([0.01, 0.02, 0.04, 0.08, 0.16], 6, "previous\n"), (waits, tries, text))
+        self.assertAlmostEqual(0.31, sum(waits), msg="about a third of a second in all")
+
+    def test_any_other_failure_is_raised_as_it_was_and_never_tried_again(self) -> None:
+        # Holds on every platform: only a PermissionError, the refusal a reader holding the target explains, is tried
+        # again, so no other failure is retried or masked, whether it comes first or after refusals.
+        for failure in (
+            OSError(errno.EXDEV, "Invalid cross-device link"),
+            FileNotFoundError(errno.ENOENT, "No such file or directory"),
+            IsADirectoryError(errno.EISDIR, "Is a directory"),
+            OSError("synthetic replace"),
+        ):
+            with self.subTest(failure=repr(failure)):
+                self.assertEqual((failure, [], 1, "previous\n"), self.replace(0, failure))
+                self.assertEqual((failure, [0.01, 0.02], 3, "previous\n"), self.replace(2, failure))
+
+    def test_an_interrupt_in_a_wait_removes_the_copy_and_is_raised(self) -> None:
+        interrupt = KeyboardInterrupt()
+        self.assertEqual((interrupt, [0.01], 1, "previous\n"), self.replace(None, interrupt=interrupt))
+
+    def test_a_reader_holding_the_target_open_for_a_moment_keeps_no_replace_from_finishing(self) -> None:
+        # A real reader in another process holds the target open through Python's open and lets go at the replace's
+        # first wait. Holds on every platform, and says how each answers: Linux and macOS replace a file another
+        # process holds open, so the replace never waits; Windows refuses it, as CI's Windows runner showed with
+        # PermissionError and WinError 5, while the reader's handle lacks delete sharing, so the replace waits once
+        # and is made when the reader has let go.
+        real_sleep = time.sleep
+        waits: list[float] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "run.json"
+            path.write_text("previous\n", encoding="utf-8")
+            with held_open(path) as let_go:
+
+                def let_go_then_wait(seconds: float) -> None:
+                    waits.append(seconds)
+                    let_go()
+                    real_sleep(seconds)
+
+                with mock.patch.object(time, "sleep", let_go_then_wait):
+                    replace_text(path, "next\n")
+            self.assertEqual("next\n", path.read_text(encoding="utf-8"))
+            self.assertEqual(["run.json"], names_in(temporary))
+            self.assertEqual([0.01] if sys.platform == "win32" else [], waits)
 
 
 class CreateTests(unittest.TestCase):
@@ -1039,6 +1174,14 @@ def detach_volume(mount: Path) -> str | None:
     raise AssertionError("unreachable: the last try returns")
 
 
+def report_volume_left(file_system: str, mount: Path, reason: str) -> None:
+    """Report a test volume detach_volume could not detach, apart from the test's verdict: as a line the validation
+    runner keeps from a suite that passes, and as a warning pytest's summary lists when the suite runs on its own."""
+    report = flat_text(f"the {file_system} test volume at {mount} stays attached: {reason}")
+    print(note_line(report), flush=True)
+    warnings.warn(report, stacklevel=2)
+
+
 class DetachVolumeTests(unittest.TestCase):
     """The teardown of RealFileSystemWithoutHardLinksTests, held on every platform by a stand-in for hdiutil."""
 
@@ -1077,6 +1220,23 @@ class DetachVolumeTests(unittest.TestCase):
             ("hdiutil detach did not finish within 120 seconds", [0.5], 2), self.detach([HDIUTIL_BUSY, None])
         )
 
+    def test_a_volume_left_attached_is_reported_on_one_marked_line_and_as_a_warning(self) -> None:
+        # test_job_pool.py runs this report through the validation runner and finds it kept.
+        reason = "hdiutil detach exited with status 16: hdiutil: couldn't eject\n  Resource busy"
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as printed,
+            warnings.catch_warnings(record=True) as warned,
+        ):
+            warnings.simplefilter("always")
+            report_volume_left("MS-DOS", Path("mount"), reason)
+        report = (
+            f"the MS-DOS test volume at {Path('mount')} stays attached: "
+            "hdiutil detach exited with status 16: hdiutil: couldn't eject Resource busy"
+        )
+        self.assertEqual(f"{NOTE_MARKER}{report}\n", printed.getvalue(), "one line, whatever the reason holds")
+        self.assertEqual([report], [str(warning.message) for warning in warned])
+        self.assertEqual([UserWarning], [warning.category for warning in warned])
+
 
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
 class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
@@ -1104,9 +1264,7 @@ class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
                     # the failure of a check.
                     reason = detach_volume(mount)
                     if reason is not None:
-                        warnings.warn(
-                            f"the {file_system} test volume at {mount} stays attached: {reason}", stacklevel=1
-                        )
+                        report_volume_left(file_system, mount, reason)
 
     def _check_volume(self, volume: Path) -> None:
         def names() -> set[str]:
