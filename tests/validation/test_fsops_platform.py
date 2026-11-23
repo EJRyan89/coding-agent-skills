@@ -17,9 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from fsops_platform import (
+    OTHER_PLACE_READS,
+    TREE_JUDGES,
     TREE_READ_SKILLS,
     TREE_READ_SKILLS_PROBLEM,
     _platform_names,
+    core_reads,
+    core_table_problems,
     filesystem_write_problems,
     platform_code_problems,
     tree_read_problems,
@@ -1959,10 +1963,13 @@ def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malfor
 
 def test_tree_read_policy_states_what_it_does_not_read() -> None:
     # Stated limits, each passing: a path method called unbound on its class, a module importing both os and os.path,
-    # which the shared resolver leaves unnamed, and a skill-core reader TREE_READ_HELPERS does not list yet.
+    # which the shared resolver leaves unnamed, a read in a skill-core class's method reached through an instance, and
+    # a module read the policy does not list.
     unbound = "from pathlib import Path\ndef read(path):\n    return Path.exists(path)\n"
     both = "import os\nimport os.path\ndef read(path):\n    return os.stat(path)\n"
-    helper = "import path_containment\ndef read(entry, tree):\n    return path_containment.refusal(entry, tree)\n"
+    helper = (
+        "from git_client import GitClient\ndef read(root):\n    return GitClient().run(['status'], directory=root)\n"
+    )
     unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
     files = {
         f"{SCRIPTS}/unbound.py": unbound,
@@ -2040,3 +2047,57 @@ def test_tree_read_policy_refuses_a_read_passed_as_a_value_and_passes_another_ca
         f"{SCRIPTS}/values.py:{line} reads a path with {read}; {TREE_READ_ADVICE}"
         for line, read in ((5, "os.stat"), (6, "os.stat"), (7, "Path.exists"))
     ]
+
+
+def test_core_reads_derives_each_reading_function_transitively_but_judges_other_places_and_methods() -> None:
+    # paths.read reads directly; wrap.carry reads through it, by call and by value; a judge and another-place read,
+    # named by the policy's own tables, neither count nor carry; a class's method is not followed; and the tree
+    # reader's module is the route, never derived.
+    judge = next(iter(TREE_JUDGES))
+    other = next(iter(OTHER_PLACE_READS))
+    judge_module, judge_name = judge.split(".")
+    other_module, other_name = other.split(".")
+    files = {
+        "paths.py": "def read(path):\n    return path.read_bytes()\n",
+        "wrap.py": "from paths import read\ndef carry(path):\n    return read(path)\n"
+        "def hand(paths):\n    return list(map(read, paths))\n",
+        f"{judge_module}.py": f"def {judge_name}(path):\n    return path.stat()\n",
+        f"{other_module}.py": f"def {other_name}(path):\n    return path.stat()\n",
+        "users.py": f"from {judge_module} import {judge_name}\nfrom {other_module} import {other_name}\n"
+        f"def judged(path):\n    return {judge_name}(path)\ndef elsewhere(path):\n    return {other_name}(path)\n",
+        "holder.py": "class Holder:\n    def read(self, path):\n        return path.read_bytes()\n",
+        "tree_reader.py": "def present(path):\n    return path.exists()\n",
+        "test_paths.py": "def test_read(tmp_path):\n    assert not (tmp_path / 'x').exists()\n",
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        core = Path(temporary)
+        write_fixture_tree(core, files)
+        assert core_reads(core) == frozenset({"paths.read", "wrap.carry", "wrap.hand"})
+        assert core_table_problems(core) == [
+            f"skills/ejryan89-skill-core/scripts: {table} names {name}, which ejryan89-skill-core does not define"
+            for table, entries in (("TREE_JUDGES", TREE_JUDGES), ("OTHER_PLACE_READS", OTHER_PLACE_READS))
+            for name in sorted(entries.keys() - {judge, other})
+        ]
+
+
+def test_core_reads_marks_the_helpers_the_reader_stands_in_for_in_the_real_core() -> None:
+    # The derivation over the repository's own ejryan89-skill-core finds the readers the skills used before the tree
+    # reader, named here as literals, and none of the tables' judges or other-place reads.
+    found = core_reads(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts")
+    expected = {
+        "file_presence.is_present",
+        "file_presence.is_directory",
+        "file_presence.is_occupied",
+        "file_presence.matching",
+        "dotnet_solution.read_text",
+        "dotnet_solution.same_path",
+        "link_probe.is_link_or_junction",
+        "folder_walk.walk_files",
+        "folders_up.folders_up",
+        "path_containment.resolved_path",
+        "path_containment.refusal",
+        "json_reader.read_file",
+        "atomic_file.is_read_only",
+    }
+    assert expected <= found
+    assert not (TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()) & found
