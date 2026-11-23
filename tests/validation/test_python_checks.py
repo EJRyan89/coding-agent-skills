@@ -5400,6 +5400,179 @@ def test_ctypes_policy_reads_each_form_resolved_call_follows(body: str) -> None:
     assert resolved_rows(python_checks.ctypes_declaration_problems, body) == marked_rows(body)
 
 
+OUTPUT_IMPORTS = "import json\nimport subprocess\n\nfrom text_lines import program_lines, text_lines\n\n\n"
+OUTPUT_READER = OUTPUT_IMPORTS + "def events(output):\n    return text_lines(output)\n"
+OUTPUT_SOURCE = (
+    OUTPUT_IMPORTS + 'OUTPUT_SOURCES = {"talk_to": "the lines a program wrote, read through a queue"}\n\n\n'
+    "def talk_to(command):\n    return queued(command)\n"
+)
+
+
+# Each way the output split check follows a program's output beyond one scope, a violating module set and a conforming
+# one, as the modules and the module each refusal names: a parameter a call in another module fills, a function an
+# OUTPUT_SOURCES entry declares a source, called in its module, through a parameter bound in exactly the form
+# `name = name or function`, or from another module, a module function's return, a comprehension over output, a part
+# of a split of output, and a line program_lines gives.
+@pytest.mark.parametrize(
+    ("files", "refused"),
+    [
+        pytest.param(
+            {
+                "tools/reader.py": OUTPUT_READER,
+                "tools/caller.py": "import subprocess\n\nfrom reader import events\n\n\n"
+                "def f(command):\n    return events(subprocess.check_output(command, text=True))\n",
+            },
+            ["tools/reader.py:8"],
+            id="a parameter another module's call fills with output",
+        ),
+        pytest.param(
+            {
+                "tools/reader.py": OUTPUT_READER,
+                "tools/caller.py": "from reader import events\n\n\ndef f(path):\n"
+                "    return events(path.read_text(encoding='utf-8'))\n",
+            },
+            [],
+            id="a parameter another module's call fills with a file's text",
+        ),
+        pytest.param(
+            {"tools/source.py": OUTPUT_SOURCE + "\n\ndef f(command):\n    return text_lines(talk_to(command))\n"},
+            ["tools/source.py:15"],
+            id="a declared source's return",
+        ),
+        pytest.param(
+            {
+                "tools/source.py": OUTPUT_IMPORTS + "def talk_to(command):\n    return queued(command)\n\n\n"
+                "def f(command):\n    return text_lines(talk_to(command))\n"
+            },
+            [],
+            id="an undeclared function's return no program gives",
+        ),
+        pytest.param(
+            {
+                "tools/source.py": OUTPUT_SOURCE + "\n\ndef f(command, talk=None):\n    talk = talk or talk_to\n"
+                "    return text_lines(talk(command))\n"
+            },
+            ["tools/source.py:16"],
+            id="a declared source a parameter holds in exactly the or form",
+        ),
+        pytest.param(
+            {
+                "tools/source.py": OUTPUT_SOURCE
+                + "\n\ndef f(command, talk=None):\n    talk = talk_to if talk is None else talk\n"
+                "    lines = program_lines(talk_to(command))\n    return text_lines(talk(command))\n"
+            },
+            [],
+            id="a declared source a parameter holds in another form",
+        ),
+        pytest.param(
+            {
+                "tools/source.py": OUTPUT_SOURCE,
+                "tools/caller.py": "from source import talk_to\nfrom text_lines import text_lines\n\n\n"
+                "def f(command):\n    return text_lines(talk_to(command))\n",
+            },
+            ["tools/caller.py:6"],
+            id="a declared source another module calls",
+        ),
+        pytest.param(
+            {
+                "tools/returns.py": OUTPUT_IMPORTS
+                + "def run(command):\n    return subprocess.run(command).stdout\n\n\n"
+                "def f(command):\n    return text_lines(run(command))\n"
+            },
+            ["tools/returns.py:12"],
+            id="a module function's return of output",
+        ),
+        pytest.param(
+            {
+                "tools/returns.py": OUTPUT_IMPORTS + "def run(path):\n    return path.read_text(encoding='utf-8')\n\n\n"
+                "def f(path):\n    return text_lines(run(path))\n"
+            },
+            [],
+            id="a module function's return of a file's text",
+        ),
+        pytest.param(
+            {
+                "tools/comprehension.py": OUTPUT_IMPORTS + "def f(command):\n"
+                "    texts = [item for item in json.loads(subprocess.check_output(command))]\n"
+                "    for text in texts:\n        text_lines(text)\n"
+            },
+            ["tools/comprehension.py:10"],
+            id="an item of a comprehension over output",
+        ),
+        pytest.param(
+            {
+                "tools/comprehension.py": OUTPUT_IMPORTS + "def f(paths):\n"
+                "    texts = [path.read_text(encoding='utf-8') for path in paths]\n"
+                "    for text in texts:\n        text_lines(text)\n"
+            },
+            [],
+            id="an item of a comprehension over files' text",
+        ),
+        pytest.param(
+            {
+                "tools/parts.py": OUTPUT_IMPORTS + "def f(command):\n"
+                "    return text_lines(subprocess.check_output(command, text=True).split('## Skills', 1)[1])\n"
+            },
+            ["tools/parts.py:8"],
+            id="a part of a split of output",
+        ),
+        pytest.param(
+            {
+                "tools/parts.py": OUTPUT_IMPORTS + "def f(command):\n"
+                "    for line in program_lines(subprocess.check_output(command, text=True)):\n"
+                "        text_lines(line)\n"
+            },
+            ["tools/parts.py:9"],
+            id="a line program_lines gives of output",
+        ),
+    ],
+)
+def test_output_split_policy_follows_output_across_functions_and_modules(
+    files: dict[str, str], refused: list[str]
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        found = python_checks.output_split_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == refused, found
+
+
+# An OUTPUT_SOURCES declaration takes the allowances' form: each entry names a function the module defines at its top
+# level whose return a call reads, with its reason.
+@pytest.mark.parametrize(
+    ("declaration", "problem"),
+    [
+        pytest.param(
+            '{"talk_to": "a reason", "stale": "a reason"}',
+            "tools/source.py: OUTPUT_SOURCES names stale, which the module defines no function by",
+            id="an entry that names no function",
+        ),
+        pytest.param(
+            '{"talk_to": "a reason", "unread": "a reason"}',
+            "tools/source.py: OUTPUT_SOURCES names unread, whose return no call reads as a program's output; remove "
+            "the entry",
+            id="an entry whose return no call reads",
+        ),
+        pytest.param(
+            '{"talk_to": ""}',
+            "tools/source.py: OUTPUT_SOURCES must map each function whose return is a program's output to its reason",
+            id="an entry with no reason",
+        ),
+    ],
+)
+def test_output_split_policy_refuses_a_stale_or_unreasoned_output_source(declaration: str, problem: str) -> None:
+    source = (
+        f"from text_lines import program_lines\n\n\nOUTPUT_SOURCES = {declaration}\n\n\n"
+        "def talk_to(command):\n    return queued(command)\n\n\ndef unread(command):\n    return queued(command)\n"
+        "\n\ndef f(command):\n    unread(command)\n    return program_lines(talk_to(command))\n"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"tools/source.py": source})
+        found = python_checks.output_split_problems(root, sorted(root.rglob("*.py")))
+    assert found == [problem]
+
+
 # Each name listing GIT_NAME_LISTINGS adds is also a command whose output the output split check names as git's, -z or
 # not.
 @pytest.mark.parametrize("command", ["diff-tree", "diff-index", "diff-files", "check-ignore", "check-attr"])
