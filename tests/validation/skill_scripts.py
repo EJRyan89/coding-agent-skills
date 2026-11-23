@@ -2525,14 +2525,15 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     return sorted(breaches)
 
 
-# A shipped skill's stdout holds one fact per line, whatever outside value a line carries: a path, a file's content, a
-# model's result, or git's or gh's error text may hold a line break, and the line after it reads as a fact of its own.
-# So every stdout print in a shipped skill's scripts prints text that cannot hold one: a literal on one line, a name
-# the module binds once to such a literal, or what a choke point returns, ejryan89-skill-core's flat_text, fact_line,
-# single_line, or console's failed_line; an f-string whose every value is one of those; an either-or of two of them;
-# or a join of a comprehension whose every item is one, the final pass over every line. A print that must print
-# something else, such as a Markdown report the skill shows as it is, is sanctioned beside the code as a module-level
-# PRINT_ALLOWED = {scope: reason}. A module that speaks another protocol, under EXIT_CONTRACT_EXEMPT, is not read.
+# A shipped or repository skill's stdout holds one fact per line, whatever outside value a line carries: a path, a
+# file's content, a model's result, or git's or gh's error text may hold a line break, and the line after it reads as a
+# fact of its own. So every stdout print in a shipped or repository skill's scripts prints text that cannot hold one: a
+# literal on one line, a name the module binds once to such a literal, or what a choke point returns,
+# ejryan89-skill-core's flat_text, fact_line, single_line, or console's failed_line; an f-string whose every value is
+# one of those; an either-or of two of them; or a join of a comprehension whose every item is one, the final pass over
+# every line. A print that must print something else, such as a Markdown report the skill shows as it is, is sanctioned
+# beside the code as a module-level PRINT_ALLOWED = {scope: reason}. A module that speaks another protocol, under
+# EXIT_CONTRACT_EXEMPT, is not read.
 OUTPUT_CHOKE_POINTS = frozenset(
     {"flat_text.flat_text", "flat_text.fact_line", "flat_text.single_line", "console.failed_line"}
 )
@@ -2622,13 +2623,12 @@ class _OutputReader:
 
 
 def print_choke_point_problems(root: Path) -> list[str]:
-    """Each stdout print in a shipped skill's scripts, tests aside, whose text could hold a line break and no
-    PRINT_ALLOWED entry sanctions, then each entry that sanctions nothing."""
+    """Each stdout print in a shipped or repository skill's scripts, tests aside, whose text could hold a line break
+    and no PRINT_ALLOWED entry sanctions, then each entry that sanctions nothing."""
     problems: list[str] = []
     paths = sorted(
         path
         for scripts in skill_script_directories(root)
-        if scripts.parent.parent == root / "skills"
         for path in file_presence.matching(scripts, "*.py")
         if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
     )

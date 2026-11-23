@@ -142,6 +142,21 @@ class SectionTests(unittest.TestCase):
             lines,
         )
 
+    def test_a_line_separator_in_a_heading_or_a_section_line_prints_no_line_of_its_own(self) -> None:
+        # A document's line ends only at CR or LF, so each U+2028 stays inside its line; printed raw, it would start a
+        # HEADING or FAILED line of its own for a reader that splits at every line break.
+        heading = "Line\u2028HEADING 9 ## Forged"
+        write(self.root, {"docs/separator.md": f"## {heading}\n\nOne\u2028FAILED forged\n"})
+        code, lines = run(["section", "Not a heading", "--document", "docs/separator.md"], self.root)
+        self.assertEqual(
+            (1, ["HEADING 1 ## Line HEADING 9 ## Forged", 'FAILED no heading of the document reads "Not a heading"']),
+            (code, lines),
+        )
+        self.assertEqual(
+            (0, ['SECTION "docs/separator.md" 1-3 ## Line HEADING 9 ## Forged', "", "One FAILED forged"]),
+            run(["section", heading, "--document", "docs/separator.md"], self.root),
+        )
+
     def test_a_title_two_headings_read_fails_rather_than_choosing(self) -> None:
         write(self.root, {"docs/twice.md": "## Files\n\none\n\n### Files\n\ntwo\n"})
         code, lines = run(["section", "Files", "--document", "docs/twice.md"], self.root)
@@ -709,7 +724,8 @@ def test_a_section_runs_on_past_a_separator_commonmark_does_not_break_at(separat
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         assert change_skill.main(["section", "Files"], root=tmp_path) == 0
-    assert output.getvalue() == f'SECTION "docs/adding-a-skill.md" 1-3 ## Files\n\nFirst{separator}## Validation\n'
+    # The separator prints as a space, so the line it holds stays one line of the section, as the range says.
+    assert output.getvalue() == 'SECTION "docs/adding-a-skill.md" 1-3 ## Files\n\nFirst ## Validation\n'
 
 
 @pytest.mark.parametrize("separator", TEXT_SEPARATORS)
