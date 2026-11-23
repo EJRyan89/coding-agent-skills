@@ -1014,7 +1014,9 @@ removed fails validation until its pattern follows it.
   or `.partition(" ")` on a fact line in a shape the fact-split policy does not read: a line another module built,
   a split after an early `continue` or `return` rather than inside the `startswith("<FACT> ")` branch, a split no
   `startswith` test guards, such as one that reads the fact's word from its own first field, a split of an attribute
-  such as `self.line`, or a line built from its word without the space, as `" ".join(("<FACT>", value))`;
+  such as `self.line`, a line built from its word without the space, as `" ".join(("<FACT>", value))`, a test
+  through a `match` statement or a `while` loop, a split by `re.split()` or another function given the line, and a
+  regex read of the module's own fact line, as `re.match(r"^<FACT> (\S+)", line)`;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one reached
   through another name, such as `emit = print`, in a script outside a shipped or repository skill, or under a `PRINT_ALLOWED`

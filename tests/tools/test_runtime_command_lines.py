@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -644,6 +644,32 @@ class SignedOutTests(unittest.TestCase):
         self.assertEqual(['UNSAFE copilot "GitHub CLI is in shared"'], found)
         self.assertEqual([], stub.started)
         self.assertTrue(lines.failed(self.facts))
+
+
+class PlaceholderTests(RuntimeCommandLinesTestCase):
+    def test_each_carried_value_names_the_throwaway_root_the_checkout_and_the_profile_by_placeholder(self) -> None:
+        root = self.root / "run"
+        named = (
+            root / "codex" / "home",
+            runtime_canary.REPOSITORY_ROOT / "tools",
+            platform_support.home_directory() / ".codex",
+        )
+
+        def facts(*_: object) -> Iterator[lines.Fact]:
+            yield lines.Fact("FAILED", ("codex", "skill-listing", " ".join(str(path) for path in named)), (2,))
+            yield lines.Fact("VERSION", ("codex", str(named[0])))
+
+        printed: list[str] = []
+        with mock.patch.object(lines, "runtime_lines", facts):
+            found = lines.run(
+                ("codex",), 5, root, runner=StubRuntimes(), which=lambda name: name, say=printed.append, samples=()
+            )
+        shown = (f"<temp>{os.sep}codex{os.sep}home", f"<source>{os.sep}tools", f"<home>{os.sep}.codex")
+        self.assertEqual(
+            [f"FAILED codex skill-listing {runtime_canary.quote(' '.join(shown))}", f"VERSION codex {shown[0]}"],
+            printed,
+        )
+        self.assertEqual(printed, [fact.line for fact in found])
 
 
 class SummaryTests(unittest.TestCase):

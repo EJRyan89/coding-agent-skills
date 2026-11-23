@@ -902,8 +902,18 @@ def _fact_module(body: str, build: str = FACT_BUILD) -> str:
     is a string the module builds."""
     built = "".join(f"    {line}\n" for line in build.splitlines())
     read = "".join(f"    {line}\n" for line in body.splitlines())
-    names = {"PREFIXES": "('OTHER ', 'FACT ')", "PREFIX": "'FACT '"}
-    bound = "".join(f"{name} = {value}\n" for name, value in names.items() if f"({name})" in body)
+    names = {
+        "PREFIXES": ["('OTHER ', 'FACT ')"],
+        "PREFIX": ["'FACT '"],
+        "WORD": ["'FACT'"],
+        "TWICE": ["'OTHER '", "'FACT '"],
+    }
+    bound = "".join(
+        f"{name} = {value}\n"
+        for name, values in names.items()
+        if re.search(rf"\b{name}\b", body + build)
+        for value in values
+    )
     return f"import re\n\n{bound}\n\ndef build(lines, value):\n{built}\n\ndef read(line, lines, other):\n{read}"
 
 
@@ -959,6 +969,17 @@ FACT_SPLIT_FORMS = (
         "if line.startswith('FACT '):\n    line = other\n    return line.split()[1]",
         FACT_BUILD,
     ),
+    # A tested or compared formatted string builds no line, but excuses none the module builds elsewhere.
+    (
+        "built beside a tested formatted string",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        f"{FACT_BUILD}\nlines.append(lines[0].startswith(f'FACT {{value}}'))",
+    ),
+    (
+        "built beside a compared formatted string",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        f"{FACT_BUILD}\nlines.append(f'FACT {{value}}' in lines)",
+    ),
 )
 # Each form the fact-split policy passes: one its paragraph leaves out, a stated limit, or a carried value.
 FACT_SPLIT_PASSES = (
@@ -1011,6 +1032,40 @@ FACT_SPLIT_PASSES = (
     ("in a while loop", "while line.startswith('FACT '):\n    line = line.split(' ', 1)[1]\nreturn line", FACT_BUILD),
     ("through a match", "match line.split():\n    case ['FACT', value]:\n        return value\nreturn ''", FACT_BUILD),
     ("by re.split", "if line.startswith('FACT '):\n    return re.split(' ', line)[1]", FACT_BUILD),
+    # "a startswith() argument built by a `+` or a formatted string, or a line built from a name holding the word".
+    ("tested by a +", "if line.startswith(WORD + ' '):\n    return line.split()[1]", FACT_BUILD),
+    ("tested by a formatted string", "if line.startswith(f'{WORD} '):\n    return line.split()[1]", FACT_BUILD),
+    (
+        "built from a name holding the word",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(f'{WORD} {value}')",
+    ),
+    # "a split in the `else` branch of a `not` test, or in the test itself".
+    (
+        "in the else branch of a not test",
+        "if not line.startswith('FACT '):\n    return ''\nelse:\n    return line.split()[1]",
+        FACT_BUILD,
+    ),
+    (
+        "in the test itself",
+        "if line.startswith('FACT ') and (parts := line.split()):\n    return parts[1]\nreturn ''",
+        FACT_BUILD,
+    ),
+    # A tested or compared formatted string is no line the module builds.
+    (
+        "with a tested formatted string its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(lines[0].startswith(f'FACT {value}'))",
+    ),
+    (
+        "with a compared formatted string its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(f'FACT {value}' in lines)",
+    ),
+    # A split after a test of a word the module builds no line of, though it builds another's.
+    ("tested for another word than it builds", "if line.startswith('OTHER '):\n    return line.split()[1]", FACT_BUILD),
+    # A module-level name bound twice is no constant, so a test given it is not read.
+    ("tested by a name bound twice", "if line.startswith(TWICE):\n    return line.split()[1]", FACT_BUILD),
 )
 
 

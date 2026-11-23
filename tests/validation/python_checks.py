@@ -5362,8 +5362,11 @@ def _target_names(target: ast.expr) -> list[ast.Name]:
 # guards it by an early `continue`, `return`, or `raise` rather than a branch; a split no startswith() test guards, as
 # of a line whose word the split itself reads; a line another module builds; a string whose literal holds the word
 # without its space, as " ".join(("WORD", value)) builds; a test or a split of an attribute, as self.line, rather than a
-# name; a test through a `match` statement or a `while` loop; and a split by re.split() or another function given the
-# line. A split that must stay states why in a module-level FACT_SPLIT_ALLOWED = {scope: reason}.
+# name; a test through a `match` statement or a `while` loop; a split by re.split() or another function given the line;
+# a startswith() argument built by a `+` or a formatted string, as startswith(FACT + " ") or startswith(f"{FACT} "), and
+# a line built from a name holding the word, as f"{FACT}{value}"; and a split in the `else` branch of a `not` test, or
+# in the test itself, as line.startswith("FACT ") and (parts := line.split()). A split that must stay states why in a
+# module-level FACT_SPLIT_ALLOWED = {scope: reason}.
 FACT_SPLIT_ALLOWANCE = "FACT_SPLIT_ALLOWED"
 # A fact line's word, its letters, digits, and underscores, and the space that ends it, at the start of a string.
 FACT_WORD = re.compile(r"([A-Z][A-Z0-9_]*) ")
@@ -5446,6 +5449,7 @@ def _built_fact_words(tree: ast.Module, constants: Mapping[str, ast.expr]) -> se
     unread = docstring_ids(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == FACT_TEST:
+            unread.update(id(part) for argument in node.args for part in ast.walk(argument))
             unread.update(id(constant) for argument in node.args for constant in _string_constants(argument, constants))
         elif isinstance(node, ast.Compare):
             unread.update(id(part) for operand in (node.left, *node.comparators) for part in ast.walk(operand))
@@ -5457,6 +5461,8 @@ def _built_fact_words(tree: ast.Module, constants: Mapping[str, ast.expr]) -> se
         if isinstance(node, ast.JoinedStr):
             # The parts after the first are text inside the string, not its start.
             unread.update(id(part) for part in node.values)
+            if id(node) in unread:
+                continue
             first = node.values[0] if node.values else None
             text = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in unread:

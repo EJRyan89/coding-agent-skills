@@ -115,4 +115,4 @@ def test_a_run_whose_probe_found_no_identifier_reads_as_its_exit_where_the_recor
         timeout=60,
     )
     # The recorder sees a Python script end, which every Python from the 3.12 floor reports.
-    assert reason == f'FAILED "ran {script.as_posix()} but it exited with code 1"'
+    assert reason.text == f'FAILED "ran {script.as_posix()} but it exited with code 1"'

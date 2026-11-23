@@ -42,7 +42,7 @@ from deployer import source as deploy_source
 from deployer.errors import DEBUG_HINT, DeployError
 from deployer.paths import Paths
 from tools import checkout_trust, claude_stream, runtime_canary
-from tools.runtime_canary import Completed
+from tools.runtime_canary import Completed, Outcome
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # The real runner, kept before setUp replaces it, for the cases that start a stub program through it.
@@ -828,7 +828,7 @@ class RunTests(RuntimeCanaryTestCase):
                 completed=Completed(0, "", ""),
                 denials=[],
                 timeout=60,
-            ),
+            ).text,
         )
 
     def test_the_installed_copy_is_never_reported_ran(self) -> None:
@@ -845,7 +845,7 @@ class RunTests(RuntimeCanaryTestCase):
                 denials=[],
                 timeout=60,
                 installed=[installed],
-            ),
+            ).text,
         )
 
     def test_a_script_run_from_another_path_is_a_wrong_path_failure(self) -> None:
@@ -871,7 +871,7 @@ class RunTests(RuntimeCanaryTestCase):
             completed=Completed(0, "", ""),
             denials=[],
             timeout=60,
-        )
+        ).text
         self.assertEqual(
             f'FAILED "ran {self.skill_dir()}/scripts/canary_probe.py but it wrote no marker; was the write denied?"',
             reason,
@@ -894,7 +894,7 @@ class RunTests(RuntimeCanaryTestCase):
                     completed=Completed(0, "", ""),
                     denials=[],
                     timeout=60,
-                )
+                ).text
                 self.assertEqual(expected.format(script=script, home=forward(self.home)), reason)
 
     def test_a_ran_line_carries_the_recorded_exit_and_a_timeout_and_still_passes(self) -> None:
@@ -913,11 +913,11 @@ class RunTests(RuntimeCanaryTestCase):
                 outcome = runtime_canary.verdict(
                     "alpha", self.home, probes=[], started=started, completed=completed, denials=[], timeout=60
                 )
-                self.assertEqual(f'RAN "{script}" "{forward(self.home)}"{suffix}', outcome)
+                self.assertEqual(f'RAN "{script}" "{forward(self.home)}"{suffix}', outcome.text)
                 # The pass rule is unchanged: the runtime started the right copy.
                 declared = {"alpha": {"codex": runtime_support.Support("full")}}
-                line = f'RUNTIME codex alpha {outcome} KEPT "k"'
-                self.assertEqual(["MATRIX codex alpha AGREES full"], runtime_canary.compare([line], declared))
+                ran = Outcome("codex", "alpha", outcome.word)
+                self.assertEqual(["MATRIX codex alpha AGREES full"], runtime_canary.compare([ran], declared))
 
     def test_a_bash_script_that_exits_nonzero_before_a_timeout_is_ran_with_both(self) -> None:
         runner = FakeRuntimes()
@@ -955,7 +955,7 @@ class RunTests(RuntimeCanaryTestCase):
                         completed=Completed(0, "", ""),
                         denials=[],
                         timeout=60,
-                    ),
+                    ).text,
                 )
 
     def test_the_python_recorder_records_how_each_script_exited(self) -> None:
@@ -1019,7 +1019,7 @@ class RunTests(RuntimeCanaryTestCase):
                         completed=Completed(0, "", ""),
                         denials=[],
                         timeout=60,
-                    ),
+                    ).text,
                 )
 
     def test_a_marker_without_the_runs_identifier_does_not_count(self) -> None:
@@ -1083,7 +1083,7 @@ class RunTests(RuntimeCanaryTestCase):
                 denials=[],
                 timeout=60,
                 rejected=["blocked by policy"],
-            ).startswith("RAN ")
+            ).text.startswith("RAN ")
         )
 
     @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
@@ -1135,7 +1135,7 @@ class RunTests(RuntimeCanaryTestCase):
             denials=[],
             timeout=60,
             unread=unread[:1],
-        )
+        ).text
         self.assertEqual(
             "FAILED "
             + runtime_canary.quote(
@@ -1240,7 +1240,7 @@ class RunTests(RuntimeCanaryTestCase):
                         completed=completed,
                         denials=denials,
                         timeout=60,
-                    ),
+                    ).text,
                 )
 
     def test_a_runtime_whose_program_vanishes_fails_that_skill_and_every_other_line_stands(self) -> None:
@@ -1630,7 +1630,7 @@ class BashTests(RuntimeCanaryTestCase):
                 denials=[],
                 timeout=60,
                 installed=[installed],
-            ),
+            ).text,
         )
 
     def test_the_bash_recorder_records_only_scripts_and_never_stops_one(self) -> None:
@@ -1805,17 +1805,15 @@ class MatrixTests(RuntimeCanaryTestCase):
             "reviews": {"claude-code": full, "codex": none, "copilot-cli": inline},
             "undeclared": None,
         }
-        lines = [
-            'RUNTIME claude plain RAN "s" "c" KEPT "k"',
-            'TRANSCRIPT claude plain "t"',
-            'RUNTIME codex plain FAILED "never ran a script from the skill" KEPT "k"',
-            'RUNTIME copilot plain BLOCKED "policy" KEPT "k"',
-            'RUNTIME copilot user-only UNSUPPORTED "copilot -p cannot start a user-only skill"',
-            'RUNTIME codex user-only RAN "s" "c" KEPT "k"',
-            'RUNTIME copilot reviews RAN "s" "c" KEPT "k"',
-            'RUNTIME codex reviews NOT_ATTEMPTED "Not on Codex."',
-            "DISCOVERED copilot reviews",
-            'RUNTIME claude undeclared RAN "s" "c" KEPT "k"',
+        outcomes = [
+            Outcome("claude", "plain", "RAN"),
+            Outcome("codex", "plain", "FAILED"),
+            Outcome("copilot", "plain", "BLOCKED"),
+            Outcome("copilot", "user-only", "UNSUPPORTED"),
+            Outcome("codex", "user-only", "RAN"),
+            Outcome("copilot", "reviews", "RAN"),
+            Outcome("codex", "reviews", "NOT_ATTEMPTED"),
+            Outcome("claude", "undeclared", "RAN"),
         ]
         self.assertEqual(
             [
@@ -1828,7 +1826,7 @@ class MatrixTests(RuntimeCanaryTestCase):
                 "MATRIX codex reviews AGREES none",
                 'MATRIX claude undeclared DISAGREES undeclared "it declares no runtime_support"',
             ],
-            runtime_canary.compare(lines, declared),
+            runtime_canary.compare(outcomes, declared),
         )
         # A partial that ran past a limit the canary can see, or stopped short of one it cannot, says more or less
         # than the run showed.
@@ -1838,10 +1836,7 @@ class MatrixTests(RuntimeCanaryTestCase):
                 'MATRIX copilot reviews DISAGREES partial "partial expects RAN, but the run was FAILED"',
             ],
             runtime_canary.compare(
-                [
-                    'RUNTIME copilot user-only RAN "s" "c" KEPT "k"',
-                    'RUNTIME copilot reviews FAILED "never ran a script from the skill" KEPT "k"',
-                ],
+                [Outcome("copilot", "user-only", "RAN"), Outcome("copilot", "reviews", "FAILED")],
                 declared,
             ),
         )
@@ -1864,6 +1859,24 @@ class MatrixTests(RuntimeCanaryTestCase):
         )
         prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
         self.assertEqual([f"${FIXTURE} {runtime_canary.INSTRUCTION}"], prompts)
+
+    def test_the_matrix_and_the_checks_read_the_outcome_carried_beside_its_line(self) -> None:
+        # A skill whose name holds a space moves every later field of its RUNTIME line, so the matrix and whether the
+        # runtime was checked come from the outcome the run carries, never from the printed line.
+        line = 'RUNTIME codex two words RAN "s" "c" KEPT "k"'
+
+        def checks(*_: object) -> Iterator[tuple[str, Outcome | None]]:
+            yield line, Outcome("codex", "two words", "RAN")
+
+        declared = {"two words": {"codex": runtime_support.Support("full")}}
+        with (
+            mock.patch.object(runtime_canary, "check_runtime", checks),
+            mock.patch.object(runtime_canary, "declarations", return_value=declared),
+        ):
+            code, lines = self.outcome(FakeRuntimes())
+        self.assertEqual(0, code, lines)
+        self.assertIn(line, lines)
+        self.assertEqual(["MATRIX codex two words AGREES full"], [line for line in lines if line.startswith("MATRIX ")])
 
     def test_a_full_skill_that_does_not_run_fails_the_canary(self) -> None:
         output = io.StringIO()
@@ -2417,7 +2430,7 @@ class InstalledCopyTests(RuntimeCanaryTestCase):
                         completed=Completed(0, "", ""),
                         denials=[],
                         timeout=60,
-                    ),
+                    ).text,
                 )
 
     def test_a_run_of_the_installed_copy_is_run_again_and_never_counts(self) -> None:
