@@ -211,10 +211,13 @@ def record(
     version: int = 1,
     ledger: Sequence[dict[str, Any]] | None = None,
     reviewers: Sequence[str] = (),
+    unavailable: Sequence[str] = (),
 ) -> dict[str, Any]:
     value: dict[str, Any] = {"review": {"version": version, "verdict": verdict}, "findings": list(findings)}
     if reviewers:
         value["review"]["reviewers"] = [{"id": reviewer} for reviewer in reviewers]
+    if unavailable:
+        value["review"]["coverage"] = {"unavailable_sources": list(unavailable)}
     if ledger is not None:
         value["ledger"] = list(ledger)
     return value
@@ -840,13 +843,30 @@ class NoFindingAboveTests(unittest.TestCase):
             check(spec, record(reviewers=["generic-review", "trust-boundary"]), "initial"),
         )
         self.assertEqual("sibling-spellings did not run; the review ran no reviewer", check(spec, record(), "initial"))
+        incomplete = record(verdict="INCOMPLETE", reviewers=["sibling-spellings"], unavailable=["a.py", "b.py"])
         self.assertEqual(
-            "the review is INCOMPLETE, so sibling-spellings did not read every changed file",
-            check(spec, record(verdict="INCOMPLETE", reviewers=["sibling-spellings"]), "initial"),
+            "sibling-spellings could not read every changed file: "
+            "the review's coverage lists unavailable sources a.py, b.py",
+            check(spec, incomplete, "initial"),
         )
         self.assertIsNone(check(spec, record(verdict="CHANGES_REQUESTED", reviewers=["sibling-spellings"]), "initial"))
         unscoped = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
-        self.assertIsNone(check(unscoped, record(verdict="INCOMPLETE"), "initial"))
+        self.assertIsNone(check(unscoped, incomplete, "initial"))
+
+    def test_a_source_s_silence_is_no_pass_when_another_reviewer_s_block_hides_an_unread_file(self) -> None:
+        # Another reviewer's blocking finding records CHANGES_REQUESTED over INCOMPLETE, so the verdict alone does not
+        # show that a changed file went unread; the coverage does.
+        spec = {"kind": "no_finding_above", "severity": "SHOULD_FIX", "source": "sibling-spellings"}
+        blocked = record(
+            [finding("a.py", 3, "MUST_FIX", source="trust-boundary")],
+            "CHANGES_REQUESTED",
+            reviewers=["sibling-spellings", "trust-boundary"],
+            unavailable=["b.py"],
+        )
+        self.assertEqual(
+            "sibling-spellings could not read every changed file: the review's coverage lists unavailable sources b.py",
+            check(spec, blocked, "initial"),
+        )
 
 
 class OnlyAtTests(unittest.TestCase):
@@ -5339,12 +5359,13 @@ def test_every_committed_clean_scenario_fails_an_incomplete_review_that_raised_n
     approved = skill_evals_judging.judge([scenario], ["haiku"], constant(record(reviewers=sources)))
     assert [outcome.failure for outcome in approved] == [None] * len(scenario.expectations)
     incomplete = skill_evals_judging.judge(
-        [scenario], ["haiku"], constant(record(verdict="INCOMPLETE", reviewers=sources))
+        [scenario], ["haiku"], constant(record(verdict="INCOMPLETE", reviewers=sources, unavailable=["a.py"]))
     )
+    unread = "could not read every changed file: the review's coverage lists unavailable sources a.py"
     expected = [
         ("verdict APPROVED", "verdict is INCOMPLETE")
         if item["kind"] == "verdict"
-        else (label, f"the review is INCOMPLETE, so {item['source']} did not read every changed file")
+        else (label, f"{item['source']} {unread}")
         for item, label in zip(spec["expectations"], (outcome.label for outcome in incomplete), strict=True)
         if item["kind"] == "verdict" or "source" in item
     ]

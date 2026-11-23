@@ -100,8 +100,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   finding above SHOULD_FIX from `sibling-spellings` and names no verdict: other reviewers may flag the fixture's
   private flattener as a copy of a shared helper and request changes, which says nothing about whether the
   specialist blocks a complete fix. A scoped `no_finding_above` fails a review that names no run of its reviewer, or
-  that is INCOMPLETE, since that reviewer's silence there shows nothing, so it stands in for the verdict a scenario
-  expecting no finding otherwise names. `open-spelling` likewise expects the specialist's own catch and no verdict,
+  that could not read every changed file (its coverage lists unavailable sources), whatever its verdict, since
+  another reviewer's blocking finding records `CHANGES_REQUESTED` over `INCOMPLETE` and that reviewer's silence there
+  shows nothing. So it stands in for the verdict a scenario expecting no finding otherwise names. `open-spelling` likewise expects the specialist's own catch and no verdict,
   since other reviewers' findings could bring `CHANGES_REQUESTED` without it.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings

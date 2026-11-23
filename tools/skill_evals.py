@@ -142,7 +142,8 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere; S is
       below the highest severity, above which nothing ranks. With `source`, only findings whose `source` names the
       reviewer R count, so another reviewer's finding fails nothing, and the expectation fails a review that names
-      no run of R or is INCOMPLETE, since R's silence there shows nothing
+      no run of R or could not read every changed file (its coverage lists unavailable sources), whatever its
+      verdict, since R's silence there shows nothing
   {"kind": "only_at", "path": P, "lines": [N, ...]}
       every finding, whatever its severity, is at P on one of the lines, as a review of one edited line should be
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}

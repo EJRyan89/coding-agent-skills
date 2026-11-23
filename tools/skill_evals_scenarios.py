@@ -327,12 +327,18 @@ def no_finding_above_expectation(spec: Mapping[str, object]) -> Expectation:
 
 def _unseen(record: Record, source: str) -> str | None:
     """Why the record cannot show what the reviewer `source` would have raised, or None: the review names no run of
-    that reviewer, or it is INCOMPLETE, so changed source went unread. Either way its silence is no evidence."""
+    that reviewer, or it could not read every changed file (its coverage lists unavailable sources), whatever its
+    verdict, since another reviewer's blocking finding records CHANGES_REQUESTED over INCOMPLETE. Either way the
+    reviewer's silence is no evidence."""
     ran = [str(reviewer.get("id")) for reviewer in review(record).get("reviewers", [])]
     if source not in ran:
         return f"{source} did not run; the review ran {', '.join(ran) or 'no reviewer'}"
-    if review(record)["verdict"] == "INCOMPLETE":
-        return f"the review is INCOMPLETE, so {source} did not read every changed file"
+    unavailable = review(record).get("coverage", {}).get("unavailable_sources", [])
+    if unavailable:
+        return (
+            f"{source} could not read every changed file: the review's coverage lists unavailable sources "
+            f"{', '.join(unavailable)}"
+        )
     return None
 
 
