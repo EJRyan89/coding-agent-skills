@@ -250,6 +250,12 @@ LINE_SPLIT_ALLOWED = {
         "its lines"
     ),
 }
+OUTPUT_SPLIT_ALLOWED = {
+    "holds_line_break": (
+        "asks whether any character str.splitlines breaks at is in the text, which is the question, not a split of "
+        "it into lines"
+    ),
+}
 
 
 PRESENCE_ALLOWED = {
