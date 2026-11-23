@@ -714,7 +714,7 @@ class RealSidecarEntryTests(WalkTestCase):
         (self.root / "inside").write_bytes(SIDECAR_BYTES)
         (self.root / "._inside").symlink_to(self.root / "inside")
         (self.root / "._out.md").symlink_to(header)
-        os.mkfifo(self.root / "._pipe.md")
+        os.mkfifo(self.root / "._pipe.md")  # type: ignore[attr-defined, unused-ignore]  # Unix only
         opened: list[str] = []
         for tree in (None, self.root):
             with self.subTest(tree=tree), recording_opens(opened):
