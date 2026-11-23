@@ -198,7 +198,8 @@ manifest for a document scenario. Which files a reviewer reviews is decided by t
 review_specialists' `route` and `uncovered`, on the scenario's changed files, a renamed one by either path, and its
 pull request's title, every `when` condition taken as open, since a run decides those: a fixture's changed files are
 the ones the diff git computes between its trees names, a repository reviewer's fixture as its run's copy holds it,
-and a document scenario's is its document alone, under the path review-document reviews it by. A manifest that sets
+and a document scenario's is its document alone, under the path review-document reviews it by. An entrypoint
+manifest routes nothing, so a path-scoped expectation with one fails the load. A manifest that sets
 `uncovered` to `ignore` is still read as giving the generic reviewer the files no specialist covers, though it gives
 it none of them once a specialist matches any; no manifest here sets it, and a scoped expectation of the generic
 reviewer there fails as one of a reviewer that did not run.

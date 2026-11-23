@@ -36,7 +36,7 @@ import skill_inventory
 import type_check_roots
 import whole_number
 from bash_syntax import BashSyntaxError
-from git_client import NO_HOOKS, GitClient, GitError, subprocess_runner
+from git_client import NO_HOOKS, GitClient, subprocess_runner
 from path_containment import resolved_path, within
 from review_canary import FixtureError, fixture_change
 from review_config import ConfigurationError, validate_repository_identity
@@ -921,7 +921,7 @@ def _fixture_changes(scenario: Scenario) -> tuple[list[str], dict[str, list[str]
         with reviewed_fixture(scenario) as fixture, fixture_change(fixture, subprocess_runner) as change:
             diff = parse_unified_diff(change.diff)
             return list(diff), renamed_from(diff), str(change.pull["title"])
-    except (FixtureError, GitError, OSError) as exc:
+    except (FixtureError, OSError) as exc:
         raise ScenarioError(f"cannot read the fixture's change: {exc}") from exc
 
 
@@ -941,13 +941,21 @@ def scenario_reach(scenario: Scenario, spec: Mapping[str, object], checkout: Pat
     """The changed files each reviewer of a review scenario could ever review. A document scenario changes its document
     alone, under the path review-document reviews it by, BY_NAME_FOLDER/<name> for a by-name one, routed by the
     manifest review-document writes for that path; a fixture scenario's come from its trees and the manifest its
-    reviewers follow."""
+    reviewers follow. Raise ScenarioError for an entrypoint manifest, which routes nothing: its one reviewer reviews
+    the whole change under the name the configuration gives the adapter, which no `source` names."""
     if scenario.document is not None:
         name = scenario.document.name
         reviewed = f"{BY_NAME_FOLDER}/{name}" if scenario.by_name else name
         return reviewer_reach(specialists_manifest(reviewed), [reviewed], {}, None)
+    manifest = scenario_manifest(spec, scenario.directory, checkout)
+    if manifest is not None and "specialists" not in manifest:
+        raise ScenarioError(
+            f"an expectation names its source, but the manifest {manifest['id']} is an entrypoint manifest, whose one "
+            "reviewer reviews the whole change under the adapter's configured name, which no source names; scope "
+            "expectations only with a specialists manifest"
+        )
     changed, renamed, title = _fixture_changes(scenario)
-    return reviewer_reach(scenario_manifest(spec, scenario.directory, checkout), changed, renamed, title)
+    return reviewer_reach(manifest, changed, renamed, title)
 
 
 def _reached(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None:

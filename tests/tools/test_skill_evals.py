@@ -702,6 +702,72 @@ class LoaderTests(unittest.TestCase):
                         skill_evals_scenarios.load_scenarios("demo", root=self.root)
                     self.assertEqual(refused, str(raised.exception))
 
+    def scoped_fixture(self, manifest: dict[str, Any] | None = None) -> Path:
+        """A fixture scenario expecting a finding of the generic reviewer's at tools/a.sh, which its head adds."""
+        found = {"kind": "finding", "path": "tools/a.sh", "lines": [1], "severity": "SHOULD_FIX"}
+        directory = write_scenario(self.root, "case", scenario_spec({**found, "source": "generic-review"}))
+        pull = json.loads((REVIEW_REPOSITORY / "drifted-guide" / "pull.json").read_text(encoding="utf-8"))
+        del pull["manifest_path"]
+        if manifest is not None:
+            pull["manifest_path"] = "review.json"
+            (directory / "base" / "review.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (directory / "pull.json").write_text(json.dumps(pull), encoding="utf-8")
+        (directory / "head" / "tools").mkdir()
+        (directory / "head" / "tools" / "a.sh").write_text("echo a\n", encoding="utf-8")
+        return directory
+
+    def test_a_scoped_expectation_of_a_fixture_with_no_manifest_reaches_every_changed_file(self) -> None:
+        self.scoped_fixture()
+        self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+
+    def test_a_fixture_whose_change_cannot_be_read_fails_a_scoped_expectation_s_load(self) -> None:
+        directory = self.scoped_fixture()
+        gone = GitError("git is gone")
+        with (
+            mock.patch.object(skill_evals_scenarios, "subprocess_runner", side_effect=gone),
+            self.assertRaises(ScenarioError) as raised,
+        ):
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertIn(
+            "case: cannot read the fixture's change: git init failed for the fixture: git is gone",
+            str(raised.exception),
+        )
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with (
+            mock.patch.object(skill_evals_scenarios, "fixture_change", side_effect=full),
+            self.assertRaises(ScenarioError) as raised,
+        ):
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertIn(
+            "case: cannot read the fixture's change: [Errno 28] No space left on device", str(raised.exception)
+        )
+        (directory / "pull.json").write_text("{}", encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertIn("case: cannot read the fixture's change: ", str(raised.exception))
+
+    def test_a_scoped_expectation_with_an_entrypoint_manifest_is_refused(self) -> None:
+        # An entrypoint manifest routes nothing, and its one reviewer is named by the configuration, never a source.
+        entrypoint = {
+            "schema_version": 1,
+            "id": "fixture-review",
+            "protocol_version": 1,
+            "supports": ["initial", "re-review"],
+            "required_capabilities": ["read-diff", "write-result"],
+            "entrypoint": "SKILL.md",
+            "resources": [],
+            "agent_profiles": [],
+        }
+        self.scoped_fixture(entrypoint)
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            "case: an expectation names its source, but the manifest fixture-review is an entrypoint manifest, whose "
+            "one reviewer reviews the whole change under the adapter's configured name, which no source names; scope "
+            "expectations only with a specialists manifest",
+            str(raised.exception),
+        )
+
     def test_a_fixture_scenario_names_no_document(self) -> None:
         write_scenario(self.root, "case", scenario_spec())
         (scenario,) = skill_evals_scenarios.load_scenarios("demo", root=self.root)
@@ -2200,6 +2266,14 @@ class ReviewerScenarioTests(unittest.TestCase):
         spec["expectations"] = spec["expectations"][:1]
         (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
         self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+        # validation-policy covers the moved file by its earlier path, so the generic reviewer never takes it.
+        spec["expectations"] = [{**spec["expectations"][0], "source": "generic-review"}]
+        (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.assertEqual(
+            "case: generic-review never reviews tools/spelling_policy.py: of the scenario's changed files, its route "
+            "reaches tools/other_policy.py",
+            self.refusal(),
+        )
 
     def test_every_committed_scoped_expectation_loads(self) -> None:
         scoped = {
