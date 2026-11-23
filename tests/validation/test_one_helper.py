@@ -230,7 +230,7 @@ class PlaceLookupTests(PlaceLookupCase):
                 problems = self.problems(_modules({path: (old, new)}))
                 self.assertEqual(1, len(problems), problems)
                 self.assertIn(expected, problems[0])
-                self.assertIn("PLACE_LOOKUP_ALLOWED", problems[0])
+                self.assertIn("PLACE_LOOKUP_SANCTIONS", problems[0])
 
     def test_a_handler_that_catches_a_class_git_error_derives_from_or_every_error_passes(self) -> None:
         for handler in ("except RuntimeError:", "except Exception:", "except BaseException:", "except:"):
@@ -249,14 +249,14 @@ class PlaceLookupTests(PlaceLookupCase):
         self.assertEqual([], self.problems(files, allowed={GUARD: {"view": "git's answer decides"}}))
         self.assertEqual(
             [
-                "tests/validation/one_helper.py: PLACE_LOOKUP_ALLOWED gives tools/guard.py view no reason; state why "
+                "tests/validation/one_helper.py: PLACE_LOOKUP_SANCTIONS gives tools/guard.py view no reason; state why "
                 "it is held to neither rule"
             ],
             self.problems(files, allowed={GUARD: {"view": " "}}),
         )
         self.assertEqual(
             [
-                "tests/validation/one_helper.py: PLACE_LOOKUP_ALLOWED names tools/guard.py reached, which neither "
+                "tests/validation/one_helper.py: PLACE_LOOKUP_SANCTIONS names tools/guard.py reached, which neither "
                 "treats a place lookup's GitError kinds apart nor lets one escape; remove the entry"
             ],
             self.problems(_modules(), allowed={GUARD: {"reached": "no longer needed"}}),

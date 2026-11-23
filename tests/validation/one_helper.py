@@ -20,7 +20,7 @@ scope that lets a lookup's GitError out, that is not caught lets that GitError o
   as a handler that counts only a ReadingTimeout as cut short would;
 - a scope nothing calls that lets one escape: a function no function of the two modules calls, and a module's own
   statements, such as its `__main__` block, so every entry point ends a place lookup's GitError in a handler.
-PLACE_LOOKUP_ALLOWED names a scope held to neither, by its module and its scope, with the reason; an entry that
+PLACE_LOOKUP_SANCTIONS names a scope held to neither, by its module and its scope, with the reason; an entry that
 sanctions nothing, one with no reason, and a lookup PLACE_LOOKUPS names that its module does not define, fail.
 
 Closing references. ejryan89-skill-core's closing_references.py is the one reader of the issues a pull request closes,
@@ -88,7 +88,7 @@ PLACE_LOOKUPS: dict[str, frozenset[str]] = {
     "tools/worktrees.py": frozenset({"checkout_of"}),
 }
 # Each scope held to neither rule, by its module's path and its scope, with the reason.
-PLACE_LOOKUP_ALLOWED: dict[str, dict[str, str]] = {
+PLACE_LOOKUP_SANCTIONS: dict[str, dict[str, str]] = {
     "tools/hub_guard.py": {
         "hub_protected": "an edit is judged by git's answer: a place git answered with an error for may lie in a "
         "guarded hub, so it is protected, while a git that did not run or finish says nothing of the place and goes "
@@ -285,7 +285,7 @@ def catching_handler(call: ast.Call, module: Module) -> ast.ExceptHandler | None
 def place_lookup_problems(
     root: Path,
     lookups: Mapping[str, frozenset[str]] = PLACE_LOOKUPS,
-    allowed: Mapping[str, Mapping[str, str]] = PLACE_LOOKUP_ALLOWED,
+    allowed: Mapping[str, Mapping[str, str]] = PLACE_LOOKUP_SANCTIONS,
 ) -> list[str]:
     """Report each handler on a path to a place lookup that treats a GitError's kinds apart, each scope nothing calls
     that lets a place lookup's GitError escape, each lookup its module does not define, and each entry of `allowed` that
@@ -322,7 +322,7 @@ def place_lookup_problems(
             found[call.caller] = (
                 f"{call.caller[0]}:{handler.lineno} {call.caller[1]} catches the GitError of a place lookup that "
                 f"{call.callee[1]} raises and treats its kinds apart ({'; '.join(apart)}); treat every GitError as an "
-                f"unknown place, or name the scope with its reason in {POLICY}'s PLACE_LOOKUP_ALLOWED"
+                f"unknown place, or name the scope with its reason in {POLICY}'s PLACE_LOOKUP_SANCTIONS"
             )
     called = {call.callee for call in calls}
     for call in sorted(calls, key=lambda each: (each.caller, each.node.lineno)):
@@ -334,14 +334,15 @@ def place_lookup_problems(
             found[caller] = (
                 f"{caller[0]}:{call.node.lineno} {caller[1]}, which nothing in {' or '.join(sorted(modules))} calls, "
                 f"lets the GitError of a place lookup that {call.callee[1]} raises escape; catch it there and treat "
-                f"every kind as an unknown place, or name the scope with its reason in {POLICY}'s PLACE_LOOKUP_ALLOWED"
+                "every kind as an unknown place, or name the scope with its reason in "
+                f"{POLICY}'s PLACE_LOOKUP_SANCTIONS"
             )
     problems += [problem for key, problem in sorted(found.items()) if key[1] not in allowed.get(key[0], {})]
     problems += [
-        f"{POLICY}: PLACE_LOOKUP_ALLOWED names {path} {scope}, which neither treats a place lookup's GitError kinds "
+        f"{POLICY}: PLACE_LOOKUP_SANCTIONS names {path} {scope}, which neither treats a place lookup's GitError kinds "
         "apart nor lets one escape; remove the entry"
         if (path, scope) not in found
-        else f"{POLICY}: PLACE_LOOKUP_ALLOWED gives {path} {scope} no reason; state why it is held to neither rule"
+        else f"{POLICY}: PLACE_LOOKUP_SANCTIONS gives {path} {scope} no reason; state why it is held to neither rule"
         for path, scopes in sorted(allowed.items())
         for scope, reason in sorted(scopes.items())
         if (path, scope) not in found or not reason.strip()
