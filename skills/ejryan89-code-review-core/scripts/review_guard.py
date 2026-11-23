@@ -35,7 +35,11 @@ reviewer can write: a folder named with the user's id that `private_folder.ensur
 of a claim, to be one only the user owns and can write, so no other local account can remove a claim or plant one.
 A call is denied while it is not. A retry is a fresh agent that claims the same role. A claim is created whole or not
 at all, through `atomic_file.create_bytes`, so no reader, a parallel first call of the same agent included, ever sees
-part of one, and a write that fails leaves no claim behind.
+part of one, and a write that fails leaves no claim behind and denies its call, naming why. The create puts the claim
+in place by a hard link, so a claims folder whose file system has none denies every first read, naming that remedy;
+the create's empty reservation is never allowed, since a claim seen empty would deny its reviewer as unreadable. Each
+first read prunes, under a lock, the claims whose run is gone and the leftovers of failed claims, and removes only a
+file it judged, so a claim made after the judgment is never removed.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
@@ -68,12 +72,14 @@ import re
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, BinaryIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import atomic_file
+import file_lock
 import file_presence
 import hook_decision
 import json_reader
@@ -141,9 +147,26 @@ Claim = tuple[Path, dict[str, Any]]
 # How old, in seconds, a claim that does not parse must be before a new claim prunes it: many times the hook's
 # timeout, so no guard that could still be writing it, such as an older version's beside this one, is running.
 UNREADABLE_CLAIM_AGE = 600
+# How old, in seconds, a copy a create left beside a claim must be before a new claim prunes it. A copy lives only while
+# its create runs, inside one hook call, which Claude Code ends at the hook's timeout, so one past every guard's timeout
+# is a killed create's; the age is an unreadable claim's, many times that timeout. Pruning a copy sooner widens nothing,
+# since a create whose copy is gone before its link fails and leaves no claim, but it would fail that create.
+LEFTOVER_COPY_AGE = UNREADABLE_CLAIM_AGE
+# The name `atomic_file.create_bytes` gives the copy it writes a claim through: `.<agent>.json.<random>.tmp`.
+LEFTOVER_COPY = ".*.json.*.tmp"
+# The file whose lock a guard holds while it prunes, so no two guards prune at once: only a prune removes a claim, and
+# a claim's path is free for a new one only once it is removed, so no claim can appear where one a prune judged was
+# while that prune holds the lock.
+PRUNE_LOCK = ".prune.lock"
 # Why a reviewer whose own claim does not parse is denied, ending with the remedy: no call can be judged against it.
 UNREADABLE_CLAIM = (
     "this reviewer's claim could not be read; run the role again with a fresh reviewer, which claims it anew"
+)
+# Why a reviewer is denied when the file system refuses the hard link a claim is made whole through, ending with the
+# remedy; `{folder}` is the runtime or temporary directory the claims folder lies in.
+NO_HARD_LINKS = (
+    "the reviewer guard makes each claim whole through a hard link, which the file system holding {folder} refuses; "
+    "give the guard a runtime or temporary directory on a file system with hard links, such as a local disk's"
 )
 
 
@@ -152,7 +175,8 @@ UNREADABLE_CLAIM = (
 PRESENCE_ALLOWED = {
     "_log_read": "counts a read the guard already allowed; a path it cannot stat goes uncounted, as one the JSON "
     "writer refuses does, and never turns the read into a denial",
-    "_prune_claims": "a claim, or a run.json, it cannot stat or read is kept, never pruned as one whose run is gone",
+    "_prune": "a claim, a copy, or a run.json it cannot open, stat, or read is kept, never pruned as one whose run is "
+    "gone or removed unjudged",
 }
 
 
@@ -381,19 +405,70 @@ def _prune_claims(claims: Path) -> None:
     claim any role, another than the prompt it first asked for included. That widens no reviewer's reads, as
     `_load_claim` says: no call of that agent was ever let through, its claiming read included, so it has read nothing
     a pull request holds that could choose the role, just as a fresh agent has not. A younger one is kept, since an
-    older guard beside this one may still be writing it in two steps. A copy a killed create left beside a claim is
-    never read as one."""
-    for path in file_presence.matching(claims, "*.json"):
+    older guard beside this one may still be writing it in two steps. A copy a killed create left beside a claim,
+    named `LEFTOVER_COPY`, is never read as one, and is removed once it is `LEFTOVER_COPY_AGE` old.
+
+    A prune removes only the file it judged, so a claim made after it judged the path is never removed. It holds the
+    lock of `PRUNE_LOCK` throughout, so no other guard prunes meanwhile: only a prune removes a claim, and a create
+    never replaces one, so while the lock is held nothing can put a newer claim where a judged one is. A guard that
+    finds the lock held leaves the prune to its holder, and one whose lock cannot be opened, or is refused for a
+    reason that may pass, leaves it to a later claim; pruning is only clearing away, so neither denies the call. A file
+    system that offers no lock at all lets no guard hold it, so each prunes unlocked there. Each removal is checked
+    too: `_prune` removes a file only while its path still names the one judged. Where no lock holds, as on such a
+    file system or beside an older guard, which prunes unlocked, that check is all that keeps a newer claim, and a
+    claim removed and remade at the path between the check and the removal is still removed."""
+    lock = claims / PRUNE_LOCK
+    descriptor: int | None = None
+    try:
+        descriptor = file_lock.take(lock)
+    except file_lock.FileLockError as exc:
+        if not exc.unsupported:
+            return
+        # No guard can hold a lock the file system does not offer, so the file is no one's.
         with contextlib.suppress(OSError):
-            try:
-                claim = json_reader.read_file(path)
-                run = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
-            except (ValueError, FieldError):
-                if time.time() - path.stat().st_mtime >= UNREADABLE_CLAIM_AGE:
-                    path.unlink()
-                continue
-            if not file_presence.is_present(Path(run) / RUN_FILE):
-                path.unlink()
+            lock.unlink()
+    except OSError:
+        return
+    else:
+        if descriptor is None:
+            return
+    try:
+        for path in file_presence.matching(claims, "*.json"):
+            _prune(path, _stale_claim)
+        for path in file_presence.matching(claims, LEFTOVER_COPY):
+            _prune(path, _leftover_copy)
+    finally:
+        if descriptor is not None:
+            file_lock.release(descriptor, lock)
+
+
+def _prune(path: Path, stale: Callable[[os.stat_result, BinaryIO], bool]) -> None:
+    """Remove `path` when `stale`, given the status and the open content of the file there, judges it one to prune, and
+    only while `path` still names that file, so a file put at `path` after the judgment is kept. The file is held open
+    from the judgment to the comparison, so its identity is never reused for another meanwhile, and closed before the
+    removal, which Windows refuses while a handle without delete sharing holds it. Any OSError keeps the file."""
+    with contextlib.suppress(OSError):
+        with path.open("rb") as handle:
+            judged = os.fstat(handle.fileno())
+            if not stale(judged, handle) or not os.path.samestat(judged, path.lstat()):
+                return
+        path.unlink()
+
+
+def _stale_claim(status: os.stat_result, content: BinaryIO) -> bool:
+    """Whether a claim is one to prune: one whose run's run.json is gone, or one that does not parse, or holds a field
+    of the wrong kind, once its modification time is `UNREADABLE_CLAIM_AGE` old."""
+    try:
+        claim = json_reader.loads(content.read().decode("utf-8"))
+        run = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
+    except (ValueError, FieldError):
+        return time.time() - status.st_mtime >= UNREADABLE_CLAIM_AGE
+    return not file_presence.is_present(Path(run) / RUN_FILE)
+
+
+def _leftover_copy(status: os.stat_result, _content: BinaryIO) -> bool:
+    """Whether a copy beside the claims is one a killed create left: `LEFTOVER_COPY_AGE` old."""
+    return time.time() - status.st_mtime >= LEFTOVER_COPY_AGE
 
 
 def _claim(agent: str, path: Path) -> None:
@@ -401,8 +476,9 @@ def _claim(agent: str, path: Path) -> None:
     first calls race, whichever linked its claim into place first holds, and the other read is judged against that
     whole claim.
 
-    A create that fails before its claim is in place leaves none and denies the call, as any failure does, so the
-    next first read claims anew. One that put its claim in place but could not remove the copy it wrote it through
+    A create that fails before its claim is in place leaves none and denies the call, naming the error, so the next
+    first read claims anew; where the file system refuses the hard link the claim is put in place by, the denial names
+    the remedy too. One that put its claim in place but could not remove the copy it wrote it through
     (`UnfinishedCopyError` with `made` set) still denies this call, after starting the role's read log, since the claim
     holds: the reviewer's next read is judged against it."""
     run = run_root(path)
@@ -414,8 +490,9 @@ def _claim(agent: str, path: Path) -> None:
     claim = json_writer.dumps({"run": str(run), "role": role["id"]})
     claims = claims_folder()
     _prune_claims(claims)
+    target = claims / f"{agent}.json"
     try:
-        atomic_file.create_bytes(claims / f"{agent}.json", claim.encode("utf-8"), mode=0o600)
+        atomic_file.create_bytes(target, claim.encode("utf-8"), mode=0o600)
     except FileExistsError:
         claimed = _load_claim(agent)
         if claimed is None:
@@ -425,10 +502,22 @@ def _claim(agent: str, path: Path) -> None:
         return
     except atomic_file.UnfinishedCopyError as exc:
         if not exc.made:
-            raise
+            raise Denied(_unmade(target, exc)) from exc
         _start_log(run, role["id"])
         raise Denied(f"this reviewer's claim is made, but the copy it was written through is left; {FIRST}") from exc
+    except OSError as exc:
+        raise Denied(_unmade(target, exc)) from exc
     _start_log(run, role["id"])
+
+
+def _unmade(target: Path, error: OSError) -> str:
+    """Why a claim the create left unmade at `target` denies its call: the error, and, where the file system refused
+    the hard link that puts a claim in place, which `atomic_file.create_bytes` raises with an errno of
+    `NO_HARD_LINK_ERRNOS` naming `target`, the remedy."""
+    reason = f"this reviewer's claim could not be made: {error}"
+    if error.errno in atomic_file.NO_HARD_LINK_ERRNOS and error.filename == str(target):
+        reason += f"; {NO_HARD_LINKS.format(folder=target.parent.parent)}"
+    return reason
 
 
 def _check_in_run(tool: str, path: Path, run: Path, reads: list[str] | None = None) -> None:
