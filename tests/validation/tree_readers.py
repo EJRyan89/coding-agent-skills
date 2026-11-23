@@ -35,11 +35,13 @@ Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows
   committed bytes.
 - A git a shell function or array runs with the words it is given, as `g() { git -C x "$@"; }`,
   `cmd=(git archive HEAD); "${cmd[@]}"`, `"$GIT" archive`, or `& git @args`, is not read at its callers.
-- A grep over the working tree, which no repository code runs, is read as one over a commit.
+- A grep over files rather than a commit, given --no-index or no commit, as search_source's snapshot search runs, is
+  read as one over a commit.
 - A command that writes a commit's tree into a working tree, worktree add, checkout, switch, or restore, is not read: it
   writes what a checkout writes and hands its caller no bytes of its own, and a later read of that working tree reads
   files, not git.
 - A list, a tuple, or a call's arguments whose words are exactly a NOT_READERS entry is passed over wherever it sits,
+  except in the catalogue's own NOT_READERS assignment, which is never read,
   so a literal `("archive", "checkout")` meant as `git archive checkout` would be excused anywhere.
 - A commit's tree read through GitHub's API, as the tarball snapshot and the contents, blobs, and trees calls do, is not
   read.
@@ -70,6 +72,7 @@ from validation_support import (
     python_trees,
     repository_files,
     scoped_nodes,
+    statement_scope,
 )
 
 POLICY = "tests/validation/tree_readers.py"
@@ -132,6 +135,7 @@ TREE_READERS: dict[str, dict[str, str]] = {
 # The words that spell a reader's subcommand but never reach git, with the reason: a list, a tuple, or a call's
 # positional arguments whose items are all string literals, exactly these words in this order, is passed over wherever
 # it sits.
+NOT_READERS_NAME = "NOT_READERS"
 NOT_READERS: dict[tuple[str, ...], str] = {
     ("archive", "checkout"): "the folders a synthesis scenario's fixture copies, which a skill evaluation names",
 }
@@ -276,6 +280,10 @@ def tree_reader_problems(
     python = [path for path in paths if path.suffix == ".py"]
     used: set[tuple[str, ...]] = set()
     for _, name, tree in python_trees(python, root, problems):
+        if name == POLICY:
+            # The catalogue's own keys spell the words they excuse, so they would excuse themselves.
+            body = [statement for statement in tree.body if statement_scope(statement) != NOT_READERS_NAME]
+            tree = ast.Module(body=body, type_ignores=[])
         for line, scope, subcommand, given in python_tree_reads(tree, not_readers, used):
             found[(name, scope)].append((line, subcommand, given))
     for (name, scope), reads in sorted(found.items(), key=lambda item: (item[0][0], item[1][0][0], item[0][1])):

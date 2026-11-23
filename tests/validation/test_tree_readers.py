@@ -118,12 +118,28 @@ class TreeReaderFixtures(unittest.TestCase):
         files = {"scenarios.py": "FOLDERS = ('archive', 'checkout')\n"}
         self.assertIn("scenarios.py:1 FOLDERS reads a commit's tree with git archive", self.problems(files, {})[0])
         self.assertEqual([], self.problems(files, {}, excused))
-        for words in ("('archive', 'HEAD')", "('archive', 'checkout', 'x')"):
+        for words in ("('archive', 'HEAD')", "('archive', 'checkout', 'x')", "('archive', 'checkout', name)"):
             with self.subTest(words=words):
                 problems = self.problems({"scenarios.py": f"FOLDERS = {words}\n"}, {}, excused)
                 self.assertEqual(2, len(problems), problems)
                 self.assertIn("scenarios.py:1 FOLDERS reads a commit's tree with git archive", problems[0])
                 self.assertIn("NOT_READERS names the words ('archive', 'checkout'), which no sequence", problems[1])
+
+    def test_the_policy_s_own_not_readers_keys_never_excuse_themselves(self) -> None:
+        excused: dict[tuple[str, ...], str] = {("archive", "checkout"): "a fixture's folders"}
+        policy = {
+            "tests/validation/tree_readers.py": "NOT_READERS = {('archive', 'checkout'): \"a fixture's folders\"}\n"
+        }
+        self.assertEqual(
+            [
+                "tests/validation/tree_readers.py: NOT_READERS names the words ('archive', 'checkout'), which no "
+                "sequence spells; remove the entry"
+            ],
+            self.problems(policy, {}, excused),
+        )
+        self.assertEqual(
+            [], self.problems({**policy, "scenarios.py": "FOLDERS = ('archive', 'checkout')\n"}, {}, excused)
+        )
 
     def test_an_excused_sequence_is_passed_over_wherever_it_sits_as_its_stated_limit_says(self) -> None:
         excused: dict[tuple[str, ...], str] = {("archive", "checkout"): "a fixture's folders"}
@@ -233,6 +249,11 @@ class TreeReaderFixtures(unittest.TestCase):
             "a program a variable names": ("sh", '"$GIT" archive HEAD', None),
             "a PowerShell splat": ("ps1", "function g { & git @args }\ng archive HEAD", None),
             "a working tree written from a commit": ("sh", "git worktree add --detach x HEAD\ngit checkout HEAD", None),
+            "a branch switched or files restored": ("sh", "git switch main\ngit restore --source HEAD -- .", None),
+            "a command in a Markdown fence": ("md", "```bash\ngit archive HEAD\n```", None),
+            "a grep given --no-index": ("py", "git.output(['grep', '--no-index', '-e', 'x'])", COMMITTED),
+            "a grep given no commit": ("py", "git.output(['grep', '-e', 'x'])", COMMITTED),
+            "a tree read through GitHub's API": ("py", "subprocess.run(['gh', 'api', 'repos/o/r/tarball/HEAD'])", None),
         }
         for label, (kind, code, given) in rows.items():
             name = f"limit.{kind}"
