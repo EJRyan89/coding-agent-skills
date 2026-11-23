@@ -191,10 +191,19 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
 An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
 verdict, which an INCOMPLETE review that raised nothing would pass, unless it holds a `no_finding_above` with a
 `source`, which fails such a review itself, a `category` the scenario's manifest does not list, ignoring case, a
-`source` that is no reviewer of the scenario, or a `finding` or `no_finding_above` that names its `source` and a path
-that reviewer never reviews fails the whole run before anything is judged. The manifest is the one the fixture's
-pull.json names in its base tree, the checkout's for a repository reviewer's scenario, or review-document's design
-manifest for a document scenario. Which files a reviewer reviews is decided by the pipeline's own routing,
+`source` that is no reviewer of the scenario, a `finding` or `no_finding_above` that names its `source` and a path
+that reviewer never reviews, or a `finding`, `repeats`, or `no_finding_above`, scoped or not, whose path, or one of
+whose `paths`, holds no added line of a fixture scenario's change, or whose `lines` are none of that path's added
+lines, fails the whole run before anything is judged. A reviewer anchors a finding only on an added line of a file it
+reviews, so such a `finding` is never met and such a `repeats` or `no_finding_above` never fails: a file the change
+deletes, one it only removes lines from, and one it moves unchanged hold none. The added lines are the ones
+review_specialists' `parse_unified_diff` records from the same diff that decides which files a reviewer reaches, read
+once. Two kinds of expectation are not checked, since a run diffs a document's extracted text, not its bytes, and a
+loader that extracted it would need the PDF extractor installed to load a scenario: a document scenario's, and one
+on a Word document or a PDF in a fixture scenario, a file review_documents' `document_format` names a format for. The
+manifest is the one the
+fixture's pull.json names in its base tree, the checkout's for a repository reviewer's scenario, or review-document's
+design manifest for a document scenario. Which files a reviewer reviews is decided by the pipeline's own routing,
 review_specialists' `route` and `uncovered`, on the scenario's changed files, a renamed one by either path, and its
 pull request's title, every `when` condition taken as open, since a run decides those: a fixture's changed files are
 the ones the diff git computes between its trees names, a repository reviewer's fixture as its run's copy holds it,
