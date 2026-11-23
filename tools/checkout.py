@@ -19,24 +19,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import file_presence
 from skill_roots import skills_directory_holding
+from type_check_roots import REPOSITORY_SKILLS
 
 ROOT_HELP = (
-    "work on this checkout of the repository instead: a directory holding source.json and .claude/skills, outside "
-    "every skills directory"
+    f"work on this checkout of the repository instead: a directory holding source.json and {REPOSITORY_SKILLS}, "
+    "outside every skills directory"
 )
 
 
 def checkout_problem(root: Path) -> str | None:
     """Why root is not a checkout of this repository a tool may write into, or None when it is one."""
-    skills = root / ".claude" / "skills"
+    skills = root / REPOSITORY_SKILLS
     # A marker of the wrong kind, or one a stat cannot examine, is named so, never as one the directory lacks.
     reasons = [file_presence.refusal_reason(root / "source.json"), file_presence.refusal_reason(skills, folder=True)]
-    for marker, reason in zip(("source.json", ".claude/skills"), reasons, strict=True):
+    for marker, reason in zip(("source.json", REPOSITORY_SKILLS), reasons, strict=True):
         if reason not in (None, file_presence.MISSING):
             return f"{root} is not a checkout of this repository: its {marker} {reason}"
     if any(reasons):
         return (
-            f"{root} is not a checkout of this repository: it needs a source.json file and a .claude/skills directory"
+            f"{root} is not a checkout of this repository: it needs a source.json file and a {REPOSITORY_SKILLS} "
+            "directory"
         )
     for path in (root, skills, root / ".agents" / "skills"):
         holder = skills_directory_holding(path)
