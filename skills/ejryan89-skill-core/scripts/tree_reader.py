@@ -1,15 +1,17 @@
-"""The one reader of a tree a skill promises to read only inside, shared by the .NET skills.
+"""The one reader of a tree a skill promises to read only inside, for the .NET skills.
 
-dotnet-dependencies promises to read only inside the tree it examines, and dotnet-format only inside the repository.
-Each keeps the promise through a `TreeReader` bound to that tree: every stat, open, read, listing, and walk of a path in
-their scripts goes through one, and validation refuses a direct read there (the tree read policy in
-`tests/validation/fsops_platform.py`), so a caller that bypasses the reader fails validation rather than waiting for a
-review to find it.
+dotnet-format promises to read only inside the repository, and keeps the promise through a `TreeReader` bound to the
+repository root: every stat, open, read, listing, and walk of a path in its scripts goes through one, and validation
+refuses a direct read there (the tree read policy in `tests/validation/fsops_platform.py`), so a caller that bypasses
+the reader fails validation rather than waiting for a review to find it. dotnet-dependencies, which promises to read
+only inside the tree it examines, is brought to the reader and the policy in a change of its own.
 
 Each call judges its path before it touches it (`refusal`), from the path's text and then by its links:
 
-- by its text, as `dotnet_solution.refusal` judges a path a file names: one outside the tree, written as a network
-  share or a device, or holding a segment Windows opens as a device, is refused unopened;
+- by its text, as `dotnet_solution.refusal` judges it: one outside the tree, or written as a network share or a device,
+  is refused unopened. A segment Windows reserves as a device, such as `Con.cs`, is not refused here, since the
+  reader also reads names a listing or git gives, which a tree on Linux or macOS may hold; a caller judging a path a
+  file names, such as a solution's entry, asks `dotnet_solution.refusal` itself first, which refuses one;
 - by its links, as `folder_walk.followed_inside` follows them: each name down from the tree is judged from its own
   metadata and each link from its text, so a link, or a `..` a link's text holds, that leads outside the tree is
   refused with nothing outside it stat, listed, or opened to decide, and so is a name whose metadata cannot be read.
@@ -28,10 +30,12 @@ and examine the name from its own metadata, as MSBuild's `Exists()` and a writer
 `dotnet_solution.entry_key`: the path as the file system compares it (`same_path`) only inside the tree with no link
 leading out, and its text otherwise, since the key's case probe lists each folder on the path.
 
-Limits: the look at a path's links and its read are two steps, so a name replaced by a link between them is read
-through; a hard link is the file itself, read as a file of the tree wherever its other names lie; and a link whose
-absolute target names a place inside the tree through another spelling of it, such as macOS's /tmp for /private/tmp, is
-refused, though it leads inside.
+Limits: deciding whether a path lies in the tree asks the tree's own folders, and the folders above it, how they compare
+names (`path_keys`), which lists each and looks up one entry's own metadata without following it, so a sibling of the
+tree, or of a folder above it, may be looked up; the look at a path's links and its read are two steps, so a name
+replaced by a link between them is read through; a hard link is the file itself, read as a file of the tree wherever its
+other names lie; and a link whose absolute target names a place inside the tree through another spelling of it, such as
+macOS's /tmp for /private/tmp, is refused, though it leads inside.
 """
 
 from __future__ import annotations
@@ -73,7 +77,7 @@ class TreeReader:
         for a path whose links all stay inside the tree, and one with a name that is not there, whose read then finds
         nothing."""
         absolute = lexical_absolute(path)
-        if (refused := refusal(absolute, self.tree)) is not None:
+        if (refused := refusal(absolute, self.tree, devices=False)) is not None:
             return refused
         for named in dict.fromkeys((path.absolute(), absolute)):
             inside, linked = followed_inside(named, self.tree)

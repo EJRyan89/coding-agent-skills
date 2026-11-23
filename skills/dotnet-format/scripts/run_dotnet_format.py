@@ -73,6 +73,7 @@ from dotnet_format_targets import (
     SDK_SOLUTION,
     formatter_for,
     formatter_skips,
+    given_folder,
     inside_root,
     read_file_list,
     solution_refusal,
@@ -83,7 +84,7 @@ from dotnet_format_targets import (
 )
 from executable_locator import find_program, located_command
 from flat_text import fact_line, flat_text
-from path_containment import resolved_path
+from path_containment import relative_within
 from seconds_option import positive_seconds
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -218,29 +219,16 @@ def batches(prefix: Sequence[str], files: list[str], limit: int = COMMAND_LINE_L
     return runs
 
 
-# The containment tests that are not decisions, each with why it does not call path_containment.
-CONTAINMENT_ALLOWED = {
-    "display_path": "display only: a diagnostic's path outside the root is shown as dotnet format wrote it",
-}
-
-
 def display_path(path: str, root: Path) -> str:
+    """A diagnostic's path relative to the repository root, `root` resolved as the user gave it, when it lies inside
+    the root by its text (`path_containment.relative_within`), else as dotnet format wrote it. The path is compared as
+    text, so one outside the root, such as an MSBuild warning in a `.props` file outside it names, is never stat or
+    followed to name it."""
     candidate = Path(path)
     if not candidate.is_absolute():
         return candidate.as_posix()
-    try:
-        return resolved_path(candidate).relative_to(resolved_path(root)).as_posix()
-    except ValueError:
-        return candidate.as_posix()
-
-
-# A path the formatter's log names, which the formatter itself opened, is resolved only to name it relative to the root.
-TREE_READ_ALLOWED = {
-    "display_path": (
-        "display only: a path the formatter's log names, which the formatter itself opened, is resolved to name it "
-        "relative to the root, and nothing is read from it"
-    ),
-}
+    inside = relative_within(candidate, given_folder(root))
+    return candidate.as_posix() if inside is None else inside.as_posix()
 
 
 INT_PARSE_ALLOWED = {

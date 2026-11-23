@@ -1188,32 +1188,44 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
-# The .NET skills promise to read only inside the tree they examine, and keep it through ejryan89-skill-core's
-# tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
-# stat, open, read, listing, and walk of a path in their scripts goes through it: a direct read there, or a read
-# through an ejryan89-skill-core helper the reader stands in for, is refused, and one that must stay, such as of a file
-# the skill itself wrote under the temporary directory or of the root a user names before any tree is bound, states why
-# beside the code in a module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's scripts are not
-# read. A call is read through the module's imports, and a callable passed as a value counts as a call of it. A path
-# method is read on any receiver that is not an imported module, since a reader cannot tell a path from another value;
-# the ones that take no positional argument count only when given none, so a method of another object sharing the name
-# and taking one, such as an evaluation's exists(text), does not, and none counts on Path(__file__), the script's own
-# file. Stated limits: a read reached by a name computed at
-# run time, as getattr(path, name), and a path method a module's own function wraps under another name.
+# The .NET skills promise to read only inside the tree they examine. dotnet-format keeps it through
+# ejryan89-skill-core's tree_reader, a reader bound to that tree which judges each path by its text and its links
+# before touching it, and dotnet-dependencies joins TREE_READ_SKILLS in a change of its own. Every stat, open, read,
+# listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a direct read there,
+# or a read through an ejryan89-skill-core helper the reader stands in for, is refused, and one that must stay, such
+# as of a file the skill itself wrote under the temporary directory or of the root a user names before any tree is
+# bound, states why beside the code in a module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's
+# scripts are not read. A call is read through the module's imports, and a callable passed as a value counts as a call
+# of it. A path method is read on any receiver that is not an imported module, since a reader cannot tell a path from
+# another value; the ones that take no positional argument count only when given none, so a method of another object
+# sharing the name and taking one, such as an evaluation's exists(text), does not, and none counts on Path(__file__),
+# the script's own file. A skill TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so
+# a renamed or emptied folder is never read as conforming. Stated limits: a read reached by a name computed at run
+# time, as getattr(path, name); a path method a module's own function wraps under another name; a path method called
+# unbound on its class with the path as its argument, as Path.exists(path); a call in a module that imports both os
+# and os.path, which the shared resolver leaves unnamed; and an ejryan89-skill-core helper that reads a path but is
+# not in TREE_READ_HELPERS, such as path_containment.refusal, until the list is derived from the core modules' own
+# reads.
 TREE_READ_SKILLS = ("skills/dotnet-format/scripts",)
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.
 LOCAL_NAME = "<local>"
 # The module functions that read a path directly: the presence functions and globs python_checks reads, the walks, the
-# plain opens call_tables lists, os.open and the other opens that take a path, and the stats, listings, and link reads.
+# plain opens call_tables lists, os.open and the other opens that take a path, the compressed and archive files, the
+# stats, listings, and link reads, and the copies, comparisons, and line caches that read a file by its path.
 DIRECT_TREE_READS = (
     PRESENCE_FUNCTIONS
     | GLOB_FUNCTIONS
     | MODULE_WALKS - {"ast.walk"}
     | {name for name, opener in TEXT_OPENERS.items() if opener.plain_file}
-    | {"os.open"}
+    | {"os.open", "io.FileIO"}
     | {name for name in OTHER_OPENS if name != "webbrowser.open"}
-    | {f"os.{name}" for name in ("stat", "lstat", "scandir", "listdir", "readlink")}
+    | {name for name in TEXT_OPENERS if name.split(".")[0] in {"gzip", "bz2", "lzma"}}
+    | {"gzip.GzipFile", "bz2.BZ2File", "lzma.LZMAFile", "zipfile.ZipFile"}
+    | {f"os.{name}" for name in ("stat", "lstat", "scandir", "listdir", "readlink", "statvfs")}
+    | {f"shutil.{name}" for name in ("copy", "copy2", "copyfile", "copytree", "copymode", "copystat", "move")}
+    | {f"filecmp.{name}" for name in ("cmp", "cmpfiles", "dircmp")}
+    | {f"linecache.{name}" for name in ("getline", "getlines", "updatecache", "checkcache")}
     | {
         f"{module}.{name}"
         for module in PATH_MODULES
@@ -1348,11 +1360,21 @@ def _tree_read_scanned_files(root: Path) -> list[Path]:
     ]
 
 
+# Why a skill TREE_READ_SKILLS names is a problem when its scripts folder holds nothing to read.
+TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to read; name the skill's scripts folder"
+
+
 def tree_read_problems(root: Path) -> list[str]:
     """Report each read of a path in the .NET skills' scripts that does not go through ejryan89-skill-core's
     tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions nothing."""
     problems: list[str] = []
-    ordered = sorted(_tree_read_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
+    scanned = _tree_read_scanned_files(root)
+    problems += [
+        f"{folder}: {TREE_READ_SKILLS_PROBLEM}"
+        for folder in TREE_READ_SKILLS
+        if not any(path.parent == root / folder for path in scanned)
+    ]
+    ordered = sorted(scanned, key=lambda path: path.relative_to(root).as_posix())
     for _, name, tree in python_trees(ordered, root, problems):
         found = [
             (

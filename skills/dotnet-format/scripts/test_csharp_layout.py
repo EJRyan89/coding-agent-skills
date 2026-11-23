@@ -24,12 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import analyzer_config
 import atomic_file
 import csharp_layout as layout
+import dotnet_format_targets as targets
 import dotnet_solution
 import tree_reader
 import whole_number
 from flat_text import flat_text
 from run_dotnet_format import Completed, Services
-from test_dotnet_format_targets import recording_reaches
+from test_dotnet_format_targets import link_folder, recording_reaches, remove_link
 from test_folder_walk import reached
 from test_path_containment import resolving_as_python_312
 from tree_reader import TreeReader
@@ -300,6 +301,29 @@ class FileTests(unittest.TestCase):
         path = self.root / "files.txt"
         path.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
         return path
+
+    def test_a_repo_root_given_through_a_link_is_resolved_and_the_reader_bound_to_its_target(self) -> None:
+        # The --repo-root the user names is resolved before any tree is bound, so a link to the repository (a junction
+        # on Windows) is followed once, and every reader is bound to the repository the link leads to.
+        (self.root / "Good.cs").write_bytes(b"class A\n{\n}\n")
+        file_list = self.file_list("Good.cs")
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        link = Path(holder.name).resolve() / "Repo"
+        link_folder(self.root, link)
+        self.addCleanup(remove_link, link)
+        trees: list[Path] = []
+
+        class Recording(TreeReader):
+            def __init__(self, tree: Path) -> None:
+                super().__init__(tree)
+                trees.append(self.tree)
+
+        with mock.patch.object(layout, "TreeReader", Recording), mock.patch.object(targets, "TreeReader", Recording):
+            status, lines = self.main("check", "--repo-root", str(link), "--file-list", str(file_list))
+        self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
+        self.assertTrue(trees)
+        self.assertEqual({self.root}, set(trees))
 
     def test_check_and_fix_preserve_bom_crlf_and_legacy_encoding(self) -> None:
         crlf = self.root / "Src" / "With Space.cs"

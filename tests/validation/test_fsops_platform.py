@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from fsops_platform import (
     TREE_READ_SKILLS,
+    TREE_READ_SKILLS_PROBLEM,
     _platform_names,
     filesystem_write_problems,
     platform_code_problems,
@@ -1850,8 +1851,14 @@ def tree_read_findings(files: dict[str, str]) -> list[str]:
 
 def test_tree_read_policy_refuses_each_direct_read_and_each_helper_the_reader_stands_in_for() -> None:
     source = (
+        "import filecmp\n"
         "import glob\n"
+        "import gzip\n"
+        "import io\n"
+        "import linecache\n"
         "import os\n"
+        "import shutil\n"
+        "import zipfile\n"
         "import os.path as osp\n"
         "from pathlib import Path\n"
         "import file_presence\n"
@@ -1873,26 +1880,40 @@ def test_tree_read_policy_refuses_each_direct_read_and_each_helper_the_reader_st
         "    folder.rglob('*.cs')\n"
         "    file_presence.is_present(path)\n"
         "    walk_files(folder, bool)\n"
+        "    shutil.copyfile(path, folder)\n"
+        "    filecmp.cmp(path, folder)\n"
+        "    linecache.getline(path, 1)\n"
+        "    zipfile.ZipFile(path)\n"
+        "    gzip.open(path)\n"
+        "    io.FileIO(path)\n"
+        "    os.statvfs(folder)\n"
         "    return sorted([path], key=key)\n"
     )
     found = tree_read_findings({f"{SCRIPTS}/reads.py": source})
     reads = [
-        (9, "os.stat"),
-        (10, "os.scandir"),
-        (11, "os.walk"),
-        (12, "os.path.isfile"),
-        (13, "glob.glob"),
-        (14, "open"),
-        (15, "Path.read_text"),
-        (16, "Path.read_bytes"),
-        (17, "Path.stat"),
-        (18, "Path.exists"),
-        (19, "Path.is_file"),
-        (20, "Path.iterdir"),
-        (21, "Path.rglob"),
-        (22, "file_presence.is_present"),
-        (23, "folder_walk.walk_files"),
-        (24, "dotnet_solution.same_path"),
+        (15, "os.stat"),
+        (16, "os.scandir"),
+        (17, "os.walk"),
+        (18, "os.path.isfile"),
+        (19, "glob.glob"),
+        (20, "open"),
+        (21, "Path.read_text"),
+        (22, "Path.read_bytes"),
+        (23, "Path.stat"),
+        (24, "Path.exists"),
+        (25, "Path.is_file"),
+        (26, "Path.iterdir"),
+        (27, "Path.rglob"),
+        (28, "file_presence.is_present"),
+        (29, "folder_walk.walk_files"),
+        (30, "shutil.copyfile"),
+        (31, "filecmp.cmp"),
+        (32, "linecache.getline"),
+        (33, "zipfile.ZipFile"),
+        (34, "gzip.open"),
+        (35, "io.FileIO"),
+        (36, "os.statvfs"),
+        (37, "dotnet_solution.same_path"),
     ]
     assert found == [f"{SCRIPTS}/reads.py:{line} reads a path with {read}; {TREE_READ_ADVICE}" for line, read in reads]
 
@@ -1934,3 +1955,21 @@ def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malfor
         f"{SCRIPTS}/malformed.py: TREE_READ_ALLOWED must map each function, class, or assignment to its reason",
         f"{SCRIPTS}/malformed.py:3 reads a path with Path.read_bytes; {TREE_READ_ADVICE}",
     ]
+
+
+def test_tree_read_policy_states_what_it_does_not_read() -> None:
+    # Stated limits, each passing: a path method called unbound on its class, a module importing both os and os.path,
+    # which the shared resolver leaves unnamed, and a skill-core reader TREE_READ_HELPERS does not list yet.
+    unbound = "from pathlib import Path\ndef read(path):\n    return Path.exists(path)\n"
+    both = "import os\nimport os.path\ndef read(path):\n    return os.stat(path)\n"
+    helper = "import path_containment\ndef read(entry, tree):\n    return path_containment.refusal(entry, tree)\n"
+    files = {f"{SCRIPTS}/unbound.py": unbound, f"{SCRIPTS}/both.py": both, f"{SCRIPTS}/helper.py": helper}
+    assert tree_read_findings(files) == []
+
+
+def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() -> None:
+    # A renamed, emptied, or missing scripts folder is a problem, never read as one that reads nothing outside the
+    # reader; a folder holding only its suites is one too.
+    expected = [f"{folder}: {TREE_READ_SKILLS_PROBLEM}" for folder in TREE_READ_SKILLS]
+    assert tree_read_findings({"README.md": "no scripts\n"}) == expected
+    assert tree_read_findings({f"{SCRIPTS}/test_only.py": "def test_x():\n    pass\n"}) == expected

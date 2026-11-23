@@ -30,9 +30,10 @@ class TreeReaderCase(unittest.TestCase):
         self.outside = self.base / "outside"
         (self.root / "Lib").mkdir(parents=True)
         (self.outside / "sub").mkdir(parents=True)
-        (self.root / "Lib" / "Lib.csproj").write_text("<Project />\n", encoding="utf-8")
-        (self.outside / "Out.csproj").write_text("<Project />\n", encoding="utf-8")
-        (self.outside / "sub" / "Deep.csproj").write_text("<Project />\n", encoding="utf-8")
+        # Written as bytes, so the reader's bytes are compared with what was written on every platform.
+        (self.root / "Lib" / "Lib.csproj").write_bytes(b"<Project />\n")
+        (self.outside / "Out.csproj").write_bytes(b"<Project />\n")
+        (self.outside / "sub" / "Deep.csproj").write_bytes(b"<Project />\n")
         self.reader = TreeReader(self.root)
 
     def link(self, target: Path, relative: str) -> Path:
@@ -100,12 +101,11 @@ class InsideTests(TreeReaderCase):
 
 class TextRefusalTests(TreeReaderCase):
     def test_a_path_outside_the_tree_by_its_text_is_refused_unopened_in_dotnet_solutions_words(self) -> None:
-        # Outside by its text, through its own `..`, as a network share, and a segment Windows opens as a device.
+        # Outside by its text, through its own `..`, and as a network share.
         for path in (
             self.outside / "Out.csproj",
             self.root / ".." / "outside" / "Out.csproj",
             Path("//server/share/x.csproj"),
-            self.root / "NUL",
         ):
             with self.subTest(path=path):
                 touched: list[tuple[str, bool]] = []
@@ -113,8 +113,18 @@ class TextRefusalTests(TreeReaderCase):
                     self.reader.contents(path)
                 self.assertEqual(refusal(Path(os.path.abspath(path)), self.root), caught.exception.reason)  # noqa: PTH100 - the text alone, as the reader takes it
                 self.assertEqual(path, caught.exception.path)
+                # Deciding whether the path lies in the tree asks the tree's own folders how they compare names, which
+                # may look up a sibling folder's own entry, never following it; nothing below or through one is reached.
                 self.assertEqual([], reached(touched, [], self.outside))
                 self.assertNotIn(str(path), [name for name, _ in touched])
+
+    def test_a_name_windows_reserves_as_a_device_is_judged_by_its_links_alone(self) -> None:
+        # A listing or git may give `Con.cs` or a folder `Aux` on Linux and macOS; the reader judges such a name by
+        # containment and links only, and a caller judging a path a file names asks dotnet_solution.refusal first.
+        for path in (self.root / "App" / "Con.cs", self.root / "Aux" / "Helper.cs", self.root / "NUL"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.reader.refusal(path))
+                self.assertIsNotNone(refusal(path, self.root))
 
 
 @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
@@ -206,5 +216,6 @@ class FolderLinkTests(TreeReaderCase):
                 self.reader.search(self.outside, lambda name: True)
             with self.assertRaises(TreeRefused):
                 list(self.reader.climb(self.outside / "sub"))
+        # The case probe of the tree's own parent may look up the sibling `outside` folder's own entry, as NTFS lists
+        # it first, never following it or reaching anything below it.
         self.assertEqual([], reached(touched, [], self.outside))
-        self.assertNotIn(str(self.outside), [name for name, _ in touched])

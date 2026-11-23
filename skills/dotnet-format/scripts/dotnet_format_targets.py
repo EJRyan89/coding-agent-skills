@@ -433,6 +433,8 @@ def still_there(root: Path, name: str) -> bool:
         raise Failed(f"the changed file {name} cannot be examined: {refused}")
     try:
         return TreeReader(root).present(root / name)
+    except TreeRefused as error:
+        raise Failed(f"the changed file {name} cannot be examined: {error.reason}") from None
     except OSError as error:
         raise Failed(f"the changed file {name} cannot be examined: {error}") from None
 
@@ -465,6 +467,8 @@ def listed_files(root: Path, folder: Path, wanted: Callable[[str], bool]) -> lis
                 found.append(path)
         except NotAFile:
             continue
+        except TreeRefused as error:
+            raise Failed(str(error)) from None
         except OSError as error:
             raise Failed(f"{path} cannot be examined: {error}") from None
     return found
