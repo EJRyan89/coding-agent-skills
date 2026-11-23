@@ -67,7 +67,9 @@ fixture's base tree, and pull.json records its `--stage`, one of ejryan89-code-r
 by default, whose fixed sentence prepare puts in that specialist's prompt; any other text file goes to the generic
 reviewer, and a stage given for one is refused. The default output is a new temporary directory, so nothing is
 written to a checkout unless `--output` names a folder inside one; `--output` must name a new or empty directory, so
-nothing already there is mixed with the review's files or replaced.
+nothing already there is mixed with the review's files or replaced. On a FAT, exFAT, or SMB volume, macOS writes an
+AppleDouble `._<name>` sidecar beside each file and folder written there, which the fixture canary's walk of the two
+trees leaves out (ejryan89-skill-core's `apple_double.is_sidecar`), so it is never a document.
 
 `resolve` takes a file name alone, with no folder, drive, or colon in it, and finds the files a program opens under that
 name: a file of that name in the working directory itself is the one found, and only otherwise is the tree below it
