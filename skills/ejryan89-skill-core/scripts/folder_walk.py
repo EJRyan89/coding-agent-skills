@@ -24,6 +24,14 @@ with the reason, so each caller decides what a folder it could not search costs 
   `tree` has no link entry followed out of it, not even to learn where it leads: an entry that `outside_link_refusal`
   finds leads outside `tree` is given to the caller when `wanted` accepts its name, for the caller to refuse, and is
   otherwise reported as `LINKED` with `LINKED_OUT_REASON`, folder or file, since telling them apart would follow it.
+- AppleDouble sidecars: a wanted entry that `apple_double.is_sidecar` takes for the sidecar macOS writes beside a file
+  or folder on a FAT, exFAT, or SMB volume, a `._<name>` file beside `<name>` in the same listing that opens with the
+  AppleDouble header, is not given, since it is the system's, not the caller's. Only a regular file, by its own
+  metadata and never a link, is opened to read the header, so no link is followed and no device or pipe is opened to
+  decide; any other `._` entry, one whose header cannot be read included, is given as before, for the caller's own
+  read to judge. Such a file is left out unreported: the rule is the statement. The look at its metadata and the open
+  are two steps, as `followed_inside`'s look and a later read are, so a file replaced by a link or a pipe between them
+  is opened through it: a stated limit, since a no-follow, non-blocking open is a flag only POSIX defines.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
   `UNEXAMINED`, each by path with the reason and the error, and the walk goes on; an error never ends it.
 - Bounds: none by depth, and none by count unless the caller gives `limit`, the most folders the walk lists, `top`
@@ -36,11 +44,12 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+import apple_double
 from link_probe import is_link_or_junction
 from path_containment import within, without_extended_prefix
 from path_keys import opens_as
@@ -290,6 +299,18 @@ def is_checkout_marker(name: str, folder: Path) -> bool:
     return opens_as(folder / name, CHECKOUT_MARKER)
 
 
+def is_sidecar_entry(entry: os.DirEntry[str], names: Collection[str]) -> bool:
+    """Whether a listed entry is an AppleDouble sidecar the walk does not give: a regular file by its own metadata, not
+    a link or another reparse point as `link_probe` judges one, that `apple_double.is_sidecar` takes for one given its
+    folder's `names`. Only such a file is opened, so a header is never read through a link, a device, or a pipe."""
+    if not entry.name.startswith(apple_double.PREFIX):
+        return False
+    own = entry.stat(follow_symlinks=False)
+    if not stat.S_ISREG(own.st_mode) or is_link_or_junction(entry.path, own):
+        return False
+    return apple_double.is_sidecar(Path(entry.path), names)
+
+
 def search_folder(
     walk: Walk,
     folder: Path,
@@ -298,9 +319,10 @@ def search_folder(
     excluded: Callable[[Path], bool],
     tree: Path | None = None,
 ) -> list[tuple[Path, bool]]:
-    """Add the wanted files directly in `folder` to `walk`, and give its subfolders to search, in name order, each
-    with whether it is a link, but those `excluded` skips or prunes; a folder that cannot be listed or is a nested
-    checkout is reported and gives none. With `tree`, a link entry leading outside it is never followed (`leaves`)."""
+    """Add the wanted files directly in `folder` to `walk`, but AppleDouble sidecars (`is_sidecar_entry`), and give
+    its subfolders to search, in name order, each with whether it is a link, but those `excluded` skips or prunes; a
+    folder that cannot be listed or is a nested checkout is reported and gives none. With `tree`, a link entry leading
+    outside it is never followed (`leaves`)."""
     try:
         with os.scandir(folder) as listing:
             entries = sorted(listing, key=lambda entry: entry.name)
@@ -310,6 +332,7 @@ def search_folder(
     if folder != top and any(is_checkout_marker(entry.name, folder) for entry in entries):
         walk.not_entered.append(NotEntered(folder, NESTED_CHECKOUT, NESTED_CHECKOUT_REASON))
         return []
+    names = frozenset(entry.name for entry in entries)
     subfolders: list[tuple[Path, bool]] = []
     for entry in entries:
         path = Path(entry.path)
@@ -325,7 +348,7 @@ def search_folder(
             elif entry.is_dir(follow_symlinks=False):
                 if not excluded(path):
                     subfolders.append((path, False))
-            elif wanted(entry.name):
+            elif wanted(entry.name) and not is_sidecar_entry(entry, names):
                 walk.files.append(path)
         except OSError as error:
             walk.not_entered.append(
