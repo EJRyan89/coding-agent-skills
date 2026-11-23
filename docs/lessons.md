@@ -1005,8 +1005,9 @@ removed fails validation until its pattern follows it.
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
-  output a method's parameter takes through self, a `bounded_process.streaming` handle, or a log read back from a
-  file; `.split()[` or `.partition(" ")` on a line the same module wrote,
+  output a method's parameter takes through self, a file another module's process start writes, a log another
+  process writes that no `OUTPUT_SOURCES` entry declares, or a field of another module's result type; `.split()[`
+  or `.partition(" ")` on a line the same module wrote,
   beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one reached

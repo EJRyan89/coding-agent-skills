@@ -943,6 +943,227 @@ GIT_OUTPUT_SOURCES = (
     ("the call", "", "client.output(['describe', 'HEAD'])"),
 )
 
+# The output split check's forms beyond a run result: a file a process writes its output to, a streaming handle, a
+# result type's field, a regular expression's transform, and a declared log, each module splitting with `SPLIT`.
+OUTPUT_FORM_IMPORTS = (
+    "import io\nimport pathlib\nimport re\nimport subprocess\nimport tempfile\nfrom dataclasses import dataclass\n"
+    "from pathlib import Path\n\n"
+    "from bounded_process import Streaming, run_bounded, streaming\nfrom text_lines import program_lines, text_lines\n"
+    "\nANSI = re.compile('\\x1b\\\\[[0-9;]*m')\n\n\n"
+)
+OUTPUT_FORMS = (
+    (
+        "a file a process writes its stderr to, read back through its with target",
+        "def f(command):\n    with tempfile.TemporaryFile() as errors:\n"
+        "        subprocess.run(command, stderr=errors)\n        errors.seek(0)\n"
+        "        return SPLIT(errors.read().decode('utf-8'))\n",
+    ),
+    (
+        "a file a process writes its stdout to, read back through the path it was opened from",
+        "def f(command, listing):\n    with listing.open('wb') as output:\n"
+        "        run_bounded(command, 5, stdout=output)\n    return SPLIT(listing.read_text(encoding='utf-8'))\n",
+    ),
+    (
+        "a file a process writes to, read back through a Path() of the path it was opened from",
+        "def f(command, name):\n    with open(name, 'wb') as output:\n"
+        "        subprocess.run(command, stdout=output)\n    return SPLIT(Path(name).read_text(encoding='utf-8'))\n",
+    ),
+    (
+        "a file a conditional expression hands a process, read back",
+        "def f(command, apart):\n    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as errors:\n"
+        "        stream = errors if apart else out\n        subprocess.run(command, stdout=out, stderr=stream)\n"
+        "        return SPLIT(errors.read().decode('utf-8'))\n",
+    ),
+    (
+        "a file a parameter hands a process and another function's parameter reads back",
+        "def start(command, errors):\n    return subprocess.Popen(command, stderr=errors)\n\n\n"
+        "def close(errors):\n    errors.seek(0)\n    return errors.read().decode('utf-8')\n\n\n"
+        "def f(command):\n    with tempfile.TemporaryFile() as errors:\n        start(command, errors)\n"
+        "        return SPLIT(close(errors))\n",
+    ),
+    (
+        "a streaming handle's read()",
+        "def f(command):\n    with streaming(command) as running:\n        return SPLIT(running.read(10).decode())\n",
+    ),
+    (
+        "a streaming handle's readline()",
+        "def f(command):\n    with streaming(command) as running:\n        line = running.readline()\n"
+        "    return SPLIT(line.decode())\n",
+    ),
+    (
+        "a streaming handle's errors() through a parameter annotated as one",
+        "def f(running: Streaming):\n    return SPLIT(running.errors().decode())\n",
+    ),
+    (
+        "a streaming handle's errors() through an attribute of self",
+        "class Session:\n    def __init__(self, command):\n        self.running = streaming(command)\n\n"
+        "    def last(self):\n        return SPLIT(self.running.errors().decode())\n",
+    ),
+    (
+        "a streaming handle's errors() through an attribute of self a parameter annotated as one fills",
+        "class Session:\n    def __init__(self, running: Streaming):\n        self.running = running\n\n"
+        "    def last(self):\n        return SPLIT(self.running.errors().decode())\n",
+    ),
+    (
+        "a result type's field a call fills with output by position",
+        "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+        "def run(command):\n    result = subprocess.run(command, text=True)\n"
+        "    return Done(result.returncode, result.stdout + result.stderr)\n\n\n"
+        "def f(done):\n    return SPLIT(done.text)\n",
+    ),
+    (
+        "a result type's field a call fills with output by keyword",
+        "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+        "def run(command):\n    return Done(code=0, text=subprocess.check_output(command, text=True))\n\n\n"
+        "def f(done):\n    return SPLIT(done.text)\n",
+    ),
+    (
+        "an re.sub() of output",
+        "def f(command):\n    return SPLIT(re.sub('x', '', subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "an re.sub() of output given by keyword",
+        "def f(command):\n    return SPLIT(re.sub('x', '', string=subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "an re.subn() of output",
+        "def f(command):\n    return SPLIT(re.subn('x', '', subprocess.check_output(command, text=True))[0])\n",
+    ),
+    (
+        "a part of an re.split() of output",
+        "def f(command):\n    parts = re.split('\\n\\n', subprocess.check_output(command, text=True))\n"
+        "    return SPLIT(parts[0])\n",
+    ),
+    (
+        "a compiled pattern's sub() of output",
+        "def f(command):\n    return SPLIT(ANSI.sub('', subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "a compiled pattern's split() of output",
+        "def f(command):\n    return SPLIT(ANSI.split(subprocess.check_output(command, text=True))[0])\n",
+    ),
+    (
+        "a pattern compiled in place's sub() of output",
+        "def f(command):\n    return SPLIT(re.compile('x').sub('', subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "a file a process writes to, read back through a pathlib.Path() of the name it was opened by",
+        "def f(command, name):\n    with open(name, 'wb') as output:\n"
+        "        subprocess.run(command, stdout=output)\n"
+        "    return SPLIT(pathlib.Path(name).read_text(encoding='utf-8'))\n",
+    ),
+    (
+        "a file io.open() opens for a process, read back through the name it was opened by",
+        "def f(command, name):\n    with io.open(name, 'wb') as output:\n"
+        "        subprocess.run(command, stdout=output)\n    return SPLIT(Path(name).read_text(encoding='utf-8'))\n",
+    ),
+)
+# Forms the check does not follow, each splitting with text_lines and passing.
+OUTPUT_FORMS_NOT_FOLLOWED = (
+    (
+        "a file read back that a process is handed as its stdin",
+        "def f(command, source):\n    with source.open('rb') as given:\n        subprocess.run(command, stdin=given)\n"
+        "    return text_lines(source.read_text(encoding='utf-8'))\n",
+    ),
+    (
+        "a file a function the module is given hands a process, read back",
+        "def f(command, start):\n    with tempfile.TemporaryFile() as errors:\n        start(command, errors)\n"
+        "        return text_lines(errors.read().decode('utf-8'))\n",
+    ),
+    (
+        "a program's log no declaration names",
+        "def read_log(log):\n    return text_lines(log.read_bytes().decode('utf-8'))\n",
+    ),
+    (
+        "a field of a result type a call fills with a file's text",
+        "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+        "def run(path):\n    return Done(0, path.read_text(encoding='utf-8'))\n\n\n"
+        "def f(done):\n    return text_lines(done.text)\n",
+    ),
+    (
+        "an attribute of self a method binds to a handle, read in another class",
+        "class Session:\n    def __init__(self, command):\n        self.running = streaming(command)\n\n\n"
+        "class Other:\n    def last(self):\n        return text_lines(self.running.errors().decode())\n",
+    ),
+    (
+        "an re.sub() of a file's text",
+        "def f(path):\n    return text_lines(re.sub('x', '', path.read_text(encoding='utf-8')))\n",
+    ),
+    (
+        "a field a call fills through a starred argument",
+        "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+        "def run(command, parts):\n    return Done(*parts, subprocess.check_output(command, text=True))\n\n\n"
+        "def f(done):\n    return text_lines(done.text)\n",
+    ),
+    (
+        "a field a call fills through a mapping unpacked",
+        "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+        "def run(command):\n    fields = {'code': 0, 'text': subprocess.check_output(command, text=True)}\n"
+        "    return Done(**fields)\n\n\n"
+        "def f(done):\n    return text_lines(done.text)\n",
+    ),
+    (
+        "a field a class does not annotate in its body",
+        "class Done:\n    def __init__(self, code, text):\n        self.code = code\n        self.text = text\n\n\n"
+        "def run(command):\n    return Done(0, subprocess.check_output(command, text=True))\n\n\n"
+        "def f(done):\n    return text_lines(done.text)\n",
+    ),
+    (
+        "a streaming handle a function returns",
+        "def start(command):\n    return streaming(command)\n\n\n"
+        "def f(command):\n    return text_lines(start(command).read(10).decode())\n",
+    ),
+    (
+        "a streaming handle an attribute of anything but self holds",
+        "def f(command, session):\n    session.running = streaming(command)\n"
+        "    return text_lines(session.running.errors().decode())\n",
+    ),
+    (
+        "a streaming handle a parameter annotated other than Streaming alone holds",
+        "def f(running: Streaming | None):\n    return text_lines(running.errors().decode())\n",
+    ),
+    (
+        "a streaming handle an annotated assignment binds to an attribute of self",
+        "class Session:\n    def __init__(self, command):\n        self.running: Streaming = streaming(command)\n\n"
+        "    def last(self):\n        return text_lines(self.running.errors().decode())\n",
+    ),
+    (
+        "a file an attribute hands a process, read back",
+        "class Run:\n    def go(self, command):\n        subprocess.run(command, stdout=self.log)\n"
+        "        return text_lines(self.log.read().decode())\n",
+    ),
+    (
+        "a file an expression names again, read back",
+        "def f(command, folder):\n    with (folder / 'out.log').open('wb') as output:\n"
+        "        subprocess.run(command, stdout=output)\n"
+        "    return text_lines((folder / 'out.log').read_text(encoding='utf-8'))\n",
+    ),
+    (
+        "a pattern another module compiles, imported by name",
+        "from pats import COLORS\n\n\n"
+        "def f(command):\n    return text_lines(COLORS.sub('', subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "a group of a regular expression's match of output",
+        "def f(command):\n"
+        "    return text_lines(re.match('(.*)', subprocess.check_output(command, text=True), re.S).group(1))\n",
+    ),
+    (
+        "an item of a regular expression's findall of output",
+        "def f(command):\n    return text_lines(re.findall('.+', subprocess.check_output(command, text=True))[0])\n",
+    ),
+    (
+        "a pattern a parameter holds",
+        "def f(command, pattern):\n"
+        "    return text_lines(pattern.sub('', subprocess.check_output(command, text=True)))\n",
+    ),
+    (
+        "an re.sub() whose replacement is output",
+        "def f(command, text):\n"
+        "    return text_lines(re.sub('x', subprocess.check_output(command, text=True), text))\n",
+    ),
+)
+
 
 # Each form of the one catalogue of lookups by name that attribute_lookups reads besides either spelling of getattr,
 # as its name, the import
@@ -1839,6 +2060,26 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(path):\n    return read(path.read_text(encoding='utf-8'))\n",
         refused=False,
     ),
+    # "a file a process start is handed as its stdout or stderr, read back": through a with target, the path a file is
+    # opened from, a conditional expression, an assignment, and a parameter a call in the module fills, either way; a
+    # streaming handle's read(), readline(), and errors(), through a with target, a parameter annotated as one, and an
+    # attribute of self; a field of a class the module defines that a call of it fills with output, by position or by
+    # keyword; a regular expression's sub(), subn(), or split(), through re or a compiled pattern; and the file an
+    # OUTPUT_SOURCES entry `function.parameter` declares a program's log. Each splits with `SPLIT`, which the refused
+    # rows give as text_lines and the passing rows as program_lines.
+    **{
+        f"a {verdict} of {form}": _form(
+            output_split_problems,
+            OUTPUT_FORM_IMPORTS + body.replace("SPLIT", splitter),
+            refused=splitter == "text_lines",
+        )
+        for form, body in OUTPUT_FORMS
+        for verdict, splitter in (("split", "text_lines"), ("program_lines split", "program_lines"))
+    },
+    **{
+        f"a split of {form}": _form(output_split_problems, OUTPUT_FORM_IMPORTS + body, refused=False)
+        for form, body in OUTPUT_FORMS_NOT_FOLLOWED
+    },
     # "a one-argument `int()` ... that converts a regular-expression group, a stripped one and a `findall` result's
     # included": an item of the list findall returns, reached by an index, through a name bound to the list, by a loop
     # or a comprehension over it, or by an index into one of its tuples.
@@ -5545,18 +5786,66 @@ OUTPUT_SOURCE = (
             [],
             id="a module function whose nested function returns output",
         ),
-        # The stated limits: each passes.
+        # A program's log a declared parameter names, split where the module reads it and from the function's caller;
+        # with no read of it, the declaration is refused instead.
+        pytest.param(
+            {
+                "tools/log.py": OUTPUT_IMPORTS + 'OUTPUT_SOURCES = {"read_log.log": "the log a hook writes"}\n\n\n'
+                "def read_log(log):\n    return log.read_bytes().decode('utf-8')\n\n\n"
+                "def f(path):\n    return text_lines(read_log(path))\n"
+            },
+            ["tools/log.py:15"],
+            id="a program's log a declared parameter names, read in its function",
+        ),
+        pytest.param(
+            {
+                "tools/log.py": OUTPUT_IMPORTS + 'OUTPUT_SOURCES = {"read_log.log": "the log a hook writes"}\n\n\n'
+                "def read_log(log):\n    return log.name\n\n\ndef f(path):\n    return text_lines(read_log(path))\n"
+            },
+            ["tools/log.py:"],
+            id="a program's log a declared parameter names that no read reads",
+        ),
+        pytest.param(
+            {
+                "tools/log.py": OUTPUT_IMPORTS + 'OUTPUT_SOURCES = {"read_log.log": "the log a hook writes"}\n\n\n'
+                "def read_log(log):\n    return text_lines(log.read_bytes().decode('utf-8'))\n"
+            },
+            ["tools/log.py:11"],
+            id="a program's log a declared parameter names, split in its function",
+        ),
+        pytest.param(
+            {
+                "tools/log.py": OUTPUT_IMPORTS + 'OUTPUT_SOURCES = {"read_log.log": "the log a hook writes"}\n\n\n'
+                "def read_log(log):\n    return program_lines(log.read_bytes().decode('utf-8'))\n"
+            },
+            [],
+            id="a program's log a declared parameter names, split at its line feeds",
+        ),
+        # A field of a class another module defines, but stdout, stderr, or output, is a stated limit.
+        pytest.param(
+            {
+                "tools/done.py": "import subprocess\nfrom dataclasses import dataclass\n\n\n"
+                "@dataclass\nclass Done:\n    code: int\n    text: str\n\n\n"
+                "def run(command):\n    return Done(0, subprocess.check_output(command, text=True))\n",
+                "tools/caller.py": "from text_lines import text_lines\n\n\n"
+                "def f(done):\n    return text_lines(done.text)\n",
+            },
+            [],
+            id="a field of a class another module defines",
+        ),
+        # A streaming handle's output, which a stated limit once left out.
         *(
             pytest.param(
                 {
                     "tools/streams.py": "from bounded_process import streaming\nfrom text_lines import text_lines\n\n\n"
                     f"def f(command):\n    with streaming(command) as running:\n        return text_lines({read})\n"
                 },
-                [],
+                ["tools/streams.py:7"],
                 id=f"a bounded_process.streaming handle's {form}",
             )
             for form, read in (("read()", "running.read(10).decode()"), ("errors()", "running.errors().decode()"))
         ),
+        # The stated limits: each passes.
         *(
             pytest.param(
                 {
@@ -5608,6 +5897,18 @@ def test_output_split_policy_follows_output_across_functions_and_modules(
             "tools/source.py: OUTPUT_SOURCES names unread, whose return no call reads as a program's output; remove "
             "the entry",
             id="an entry whose return no call reads",
+        ),
+        pytest.param(
+            '{"talk_to": "a reason", "talk_to.missing": "a reason"}',
+            "tools/source.py: OUTPUT_SOURCES names talk_to.missing, which names no parameter of a function the module "
+            "defines at its top level",
+            id="a log entry that names no parameter",
+        ),
+        pytest.param(
+            '{"talk_to": "a reason", "unread.command": "a reason"}',
+            "tools/source.py: OUTPUT_SOURCES names unread.command, whose file no read in the module reads as a "
+            "program's log; remove the entry",
+            id="a log entry whose file no read reads",
         ),
         pytest.param(
             '{"talk_to": ""}',

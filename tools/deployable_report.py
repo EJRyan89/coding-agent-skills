@@ -307,6 +307,11 @@ def exit_code(results: list[RuntimeResult], deploy_verify_exit: int, deploy_veri
     return 0 if failed and failed <= skipped else 1
 
 
+# The log is what deploy.py verify printed, which the workflow saved to a file no reading can tell from its path, so
+# validation reads it as a program's output only by this declaration.
+OUTPUT_SOURCES = {"_verify_log.path": "the output of deploy.py verify, which the workflow saved to a file"}
+
+
 def _verify_log(path: str) -> str:
     """The saved output of deploy.py verify, or "" when there is none to read; PowerShell may start it with a BOM."""
     try:
