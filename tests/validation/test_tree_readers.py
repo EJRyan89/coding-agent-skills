@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from tree_readers import CHECKOUT, COMMITTED, ENTRIES, tree_reader_problems
-from validation_support import write_fixture_tree
+from validation_support import MODULE_SCOPE, write_fixture_tree
 
 # A module with one reader of each kind of bytes, each spelled as the repository spells one.
 READERS = (
@@ -66,7 +66,7 @@ class TreeReaderFixtures(unittest.TestCase):
         self.assertEqual(1, len(problems), problems)
         self.assertTrue(problems[0].startswith("tool.py:19 Snapshot.read reads a commit's tree with git cat-file,"))
         self.assertIn("TREE_READERS in tests/validation/tree_readers.py does not name", problems[0])
-        self.assertIn("the 2026-11-22 row on readers of a commit's tree in docs/design.md's Decisions", problems[0])
+        self.assertIn("the row on readers of a commit's tree in docs/design.md's Decisions", problems[0])
 
     def test_a_reader_whose_words_give_other_bytes_than_its_entry_promises_fails(self) -> None:
         # The snapshot reader moved to git archive would hand its callers a checkout's bytes.
@@ -164,11 +164,70 @@ class TreeReaderFixtures(unittest.TestCase):
                 "\n"
                 "def folders(root, commit, git):\n"
                 "    git.output(['rev-parse', commit])\n"  # another subcommand
-                "    git.output(['-C', root, 'show', 'archive'])\n"  # a reader's name as a later word
+                "    git.output(['-C', root, 'log', 'archive'])\n"  # a reader's name as a later word
                 "    return Path(root, 'archive'), print('ls-tree', commit)\n"  # calls that name no git
             ),
         }
         self.assertEqual([], self.problems(files, {}))
+
+    def test_each_cat_file_show_and_grep_option_gives_the_bytes_the_policy_names(self) -> None:
+        rows = {
+            "'cat-file', '--filters', blob": CHECKOUT,
+            "'cat-file', '--textconv', blob": CHECKOUT,
+            "'cat-file', '-e', blob": ENTRIES,
+            "'cat-file', '-s', blob": ENTRIES,
+            "'cat-file', '-t', blob": ENTRIES,
+            "'cat-file', '--batch-check=%(objectsize)'": ENTRIES,
+            "'cat-file', '-p', blob": COMMITTED,
+            "'show', blob": COMMITTED,
+            "'show', '--textconv', blob": CHECKOUT,
+            "'grep', '-z', '-e', 'x', blob": COMMITTED,
+            "'grep', '--textconv', '-e', 'x', blob": CHECKOUT,
+        }
+        for words, given in rows.items():
+            module = {"tool.py": f"def read(git, blob):\n    return git.output([{words}])\n"}
+            with self.subTest(words=words):
+                self.assertEqual([], self.problems(module, {"tool.py": {"read": given}}))
+                wrong = COMMITTED if given != COMMITTED else ENTRIES
+                self.assertEqual(1, len(self.problems(module, {"tool.py": {"read": wrong}})))
+
+    def test_each_stated_limit_reads_as_its_docstring_says(self) -> None:
+        # Each passes unread, or, for the cat-file mode only a value names and a script's git read by its subcommand
+        # alone, passes with the committed bytes its entry names.
+        python = "import shlex\nimport subprocess\n\n\ndef limit(git, client, verb, mode, commit):\n    {}\n"
+        rows = {
+            "a subcommand only a value names": ("py", "git.output([verb, commit])", None),
+            "a cat-file mode only a value names": ("py", "git.output(['cat-file', mode, commit])", COMMITTED),
+            "a string literal before the subcommand": ("py", "git_output('/repo', 'cat-file', 'blob', commit)", None),
+            "a call named for no git": ("py", "runner('archive', commit)", None),
+            "a file_at bound to a name": ("py", "read = client.file_at", None),
+            "one string without a shell": ("py", "subprocess.run('git archive HEAD')", None),
+            "a string split by str.split": ("py", "subprocess.run('git archive HEAD'.split())", None),
+            "a string split by shlex.split": ("py", "subprocess.run(shlex.split('git archive HEAD'))", None),
+            "a formatted shell command": ("py", "subprocess.run(f'git archive {commit}', shell=True)", None),
+            "a shell's -c script in a list": ("py", "subprocess.run(['bash', '-c', 'git archive HEAD'])", None),
+            "a shell command's mode": ("py", "subprocess.run('git cat-file -s HEAD:a', shell=True)", COMMITTED),
+            "a script's mode": ("sh", "git cat-file --filters HEAD:a", COMMITTED),
+            "a shell function": ("sh", 'g() { git -C x "$@"; }\ng archive HEAD', None),
+            "a shell array": ("sh", 'cmd=(git archive HEAD)\n"${cmd[@]}"', None),
+            "a program a variable names": ("sh", '"$GIT" archive HEAD', None),
+            "a PowerShell splat": ("ps1", "function g { & git @args }\ng archive HEAD", None),
+            "a working tree written from a commit": ("sh", "git worktree add --detach x HEAD\ngit checkout HEAD", None),
+        }
+        for label, (kind, code, given) in rows.items():
+            name = f"limit.{kind}"
+            text = python.format(code) if kind == "py" else f"{code}\n"
+            if kind == "sh":
+                text = f"#!/usr/bin/env bash\n{text}"
+            readers = {} if given is None else {name: {MODULE_SCOPE if kind != "py" else "limit": given}}
+            with self.subTest(label):
+                self.assertEqual([], self.problems({name: text}, readers))
+
+    def test_a_script_whose_git_cannot_be_read_is_named(self) -> None:
+        self.assertEqual(
+            ["broken.sh: cannot read the git it runs: not Bash the grammar reads (expected `fi`)"],
+            self.problems({"broken.sh": "#!/usr/bin/env bash\nif then\n"}, {}),
+        )
 
     def test_suites_and_fixtures_are_not_read(self) -> None:
         reader = "def listing(git, commit):\n    return git.output(['ls-tree', commit])\n"

@@ -2,11 +2,13 @@
 
 The code-review snapshot and deploy.py --at write a commit's tree to disk with different bytes on purpose: the snapshot
 lists the tree with git ls-tree and reads each blob with git cat-file, so it holds the committed bytes, while --at runs
-git archive, which writes each file as a checkout would. The 2026-11-22 row on readers of a commit's tree in
-docs/design.md's Decisions records why both stay. This policy names every place in the repository that runs git archive,
-git ls-tree, or git cat-file, by its module and its scope, with the bytes it promises, and fails on a reader the
-catalogue does not name, on one whose git words no longer give the bytes its entry promises, and on an entry that names
-no reader, so a change to one reader is made with the other in view.
+git archive, which writes each file as a checkout would. The row on readers of a commit's tree in docs/design.md's
+Decisions records why both stay. This policy names every place in the repository that runs git archive, ls-tree,
+cat-file, show, or grep, by its module and its scope, with the bytes it promises, and fails on a reader the catalogue
+does not name, on one whose git words no longer give the bytes its entry promises, and on an entry that names no reader,
+so a change to one reader is made with the other in view. archive gives a checkout's bytes, and so does cat-file, show,
+or grep given --filters or --textconv; ls-tree gives entries, and so does cat-file given -e, -s, -t, or --batch-check;
+any other cat-file, show, or grep gives the committed bytes.
 
 What counts as a reader's git words, in every Python file outside the suites, the root conftest.py, and tests/fixtures/:
 the items of each list or tuple literal, and the positional arguments of each call whose name says git, as
@@ -18,12 +20,27 @@ command string of each call_tables PROCESS_STARTS runner that runs it through a 
 script outside the suites, are read by ejryan89-skill-core's git_subcommands, through skill_layout's
 script_git_subcommands for a script.
 
-Stated limits: a subcommand that only a value names, as `verb` in `git.output([verb, commit])`, is not read, and a git
-cat-file mode that only a value names is read as one that gives the committed bytes. The words of a call whose name says
-no git, as `runner(arguments)`, are read only where a list or tuple literal holds them, and a command a runner runs
-through a shell only where it is one string literal, never a formatted string. A shell's -c script inside a list, and a
-command in a Markdown fence, are not read. Other git commands that reach a tree's objects, such as read-tree into an
-index or show given <commit>:<path>, are not catalogued: no repository code reads a file's bytes through them.
+Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows:
+- A subcommand that only a value names, as `verb` in `git.output([verb, commit])`, is not read.
+- A cat-file mode that only a value names is read as one that gives the committed bytes.
+- A call named for git whose words start with a string literal before the subcommand, as
+  `git_output("/repo", "cat-file", ...)`, takes that string for the subcommand.
+- The words of a call whose name says no git, as `runner(arguments)`, are read only where a list or tuple literal holds
+  them, and a file_at reached through a name bound to the method, as `read = client.file_at`, is not read.
+- A command given as one string to a runner without a shell, or split from one string by str.split or shlex.split, is
+  not read, and a command a runner runs through a shell is read only where it is one string literal.
+- A shell's -c script inside a list, and a command in a Markdown fence, are not read.
+- A Bash or PowerShell script's git, and a command a runner runs through a shell, are read by their subcommand alone, so
+  cat-file, show, or grep there given --filters, --textconv, -e, -s, -t, or --batch-check is read as giving the
+  committed bytes.
+- A git a shell function or array runs with the words it is given, as `g() { git -C x "$@"; }`,
+  `cmd=(git archive HEAD); "${cmd[@]}"`, `"$GIT" archive`, or `& git @args`, is not read at its callers.
+- A grep over the working tree, which no repository code runs, is read as one over a commit.
+- A command that writes a commit's tree into a working tree, worktree add, checkout, switch, or restore, is not read: it
+  writes what a checkout writes and hands its caller no bytes of its own, and a later read of that working tree reads
+  files, not git.
+- A commit's tree read through GitHub's API, as the tarball snapshot and the contents, blobs, and trees calls do, is not
+  read.
 """
 
 from __future__ import annotations
@@ -36,7 +53,6 @@ from pathlib import Path
 
 import git_client
 import runtime_support
-from bash_syntax import BashSyntaxError
 from call_tables import PROCESS_STARTS
 from exit_tables import NOT_SCANNED
 from git_subcommands import UNREAD_PART, bash_git_subcommands, powershell_program
@@ -55,7 +71,7 @@ from validation_support import (
 )
 
 POLICY = "tests/validation/tree_readers.py"
-DECISION = "the 2026-11-22 row on readers of a commit's tree in docs/design.md's Decisions"
+DECISION = "the row on readers of a commit's tree in docs/design.md's Decisions"
 
 # The bytes a reader of a commit's tree promises the code that calls it.
 COMMITTED = "committed"
@@ -67,11 +83,12 @@ PROMISES = {
     ENTRIES: "the tree's entries, their paths, modes, object names, kinds, or sizes, and never a file's bytes",
 }
 # The git subcommands that read a commit's tree.
-READER_SUBCOMMANDS = frozenset({"archive", "ls-tree", "cat-file"})
-# The git cat-file modes that answer with an object's kind, size, or presence rather than its bytes, and those that
-# apply the attributes and filters a checkout applies.
-CAT_FILE_ENTRIES = frozenset({"-e", "-s", "-t"})
-CAT_FILE_CONVERTS = frozenset({"--filters", "--textconv"})
+READER_SUBCOMMANDS = frozenset({"archive", "ls-tree", "cat-file", "show", "grep"})
+# The cat-file options that answer with an object's kind, size, or presence rather than its bytes, and the options of
+# cat-file, show, and grep that apply the attributes and filters a checkout applies; an option counts alone or with a
+# value after =, as --batch-check=%(objectsize) does.
+CAT_FILE_ENTRIES = frozenset({"-e", "-s", "-t", "--batch-check"})
+CONVERTING_OPTIONS = frozenset({"--filters", "--textconv"})
 CAT_FILE = "cat-file"
 GIT = "git"
 # GitClient's method that reads a file's committed bytes at a commit, whose every call is a reader of them.
@@ -82,7 +99,10 @@ SHELL_SCRIPTS = frozenset({".sh", ".bash", ".ps1"})
 # Each reader of a commit's tree, by its module's path from the repository root and its scope, as scoped_nodes names
 # it, with the bytes it promises: one of PROMISES.
 TREE_READERS: dict[str, dict[str, str]] = {
-    ".claude/skills/audit-repository/scripts/audit_repository.py": {"tracked_files": ENTRIES},
+    ".claude/skills/audit-repository/scripts/audit_repository.py": {
+        "tracked_files": ENTRIES,
+        "search_construct": COMMITTED,
+    },
     ".claude/skills/change-skill/scripts/change_skill.py": {"Tree.base": COMMITTED},
     # deploy.py --at: the tree a deployment from a checkout of the commit reads, and the paths whose attributes it
     # asks git archive about.
@@ -97,14 +117,15 @@ TREE_READERS: dict[str, dict[str, str]] = {
         "_commit_members": ENTRIES,
         "read_blob": COMMITTED,
         "_blob_binary_test": COMMITTED,
+        "search_source": COMMITTED,
     },
     "skills/ejryan89-skill-core/scripts/git_client.py": {"GitClient.file_at": COMMITTED},
     "skills/review-document/scripts/review_document.py": {"committed_blob": ENTRIES, "committed_base": COMMITTED},
     "skills/review-insights/scripts/review_guidance.py": {"read_committed": COMMITTED},
     "tests/validation/silent_reverts.py": {"current_blobs": ENTRIES},
-    "tests/validation/upgrade_notes.py": {"revision_snapshot": ENTRIES},
+    "tests/validation/upgrade_notes.py": {"revision_snapshot": COMMITTED},
     "tools/mutation_gate.py": {"tree_files": ENTRIES},
-    "tools/release_notes.py": {"_notes_at": ENTRIES},
+    "tools/release_notes.py": {"_notes_at": COMMITTED},
 }
 # The places whose words spell a reader's subcommand but never reach git, by module and scope, with the reason.
 NOT_READERS: dict[str, dict[str, str]] = {
@@ -148,10 +169,11 @@ def _reads(words: Sequence[str]) -> tuple[str, str] | None:
     index = git_client.subcommand_index(words)
     if index is None or words[index] not in READER_SUBCOMMANDS:
         return None
-    subcommand, rest = words[index], words[index + 1 :]
-    if subcommand == "archive" or CAT_FILE_CONVERTS & set(rest):
+    subcommand = words[index]
+    options = {word.partition("=")[0] for word in words[index + 1 :]}
+    if subcommand == "archive" or CONVERTING_OPTIONS & options:
         return subcommand, CHECKOUT
-    if subcommand == "ls-tree" or (rest[:1] and rest[0] in CAT_FILE_ENTRIES):
+    if subcommand == "ls-tree" or (subcommand == CAT_FILE and CAT_FILE_ENTRIES & options):
         return subcommand, ENTRIES
     return subcommand, COMMITTED
 
@@ -225,8 +247,8 @@ def tree_reader_problems(
         name = path.relative_to(root).as_posix()
         try:
             script_reads = _script_reads(path)
-        except (UnreadScript, BashSyntaxError) as error:
-            problems.append(f"{name}: cannot read the git it runs ({error})")
+        except UnreadScript as error:
+            problems.append(f"{name}: cannot read the git it runs: {error.reason}")
             continue
         for line, scope, subcommand, given in script_reads:
             found[(name, scope)].append((line, subcommand, given))
