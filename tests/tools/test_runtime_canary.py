@@ -364,12 +364,9 @@ class RuntimeCanaryTestCase(unittest.TestCase):
             runner, skills, runtimes, sources, environment, installed, discovery_only, which, **options
         )
         # A deployment that stops exits 1 too, but it prints none of these lines, so it fails here.
-        # A runtime is checked by a listing that found or missed the canary's copy, or by a run the canary started.
-        checked = any(
-            line.startswith(("DISCOVERED ", "UNDISCOVERED "))
-            or (line.startswith("RUNTIME ") and line.split()[3] not in ("NOT_ATTEMPTED", "UNSUPPORTED"))
-            for line in lines
-        )
+        # A runtime is checked by a listing that found or missed the canary's copy, or by a run the canary started,
+        # read from the outcomes the run carried beside its RUNTIME lines, never from the printed lines.
+        checked = runtime_canary.checks(lines, self.outcomes)
         failed = not checked or any(
             line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED "))
             or (line.startswith("MATRIX ") and " DISAGREES " in line)
@@ -390,9 +387,18 @@ class RuntimeCanaryTestCase(unittest.TestCase):
         which: Callable[[str], str | None] | None = None,
         **options: Any,
     ) -> tuple[int, list[str]]:
-        """The canary's exit code and printed lines, for a test that states the code it expects."""
+        """The canary's exit code and printed lines, for a test that states the code it expects; the outcomes the run
+        carried beside its RUNTIME lines are left in self.outcomes."""
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        self.outcomes: list[Outcome] = []
+        real = runtime_canary.check_runtime
+
+        def recorded(*arguments: Any, **keywords: Any) -> Iterator[tuple[str, Outcome | None]]:
+            for line, outcome in real(*arguments, **keywords):
+                self.outcomes += [outcome] if outcome is not None else []
+                yield line, outcome
+
+        with contextlib.redirect_stdout(output), mock.patch.object(runtime_canary, "check_runtime", recorded):
             code = runtime_canary.canary(
                 list(skills),
                 list(runtimes),
@@ -1862,21 +1868,31 @@ class MatrixTests(RuntimeCanaryTestCase):
 
     def test_the_matrix_and_the_checks_read_the_outcome_carried_beside_its_line(self) -> None:
         # A skill whose name holds a space moves every later field of its RUNTIME line, so the matrix and whether the
-        # runtime was checked come from the outcome the run carries, never from the printed line.
-        line = 'RUNTIME codex two words RAN "s" "c" KEPT "k"'
+        # runtime was checked come from the outcome the run carries, never from the printed line. Each case runs
+        # through the canary helper, which judges the exit code from the same carried outcomes.
+        cases = {
+            "RAN": ("full", 0, 'RUNTIME codex two words RAN "s" "c" KEPT "k"'),
+            # A runtime that started nothing checked nothing, so the run fails however the line reads.
+            "NOT_ATTEMPTED": ("none", 1, 'RUNTIME codex two words NOT_ATTEMPTED "Not on Codex."'),
+        }
+        for word, (level, code, line) in cases.items():
 
-        def checks(*_: object) -> Iterator[tuple[str, Outcome | None]]:
-            yield line, Outcome("codex", "two words", "RAN")
+            def checks(*_: object, shown: str = line, word: str = word) -> Iterator[tuple[str, Outcome | None]]:
+                yield shown, Outcome("codex", "two words", word)
 
-        declared = {"two words": {"codex": runtime_support.Support("full")}}
-        with (
-            mock.patch.object(runtime_canary, "check_runtime", checks),
-            mock.patch.object(runtime_canary, "declarations", return_value=declared),
-        ):
-            code, lines = self.outcome(FakeRuntimes())
-        self.assertEqual(0, code, lines)
-        self.assertIn(line, lines)
-        self.assertEqual(["MATRIX codex two words AGREES full"], [line for line in lines if line.startswith("MATRIX ")])
+            declared = {"two words": {"codex": runtime_support.Support(level)}}
+            with (
+                self.subTest(outcome=word),
+                mock.patch.object(runtime_canary, "check_runtime", checks),
+                mock.patch.object(runtime_canary, "declarations", return_value=declared),
+            ):
+                lines = self.canary(FakeRuntimes())
+                self.assertEqual(code, int(any(found.startswith("NOTHING_CHECKED ") for found in lines)), lines)
+                self.assertIn(line, lines)
+                self.assertEqual(
+                    [f"MATRIX codex two words AGREES {level}"],
+                    [found for found in lines if found.startswith("MATRIX ")],
+                )
 
     def test_a_full_skill_that_does_not_run_fails_the_canary(self) -> None:
         output = io.StringIO()
