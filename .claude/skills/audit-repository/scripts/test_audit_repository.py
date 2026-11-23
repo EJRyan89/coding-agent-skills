@@ -491,6 +491,14 @@ class ReleaseTests(Fixture):
         self.assertIn("# Release audit: the deployer", briefs["deployer"])
         self.assertIn('- `"tests/deployer/"`', briefs["deployer"])
 
+    def test_a_line_break_in_the_since_ref_prints_no_line_of_its_own(self) -> None:
+        # Git reads v0.1.0^{/<pattern>} as the newest commit from v0.1.0 whose message matches, and this pattern
+        # matches any. Printed raw, its line break would end the BASE line and start a CHANGED line of its own.
+        code, lines = self.run_main("release", "--since", "v0.1.0^{/(\nCHANGED 0)?}")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(f"BASE v0.1.0^{{/( CHANGED 0)?}} {git(self.root, 'rev-parse', 'v0.1.0')}", lines[0])
+        self.assertEqual(["CHANGED 6"], [line for line in lines if line.startswith("CHANGED")])
+
     def test_every_brief_carries_the_kinds_of_drift_and_the_report_template(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
         drift = [line.split(" ")[1] for line in lines if line.startswith("DRIFT ")]
