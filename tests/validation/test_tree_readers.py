@@ -51,7 +51,7 @@ class TreeReaderFixtures(unittest.TestCase):
         self,
         files: dict[str, str],
         readers: Mapping[str, Mapping[str, str]],
-        not_readers: Mapping[str, Mapping[str, str]] | None = None,
+        not_readers: Mapping[tuple[str, ...], str] | None = None,
     ) -> list[str]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -93,7 +93,7 @@ class TreeReaderFixtures(unittest.TestCase):
 
     def test_an_entry_that_names_no_reader_and_a_promise_of_no_kind_fail(self) -> None:
         readers = {"tool.py": {**CATALOGUE["tool.py"], "gone": ENTRIES}, "other.py": {"listing": "bytes"}}
-        not_readers = {"tool.py": {"FOLDERS": "names folders"}}
+        not_readers: dict[tuple[str, ...], str] = {("archive", "folders"): "names folders", ("ls-tree", "x"): " "}
         problems = self.problems({"tool.py": READERS}, readers, not_readers)
         self.assertEqual(
             [
@@ -101,18 +101,38 @@ class TreeReaderFixtures(unittest.TestCase):
                 "remove the entry",
                 "tests/validation/tree_readers.py: TREE_READERS names tool.py gone, which reads no commit's tree; "
                 "remove the entry",
-                "tests/validation/tree_readers.py: NOT_READERS names tool.py FOLDERS, which reads no commit's tree; "
-                "remove the entry",
+                "tests/validation/tree_readers.py: NOT_READERS names the words ('archive', 'folders'), which no "
+                "sequence spells; remove the entry",
+                "tests/validation/tree_readers.py: NOT_READERS names the words ('ls-tree', 'x'), which no sequence "
+                "spells; remove the entry",
+                "tests/validation/tree_readers.py: NOT_READERS gives the words ('ls-tree', 'x') no reason; state why "
+                "they never reach git",
                 "tests/validation/tree_readers.py: TREE_READERS promises 'bytes' for other.py listing, which PROMISES "
                 "does not name",
             ],
             problems,
         )
 
-    def test_words_that_never_reach_git_pass_only_when_not_readers_names_them(self) -> None:
+    def test_words_that_never_reach_git_pass_only_when_they_are_exactly_a_not_readers_entry(self) -> None:
+        excused: dict[tuple[str, ...], str] = {("archive", "checkout"): "a fixture's folders"}
         files = {"scenarios.py": "FOLDERS = ('archive', 'checkout')\n"}
         self.assertIn("scenarios.py:1 FOLDERS reads a commit's tree with git archive", self.problems(files, {})[0])
-        self.assertEqual([], self.problems(files, {}, {"scenarios.py": {"FOLDERS": "names the fixture's folders"}}))
+        self.assertEqual([], self.problems(files, {}, excused))
+        for words in ("('archive', 'HEAD')", "('archive', 'checkout', 'x')"):
+            with self.subTest(words=words):
+                problems = self.problems({"scenarios.py": f"FOLDERS = {words}\n"}, {}, excused)
+                self.assertEqual(2, len(problems), problems)
+                self.assertIn("scenarios.py:1 FOLDERS reads a commit's tree with git archive", problems[0])
+                self.assertIn("NOT_READERS names the words ('archive', 'checkout'), which no sequence", problems[1])
+
+    def test_an_excused_sequence_is_passed_over_wherever_it_sits_as_its_stated_limit_says(self) -> None:
+        excused: dict[tuple[str, ...], str] = {("archive", "checkout"): "a fixture's folders"}
+        files = {
+            "tool.py": (
+                "def export(git):\n    return git.output(['archive', 'checkout']), git_output('archive', 'checkout')\n"
+            )
+        }
+        self.assertEqual([], self.problems(files, {}, excused))
 
     def test_each_spelling_that_reaches_git_is_read(self) -> None:
         files = {

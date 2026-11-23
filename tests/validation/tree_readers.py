@@ -39,6 +39,8 @@ Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows
 - A command that writes a commit's tree into a working tree, worktree add, checkout, switch, or restore, is not read: it
   writes what a checkout writes and hands its caller no bytes of its own, and a later read of that working tree reads
   files, not git.
+- A list, a tuple, or a call's arguments whose words are exactly a NOT_READERS entry is passed over wherever it sits,
+  so a literal `("archive", "checkout")` meant as `git archive checkout` would be excused anywhere.
 - A commit's tree read through GitHub's API, as the tarball snapshot and the contents, blobs, and trees calls do, is not
   read.
 """
@@ -127,12 +129,11 @@ TREE_READERS: dict[str, dict[str, str]] = {
     "tools/mutation_gate.py": {"tree_files": ENTRIES},
     "tools/release_notes.py": {"_notes_at": COMMITTED},
 }
-# The places whose words spell a reader's subcommand but never reach git, by module and scope, with the reason.
-NOT_READERS: dict[str, dict[str, str]] = {
-    "tools/skill_evals_scenarios.py": {
-        "SYNTHESIS_FOLDERS": "names the folders a synthesis scenario's fixture copies, archive and checkout, not git's "
-        "words"
-    },
+# The words that spell a reader's subcommand but never reach git, with the reason: a list, a tuple, or a call's
+# positional arguments whose items are all string literals, exactly these words in this order, is passed over wherever
+# it sits.
+NOT_READERS: dict[tuple[str, ...], str] = {
+    ("archive", "checkout"): "the folders a synthesis scenario's fixture copies, which a skill evaluation names",
 }
 
 
@@ -192,17 +193,36 @@ def _shell_command(call: ast.Call, resolver: CallableResolver) -> str | None:
     return None
 
 
-def python_tree_reads(tree: ast.Module) -> list[tuple[int, str, str, str]]:
+def _excused(
+    values: Sequence[ast.expr], not_readers: Mapping[tuple[str, ...], str], used: set[tuple[str, ...]]
+) -> bool:
+    """Whether a sequence of values is exactly the words of a NOT_READERS entry, every one a string literal, the same
+    in number and order; an entry it matches is added to `used`."""
+    words = tuple(value.value for value in values if isinstance(value, ast.Constant) and isinstance(value.value, str))
+    if len(words) != len(values) or words not in not_readers:
+        return False
+    used.add(words)
+    return True
+
+
+def python_tree_reads(
+    tree: ast.Module,
+    not_readers: Mapping[tuple[str, ...], str] = NOT_READERS,
+    used: set[tuple[str, ...]] | None = None,
+) -> list[tuple[int, str, str, str]]:
     """Each read of a commit's tree a Python module's git words make, as (line, scope, subcommand, bytes), in the
-    order a walk of the module meets them."""
+    order a walk of the module meets them, past each sequence that is exactly the words of a `not_readers` entry, which
+    is added to `used`."""
     resolver = CallableResolver(tree)
+    excusing: set[tuple[str, ...]] = set() if used is None else used
     found: list[tuple[int, str, str, str]] = []
     for node, scope in scoped_nodes(tree.body):
         readings: list[tuple[str, str] | None] = []
         if isinstance(node, ast.List | ast.Tuple):
-            readings.append(_reads(_words(node.elts)))
+            if not _excused(node.elts, not_readers, excusing):
+                readings.append(_reads(_words(node.elts)))
         elif isinstance(node, ast.Call):
-            if runtime_support.names_git(node.func):
+            if runtime_support.names_git(node.func) and not _excused(node.args, not_readers, excusing):
                 readings.append(_reads(_words(node.args)))
             if isinstance(node.func, ast.Attribute) and node.func.attr == FILE_AT:
                 readings.append((CAT_FILE, COMMITTED))
@@ -234,11 +254,12 @@ def tree_reader_problems(
     root: Path,
     files: Iterable[Path] | None = None,
     readers: Mapping[str, Mapping[str, str]] = TREE_READERS,
-    not_readers: Mapping[str, Mapping[str, str]] = NOT_READERS,
+    not_readers: Mapping[tuple[str, ...], str] = NOT_READERS,
 ) -> list[str]:
     """Report each reader of a commit's tree that `readers` does not name, each one whose git words give other bytes
-    than its entry promises, each scope that gives both a checkout's and the committed bytes, and each entry of
-    `readers` or `not_readers` that names no reader, and each promise PROMISES does not name."""
+    than its entry promises, each scope that gives both a checkout's and the committed bytes, each entry of `readers`
+    that names no reader, each entry of `not_readers` that no sequence spells or that gives no reason, and each promise
+    PROMISES does not name."""
     problems: list[str] = []
     found: dict[tuple[str, str], list[tuple[int, str, str]]] = defaultdict(list)
     paths = scanned_files(root, files)
@@ -253,12 +274,11 @@ def tree_reader_problems(
         for line, scope, subcommand, given in script_reads:
             found[(name, scope)].append((line, subcommand, given))
     python = [path for path in paths if path.suffix == ".py"]
+    used: set[tuple[str, ...]] = set()
     for _, name, tree in python_trees(python, root, problems):
-        for line, scope, subcommand, given in python_tree_reads(tree):
+        for line, scope, subcommand, given in python_tree_reads(tree, not_readers, used):
             found[(name, scope)].append((line, subcommand, given))
     for (name, scope), reads in sorted(found.items(), key=lambda item: (item[0][0], item[1][0][0], item[0][1])):
-        if scope in not_readers.get(name, {}):
-            continue
         line, subcommand, _ = reads[0]
         listed = readers.get(name, {}).get(scope)
         promised = _promise((subcommand, given) for _, subcommand, given in reads)
@@ -279,13 +299,22 @@ def tree_reader_problems(
                 f"promises {listed}; keep the bytes its callers rely on, or change its entry with every caller in "
                 f"view; see {DECISION}"
             )
-    for catalogue, label in ((readers, "TREE_READERS"), (not_readers, "NOT_READERS")):
-        problems += [
-            f"{POLICY}: {label} names {name} {scope}, which reads no commit's tree; remove the entry"
-            for name, scopes in sorted(catalogue.items())
-            for scope in sorted(scopes)
-            if (name, scope) not in found
-        ]
+    problems += [
+        f"{POLICY}: TREE_READERS names {name} {scope}, which reads no commit's tree; remove the entry"
+        for name, scopes in sorted(readers.items())
+        for scope in sorted(scopes)
+        if (name, scope) not in found
+    ]
+    problems += [
+        f"{POLICY}: NOT_READERS names the words {words!r}, which no sequence spells; remove the entry"
+        for words in sorted(not_readers)
+        if words not in used
+    ]
+    problems += [
+        f"{POLICY}: NOT_READERS gives the words {words!r} no reason; state why they never reach git"
+        for words, reason in sorted(not_readers.items())
+        if not reason.strip()
+    ]
     problems += [
         f"{POLICY}: TREE_READERS promises {promise!r} for {name} {scope}, which PROMISES does not name"
         for name, scopes in sorted(readers.items())
