@@ -240,6 +240,7 @@ from path_containment import relative_within, resolved_path
 from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from suite_names import is_suite_name
 from text_lines import program_lines, text_lines
+from type_check_roots import REPOSITORY_SKILLS
 from typed_fields import FieldError, FieldReader
 from validation_support import import_aliases, literal_lookups, qualified_name, repository_files
 
@@ -689,7 +690,7 @@ def is_gate_module(path: str) -> bool:
         parts[0] in ("deployer", "tools")
         or pure.parent.as_posix() in (VALIDATION_FOLDER, POLICY_FOLDER)
         or (parts[0] == "skills" and len(parts) > 3 and parts[2] == "scripts")
-        or (parts[:2] == (".claude", "skills") and len(parts) > 4 and parts[3] == "scripts")
+        or (parts[:2] == PurePosixPath(REPOSITORY_SKILLS).parts and len(parts) > 4 and parts[3] == "scripts")
     )
 
 
