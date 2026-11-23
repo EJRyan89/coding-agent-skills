@@ -736,11 +736,13 @@ class DeployerPresenceTests(DeployerTestCase):
         )
         tree = self.root / "tree"
         (tree / "scripts").mkdir(parents=True)
+        # Written as bytes, so the bytes read_tree hashes are the ones written on every platform: write_text would
+        # write CRLF on Windows.
         for relative in ("SKILL.md", "notes.md", "scripts/run.py"):
-            (tree / relative).write_text("x\n", encoding="utf-8")
+            (tree / relative).write_bytes(b"x\n")
         for sidecar in ("._SKILL.md", "._scripts", "scripts/._run.py"):
             (tree / sidecar).write_bytes(SIDECAR_BYTES)
-        (tree / "._notes.md").write_text("x\n", encoding="utf-8")
+        (tree / "._notes.md").write_bytes(b"x\n")
         (tree / "._gone.md").write_bytes(SIDECAR_BYTES)
         self.assertEqual(
             {
