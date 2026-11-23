@@ -56,7 +56,7 @@ import hashlib
 import re
 import sys
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -93,6 +93,8 @@ from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, loa
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
+    Analyzer,
+    Finding,
     FindingReference,
     RecordError,
     ReviewRecord,
@@ -103,6 +105,7 @@ from review_records import (
     valid_analyzer,
     validate_record_pair,
 )
+from review_synthesis import FindingKey, Pair
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError
 
@@ -140,8 +143,6 @@ BOUND_OPTIONS = {"--category": 1, "--synthesized": 1, "--note": 1, "--analyzer":
 BOUND_SEPARATOR = "\0"
 
 ReviewKey = tuple[str, int, int]
-FindingKey = tuple[str, int, int, str]
-Pair = tuple[Mapping[str, Any], Mapping[str, Any], FindingKey]  # (record, finding, its ledger entry)
 
 
 class InsightError(ValueError):
@@ -279,11 +280,11 @@ def collect_records(
     return sorted(records, key=lambda item: str(item[0]).casefold())
 
 
-def _review_key(record: Mapping[str, Any]) -> ReviewKey:
+def _review_key(record: ReviewRecord) -> ReviewKey:
     return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
 
 
-def _finding_key(record: Mapping[str, Any], finding: Mapping[str, Any]) -> FindingKey:
+def _finding_key(record: ReviewRecord, finding: Finding) -> FindingKey:
     return (*_review_key(record), finding["id"])
 
 
@@ -299,7 +300,7 @@ def flags_by_entry(flags: list[dict[str, Any]], ledgers: Ledgers) -> dict[Findin
     return linked
 
 
-def raised_by(record: Mapping[str, Any], finding: Mapping[str, Any]) -> list[tuple[str, str]]:
+def raised_by(record: ReviewRecord, finding: Finding) -> list[tuple[str, str]]:
     """The reviewers that raised a finding, each with the model it ran on.
 
     A record's sole reviewer raised every finding (a repository entrypoint reviewer's source is its own free text);
@@ -423,7 +424,7 @@ def _analyzer_recommendation(coverage: str, tool: str, rule: str, repositories: 
     )
 
 
-def _evidence(record: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str, Any]:
+def _evidence(record: ReviewRecord, finding: Finding) -> dict[str, Any]:
     return {
         "repository": record["repository"].lower(),
         "pull_number": record["pull_request"]["number"],
@@ -473,7 +474,7 @@ def analyze(
     category_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
     groups: dict[tuple[str, ...], list[Pair]] = {}
-    spellings: dict[tuple[str, ...], dict[str, str]] = {}
+    spellings: dict[tuple[str, ...], Analyzer] = {}
     for record, finding, entry in counted_pairs(records, ledgers):
         category_counts[finding["category"]] += 1
         severity_counts[finding["severity"]] += 1
@@ -526,18 +527,18 @@ def analyze(
                 }
             )
             continue
-        analyzer = spellings[key]
+        spelling = spellings[key]
         repositories = sorted({record["repository"].lower() for record, _, _ in pairs})
         recommendations.append(
             {
                 "id": identifier,
                 "kind": "analyzer",
-                "coverage": analyzer["coverage"],
-                "tool": analyzer["tool"],
-                "rule": analyzer["rule"],
+                "coverage": spelling["coverage"],
+                "tool": spelling["tool"],
+                "rule": spelling["rule"],
                 "repositories": repositories,
                 "recommendation": _analyzer_recommendation(
-                    analyzer["coverage"], analyzer["tool"], analyzer["rule"], repositories
+                    spelling["coverage"], spelling["tool"], spelling["rule"], repositories
                 ),
                 **common,
                 "evidence": [_evidence(record, finding) for record, finding, _ in pairs],

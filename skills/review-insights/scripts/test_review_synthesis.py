@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,7 +28,7 @@ from json_writer import JsonWriteRefused
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_io import PersistenceError
-from review_records import build_record, write_record_pair
+from review_records import Finding, ReviewRecord, build_record, write_record_pair
 from test_review_archive import unstatable
 from test_review_insights import DECIDED_AT, LINE_BREAKS, InsightFixture, covered, record
 
@@ -363,19 +363,24 @@ class InputTests(SynthesisFixture):
         self.assertFailed(self.synthesize(json_path, json_path.parent / rs.RESULT_NAME), "has no synthesis to record")
 
     def test_large_ranges_show_the_largest_groups_in_full_and_summarize_the_rest(self) -> None:
-        record = {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
-        pairs = [
+        record = cast(
+            ReviewRecord, {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
+        )
+        pairs: list[rs.Pair] = [
             (
                 record,
-                {
-                    "id": f"F{index:03d}",
-                    "category": "Style",
-                    "severity": "SUGGESTION",
-                    "source": "fixture",
-                    "path": "a.cs",
-                    "line": 1,
-                    "body": f"Distinct finding {chr(65 + index % 26)}{chr(65 + index // 26 % 26)}",
-                },
+                cast(
+                    Finding,
+                    {
+                        "id": f"F{index:03d}",
+                        "category": "Style",
+                        "severity": "SUGGESTION",
+                        "source": "fixture",
+                        "path": "a.cs",
+                        "line": 1,
+                        "body": f"Distinct finding {chr(65 + index % 26)}{chr(65 + index // 26 % 26)}",
+                    },
+                ),
                 ("owner/repo", 1, 1, f"F{index:03d}"),
             )
             for index in range(rs.GROUPS_IN_FULL + 5)
@@ -907,10 +912,11 @@ class RenderTests(SynthesisFixture):
 class StageTests(unittest.TestCase):
     """The synthesis stage's own choices, without a report around them."""
 
-    def pair(
-        self, index: int, body: str, severity: str = "SUGGESTION"
-    ) -> tuple[dict[str, Any], dict[str, Any], tuple[str, int, int, str]]:
-        record = {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
+    def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> rs.Pair:
+        """The parts of a record and a finding that grouping reads, typed as the validated ones it takes."""
+        record = cast(
+            ReviewRecord, {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
+        )
         finding: dict[str, Any] = {
             "id": f"F{index:03d}",
             "category": "Style",
@@ -920,7 +926,7 @@ class StageTests(unittest.TestCase):
             "line": 1,
             "body": body,
         }
-        return record, finding, ("owner/repo", 1, 1, finding["id"])
+        return record, cast(Finding, finding), ("owner/repo", 1, 1, finding["id"])
 
     def test_the_staged_input_and_context_are_sorted_compact_lines_and_a_one_space_indent_past_ascii_kept(
         self,
@@ -967,9 +973,11 @@ class StageTests(unittest.TestCase):
         )
 
     def test_guidance_is_the_latest_record_of_each_repository_scoped_reviewer(self) -> None:
-        def reviewed(name: str, scope: str, stamp: str, files: list[str]) -> dict[str, Any]:
+        def reviewed(name: str, scope: str, stamp: str, files: list[str]) -> ReviewRecord:
             adapter = {"name": name, "scope": scope, "source_hashes": dict.fromkeys(files, "b" * 64)}
-            return {"repository": "Owner/Repo", "review": {"reviewed_at": stamp, "adapter": adapter}}
+            return cast(
+                ReviewRecord, {"repository": "Owner/Repo", "review": {"reviewed_at": stamp, "adapter": adapter}}
+            )
 
         records = {
             Path("b.json"): reviewed("reviewer", "repository", "2026-01-01T00:00:00+00:00", ["old.md"]),
@@ -985,7 +993,9 @@ class StageTests(unittest.TestCase):
     def test_a_suite_profile_a_reviewer_was_built_from_is_no_guidance_file(self) -> None:
         adapter = {"name": "reviewer", "scope": "repository", "source_hashes": dict.fromkeys(SUITE_SOURCES, "b" * 64)}
         records = {
-            Path("a.json"): {"repository": "owner/repo", "review": {"reviewed_at": "2026-01-01", "adapter": adapter}}
+            Path("a.json"): cast(
+                ReviewRecord, {"repository": "owner/repo", "review": {"reviewed_at": "2026-01-01", "adapter": adapter}}
+            )
         }
         self.assertEqual({"owner/repo": ["docs/design.md"]}, review_guidance.guidance_files(["owner/repo"], records))
 

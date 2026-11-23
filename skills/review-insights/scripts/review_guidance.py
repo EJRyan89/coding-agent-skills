@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TypedDict
 
 import file_presence
 from flat_text import flat_text
@@ -48,7 +48,7 @@ from link_targets import Cover, link_spans, link_target
 from markdown_sections import PROSE_BLOCKS, blocks, code_spans
 from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
-from review_records import is_suite_profile
+from review_records import ReviewRecord, is_suite_profile
 from text_lines import text_lines
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"})
@@ -141,23 +141,62 @@ class Rule:
     numbers: frozenset[str]
 
 
+class GuidanceFileLine(TypedDict):
+    """The synthesis input's line for one version of a guidance file: its text in `content` when `status` is
+    `included`, otherwise null."""
+
+    kind: str
+    repository: str
+    path: str
+    role: str
+    reviewers: list[str]
+    status: str
+    content: str | None
+
+
+class OverlapCandidate(TypedDict):
+    """Two rules of different files that conflict or duplicate each other, as `compare` finds them."""
+
+    relation: str
+    similarity: float
+    differs: list[str]
+    paths: list[str]
+    lines: list[int]
+    texts: list[str]
+
+
+class GuidanceOverlap(OverlapCandidate):
+    """An overlap candidate in one repository's guidance, with every reviewer given both files' versions."""
+
+    repository: str
+    reviewers: list[str]
+
+
+class UnsuppliedReference(TypedDict):
+    """A Markdown file a reviewer's guidance links to or names in code that the reviewer was not given."""
+
+    repository: str
+    reviewer: str
+    path: str
+    line: int
+    reference: str
+
+
 @dataclass
 class Guidance:
     """Each repository's guidance files by path, the input's line for each file, and the candidates found in them."""
 
     files: dict[str, list[str]]
-    lines: list[dict[str, Any]] = field(default_factory=list)
-    overlaps: list[dict[str, Any]] = field(default_factory=list)
-    unsupplied: list[dict[str, Any]] = field(default_factory=list)
+    lines: list[GuidanceFileLine] = field(default_factory=list)
+    overlaps: list[GuidanceOverlap] = field(default_factory=list)
+    unsupplied: list[UnsuppliedReference] = field(default_factory=list)
     # A fact line for each prose file whose working-tree copy could not be read.
     unreadable: list[str] = field(default_factory=list)
     # Each repository whose overlap search stopped at CANDIDATE_BUDGET with pairs it did not compare.
     stopped: list[str] = field(default_factory=list)
 
 
-def reviewer_sources(
-    repositories: list[str], records: Mapping[Path, Mapping[str, Any]]
-) -> dict[str, dict[str, Source]]:
+def reviewer_sources(repositories: list[str], records: Mapping[Path, ReviewRecord]) -> dict[str, dict[str, Source]]:
     """Each repository's repository-scoped reviewers, each with the latest record it wrote, anywhere in the archive,
     and none of the files of one read from another checkout. `records` holds every validated record of the
     repositories by its path."""
@@ -183,7 +222,7 @@ def reviewer_sources(
     return latest
 
 
-def guidance_files(repositories: list[str], records: Mapping[Path, Mapping[str, Any]]) -> dict[str, list[str]]:
+def guidance_files(repositories: list[str], records: Mapping[Path, ReviewRecord]) -> dict[str, list[str]]:
     """Each repository's guidance files: the source files of the latest record each repository-scoped reviewer
     wrote. A profile the suite ships is recorded beside them under its `suite:<name>` reference, but it is no file of
     the repository, which cannot change it, so it is left out, as is every file of a reviewer read from another
@@ -269,7 +308,7 @@ def _file_versions(by_name: dict[str, Source]) -> dict[VersionKey, list[tuple[st
 
 def read_guidance(
     repositories: list[str],
-    records: Mapping[Path, Mapping[str, Any]],
+    records: Mapping[Path, ReviewRecord],
     checkouts: Mapping[str, Path | None],
     reader: Reader | None = None,
 ) -> Guidance:
@@ -287,7 +326,7 @@ def read_guidance(
         # Whether each version of a file whose working-tree copy could not be read was found at a pinning commit.
         found: dict[str, list[bool]] = {}
         for (path, digest), given in sorted(_file_versions(sources[repository]).items()):
-            line: dict[str, Any] = {
+            line: GuidanceFileLine = {
                 "kind": "guidance-file",
                 "repository": repository,
                 "path": path,
@@ -385,7 +424,7 @@ def _similarity(first: Rule, second: Rule) -> float:
     return len(first.words & second.words) / len(first.words | second.words)
 
 
-def compare(first: Rule, second: Rule) -> dict[str, Any] | None:
+def compare(first: Rule, second: Rule) -> OverlapCandidate | None:
     """The candidate two rules of different files make: a `conflict` when they share most of their words and differ
     in force or numbers, a `duplicate` when they share nearly all of them and agree; otherwise None."""
     similarity = _similarity(first, second)
@@ -442,7 +481,7 @@ def _visits(
 
 def overlaps(
     repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[GuidanceOverlap], bool]:
     """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
     reviewers given both versions; a candidate two versions share is one, naming every reviewer given it. Only rules
     that share one of their rarest words are compared, at most CANDIDATE_BUDGET pairs in all, and the second value
@@ -450,7 +489,7 @@ def overlaps(
     by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
     frequency = Counter(word for _, found in by_version for rule in found for word in rule.words)
     order = {word: (count, word) for word, count in frequency.items()}
-    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+    found: dict[tuple[object, ...], GuidanceOverlap] = {}
     shared: dict[tuple[VersionKey, VersionKey], set[str]] = {}
     visits = _visits(by_version, order)
     for first_key, second_key, first, second in islice(visits, CANDIDATE_BUDGET):
@@ -471,7 +510,7 @@ def _given(source: Source, *versions: VersionKey) -> bool:
     return all(source.hashes.get(path) == digest for path, digest in versions)
 
 
-def _overlap_rank(item: dict[str, Any]) -> tuple[Any, ...]:
+def _overlap_rank(item: GuidanceOverlap) -> tuple[bool, float, str, list[str], list[int]]:
     return item["relation"] != "conflict", -item["similarity"], item["repository"], item["paths"], item["lines"]
 
 
@@ -503,7 +542,7 @@ def _code_references(line: str, links: Cover) -> list[str]:
     ]
 
 
-def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
+def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[UnsuppliedReference]:
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
     was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
     or from the repository root when it starts with `/`; a path named in code outside a link counts as given when the
@@ -513,7 +552,7 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
     definition's line is passed over whole; and an inline link with text after its title is passed over to the next
     `)`. An inline link that does not close is passed over only at its destination, so a path after it is still
     read."""
-    found: list[dict[str, Any]] = []
+    found: list[UnsuppliedReference] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
         for path in sorted(given):

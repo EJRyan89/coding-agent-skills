@@ -58,11 +58,17 @@ from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
+    Finding,
     ReviewRecord,
     finding_reference,
     valid_analyzer,
 )
 from review_vocabularies import SEVERITIES, SEVERITY_RANK
+
+# A finding by the repository, lowercase, the pull request, the review version, and its ID there; and an analyzed
+# finding with its record and the key of its ledger entry, the first review to raise it.
+FindingKey = tuple[str, int, int, str]
+Pair = tuple[ReviewRecord, Finding, FindingKey]
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -182,7 +188,7 @@ class SynthesisError(ValueError):
         self.problems = problems
 
 
-def finding_ref(record: Mapping[str, Any], finding: Mapping[str, Any]) -> str:
+def finding_ref(record: ReviewRecord, finding: Finding) -> str:
     return finding_reference(
         record["repository"], record["pull_request"]["number"], record["review"]["version"], finding["id"]
     )
@@ -204,11 +210,11 @@ def _marked(match: re.Match[str]) -> str:
     return match[0] if match[0].isspace() else "?"
 
 
-def headline(finding: Mapping[str, Any]) -> str:
+def headline(finding: Finding) -> str:
     return _line(finding.get("title") or finding["body"], HEADLINE)
 
 
-def group_key(record: Mapping[str, Any], finding: Mapping[str, Any]) -> tuple[str, str, str]:
+def group_key(record: ReviewRecord, finding: Finding) -> tuple[str, str, str]:
     normalized = re.sub(r"[^a-z]+", " ", headline(finding).lower()).strip()
     return record["repository"].lower(), finding["category"], normalized
 
@@ -218,9 +224,9 @@ class _Group:
     repository: str
     category: str
     headline: str
-    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]] = field(default_factory=list)
+    pairs: list[Pair] = field(default_factory=list)
 
-    def rank(self, outcomes: dict[Any, str], flagged: set[Any]) -> tuple[int, int, int, int]:
+    def rank(self, outcomes: Mapping[FindingKey, str], flagged: set[FindingKey]) -> tuple[int, int, int, int]:
         """Larger groups first, then those with more flagged findings, then more findings a later review judged
         still present, partly addressed counting as still present, then the highest severity."""
         severity = max(SEVERITY_RANK[finding["severity"]] for _, finding, _ in self.pairs)
@@ -229,7 +235,9 @@ class _Group:
         return -len(self.pairs), -marked, -still, -severity
 
 
-def _group_line(group: _Group, identifier: str, outcomes: dict[Any, str], flagged: set[Any]) -> dict[str, Any]:
+def _group_line(
+    group: _Group, identifier: str, outcomes: Mapping[FindingKey, str], flagged: set[FindingKey]
+) -> dict[str, Any]:
     paths = Counter(finding["path"] for _, finding, _ in group.pairs)
     outcome_counts = Counter(outcomes.get(entry, "unjudged") for _, _, entry in group.pairs)
     analyzers = sorted(
@@ -281,7 +289,7 @@ def _tail_lines(groups: list[_Group]) -> list[dict[str, Any]]:
 
 
 def group_findings(
-    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any], Any]], outcomes: dict[Any, str], flagged: set[Any]
+    pairs: Sequence[Pair], outcomes: Mapping[FindingKey, str], flagged: set[FindingKey]
 ) -> list[dict[str, Any]]:
     """The input's finding lines: groups of findings with the same repository, category, and headline, the largest
     and most acted-on in full, then one line per repository and category for the rest."""
@@ -406,7 +414,7 @@ def presented(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=lambda item: (PRIORITIES.index(item["priority"]), fix_rank(item)))
 
 
-def _jsonl(items: list[dict[str, Any]]) -> str:
+def _jsonl(items: Sequence[Mapping[str, object]]) -> str:
     return "".join(json_writer.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in items)
 
 
@@ -526,7 +534,9 @@ def remove_run(synthesis: dict[str, Any] | None) -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
-def staged_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[str, Any]) -> tuple[str, dict[Path, str]]:
+def staged_inputs(
+    directory: Path, lines: Sequence[Mapping[str, object]], context: dict[str, Any]
+) -> tuple[str, dict[Path, str]]:
     """The seal, and the context and the input, its seal line first, by the path each is written to. A context
     larger than `synthesize` reads back is refused."""
     body = _jsonl(lines)
@@ -569,16 +579,16 @@ class Analyzed:
 
     report: dict[str, Any]
     records: list[ReviewRecord]
-    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]]
-    outcomes: dict[Any, str]
-    flagged: set[Any]
-    signal_lines: list[dict[str, Any]] = field(default_factory=list)
+    pairs: list[Pair]
+    outcomes: dict[FindingKey, str]
+    flagged: set[FindingKey]
+    signal_lines: list[Mapping[str, object]] = field(default_factory=list)
 
 
 def _category_lines(analyzed: Analyzed) -> list[dict[str, Any]]:
     """One line per analyzed category with its count; a small category also lists every finding in full, since the
     result must address each one."""
-    members: dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any], Any]]] = {}
+    members: dict[str, list[Pair]] = {}
     for pair in analyzed.pairs:
         members.setdefault(pair[1]["category"], []).append(pair)
     lines = []

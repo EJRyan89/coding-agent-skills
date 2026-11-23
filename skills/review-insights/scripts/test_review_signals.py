@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import unittest
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -428,13 +429,19 @@ class CapTests(SignalFixture):
         self.assertIn("SIGNALS_OMITTED verdict_flips 1", lines)
 
     def test_a_flip_between_approval_and_requested_changes_outranks_one_from_an_incomplete_review(self) -> None:
-        flip = {
+        flip: review_signals.VerdictFlip = {
             "verdicts": ["APPROVED", "CHANGES_REQUESTED"],
             "repository": "owner/repo",
             "pull_number": 9,
             "versions": [1, 2],
+            "head_sha": HEAD,
+            "differences": [],
         }
-        incomplete = {**flip, "verdicts": ["INCOMPLETE", "CHANGES_REQUESTED"], "pull_number": 1}
+        incomplete: review_signals.VerdictFlip = {
+            **flip,
+            "verdicts": ["INCOMPLETE", "CHANGES_REQUESTED"],
+            "pull_number": 1,
+        }
         self.assertLess(review_signals.flip_rank(flip, 1), review_signals.flip_rank(incomplete, 5))
 
     def test_disagreements_keep_the_widest_spread_then_the_most_findings_not_the_first_pull(self) -> None:
@@ -478,6 +485,26 @@ class UpgradeTests(SignalFixture):
         json_path.write_text(json.dumps({**report, "signals": {"severity_drift": []}}), encoding="utf-8")
         with self.assertRaisesRegex(ri.InsightError, "has invalid signals"):
             ri.load_report(json_path)
+
+
+class ShapeTests(unittest.TestCase):
+    def test_the_signals_table_and_each_shape_name_the_same_signals_in_the_same_order(self) -> None:
+        # `kept` and `empty` spell out each signal's name, so the table and the shapes must name the same signals,
+        # and the report keeps its keys in the order the two have always written them.
+        names = list(review_signals.SIGNALS)
+        self.assertEqual(names, list(review_signals.FIELDS))
+        self.assertEqual(names, list(review_signals.Found.__annotations__))
+        self.assertEqual([*names, "counts"], list(review_signals.Signals.__annotations__))
+        self.assertEqual([*names, "counts"], list(review_signals.empty()))
+        found: review_signals.Found = {
+            "severity_drift": [],
+            "verdict_flips": [],
+            "reviewer_disagreements": [],
+            "guidance_overlaps": [],
+            "unsupplied_references": [],
+        }
+        self.assertEqual(["counts", *names], list(review_signals.kept(found)))
+        self.assertEqual(review_signals.empty(), review_signals.kept(found))
 
 
 def _input(json_path: Path) -> list[dict[str, Any]]:
