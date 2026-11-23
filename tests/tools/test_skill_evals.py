@@ -832,8 +832,11 @@ class NoFindingAboveTests(unittest.TestCase):
         other = record([finding("a.py", 3, "MUST_FIX", source="trust-boundary")], reviewers=ran)
         self.assertEqual("found MUST_FIX at a.py:3", check(unscoped, other, "initial"))
         for malformed in ("", "  ", 5, None):
-            with self.subTest(malformed=malformed), self.assertRaisesRegex(ScenarioError, "source must be a reviewer"):
-                skill_evals_scenarios.expectation({**spec, "source": malformed}, "initial")
+            with self.subTest(malformed=malformed):
+                self.assertEqual(
+                    "source must be a reviewer's id; leave it out for any reviewer",
+                    refusal({**spec, "source": malformed}, "initial"),
+                )
 
     def test_a_source_s_silence_is_no_pass_when_it_did_not_run_or_the_review_is_incomplete(self) -> None:
         # Nothing raised by a reviewer that never ran, or that could not read every changed file, shows nothing.
