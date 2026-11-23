@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import atomic_file
+import file_lock
 import json_writer
 import path_containment
 import path_keys
@@ -41,6 +42,8 @@ from test_review_runtime_validation import directory_link
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REAL_LINK = os.link
+REAL_UNLINK = Path.unlink
+REAL_LSTAT = Path.lstat
 AGENT = "a71dab35ebc1b97eb"  # the form Claude Code gives an agent ID
 OTHER_AGENT = "a73176509870d6114"
 OTHER_USER = 4242  # another local account's user id
@@ -51,6 +54,9 @@ UNREADABLE_CLAIM = (
 )
 # The age, in seconds, past which a claim that does not parse is pruned: the guard's UNREADABLE_CLAIM_AGE.
 UNREADABLE_CLAIM_AGE = 600
+# The age, in seconds, past which a copy a killed create left beside the claims is pruned: LEFTOVER_COPY_AGE.
+LEFTOVER_COPY_AGE = 600
+THIRD_AGENT = "a000000000000000f"
 
 
 def age_by(path: Path, seconds: float) -> None:
@@ -1049,9 +1055,12 @@ class ClaimTests(GuardFixture):
                 with contextlib.ExitStack() as stack:
                     for patch in patches:
                         stack.enter_context(patch)
-                    with self.assertRaises(OSError) as caught:
-                        self.decide("Read", file_path=self.prompt())
-                self.assertEqual(errno.ENOSPC, caught.exception.errno)
+                    reason = self.decide("Read", file_path=self.prompt())
+                self.assertEqual(
+                    "Code-review reviewer boundary: this reviewer's claim could not be made: "
+                    f"[Errno {errno.ENOSPC}] {os.strerror(errno.ENOSPC)}.",
+                    reason,
+                )
                 self.assertFalse((self.claims / f"{AGENT}.json").exists(), "a failed write leaves no claim")
                 self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
                 self.claim()
@@ -1060,12 +1069,13 @@ class ClaimTests(GuardFixture):
                 guard.read_log(self.run_directory, "csharp-review").unlink()
 
     def full_disk_after_the_create(self) -> list[Any]:
-        """os.open creating a file in the claims folder, then failing as a full disk does, the file left created."""
+        """os.open creating a file in the claims folder other than the prune's lock, then failing as a full disk does,
+        the file left created."""
         real_open = os.open
 
         def full_disk(file: Any, flags: int, *args: Any, **kwargs: Any) -> int:
             descriptor = real_open(file, flags, *args, **kwargs)
-            if flags & os.O_CREAT and Path(file).parent == self.claims:
+            if flags & os.O_CREAT and Path(file).parent == self.claims and Path(file).name != guard.PRUNE_LOCK:
                 os.close(descriptor)
                 raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
             return descriptor
@@ -1141,17 +1151,20 @@ class ClaimTests(GuardFixture):
                     target=path,
                     copy=copy,
                     failure=OSError(errno.EIO, "I/O error"),
-                    removal=PermissionError(),
+                    removal=PermissionError(errno.EACCES, "Permission denied"),
                     made=made,
                 )
 
             return create
 
-        with (
-            mock.patch.object(atomic_file, "create_bytes", unfinished(made=False)),
-            self.assertRaises(atomic_file.UnfinishedCopyError),
-        ):
-            self.decide("Read", file_path=self.prompt())
+        target = self.claims / f"{AGENT}.json"
+        with mock.patch.object(atomic_file, "create_bytes", unfinished(made=False)):
+            self.assertEqual(
+                "Code-review reviewer boundary: this reviewer's claim could not be made: Cannot remove "
+                f"{target.with_name(f'.{target.name}.left.tmp')}, the unfinished copy of {target}: [Errno "
+                f"{errno.EACCES}] Permission denied.",
+                self.decide("Read", file_path=self.prompt()),
+            )
         self.assert_no_claim("a claim not made is no claim")
         self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
         with mock.patch.object(atomic_file, "create_bytes", unfinished(made=True)):
@@ -1214,6 +1227,235 @@ class ClaimTests(GuardFixture):
         with unstatable(self.other_run / "run.json"):
             self.claim()
         self.assertEqual(sorted([f"{AGENT}.json", live.name]), sorted(path.name for path in self.claims.iterdir()))
+
+
+STALE_CLAIMS = ("unparseable and old", "of a run that is gone")
+
+
+class PruneTests(GuardFixture):
+    """A first read prunes under a lock and removes only the file it judged, so no claim made after the judgment is
+    removed; it prunes a copy a killed create left; and a claim the file system cannot link into place denies naming
+    the cause and the remedy."""
+
+    def stale_claim(self, kind: str) -> tuple[Path, str]:
+        """Agent OTHER_AGENT's claim, of `kind`, which a prune removes, in an otherwise empty claims folder, with the
+        reason its agent's own read is denied while the claim is there."""
+        shutil.rmtree(self.claims, ignore_errors=True)
+        self.claims.mkdir()
+        stale = self.claims / f"{OTHER_AGENT}.json"
+        if kind == "unparseable and old":
+            stale.write_bytes(b'{"run": ')
+            age_by(stale, UNREADABLE_CLAIM_AGE)
+            return stale, UNREADABLE_CLAIM
+        gone = self.root / "code-review-run-gone"
+        stale.write_text(json.dumps({"run": str(gone), "role": "csharp-review"}), encoding="utf-8")
+        return stale, f"Code-review reviewer boundary: the review run {gone} could not be read."
+
+    def test_no_guard_prunes_while_another_does_so_a_claim_made_meanwhile_is_never_removed(self) -> None:
+        # Guard A judges agent X's claim one to prune. Just before A removes it, guard B prunes it and X's next read
+        # claims anew at the same path. A holds the prune's lock, so B leaves the prune to A and claims, and
+        # X's read is judged against the claim still there; without the lock, A would remove the claim X's read was
+        # just let through on, and X's next read would be a first read again.
+        for kind in STALE_CLAIMS:
+            with self.subTest(kind=kind):
+                stale, denied = self.stale_claim(kind)
+                reads: dict[str, str | None] = {}
+
+                def unlink_after_the_race(
+                    path: Path, missing_ok: bool = False, *, stale: Path = stale, reads: dict[str, str | None] = reads
+                ) -> None:
+                    if path == stale and not reads:
+                        # Marked first, so a prune B or X makes, had it no lock to wait on, removes for real.
+                        reads["started"] = None
+                        reads["B"] = self.decide("Read", agent=THIRD_AGENT, file_path=self.prompt("sql-review"))
+                        reads["X"] = self.decide("Read", agent=OTHER_AGENT, file_path=self.prompt("sql-review"))
+                    REAL_UNLINK(path, missing_ok=missing_ok)
+
+                with mock.patch.object(Path, "unlink", unlink_after_the_race):
+                    self.claim()
+                self.assertEqual(
+                    {"started": None, "B": None, "X": denied}, reads, "X's read is judged against the claim A holds"
+                )
+                self.assertFalse(stale.exists(), "A removes the claim it judged")
+                self.claim("sql-review", agent=OTHER_AGENT)
+                self.assertEqual(
+                    {"run": str(self.run_directory), "role": "sql-review"},
+                    json.loads(stale.read_text(encoding="utf-8")),
+                )
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows refuses to remove a file a handle without delete sharing holds open, as the prune holds the claim it "
+        "judges until it compares it, so no claim can be removed and remade there meanwhile",
+    )
+    def test_a_prune_removes_only_the_file_it_judged_so_a_claim_remade_after_the_judgment_is_kept(self) -> None:
+        # Holds on Linux and macOS. Where no lock holds, as beside an older guard, which prunes unlocked: between A's
+        # judgment of X's claim and its removal, the older guard removes the claim and X's next read claims anew at
+        # the same path. A compares the file it judged with the one at the path, and keeps the newer claim.
+        for kind in STALE_CLAIMS:
+            with self.subTest(kind=kind):
+                stale, _denied = self.stale_claim(kind)
+                raced: list[str | None] = []
+
+                def lstat_after_the_race(
+                    path: Path, *, stale: Path = stale, raced: list[str | None] = raced
+                ) -> os.stat_result:
+                    if path == stale and not raced:
+                        raced.append("racing")
+                        stale.unlink()
+                        raced[0] = self.decide("Read", agent=OTHER_AGENT, file_path=self.prompt("sql-review"))
+                    return REAL_LSTAT(path)
+
+                with mock.patch.object(Path, "lstat", lstat_after_the_race):
+                    self.claim()
+                self.assertEqual([None], raced, "X's read claims anew")
+                self.assertEqual(
+                    {"run": str(self.run_directory), "role": "sql-review"},
+                    json.loads(stale.read_text(encoding="utf-8")),
+                    "the claim X's read was let through on holds",
+                )
+                self.assertIsNone(self.decide("Write", agent=OTHER_AGENT, file_path=self.result("sql-review")))
+
+    def test_a_prune_another_guard_holds_the_lock_of_is_left_to_it_and_the_claim_is_made(self) -> None:
+        stale, _denied = self.stale_claim("of a run that is gone")
+        lock = self.claims / guard.PRUNE_LOCK
+        descriptor = file_lock.take(lock)
+        self.assertIsNotNone(descriptor)
+        try:
+            self.claim()
+            self.assertTrue(stale.exists(), "the lock's holder prunes, not this guard")
+        finally:
+            file_lock.release(descriptor or 0, lock)
+        self.claim(agent=THIRD_AGENT)
+        self.assertFalse(stale.exists())
+        self.assertFalse(lock.exists(), "a prune leaves no lock behind")
+
+    def test_a_lock_that_cannot_be_opened_or_is_refused_for_a_while_leaves_the_prune_to_a_later_claim(self) -> None:
+        for name, failure in (
+            ("cannot be opened", PermissionError(errno.EACCES, "Permission denied")),
+            ("refused for a while", file_lock.FileLockError(errno.ENOLCK, "No locks available")),
+        ):
+            with self.subTest(name=name):
+                stale, _denied = self.stale_claim("of a run that is gone")
+                with mock.patch.object(file_lock, "take", side_effect=failure):
+                    self.claim()
+                self.assertTrue(stale.exists(), "the prune is left, and the claim is made")
+                self.claim(agent=THIRD_AGENT)
+                self.assertFalse(stale.exists())
+
+    def test_a_file_system_with_no_lock_at_all_prunes_unlocked_and_keeps_no_lock_file(self) -> None:
+        stale, _denied = self.stale_claim("of a run that is gone")
+        unsupported = file_lock.FileLockError(errno.ENOTSUP, "Operation not supported")
+        with mock.patch.object(file_lock, "try_lock", side_effect=unsupported):
+            self.claim()
+        self.assertFalse(stale.exists())
+        self.assertEqual([f"{AGENT}.json"], [path.name for path in self.claims.iterdir()])
+
+    def test_a_copy_a_killed_create_left_is_pruned_once_old_and_a_younger_one_and_its_claim_are_kept(self) -> None:
+        # Holds on every platform CI runs, each of which keeps its temporary directory on a file system with hard
+        # links. A create killed before it removed its copy's own name leaves `.<agent>.json.<random>.tmp` beside the
+        # claims: once linked into place, the copy and the claim are one file, and before that, the copy alone.
+        self.claims.mkdir()
+        claim = self.claims / f"{OTHER_AGENT}.json"
+        claim.write_text(json.dumps({"run": str(self.other_run), "role": "csharp-review"}), encoding="utf-8")
+        linked = self.claims / f".{OTHER_AGENT}.json.k1l7ed.tmp"
+        os.link(claim, linked)
+        unlinked = self.claims / f".{THIRD_AGENT}.json.p4r7ly.tmp"
+        young = self.claims / f".{THIRD_AGENT}.json.y0un9x.tmp"
+        for copy in (unlinked, young):
+            copy.write_bytes(b'{"run": ')
+        for copy in (linked, unlinked):
+            age_by(copy, LEFTOVER_COPY_AGE)
+        age_by(young, LEFTOVER_COPY_AGE - 60)
+        opened: list[Path] = []
+        real_open = Path.open
+
+        def recording_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        # Windows refuses to remove a name of a file a handle without delete sharing holds open, so a prune that
+        # opened a copy a create is still using would keep that create from removing its copy's name.
+        with mock.patch.object(Path, "open", recording_open):
+            self.claim()
+        self.assertNotIn(young, opened, "a copy younger than LEFTOVER_COPY_AGE is never opened")
+        self.assertIn(unlinked, opened, "an old copy is judged open")
+        self.assertEqual(
+            sorted([f"{AGENT}.json", claim.name, young.name]), sorted(path.name for path in self.claims.iterdir())
+        )
+        self.assertEqual(
+            {"run": str(self.other_run), "role": "csharp-review"}, json.loads(claim.read_text(encoding="utf-8"))
+        )
+
+    def test_a_copy_gone_before_its_age_is_read_is_kept_and_the_claim_is_made(self) -> None:
+        # Holds on every platform: a create removes its copy's name right after linking it into place, so a copy the
+        # prune listed is often gone by the time its age is read. It is kept unjudged, never opened, and the read
+        # claims as if it were not there.
+        self.claims.mkdir()
+        vanished = self.claims / f".{OTHER_AGENT}.json.g0n3xx.tmp"
+        vanished.write_bytes(b'{"run": ')
+        age_by(vanished, LEFTOVER_COPY_AGE)
+
+        def gone(path: Path) -> os.stat_result:
+            if path == vanished:
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+            return REAL_LSTAT(path)
+
+        with mock.patch.object(Path, "lstat", gone):
+            self.claim()
+        self.assertTrue(vanished.exists(), "a copy whose age cannot be read is kept")
+        self.assertEqual(
+            {"run": str(self.run_directory), "role": "csharp-review"},
+            json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")),
+        )
+
+    def test_a_claims_folder_whose_file_system_refuses_hard_links_denies_naming_the_cause_and_the_remedy(self) -> None:
+        # Holds on every platform: os.link refuses as a file system without hard links does on each of them.
+        target = self.claims / f"{AGENT}.json"
+
+        def refusing(code: int) -> Any:
+            def link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+                raise OSError(code, os.strerror(code), str(source), None, str(destination))
+
+            return link
+
+        for code in sorted(atomic_file.NO_HARD_LINK_ERRNOS):
+            with self.subTest(errno=errno.errorcode[code]):
+                with mock.patch.object(os, "link", refusing(code)):
+                    reason = self.decide("Read", file_path=self.prompt())
+                self.assertEqual(
+                    "Code-review reviewer boundary: this reviewer's claim could not be made: "
+                    f"[Errno {code}] the file system refused to link the finished copy into place: "
+                    f"{os.strerror(code)}: {str(target)!r}; the reviewer guard makes each claim whole through a hard "
+                    f"link, which the file system holding {self.root} refuses; give the guard a runtime or temporary "
+                    "directory on a file system with hard links, such as a local disk's.",
+                    reason,
+                )
+                self.assert_no_claim("no claim and no copy is left")
+                self.assertFalse(guard.claimed(self.run_directory, "csharp-review"))
+
+        # The same errno raised naming another path than the claim, such as the claims folder, is no refusal of the
+        # claim's link, so it names its error alone.
+        def elsewhere(*args: Any, **kwargs: Any) -> None:
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), str(self.claims))
+
+        with mock.patch.object(atomic_file, "create_bytes", elsewhere):
+            self.assertEqual(
+                "Code-review reviewer boundary: this reviewer's claim could not be made: "
+                f"[Errno {errno.EXDEV}] {os.strerror(errno.EXDEV)}: {str(self.claims)!r}.",
+                self.decide("Read", file_path=self.prompt()),
+            )
+        self.assert_no_claim()
+        # Any other refusal of the link names its error alone.
+        with mock.patch.object(os, "link", refusing(errno.EACCES)):
+            self.assertEqual(
+                "Code-review reviewer boundary: this reviewer's claim could not be made: "
+                f"[Errno {errno.EACCES}] the file system refused to link the finished copy into place: "
+                f"{os.strerror(errno.EACCES)}: {str(target)!r}.",
+                self.decide("Read", file_path=self.prompt()),
+            )
+        self.assert_no_claim()
+        self.claim()
 
 
 class ClaimsFolderTests(GuardFixture):
