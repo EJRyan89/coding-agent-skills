@@ -12,10 +12,24 @@ from git_client import GitClient
 
 AUTHOR = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
 
-# Each way a checkout follows another repository's pull request, with the reason tools/checkout_trust.py gives.
+
+def another_remote(branch: str, remote: str) -> str:
+    """The reason tools/checkout_trust.py gives for the branch `branch` following a branch of `remote`, not origin."""
+    return (
+        f"its branch {branch} follows {remote}, a remote other than origin, as gh pr checkout sets for a fork's pull"
+        " request; if the branch is your own, run git branch --unset-upstream, and push it to your fork without -u from"
+        " then on"
+    )
+
+
+# Each way a checkout follows another repository's pull request, or cannot be told from one, with the reason
+# tools/checkout_trust.py gives. A branch pushed to the user's own fork with -u follows that fork's branch, as
+# gh pr checkout tracks another author's pull request from a fork, so it is refused too.
 FOREIGN = {
     "pull-request-ref": "its branch main follows refs/pull/7/head, a pull request's ref",
-    "another-remote": "its branch main follows someone, not origin",
+    "pull-request-ref-on-another-remote": "its branch main follows refs/pull/7/head, a pull request's ref",
+    "another-remote": another_remote("main", "someone"),
+    "own-fork": another_remote("main", "fork"),
     "detached-unheld": "its HEAD is detached at a commit no branch of origin holds",
     "detached-mirrored-pull-request": "its HEAD is detached at a commit no branch of origin holds",
 }
@@ -44,6 +58,15 @@ def follow(root: Path, git: GitClient, remote: str, merge: str) -> None:
     git.output(["config", "branch.main.merge", merge], directory=root)
 
 
+def push_to_own_fork(root: Path, git: GitClient, *options: str) -> None:
+    """Add a bare repository beside `root` as the remote fork, as CONTRIBUTING.md has a contributor without push access
+    do, and push main to it with `options`, such as -u."""
+    fork = root.parent / f"{root.name} fork.git"
+    git.output(["init", "-q", "--bare", str(fork)])
+    git.output(["remote", "add", "fork", str(fork)], directory=root)
+    git.output(["push", "-q", *options, "fork", "main"], directory=root)
+
+
 def detach_at_mirrored_pull_request(root: Path, git: GitClient) -> None:
     """Mirror pull request 7's head, at the commit origin/main does not hold, under refs/remotes/origin/pr/7 as
     PULL_REQUESTS_REFSPEC fetches it, and detach HEAD there."""
@@ -56,8 +79,12 @@ def make_foreign(root: Path, git: GitClient, case: str) -> str:
     """Turn the own checkout at `root` into the case of FOREIGN named `case`, and return its reason."""
     if case == "pull-request-ref":
         follow(root, git, "origin", "refs/pull/7/head")
+    elif case == "pull-request-ref-on-another-remote":
+        follow(root, git, "someone", "refs/pull/7/head")
     elif case == "another-remote":
         follow(root, git, "someone", "refs/heads/topic")
+    elif case == "own-fork":
+        push_to_own_fork(root, git, "-u")
     elif case == "detached-unheld":
         git.output(["checkout", "-q", "--detach", "HEAD"], directory=root)
     elif case == "detached-mirrored-pull-request":
