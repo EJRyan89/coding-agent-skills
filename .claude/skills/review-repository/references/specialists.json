@@ -226,6 +226,16 @@
       "exclude": [],
       "resources": ["docs/releasing.md"],
       "when": null
+    },
+    {
+      "id": "workflow-token",
+      "category": "Workflow token",
+      "profile": ".claude/skills/review-repository/references/workflow-token.md",
+      "include": ["(?i)^."],
+      "exclude": [],
+      "resources": [],
+      "when": "token-mentions",
+      "shares_files": true
     }
   ],
   "conditions": {
@@ -260,6 +270,10 @@
         ".claude/skills/*/scripts/**/*-test.*",
         ".claude/skills/*/scripts/**/*.test.*"
       ]
+    },
+    "token-mentions": {
+      "script": ".claude/skills/review-repository/scripts/token_mentions.py",
+      "reads": []
     }
   }
 }

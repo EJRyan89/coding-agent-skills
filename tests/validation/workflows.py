@@ -595,7 +595,9 @@ _CREDENTIAL = (
     r"(?:tokens?|github_token|gh_token)(?:'s?)?(?!\w)"
     r"|\$\{\{ ?(?:secrets\.github_token|github\.token) ?\}\}|(?:secrets\.github_token|github\.token)(?!\w))"
 )
-_CREDENTIAL_PHRASE = rf"(?:(?:the|a|an|any|its|their|this|that) )?{_CREDENTIAL}"
+# A noun that stands for the token's use before it, as "access to the token" and "use of the token" do.
+_ACCESS = r"(?:(?:any |read |write |full )?access to |(?:any |the )?use of )"
+_CREDENTIAL_PHRASE = rf"{_ACCESS}?(?:(?:the|a|an|any|its|their|this|that) )?{_CREDENTIAL}"
 # An adverb that may stand between a verb's words, as "is ever given" does.
 _ADVERB = r"(?:(?:ever|also|then|otherwise|yet|still|now|\w+ly) )?"
 # What may hold the token: a step, job, leg, or workflow, after up to two words that qualify it, as "no other job"
@@ -615,10 +617,12 @@ _MODALS = r"(?:will|would|shall|should|can|could|may|might|must)"
 _PASSIVE = (
     rf"(?:(?:is|are|was|were)(?: being)?|gets?|got|(?:has|have|had) been|{_MODALS} (?:be|get)|(?:does|do|did) get)"
 )
-_ACTIVE = (
-    r"(?:holds?|has|have|receives?|gets?|sees?|uses?|runs? with|read|reach|access|ha(?:s|ve) access to|gets? access to)"
-)
-_PERFECT = r"(?:has|have|had) (?:held|had|received|got|gotten|seen|used|run with|read|reached|accessed|had access to)"
+_ACTIVE = r"(?:holds?|has|have|receives?|gets?|sees?|uses?|runs? with|read|reach|access)"
+# Each of those verbs bare, as a modal, a negation, or "to" writes it.
+_BARE = r"(?:hold|have|receive|get|see|use|read|reach|access|run with)"
+# Each participle of a verb that holds the token, which the perfect and the passive with "by" write.
+_HELD = r"(?:held|had|received|got|gotten|seen|used|read|reached|accessed)"
+_PERFECT = rf"(?:has|have|had) (?:{_HELD}|run with)"
 _GIVEN = (
     rf"(?:{_PASSIVE} {_ADVERB}{_GIVE}|{_ADVERB}(?:(?:{_MODALS}|does|do|did) {_ADVERB})?{_ACTIVE}|{_ADVERB}{_PERFECT})"
 )
@@ -630,20 +634,22 @@ _NEGATED_PASSIVE = (
 _NEGATED_ACTIVE = rf"(?:(?:do|does|did|{_MODALS}){_NOT}|won't|can't|cannot|shan't|never)"
 _NOT_GIVEN = (
     rf"(?:{_NEGATED_PASSIVE} {_ADVERB}{_GIVE}"
-    rf"|{_NEGATED_ACTIVE} {_ADVERB}(?:hold|have|receive|get|see|use|read|reach|access|run with|have access to)"
-    rf"|(?:has|have|had){_NOT} (?:held|had|received|got|gotten|seen|used|read|reached|accessed|run with)"
+    rf"|{_NEGATED_ACTIVE} {_ADVERB}{_BARE}"
+    rf"|(?:has|have|had){_NOT} (?:{_HELD}|run with)"
     r"|never (?:holds?|has|receives?|gets?|sees?|uses?)|runs? without)"
 )
-# The token named first: "the token is given to", "has been passed to", "reaches", "will reach", "goes to", or "is
-# available to".
+# The token named first: "the token is given to", "has been passed to", "reaches", "will reach", "goes to", "is
+# available to", or "is held by".
+_OPEN = r"(?:available|accessible|visible)"
+_TO_HOLDER = rf"(?:(?:{_GIVE}|{_OPEN}) to|{_HELD} by)"
 _TOKEN_GOES = (
-    rf"(?:{_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|(?:(?:{_MODALS}|does|do|did) )?(?:reach|go to)"
+    rf"(?:{_PASSIVE} {_ADVERB}{_TO_HOLDER}|(?:(?:{_MODALS}|does|do|did) )?(?:reach|go to)"
     r"|reaches|goes to|(?:has|have|had) (?:reached|gone to))"
 )
-# The token named first with its verb negated: "is not given to", "has never been passed to", "does not reach", "will
-# not go to", before "any", "a", or "the" and the holder.
+# The token named first with its verb negated: "is not given to", "has never been passed to", "is not held by", "does
+# not reach", "will not go to", before "any", "a", or "the" and the holder.
 _TOKEN_KEPT = (
-    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|{_NEGATED_ACTIVE} (?:reach|go to)"
+    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}{_TO_HOLDER}|{_NEGATED_ACTIVE} (?:reach|go to)"
     rf"|(?:has|have|had){_NOT} (?:reached|gone to)|never (?:reaches|goes to))"
     r"(?: (?:any|a|an|the|one)(?: single)?)?"
 )
@@ -652,30 +658,41 @@ _TOKEN_KEPT = (
 _HOLDER_END = r"(?![\w'])"
 # "Alone" or "only" closing a holder, and not opening a condition, as "only as", "only through", or "only when" does.
 _ALONE = r"(?:alone|only)(?! (?:as|through|by|via|when|if|where|while|in|from|with|under|after|before|because)\b)"
+# "Only" and its synonyms before a sole holder, as "is given only to the query job" and "is held by only one job" do.
+_SOLELY = r"(?:only|solely|exclusively)"
+# A participle that holds the token after the sole holder, as "the only job receiving the token" does.
+_HOLDING = r"(?:holding|having|receiving|getting|using|seeing|reading|accessing)"
 # Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
 # each false while ACTION_INPUT_STATEMENT holds, by the meaning each is named for: that a step, job, leg, or workflow
 # is given no token, or that one job alone is given it. A true statement about a step's command names the command, as
 # "no command a step runs is given the token" and "the only job whose command is given the run's token" do, so no
 # pattern reads it. The patterns read the verbs above and no others: a sentence in other words is the review's to judge.
+# They do not read, among others: a noun before the token other than _ACCESS's, as "a copy of the token" is; a verb that
+# withholds, as "lacks", "is kept from", "is withheld from", "stays out of", or "never leaves" does; two verbs joined,
+# as "can see or use" are; "nothing" or "the only one" for the holder; the claim split across sentences, as "Steps:
+# none is given the token." splits it; or the token named only as a credential or a secret.
 RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
     "no step is given the token": re.compile(
-        rf"\b{_NONE} {_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
+        rf"\b{_NONE} {_HOLDER} (?:(?:that|which) )?{_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|{_PASSIVE} {_ADVERB}{_GIVE}) {_NONE} "
         rf"{_HOLDER}{_HOLDER_END}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}{_HOLDER_END}"
     ),
     "the legs hold no token": re.compile(
-        rf"\b(?:holds?|held|holding) no {_CREDENTIAL}|\b{_HOLDER} {_GIVEN} no {_CREDENTIAL}"
+        rf"\b(?:holds?|held|holding|{_HOLDER} {_GIVEN}) no (?:{_ACCESS}(?:(?:the|a|an|any|its|their) )?)?{_CREDENTIAL}"
     ),
     "the only job given the run's token": re.compile(
-        rf"\bthe (?:only|one|sole|single) {_HOLDER} (?:(?:that|which) {_GIVEN}|given|holding|with) {_CREDENTIAL_PHRASE}"
+        rf"\bthe (?:only|one|sole|single) {_HOLDER} "
+        rf"(?:(?:that|which) {_GIVEN}|{_GIVE}|{_HOLDING}|with|to (?:(?:be|get) {_GIVE}|{_BARE})) "
+        rf"{_CREDENTIAL_PHRASE}"
         rf"|\bonly (?:the |one |this |that )?(?:[\w-]+ )?{_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_GOES} (?:the |this |that |one |a )?(?:[\w-]+ )?"
         rf"{_HOLDER_NOUN} {_ALONE}"
-        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_PASSIVE} {_ADVERB}{_GIVE} |reaches |goes )?"
-        r"(?:only|solely|exclusively) "
-        rf"(?:to )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}{_HOLDER_END}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_PASSIVE} {_ADVERB}(?:{_GIVE}|{_HELD}|{_OPEN}) |reaches |goes )?{_SOLELY} "
+        rf"(?:to |by )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}{_HOLDER_END}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_GOES} {_SOLELY} (?:the |this |that |one )?(?:[\w-]+ )?"
+        rf"{_HOLDER_NOUN}{_HOLDER_END}"
     ),
 }
 # The parts of the repository token_claim_texts leaves out, by path or folder, each with why no claim about this
