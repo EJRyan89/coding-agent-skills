@@ -50,7 +50,6 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
-import folder_walk
 import json_reader
 import json_writer
 import python_reader
@@ -65,8 +64,7 @@ from agent_skills import (
 )
 from check_provenance import Source
 from console import run_main
-from dotnet_solution import FileRefused, lexical_absolute
-from dotnet_solution import refusal as text_refusal
+from dotnet_solution import FileRefused
 from file_presence import NotAFile
 from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
@@ -244,11 +242,6 @@ def tree_reader(root: Path) -> TreeReader:
     return TreeReader(root)
 
 
-# Why the reader refuses a path that more than folder_walk.LINK_LIMIT links lie on the way to, such as a link to itself:
-# a loop, judged where it lies, which the read that follows refuses, rather than a link that leads out.
-LINK_LOOP = f"more than {folder_walk.LINK_LIMIT} links lie on the way to it, {folder_walk.NOT_FOLLOWED}"
-
-
 def read_bytes(root: Path, path: Path) -> bytes:
     """The bytes of `path`, a file below `root`, through the root's reader, within its bound and from a regular file
     only; the one read of a file's contents, with read_text. Raises OutsideLinkError for a path behind a link that
@@ -358,29 +351,18 @@ def link_out(root: Path, path: Path) -> Path | None:
             linked = reader.is_link(current)
         except (FileNotFoundError, NotADirectoryError):
             return None
-        if linked and _link_leaves(reader, current):
+        if linked and reader.leads_out(current):
             return current
     return None
-
-
-def _link_leaves(reader: TreeReader, path: Path) -> bool:
-    """Whether the reader refuses `path` for a link on its way that leads out of its tree: any refusal but a loop's."""
-    refused = reader.refusal(path)
-    return refused is not None and refused != LINK_LOOP
 
 
 def leaves_root(root: Path, path: Path) -> bool:
     """Whether `path` lies outside `root`, by its text or through a symbolic link or junction on its way that leads out
     of the repository, judged by the root's reader from each link's text, so nothing outside is looked at to decide. A
-    symbolic link loop is no such path: it is judged where it lies, and the read that follows refuses it, naming the
-    loop, rather than a warning reporting it as a link that leads out; and neither is a path with a name on its way
-    whose metadata cannot be read, which the read that follows refuses, naming why."""
-    reader = tree_reader(root)
-    if reader.refusal(path) is None:
-        return False
-    if text_refusal(lexical_absolute(path), reader.tree, devices=False) is not None:
-        return True
-    return outside_link(root, path) is not None
+    symbolic link loop is no such path, nor a link whose metadata or text cannot be read, nor one on the way to a name
+    whose metadata cannot be read: the reader refuses each, but not as a way out (`TreeReader.leads_out`), so the read
+    that follows refuses it, naming why, rather than a warning reporting it as a link that leads out."""
+    return tree_reader(root).leads_out(path)
 
 
 @dataclass
@@ -462,7 +444,7 @@ def walk_files(
             # A link entry the walk did not follow: one leading out of the root is the link the inventory warns of,
             # and any other the reader refuses, such as a link to itself, is an entry it cannot examine.
             refused = reader.refusal(entry.path)
-            if refused is None or _link_leaves(reader, entry.path):
+            if refused is None or reader.leads_out(entry.path):
                 listing.outside.append(entry.path)
             else:
                 listing.unread.append((entry.path, f"the entry cannot be examined: {refused}"))
@@ -785,7 +767,9 @@ def _unreadable_finding(root: Path, path: Path, error: Exception | str) -> Findi
 def _below_any(path: str | None, message: str, unread: dict[str, set[str]]) -> bool:
     """Whether the repository-relative `path` lies strictly below a folder in `unread` reported with this same
     `message`: the folder's own failure, naming the folder, which every path below it meets when its metadata cannot
-    be read. A path below a folder that only cannot be listed fails for a reason of its own, which is kept."""
+    be read. A path below a folder that cannot be listed, or whose entries the walk cannot examine, is kept: it fails
+    for a reason of its own, or the walk and the reader word one failure differently, and a finding carries no cause to
+    match beyond its message."""
     return path is not None and any(
         message in messages and posix_within(path, folder, strict=True) for folder, messages in unread.items()
     )
@@ -4227,12 +4211,17 @@ def print_report(report: str) -> None:
 
 def not_a_checkout(root: Path) -> str | None:
     """Why `root` is refused as a repository to audit, or None when a `.git` is in it: no `.git` at all, a link to
-    nothing included, since git reads nothing through it, and a `.git` that is a link leading out of the root, which
-    the audit does not follow to learn what is there, or a `.git` whose stat fails, named with the error rather than
-    read as none."""
+    nothing included, since git reads nothing through it; a `.git` that is a link leading out of the root, which the
+    audit does not follow to learn what is there; or a `.git` whose stat fails, named with the error rather than read
+    as none."""
     marker = root / ".git"
     try:
-        checkout = link_out(root, marker) is None and anything_at(root, marker)
+        if link_out(root, marker) is not None:
+            return (
+                f"{root} is not a Git repository the audit reads: its .git is a link that leads out of the repository, "
+                "which the audit does not follow"
+            )
+        checkout = anything_at(root, marker)
     except OSError as error:
         return f"{root} could not be examined for a .git: {error}"
     return None if checkout else f"{root} is not a Git repository (no .git found)"

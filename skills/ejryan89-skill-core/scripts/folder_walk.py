@@ -195,11 +195,17 @@ def names_below(path: Path, root: Path) -> list[str] | None:
     return list(target.parts[len(root.parts) :]) if within(Path(*head), root) else None
 
 
-def leads_outside(source: tuple[Path, Path], root: Path) -> str:
-    """The refusal of a path whose way leads out of `root` through the link `source`, naming it and its text."""
+class LeadsOutside(str):
+    """A refusal `leads_outside` gives: the text a caller prints, typed so a caller can tell a way that leads out of the
+    tree from any other refusal `followed_inside` gives without reading the text back."""
+
+
+def leads_outside(source: tuple[Path, Path], root: Path) -> LeadsOutside:
+    """The refusal of a path whose way leads out of `root` through the link `source`, naming it and its text, typed as
+    `LeadsOutside`."""
     link, written = source
     outside = f"outside the examined tree {root.as_posix()}, {NOT_FOLLOWED}"
-    return f"{link.as_posix()} is a link to {without_extended_prefix(written).as_posix()}, {outside}"
+    return LeadsOutside(f"{link.as_posix()} is a link to {without_extended_prefix(written).as_posix()}, {outside}")
 
 
 def leaves(entry: os.DirEntry[str], tree: Path) -> bool:

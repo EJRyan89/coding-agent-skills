@@ -54,7 +54,7 @@ from pathlib import Path
 import file_presence
 from atomic_file import is_read_only
 from dotnet_solution import decode_text, entry_key, lexical_absolute, read_bounded, refusal
-from folder_walk import SKIPPED_FOLDERS, Walk, followed_inside, walk_files
+from folder_walk import SKIPPED_FOLDERS, LeadsOutside, Walk, followed_inside, walk_files
 from folders_up import folders_up
 from link_probe import is_link_or_junction
 from path_keys import opens_as
@@ -94,6 +94,22 @@ class TreeReader:
             if inside is None:
                 return CLIMBS_OUT
         return None
+
+    def leads_out(self, path: Path) -> bool:
+        """Whether `refusal` refuses `path` because it leads out of the tree: by its text, or through a link on its way,
+        or a `..` a link's text holds, that leads outside (`folder_walk.LeadsOutside`). Any other refusal, a name whose
+        metadata cannot be read, a link whose text cannot be read, a loop of links, or a `..` of the path's own that
+        climbs out once the links before it are followed, is not one, and neither is a path the reader lets through."""
+        absolute = lexical_absolute(path)
+        if refusal(absolute, self.tree, devices=False) is not None:
+            return True
+        for named in dict.fromkeys((path.absolute(), absolute)):
+            inside, linked = followed_inside(named, self.tree)
+            if linked is not None:
+                return isinstance(linked, LeadsOutside)
+            if inside is None:
+                return False
+        return False
 
     def judged(self, path: Path) -> Path:
         """`path`, or `TreeRefused` when `refusal` refuses it."""

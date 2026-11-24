@@ -18,13 +18,15 @@ it looks for the instruction files a memory's overlaps are measured against and 
 reader bound to it, so no link leading out of either is followed, not even to learn what it is: an instruction file that
 a link on its way leads out is passed over unread, as a linked folder always was, a cited path through one is reported
 unreadable with the reader's reason, and a store whose MEMORY.md is such a link is no memory store. A cited path,
-relative, absolute, or ~, whose text names a place in the repository or the store is looked up through that tree's
-reader, so one through a link leading out of it, or whose `..` climbs out after such a link, is reported unreadable too.
-A cited path whose text names no place in either, or whose own `..` climbs out with no link before it, an --instructions
-file, the settings, and the deployer's manifest are read where they are named, as TREE_READ_ALLOWED states. The
-instruction files in the user's configuration directory (--user-dir) are read with their links followed, as Claude Code
-loads a CLAUDE.md linked from a dotfiles checkout: refusing a link guards against a repository the user did not write,
-and that directory is the user's own.
+relative, absolute, or ~, that names a place in the repository or the store, its `..` taken as text, wherever it was
+written from and however its `..` climbs out and back in, or that has a link on its way leading out of either, is looked
+up through that tree's reader, so one through such a link, or whose `..` climbs out after one, is reported unreadable
+too. A cited path that names neither and has no such link, an --instructions file, the settings, and the deployer's
+manifest are read where they are named, as TREE_READ_ALLOWED states. The instruction files in the user's configuration
+directory (--user-dir) are read with their links followed, as Claude Code loads a CLAUDE.md linked from a dotfiles
+checkout: refusing a link guards against a repository the user did not write, and that directory is the user's own. A
+cited path is read only as PATH_LIKE matches one, so a path holding `~` past its start, as a Windows short name such as
+RUNNER~1 does, is not read as a cited path: a stated limit.
 
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
@@ -287,9 +289,9 @@ PRESENCE_ALLOWED = {
 # or a setting names, the skill's own output, and the settings and git state that choose the store.
 TREE_READ_ALLOWED = {
     "outside_present": (
-        "whether anything is at a path a memory cites whose text names no place in the repository or the store, or "
-        "whose own `..` climbs out of the one it names with no link before it: the place it names, outside every tree "
-        "the audit examines"
+        "whether anything is at a path a memory cites that names no place in the repository or the store, its `..` "
+        "taken as text, and has no link on its way leading out of either: the place it names, outside every tree the "
+        "audit examines"
     ),
     "named_text": (
         "reads an instruction file the user names with --instructions, where it names, and one a pattern found in the "
@@ -607,22 +609,28 @@ def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
 
 def cited_places(cited: Path, bases: list[Path]) -> list[tuple[TreeReader | None, Path]]:
     """The places a cited path may name, each with the reader that looks it up: a relative one below each of `bases`,
-    the repository and the memory store, and an absolute or `~` one where it names, each through the reader bound to
-    a base its text names (`cited_place`). An absolute one that names no base is looked up where it names, once."""
-    if not cited.is_absolute():
-        return [cited_place(base, base / cited) for base in bases]
-    inside = [place for place in (cited_place(base, cited) for base in bases) if place[0] is not None]
-    return inside or [(None, cited)]
+    the repository and the memory store, and an absolute or `~` one where it names, each through the reader of a base
+    it names (`cited_place`), and looked up where it names only when it names none."""
+    candidates = [base / cited for base in bases] if not cited.is_absolute() else [cited]
+    return [cited_place(place, bases) for place in candidates]
 
 
-def cited_place(base: Path, place: Path) -> tuple[TreeReader | None, Path]:
-    """`place` with the reader bound to `base` that looks it up when its text names a place in `base`, so a link on its
-    way that leads out of `base`, or a `..` that climbs out after one, is refused rather than followed; None for one
-    whose text names no place in `base`, or whose own `..` climbs out of it with no link before it, which is looked up
-    where it names. Each name on its way is judged from its own metadata and each link from its text
-    (`folder_walk.followed_inside`), so nothing outside `base` is looked at to decide."""
-    inside, refused = followed_inside(place.absolute(), lexical_absolute(base))
-    return (None, place) if inside is None and refused is None else (TreeReader(base), place)
+def cited_place(place: Path, bases: list[Path]) -> tuple[TreeReader | None, Path]:
+    """`place` with the reader of the base it names, the deepest when several do, so a link on its way that leads out
+    of that base, or a `..` that climbs out after one, is refused rather than followed; None for one that names no base,
+    which is looked up where it names. A place names a base when its form with every `..` taken as text lies in it,
+    whatever base it was written from and however its own `..` climbs out and back in, or when a link on its way, its
+    own `..` taken after it, leads out of the base (`folder_walk.followed_inside`), each name judged from its own
+    metadata and each link from its text, so nothing outside a base is looked at to decide."""
+    owners = [
+        base
+        for base in bases
+        if within(lexical_absolute(place), lexical_absolute(base))
+        or followed_inside(place.absolute(), lexical_absolute(base))[1] is not None
+    ]
+    if not owners:
+        return None, place
+    return TreeReader(max(owners, key=lambda base: len(lexical_absolute(base).parts))), place
 
 
 def cited_presence(places: list[tuple[TreeReader | None, Path]]) -> tuple[bool | None, str | None]:
@@ -743,43 +751,32 @@ def destination_key(path: Path) -> str:
 
 
 def tree_present(reader: TreeReader, path: Path) -> bool:
-    """Whether a regular file is at `path` in `reader`'s tree, following links inside it; False for one that a link
-    on its way leads out of, which is passed over unread, and the reader's refusal for any other it refuses."""
-    if reader.refusal(path) is not None and linked_way(reader, path):
+    """Whether a regular file is at `path` in `reader`'s tree, following links inside it; False for one that leads out
+    of the tree (`TreeReader.leads_out`), which is passed over unread. Any other refusal, such as a name whose metadata
+    cannot be read or a loop of links, raises the reader's `TreeRefused`, so the audit fails rather than losing the
+    file's overlaps."""
+    if reader.leads_out(path):
         return False
     return reader.present(path, other_is_absent=True)
-
-
-def linked_way(reader: TreeReader, path: Path) -> bool:
-    """Whether a symbolic link or junction lies on the way to `path` from `reader`'s tree, each name judged from its own
-    metadata through the reader, so no link is followed to tell; a name not there ends the look."""
-    current = reader.tree
-    for part in lexical_absolute(path).relative_to(reader.tree).parts:
-        current = current / part
-        try:
-            if reader.is_link(current):
-                return True
-        except (FileNotFoundError, NotADirectoryError):
-            return False
-    return False
 
 
 def pattern_files(root: Path, pattern: str) -> list[Path]:
     """The paths below `root` a destination pattern names, in path order.
 
     A pattern without `**/` names one file, which `destination_sources` looks up through a reader bound to `root`.
-    `<folder>/**/<name>` names each file below the folder that a reader bound to `root` finds with
-    ejryan89-skill-core's folder walk, which skips its one stated set of folders and every nested checkout, and enters
-    no link, nor follows one leading out of `root` even to learn what it is: a name with a wildcard as fnmatch matches
-    it, and a fixed name as the folder holding the file gives the entry for it (`path_keys.opens_as`), as a runtime
-    opens it, so a `claude.md` is the folder's CLAUDE.md where it folds case. A folder a link on its way leads out of
-    `root` names none. A folder the walk cannot list, or an entry it cannot examine, raises the error it met."""
+    `<folder>/**/<name>` names each file below the folder that a reader bound to `root` finds with ejryan89-skill-core's
+    folder walk, which skips its one stated set of folders and every nested checkout, and enters no link, nor follows
+    one leading out of `root` even to learn what it is: a name with a wildcard as fnmatch matches it, and a fixed name
+    as the folder holding the file gives the entry for it (`path_keys.opens_as`), as a runtime opens it, so a
+    `claude.md` is the folder's CLAUDE.md where it folds case. A folder that leads out of `root`
+    (`TreeReader.leads_out`) names none, and one the reader refuses otherwise raises its `TreeRefused`. A folder the
+    walk cannot list, or an entry it cannot examine, raises the error it met."""
     folder, below, name = pattern.rpartition("**/")
     if not below:
         return [root / pattern]
     reader = TreeReader(root)
     base = root / folder if folder else root
-    if reader.refusal(base) is not None and linked_way(reader, base):
+    if reader.leads_out(base):
         return []
     if not reader.folder(base):
         return []

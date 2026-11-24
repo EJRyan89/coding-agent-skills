@@ -114,7 +114,7 @@ artifacts rather than authority sources.
 
 ## Git repository check is CLI-only
 
-The CLI checks that something is at `args.root / ".git"`, through the repository's tree reader (not equivalent to `git rev-parse --show-toplevel`): a `.git` that is a link to nothing is refused as no Git repository, since nothing can be read through it, and so is a `.git` that is a link leading out of the repository, which the audit does not follow, and a root whose `.git` cannot be examined is refused naming the reason. The `audit()` library function does not enforce repository identity.
+The CLI checks that something is at `args.root / ".git"`, through the repository's tree reader (not equivalent to `git rev-parse --show-toplevel`): a `.git` that is a link to nothing is refused as no Git repository, since nothing can be read through it, while a `.git` that is a link leading out of the repository is refused as one the audit does not follow, naming it, and a root whose `.git` cannot be examined is refused naming the reason. The `audit()` library function does not enforce repository identity.
 
 ## Read-only contract
 

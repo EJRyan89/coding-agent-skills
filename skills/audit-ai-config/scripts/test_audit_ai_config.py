@@ -7010,13 +7010,13 @@ class PresenceAnswerTests(unittest.TestCase):
         )
         checkout = self.root / "checkout"
         checkout.mkdir()
-        (checkout / ".git").symlink_to(self.root / "no-git")
+        (checkout / ".git").symlink_to(checkout / "no-git")
         self.assertEqual(f"{checkout} is not a Git repository (no .git found)", audit.not_a_checkout(checkout))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_a_git_that_is_a_link_out_of_the_root_is_no_checkout_whatever_it_leads_to(self) -> None:
         # The audit does not follow a link out of the root to learn what is there, so a .git leading out to a real
-        # Git directory, or to nothing, is refused as no Git repository, and nothing outside is looked at.
+        # Git directory, or to nothing, is refused, naming the link, and nothing outside is looked at.
         outside = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, outside)
         (outside / "git").mkdir()
@@ -7029,7 +7029,11 @@ class PresenceAnswerTests(unittest.TestCase):
                 with looked_at(outside) as looked:
                     refusal = audit.not_a_checkout(checkout)
                 self.assertEqual([], looked)
-                self.assertEqual(f"{checkout} is not a Git repository (no .git found)", refusal)
+                self.assertEqual(
+                    f"{checkout} is not a Git repository the audit reads: its .git is a link that leads out of the "
+                    "repository, which the audit does not follow",
+                    refusal,
+                )
 
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
@@ -7202,6 +7206,17 @@ class OutsideLinkTests(unittest.TestCase):
         result = audit.audit(self.root)
         self.assertNotIn(("WARNING", "inventory", "loop"), self._outside_links(result))
         [error] = [f.message for f in result.findings if f.path == "loop" and f.severity == "ERROR"]
+        self.assertIn("cannot be examined", error)
+
+    def test_a_link_inside_refused_for_permission_is_an_entry_it_cannot_examine_never_a_link_out(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, to a folder inside the root whose name cannot be
+        # examined, as a folder without search permission makes it: refused, but not as a way out of the repository.
+        _write_fixture(self.root, {"locked/inner/AGENTS.md": "# Inner\n"})
+        _link_directory(self.root / "locked" / "inner", self.root / "lnk")
+        with os_stat_denied(self.root / "locked" / "inner"):
+            result = audit.audit(self.root)
+        self.assertNotIn(("WARNING", "inventory", "lnk"), self._outside_links(result))
+        [error] = [f.message for f in result.findings if f.path == "lnk" and f.severity == "ERROR"]
         self.assertIn("cannot be examined", error)
 
     def test_a_file_past_the_readers_bound_is_never_read(self) -> None:
