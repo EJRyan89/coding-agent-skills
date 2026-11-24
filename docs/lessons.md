@@ -1798,7 +1798,8 @@ brief repeats or stands in for.
 - **Use:** `pull_request:type_checks`, which prints the type-check jobs a change runs with the runner's command for
   each.
 - **Guard:** `tests/test_run_validation.py::PullRequestOnlySelection::test_a_title_or_a_body_alone_runs_only_the_pull_request_checks_and_says_so`,
-  `.claude/skills/implement-change/scripts/test_pull_request.py::TypeChecksCommandTests`
+  `.claude/skills/implement-change/scripts/test_pull_request.py::TypeChecksCommandTests`,
+  `.claude/skills/implement-change/scripts/test_fix_brief.py::test_the_rules_name_the_exact_command_of_each_check_they_ask_for`
 - **Search for:** `rg -n '[Tt]itle and body checks|on the changed files|[Pp]olicies pass' -g '*.md'` where no command
   follows on the same line or the next; a brief's checks line that names a check, such as the policies or mypy,
   without its `-k` selector or the script that prints it.
@@ -1820,7 +1821,8 @@ brief repeats or stands in for.
   `lessons_patterns:listing`, the patterns the files a change will touch meet, listed before it is planned.
 - **Guard:** `.claude/skills/change-skill/scripts/test_change_skill.py::GateTests`,
   `.claude/skills/implement-change/scripts/test_lessons_patterns.py::test_a_pattern_is_met_by_a_file_that_is_a_module_its_use_names`,
-  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_module_a_trust_boundary_module_imports_is_routed_or_named_outside_the_boundary`
+  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_module_a_trust_boundary_module_imports_is_routed_or_named_outside_the_boundary`,
+  `.claude/skills/implement-change/scripts/test_fix_brief.py::test_the_rules_name_the_exact_command_of_each_check_they_ask_for`
 - **Search for:** `rg -n '^- A pull request that changes|cites its .evaluate-skill. run' -g CLAUDE.md`, each gate
   checked against what `.claude/skills/change-skill/SKILL.md` runs; a new import into a module
   `TRUST_BOUNDARY_SCRIPTS` lists with no route in `specialists.json`; a review finding on a pull request that a
