@@ -905,8 +905,9 @@ def ladder_project(references: Iterable[str], package: str | None = None) -> str
 class PathWalkBoundTests(Fixture):
     """The why walk keeps the nodes each path has passed, since the chains are the answer, so a graph of diamonds has
     exponentially many paths through it. The walk stops once the answer is truncated and enters no package or
-    project from which no chain ends at the name, so its work is bounded by the chains it prints, never by the paths
-    it does not print. Each test counts the walk's steps, never the time it takes."""
+    project from which no chain ends at the name, so on a ladder of diamonds its work follows the chains it prints,
+    not every path through the ladder; the forms it cannot bound are stated in `PathFinder`'s docstring. Each test
+    counts the walk's steps, never the time it takes."""
 
     def walk_steps(self, *arguments: str) -> tuple[int, list[list[str]]]:
         """Run the script and count every package and project the why walk enters."""

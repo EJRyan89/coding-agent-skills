@@ -1159,7 +1159,14 @@ class PathFinder:
     every path to it. So the walk enters only the projects and packages from which a chain can end at the name
     (`reaching_projects`, `reaching_packages`), each set read once per question, and stops once a chain past the
     limit has truncated the answer: a graph dense in diamonds has exponentially many paths, and none of those past
-    the limit, or ending elsewhere, is printed."""
+    the limit, or ending elsewhere, is printed.
+
+    What this cannot bound is stated: whether a chain can end at the name is read without the path's `seen`, and a
+    chain already found is not counted again, so two forms still walk every path. Project references that lead
+    back to the project the walk started from enter branches whose only way to the name is through a project the
+    path has passed, and a ladder of project pairs sharing one `AssemblyName` finds each chain again under the same
+    hops, never reaching the limit. Neither is a form a working solution writes: a reference cycle fails restore with
+    NU1108, and a project referencing two projects of one `AssemblyName` gets both assemblies at one name."""
 
     def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
         self.graph = graph
