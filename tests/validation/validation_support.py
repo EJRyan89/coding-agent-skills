@@ -1484,12 +1484,10 @@ def _untracked_sidecars(root: Path, names: list[str]) -> frozenset[str]:
 
 
 def _is_own_file(path: Path, folders: dict[Path, frozenset[str] | None]) -> bool:
-    """Whether an untracked file git lists is the checkout's own rather than a sidecar: whether
+    """Whether an untracked `._` file git lists is the checkout's own rather than a sidecar: whether
     `file_presence.listed`, which judges a `._<name>` entry by its sibling in the same listing, its own metadata, and
-    its header, keeps it. Only a `._` name has its folder listed, once, kept in `folders`; a folder it cannot list
-    keeps the file, whose own read reports it."""
-    if not path.name.startswith(apple_double.PREFIX):
-        return True
+    its header, keeps it. Each folder is listed once, kept in `folders`; a folder it cannot list keeps the file, whose
+    own read reports it."""
     if path.parent not in folders:
         try:
             folders[path.parent] = frozenset(entry.name for entry in file_presence.listed(path.parent))
