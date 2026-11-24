@@ -1,9 +1,10 @@
 """The one reading of the number a name stands for when a program exits with it: a module's int constants and the
 constants its imports name, read from the syntax tree without running the module.
 
-Validation's exit tables (`tests/validation/exit_tables.py`) and audit-skill's inventory
-(`skills/audit-skill/scripts/skill_inventory.py`) read an exit code given by a name here, so a form either learns
-reaches both. `read` takes a module's constants: each name its own scope binds, at the top or in a module-level `if`,
+Validation's exit tables (`tests/validation/exit_tables.py`) and script-results policy
+(`tests/validation/skill_scripts.py`) and audit-skill's inventory (`skills/audit-skill/scripts/skill_inventory.py`)
+read an exit code given by a name here, so a form any of them learns reaches all three.
+`read` takes a module's constants: each name its own scope binds, at the top or in a module-level `if`,
 `try`, `with`, loop, or `match` block, by a plain, chained, or annotated assignment of an int literal, `Final` or not.
 A name a binding of any other form reaches, an unpacking, an augmented assignment, a loop or `with` target, a walrus,
 a `del`, an `except ... as`, a match capture, a function or class definition, an import beside an assignment, or a
