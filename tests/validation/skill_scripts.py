@@ -76,6 +76,7 @@ from python_checks import (
     reaches,
     sanctioned_problems,
 )
+from python_names import TYPE_PARAMETERS
 from skill_roots import SKILL_CORE
 from text_lines import LINE_BREAK, LINE_FEED, line_index, line_starts, text_lines
 from toolchain import powershell_json
@@ -609,16 +610,20 @@ def _reached_name(node: ast.expr, resolver: CallableResolver) -> str:
 
 
 def _type_uses(tree: ast.Module, resolver: CallableResolver) -> set[int]:
-    """The nodes that use a class as a type, which starts nothing: an annotation, a subscripted generic such as
-    subprocess.Popen[bytes], and the class isinstance or issubclass checks against. A subscripted generic is a name
-    or an attribute; a collection indexed where it is written, as {"run": subprocess.run}["run"], hands on each runner
-    it holds."""
+    """The nodes that use a class as a type, which starts nothing: an annotation, a type statement's value, a type
+    parameter's bound, a subscripted generic such as subprocess.Popen[bytes], and the class isinstance or issubclass
+    checks against. A subscripted generic is a name or an attribute; a collection indexed where it is written, as
+    {"run": subprocess.run}["run"], hands on each runner it holds."""
     roots: list[ast.expr] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.arg | ast.AnnAssign) and node.annotation is not None:
             roots.append(node.annotation)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
             roots.append(node.returns)
+        elif isinstance(node, ast.TypeAlias):
+            roots.append(node.value)
+        elif isinstance(node, ast.TypeVar) and node.bound is not None:
+            roots.append(node.bound)
         elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name | ast.Attribute):
             roots.append(node.value)
         elif isinstance(node, ast.Call) and resolver.name(node.func) in {"isinstance", "issubclass"}:
@@ -629,8 +634,8 @@ def _type_uses(tree: ast.Module, resolver: CallableResolver) -> set[int]:
 class _NameBindings:
     """Every value the module binds each name to, in the lexical scope that owns the name: an assigned value, each
     element of what a loop or a comprehension walks, or None for a store whose value the reader cannot read, such as
-    a with statement's target, an import, or an unpacking it cannot pair. A function's parameters are read through
-    its calls instead."""
+    a with statement's target, an import, a type statement, a type parameter, or an unpacking it cannot pair. A
+    function's parameters are read through its calls instead."""
 
     def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
         self.scopes = resolver.scopes
@@ -649,6 +654,10 @@ class _NameBindings:
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 for alias in node.names:
                     self.values[self.key(node, (alias.asname or alias.name).split(".")[0])].append(None)
+            elif isinstance(node, ast.TypeAlias):
+                self._bind(node.name, None, node.name)
+            elif isinstance(node, TYPE_PARAMETERS):
+                self.values[self.key(node, node.name)].append(None)
 
     def key(self, node: ast.AST, name: str) -> tuple[int, str]:
         """The scope that owns a name where node uses or stores it, and the name."""

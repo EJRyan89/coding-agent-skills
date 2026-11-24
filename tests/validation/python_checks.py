@@ -49,6 +49,7 @@ from git_client import GLOBAL_VALUE_OPTIONS
 from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, relative_within
+from python_names import TYPE_PARAMETERS
 from runtime_support import names_git
 from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
@@ -621,10 +622,11 @@ def _keeps_clear(node: ast.Name, parents: dict[int, ast.AST], given: set[int]) -
 def _cleared_names(tree: ast.Module, resolver: CallableResolver, given: set[int]) -> set[tuple[int, str]]:
     """Each name, by the scope that binds it, bound only to an environment without_repository_variables builds and
     changed in place, if at all, only by keys that name none of git's repository-selecting variables, wherever in the
-    module the name is read, closures included. A parameter is bound by the caller, so it is none. An update in place,
-    such as `env.update(...)`, `env[key] = ...`, or `env |= ...`, keeps the name cleared only when every key it can add
-    is such a constant, as `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as
-    `env.update(os.environ)`, does not, and neither does a read that hands the mapping on (_keeps_clear)."""
+    module the name is read, closures included. A parameter is bound by the caller, and a type parameter to a type, so
+    neither is one. An update in place, such as `env.update(...)`, `env[key] = ...`, or `env |= ...`, keeps the name
+    cleared only when every key it can add is such a constant, as `env.update({"LC_ALL": "C"})`; one that adds keys from
+    elsewhere, such as `env.update(os.environ)`, does not, and neither does a read that hands the mapping on
+    (_keeps_clear)."""
     assigned: dict[int, ast.expr] = {}
     augmented: dict[int, ast.AugAssign] = {}
     parents: dict[int, ast.AST] = {}
@@ -640,6 +642,8 @@ def _cleared_names(tree: ast.Module, resolver: CallableResolver, given: set[int]
     for node in ast.walk(tree):
         if isinstance(node, ast.arg):
             name, cleared = node.arg, False
+        elif isinstance(node, TYPE_PARAMETERS):
+            name, cleared = node.name, False
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             # A proven augmented union leaves the name as its bindings make it; an unproven one makes it not cleared.
             change = _updated_name(augmented[id(node)]) if id(node) in augmented else None
@@ -946,9 +950,10 @@ def resolve_problems(root: Path, files: list[Path]) -> list[str]:
 # a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
 # whose pattern is an `|` of sequence patterns, which reads no item's truth. A parameter's default is read in its own
 # function's scope, where Python evaluates it in the scope around, so a suppress given as `def g(quiet=quiet):` leads
-# back to its own name and is not read. The link tests are no presence
-# predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed
-# stat through.
+# back to its own name and is not read. A suppress the module binds to a name a class's type parameter hides in the
+# class's methods is read as the module's, so the policy refuses there what it should pass. The link tests are no
+# presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a
+# failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -1084,9 +1089,9 @@ def _parameter_default(node: ast.arg, parent: ast.AST | None) -> ast.expr | None
 
 
 def _scope_bindings(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[str, dict[str, list[_Binding]]]:
-    """Each scope's bindings of each name: a store of the name, a parameter, with its default, an import, which binds
-    a value of another module, an item stored into it, and a call of a method that adds to it, as `found.append(p)`
-    is, each with the value it binds and its guards."""
+    """Each scope's bindings of each name: a store of the name, a parameter, with its default, a type parameter, an
+    import, which binds a value of another module, an item stored into it, and a call of a method that adds to it, as
+    `found.append(p)` is, each with the value it binds and its guards."""
     found: dict[str, dict[str, list[_Binding]]] = {}
     for node, scope in scoped_nodes(tree.body):
         names: list[str] = []
@@ -1097,6 +1102,8 @@ def _scope_bindings(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[str, 
             names, value = [node.id], _bound_value(node, parent, parents)
         elif isinstance(node, ast.arg):
             names, default = [node.arg], _parameter_default(node, parent)
+        elif isinstance(node, TYPE_PARAMETERS):
+            names = [node.name]
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
         elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
@@ -6939,6 +6946,8 @@ def _top_level_bindings(node: ast.stmt) -> list[tuple[str, str]]:
         return [(name, kind) for target in targets for name in _stored_names(target)]
     if isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor):
         return [(name, "") for name in _stored_names(node.target)]
+    if isinstance(node, ast.TypeAlias):
+        return [(node.name.id, "")]
     if isinstance(node, ast.With | ast.AsyncWith):
         return [(name, "") for item in node.items for name in _stored_names(item.optional_vars)]
     return []

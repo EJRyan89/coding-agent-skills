@@ -298,7 +298,7 @@ from module_assignments import assigned_names, sole_assignment
 from path_containment import resolved_path, within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
-from python_names import import_aliases, qualified_name
+from python_names import import_aliases, qualified_name, type_parameter_names
 from suite_names import is_suite_name
 from text_lines import LINE_FEED, line_index, line_starts, text_lines
 from tree_reader import TreeReader, TreeRefused
@@ -2835,6 +2835,17 @@ def local_names(function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -
     return names - declared
 
 
+def _runs_around(node: ast.AST, holder: ast.AST) -> bool:
+    """Whether a node of a definition runs in the scope around it, outside its type parameters' scope: in a decorator,
+    or in a parameter's default."""
+    if not isinstance(holder, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return False
+    around: list[ast.expr | None] = [*holder.decorator_list]
+    if not isinstance(holder, ast.ClassDef):
+        around += [*holder.args.defaults, *holder.args.kw_defaults]
+    return any(inner is node for item in around if item is not None for inner in ast.walk(item))
+
+
 class ExitReading:
     """The codes one script's exit expressions give: each literal, and each name a constant binds, read by
     ejryan89-skill-core's exit_constants through the module's imports and the modules `locate` finds; each name no
@@ -2849,9 +2860,12 @@ class ExitReading:
         self.unread: dict[tuple[int, str], None] = {}
 
     def is_local(self, node: ast.Name) -> bool:
-        """Whether a function or lambda that holds the name binds it itself."""
+        """Whether a function or lambda that holds the name binds it itself, or a function, class, or type statement
+        that holds it binds it as a type parameter, outside the decorators and the defaults, which run around it."""
         holder = self.parents.get(id(node))
         while holder is not None:
+            if node.id in type_parameter_names(holder) and not _runs_around(node, holder):
+                return True
             if isinstance(holder, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
                 if id(holder) not in self.locals_of:
                     self.locals_of[id(holder)] = local_names(holder)
