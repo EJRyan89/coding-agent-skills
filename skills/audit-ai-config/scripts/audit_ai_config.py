@@ -36,6 +36,7 @@ import ast
 import contextlib
 import errno
 import fnmatch
+import functools
 import hashlib
 import re
 import sys
@@ -61,11 +62,12 @@ from agent_skills import (
     RESERVED_WORDS,
     SKILL_FILE,
     XML_TAG_PATTERN,
-    is_skill_file,
 )
 from check_provenance import Source
 from console import run_main
-from file_presence import NotAFile, is_directory, is_present, is_there, listed
+from dotnet_solution import FileRefused, lexical_absolute
+from dotnet_solution import refusal as text_refusal
+from file_presence import NotAFile
 from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
@@ -79,18 +81,34 @@ from frontmatter import (
     user_only_value,
 )
 from frontmatter import split as split_frontmatter
-from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 from markdown_sections import ATX_HEADING, code_block_lines, find_fences, without_code_spans
 from module_assignments import assigned_names, sole_assignment
-from path_containment import resolved_path, within
+from path_containment import posix_within, resolved_path
 from path_keys import opens_as
 from text_lines import text_lines
+from tree_reader import TreeReader
 from typed_fields import FieldError, FieldReader
 
 # ---------------------------------------------------------------------------
 # Finding model
 # ---------------------------------------------------------------------------
+
+# Every stat, listing, walk, and read of a path below the repository goes through its tree reader (`tree_reader`). The
+# reads that do not, each with why.
+TREE_READ_ALLOWED = {
+    "opened_as": (
+        "asks the folder holding a found file, inside the root, how it compares names: path_keys lists that folder and "
+        "examines the one entry from its own metadata, never following it"
+    ),
+    "examined_root": (
+        "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
+        "the tree the reader is bound to"
+    ),
+    "reported_sources": (
+        "reads references/provenance.json, the skill's own file, or the file a caller names: no file of the repository"
+    ),
+}
 
 PRINT_ALLOWED = {
     "print_report": "prints the relay, Markdown, or JSON report the user asked for, as it is, over many lines",
@@ -163,25 +181,6 @@ TRANSPORT_COMPATIBILITY: dict[str, set[str]] = {
 }
 
 
-# The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
-# the answer it should give.
-PRESENCE_ALLOWED = {
-    "_has_generator_script": "answers whether a generator naming CLAUDE.md is found; the inventory reports a "
-    "generator it cannot read as an ERROR",
-    "found_file": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
-    "cannot examine as an ERROR",
-    "found_folder": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
-    "cannot examine as an ERROR",
-    "_has_ci_parity_workflow": "answers whether a parity workflow is found; the inventory, or the check that reads the"
-    " path, reports one it cannot examine as an ERROR",
-    "_expected_skill_shim": "the .claude/skills checks report a canonical skill they cannot read",
-    "check_orphans": "the check that reads each candidate reports one it cannot read",
-    "_claude_rules": "lists the rules it can read; the inventory, or the check that reads the path, reports one it "
-    "cannot examine as an ERROR",
-    "check_limitations": "check_copilot_configuration reports a folder it cannot list as an ERROR",
-}
-
-
 @dataclass
 class Finding:
     severity: str  # ERROR, WARNING, INFO
@@ -243,22 +242,42 @@ class OutsideLinkError(OSError):
     check that reports a file it could not read reports this one too, and none reads through the link."""
 
 
+@functools.cache
+def tree_reader(root: Path) -> TreeReader:
+    """The one reader of the repository the audit examines: every stat, listing, walk, and read of a path below `root`
+    goes through it, so nothing is followed out of the root, not even to learn where a link leads."""
+    return TreeReader(root)
+
+
+# Why the reader refuses a path that more than folder_walk.LINK_LIMIT links lie on the way to, such as a link to itself:
+# a loop, judged where it lies, which the read that follows refuses, rather than a link that leads out.
+LINK_LOOP = f"more than {folder_walk.LINK_LIMIT} links lie on the way to it, {folder_walk.NOT_FOLLOWED}"
+
+
 def read_bytes(root: Path, path: Path) -> bytes:
-    """The bytes of `path`, a file below `root`; the one read of a file's contents, with read_text. Raises
-    OutsideLinkError for a path behind a link that leads out of the root, whether a walk found it or a check names it,
-    since a walk's check covers only the paths it finds."""
+    """The bytes of `path`, a file below `root`, through the root's reader, within its bound and from a regular file
+    only; the one read of a file's contents, with read_text. Raises OutsideLinkError for a path behind a link that
+    leads out of the root, whether a walk found it or a check names it, since a walk's check covers only the paths it
+    finds, and the reader's refusal, an OSError, for a path it does not read."""
     _refuse_outside_link(root, path)
-    return path.read_bytes()
+    try:
+        return tree_reader(root).contents(path)
+    except FileRefused as refused:
+        # A read the operating system refused is reported by its own error, as every check names one; the reader's
+        # own refusals, a file that is not regular or past its bound, by the reader's words.
+        if isinstance(refused.__context__, OSError):
+            raise refused.__context__ from None
+        raise
 
 
 def read_text(root: Path, path: Path) -> str:
-    """The text of `path`, a file below `root`, refused as read_bytes refuses one."""
-    _refuse_outside_link(root, path)
-    return path.read_text(encoding="utf-8-sig")
+    """The text of `path`, a file below `root`, refused as read_bytes refuses one, decoded as Path.read_text decodes
+    UTF-8 with a byte-order mark: each line ending read as `\\n`."""
+    return read_bytes(root, path).decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _refuse_outside_link(root: Path, path: Path) -> None:
-    link = outside_link(root, path)
+    link = link_out(root, path)
     if link is not None:
         raise OutsideLinkError(
             f"it lies behind {link.relative_to(root).as_posix()}, a link that leads out of the repository, which the "
@@ -266,22 +285,47 @@ def _refuse_outside_link(root: Path, path: Path) -> None:
         )
 
 
-def found_file(path: Path) -> bool:
+def file_at(root: Path, path: Path, *, other_is_absent: bool = False) -> bool:
+    """`file_presence.is_present` of `path` through the root's reader: whether a regular file is there. A path behind a
+    link that leads out of the root is there as far as the audit looks, which never looks past the link, so the read
+    that follows refuses it with OutsideLinkError."""
+    if link_out(root, path) is not None:
+        return True
+    return tree_reader(root).present(path, other_is_absent=other_is_absent)
+
+
+def folder_at(root: Path, path: Path, *, other_is_absent: bool = False) -> bool:
+    """`file_presence.is_directory` of `path` through the root's reader, a path behind a link that leads out of the
+    root answering as `file_at` answers, so the listing or walk that follows names the link."""
+    if link_out(root, path) is not None:
+        return True
+    return tree_reader(root).folder(path, other_is_absent=other_is_absent)
+
+
+def anything_at(root: Path, path: Path) -> bool:
+    """`file_presence.is_there` of `path` through the root's reader, a path behind a link that leads out of the root
+    answering as `file_at` answers."""
+    if link_out(root, path) is not None:
+        return True
+    return tree_reader(root).there(path)
+
+
+def found_file(root: Path, path: Path) -> bool:
     """Whether a regular file is at `path`, for a check that only names or counts what it finds. One whose stat fails,
     or something else in its place, is not found here: the inventory, or the check that reads the file, reports it as
     an ERROR, so the audit never passes by it, and Path.is_file, which raises the stat's error before Python 3.14 and
     answers False from it, is not asked."""
     try:
-        return is_present(path)
+        return file_at(root, path)
     except OSError:
         return False
 
 
-def found_folder(path: Path) -> bool:
+def found_folder(root: Path, path: Path) -> bool:
     """Whether a folder is at `path`, for a check that only names or counts what it finds, as found_file answers for a
     file: the inventory or check_copilot_configuration reports a folder that cannot be examined as an ERROR."""
     try:
-        return is_directory(path)
+        return folder_at(root, path)
     except OSError:
         return False
 
@@ -296,31 +340,52 @@ def read_text_or_none(root: Path, path: Path) -> str | None:
 
 def outside_link(root: Path, path: Path) -> Path | None:
     """The symbolic link or junction that leads out of `root` on the way to `path`, a path below it: `path` itself or a
-    folder above it, the first one, or None when there is none. Each step is judged by link_probe from its own
-    metadata, and a link by where it resolves to, so a link whose target stays inside the root is no such link; a
-    step that does not exist ends the search, since nothing behind it can be read."""
+    folder above it, the first one, or None when there is none, as `link_out` finds it, a step that cannot be examined
+    ending the search too: a check that names what it finds asks this, and the read that follows refuses such a step,
+    naming why."""
+    try:
+        return link_out(root, path)
+    except OSError:
+        return None
+
+
+def link_out(root: Path, path: Path) -> Path | None:
+    """`outside_link`'s answer, judged step by step through the root's reader, each name from its own metadata and a
+    link by its text alone, so nothing it leads to is looked at and a link whose target stays inside the root is no
+    such link; a step that does not exist ends the search, since nothing behind it can be read. A step whose metadata
+    cannot be read raises the OSError that names it, so a path whose kind could not be examined is never read, nor
+    taken for there or not there, as one with no link on its way."""
+    reader = tree_reader(root)
     current = root
     for part in path.relative_to(root).parts:
         current = current / part
         try:
-            linked = is_link_or_junction(current)
-        except OSError:
+            linked = reader.is_link(current)
+        except (FileNotFoundError, NotADirectoryError):
             return None
-        if linked and leaves_root(root, current):
+        if linked and _link_leaves(reader, current):
             return current
     return None
 
 
+def _link_leaves(reader: TreeReader, path: Path) -> bool:
+    """Whether the reader refuses `path` for a link on its way that leads out of its tree: any refusal but a loop's."""
+    refused = reader.refusal(path)
+    return refused is not None and refused != LINK_LOOP
+
+
 def leaves_root(root: Path, path: Path) -> bool:
-    """Whether `path` lies outside `root` once its links and `..` parts are resolved, as a symbolic link or junction
-    that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
-    through it. A symbolic link loop is no such path: `resolved_path` leaves it unresolved on every Python version, so
-    it is judged where it lies, and the read that follows refuses it, naming the loop, rather than a warning reporting
-    it as a link that leads out."""
-    try:
-        return not within(resolved_path(path), resolved_path(root))
-    except (OSError, ValueError):
+    """Whether `path` lies outside `root`, by its text or through a symbolic link or junction on its way that leads out
+    of the repository, judged by the root's reader from each link's text, so nothing outside is looked at to decide. A
+    symbolic link loop is no such path: it is judged where it lies, and the read that follows refuses it, naming the
+    loop, rather than a warning reporting it as a link that leads out; and neither is a path with a name on its way
+    whose metadata cannot be read, which the read that follows refuses, naming why."""
+    reader = tree_reader(root)
+    if reader.refusal(path) is None:
+        return False
+    if text_refusal(lexical_absolute(path), reader.tree, devices=False) is not None:
         return True
+    return outside_link(root, path) is not None
 
 
 @dataclass
@@ -349,7 +414,7 @@ def list_directory(root: Path, directory: Path, pattern: str | None = None) -> L
     if leaves_root(root, directory):
         listing.outside.append(outside_link(root, directory) or directory)
         return listing
-    for path in listed(directory):
+    for path in tree_reader(root).listing(directory):
         if pattern is None or fnmatch.fnmatch(path.name, pattern):
             listing.add(root, path)
     return listing
@@ -362,7 +427,7 @@ def regular_files(root: Path, listing: Listing) -> Listing:
     files = Listing(outside=listing.outside, unread=list(listing.unread), skipped=list(listing.skipped))
     for path in listing.paths:
         try:
-            if is_present(path):
+            if file_at(root, path):
                 files.add(root, path)
         except NotAFile:
             continue
@@ -394,7 +459,7 @@ def walk_files(
     if leaves_root(root, base):
         listing.outside.append(outside_link(root, base) or base)
         return listing
-    walk = folder_walk.walk_files(base, wanted, skipped=skipped, follow=lambda path: not leaves_root(root, path))
+    walk = tree_reader(root).search(base, wanted, skipped=skipped, follow=lambda _path: True)
     listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
     listing.unread.extend(
         (entry.path, entry.reason) for entry in walk.not_entered if entry.kind in (UNLISTABLE, UNEXAMINED)
@@ -428,10 +493,17 @@ def named_walk(root: Path, names: Collection[str]) -> Listing:
     return walk
 
 
+def opened_as(path: Path, name: str) -> bool:
+    """`path_keys.opens_as`: whether the folder holding `path`, a file the root's walk or listing found or a fixed name
+    below the root, gives `path`'s own entry when a runtime opens `name` there, as `agent_skills.is_skill_file` asks
+    for SKILL.md."""
+    return opens_as(path, name)
+
+
 def opened_name(path: Path, names: Collection[str]) -> str | None:
     """Which of `names` a runtime opening it in `path`'s folder reaches `path` by, as the folder's file system gives
     the entry (`path_keys.opens_as`), or None when it is none of them."""
-    return next((name for name in sorted(names) if opens_as(path, name)), None)
+    return next((name for name in sorted(names) if opened_as(path, name)), None)
 
 
 def named_files(root: Path, *names: str) -> list[Path]:
@@ -691,7 +763,7 @@ def _inventory_unreadable(root: Path, paths: list[Path], *, read: bool = True) -
     findings: list[Finding] = []
     for path in paths:
         try:
-            if is_present(path) and read:
+            if file_at(root, path) and read:
                 read_text(root, path)
         except (OSError, UnicodeError) as error:
             findings.append(_unreadable_finding(root, path, error))
@@ -710,14 +782,26 @@ def _unreadable_finding(root: Path, path: Path, error: Exception | str) -> Findi
     return Finding("ERROR", "inventory", path.relative_to(root).as_posix(), message=f"{UNREAD}{error}")
 
 
+def _below_any(path: str | None, folders: Collection[str]) -> bool:
+    """Whether the repository-relative `path` lies below one of `folders`."""
+    return path is not None and any(posix_within(path, folder, strict=True) for folder in folders)
+
+
 def _one_unread_error_per_path(findings: list[Finding]) -> list[Finding]:
     """The findings with each path that could not be read, examined, or listed reported once, by the first reporter,
-    though several listings or checks meet it."""
+    though several listings or checks meet it, and none below a folder reported so: every path below a folder whose
+    metadata cannot be read fails as the folder does, since the reader examines each folder on a path's way, so the
+    folder's ERROR names why."""
+    unread = {
+        finding.path
+        for finding in findings
+        if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)) and finding.path
+    }
     seen: set[str | None] = set()
     kept: list[Finding] = []
     for finding in findings:
         if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)):
-            if finding.path in seen:
+            if finding.path in seen or _below_any(finding.path, unread):
                 continue
             seen.add(finding.path)
         kept.append(finding)
@@ -738,7 +822,7 @@ def _fixed_files(root: Path, rel_paths: list[str], found: str) -> list[Finding]:
             findings.append(outside_link_finding(root, link))
             continue
         try:
-            if is_present(root / rel_path):
+            if file_at(root, root / rel_path):
                 findings.append(_inventory_finding(rel_path, found.format(rel_path)))
         except OSError as error:
             findings.append(_unreadable_finding(root, root / rel_path, error))
@@ -750,7 +834,7 @@ def _inventory_folders(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for rel in INVENTORY_FOLDERS:
         try:
-            is_directory(root / rel)
+            folder_at(root, root / rel)
         except OSError as error:
             findings.append(_unreadable_finding(root, root / rel, error))
     return findings
@@ -791,7 +875,7 @@ def skill_files(root: Path, directory: Path) -> Listing:
     for folder in folders.paths:
         skill = folder / "SKILL.md"
         try:
-            if is_present(skill):
+            if file_at(root, skill):
                 listing.add(root, skill)
         except NotAFile as error:
             listing.unread.append((skill, str(error)))
@@ -808,7 +892,7 @@ def _inventory_skill_directories(root: Path) -> list[Finding]:
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
         d = root / skill_dir
         try:
-            if not is_directory(d):
+            if not folder_at(root, d):
                 continue
         except OSError as error:
             findings.append(_unreadable_finding(root, d, error))
@@ -846,7 +930,7 @@ def _inventory_claude_rules(root: Path) -> list[Finding]:
     """Claude Code's rules, every Markdown file below .claude/rules; the rule check reports a link this walk skips."""
     base = root / ".claude/rules"
     try:
-        if not is_directory(base):
+        if not folder_at(root, base):
             return []
     except OSError as error:
         return [_unreadable_finding(root, base, error)]  # _claude_rules leaves a folder it cannot read to this ERROR
@@ -882,7 +966,7 @@ def _inventory_path_instructions(root: Path) -> list[Finding]:
     """Path-specific Copilot instructions."""
     instructions_dir = root / ".github/instructions"
     try:
-        if not is_directory(instructions_dir):
+        if not folder_at(root, instructions_dir):
             return []
     except OSError as error:
         return [_unreadable_finding(root, instructions_dir, error)]
@@ -908,7 +992,7 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
     read, which the CI parity signal cannot read either."""
     workflows_dir = root / ".github/workflows"
     try:
-        if not is_directory(workflows_dir):
+        if not folder_at(root, workflows_dir):
             return []
         listings = [list_directory(root, workflows_dir, pattern) for pattern in ("*.yml", "*.yaml")]
     except OSError as error:
@@ -1174,7 +1258,7 @@ def agent_files(root: Path, agents: Path) -> Listing:
     """The files below an agents folder, in its subfolders too, since Copilot CLI and Claude Code read both folders'
     agents recursively, never through a link that leads out of the root, an entry that cannot be examined kept too, as
     regular_files keeps one; raises OSError when the folder cannot be examined, or a file is in its place."""
-    if not is_directory(agents):
+    if not folder_at(root, agents):
         return Listing()
     return regular_files(root, walk_files(root, agents, lambda _name: True, keep_unexamined=True))
 
@@ -1276,7 +1360,7 @@ def manifest_name(root: Path, path: Path) -> str:
     """The path the manifest records a Copilot projection under: a `.github/skills` skill's main file as the runtime
     opens it, `SKILL.md`, which is this file in any case where its folder folds case, and any other file as it is
     spelled on disk. Every lookup of a found projection among the manifest's artifacts goes through it."""
-    skill = path.parent.parent == root / ".github/skills" and is_skill_file(path)
+    skill = path.parent.parent == root / ".github/skills" and opened_as(path, SKILL_FILE)
     return (path.with_name(SKILL_FILE) if skill else path).relative_to(root).as_posix()
 
 
@@ -1298,7 +1382,7 @@ def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> 
 def skill_walk(root: Path, directory: Path) -> Listing:
     """Each skill main file below a skills folder, as walk_files finds it, with the links that lead out of the root.
 
-    A file directly in a skill's folder is its SKILL.md as the folder compares names (is_skill_file), the file a
+    A file directly in a skill's folder is its SKILL.md as the folder compares names (opened_as), the file a
     runtime opens by that name, so any case where the folder folds case; one deeper is taken only as spelled
     `SKILL.md`, since no runtime opens it as a skill's main file, so a lowercase `skill.md` template is never audited.
     A file link the rule turns away leaves `outside` too, so a name no runtime opens draws no finding; the folders
@@ -1307,7 +1391,7 @@ def skill_walk(root: Path, directory: Path) -> Listing:
     walk = walk_files(root, directory, lambda name: name.casefold() == SKILL_FILE.casefold())
 
     def taken(path: Path) -> bool:
-        return is_skill_file(path) if path.parent.parent == directory else path.name == SKILL_FILE
+        return opened_as(path, SKILL_FILE) if path.parent.parent == directory else path.name == SKILL_FILE
 
     walk.paths = [path for path in walk.paths if taken(path)]
     walk.outside = [path for path in walk.outside if path.name.casefold() != SKILL_FILE.casefold() or taken(path)]
@@ -1325,7 +1409,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     for skill_dir in (".github/skills", ".claude/skills", ".agents/skills"):
         directory = root / skill_dir
         try:
-            if not is_directory(directory):
+            if not folder_at(root, directory):
                 continue
         except OSError as error:
             findings.append(_unlistable_finding(skill_dir, error))
@@ -1503,7 +1587,7 @@ def _codex_implicit_invocation(root: Path, policy: Path) -> tuple[bool, str | No
     """Whether Codex may invoke the skill on its own, which its skills page makes the default unless
     agents/openai.yaml sets policy.allow_implicit_invocation to false, and a problem reading that file."""
     try:
-        if not is_present(policy):
+        if not file_at(root, policy):
             return True, None
         text = read_text(root, policy)
     except (OSError, UnicodeError):
@@ -1571,7 +1655,7 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
     for candidate in GENERATOR_CANDIDATES:
         path = root / candidate
         try:
-            if not is_present(path):
+            if not file_at(root, path):
                 continue
             tree = python_reader.parse(read_text(root, path), candidate)
         except (UnicodeError, OSError, python_reader.PythonRefused):
@@ -1617,20 +1701,20 @@ def derive_file_scope(root: Path) -> dict[str, list[str]]:
     """
     runtimes: list[str] = []
     # The inventory reports each of these paths that cannot be examined, or holds the wrong kind, as an ERROR.
-    if any(found_file(root / name) for name in CLAUDE_MD_FILES) or (
-        found_file(root / CLAUDE_AGENTS_MD) and not found_file(root / CLAUDE_LOCAL_MD)
+    if any(found_file(root, root / name) for name in CLAUDE_MD_FILES) or (
+        found_file(root, root / CLAUDE_AGENTS_MD) and not found_file(root, root / CLAUDE_LOCAL_MD)
     ):
         runtimes.append("claude")
     if (
-        any(found_file(root / name) for name in CODEX_INSTRUCTION_FILES)
-        or found_folder(root / ".codex")
-        or found_folder(root / ".agents/skills")
+        any(found_file(root, root / name) for name in CODEX_INSTRUCTION_FILES)
+        or found_folder(root, root / ".codex")
+        or found_folder(root, root / ".agents/skills")
     ):
         runtimes.append("codex")
     surfaces: list[str] = []
-    if found_folder(root / ".github"):
+    if found_folder(root, root / ".github"):
         surfaces.extend(("copilot_cli", "code_review"))
-        if found_file(root / ".github/workflows/copilot-setup-steps.yml"):
+        if found_file(root, root / ".github/workflows/copilot-setup-steps.yml"):
             surfaces.append("cloud_agent")
     return {"runtimes": runtimes, "surfaces": surfaces} if runtimes or surfaces else {}
 
@@ -1661,7 +1745,7 @@ def _manifest_is_there(root: Path) -> bool:
     """Whether a manifest is at its path: one that cannot be examined, or a folder in its place, is there, as
     _manifest_signal reports it malformed, never missing."""
     try:
-        return is_present(root / ".github/ai-config-manifest.json")
+        return file_at(root, root / ".github/ai-config-manifest.json")
     except OSError:
         return True
 
@@ -1886,7 +1970,7 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
     """Return ("manifest", "alternative", or None), the manifest data that signal carries, and findings."""
     manifest_path = root / ".github/ai-config-manifest.json"
     try:
-        if not is_present(manifest_path):
+        if not file_at(root, manifest_path):
             return None, {}, []
         return _judge_manifest(root, json_reader.loads(read_text(root, manifest_path)))
     # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses; the
@@ -1943,7 +2027,7 @@ def _claude_md_there(root: Path) -> bool:
     """Whether the root CLAUDE.md a manifest names is there: one that cannot be examined is, since only its read can
     tell, and the inventory reports it as an ERROR; a folder in its place is not."""
     try:
-        return is_present(root / "CLAUDE.md")
+        return file_at(root, root / "CLAUDE.md")
     except NotAFile:
         return False
     except OSError:
@@ -1951,13 +2035,13 @@ def _claude_md_there(root: Path) -> bool:
 
 
 def _has_claude_md(root: Path) -> bool:
-    return any(found_file(root / name) for name in CLAUDE_MD_FILES)
+    return any(found_file(root, root / name) for name in CLAUDE_MD_FILES)
 
 
 def claude_md_text(root: Path) -> tuple[str, str] | None:
     """The first CLAUDE.md Claude Code reads, as a path, and the text of every one it reads, or None when there is
     none it can read; the inventory reports one it cannot read or examine as an ERROR."""
-    found = [(name, read_text_or_none(root, root / name)) for name in CLAUDE_MD_FILES if found_file(root / name)]
+    found = [(name, read_text_or_none(root, root / name)) for name in CLAUDE_MD_FILES if found_file(root, root / name)]
     texts = [text for _, text in found if text is not None]
     return (found[0][0], "\n".join(texts)) if texts else None
 
@@ -1983,7 +2067,7 @@ def _has_generator_script(root: Path) -> bool:
     for candidate in GENERATOR_CANDIDATES:
         gen_path = root / candidate
         try:
-            if is_present(gen_path) and "CLAUDE.md" in read_text(root, gen_path):
+            if file_at(root, gen_path) and "CLAUDE.md" in read_text(root, gen_path):
                 return True
         except (OSError, UnicodeError):
             pass  # the inventory reports a generator it cannot read as an ERROR
@@ -1994,7 +2078,7 @@ def _has_ci_parity_workflow(root: Path) -> bool:
     """True when a workflow runs the generator's parity check."""
     workflows_dir = root / ".github/workflows"
     try:
-        if not is_directory(workflows_dir):
+        if not folder_at(root, workflows_dir):
             return False
         listings = [list_directory(root, workflows_dir, pattern) for pattern in ("*.yml", "*.yaml")]
     except OSError:
@@ -2110,7 +2194,7 @@ def _expected_skill_shim(
     """Reconstruct the deterministic shim content for a skill, or None."""
     canonical = root / f".claude/skills/{skill_name}/SKILL.md"
     try:
-        if not is_present(canonical):
+        if not file_at(root, canonical):
             return None
         lines = text_lines(read_text(root, canonical))
     except (OSError, UnicodeError):
@@ -2147,7 +2231,7 @@ def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
     in the file's place are told apart."""
     full_path = root / path_str
     try:
-        if not is_present(full_path):
+        if not file_at(root, full_path):
             return None, f"Generated artifact missing: {path_str}"
         return read_text(root, full_path), None
     except (OSError, UnicodeError) as error:
@@ -2240,9 +2324,9 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
     agents_dir = root / ".agents/skills"
     claude_dir = root / ".claude/skills"
     orphan_shims: set[str] = set()
-    if found_folder(agents_dir):
+    if found_folder(root, agents_dir):
         canonical_names = set()
-        if found_folder(claude_dir):  # the inventory reports a link either skill listing skips
+        if found_folder(root, claude_dir):  # the inventory reports a link either skill listing skips
             canonical_names = {p.parent.name for p in skill_files(root, claude_dir).paths}
         for shim in skill_files(root, agents_dir).paths:
             if shim.parent.name not in canonical_names:
@@ -2264,14 +2348,14 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
         candidates = [
             root / pattern for pattern in MANIFEST_ALLOWED_PATHS if "*" not in pattern and not pattern.endswith(".json")
         ]
-        if found_folder(agents_dir):
+        if found_folder(root, agents_dir):
             candidates.extend(skill_files(root, agents_dir).paths)
         for path in candidates:
             rel = path.relative_to(root).as_posix()
             if rel in listed or rel in orphan_shims:
                 continue
             try:
-                if not is_present(path):
+                if not file_at(root, path):
                     continue
                 generated = has_ownership_marker(read_text(root, path))
             except (OSError, UnicodeError):
@@ -2314,7 +2398,7 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
     wrapper_key = MCP_JSON_FILES[rel_path]
     findings: list[Finding] = []
     try:
-        if not is_present(path):
+        if not file_at(root, path):
             return {}, findings
         data = json_reader.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
@@ -2444,7 +2528,7 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     rel = CODEX_CONFIG
     path = root / rel
     try:
-        if not is_present(path):
+        if not file_at(root, path):
             return {}, []
         config = tomllib.loads(read_bytes(root, path).decode())
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, deep TOML
@@ -2628,7 +2712,7 @@ class InstructionSources:
 
 
 def _instruction_sources(root: Path) -> InstructionSources:
-    agents_md = found_file(root / "AGENTS.md")
+    agents_md = found_file(root, root / "AGENTS.md")
     agents_redirects = False
     if agents_md:
         with contextlib.suppress(OSError, UnicodeError):
@@ -2636,16 +2720,16 @@ def _instruction_sources(root: Path) -> InstructionSources:
     instructions = root / ".github/instructions"
     rules = root / CLAUDE_RULES
     return InstructionSources(
-        claude_md=found_file(root / "CLAUDE.md"),
-        dot_claude_md=found_file(root / ".claude/CLAUDE.md"),
+        claude_md=found_file(root, root / "CLAUDE.md"),
+        dot_claude_md=found_file(root, root / ".claude/CLAUDE.md"),
         agents_md=agents_md,
         agents_redirects=agents_redirects,
-        copilot_instructions=found_file(root / ".github/copilot-instructions.md"),
-        gemini_md=found_file(root / "GEMINI.md"),
+        copilot_instructions=found_file(root, root / ".github/copilot-instructions.md"),
+        gemini_md=found_file(root, root / "GEMINI.md"),
         # The inventory reports a link this walk skips.
-        path_instructions=found_folder(instructions)
+        path_instructions=found_folder(root, instructions)
         and bool(walk_files(root, instructions, _is_path_instructions).paths),
-        claude_rules=found_folder(rules) and bool(walk_files(root, rules, _is_markdown).paths),
+        claude_rules=found_folder(root, rules) and bool(walk_files(root, rules, _is_markdown).paths),
     )
 
 
@@ -2708,7 +2792,7 @@ def _codex_choice(root: Path, directory: Path, fallbacks: list[str]) -> tuple[st
     for name in (*CODEX_INSTRUCTION_FILES, *fallbacks):
         candidate = directory / name
         try:
-            if not is_present(candidate):
+            if not file_at(root, candidate):
                 continue
             return name, bool(read_bytes(root, candidate).decode("utf-8", "replace").strip())
         except NotAFile as error:
@@ -2741,7 +2825,7 @@ def _codex_size(root: Path, name: str) -> list[Finding]:
     if outside_link(root, path) is not None:
         return []
     try:
-        size = path.stat().st_size
+        size = tree_reader(root).status(path).st_size
     except OSError as error:
         return _codex_layering_finding(
             "ERROR",
@@ -2826,7 +2910,7 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
     if not (sources.agents_md and sources.agents_redirects):
         return findings
     for nested in _nested_files(root, "AGENTS.md"):
-        if found_file(nested.parent / "AGENTS.override.md"):
+        if found_file(root, nested.parent / "AGENTS.override.md"):
             continue  # Codex takes the override beside it, which the warning above names; the inventory reports one
             # it cannot examine
         try:
@@ -2962,7 +3046,7 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
             ("AGENTS.md", sources.agents_md and not sources.agents_redirects),
             ("CLAUDE.md", sources.claude_md),
             ("GEMINI.md", sources.gemini_md),
-            ("REVIEW.md", found_file(root / "REVIEW.md")),
+            ("REVIEW.md", found_file(root, root / "REVIEW.md")),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             (".github/instructions", sources.path_instructions),
         )
@@ -2997,7 +3081,7 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
             "this is advisory context, not a trusted-base or trusted-ref review contract",
         ),
     ]
-    if found_folder(root / ".github/skills"):
+    if found_folder(root, root / ".github/skills"):
         findings.append(
             Finding(
                 severity="INFO",
@@ -3194,7 +3278,7 @@ def check_claude_code(root: Path) -> list[Finding]:
 def _claude_settings(root: Path) -> list[Finding]:
     path = root / CLAUDE_SETTINGS
     try:
-        if not is_present(path):
+        if not file_at(root, path):
             return []
         data = json_reader.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
@@ -3408,7 +3492,7 @@ def _missing_imports(root: Path, rel: str, imports: list[str]) -> list[Finding]:
             continue
         target = (root / rel).parent / name
         try:
-            if leaves_root(root, target) or is_there(target):
+            if leaves_root(root, target) or anything_at(root, target):
                 continue
         except OSError as error:
             message = f"Import @{name} names a path that could not be examined, so whether it loads is unknown: {error}"
@@ -3425,7 +3509,7 @@ def _claude_rules(root: Path) -> list[Finding]:
     globs its paths frontmatter lists."""
     base = root / CLAUDE_RULES
     try:
-        if not is_directory(base):
+        if not folder_at(root, base):
             return []
     except OSError:
         return []  # the inventory reports a rules folder it cannot read as an ERROR
@@ -3571,7 +3655,7 @@ def _codex_hooks(root: Path) -> list[Finding]:
     path = root / CODEX_HOOKS_FILE
     file_hooks = None
     try:
-        present = is_present(path)
+        present = file_at(root, path)
         data = json_reader.loads(read_text(root, path)) if present else None
     # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
     except (OSError, ValueError) as error:
@@ -3606,7 +3690,7 @@ def _codex_files(root: Path, folder: str, pattern: str) -> Listing:
     """The files directly in one of Codex's folders that match `pattern`, or none when there is no such folder.
     Raises OSError for one that cannot be examined or listed, or a file in its place, which the inventory reports."""
     directory = root / folder
-    if not is_directory(directory):
+    if not folder_at(root, directory):
         return Listing()
     return regular_files(root, list_directory(root, directory, pattern))
 
@@ -3875,7 +3959,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     for directory in (".github/skills", ".github/agents"):
         base = root / directory
         try:
-            if not is_directory(base):
+            if not folder_at(root, base):
                 continue
         except OSError:
             continue  # check_copilot_configuration reports a folder it cannot list as an ERROR
@@ -3888,7 +3972,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
             if generated or manifest_name(root, path) in artifact_paths:
                 note(rel, "Generated Copilot projection is provenance-checked only, not reconstructed")
     instructions = root / ".github/instructions"
-    if found_folder(instructions) and walk_files(root, instructions, _is_path_instructions).paths:
+    if found_folder(root, instructions) and walk_files(root, instructions, _is_path_instructions).paths:
         note(".github/instructions", "Path-specific instructions are not checked for contradictions or overlap")
     for nested in _nested_files(root, ".mcp.json"):
         note(nested.relative_to(root).as_posix(), "Nested .mcp.json files are not validated")
@@ -3900,9 +3984,15 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
+def examined_root(root: Path) -> Path:
+    """The repository the user names, made absolute with its links followed, since a relative root such as "." has no
+    name of its own; the tree the audit's reader is then bound to."""
+    return resolved_path(root)
+
+
 def audit(root: Path) -> AuditResult:
     """Run all audit checks and return the result."""
-    root = resolved_path(root)  # a relative root such as "." has no name of its own
+    root = examined_root(root)
     result = AuditResult(repository=root.name)
 
     # Step 1: Inventory
@@ -4135,7 +4225,7 @@ def not_a_checkout(root: Path) -> str | None:
     nothing included, since git reads nothing through it, or a `.git` whose stat fails, named with the error rather
     than read as none."""
     try:
-        checkout = is_there(root / ".git")
+        checkout = anything_at(root, root / ".git")
     except OSError as error:
         return f"{root} could not be examined for a .git: {error}"
     return None if checkout else f"{root} is not a Git repository (no .git found)"

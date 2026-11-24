@@ -1,4 +1,4 @@
-"""The one reader of a tree a skill promises to read only inside, for the .NET skills, audit-skill, and review-document.
+"""The one reader of a tree a skill promises to read only inside, for each skill the tree read policy names.
 
 dotnet-dependencies promises to read only inside the tree it examines, and dotnet-format only inside the repository.
 Each keeps the promise through a `TreeReader` bound to that tree: every stat, open, read, listing, and walk of a path in
@@ -8,7 +8,9 @@ review to find it. dotnet-dependencies reads a package unpacked in the NuGet cac
 tree, through a reader bound to the cache folder, so no link is followed out of that either. audit-skill reads the
 skill folder it audits through a reader bound to that folder too, the places outside it stated in TREE_READ_ALLOWED, and
 review-document the document it reviews, the checkout around it, and the working directory its resolve searches, each
-through a reader bound to it.
+through a reader bound to it. audit-ai-config reads the repository it audits through a reader bound to it,
+curate-agent-memory the memory store, the repository, and the user's configuration directory through a reader bound
+to each, and review-insights a guidance file's working-tree copy through a reader bound to the configured checkout.
 
 Each call judges its path before it touches it (`refusal`), from the path's text and then by its links:
 
@@ -173,10 +175,16 @@ class TreeReader:
         skipped: frozenset[str] = SKIPPED_FOLDERS,
         prune: Callable[[Path], bool] | None = None,
         limit: int | None = None,
+        follow: Callable[[Path], bool] | None = None,
     ) -> Walk:
         """`folder_walk.walk_files` below a judged `top`, given the tree, so it follows no link entry out of it, not
-        even to learn what it is."""
-        return walk_files(self.judged(top), wanted, skipped=skipped, prune=prune, limit=limit, tree=self.tree)
+        even to learn what it is. `follow` is passed through: a link entry leading out of the tree is never offered to
+        it, since the walk judges such an entry first and reports it as `LINKED`, so only a folder link that stays
+        inside is, and one it accepts is entered, unless it comes back into a folder the walk is inside, which is
+        reported as `LOOP` and not entered, so the walk ends."""
+        return walk_files(
+            self.judged(top), wanted, skipped=skipped, prune=prune, follow=follow, limit=limit, tree=self.tree
+        )
 
     def climb(self, start: Path, stop: Path | None = None) -> Iterator[Path]:
         """`start`, a judged path inside the tree, and each folder above it up to the tree's top, nearest first, as

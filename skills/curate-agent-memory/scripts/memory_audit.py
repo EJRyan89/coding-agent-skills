@@ -13,6 +13,15 @@ commands refuse the directory. A memory is a regular file named *.md directly in
 MEMORY.md; any other entry so named, a directory, symbolic link, or junction, is reported unreadable with
 its reason and never read, added to the index, or deleted.
 
+audit reads the memory store through ejryan89-skill-core's tree_reader bound to it, and the repository (--repo)
+and the user's configuration directory, where it looks for the instruction files a memory's overlaps are measured
+against and the paths a memory cites, through a reader bound to each, so no link leading out of one is followed, not
+even to learn what it is: an instruction file that a link on its way leads out is passed over unread, as a linked
+folder always was, a cited path through one is reported unreadable with the reader's reason, and a store whose
+MEMORY.md is such a link is no memory store. A cited absolute or ~ path, or a relative one whose own `..` climbs out,
+an --instructions file, the settings, and the deployer's manifest are read where they are named, as TREE_READ_ALLOWED
+states.
+
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
 prints `REPO <root>`, the top level of the Git worktree holding that folder, or the folder itself when
@@ -129,23 +138,23 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
-import folder_walk
 import json_reader
 import json_writer
 import private_folder
-from atomic_file import TRACKED_FILE_MODE, UnfinishedCopyError, create_bytes, is_read_only, replace_text
+from atomic_file import TRACKED_FILE_MODE, UnfinishedCopyError, create_bytes, replace_text
 from console import run_main
+from dotnet_solution import FileRefused, lexical_absolute
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
-from file_presence import is_directory, is_present, matching, refusal_reason
+from file_presence import is_directory, is_present, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_destinations import link_destinations, written_destination
-from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import ATX_HEADING, CODE, EMPTY_ATX_HEADING, HEADING, blocks, code_spans
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
 from text_lines import text_lines
+from tree_reader import TreeReader, TreeRefused
 
 INDEX_NAME = "MEMORY.md"
 # The deployer's ownership manifest beside the skills it deploys, and where a source checkout keeps a skill.
@@ -262,6 +271,49 @@ PRESENCE_ALLOWED = {
     "output_refusal": (
         "a failed stat reads as no file here, but audit_lines creates the report with create_bytes, which never "
         "replaces a file and raises for one it cannot create"
+    ),
+}
+
+
+# The reads outside the trees the audit examines, each with why. The memory store is read through a reader bound to
+# it, and the repository and the user's configuration directory, where the audit looks for instruction files and
+# cited paths, through readers bound to each, so no link leading out of one is followed; these read the places a user
+# or a setting names, the skill's own output, and the settings and git state that choose the store.
+TREE_READ_ALLOWED = {
+    "outside_present": (
+        "whether anything is at a path a memory cites by an absolute or ~ path, or by a relative one whose own `..` "
+        "climbs out of the repository or the store: the place it names, outside every tree the audit examines"
+    ),
+    "named_text": "reads an instruction file the user names with --instructions, where it names",
+    "named_present": "whether an instruction file the user names with --instructions is a file, where it names",
+    "destination_key": (
+        "keys a destination file by its path with links followed, so a file named with --instructions and found by a "
+        "pattern is measured once: a tree file only once its reader judged that no link on its way leads out"
+    ),
+    "opens_under": (
+        "asks the folder holding a file the reader's walk found, which the reader judged inside the tree first, "
+        "whether it gives that file's entry for the name searched for (path_keys.opens_as), from the entries' own "
+        "metadata, following no link"
+    ),
+    "main_worktree": (
+        "compares and resolves the Git directories git names for the repository, to find the main worktree the memory "
+        "directory's name derives from"
+    ),
+    "candidate_directories": (
+        "lists the configuration directory's projects folder for the memory directories Claude Code keeps there: "
+        "Claude Code's own state, outside every tree the audit examines"
+    ),
+    "directory_state": "whether anything is at the memory directory resolve chose, before it is taken as a store",
+    "read_settings": "reads a Claude Code settings file, which chooses the memory directory",
+    "project_folder": "resolves a folder in no Git repository, as Claude Code names its project",
+    "output_refusal": "judges the --output path the user names for the skill's own report before it is written",
+    "manifest_skill_files": "reads the deployer's manifest under the home, which names a skill's source checkout",
+    "source_refusal": "judges a skill's source file the manifest or the user names, before the user edits it",
+    "project_skill": "whether the repository's project skill file of the name given is there, for the user to edit",
+    "create_output": "examines the --output folder and creates the skill's own report there",
+    "create_temporary_report": "creates the skill's own report under the private temporary directory",
+    "store_folder_reason": (
+        "judges the memory directory a command is given, before a reader is bound to it, since it is the tree"
     ),
 }
 
@@ -410,19 +462,28 @@ def _after_blanks(line: str, position: int) -> int:
 
 
 def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
-    """The index's entries and lines, none when no index is there; a directory or anything else in its place raises
-    NotAFile, an OSError, rather than reading as an empty index."""
-    if not is_present(path):
+    """The index's entries and lines, none when no index is there, read through a reader bound to the store holding
+    it; a directory or anything else in its place raises NotAFile, an OSError, rather than reading as an empty index."""
+    reader = TreeReader(path.parent)
+    if not reader.present(path):
         return [], []
-    lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
+    lines = text_lines(memory_text(reader, path))
     entries = [{"line": str(index + 1), **entry} for index, entry in sorted(index_entries(lines).items())]
     return entries, lines
 
 
 def target_identity(memory_dir: Path, file: str) -> str:
-    """Compare targets relative to the store, resolving ./ prefixes and folding case where the store's file
-    system does."""
-    return path_key(memory_dir / store_name(file), resolve=True)
+    """Compare targets relative to the store, without ./ prefixes and folding case where the store's file system does,
+    as a reader bound to the store keys them (`TreeReader.key`): a target no link leads out of the store by its
+    file system's key, any other by its text, so no link is followed to compare it."""
+    return TreeReader(memory_dir).key(memory_dir / store_name(file))
+
+
+def memory_text(reader: TreeReader, path: Path) -> str:
+    """The text of a file `reader` reads, within its bound and from a regular file only, decoded as UTF-8 with each
+    undecodable byte replaced and each line break read as a newline, as `Path.read_text` reads one."""
+    text = reader.contents(path).decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def store_name(target: str) -> str:
@@ -440,16 +501,20 @@ CANNOT_INSPECT = "cannot inspect: "
 def entry_problem(path: Path) -> str | None:
     """Why the entry at path is no memory file to read, or None when it is a regular file.
 
-    A directory, symbolic link, or Windows junction is never followed, whatever it points at, so an entry named like
-    a memory that is one of them is never read through, indexed, or deleted.
+    The entry is judged through a reader bound to the store holding it, from its own metadata first: a directory,
+    symbolic link, or Windows junction is never followed, whatever it points at, so an entry named like a memory that
+    is one of them is never read through, indexed, or deleted.
     """
+    reader = TreeReader(path.parent)
     try:
-        status = os.lstat(path)
+        if reader.is_link(path):
+            return "not a regular file"
+        status = reader.status(path)
     except (FileNotFoundError, NotADirectoryError):
         return MISSING
     except OSError as exc:
         return f"{CANNOT_INSPECT}{reason(exc)}"
-    if not is_plain_file(path, status):
+    if not stat.S_ISREG(status.st_mode):
         return "not a regular file"
     return None
 
@@ -479,10 +544,12 @@ def memory_entries(memory_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]
 
     The index, however its name is spelled, is neither.
     """
+    reader = TreeReader(memory_dir)
     index_identity = target_identity(memory_dir, INDEX_NAME)
     files: list[Path] = []
     others: list[tuple[str, str]] = []
-    for path in matching(memory_dir, "*.md"):
+    listing = reader.listing(memory_dir) if reader.folder(memory_dir) else []
+    for path in (entry for entry in listing if fnmatch.fnmatch(entry.name, "*.md")):
         if target_identity(memory_dir, path.name) == index_identity:
             continue
         problem = entry_problem(path)
@@ -520,33 +587,66 @@ def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
             Path(candidate.replace("~", str(absolute_home()), 1)) if candidate.startswith("~") else Path(candidate)
         )
         exists, unreadable = cited_presence(
-            [expanded] if expanded.is_absolute() else [base / expanded for base in bases]
+            [(None, expanded)] if expanded.is_absolute() else [cited_place(base, expanded) for base in bases]
         )
         cited.append(CitedPath(candidate, exists, unreadable))
     return cited
 
 
-def cited_presence(places: list[Path]) -> tuple[bool | None, str | None]:
-    """Whether a file or a folder is at one of the places a cited path may name, following links; None with the
-    reason when none is found and a stat failed, so a path it cannot examine is never reported as not found."""
+def cited_place(base: Path, cited: Path) -> tuple[TreeReader | None, Path]:
+    """Where a relative cited path names, below the repository or the memory store, with the reader bound to that tree
+    that looks it up; None for one whose own `..` climbs out of the tree, which is looked up where it names, as an
+    absolute one is."""
+    place = base / cited
+    return (TreeReader(base), place) if within(lexical_absolute(place), lexical_absolute(base)) else (None, place)
+
+
+def cited_presence(places: list[tuple[TreeReader | None, Path]]) -> tuple[bool | None, str | None]:
+    """Whether a file or a folder is at one of the places a cited path may name, following links, each looked up
+    through the reader bound to its tree, so a link leading out of it is never followed, or where it names when it has
+    none; None with the reason when none is found and a stat failed or the reader refused it, so a path it cannot
+    examine is never reported as not found."""
     reason: str | None = None
-    for place in places:
+    for reader, place in places:
         try:
-            if is_present(place, other_is_absent=True) or is_directory(place, other_is_absent=True):
+            if place_present(reader, place):
                 return True, None
         except OSError as error:
-            reason = reason or flat_text(error.strerror or str(error))
+            reason = reason or flat_text(examined(error))
     return (None, reason) if reason is not None else (False, None)
 
 
-def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]]:
-    """Split destination documents into passages for overlap scoring (`passages`). A document that cannot be read
-    raises its OSError, which fails the audit, rather than silently losing its overlaps."""
+def place_present(reader: TreeReader | None, place: Path) -> bool:
+    """Whether a file or a folder is at `place`, through `reader` when it has one."""
+    if reader is not None:
+        return reader.present(place, other_is_absent=True) or reader.folder(place, other_is_absent=True)
+    return outside_present(place)
+
+
+def outside_present(place: Path) -> bool:
+    """Whether a file or a folder is at a cited place outside the repository and the memory store, following links."""
+    return is_present(place, other_is_absent=True) or is_directory(place, other_is_absent=True)
+
+
+def destination_blocks(
+    files: list[Path], readers: dict[Path, TreeReader] | None = None
+) -> list[tuple[str, int, str, set[str]]]:
+    """Split destination documents into passages for overlap scoring (`passages`), each read through the reader
+    `readers` gives it, bound to the repository or the user's configuration directory, and an instruction file the
+    user names where it names. A document that cannot be read raises its OSError, which fails the audit, rather than
+    silently losing its overlaps."""
     blocks: list[tuple[str, int, str, set[str]]] = []
     for path in files:
-        for start, text in passages(text_lines(path.read_text(encoding="utf-8", errors="replace"))):
-            blocks.append((str(path), start, text, words(text)))
+        reader = (readers or {}).get(path)
+        text = memory_text(reader, path) if reader is not None else named_text(path)
+        for start, passage in passages(text_lines(text)):
+            blocks.append((str(path), start, passage, words(passage)))
     return blocks
+
+
+def named_text(path: Path) -> str:
+    """The text of an instruction file the user names with --instructions, read where it names."""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def passages(lines: list[str]) -> list[tuple[int, str]]:
@@ -577,46 +677,100 @@ def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> tup
 
 
 def destination_files(repo: Path | None, instructions: list[Path], user_dir: Path | None = None) -> list[Path]:
-    """The instruction files a memory's overlaps are measured against: each named one and each a destination pattern
-    finds (`pattern_files`). A folder among them is passed over, and a stat that fails raises, so an instruction file
-    the audit cannot look at fails it rather than silently losing its overlaps."""
-    files = [path for path in instructions if is_present(path, other_is_absent=True)]
+    """The instruction files a memory's overlaps are measured against, as `destination_sources` finds them."""
+    return list(destination_sources(repo, instructions, user_dir))
+
+
+def destination_sources(
+    repo: Path | None, instructions: list[Path], user_dir: Path | None = None
+) -> dict[Path, TreeReader | None]:
+    """The instruction files a memory's overlaps are measured against, each with the reader that reads it: each named
+    one, read where it names, and each a destination pattern finds (`pattern_files`) below the repository or the
+    user's configuration directory, through a reader bound to it, so one that a link on its way leads out of is passed
+    over unread, as a linked folder always was. A folder among them is passed over, and a stat that fails raises, so an
+    instruction file the audit cannot look at fails it rather than silently losing its overlaps."""
+    files: list[tuple[Path, TreeReader | None]] = [(path, None) for path in instructions if named_present(path)]
     for root, patterns in ((repo, DESTINATION_GLOBS), (user_dir, USER_DESTINATION_GLOBS)):
         if root is None:
             continue
+        reader = TreeReader(root)
         for pattern in patterns:
-            files.extend(path for path in pattern_files(root, pattern) if is_present(path, other_is_absent=True))
-    unique: dict[str, Path] = {}
-    for path in files:
-        unique.setdefault(path_key(path, resolve=True), path)
-    return list(unique.values())
+            files.extend((path, reader) for path in pattern_files(root, pattern) if tree_present(reader, path))
+    unique: dict[str, tuple[Path, TreeReader | None]] = {}
+    for path, source in files:
+        unique.setdefault(destination_key(path), (path, source))
+    return dict(unique.values())
+
+
+def named_present(path: Path) -> bool:
+    """Whether a regular file is at an instruction file the user names with --instructions, following links."""
+    return is_present(path, other_is_absent=True)
+
+
+def destination_key(path: Path) -> str:
+    """What two destination files are compared by: the path with its links followed, case-folded where its file
+    system ignores case, so a file named with --instructions and found by a pattern is measured once."""
+    return path_key(path, resolve=True)
+
+
+def tree_present(reader: TreeReader, path: Path) -> bool:
+    """Whether a regular file is at `path` in `reader`'s tree, following links inside it; False for one that a link
+    on its way leads out of, which is passed over unread, and the reader's refusal for any other it refuses."""
+    if reader.refusal(path) is not None and linked_way(reader, path):
+        return False
+    return reader.present(path, other_is_absent=True)
+
+
+def linked_way(reader: TreeReader, path: Path) -> bool:
+    """Whether a symbolic link or junction lies on the way to `path` from `reader`'s tree, each name judged from its own
+    metadata through the reader, so no link is followed to tell; a name not there ends the look."""
+    current = reader.tree
+    for part in lexical_absolute(path).relative_to(reader.tree).parts:
+        current = current / part
+        try:
+            if reader.is_link(current):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+    return False
 
 
 def pattern_files(root: Path, pattern: str) -> list[Path]:
     """The paths below `root` a destination pattern names, in path order.
 
-    A pattern without `**/` names one file, looked up directly: glob checks such a name with os.path.lexists, which
-    answers False for a stat that fails. `<folder>/**/<name>` names each file below the folder that
-    ejryan89-skill-core's folder walk finds, which skips its one stated set of folders and every nested checkout, and
-    enters no link: a name with a wildcard as fnmatch matches it, and a fixed name as the folder holding the file
-    gives the entry for it (`path_keys.opens_as`), as a runtime opens it, so a `claude.md` is the folder's CLAUDE.md
-    where it folds case. A folder the walk cannot list, or an entry it cannot examine, raises the error it met."""
+    A pattern without `**/` names one file, which `destination_sources` looks up through a reader bound to `root`.
+    `<folder>/**/<name>` names each file below the folder that a reader bound to `root` finds with
+    ejryan89-skill-core's folder walk, which skips its one stated set of folders and every nested checkout, and enters
+    no link, nor follows one leading out of `root` even to learn what it is: a name with a wildcard as fnmatch matches
+    it, and a fixed name as the folder holding the file gives the entry for it (`path_keys.opens_as`), as a runtime
+    opens it, so a `claude.md` is the folder's CLAUDE.md where it folds case. A folder a link on its way leads out of
+    `root` names none. A folder the walk cannot list, or an entry it cannot examine, raises the error it met."""
     folder, below, name = pattern.rpartition("**/")
     if not below:
         return [root / pattern]
+    reader = TreeReader(root)
     base = root / folder if folder else root
-    if not is_directory(base):
+    if reader.refusal(base) is not None and linked_way(reader, base):
+        return []
+    if not reader.folder(base):
         return []
     if "*" in name:
-        walk = folder_walk.walk_files(base, lambda found: fnmatch.fnmatch(found, name))
+        walk = reader.search(base, lambda found: fnmatch.fnmatch(found, name))
         files = walk.files
     else:
-        walk = folder_walk.walk_files(base, lambda found: found.casefold() == name.casefold())
-        files = [path for path in walk.files if opens_as(path, name)]
+        walk = reader.search(base, lambda found: found.casefold() == name.casefold())
+        files = [path for path in walk.files if opens_under(reader, path, name)]
     for entry in walk.not_entered:
         if entry.error is not None:
             raise entry.error
     return sorted(files, key=os.fspath)
+
+
+def opens_under(reader: TreeReader, path: Path, name: str) -> bool:
+    """Whether the folder holding `path`, judged inside `reader`'s tree first, gives `path`'s entry when a program opens
+    `name` there (`path_keys.opens_as`); a folder the reader refuses raises `TreeRefused`."""
+    reader.judged(path.parent)
+    return opens_as(path, name)
 
 
 def audit(
@@ -627,10 +781,11 @@ def audit(
     user_dir: Path | None = None,
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
+    store = TreeReader(memory_dir)
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
-    index_exists = is_present(index_path)
-    index_bytes = index_path.stat().st_size if index_exists else 0
+    index_exists = store.present(index_path)
+    index_bytes = store.status(index_path).st_size if index_exists else 0
     indexed_files = Counter(target_identity(memory_dir, entry["target"]) for entry in entries)
     candidates, others = memory_entries(memory_dir)
     unreadable = {target_identity(memory_dir, name): (name, problem) for name, problem in others}
@@ -641,12 +796,13 @@ def audit(
     parsed: dict[Path, tuple[dict[str, str], str]] = {}
     for path in candidates:
         try:
-            parsed[path] = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+            parsed[path] = parse_frontmatter(memory_text(store, path))
         except OSError as exc:
             unreadable[target_identity(memory_dir, path.name)] = (path.name, reason(exc))
     files = list(parsed)
     known_names = {path.stem for path in files} | {meta.get("name", "") for meta, _ in parsed.values()}
-    blocks = destination_blocks(destination_files(repo, instructions or [], user_dir))
+    sources = destination_sources(repo, instructions or [], user_dir)
+    blocks = destination_blocks(list(sources), {path: reader for path, reader in sources.items() if reader is not None})
     bases = [base for base in (repo, memory_dir) if base is not None]
     memories: list[Memory] = []
     for path in files:
@@ -660,7 +816,7 @@ def audit(
                 description=meta.get("description", ""),
                 type=meta.get("type", ""),
                 indexed=target_identity(memory_dir, path.name) in indexed_files,
-                age_days=round((now - path.stat().st_mtime) / 86400, 1),
+                age_days=round((now - store.status(path).st_mtime) / 86400, 1),
                 links=links,
                 broken_links=[link for link in links if link not in known_names],
                 cited_paths=cited_paths(body, bases),
@@ -728,13 +884,20 @@ def derived_hook(body: str) -> str:
     return one_line(heading.group("text") if heading else "" if EMPTY_ATX_HEADING.fullmatch(first) else first)
 
 
+def index_text(path: Path) -> str:
+    """The index's text as written, its line breaks kept, read through a reader bound to the store holding it, or
+    empty when no index is there."""
+    reader = TreeReader(path.parent)
+    return reader.contents(path).decode("utf-8", errors="replace") if reader.present(path) else ""
+
+
 def reindex(memory_dir: Path) -> dict[str, Any]:
     """Rebuild MEMORY.md in memory without writing it; see the module docstring for the rules."""
     index_path = memory_dir / INDEX_NAME
-    current = index_path.read_bytes().decode("utf-8", errors="replace") if is_present(index_path) else ""
+    current = index_text(index_path)
 
     def frontmatter(file: str) -> tuple[dict[str, str], str]:
-        return parse_frontmatter((memory_dir / file).read_text(encoding="utf-8", errors="replace"))
+        return parse_frontmatter(memory_text(TreeReader(memory_dir), memory_dir / file))
 
     def derived_title(meta: dict[str, str], file: str) -> str:
         return flat_text((meta.get("name") or Path(file).stem).replace("[", "(").replace("]", ")"))
@@ -812,7 +975,7 @@ def write_index(path: Path, content: str) -> None:
     the new index in a file it creates under a fresh name; nothing else in the directory is touched or left behind,
     even when the write fails."""
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        mode = stat.S_IMODE(TreeReader(path.parent).status(path).st_mode)
     except FileNotFoundError:
         mode = TRACKED_FILE_MODE
     replace_text(path, content, mode=mode)
@@ -835,7 +998,7 @@ def refusal(memory_dir: Path, name: str) -> str | None:
         return "the index is rebuilt with reindex, never deleted"
     problem = entry_problem(memory_dir / name)
     # Windows will not delete a read-only file, so one is refused with the rest, before any deletion, everywhere.
-    if problem is None and is_read_only(memory_dir / name):
+    if problem is None and TreeReader(memory_dir).read_only(memory_dir / name):
         return "the file is read-only; make it writable to delete it"
     return problem
 
@@ -1022,7 +1185,7 @@ def repository_supplied(repo: Path, scope: str) -> bool:
     if scope != "local":
         return scope == "project"
     try:
-        if is_link_or_junction(repo / ".claude"):
+        if TreeReader(repo).is_link(repo / ".claude"):
             return True
     except (FileNotFoundError, NotADirectoryError):
         pass
@@ -1089,13 +1252,19 @@ def locate(
             return unresolved([*notes, str(exc)])
         if root is None:
             # Claude Code uses the project's own folder for a project in no Git repository.
-            root = resolved_path(repo)
+            root = project_folder(repo)
             source = f"derived from the folder ({root}), which is in no Git repository"
         else:
             source = f"derived from the repository's main worktree ({root})"
         directory = projects / encode_project(str(root)) / "memory"
         notes.append("The directory name is derived by convention; confirm it before changing anything.")
     return {"memory_dir": str(directory), "source": source, **directory_state(directory), "notes": notes}
+
+
+def project_folder(folder: Path) -> Path:
+    """A folder in no Git repository, a project of its own, made absolute with its links followed, as Claude Code names
+    its project."""
+    return resolved_path(folder)
 
 
 def chosen_directory(
@@ -1134,13 +1303,23 @@ def chosen_directory(
     }
 
 
+def examined(exc: OSError) -> str:
+    """Why an OSError was raised: a tree reader's refusal, or a read it did not make, by its reason alone, as the
+    operating system's reason is given; any other by that reason, or its message when it has none."""
+    if isinstance(exc, TreeRefused | FileRefused):
+        return exc.reason
+    return exc.strerror or str(exc)
+
+
 def reason(exc: OSError) -> str:
     """An expected OSError's reason on one line."""
-    return flat_text(exc.strerror or str(exc))
+    return flat_text(examined(exc))
 
 
 def describe(exc: OSError) -> str:
     """An expected OSError as one line: its reason and the file it names."""
+    if isinstance(exc, TreeRefused | FileRefused):
+        return f"{reason(exc)}: {flat_text(str(exc.path))}"
     return f"{reason(exc)}: {flat_text(str(exc.filename))}" if exc.strerror and exc.filename else reason(exc)
 
 
@@ -1180,7 +1359,7 @@ def store_refusal(memory_dir: Path) -> str | None:
     if root:
         return f"{memory_dir} is inside the skills directory {root}; name the memory directory resolve printed"
     try:
-        present = is_present(memory_dir / INDEX_NAME)
+        present = TreeReader(memory_dir).present(memory_dir / INDEX_NAME)
     except OSError as exc:
         return f"{memory_dir} is not a memory directory: its {INDEX_NAME} cannot be read: {reason(exc)}"
     if not present:
@@ -1280,6 +1459,13 @@ def source_refusal(path: Path) -> str | None:
     return None if reason is None else f"{path} {reason}"
 
 
+def project_skill(repo: Path, name: str) -> Path | None:
+    """The repository's .claude/skills/<name>/SKILL.md when a file is there, following links, a source the user edits
+    and the next step judges with `source_refusal`."""
+    project = repo / ".claude" / "skills" / name / "SKILL.md"
+    return project if is_present(project) else None
+
+
 def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Each editable source file of a skill, or the file named with --file, never one inside a skills directory."""
     unread = ""
@@ -1298,8 +1484,8 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
         except GitError as exc:
             repo = None
             unread = f"NOTE {flat_text(f'no project skill was looked for: git could not read the repository: {exc}')}"
-        project = None if repo is None else repo / ".claude" / "skills" / args.name / "SKILL.md"
-        candidates += [project] if project is not None and is_present(project) else []
+        project = None if repo is None else project_skill(repo, args.name)
+        candidates += [project] if project is not None else []
         missing = (
             f"no editable source of skill {args.name}: the deployer's manifest records none, and the repository has "
             "no project skill of that name; name its source file with --file"
@@ -1378,12 +1564,18 @@ def resolve_command(args: argparse.Namespace) -> tuple[int, list[str]]:
         if repo is None and args.repo is None:
             return 1, ["FAILED not inside a Git repository; pass --repo"]
         # A folder in no Git repository is a project of its own.
-        repo = repo or resolved_path(args.repo)
+        repo = repo or project_folder(args.repo)
         if holds_line_break(str(repo)):
             return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(repo)!r}')}"]
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))
     except GitError as exc:
         return 1, [f"FAILED {flat_text(f'git could not read the repository: {exc}')}"]
+
+
+def store_folder_reason(memory_dir: Path) -> str | None:
+    """`file_presence.refusal_reason` of the memory directory a command is given, the tree every later read of the
+    store is bound to, judged before any reader is bound to it."""
+    return file_presence.refusal_reason(memory_dir, folder=True)
 
 
 def run(args: argparse.Namespace) -> tuple[int, list[str]]:
@@ -1397,7 +1589,7 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         if refused:
             return 1, [f"FAILED {refused}"]
     # Only a directory with nothing there is not found: a file in its place, or one a stat cannot examine, is named so.
-    reason = file_presence.refusal_reason(args.memory_dir, folder=True)
+    reason = store_folder_reason(args.memory_dir)
     if reason == file_presence.MISSING:
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
     if reason is not None:

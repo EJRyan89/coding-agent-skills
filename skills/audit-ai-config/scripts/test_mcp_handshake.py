@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ import audit_ai_config
 import bounded_process
 import mcp_handshake
 import nesting_depth
+from test_audit_ai_config import looked_at
 
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
@@ -34,13 +36,14 @@ LINE_SEPARATORS = ("\n", "\r", "\u0085", "\u2028", "\u2029")
 
 
 def link_directory(target: Path, link: Path) -> None:
-    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link, its target spelled
+    resolved, as the handshake's root is, since a link's text naming the root through another spelling leads out."""
     if sys.platform == "win32":
         import _winapi
 
-        _winapi.CreateJunction(str(target), str(link))
+        _winapi.CreateJunction(str(target.resolve()), str(link))
     else:
-        link.symlink_to(target, target_is_directory=True)
+        link.symlink_to(target.resolve(), target_is_directory=True)
 
 
 FAKE_SERVER = """\
@@ -791,6 +794,29 @@ class HandshakeTests(unittest.TestCase):
                     lines,
                 )
 
+    def test_a_cwd_through_a_link_out_is_refused_with_nothing_outside_looked_at(self) -> None:
+        # A junction on Windows, a symbolic link elsewhere: the reader judges the link by its text, where resolving the
+        # cwd once followed it outside the repository to learn where it leads. The outside folder is no sibling of the
+        # repository, whose parent the reader asks how it compares names.
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "deeper").mkdir()
+        link_directory(outside, self.root / "linked")
+        self._write(".mcp.json", "mcpServers", {"linked": self._stdio("record", cwd="linked/deeper")})
+        with looked_at(outside) as looked:
+            code, lines = self._run()
+        self.assertEqual([], looked)
+        self.assertEqual(
+            (
+                1,
+                [
+                    "CONFIG_ERROR .mcp.json Server 'linked': cwd 'linked/deeper' is outside the repository",
+                    "SKIPPED linked source=.mcp.json transport=stdio",
+                ],
+            ),
+            (code, lines),
+        )
+
     def test_a_cwd_outside_the_repository_is_refused_and_never_started(self) -> None:
         outside = Path(self.temp.name) / "outside"
         outside.mkdir()
@@ -802,7 +828,8 @@ class HandshakeTests(unittest.TestCase):
                 "parent": self._stdio("record", cwd=".."),
                 "absolute": self._stdio("record", cwd=str(outside)),
                 "linked": self._stdio("record", cwd="linked"),
-                "inside": self._stdio("ok", cwd=str(self.root / "tools")),
+                # The audit resolves its root and judges a cwd by its text, so an absolute cwd is spelled resolved.
+                "inside": self._stdio("ok", cwd=str(self.root.resolve() / "tools")),
             },
         )
         self.assertEqual(

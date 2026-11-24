@@ -60,6 +60,10 @@ CODE = "print('check')\n"
 CONVENTIONS_LOWERED = CONVENTIONS.replace("CancellationToken as MUST_FIX", "CancellationToken as SUGGESTION", 1)
 
 
+# Why a guidance file the reader is refused when it opens it is not read.
+DENIED = "the entry cannot be read: Permission denied"
+
+
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -500,7 +504,7 @@ class ReadTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, outside)
         (outside / "checklist.md").write_text(CHECKLIST, encoding="utf-8", newline="\n")
         for name, target, reason in (
-            ("leaving", outside, "a symbolic link or junction leads the entry outside the tree"),
+            ("leaving", outside, rg.LINK_ON_PATH),
             (
                 "staying",
                 self.checkout / "docs",
@@ -516,6 +520,50 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(
             rg.WorkingCopy(None), rg.read_working_copy(self.checkout, "docs/absent.md"), "no file, no reason"
         )
+
+    def test_a_link_leading_out_of_the_checkout_is_never_followed_to_judge_it(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the reader judges the link from its own metadata,
+        # so nothing it leads to outside the checkout is looked at, where resolving the path used to follow it there.
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "checklist.md").write_text(CHECKLIST, encoding="utf-8", newline="\n")
+        link(outside, self.checkout / "leaving")
+        looked: list[str] = []
+        real_lstat, real_stat = os.lstat, os.stat
+        far = os.path.normcase(os.path.realpath(outside))
+
+        def recorded(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+            def look(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+                if os.path.normcase(os.fspath(path)).startswith((far, os.path.normcase(os.fspath(outside)))):
+                    looked.append(os.fspath(path))
+                return real(path, *args, **kwargs)
+
+            return look
+
+        with mock.patch("os.lstat", recorded(real_lstat)), mock.patch("os.stat", recorded(real_stat)):
+            copy = rg.read_working_copy(self.checkout, "leaving/checklist.md")
+        self.assertEqual([], looked, "nothing outside the checkout is looked at")
+        self.assertEqual(rg.WorkingCopy(None, unreadable=rg.LINK_ON_PATH), copy)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_guidance_file_that_is_a_link_out_of_the_checkout_is_never_read(self) -> None:
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "checklist.md").write_text(CHECKLIST, encoding="utf-8", newline="\n")
+        target = self.checkout / "docs" / "checklist.md"
+        target.unlink()
+        target.symlink_to(outside / "checklist.md")
+        self.assertEqual(
+            rg.WorkingCopy(None, unreadable=rg.LINK_ON_PATH), rg.read_working_copy(self.checkout, "docs/checklist.md")
+        )
+
+    def test_a_guidance_path_that_is_no_regular_file_is_never_opened(self) -> None:
+        # The reader reads a regular file only, so a folder, a pipe, or a device in a guidance file's place is not read.
+        target = self.checkout / "docs" / "checklist.md"
+        target.unlink()
+        target.mkdir()
+        with mock.patch.object(Path, "open", side_effect=AssertionError("opened")):
+            self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, "docs/checklist.md"))
 
     def test_a_guidance_file_reached_through_a_link_inside_the_checkout_is_named_not_dropped(self) -> None:
         # As a CLAUDE.md that links to AGENTS.md is: the link is never followed, so the report names the file.
@@ -568,10 +616,10 @@ class ReadTests(unittest.TestCase):
         with unreadable("checklist.md"):
             copy = rg.read_working_copy(self.checkout, "docs/checklist.md")
             guidance = self.read_at(commit)
-        self.assertEqual(rg.WorkingCopy(None, None, "PermissionError: Permission denied"), copy)
+        self.assertEqual(rg.WorkingCopy(None, None, "the entry cannot be read: Permission denied"), copy)
         self.assertEqual("included", self.statuses(guidance)["docs/checklist.md"][1])
         self.assertEqual(
-            ["GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit PermissionError: Permission denied"],
+            [f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit {DENIED}"],
             guidance.unreadable,
         )
 
@@ -582,9 +630,9 @@ class ReadTests(unittest.TestCase):
                 "OSError: Input/output error",
             ),
             # The file goes between the check and the read.
-            "read_bytes": (
-                {"read_bytes": FileNotFoundError(errno.ENOENT, "No such file or directory")},
-                "FileNotFoundError: No such file or directory",
+            "open": (
+                {"open": FileNotFoundError(errno.ENOENT, "No such file or directory")},
+                "the entry cannot be read: No such file or directory",
             ),
         }
         for name, (failures, reason) in cases.items():
@@ -663,7 +711,7 @@ class ReadTests(unittest.TestCase):
             self.statuses(guidance),
         )
         self.assertEqual(
-            ["GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none PermissionError: Permission denied"],
+            [f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none {DENIED}"],
             guidance.unreadable,
         )
         self.assertEqual([], self.read().unreadable)
@@ -688,7 +736,7 @@ class ReadTests(unittest.TestCase):
         with unreadable("conventions.md"):
             guidance = self.read()
         self.assertEqual(
-            ["GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=none PermissionError: Permission denied"],
+            [f"GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=none {DENIED}"],
             guidance.unreadable,
         )
 
@@ -709,7 +757,7 @@ class ReadTests(unittest.TestCase):
         with unreadable("conventions.md"):
             guidance = self.read()
         self.assertEqual(
-            ["GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=partial PermissionError: Permission denied"],
+            [f"GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=partial {DENIED}"],
             guidance.unreadable,
         )
         self.assertEqual(
@@ -799,14 +847,14 @@ def link(target: Path, at: Path) -> None:
 @contextmanager
 def unreadable(name: str) -> Iterator[None]:
     """Reading any file named `name` fails as a file locked against reading does."""
-    real = Path.read_bytes
+    real = Path.open
 
-    def read_bytes(path: Path) -> bytes:
+    def opened(path: Path, *args: Any, **kwargs: Any) -> Any:
         if path.name == name:
             raise PermissionError(13, "Permission denied", str(path))
-        return real(path)
+        return real(path, *args, **kwargs)
 
-    with mock.patch.object(Path, "read_bytes", read_bytes):
+    with mock.patch.object(Path, "open", opened):
         yield
 
 
@@ -907,7 +955,8 @@ class ReportTests(InsightFixture):
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         self.assertIn(
-            "GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none PermissionError: Permission denied", lines
+            f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none {DENIED}",
+            lines,
         )
         directory = Path(lines[0].removeprefix("REPORT ")).parent
         items = [json.loads(line) for line in (directory / rs.INPUT_NAME).read_text(encoding="utf-8").splitlines()]
@@ -930,7 +979,7 @@ class ReportTests(InsightFixture):
         self.assertEqual(
             [
                 "MARKDOWN",
-                "GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit PermissionError: Permission denied",
+                f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit {DENIED}",
                 "GUIDANCE_OVERLAP",
             ],
             [lines[1].split()[0], lines[2], lines[3].split()[0]],

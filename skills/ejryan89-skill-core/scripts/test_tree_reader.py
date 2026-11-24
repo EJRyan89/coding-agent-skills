@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import file_presence
 from dotnet_solution import refusal, same_path
-from folder_walk import LINKED, LINKED_OUT_REASON, NotEntered
+from folder_walk import LINKED, LINKED_OUT_REASON, LINKED_REASON, LOOP, LOOP_REASON, NotEntered
 from test_folder_walk import link_folder, reached, recording, remove_link
 from tree_reader import CLIMBS_OUT, TreeReader, TreeRefused
 
@@ -251,6 +251,37 @@ class FolderLinkTests(TreeReaderCase):
         self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
         self.assertEqual([NotEntered(out, LINKED, LINKED_OUT_REASON)], walk.not_entered)
         self.assertEqual([], reached(touched, [out], self.outside))
+
+    def test_a_followed_walk_offers_follow_no_link_out_and_enters_one_that_stays_inside(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the link leading out is reported as LINKED without
+        # ever being offered to follow, and the one that stays inside is offered and entered.
+        out = self.link(self.outside / "sub", "Out")
+        inside = self.link(self.root / "Lib", "Shared")
+        offered: list[Path] = []
+
+        def follow(path: Path) -> bool:
+            offered.append(path)
+            return True
+
+        touched: list[tuple[str, bool]] = []
+        with recording(touched):
+            walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"), follow=follow)
+        self.assertEqual([inside], offered)
+        self.assertEqual([self.root / "Lib" / "Lib.csproj", inside / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(out, LINKED, LINKED_OUT_REASON)], walk.not_entered)
+        self.assertEqual([], reached(touched, [out], self.outside))
+
+    def test_a_followed_link_back_into_the_walk_is_a_loop_and_the_walk_ends(self) -> None:
+        loop = self.link(self.root, "Lib/Back")
+        walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"), follow=lambda _path: True)
+        self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(loop, LOOP, LOOP_REASON)], walk.not_entered)
+
+    def test_a_walk_without_follow_enters_no_folder_link(self) -> None:
+        inside = self.link(self.root / "Lib", "Shared")
+        walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"))
+        self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(inside, LINKED, LINKED_REASON)], walk.not_entered)
 
     def test_a_walk_or_climb_from_outside_the_tree_is_refused_before_it_starts(self) -> None:
         touched: list[tuple[str, bool]] = []

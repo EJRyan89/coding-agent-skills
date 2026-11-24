@@ -94,6 +94,19 @@ from text_lines import program_lines
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
 RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target repository configures"
+# Each server's cwd and command are judged inside the repository by audit_ai_config's tree reader (outside_problem),
+# and the configuration files are read through it. The reads that are not, each with why.
+TREE_READ_ALLOWED = {
+    "handshake_root": (
+        "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
+        "the tree the reader is bound to"
+    ),
+    "resolve_command": (
+        "finds the program a server's command names: a bare name on the search path, outside the repository by "
+        "design, and one with a directory part where a client starts it, which outside_problem judged inside the "
+        "repository first"
+    ),
+}
 OWNER_ONLY_ALLOWED = {
     "group_servers": "builds a key that compares a user's MCP server definitions, where a TOML nan or date must stay "
     "distinct rather than be refused; it writes no JSON anyone reads",
@@ -427,7 +440,7 @@ def main(arguments: list[str] | None = None) -> int:
     if refusal is not None:
         print(single_line(f"FAILED {refusal}"))
         return 1
-    root = resolved_path(args.root)
+    root = handshake_root(args.root)
     groups, problems = group_servers(root, args.server)
     refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:
@@ -452,6 +465,12 @@ def main(arguments: list[str] | None = None) -> int:
             failed = True
             print(single_line(f"HANDSHAKE_FAILED {label} {flat_text(str(error))}"))
     return 1 if failed else 0
+
+
+def handshake_root(root: Path) -> Path:
+    """The repository the user names, made absolute with its links followed, as the audit takes its root: the tree
+    whose reader then judges each server's cwd and command."""
+    return resolved_path(root)
 
 
 def starts(entry: dict[str, Any], sources: list[str]) -> bool:
