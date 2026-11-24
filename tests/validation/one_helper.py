@@ -1,9 +1,9 @@
-"""Each concept read in one helper is read only through it: the hub guard's place lookups, closing references, and a
-checkout's status.
+"""Each concept read in one helper is read only through it: the hub guard's place lookups, closing references, a
+checkout's status, a pull request's files, a repository path read from a snapshot, and an owner/name pattern.
 
 Outside review passes kept finding one concept implemented twice, with one copy fixed and the other left behind. The
 duplication policy catches a copied definition, not a concept implemented again with other code, so this policy holds
-the hub guard's place lookups and closing references to their helpers.
+each concept below to its helper.
 
 Place lookups. PLACE_LOOKUPS names them: checkout_of, guarded_hub_of_repository, and reached_hubs in tools/hub_guard.py,
 and checkout_of in tools/worktrees.py. Each raises git_client's GitError where git cannot say where a call acts, and a
@@ -87,6 +87,54 @@ stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read; no Bash or PowerShell script in the
   repository but the suites runs `git status` without `--no-optional-locks`, and the suites' own, as the update
   fixture's self-tests of its setup helper, read throwaway repositories.
+
+Pull request files. ejryan89-code-review-core's review_github.py is the one reader of GitHub's files endpoint of a pull
+request: its GitHubClient.list_pull_files reads the pull request's count of changed files and its head before the
+pages, and answers with a PullFiles whose checks, each public method or property the class defines, which this policy
+reads from the class, tell a caller whether the listing is cut short of that count (`cut`) and whether the head moved
+from the one the caller reads the change at (`moved_from`). In every non-test module ruff formats but the helper, it
+fails:
+- a string literal, or an f-string read with each formatted value as a value, that spells `pulls/<number>/files` with
+  the number a literal or a value, ending at a word end, so `pulls/{n}/filesystem` is not the endpoint;
+- a call of a function or a method named list_pull_files whose result is not bound to one name, as by `listing = ...`,
+  or whose scope does not read every one of the checks as an attribute of that name.
+PULL_FILES_SANCTIONS names a scope that reads the endpoint itself, by its module and its scope, with the reason, as
+the shepherd's every_file, which pages it through ejryan89-skill-core's gh client and checks both the count and the
+head; an entry that sanctions nothing, or one with no reason, fails. Its stated limits, each one a fixture in
+tests/validation/test_one_helper.py shows:
+- An endpoint joined with `+` or built by `format()` is not read.
+- A check anywhere in the scope counts, before the read or in a branch that never runs, and a check made in another
+  function the listing is handed to does not.
+- A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
+
+Snapshot paths. ejryan89-skill-core's diff_paths.py is the one reader of a snapshot's file by its repository path: its
+snapshot_path judges the name with unsafe_snapshot_name, the rule the snapshot's writer applies, and then holds the
+joined path inside the resolved root, so a name that leads out through a link is refused too. In every non-test module
+ruff formats but the helper, it fails a scope that gives a name to the helper's unsafe_snapshot_name, resolved through
+the module's imports, and joins that same name onto a path itself: by `/`, by a `joinpath` method, or by os.path's,
+posixpath's, or ntpath's `join`, the name anywhere inside an operand. A scope that judges a name without joining it,
+as a manifest's reader that refuses a listed name does, passes. A module states why a scope joins one itself in a
+module-level SNAPSHOT_PATH_READ_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason,
+fails. Its stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
+- A name judged in one scope and joined in another, joined under another name, or judged as anything but a name, as
+  `entry.path`, is not read.
+- A join with no judge at all is not read: the rule finds a second judge of a snapshot path, never a reader that judges
+  nothing.
+
+Repository names. ejryan89-skill-core's github_remote.py holds the one spelling of the characters a repository's owner
+and name hold, REPOSITORY_CHARACTERS, and OWNER_AND_NAME, an owner and a name of them, which closing_references.py,
+repo-cleanup's pr_status.py, and the review core's review_config.py build on; review_config's repository identity keeps
+its narrower rule, a login for the owner and a name never made only of dots, on top of the class. The policy reads the
+class from the helper. In every non-test module ruff formats but the helper, it fails a string literal that spells an
+owner/name pattern with its own class: a character class that takes exactly the characters the helper's takes, of
+printable ASCII and a letter outside it, then a quantifier, lazy or not, a `/`, escaped or not, and the same class
+again, its characters in any order. A module states why a scope spells one in a module-level
+REPOSITORY_PATTERN_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its
+stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
+- A class that takes another set of characters is another class, so `[\\w.-]`, which also takes letters outside
+  ASCII, is not read, and neither is a class whose body holds what `re` reads as a set operation, as `--`.
+- A pattern joined with `+`, or split by an f-string's formatted value, is not read.
+- A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
 """
 
 from __future__ import annotations
@@ -100,9 +148,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import closing_references
+import diff_paths
 import file_presence
 import git_client
 import git_worktrees
+import github_remote
 from python_checks import formatted_modules, sanctioned_problems
 from validation_support import (
     REPOSITORY_ROOT,
@@ -143,12 +193,24 @@ CATCHING = frozenset(
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
+def _class_definition(source: Path, name: str) -> ast.ClassDef:
+    tree = parse_python(source)
+    return next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == name)
+
+
+def public_members(source: Path, name: str) -> frozenset[str]:
+    """Each public method or property a class defines, read from its own definition."""
+    defined = _class_definition(source, name)
+    return frozenset(
+        node.name for node in defined.body if isinstance(node, FUNCTIONS) and not node.name.startswith("_")
+    )
+
+
 def error_attributes(source: Path, name: str) -> frozenset[str]:
     """The attributes that tell one error of a class from another, read from the class's own definition: each one its
     methods assign on self, and each public method or property it defines, none of which RuntimeError holds."""
-    tree = parse_python(source)
-    defined = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == name)
-    public = {node.name for node in defined.body if isinstance(node, FUNCTIONS) and not node.name.startswith("_")}
+    defined = _class_definition(source, name)
+    public = public_members(source, name)
     assigned = {
         node.attr
         for node in ast.walk(defined)
@@ -672,6 +734,289 @@ def status_problems(root: Path, files: Iterable[Path] | None = None) -> list[str
     return problems
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Pull request file listings
+
+PULL_FILES_HELPER = "skills/ejryan89-code-review-core/scripts/review_github.py"
+# The helper's reader of the listing, the class it answers with, and the checks a caller makes of that answer: each
+# public method or property the class defines over its fields, read from the class's own definition.
+PULL_FILES_READER = "list_pull_files"
+PULL_FILES_CLASS = "PullFiles"
+LISTING_CHECKS = public_members(REPOSITORY_ROOT / PULL_FILES_HELPER, PULL_FILES_CLASS)
+# What a formatted value of an f-string reads as where the rule reads the text it spells.
+FORMATTED = "\0"
+# GitHub's files endpoint of a pull request, its number a literal or a formatted value, ending at a word end.
+FILES_ENDPOINT = re.compile(rf"pulls/(?:{FORMATTED}|[0-9]+)/files(?![A-Za-z0-9_-])")
+# Each scope that reads a pull request's files itself, by its module's path and its scope, with the reason.
+PULL_FILES_SANCTIONS: dict[str, dict[str, str]] = {
+    ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py": {
+        "every_file": "the shepherd reads pull requests through ejryan89-skill-core's gh client, not the review "
+        "core's, and pages the endpoint only for a pull request gh's listing holds fewer files of than it changes; it "
+        "refuses a listing whose length is not the pull request's count of changed files, and one read while the "
+        "head moved from the one its listing recorded, as list_pull_files' callers do",
+    },
+}
+READ_PULL_FILES = (
+    f"read a pull request's files through {PULL_FILES_HELPER}'s {PULL_FILES_READER}, or name the scope with its "
+    f"reason in {POLICY}'s PULL_FILES_SANCTIONS"
+)
+
+
+def spelled_text(node: ast.AST) -> str | None:
+    """The text a string literal or an f-string spells, each formatted value read as FORMATTED; None for anything
+    else."""
+    if isinstance(node, ast.JoinedStr):
+        return "".join(_string(part) or FORMATTED for part in node.values)
+    return _string(node)
+
+
+def _parents(tree: ast.Module) -> dict[int, ast.AST]:
+    return {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _bound_name(call: ast.Call, parents: Mapping[int, ast.AST]) -> str | None:
+    """The one name a call's result is bound to, as `listing = github.list_pull_files(...)` binds it, or None."""
+    parent = parents.get(id(call))
+    targets = (
+        parent.targets
+        if isinstance(parent, ast.Assign)
+        else [parent.target]
+        if isinstance(parent, ast.AnnAssign | ast.NamedExpr)
+        else []
+    )
+    return targets[0].id if len(targets) == 1 and isinstance(targets[0], ast.Name) else None
+
+
+def _reads_listing(call: ast.Call) -> bool:
+    function = call.func
+    name = (
+        function.attr if isinstance(function, ast.Attribute) else function.id if isinstance(function, ast.Name) else ""
+    )
+    return name == PULL_FILES_READER
+
+
+def module_pull_files_problems(name: str, tree: ast.Module) -> list[tuple[int, str, str]]:
+    """Each place a module spells GitHub's files endpoint of a pull request, and each call of the helper's reader whose
+    listing its scope does not bind to a name and check with every one of LISTING_CHECKS, as its line, its scope, and
+    its refusal."""
+    parents = _parents(tree)
+    checked: dict[str, dict[str, set[str]]] = {}
+    calls: list[tuple[ast.Call, str]] = []
+    found: list[tuple[int, str, str]] = []
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(parents.get(id(node)), ast.JoinedStr):
+            continue
+        text = spelled_text(node)
+        if text is not None and FILES_ENDPOINT.search(text):
+            refusal = f"{scope} spells GitHub's files endpoint of a pull request; {READ_PULL_FILES}"
+            found.append((getattr(node, "lineno", 0), scope, refusal))
+        if isinstance(node, ast.Call) and _reads_listing(node):
+            calls.append((node, scope))
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr in LISTING_CHECKS:
+            checked.setdefault(scope, {}).setdefault(node.value.id, set()).add(node.attr)
+    for call, scope in calls:
+        bound = _bound_name(call, parents)
+        if bound is None:
+            refusal = f"{scope} reads {PULL_FILES_READER}'s listing without binding it to a name its checks read"
+        else:
+            missing = sorted(LISTING_CHECKS - checked.get(scope, {}).get(bound, set()))
+            if not missing:
+                continue
+            refusal = (
+                f"{scope} reads {PULL_FILES_READER}'s listing without checking {', '.join(missing)}, so a listing "
+                f"cut short of the files GitHub counts, or one read at another head, is taken as the whole change"
+            )
+        found.append((call.lineno, scope, f"{refusal}; {READ_PULL_FILES}"))
+    return sorted(set(found))
+
+
+def pull_files_modules(root: Path, files: Iterable[Path]) -> list[Path]:
+    """The modules the pull-files rule reads: every non-test module ruff formats but the helper."""
+    return [root / name for name in formatted_modules(root, list(files)) if name != PULL_FILES_HELPER]
+
+
+def pull_files_problems(
+    root: Path, files: Iterable[Path] | None = None, sanctions: Mapping[str, Mapping[str, str]] = PULL_FILES_SANCTIONS
+) -> list[str]:
+    """Report each place a module other than the helper reads a pull request's files itself, or reads the helper's
+    listing without checking it, that `sanctions` does not name, and each entry of it that sanctions nothing or gives
+    no reason."""
+    listed = repository_files(root) if files is None else list(files)
+    problems: list[str] = []
+    held: set[tuple[str, str]] = set()
+    for _, name, tree in python_trees(pull_files_modules(root, listed), root, problems):
+        for line, scope, refusal in module_pull_files_problems(name, tree):
+            if scope in sanctions.get(name, {}):
+                held.add((name, scope))
+            else:
+                problems.append(f"{name}:{line} {refusal}")
+    for name, scopes in sanctions.items():
+        for scope, reason in scopes.items():
+            if not reason.strip():
+                problems.append(
+                    f"{POLICY}: PULL_FILES_SANCTIONS gives {name} {scope} no reason; state why it reads "
+                    "a pull request's files itself"
+                )
+            elif (name, scope) not in held:
+                problems.append(
+                    f"{POLICY}: PULL_FILES_SANCTIONS names {name} {scope}, which reads no pull request's "
+                    "files itself; remove the entry"
+                )
+    return problems
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Snapshot paths
+
+SNAPSHOT_HELPER = "skills/ejryan89-skill-core/scripts/diff_paths.py"
+# The helper's judge of a name, which only its snapshot_path joins onto a snapshot's root.
+SNAPSHOT_JUDGE = f"{diff_paths.__name__}.{diff_paths.unsafe_snapshot_name.__name__}"
+SNAPSHOT_READER = f"{diff_paths.__name__}.{diff_paths.snapshot_path.__name__}"
+# The joins of a path the rule reads besides `/`: a method of a path, and the functions of os.path's modules.
+JOIN_METHOD = "joinpath"
+JOIN_FUNCTIONS = frozenset({"os.path.join", "posixpath.join", "ntpath.join"})
+SNAPSHOT_PATH_ALLOWANCE = "SNAPSHOT_PATH_READ_ALLOWED"
+READ_SNAPSHOT_PATH = (
+    f"judge a repository path read from a snapshot through {SNAPSHOT_READER}, which also holds it inside the "
+    f"resolved root, or state why in {SNAPSHOT_PATH_ALLOWANCE}; see {POLICY}"
+)
+
+
+def _joined_operands(node: ast.AST, resolver: CallableResolver) -> list[ast.AST]:
+    """The operands a node joins into a path: the two sides of a `/`, or the arguments of a joinpath or an os.path join;
+    none for anything else."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return [node.left, node.right]
+    if isinstance(node, ast.Call):
+        function = node.func
+        if (isinstance(function, ast.Attribute) and function.attr == JOIN_METHOD) or resolver.name(
+            function
+        ) in JOIN_FUNCTIONS:
+            return list(node.args)
+    return []
+
+
+def module_snapshot_path_problems(name: str, tree: ast.Module) -> list[str]:
+    """Each place a scope joins a name it judged with the helper's unsafe_snapshot_name itself, as its line and its
+    refusal, that the module's SNAPSHOT_PATH_READ_ALLOWED does not sanction, and each entry of it that sanctions
+    nothing."""
+    resolver = CallableResolver(tree)
+    judged: dict[str, set[str]] = {}
+    joins: list[tuple[ast.AST, str, list[ast.AST]]] = []
+    for node, scope in scoped_nodes(tree.body):
+        if (
+            isinstance(node, ast.Call)
+            and resolver.name(node.func) == SNAPSHOT_JUDGE
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+        ):
+            judged.setdefault(scope, set()).add(node.args[0].id)
+        if operands := _joined_operands(node, resolver):
+            joins.append((node, scope, operands))
+    found: list[tuple[int, str, str]] = []
+    for node, scope, operands in joins:
+        names = {inner.id for operand in operands for inner in ast.walk(operand) if isinstance(inner, ast.Name)}
+        if joined := sorted(names & judged.get(scope, set())):
+            refusal = f"{scope} joins {', '.join(joined)}, a name it judges itself, onto a path; {READ_SNAPSHOT_PATH}"
+            found.append((getattr(node, "lineno", 0), scope, refusal))
+    return sanctioned_problems(name, tree, SNAPSHOT_PATH_ALLOWANCE, found)
+
+
+def snapshot_path_modules(root: Path, files: Iterable[Path]) -> list[Path]:
+    """The modules the snapshot-path rule reads: every non-test module ruff formats but the helper."""
+    return [root / name for name in formatted_modules(root, list(files)) if name != SNAPSHOT_HELPER]
+
+
+def snapshot_path_problems(root: Path, files: Iterable[Path] | None = None) -> list[str]:
+    """Report each place a module other than the helper joins a snapshot path it judged itself that it does not
+    sanction, and each sanction that holds nothing."""
+    listed = repository_files(root) if files is None else list(files)
+    problems: list[str] = []
+    for _, name, tree in python_trees(snapshot_path_modules(root, listed), root, problems):
+        problems += module_snapshot_path_problems(name, tree)
+    return problems
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Repository names
+
+REPOSITORY_HELPER = "skills/ejryan89-skill-core/scripts/github_remote.py"
+# The helper's class of the characters an owner and a name hold, read from the helper.
+REPOSITORY_CLASS = f"[{github_remote.REPOSITORY_CHARACTERS}]"
+# The characters a class is measured over: printable ASCII, and a letter outside it, so `[\w.-]`, which also takes
+# that letter, is another class.
+CLASS_SAMPLE = "".join(chr(code) for code in range(0x20, 0x7F)) + "\u00e9"
+# A character class as a pattern writes one, its body escapes included, and what may stand between an owner's class
+# and a name's: a quantifier, lazy or not, then a `/`, escaped or not.
+CHARACTER_CLASS = re.compile(r"\[(?:\\.|[^\]\\])+\]")
+OWNER_NAME_JOIN = re.compile(r"(?:[+*?]|\{[0-9]*,?[0-9]*\})\??\\?/")
+REPOSITORY_ALLOWANCE = "REPOSITORY_PATTERN_ALLOWED"
+READ_REPOSITORY = (
+    f"build an owner/name pattern on {REPOSITORY_HELPER}'s REPOSITORY_CHARACTERS or OWNER_AND_NAME, or state why in "
+    f"{REPOSITORY_ALLOWANCE}; see {POLICY}"
+)
+
+
+# What a class body may hold that `re` warns a later Python will read as a nested set or a set operation: no class
+# that holds one is measured, so the rule never compiles a pattern a warning filter would turn into an error.
+SET_OPERATIONS = ("[", "--", "&&", "~~", "||")
+
+
+def class_members(spelled: str) -> frozenset[str] | None:
+    """The characters of CLASS_SAMPLE a character class takes, or None for a class `re` cannot compile or that holds
+    one of SET_OPERATIONS in its body."""
+    if any(operation in spelled[1:-1] for operation in SET_OPERATIONS):
+        return None
+    try:
+        compiled = re.compile(spelled)
+    except re.error:
+        return None
+    return frozenset(character for character in CLASS_SAMPLE if compiled.fullmatch(character))
+
+
+REPOSITORY_MEMBERS = class_members(REPOSITORY_CLASS)
+
+
+def spells_owner_and_name(text: str) -> bool:
+    """Whether a pattern's text spells an owner and a name with the helper's class: a class taking exactly the
+    characters it takes, a quantifier, a `/`, and the same class again."""
+    classes = [(found.start(), found.end()) for found in CHARACTER_CLASS.finditer(text)]
+    repository = [class_members(text[start:end]) == REPOSITORY_MEMBERS for start, end in classes]
+    return any(
+        repository[index]
+        and repository[index + 1]
+        and OWNER_NAME_JOIN.fullmatch(text, classes[index][1], classes[index + 1][0]) is not None
+        for index in range(len(classes) - 1)
+    )
+
+
+def module_repository_problems(name: str, tree: ast.Module) -> list[str]:
+    """Each string literal in a module that spells an owner and a name with the helper's class itself, as its line and
+    its refusal, that the module's REPOSITORY_PATTERN_ALLOWED does not sanction, and each entry of it that sanctions
+    nothing."""
+    found = [
+        (node.lineno, scope, f"{scope} spells an owner/name pattern with its own character class; {READ_REPOSITORY}")
+        for node, scope in scoped_nodes(tree.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and spells_owner_and_name(node.value)
+    ]
+    return sanctioned_problems(name, tree, REPOSITORY_ALLOWANCE, found)
+
+
+def repository_modules(root: Path, files: Iterable[Path]) -> list[Path]:
+    """The modules the repository-name rule reads: every non-test module ruff formats but the helper."""
+    return [root / name for name in formatted_modules(root, list(files)) if name != REPOSITORY_HELPER]
+
+
+def repository_problems(root: Path, files: Iterable[Path] | None = None) -> list[str]:
+    """Report each owner/name pattern a module other than the helper spells with its own character class that it does
+    not sanction, and each sanction that holds nothing."""
+    listed = repository_files(root) if files is None else list(files)
+    problems: list[str] = []
+    for _, name, tree in python_trees(repository_modules(root, listed), root, problems):
+        problems += module_repository_problems(name, tree)
+    return problems
+
+
 class OneHelperPolicies(unittest.TestCase):
     def test_every_path_to_a_place_lookup_treats_any_git_error_as_an_unknown_place(self) -> None:
         self.assertEqual([], place_lookup_problems(REPOSITORY_ROOT))
@@ -687,6 +1032,27 @@ class OneHelperPolicies(unittest.TestCase):
         modules = formatted_modules(REPOSITORY_ROOT, listed)
         read = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in status_modules(REPOSITORY_ROOT, listed)]
         self.assertEqual([], scope_problems("the status rule", modules, read, {STATUS_HELPER: "the one helper itself"}))
+
+    def test_a_pull_request_s_files_are_read_only_through_their_one_helper(self) -> None:
+        self.assertEqual([], pull_files_problems(REPOSITORY_ROOT))
+
+    def test_a_snapshot_path_is_read_only_through_its_one_helper(self) -> None:
+        self.assertEqual([], snapshot_path_problems(REPOSITORY_ROOT))
+
+    def test_an_owner_and_name_pattern_is_built_only_on_its_one_helper(self) -> None:
+        self.assertEqual([], repository_problems(REPOSITORY_ROOT))
+
+    def test_the_pull_files_snapshot_path_and_repository_rules_read_every_module_their_rules_speak_of(self) -> None:
+        listed = repository_files(REPOSITORY_ROOT)
+        modules = formatted_modules(REPOSITORY_ROOT, listed)
+        for policy, read_modules, helper in (
+            ("the pull-files rule", pull_files_modules, PULL_FILES_HELPER),
+            ("the snapshot-path rule", snapshot_path_modules, SNAPSHOT_HELPER),
+            ("the repository-name rule", repository_modules, REPOSITORY_HELPER),
+        ):
+            with self.subTest(policy):
+                read = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in read_modules(REPOSITORY_ROOT, listed)]
+                self.assertEqual([], scope_problems(policy, modules, read, {helper: "the one helper itself"}))
 
     def test_the_closing_reference_rule_reads_every_module_its_rule_speaks_of(self) -> None:
         listed = repository_files(REPOSITORY_ROOT)

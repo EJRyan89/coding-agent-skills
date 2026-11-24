@@ -1194,3 +1194,40 @@ class LocalManifestTests(unittest.TestCase):
             config["repositories"][identity] = {"reviewer": reviewer, "checkout_path": str(self.checkout)}
             config["repository_sets"]["primary"].append(identity)
         review_config.check_local_manifests(validate_config(config), self.root / "config.json", refuse)
+
+
+class RepositoryCharacterTests(unittest.TestCase):
+    """The review core's owner/name patterns build on ejryan89-skill-core's github_remote.REPOSITORY_CHARACTERS and
+    accept what they accepted before the class moved there."""
+
+    LOOSE = ("o/r", "O-1/r.2", "o_/_r", ".github/.github", "o/.", "o/..", "-o/r-", "o/r.git")
+    REFUSED = ("a/b/c", "o r/x", "\u00f6/r", "o/r!", "/r", "o/", "o", "o/r\u0661", "o/r\n")
+
+    def test_the_repository_patterns_are_built_on_github_remote_s_characters(self) -> None:
+        # Pinned against an independent literal of the class github_remote.REPOSITORY_CHARACTERS spells.
+        for pattern in (review_config.REPOSITORY_NAME, review_config.IGNORED_REPOSITORY_PATTERN.pattern):
+            with self.subTest(pattern):
+                self.assertIn("A-Za-z0-9_.-]", pattern)
+
+    def test_an_override_key_and_an_ignored_entry_accept_each_spelling_they_accepted_before(self) -> None:
+        for written in self.LOOSE:
+            with self.subTest(written):
+                self.assertTrue(review_config.STATUS_OVERRIDE_KEY_PATTERN.fullmatch(f"{written}#1"))
+                self.assertTrue(review_config.IGNORED_REPOSITORY_PATTERN.fullmatch(written))
+        for written in self.REFUSED:
+            with self.subTest(written):
+                self.assertIsNone(review_config.STATUS_OVERRIDE_KEY_PATTERN.fullmatch(f"{written}#1"))
+                self.assertIsNone(review_config.IGNORED_REPOSITORY_PATTERN.fullmatch(written))
+
+    def test_an_identity_keeps_its_narrower_rule_over_the_shared_class(self) -> None:
+        # The owner is a login and the name is never only dots, so only some loose spellings are identities.
+        accepted = [written for written in (*self.LOOSE, *self.REFUSED) if self._identity(written)]
+        self.assertEqual(["o/r", "O-1/r.2", "o/r.git"], accepted)
+
+    @staticmethod
+    def _identity(written: str) -> bool:
+        try:
+            review_config.validate_repository_identity(written)
+        except ConfigurationError:
+            return False
+        return True
