@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 from console import run_main
-from file_presence import is_directory, is_occupied, is_present
+from file_presence import is_directory, is_occupied, is_present, listed
 from text_lines import text_lines
 from type_check_roots import REPOSITORY_SKILLS
 
@@ -75,8 +75,8 @@ PROTECTED_WRITES = (
 
 PRESENCE_ALLOWED = {
     "_stray_problems": (
-        "an entry iterdir listed is there, so the test's False names something other than a folder, which the "
-        "problem says"
+        "an entry the folder's listing gave is there, so the test's False names something other than a folder, "
+        "which the problem says"
     ),
 }
 
@@ -173,22 +173,24 @@ def _raise(error: OSError) -> None:
 
 
 def _folder_files(folder: Path) -> list[str]:
-    """Every entry below a shim folder that is not a folder; os.walk raises for a folder below it it cannot list, where
-    rglob would match nothing."""
-    return sorted(
-        Path(base, name).relative_to(folder).as_posix()
-        for base, _, names in os.walk(folder, onerror=_raise)
-        for name in names
-    )
+    """Every entry below a shim folder that is not a folder, but the AppleDouble sidecars macOS writes beside each file
+    on a FAT, exFAT, or SMB volume, which `file_presence.listed` leaves out of each folder's listing; os.walk raises
+    for a folder below it it cannot list, where rglob would match nothing."""
+    found = []
+    for base, _, names in os.walk(folder, onerror=_raise):
+        own = {path.name for path in listed(Path(base))}
+        found += [Path(base, name).relative_to(folder).as_posix() for name in names if name in own]
+    return sorted(found)
 
 
 def _stray_problems(root: Path, expected: dict[str, dict[str, str] | str | None]) -> list[str]:
-    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone. Raises
-    OSError, NotADirectory for a file in its place, for an .agents/skills it cannot examine, and for an entry in it it
-    cannot examine, which it never tells to be deleted."""
+    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone, but the
+    AppleDouble sidecar macOS writes beside each shim folder on a FAT, exFAT, or SMB volume, which
+    `file_presence.listed` leaves out. Raises OSError, NotADirectory for a file in its place, for an .agents/skills it
+    cannot examine, and for an entry in it it cannot examine, which it never tells to be deleted."""
     found = []
     shims = root / SHIMS
-    for entry in sorted(shims.iterdir()) if is_directory(shims) else []:
+    for entry in listed(shims) if is_directory(shims) else []:
         relative = (SHIMS / entry.name).as_posix()
         if not is_directory(entry, other_is_absent=True):
             found.append(f"{relative} is not a shim folder; delete it")
