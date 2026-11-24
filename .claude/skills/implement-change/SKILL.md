@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "Bash(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/fix_brief.py *)"]
 ---
 
 # Implementing a change
@@ -23,11 +23,19 @@ Start from an issue the user hands over or a need they describe; an open issue a
 
 ## 3. Bug class
 
-For a defect, find its class before planning the fix: the same pattern elsewhere, the other callers of the same reader or writer, and its twin in another shell or runtime. Fix each sibling in the same change, or file a follow-up issue for it and name that issue in the pull request. Fixing only the named instance leaves the rest to be found again.
+For a defect, find its class before planning the fix: the same pattern elsewhere, the other callers of the same reader or writer, and its twin in another shell or runtime. For an issue, start from the callers and twins its brief lists (step 4). Fix each sibling in the same change, or file a follow-up issue for it and name that issue in the pull request. Fixing only the named instance leaves the rest to be found again.
 
 ## 4. Size gate and lessons
 
 Apply *Size gate*. A change that passes is implemented on the current model without a plan. Otherwise plan.
+
+When the change resolves an issue, write its brief, giving with `--path` each file the change will touch that the issue does not name in a code span:
+
+```bash
+python -B .claude/skills/implement-change/scripts/fix_brief.py '<issue>' --path '<path>'
+```
+
+It prints `ISSUE <number> <title>` and `BRIEF "<file>"`, the brief it wrote, or a last line `FAILED <reason>` to report. The brief lists the files the issue names, the callers of each symbol it names, each file's twins, the lessons patterns below for those files, and the *Contract files* entries that name them, each list saying what its bound left out, then the rules every fix session meets. Complete its construct section and judge each entry; a name several files hold is yours to choose with `--path`. Write it again when the plan adds a file.
 
 Either way, before planning, or before implementing when the gate skips the plan, list the patterns of the repository's lessons catalogue that the files the change will touch meet, naming each file it edits or adds from the top of the repository:
 
@@ -42,7 +50,7 @@ It prints a `PATTERN <catalogue>:<line> <pattern> <evidence> ...` line for each 
 Plan in the runtime's read-only planning mode, on the strongest model it offers. Read the files the change touches and their tests. Settle real design choices with the user. The deliverable is a handoff prompt that stands alone, in a fenced block:
 
 - the issue and the scope, with where it stops;
-- the files to change, and the lessons patterns step 4 listed for them, with how the change keeps each;
+- the files to change, and the lessons patterns step 4 listed for them, with how the change keeps each, and, for an issue, the brief's path;
 - the tests to write first;
 - the validation to run, from *Validation*;
 - the documentation to update, from *Documentation*;
