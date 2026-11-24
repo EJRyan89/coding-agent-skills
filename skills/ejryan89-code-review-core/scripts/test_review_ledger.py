@@ -20,6 +20,7 @@ from review_config import verdict_policy
 from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (
     AdapterResult,
+    CarriedFinding,
     LedgerEntry,
     PriorDisposition,
     RecordError,
@@ -153,7 +154,7 @@ class ArchiveFixture:
         self.archive = root / "archive"
         self.count = 0
 
-    def prior(self) -> list[dict[str, Any]]:
+    def prior(self) -> list[CarriedFinding]:
         return carried_findings(pull_records(self.archive, "example/one", 12))
 
     def commit(

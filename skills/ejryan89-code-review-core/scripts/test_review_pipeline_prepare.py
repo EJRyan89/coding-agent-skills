@@ -42,7 +42,7 @@ from review_config import ConfigurationError, write_config
 from review_flags import add_flag
 from review_github import GitHubClient
 from review_operation import ReviewOperationError
-from review_records import build_record, validate_adapter_result
+from review_records import Comment, build_record, validate_adapter_result
 from review_reviewers import MissingSkillError
 from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
@@ -320,9 +320,9 @@ class RecordingGitHub(GitHubClient):
         self.calls.append(("get_pull_diff", repository, number))
         return self.diff, self.undecodable
 
-    def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
+    def list_open_review_threads(self, repository: str, number: int) -> list[Comment]:
         self.calls.append(("list_open_review_threads", repository, number))
-        threads: list[dict[str, Any]] = json.loads(json.dumps(self.threads))
+        threads: list[Comment] = json.loads(json.dumps(self.threads))
         return threads
 
 
