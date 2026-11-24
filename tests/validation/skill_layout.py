@@ -479,8 +479,8 @@ UNSOURCED_STATEMENTS: dict[tuple[str, str], str] = {
     (
         "docs/copilot-support.md",
         "A headless `copilot -p` session cannot ask, so every read of the skill is denied and the skill cannot run.",
-    ): "carried from the repository's first commit with no recorded observation; Copilot's programmatic reference "
-    "documents --add-dir for reads outside the working directory but not the denial, and the guidance audit rereads it",
+    ): "unverified: carried from the repository's first commit with no recorded observation, and Copilot's "
+    "programmatic reference documents --add-dir but not the denial; #3296 verifies it",
     (
         "docs/copilot-support.md",
         "A `COPILOT_HOME` that is not an absolute path is refused by every command of `deploy.py` once its command "
