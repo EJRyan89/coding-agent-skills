@@ -792,83 +792,176 @@ SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
 TREE_READ_ALLOWED = {
     "require_kind": (
         "the skill folder inventory is given, the file tools is given, or locate's plugin folder: a path the user "
-        "names, asked whether it is there before any reader is bound to it, since it chooses the folder"
+        "names, asked whether it is there before any reader is bound to it, since it chooses the folder",
+        ("inventory", "search_roots", "tools"),
     ),
     "given_path": (
         "resolves a path the user names that holds a `..`, the skill folder, file, repository, home, or plugin folder, "
-        "before any reader is bound to it, since it chooses the folder"
+        "before any reader is bound to it, since it chooses the folder",
+        ("main",),
     ),
-    "is_given_folder": "whether a path the user names to scan is a folder, which then has a reader bound to it",
-    "not_a_file": "whether something other than a file is at a path the user names to scan, before reading it as named",
-    "is_given_file": "whether a file is at a path the user names to scan, read as named, the user's own choice",
+    "is_given_folder": (
+        "whether a path the user names to scan is a folder, which then has a reader bound to it",
+        ("scan", "scanned_files", "scanned_texts"),
+    ),
+    "not_a_file": (
+        "whether something other than a file is at a path the user names to scan, before reading it as named",
+        ("scanned_texts",),
+    ),
+    "is_given_file": (
+        "whether a file is at a path the user names to scan, read as named, the user's own choice",
+        ("scanned_texts",),
+    ),
     "outside_bytes": (
         "the bytes of a file outside the examined folder: a Markdown file the skill names outside it (OUTSIDE_READ), a "
         "file the user names to scan, a .agents/skills shim locate compares, a runtime prompt's sample and the source "
         "files it names, an agent definition or a plugin's hooks file beside the skill's root, and a script a command "
         "runs from the repository root or another skill, or ejryan89-skill-core's; a file of the folder is read "
-        "through its reader"
+        "through its reader",
+        (
+            "measure_sample",
+            "named_bytes",
+            "outside_lines",
+            "outside_text",
+            "plugin_hooks",
+            "scanned_texts",
+            "setting_lines",
+        ),
     ),
     "is_outside_file": (
         "whether a file is at one of the places outside_bytes names, following its links, as the runtime reading it "
-        "does"
+        "does",
+        ("agent_lines", "measure_sample", "outside_lines", "outside_scripts"),
     ),
     "opened_path": (
         "resolves a path as the runtime opens it: the examined folder's own place and the folders above it, a file of "
         "the folder the reader let through, whose links stay inside, a folder whose scripts the status lines read, or "
         "a path the skill's Markdown names, which is how the audit learns that it leads out of the folder, an outside "
-        "read it reports"
+        "read it reports",
+        (
+            "command_scripts",
+            "in_skill",
+            "linked_files",
+            "markdown_links",
+            "module_locator.locate",
+            "needs_evidence",
+            "nested_flags",
+            "outside_lines",
+            "outside_scripts",
+            "passed_over",
+            "python_constants",
+            "repository_root",
+            "runs_repository_code",
+            "scripts_beside",
+            "shown_path",
+            "skill_folder",
+            "skill_scripts",
+            "status_lines",
+        ),
     ),
     "identity": (
         "keys a path as the file system compares it, its links followed: a skill folder or file locate finds, or a "
-        "path the skill's Markdown names, compared as opened_path resolves it"
+        "path the skill's Markdown names, compared as opened_path resolves it",
+        ("available_lines", "linked_files", "locate", "outside_lines"),
     ),
     "is_main_name": (
         "asks a folder whether a name it lists is its SKILL.md: agent_skills.is_skill_file reads the folder's own "
-        "listing and the entry's own metadata, following no link"
+        "listing and the entry's own metadata, following no link",
+        ("category", "main_files", "tools"),
     ),
     "script_is_present": (
         "whether a script a command names is there, as the runtime running the command finds it, its links followed; "
-        "one leading out of the skill folder is a script outside it, which the status lines read by design"
+        "one leading out of the skill folder is a script outside it, which the status lines read by design",
+        ("command_scripts", "runs_repository_code"),
     ),
     "listed_entries": (
         "lists a folder outside the examined one: the source tree's runtime prompt samples, its trigger scenarios, or "
-        "the agent definitions beside the skill's root"
+        "the agent definitions beside the skill's root",
+        ("defined_agents", "listed_in_folders", "sample_lines"),
     ),
-    "listed_in_folders": "lists the source tree's trigger scenario folders for the skill, outside the examined folder",
-    "plugin_roots": "locate's search of the plugin folder the user names, or of Claude Code's plugin cache in the home",
-    "manifest_name": "a plugin's manifest, at the plugin root beside a skill folder or one locate searches",
-    "available_lines": "locate's listing of each skill root, in the home and the repository, when no skill matches",
+    "listed_in_folders": (
+        "lists the source tree's trigger scenario folders for the skill, outside the examined folder",
+        ("trigger_scenario_lines",),
+    ),
+    "plugin_roots": (
+        "locate's search of the plugin folder the user names, or of Claude Code's plugin cache in the home",
+        ("plugin_skill_roots",),
+    ),
+    "manifest_name": (
+        "a plugin's manifest, at the plugin root beside a skill folder or one locate searches",
+        ("plugin_of", "plugin_skill_roots"),
+    ),
+    "available_lines": (
+        "locate's listing of each skill root, in the home and the repository, when no skill matches",
+        ("locate",),
+    ),
     "skill_folders": (
         "lists the skills folder holding the audited skill, whose siblings it may invoke; each sibling's own files "
-        "are read through a reader bound to its folder"
+        "are read through a reader bound to its folder",
+        ("invoked_evidence",),
     ),
     "dependency_folders": (
         "whether a skill this one depends on has a folder beside it; that folder's files are read through a reader "
-        "bound to it"
+        "bound to it",
+        ("setting_lines",),
     ),
-    "source_root": "whether the source tree around the skill folder holds the skill's deploy metadata",
-    "read_metadata": "a skill's deploy metadata in the source tree around the skill folder",
-    "unreadable_metadata": "whether a deploy metadata file the source tree holds is there though it cannot be read",
+    "source_root": (
+        "whether the source tree around the skill folder holds the skill's deploy metadata",
+        (
+            "declared_agents",
+            "declared_lines",
+            "dependency_folders",
+            "plugin_lines",
+            "runtime_lines",
+            "sample_lines",
+            "skill_files",
+            "trigger_scenario_lines",
+        ),
+    ),
+    "read_metadata": (
+        "a skill's deploy metadata in the source tree around the skill folder",
+        ("declared_agents", "declared_lines", "own_needs", "runtime_lines", "skill_closure", "unreadable_metadata"),
+    ),
+    "unreadable_metadata": (
+        "whether a deploy metadata file the source tree holds is there though it cannot be read",
+        ("declared_agents", "declared_lines", "own_needs", "runtime_lines"),
+    ),
     "plugin_lines": (
-        "the other skills the plugin holding a skill folder carries, or the source tree's marketplace and plugin plans"
+        "the other skills the plugin holding a skill folder carries, or the source tree's marketplace and plugin plans",
+        ("inventory",),
     ),
-    "trigger_scenario_lines": "the source tree's trigger scenarios for the skill, under TRIGGER_SCENARIOS",
-    "sample_lines": "whether the source tree holds a folder of the skill's runtime prompt samples",
+    "trigger_scenario_lines": (
+        "the source tree's trigger scenarios for the skill, under TRIGGER_SCENARIOS",
+        ("tools",),
+    ),
+    "sample_lines": ("whether the source tree holds a folder of the skill's runtime prompt samples", ("scan",)),
     "repository_root": (
-        "the nearest folder above the skill folder with a .git entry, from which its commands run repository tools"
+        "the nearest folder above the skill folder with a .git entry, from which its commands run repository tools",
+        ("status_lines",),
     ),
     "outside_scripts": (
         "lists the scripts beside one a command runs from the repository root or another skill, or "
-        "ejryan89-skill-core's, outside the examined folder, whose status lines the audit compares"
+        "ejryan89-skill-core's, outside the examined folder, whose status lines the audit compares",
+        ("scripts_beside",),
     ),
-    "defined_agents": "lists the agent definitions beside the skill's root: agents/, ~/.claude/agents, or a plugin's",
-    "read_agent": "reads an agent definition beside the skill's root, outside the examined folder",
-    "plugin_hooks": "whether the plugin holding the skill folder has a hooks file, beside the skill's root",
+    "defined_agents": (
+        "lists the agent definitions beside the skill's root: agents/, ~/.claude/agents, or a plugin's",
+        ("agent_lines", "named_agents", "plugin_lines", "started_agents"),
+    ),
+    "read_agent": (
+        "reads an agent definition beside the skill's root, outside the examined folder",
+        ("agent_lines", "started_agents"),
+    ),
+    "plugin_hooks": (
+        "whether the plugin holding the skill folder has a hooks file, beside the skill's root",
+        ("agent_lines",),
+    ),
     "powershell_script_commands": (
         "hands a script's text, already read, to pwsh through a request file powershell_commands writes and reads "
-        "under the private temporary directory: the skill's own file, no path of the examined folder"
+        "under the private temporary directory: the skill's own file, no path of the examined folder",
+        ("script_git_subcommands",),
     ),
-    "provenance": "audit-skill's own provenance file beside this script, or the one a test names",
+    "provenance": ("audit-skill's own provenance file beside this script, or the one a test names", ("main",)),
 }
 
 

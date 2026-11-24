@@ -187,15 +187,30 @@ PRESENCE_ALLOWED = {
 TREE_READ_ALLOWED = {
     "previous_period": (
         "lists the repository set's summary folder the skill writes its reports in, and asks whether each period's "
-        "report is there: the skill's own output"
+        "report is there: the skill's own output",
+        ("review_insights:create_report",),
     ),
-    "seal": "reads the input and context files report wrote beside the insights report: the skill's own output",
+    "seal": (
+        "reads the input and context files report wrote beside the insights report: the skill's own output",
+        ("load_context",),
+    ),
+    "load_context": (
+        "reads the context file report wrote beside the insights report, in the folder the synthesis record names: the "
+        "skill's own output",
+        ("review_insights:synthesize",),
+    ),
+    "unclaimed": (
+        "whether the reviewer guard's log is in the run folder the skill made under the private temporary directory: "
+        "the skill's own run",
+        ("review_insights:synthesize",),
+    ),
     "Staged.stage_run": (
         "resolves the new run folder the skill makes under the private temporary directory: the skill's own output"
     ),
     "remove_run": (
         "compares the run folder a synthesis names with the temporary directory and reads the run.json the skill "
-        "wrote there, to remove only a run it made: the skill's own output"
+        "wrote there, to remove only a run it made: the skill's own output",
+        ("review_insights:create_report", "review_insights:synthesize"),
     ),
 }
 

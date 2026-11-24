@@ -199,44 +199,59 @@ PRESENCE_ALLOWED = {
 }
 
 # The reads outside a tree a reader is bound to, each with why it lies outside: the module states which reads are
-# bound to which tree. One more is stated here, since the tree read policy cannot sanction it: report_runs reads the run
-# list prepare printed through ejryan89-code-review-core's review_batches.load_run_list, which reads it with
-# review_io.read_json, and the policy derives no reader from a sibling skill's scripts loaded through sibling_scripts,
-# its stated limit, so an entry for report_runs would sanction nothing it sees. The run list is the pipeline's own state
-# in the run folder, outside every tree the skill examines by design.
+# bound to which tree.
 TREE_READ_ALLOWED = {
-    "<module>": (
-        "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "
-        "scripts folder beside this skill's own, no path of a tree the skill examines"
+    "report_runs": (
+        "reads the run list prepare printed through ejryan89-code-review-core's review_batches.load_run_list: the "
+        "pipeline's own state in the run folder, outside every tree the skill examines",
+        ("report_command",),
     ),
     "given_path": (
         "resolves, its links followed, the document path the user names and the checkout git names around it, before "
-        "a reader is bound to either, since each chooses the tree a reader is then bound to"
+        "a reader is bound to either, since each chooses the tree a reader is then bound to",
+        ("build", "locate"),
     ),
     "_is_a_path": (
         "whether anything is at the path build is given, before it is read as a document's path or a pull request's "
-        "selector, so before any tree is chosen"
+        "selector, so before any tree is chosen",
+        ("pull_reference",),
     ),
     "output_directory": (
         "judges the --output folder the user names for the skill's own files new or empty before anything is written: "
-        "the skill's own output, wherever the user puts it"
+        "the skill's own output, wherever the user puts it",
+        ("build", "build_pull"),
     ),
     "output_root": (
         "resolves the new temporary folder the skill makes for its own files under the private temporary directory: "
-        "the skill's own output"
+        "the skill's own output",
+        ("build", "build_pull"),
     ),
     "report": (
         "the fixture build wrote, which --fixture or the run list names, and the report finalize recorded in the run "
         "folder under the home, each read where it is named, to copy the report beside the fixture: the skill's own "
-        "output and the pipeline's, no tree the skill examines"
+        "output and the pipeline's, no tree the skill examines",
+        ("listed_report", "report_command"),
     ),
-    "_is_file": "whether a fixture's pull.json, a recorded report, or its record is a file: the files report copies",
-    "json_object": "a fixture's pull.json or a recorded report's record, which report compares: the files it copies",
-    "earlier_copy": "compares a report.md beside the fixture with the recorded report it would copy there",
-    "is_empty_file": "whether a report.md beside the fixture is the empty reservation a stopped copy left",
+    "_is_file": (
+        "whether a fixture's pull.json, a recorded report, or its record is a file: the files report copies",
+        ("report",),
+    ),
+    "json_object": (
+        "a fixture's pull.json or a recorded report's record, which report compares: the files it copies",
+        ("refuse_other_review",),
+    ),
+    "earlier_copy": (
+        "compares a report.md beside the fixture with the recorded report it would copy there",
+        ("report",),
+    ),
+    "is_empty_file": (
+        "whether a report.md beside the fixture is the empty reservation a stopped copy left",
+        ("report",),
+    ),
     "folded": (
         "name_key given no folder folds a name as text, composed and case-folded fully, and asks no folder; the policy "
-        "counts every call of it, since given a folder it asks that folder how it compares names"
+        "counts every call of it, since given a folder it asks that folder how it compares names",
+        ("resolve", "resolve.wanted"),
     ),
 }
 
