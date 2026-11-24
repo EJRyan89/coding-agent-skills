@@ -5,12 +5,12 @@ Each keeps the promise through a `TreeReader` bound to that tree: every stat, op
 their scripts goes through one, and validation refuses a direct read there (the tree read policy in
 `tests/validation/fsops_platform.py`), so a caller that bypasses the reader fails validation rather than waiting for a
 review to find it. dotnet-dependencies reads a package unpacked in the NuGet cache, which lies outside the examined
-tree, through a reader bound to the cache folder, so no link is followed out of that either. audit-skill reads the
-skill folder it audits through a reader bound to that folder too, the places outside it stated in TREE_READ_ALLOWED, and
+tree, through a reader bound to the cache folder, so no link is followed out of that either. audit-skill reads the skill
+folder it audits through a reader bound to that folder too, the places outside it stated in TREE_READ_ALLOWED, and
 review-document the document it reviews, the checkout around it, and the working directory its resolve searches, each
 through a reader bound to it. audit-ai-config reads the repository it audits through a reader bound to it,
-curate-agent-memory the memory store, the repository, and the user's configuration directory through a reader bound
-to each, and review-insights a guidance file's working-tree copy through a reader bound to the configured checkout.
+curate-agent-memory the memory store and the repository through a reader bound to each, and review-insights a guidance
+file's working-tree copy through a reader bound to the configured checkout.
 
 Each call judges its path before it touches it (`refusal`), from the path's text and then by its links:
 

@@ -103,8 +103,9 @@ TREE_READ_ALLOWED = {
     ),
     "resolve_command": (
         "finds the program a server's command names: a bare name on the search path, outside the repository by "
-        "design, and one with a directory part where a client starts it, which outside_problem judged inside the "
-        "repository first"
+        "design; an absolute command where it names, which runs as configured, wherever it points, so shutil.which "
+        "stats it there; and a relative one with a directory part where a client starts it, which outside_problem "
+        "judged inside the repository first"
     ),
 }
 OWNER_ONLY_ALLOWED = {

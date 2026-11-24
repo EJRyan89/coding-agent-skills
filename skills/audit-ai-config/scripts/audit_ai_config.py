@@ -447,15 +447,25 @@ def walk_files(
     A folder or wanted file that leads out of the root is neither entered nor read: the link it is, or lies behind when
     `base` does, goes in `outside`. A link that
     stays inside the root is followed, but never back into a folder the walk is inside. A folder that cannot be
-    listed, `base` included, and an entry that cannot be examined go in `unread` with the reason, never read as empty.
+    listed, `base` included, an entry that cannot be examined, and a link the reader refuses for another reason than
+    leading out, such as a link to itself, go in `unread` with the reason, never read as empty.
     A nested checkout, and a link back into a folder the walk is inside, go in `skipped` with the reason.
     """
     listing = Listing()
     if leaves_root(root, base):
         listing.outside.append(outside_link(root, base) or base)
         return listing
-    walk = tree_reader(root).search(base, wanted, skipped=skipped, follow=lambda _path: True)
-    listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
+    reader = tree_reader(root)
+    walk = reader.search(base, wanted, skipped=skipped, follow=lambda _path: True)
+    for entry in walk.not_entered:
+        if entry.kind == LINKED:
+            # A link entry the walk did not follow: one leading out of the root is the link the inventory warns of,
+            # and any other the reader refuses, such as a link to itself, is an entry it cannot examine.
+            refused = reader.refusal(entry.path)
+            if refused is None or _link_leaves(reader, entry.path):
+                listing.outside.append(entry.path)
+            else:
+                listing.unread.append((entry.path, f"the entry cannot be examined: {refused}"))
     listing.unread.extend(
         (entry.path, entry.reason) for entry in walk.not_entered if entry.kind in (UNLISTABLE, UNEXAMINED)
     )
@@ -772,26 +782,29 @@ def _unreadable_finding(root: Path, path: Path, error: Exception | str) -> Findi
     return Finding("ERROR", "inventory", path.relative_to(root).as_posix(), message=f"{UNREAD}{error}")
 
 
-def _below_any(path: str | None, folders: Collection[str]) -> bool:
-    """Whether the repository-relative `path` lies below one of `folders`."""
-    return path is not None and any(posix_within(path, folder, strict=True) for folder in folders)
+def _below_any(path: str | None, message: str, unread: dict[str, set[str]]) -> bool:
+    """Whether the repository-relative `path` lies strictly below a folder in `unread` reported with this same
+    `message`: the folder's own failure, naming the folder, which every path below it meets when its metadata cannot
+    be read. A path below a folder that only cannot be listed fails for a reason of its own, which is kept."""
+    return path is not None and any(
+        message in messages and posix_within(path, folder, strict=True) for folder, messages in unread.items()
+    )
 
 
 def _one_unread_error_per_path(findings: list[Finding]) -> list[Finding]:
     """The findings with each path that could not be read, examined, or listed reported once, by the first reporter,
-    though several listings or checks meet it, and none below a folder reported so: every path below a folder whose
-    metadata cannot be read fails as the folder does, since the reader examines each folder on a path's way, so the
-    folder's ERROR names why."""
-    unread = {
-        finding.path
-        for finding in findings
-        if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)) and finding.path
-    }
+    though several listings or checks meet it, and none below a folder reported with the same failure: the reader
+    examines each folder on a path's way, so a folder whose metadata cannot be read fails every path below it with
+    the folder's own error, which the folder's ERROR names."""
+    unread: dict[str, set[str]] = {}
+    for finding in findings:
+        if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)) and finding.path:
+            unread.setdefault(finding.path, set()).add(finding.message)
     seen: set[str | None] = set()
     kept: list[Finding] = []
     for finding in findings:
         if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)):
-            if finding.path in seen or _below_any(finding.path, unread):
+            if finding.path in seen or _below_any(finding.path, finding.message, unread):
                 continue
             seen.add(finding.path)
         kept.append(finding)
@@ -4214,10 +4227,12 @@ def print_report(report: str) -> None:
 
 def not_a_checkout(root: Path) -> str | None:
     """Why `root` is refused as a repository to audit, or None when a `.git` is in it: no `.git` at all, a link to
-    nothing included, since git reads nothing through it, or a `.git` whose stat fails, named with the error rather
-    than read as none."""
+    nothing included, since git reads nothing through it, and a `.git` that is a link leading out of the root, which
+    the audit does not follow to learn what is there, or a `.git` whose stat fails, named with the error rather than
+    read as none."""
+    marker = root / ".git"
     try:
-        checkout = anything_at(root, root / ".git")
+        checkout = link_out(root, marker) is None and anything_at(root, marker)
     except OSError as error:
         return f"{root} could not be examined for a .git: {error}"
     return None if checkout else f"{root} is not a Git repository (no .git found)"

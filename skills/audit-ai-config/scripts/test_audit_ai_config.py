@@ -6410,6 +6410,49 @@ def stat_denied(target: Path, *, older: bool, walked: bool = True) -> Iterator[N
         yield
 
 
+def test_a_path_below_a_folder_is_dropped_only_with_the_folders_own_failure() -> None:
+    # A folder whose metadata cannot be read fails every path below it with its own error, which the folder's ERROR
+    # names once; a sibling whose name only starts with the folder's, a path-less ERROR, and a path below that fails
+    # for a reason of its own are kept, and a path equal to the folder is the folder, kept once.
+    denied = f"{audit.UNREAD}[Errno 13] Access is denied: 'a'"
+    own = f"{audit.UNREAD}[Errno 13] Access is denied: 'a/c'"
+
+    def error(path: str | None, message: str) -> audit.Finding:
+        return audit.Finding("ERROR", "inventory", path, message=message)
+
+    findings = [
+        error("a/b", denied),
+        error("a", denied),
+        error("a", denied),
+        error("ab", denied),
+        error(None, denied),
+        error("a/c", own),
+        error("a/b/d", denied),
+    ]
+    kept = [(finding.path, finding.message) for finding in audit._one_unread_error_per_path(findings)]
+    assert kept == [("a", denied), ("ab", denied), (None, denied), ("a/c", own)]
+
+
+def test_a_file_that_cannot_be_read_below_a_folder_that_cannot_be_listed_keeps_its_own_error() -> None:
+    # As a folder at mode 0311 holding a file at mode 000: the folder can be entered but not listed, so the file below
+    # it is examined and fails to open on its own, and both are reported, the file's ERROR never dropped as the
+    # folder's.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve()
+        _setup_conforming_repo(root)
+        github, instructions = root / ".github", root / ".github" / "copilot-instructions.md"
+        real_open = Path.open
+
+        def opened(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path == instructions:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        with listing_denied(github), mock.patch.object(Path, "open", opened):
+            errors = [f.path for f in audit.check_inventory(root) if f.severity == "ERROR"]
+    assert ".github/copilot-instructions.md" in errors, errors
+
+
 class UnexaminedPathTests(unittest.TestCase):
     """A configuration file or folder whose stat fails, or with something else in its place, is a finding at its
     path, never read as no such file or folder."""
@@ -6967,8 +7010,26 @@ class PresenceAnswerTests(unittest.TestCase):
         )
         checkout = self.root / "checkout"
         checkout.mkdir()
-        (checkout / ".git").symlink_to(checkout / "no-git")
+        (checkout / ".git").symlink_to(self.root / "no-git")
         self.assertEqual(f"{checkout} is not a Git repository (no .git found)", audit.not_a_checkout(checkout))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_git_that_is_a_link_out_of_the_root_is_no_checkout_whatever_it_leads_to(self) -> None:
+        # The audit does not follow a link out of the root to learn what is there, so a .git leading out to a real
+        # Git directory, or to nothing, is refused as no Git repository, and nothing outside is looked at.
+        outside = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "git").mkdir()
+        checkout = self.root / "linked-checkout"
+        checkout.mkdir()
+        for target in (outside / "git", outside / "nothing"):
+            with self.subTest(target=target.name):
+                (checkout / ".git").unlink(missing_ok=True)
+                (checkout / ".git").symlink_to(target)
+                with looked_at(outside) as looked:
+                    refusal = audit.not_a_checkout(checkout)
+                self.assertEqual([], looked)
+                self.assertEqual(f"{checkout} is not a Git repository (no .git found)", refusal)
 
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
@@ -7133,6 +7194,15 @@ class OutsideLinkTests(unittest.TestCase):
             sorted(("WARNING", "inventory", link) for link in (".github/agents", "vendor", ".claude/rules")),
             sorted(self._outside_links(result)),
         )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_link_to_itself_is_an_entry_it_cannot_examine_never_a_link_that_leads_out(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to("loop")
+        result = audit.audit(self.root)
+        self.assertNotIn(("WARNING", "inventory", "loop"), self._outside_links(result))
+        [error] = [f.message for f in result.findings if f.path == "loop" and f.severity == "ERROR"]
+        self.assertIn("cannot be examined", error)
 
     def test_a_file_past_the_readers_bound_is_never_read(self) -> None:
         # The reader reads a regular file within its bound only, so a huge file or a device at a configuration path

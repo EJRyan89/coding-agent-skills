@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -475,9 +476,17 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(3, overlaps[0]["line"])
         self.assertEqual(0, self.by_file(self.run_audit())["sut.md"]["overlaps_omitted"])
 
+    def elsewhere(self) -> Path:
+        """A folder outside the repository and the memory store, in a temporary folder of its own, so it is no sibling
+        of either: deciding whether a path lies in a tree asks the tree's parent how it compares names, which on Windows
+        looks up a sibling's own entry, never following it, as the tree reader's stated limit says."""
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        return folder
+
     def outside_rule(self) -> Path:
         """A folder outside the repository and the memory store holding a rule a memory overlaps."""
-        outside = self.root / "elsewhere"
+        outside = self.elsewhere()
         write(
             outside / "guidelines.md",
             "# Tests\n\n- Name the object under test after its class, never the generic sut variable name.\n",
@@ -511,10 +520,25 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual([], looked, "no link is followed, not even to learn what it is")
         self.assertEqual([], self.by_file(report)["sut.md"]["overlaps"])
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_user_claude_md_linked_from_dotfiles_is_measured_where_a_repository_link_out_is_not(self) -> None:
+        # The user's configuration directory is the user's own, so its CLAUDE.md linked from a dotfiles checkout is
+        # read through the link, as Claude Code loads it; the same link in the repository, which the user may not have
+        # written, is still passed over unread.
+        dotfiles = self.outside_rule()
+        user_dir = self.root / "user-config"
+        user_dir.mkdir()
+        (user_dir / "CLAUDE.md").symlink_to(dotfiles / "guidelines.md")
+        overlaps = memory_audit.audit(self.memory_dir, self.repo, user_dir=user_dir)["memories"][0]["overlaps"]
+        self.assertEqual([str(user_dir / "CLAUDE.md")], [overlap["file"] for overlap in overlaps])
+        (self.repo / "CLAUDE.md").symlink_to(dotfiles / "guidelines.md")
+        overlaps = memory_audit.audit(self.memory_dir, self.repo)["memories"][0]["overlaps"]
+        self.assertEqual([], overlaps)
+
     def test_a_cited_path_through_a_link_out_of_the_repository_is_never_followed(self) -> None:
         # A junction on Windows, a symbolic link on Linux and macOS: the cited path is not reported as there or not,
         # but as one the repository's reader refuses, with the link it names and where it leads.
-        outside = self.root / "elsewhere"
+        outside = self.elsewhere()
         write(outside / "rule.md", "Rule.\n")
         link = directory_link(self.repo / "shared", outside)
         write(self.memory_dir / "paths.md", memory("paths", "Read `shared/rule.md`."))
@@ -525,9 +549,39 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(("shared/rule.md", None), (cited["path"], cited["exists"]))
         self.assertIn("outside the examined tree", cited["unreadable"])
 
+    def test_an_absolute_cited_path_into_the_repository_through_a_link_out_is_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: an absolute path naming a place in the repository
+        # is looked up through the repository's reader, as the same path written relative is.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        link = directory_link(self.repo / "shared", outside)
+        cited = (self.repo / "shared" / "rule.md").as_posix()
+        write(self.memory_dir / "paths.md", memory("paths", f"Read `{cited}`."))
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        [found] = self.by_file(report)["paths.md"]["cited_paths"]
+        self.assertEqual((cited, None), (found["path"], found["exists"]))
+        self.assertIn("outside the examined tree", found["unreadable"])
+
+    def test_a_cited_path_whose_dot_dot_climbs_out_past_a_link_is_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: `a/../../x.md` names the repository's parent as
+        # written, but Linux and macOS open it as <outside>/x.md, through the link, so the reader refuses it.
+        outside = self.elsewhere()
+        write(outside / "x.md", "Here.\n")
+        (outside / "1" / "2").mkdir(parents=True)
+        link = directory_link(self.repo / "a", outside / "1" / "2")
+        write(self.memory_dir / "paths.md", memory("paths", "Read `a/../../x.md`."))
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        [found] = self.by_file(report)["paths.md"]["cited_paths"]
+        self.assertEqual(("a/../../x.md", None), (found["path"], found["exists"]))
+        self.assertIn("outside the examined tree", found["unreadable"])
+
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_a_memory_linked_out_of_the_store_is_unreadable_and_never_followed(self) -> None:
-        outside = self.root / "elsewhere"
+        outside = self.elsewhere()
         write(outside / "kept.md", memory("kept", "Kept body."))
         link = self.memory_dir / "kept.md"
         link.symlink_to(outside / "kept.md")
@@ -540,7 +594,7 @@ class MemoryAuditTests(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
     def test_an_index_linked_out_of_the_store_is_refused_unread(self) -> None:
-        outside = self.root / "elsewhere"
+        outside = self.elsewhere()
         write(outside / "MEMORY.md", "- [Kept](kept.md) — hook\n")
         index = self.memory_dir / "MEMORY.md"
         index.symlink_to(outside / "MEMORY.md")

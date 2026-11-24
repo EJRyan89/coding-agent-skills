@@ -1194,7 +1194,7 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # through a reader bound to that folder, and review-document reads the document it reviews, the checkout around it,
 # and the working directory resolve searches through readers bound to the document's folder, that checkout, and that
 # directory, audit-ai-config reads the repository it audits through a reader bound to it, curate-agent-memory the
-# memory store, the repository, and the user's configuration directory through a reader bound to each, and
+# memory store and the repository through a reader bound to each, and
 # review-insights a guidance file's working-tree copy through a reader bound to the configured checkout, the places
 # outside each stated in TREE_READ_ALLOWED. Each keeps it through ejryan89-skill-core's
 # tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
