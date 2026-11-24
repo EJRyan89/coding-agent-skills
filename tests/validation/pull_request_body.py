@@ -26,8 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from closing_references import stray_closing_lines
 from flat_text import flat_text
 from forms_considered import FIX_TYPE, FORMS_HEADING, FormsFault, forms_fault, is_fix_title, placeholder_forms
+from implementation_profile import PROFILE as PROFILE_DOC
 from pull_request_title import head_branch
-from upgrade_notes import PROFILE_DOC
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, markdown_section
 
 from tools.release_notes import ReleaseNotesError
