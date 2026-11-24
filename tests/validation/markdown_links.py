@@ -14,6 +14,7 @@ from pathlib import Path
 
 import file_presence
 import lessons_catalogue
+from evaluation_results import TableError, measured_scenarios
 from link_destinations import link_destinations
 from markdown_sections import ATX_HEADING, code_spans, outside_fences
 from text_lines import text_lines
@@ -28,6 +29,14 @@ from validation_support import (
 
 # GitHub's heading slug keeps letters, digits, underscores, hyphens, and spaces, then turns each space into a hyphen.
 SLUG_REMOVED = re.compile(r"[^\w\- ]")
+# The fields only a pattern under the catalogue's Prompt patterns has.
+PROMPT_FIELDS = ("Prompt", "Caught by")
+# A prompt a lesson names: a file by its path from the repository root, and a heading of it by its fragment.
+PROMPT_PLACE = re.compile(r"([\w.-]+(?:/[\w.-]+)*)(?:#([\w-]+))?")
+# An evaluation scenario a lesson names as its guard, by its folder: the skill, and the scenario.
+EVALUATION_SCENARIO = re.compile(r"tests/fixtures/skill-evals/([\w.-]+)/([\w.-]+)")
+# The document whose results table records each skill's evaluation runs.
+EVALUATIONS_DOC = "docs/skill-evaluations.md"
 
 
 PRESENCE_ALLOWED = {
@@ -281,11 +290,40 @@ def cited_test_problems(root: Path) -> list[str]:
     return problems
 
 
+def _scenario_problem(root: Path, span: str, skill: str, scenario: str) -> str | None:
+    """Why an evaluation scenario a lesson names as its guard does not resolve, or None when it does: its folder is
+    there, and a row of the results table in docs/skill-evaluations.md records it as measured, as
+    ejryan89-skill-core's evaluation_results reads the table through `measured_scenarios`, never as not run."""
+    # As for a skill step: a stat that fails raises, and a scenario or a results file of the wrong kind is named so.
+    try:
+        present = file_presence.is_directory(root / span)
+    except file_presence.NotADirectory:
+        return f"cites {span}, but {span} is not a folder"
+    if not present:
+        return f"cites {span}, but {span} does not exist"
+    results = root / EVALUATIONS_DOC
+    try:
+        if not file_presence.is_present(results):
+            return f"cites {span}, but {EVALUATIONS_DOC}, which records each scenario's runs, does not exist"
+    except file_presence.NotAFile:
+        return f"cites {span}, but {EVALUATIONS_DOC}, which records each scenario's runs, is not a file"
+    try:
+        measured = measured_scenarios(results.read_text(encoding="utf-8"), skill)
+    except (OSError, UnicodeDecodeError, TableError) as error:
+        return f"cites {span}, but {EVALUATIONS_DOC} cannot be read: {error}"
+    if scenario not in measured:
+        return f"cites {span}, which no row of {EVALUATIONS_DOC} records as run for {skill}"
+    return None
+
+
 def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> str | None:
     """Why a guard a lesson names does not resolve, or None when it does: a test ID by its path from the repository
-    root, a heading of a skill's SKILL.md by its fragment, or a workflow file."""
+    root, a heading of a skill's SKILL.md by its fragment, a workflow file, or an evaluation scenario, which
+    evaluate-skill runs on models and validation never does, by its folder."""
     skill_step = re.compile(r"((?:\.claude/)?skills/[\w.-]+/SKILL\.md)#([\w-]+)")
     workflow = re.compile(r"\.github/workflows/[\w.-]+\.ya?ml")
+    if scenario := EVALUATION_SCENARIO.fullmatch(span):
+        return _scenario_problem(root, span, scenario.group(1), scenario.group(2))
     if (citation := CITED_ID.fullmatch(span)) and "/" in citation.group(1):
         return _id_problem(index, document, citation)
     if step := skill_step.fullmatch(span):
@@ -308,7 +346,35 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
         except file_presence.NotAFile:
             return f"cites {span}, but {span} is not a file"
         return None if present else f"cites {span}, but {span} does not exist"
-    return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
+    return (
+        f"names {span}, which is not a test ID, a skill's step, a workflow, or an evaluation scenario by its path from "
+        "the repository root"
+    )
+
+
+def _prompt_problem(root: Path, span: str) -> str | None:
+    """Why a prompt a lesson names does not resolve, or None when it does: a file by its path from the repository
+    root, inside it, and, for a Markdown file, a heading of it by its fragment."""
+    if not (prompt := PROMPT_PLACE.fullmatch(span)) or ".." in prompt.group(1).split("/"):
+        return f"names {span}, which is not a file by its path from the repository root, with a heading's fragment"
+    name, fragment = prompt.groups()
+    try:
+        present = file_presence.is_present(root / name)
+    except file_presence.NotAFile:
+        return f"names the prompt {span}, but {name} is not a file"
+    if not present:
+        return f"names the prompt {span}, but {name} does not exist"
+    if fragment is None:
+        return None
+    if not name.endswith(".md"):
+        return f"names the prompt {span}, but {name} is not Markdown, whose headings a fragment names"
+    try:
+        text = (root / name).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return f"names the prompt {span}, but {name} cannot be read: {error}"
+    if fragment not in heading_slugs(text):
+        return f"names the prompt {span}, which names no heading of {name}"
+    return None
 
 
 def _bound_names(body: list[ast.stmt]) -> dict[str, ast.stmt]:
@@ -374,11 +440,23 @@ def _entry_problems(root: Path, index: _TestIndex, pattern: lessons_catalogue.Pa
         return f"{document}:{number} the pattern {name!r}"
 
     problems = [f"{at(number)} {problem}" for number, problem in pattern.problems]
+    prompted = pattern.section == lessons_catalogue.PROMPT_PATTERNS
+    problems += [
+        f"{at(fields[field][0][0])} names the field {field!r}, which only a pattern under "
+        f"'## {lessons_catalogue.PROMPT_PATTERNS}' has"
+        for field in PROMPT_FIELDS
+        if not prompted and field in fields
+    ]
     problems += [
         f"{at(heading_number)} states no {field}"
-        for field in ("Rule", "Why")
+        for field in ("Rule", "Why", *(("Prompt",) if prompted else ()))
         if not any(text for _, text in fields.get(field, []))
     ]
+    prompts = pattern.spans("Prompt") if prompted else []
+    if any(text for _, text in fields.get("Prompt", [])) and prompted and not any(spans for _, spans in prompts):
+        problems.append(f"{at(prompts[0][0])} names no prompt in a code span")
+    for number, spans in prompts:
+        problems += [f"{at(number)} {problem}" for span in spans if (problem := _prompt_problem(root, span))]
     if not any(spans for _, spans in pattern.spans("Search for")):
         problems.append(f"{at(heading_number)} names no form a violation takes under Search for, each in a code span")
     guards, uses = pattern.spans("Guard"), pattern.spans("Use")
@@ -403,16 +481,20 @@ def _entry_problems(root: Path, index: _TestIndex, pattern: lessons_catalogue.Pa
 
 
 def lessons_ledger_problems(root: Path) -> list[str]:
-    """Report each pattern of docs/lessons.md, read through ejryan89-skill-core's lessons_catalogue, the reader the
-    `implement-change` repository skill's pattern lister shares, that states no Rule or Why, names no form a violation
-    takes under Search for in a code span, names neither a guard that refuses a violation nor, under No guard, the
-    reason no guard is possible, whatever mechanism it uses, or names both a guard and that reason, or names a field a
-    pattern does not have or one field twice; each guard and mechanism it names that does not resolve; and a catalogue
-    that is missing, cannot be read, or holds no pattern. A guard is a test ID, `<path>::<test>`, `<path>::<class>`,
-    or `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
-    `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a workflow, `.github/workflows/<file>`,
-    that exists. A mechanism is a module importable from exactly one of the repository root and the skills' scripts,
-    and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
+    """Report each pattern of docs/lessons.md, under its Patterns or its Prompt patterns, read through
+    ejryan89-skill-core's lessons_catalogue, the reader the `implement-change` repository skill's pattern lister shares,
+    that states no Rule or Why, or, for a prompt pattern, no Prompt, names no form a violation takes under Search for in
+    a code span, names neither a guard that refuses a violation nor, under No guard, the reason no guard is possible,
+    whatever mechanism it uses, or names both a guard and that reason, names a field a pattern does not have or one
+    field twice, or, outside Prompt patterns, a Prompt or a Caught by; each prompt, guard, and mechanism it names that
+    does not resolve; and a catalogue that is missing, cannot be read, or holds no pattern. A prompt is a file by its
+    path from the repository root, `<path>`, or, for Markdown, one of its headings, `<path>#<fragment>`. A guard is a
+    test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`, that names a test or a test class of
+    that file, a skill's step, `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, a workflow,
+    `.github/workflows/<file>`, that exists, or an evaluation scenario, `tests/fixtures/skill-evals/<skill>/<scenario>`,
+    a folder that a row of docs/skill-evaluations.md records, which evaluate-skill runs on models, never validation. A
+    mechanism is a module importable from exactly one of the repository root and the skills' scripts, and a name it
+    binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     try:
         patterns = lessons_catalogue.read_patterns(root)
     except lessons_catalogue.CatalogueError as error:
