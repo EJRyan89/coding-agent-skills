@@ -162,6 +162,8 @@ class ReadTests(unittest.TestCase):
             "a match rest": "A = 1\nmatch {}:\n    case {**A}:\n        pass\n",
             "a function": "A = 1\ndef A():\n    pass\n",
             "a class": "A = 1\nclass A:\n    pass\n",
+            "a type statement": "A = 1\ntype A = int\n",
+            "a type statement in a block": "A = 1\nif ready:\n    type A = int\n",
             "declared global": "A = 1\ndef rebind():\n    global A\n    A = 2\n",
             "imported too": "A = 1\ntry:\n    from fast import A\nexcept ImportError:\n    pass\n",
             "a loop target before the literal": "for A in range(3):\n    pass\nA = 1\n",
@@ -179,6 +181,10 @@ class ReadTests(unittest.TestCase):
             "class Holder:\n    A = 4\n"
             "handler = lambda A=5: A\n"
             "[A for A in range(2)]\n"
+            # A type parameter binds in its own annotation scope, never the module's.
+            "def generic[A](): pass\n"
+            "class Generic[*A]: pass\n"
+            "type Alias[**A] = int\n"
         )
         self.assertEqual({"A": frozenset({1})}, found.values)
         self.assertNotIn("B", found.unread)

@@ -4,30 +4,30 @@ constants its imports name, read from the syntax tree without running the module
 Validation's exit tables (`tests/validation/exit_tables.py`) and script-results policy
 (`tests/validation/skill_scripts.py`) and audit-skill's inventory (`skills/audit-skill/scripts/skill_inventory.py`)
 read an exit code given by a name here, so a form any of them learns reaches all three.
-`read` takes a module's constants: each name its own scope binds, at the top or in a module-level `if`,
-`try`, `with`, loop, or `match` block, by a plain, chained, or annotated assignment of an int literal, `Final` or not.
-A name a binding of any other form reaches, an unpacking, an augmented assignment, a loop or `with` target, a walrus,
-a `del`, an `except ... as`, a match capture, a function or class definition, an import beside an assignment, or a
-`global` statement in any function, is unread, never the literal another binding gives it. What a name stands for is
-every value it can hold once the module has run, never fewer: where a block runs whole, a later binding in it replaces
-an earlier one, as Python binds it, and the arms of an `if` or a `match` each give theirs; a block that may stop
-partway, a `try`'s body, a `with`'s body, which a context manager may leave by suppressing an error, and a loop's body
-and `else`, which `break` and `continue` may leave, keeps every value the name held before or was bound in it, so a
-handler, the code after the loop, and the code after the `with` see each. `resolve` gives what an expression stands for:
-an int literal, a name of the module's own constants, or one an import names, followed through each module a caller's
-`locate` finds, re-exports included; None for anything it cannot read, which the caller reports as unread, never as a
-code the program does not exit with.
+`read` takes a module's constants: each name its own scope binds, at the top or in a module-level `if`, `try`, `with`,
+loop, or `match` block, by a plain, chained, or annotated assignment of an int literal, `Final` or not. A name a binding
+of any other form reaches, an unpacking, an augmented assignment, a loop or `with` target, a walrus, a `del`, an
+`except ... as`, a match capture, a function or class definition, a `type` statement, an import beside an assignment, or
+a `global` statement in any function, is unread, never the literal another binding gives it; a type parameter binds in
+its own scope, never the module's. What a name stands for is every value it can hold once the module has run, never
+fewer: where a block runs whole, a later binding in it replaces an earlier one, as Python binds it, and the arms of an
+`if` or a `match` each give theirs; a block that may stop partway, a `try`'s body, a `with`'s body, which a context
+manager may leave by suppressing an error, and a loop's body and `else`, which `break` and `continue` may leave, keeps
+every value the name held before or was bound in it, so a handler, the code after the loop, and the code after the
+`with` see each. `resolve` gives what an expression stands for: an int literal, a name of the module's own constants, or
+one an import names, followed through each module a caller's `locate` finds, re-exports included; None for anything it
+cannot read, which the caller reports as unread, never as a code the program does not exit with.
 
 Stated limits, each a form no repository code writes: a name rebound through `globals()`, `setattr` on the module, or
-`exec`, a star import after the name's assignment, a `type` statement that binds the name, or an attribute write from
-another module, such as `codes.STALE = 9` in the module that imports `codes`, is read as the literals its own
-assignments give it, since no binding statement this reader reads shows the change. A relative import, which
-python_names leaves out of a module's aliases, beside an assignment of the same name is read as the assignment's
-literal, unless the caller adds the relative import's aliases, as validation's exit tables do and audit-skill's
-inventory does not. An import inside a function is read as the module's own, as python_names reads it, so a constant
-whose name it shares is unread: the reader fails closed there. A constant rebound after the module-level statement that
-exits, or that calls the function reading it, is read as its later literal alone, though the program exits with the
-earlier one: `C = 3`, `def main(): return C`, `if __name__ == '__main__': sys.exit(main())`, then `C = 4`, is read as 4.
+`exec`, a star import after the name's assignment, or an attribute write from another module, such as `codes.STALE = 9`
+in the module that imports `codes`, is read as the literals its own assignments give it, since no binding statement this
+reader reads shows the change. A relative import, which python_names leaves out of a module's aliases, beside an
+assignment of the same name is read as the assignment's literal, unless the caller adds the relative import's aliases,
+as validation's exit tables do and audit-skill's inventory does not. An import inside a function is read as the module's
+own, as python_names reads it, so a constant whose name it shares is unread: the reader fails closed there. A constant
+rebound after the module-level statement that exits, or that calls the function reading it, is read as its later literal
+alone, though the program exits with the earlier one: `C = 3`, `def main(): return C`,
+`if __name__ == '__main__': sys.exit(main())`, then `C = 4`, is read as 4.
 """
 
 from __future__ import annotations
@@ -156,6 +156,8 @@ def read(tree: ast.Module, aliases: dict[str, str]) -> ModuleConstants:
             unread.add(node.rest)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             unread.add(node.name)
+        elif isinstance(node, ast.TypeAlias):
+            unread.add(node.name.id)
     # A function that declares a name global may bind it, so no literal is what the name stands for.
     unread.update(name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names)
     values = _flow(tree.body, {}, True)

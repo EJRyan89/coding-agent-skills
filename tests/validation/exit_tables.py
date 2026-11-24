@@ -45,6 +45,7 @@ import file_presence
 import whole_number
 from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, call_code, exit_argument
 from path_containment import within
+from python_names import type_parameter_names
 from skill_scripts import RESULTS_DOC, ParserBindings, Spellings, main_blocks, parser_names
 from text_lines import text_lines
 from validation_support import (
@@ -191,6 +192,9 @@ class Module:
     properties: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
     # What it binds to an argument parser, as skill_scripts.parser_names reads it.
     parsers: ParserBindings = field(default_factory=lambda: ParserBindings(Spellings(), {}))
+    # The names the type parameters of each top-level function, and of each method with its class's, bind in its body
+    # (_type_parameters), by the function's identity, which hide a module constant of the same name there.
+    type_parameters: dict[int, frozenset[str]] = field(default_factory=dict)
 
     @classmethod
     def read(cls, path: Path, tree: ast.Module, package: str = "") -> Module:
@@ -200,8 +204,11 @@ class Module:
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 module.functions[node.name] = node
+                module.type_parameters[id(node)] = _type_parameters(node)
             elif isinstance(node, ast.ClassDef):
                 for method in node.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        module.type_parameters[id(method)] = _type_parameters(method, node)
                     if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
                         isinstance(decorator, ast.Name) and decorator.id == "property"
                         for decorator in method.decorator_list
@@ -225,6 +232,19 @@ class Module:
 
 
 Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _type_parameters(function: Function, owner: ast.ClassDef | None = None) -> frozenset[str]:
+    """The names a function's type parameters, and its class's, bind in its body, but those its own parameters take
+    back, as `def f[T](T)` does."""
+    arguments = function.args
+    taken = {
+        each.arg
+        for each in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+        if each is not None
+    }
+    held = [*(type_parameter_names(owner) if owner is not None else []), *type_parameter_names(function)]
+    return frozenset(held) - taken
 
 
 @dataclass(frozen=True, eq=False)
@@ -840,9 +860,18 @@ class CodeReader:
         if _falls_through(function.body, module.aliases) and element is None:
             self.reading.codes.add(0)
 
+    def type_parameter(self, node: ast.Name, scope: Scope) -> bool:
+        """Whether a name is a type parameter of its function or of the function's class, which no module constant of
+        that name reaches."""
+        function = scope.function
+        return function is not None and node.id in scope.module.type_parameters.get(id(function), frozenset())
+
     def value(self, node: ast.expr | None, scope: Scope, element: int | None = None) -> None:
-        """Add the codes one returned expression can be, or the item at `element` of the tuple it is."""
-        if element is not None and isinstance(node, ast.Tuple) and element < len(node.elts):
+        """Add the codes one returned expression can be, or the item at `element` of the tuple it is: a type parameter
+        is unread, whatever constant shares its name."""
+        if isinstance(node, ast.Name) and self.type_parameter(node, scope):
+            self._unread(node, scope)
+        elif element is not None and isinstance(node, ast.Tuple) and element < len(node.elts):
             self.value(node.elts[element], scope)
         elif element is None and (codes := self.code(node, scope)) is not None:
             self.reading.codes |= codes

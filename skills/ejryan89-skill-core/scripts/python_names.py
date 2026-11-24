@@ -43,6 +43,23 @@ def import_aliases(tree: ast.AST) -> dict[str, str]:
     return {name: target for found in module_imports(tree) for name, target in found.bindings}
 
 
+# The type parameters a function, a class, or a type statement declares (PEP 695). Each binds its `name`, a string and
+# not a Name node, in an annotation scope around what declares it: the body, a class's methods, the annotations, a
+# class's bases, and a type statement's value see it, and a function's decorators and defaults do not.
+TYPE_PARAMETERS = (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)
+# The nodes that declare type parameters, each in its `type_params`.
+GENERIC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.TypeAlias)
+
+
+def type_parameter_names(node: ast.AST) -> list[str]:
+    """Each name the type parameters of a function, a class, or a type statement bind, in order, as `def f[T, *Ts,
+    **P]()` binds T, Ts, and P; [] for a node that declares none. Every reader of what a scope binds reads them here,
+    since no Name node spells them."""
+    if not isinstance(node, GENERIC_NODES):
+        return []
+    return [parameter.name for parameter in node.type_params if isinstance(parameter, TYPE_PARAMETERS)]
+
+
 def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
     """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
     after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
