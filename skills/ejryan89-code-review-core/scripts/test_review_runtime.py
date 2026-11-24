@@ -52,6 +52,7 @@ from review_runtime import (
 )
 from test_review_archive import unstatable
 from test_review_records import field_pattern
+from test_review_runtime_validation import directory_link
 
 
 class RuntimeContractTests(unittest.TestCase):
@@ -1866,6 +1867,23 @@ class SnapshotNameTests(unittest.TestCase):
 
     def test_a_safe_name_lands_below_the_root(self) -> None:
         self.assertEqual(Path("root", "src", "a b.py"), review_runtime._snapshot_path(Path("root"), "src/a b.py"))
+
+    def test_a_name_that_leads_out_of_the_root_by_a_parent_segment_or_a_link_is_never_read(self) -> None:
+        # A junction on Windows, a symbolic link elsewhere: the root's own folder leads outside it on every platform.
+        with tempfile.TemporaryDirectory(prefix="snapshot-name-") as temporary:
+            root = Path(temporary, "root")
+            outside = Path(temporary, "outside")
+            root.mkdir()
+            outside.mkdir()
+            (outside / "app.py").write_bytes(b"outside\n")
+            directory_link(root / "src", outside)
+            for escaping in ["../outside/app.py", "src/../../outside/app.py", "src/app.py"]:
+                with (
+                    self.subTest(escaping),
+                    self.assertRaisesRegex(review_runtime.RuntimeContractError, "^Source snapshot path is unsafe: "),
+                ):
+                    review_runtime._snapshot_path(root, escaping)
+            self.assertEqual(root / "kept" / "app.py", review_runtime._snapshot_path(root, "kept/app.py"))
 
 
 class GitLabelTests(unittest.TestCase):

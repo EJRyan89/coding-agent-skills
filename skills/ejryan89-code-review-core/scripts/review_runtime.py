@@ -26,7 +26,7 @@ import file_presence
 import json_writer
 import private_folder
 from device_names import is_reserved_device_name
-from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
+from diff_paths import MAX_SEGMENT_UNITS, snapshot_path, unsafe_snapshot_name
 from executable_locator import find_executable
 from flat_text import flat_text
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
@@ -1529,10 +1529,11 @@ def _snapshot_stamp(metadata: dict[str, Any], tree: _SnapshotTree, manifest_dige
 
 
 def _snapshot_path(root: Path, relative: str) -> Path:
-    """Where a listed or fetched file lies in the snapshot at `root`, once ejryan89-skill-core's
-    `diff_paths.unsafe_snapshot_name`, the rule every snapshot reader applies, finds the name safe; the snapshot's
-    writer excludes any other name, so a manifest that lists one is refused."""
-    if unsafe_snapshot_name(relative):
+    """Where a listed or fetched file lies in the snapshot at `root`, as written below it, once ejryan89-skill-core's
+    `diff_paths.snapshot_path`, the one reader of a snapshot's file by its repository path, finds the name safe and
+    inside the resolved root; the snapshot's writer excludes any other name, so a manifest that lists one is refused.
+    The path is returned as written, not resolved, since a write into it checks each of its parts from `root` up."""
+    if snapshot_path(root, relative) is None:
         raise RuntimeContractError(f"Source snapshot path is unsafe: {relative!r}")
     return root.joinpath(*PurePosixPath(relative).parts)
 

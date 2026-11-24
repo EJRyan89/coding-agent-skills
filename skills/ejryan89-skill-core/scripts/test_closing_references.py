@@ -289,3 +289,30 @@ def test_a_hidden_closes_line_is_read_where_the_template_comments_are_blanked() 
 )
 def test_title_holds_closing_reference_reads_a_keyword_before_a_reference_start(title: str, expected: bool) -> None:
     assert title_holds_closing_reference(title) is expected
+
+
+# The repositories a reference names, as the reader read them before its owner/name class moved to github_remote: any
+# run of the repository characters on each side of one `/`, and nothing else.
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("o/r", ["o/r"]),
+        ("O-1/r.2", ["O-1/r.2"]),
+        ("o_/_r", ["o_/_r"]),
+        (".github/.github", [".github/.github"]),
+        ("o/.", ["o/."]),
+        ("o/..", ["o/.."]),
+        ("-o/r-", ["-o/r-"]),
+        ("o/r.git", ["o/r.git"]),
+        ("a/b/c", []),
+        ("o r/x", []),
+        ("\u00f6/r", []),
+        ("o/r!", []),
+        ("/r", []),
+        ("o/", []),
+        ("o/r\u0661", []),
+    ],
+)
+def test_each_owner_and_name_spelling_is_read_as_before(written: str, expected: list[str]) -> None:
+    assert [reference.repository for reference in closing_references(f"Closes {written}#1")] == expected
+    assert REPOSITORY == "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
