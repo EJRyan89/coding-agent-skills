@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import dotnet_solution
+import exit_constants
 import powershell_commands
 import skill_inventory
 import skill_menu
@@ -1790,7 +1791,9 @@ class StatusLineTests(TemporaryTestCase):
     def status(self, folder: Path) -> list[str]:
         code, lines, error = run("scan", str(folder))
         self.assertEqual((0, ""), (code, error))
-        return [line for line in lines if line.startswith(("UNPRINTED ", "UNEXPLAINED ", "EXIT_MISMATCH "))]
+        return [
+            line for line in lines if line.startswith(("UNPRINTED ", "UNEXPLAINED ", "EXIT_MISMATCH ", "EXIT_UNREAD "))
+        ]
 
     def test_a_document_promising_a_line_no_script_prints_is_unprinted(self) -> None:
         folder = self.skill(
@@ -1969,6 +1972,143 @@ class StatusLineTests(TemporaryTestCase):
         self.assertEqual(
             [f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 2"], self.status(folder), "no argparse, no 2"
         )
+
+    def test_an_annotated_final_or_nested_constant_gives_its_code_as_validation_reads_it(self) -> None:
+        # exit_codes read a constant only from a plain module-level assignment, so each of these was a false
+        # EXIT_MISMATCH for the code the script exits with.
+        for case, constant in (
+            ("annotated", "STALE: int = 3\n"),
+            ("final", "from typing import Final\n\nSTALE: Final = 3\n"),
+            ("final of int", "from typing import Final\n\nSTALE: Final[int] = 3\n"),
+            ("nested in an if", "if sys.platform == 'win32':\n    STALE = 3\nelse:\n    STALE = 3\n"),
+            ("nested in a with", "with open(__file__) as handle:\n    STALE = 3\n"),
+            ("in a try's handler", "try:\n    import fast\nexcept ImportError:\n    STALE = 3\n"),
+        ):
+            with self.subTest(case):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    f"import sys\n\n{constant}\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                )
+                self.assertEqual([], self.status(folder))
+
+    def test_a_constant_an_import_names_is_read_in_the_skill_s_own_module_or_ejryan89_skill_core_s(self) -> None:
+        folder = self.skill(
+            "It exits 3 when the plan is stale, and 4 when it is held.\n",
+            "import sys\n\nimport codes\nfrom codes import STALE\n\n"
+            "def stop() -> None:\n    sys.exit(STALE)\n\n"
+            "def hold() -> int:\n    return codes.HELD\n",
+        )
+        write(folder / "scripts" / "codes.py", "from typing import Final\n\nSTALE: Final = 3\nHELD = 4\n")
+        self.assertEqual([], self.status(folder))
+        core = self.root / "repo" / "skills" / "ejryan89-skill-core" / "scripts"
+        write(core / "codes.py", "STALE = 3\nHELD = 4\n")
+        (folder / "scripts" / "codes.py").unlink()
+        self.assertEqual([], self.status(folder), "read in ejryan89-skill-core's scripts")
+
+    def test_a_constant_a_package_holds_is_unread_since_the_scan_reads_no_subfolder(self) -> None:
+        # The scan reads a scripts folder's own files, so a package's modules are none of the scripts the locator
+        # looks among, and a constant one holds is unread, never a code the script does not exit with.
+        for case, script in (
+            ("from the package", "import sys\n\nfrom pkg import STALE\n\ndef stop() -> None:\n    sys.exit(STALE)\n"),
+            (
+                "from its module",
+                "import sys\n\nimport pkg.codes\n\ndef stop() -> None:\n    sys.exit(pkg.codes.STALE)\n",
+            ),
+        ):
+            with self.subTest(case):
+                folder = self.skill("It exits 3 when the plan is stale.\n", script)
+                write(folder / "scripts" / "pkg" / "__init__.py", "STALE = 3\n")
+                write(folder / "scripts" / "pkg" / "codes.py", "STALE = 3\n")
+                self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_a_stated_code_an_unread_constant_may_give_is_unread_never_a_mismatch(self) -> None:
+        # A constant exit_codes cannot read was taken as no code at all, so the code it gives was a false
+        # EXIT_MISMATCH MUST FIX; it is EXIT_UNREAD, for the auditor to check by hand.
+        for case, constant in (
+            ("bound to an expression", "STALE = 2 + 1\n"),
+            ("rebound", "STALE = 3\nSTALE += 1\n"),
+            ("imported from a module the audit does not read", "from elsewhere import STALE\n"),
+            ("relatively imported", "from .codes import STALE\n"),
+        ):
+            with self.subTest(case):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    f"import sys\n\n{constant}\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                )
+                self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_an_unread_exit_in_any_script_makes_each_stated_code_no_script_gives_unread(self) -> None:
+        # Each script's unread exits are kept, whichever script is read after it.
+        for unread, plain in (("a_tool.py", "z_tool.py"), ("z_tool.py", "a_tool.py")):
+            with self.subTest(unread):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    "import sys\n\nfrom elsewhere import STALE\n\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                    unread,
+                )
+                write(folder / "scripts" / plain, "import sys\n\nsys.exit(1)\n")
+                self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+                (folder / "scripts" / unread).unlink()
+                (folder / "scripts" / plain).unlink()
+
+    def test_a_code_a_function_binds_itself_is_not_read_and_leaves_a_mismatch_a_mismatch(self) -> None:
+        # A local or a parameter is the function's own, which the constant reading does not reach, as before.
+        folder = self.skill(
+            "It exits 3 when the plan is stale.\n",
+            "import sys\n\nSTALE = 4\n\n"
+            "def stop(code: int) -> None:\n    sys.exit(code)\n\n"
+            "def held() -> int:\n    STALE = 3\n    return STALE\n\n"
+            "def result(run) -> None:\n    sys.exit(run.returncode)\n",
+        )
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_a_constant_a_later_assignment_replaces_gives_only_its_last_value(self) -> None:
+        # Every literal binding was unioned, so the 3 the script never exits with was read as a code it does.
+        for case, constant in (
+            ("at the top", "STALE = 3\nSTALE = 4\n"),
+            ("in one if arm", "if sys.platform == 'win32':\n    STALE = 3\n    STALE = 4\nelse:\n    STALE = 4\n"),
+        ):
+            with self.subTest(case):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    f"import sys\n\n{constant}\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                )
+                self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_a_name_a_function_declares_global_or_binds_only_in_a_nested_scope_is_the_module_s(self) -> None:
+        # A global the function assigns is the module's, bound otherwise than to a literal, so its code is unread; a
+        # name only a nested function binds is the module's constant, read as 3.
+        folder = self.skill(
+            "It exits 3 when the plan is stale.\n",
+            "import sys\n\nSTALE = 3\n\ndef stop() -> None:\n    global STALE\n    STALE = 3\n    sys.exit(STALE)\n",
+        )
+        self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+        folder = self.skill(
+            "It exits 3 when the plan is stale.\n",
+            "import sys\n\nSTALE = 3\n\n"
+            "def stop() -> None:\n    def helper() -> None:\n        STALE = 9\n    sys.exit(STALE)\n",
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_a_name_a_function_or_lambda_binds_itself_is_not_the_module_s_constant(self) -> None:
+        for case, function in (
+            ("a lambda parameter", "handler = lambda STALE: sys.exit(STALE)\n"),
+            (
+                "an except name",
+                "def stop() -> None:\n    try:\n        pass\n    except OSError as STALE:\n        sys.exit(STALE)\n",
+            ),
+            (
+                "a match capture",
+                "def stop(x) -> None:\n    match x:\n        case STALE:\n            sys.exit(STALE)\n",
+            ),
+            (
+                "a nested definition",
+                "def stop() -> None:\n    def STALE() -> None:\n        pass\n    sys.exit(STALE)\n",
+            ),
+        ):
+            with self.subTest(case):
+                folder = self.skill("It exits 3 when the plan is stale.\n", f"import sys\n\nSTALE = 3\n\n{function}")
+                self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
 
     def test_quit_a_code_keyword_a_bare_system_exit_and_a_message_exit_as_validation_reads_them(self) -> None:
         # The exit calls were exit, _exit, and SystemExit given a positional code, so each of these was a false
@@ -5566,3 +5706,112 @@ def test_the_one_folder_listings_leave_out_a_sidecar_beside_its_file_and_keep_an
     write(skill / "scripts" / "._check.py", "x\n")
     scripts = skill_inventory.skill_scripts(skill, skill / "scripts")
     assert [path.name for path in scripts] == ["._check.py", "check.py", "run.py"]
+
+
+def test_local_names_are_a_function_s_parameters_and_own_bindings_but_its_declared_and_nested_scopes_names() -> None:
+    tree = ast.parse(
+        "def outer(a, /, b, *rest, c, **more):\n"
+        "    global DECLARED\n"
+        "    DECLARED = 1\n"
+        "    stored = 2\n"
+        "    def nested(inner):\n"
+        "        nonlocal stored\n"
+        "        stored = 3\n"
+        "        hidden = 4\n"
+        "    class Kind:\n"
+        "        attribute = 5\n"
+        "    try:\n"
+        "        pass\n"
+        "    except OSError as caught:\n"
+        "        pass\n"
+        "    match a:\n"
+        "        case [first, *others]:\n"
+        "            pass\n"
+        "    del removed\n"
+        "    handler = lambda given: given\n"
+    )
+    outer = tree.body[0]
+    assert isinstance(outer, ast.FunctionDef)
+    nested = outer.body[3]
+    assert isinstance(nested, ast.FunctionDef)
+    handler = outer.body[-1]
+    assert isinstance(handler, ast.Assign)
+    assert isinstance(handler.value, ast.Lambda)
+    assert skill_inventory.local_names(outer) == {
+        "a",
+        "b",
+        "rest",
+        "c",
+        "more",
+        "stored",
+        "nested",
+        "Kind",
+        "caught",
+        "first",
+        "others",
+        "removed",
+        "handler",
+    }
+    assert skill_inventory.local_names(nested) == {"inner", "hidden"}
+    assert skill_inventory.local_names(handler.value) == {"given"}
+
+
+def test_the_module_locator_finds_a_module_a_package_or_a_dotted_module_among_the_scripts_read(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "skill" / "scripts" / "tool.py"
+    core = tmp_path / "core"
+    read = {
+        "codes": exit_constants.ModuleConstants({"OWN": frozenset({3})}, frozenset(), {}),
+        "pkg": exit_constants.ModuleConstants({"PACKAGE": frozenset({4})}, frozenset(), {}),
+        "pkg.inner": exit_constants.ModuleConstants({"INNER": frozenset({5})}, frozenset(), {}),
+        "shared": exit_constants.ModuleConstants({"CORE": frozenset({6})}, frozenset(), {}),
+    }
+    modules = {
+        skill_inventory.opened_path(script.parent / "codes.py"): read["codes"],
+        skill_inventory.opened_path(script.parent / "pkg" / "__init__.py"): read["pkg"],
+        skill_inventory.opened_path(script.parent / "pkg" / "inner.py"): read["pkg.inner"],
+        skill_inventory.opened_path(core / "shared.py"): read["shared"],
+    }
+    locate = skill_inventory.module_locator(script, [core], modules)
+    for dotted, expected in read.items():
+        assert locate(dotted) is expected, dotted
+    assert locate("absent") is None
+    assert locate("pkg.absent") is None
+
+
+@pytest.mark.parametrize(
+    ("script", "codes"),
+    [
+        pytest.param("def main() -> int:\n    return 4\n", {4}, id="an int function's return"),
+        pytest.param("def main(x) -> int:\n    return 3 if x else 4\n", {3, 4}, id="both arms of a conditional"),
+        pytest.param(
+            "def main() -> int:\n    return 'text'\n\ndef flag() -> int:\n    return True\n",
+            set(),
+            id="a string or a bool returned",
+        ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\ndef held() -> int:\n    STALE = 9\n    return STALE\n\n"
+            "def stop() -> None:\n    sys.exit(STALE)\n",
+            {3},
+            id="a name one function binds and another reads as the module's",
+        ),
+    ],
+)
+def test_exit_codes_reads_returns_conditionals_and_each_function_s_own_names(script: str, codes: set[int]) -> None:
+    assert skill_inventory.exit_codes(ast.parse(script)) == (codes, [])
+
+
+def test_python_constants_reads_each_python_script_past_a_shell_script_or_one_that_does_not_parse(
+    tmp_path: Path,
+) -> None:
+    texts = {tmp_path / "a.sh": "exit 1\n", tmp_path / "b.py": "def (\n", tmp_path / "c.py": "C = 3\n"}
+    found = skill_inventory.python_constants(texts)
+    assert list(found) == [skill_inventory.opened_path(tmp_path / "c.py")]
+    assert found[skill_inventory.opened_path(tmp_path / "c.py")].values == {"C": frozenset({3})}
+
+
+def test_a_stated_code_no_script_exits_with_is_a_mismatch_unless_the_caller_says_an_exit_is_unread() -> None:
+    lines = ["---", "name: alpha", "---", "It exits 3."]
+    assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set()) == ["EXIT_MISMATCH SKILL.md 4 3"]
+    assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set(), True) == ["EXIT_UNREAD SKILL.md 4 3"]
