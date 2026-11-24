@@ -43,6 +43,7 @@ from workflows import (
     deployable_bash_problems,
     deployable_path_problems,
     deployable_posix_problems,
+    diagnostics_job_problems,
     image_module_problems,
     leg_problems,
     mutation_checkout_problems,
@@ -1762,6 +1763,58 @@ class ChangelogJobFixtures(unittest.TestCase):
                 self.assertTrue(any(problem in found for found in changelog_job_problems(drifted)), drifted)
 
 
+DIAGNOSTICS_JOB = (
+    "jobs:\n"
+    "  diagnostics:\n    runs-on: ubuntu-latest\n"
+    "    strategy:\n      matrix:\n        python-version: ['3.12', '3.x']\n    steps:\n"
+    "      - name: Install\n        run: python -m pip install -r requirements-dev.txt\n"
+    "      - name: Run\n        env:\n          PYTHONDEVMODE: '1'\n          PYTHONWARNINGS: error\n"
+    '        run: python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"\n'
+)
+
+
+class DiagnosticsJobFixtures(unittest.TestCase):
+    def test_each_departure_from_the_diagnostic_run_fails(self) -> None:
+        self.assertEqual([], diagnostics_job_problems(DIAGNOSTICS_JOB))
+        command = 'python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"'
+        alone = f"the diagnostics job must run {command!r} once, alone in its step"
+        settings = f"the step that runs {command!r} must set exactly"
+        shared = "an env other than the run's own step sets ['PYTHONDEVMODE', 'PYTHONWARNINGS']"
+        for drifted, problem in (
+            (DIAGNOSTICS_JOB.replace("ubuntu-latest", "windows-latest"), "the diagnostics job runs on windows-latest"),
+            (DIAGNOSTICS_JOB.replace("['3.12', '3.x']", "['3.x']"), "the diagnostics job runs Python ['3.x']"),
+            (DIAGNOSTICS_JOB.replace(' --summary "$GITHUB_STEP_SUMMARY"', ""), alone),
+            (DIAGNOSTICS_JOB.replace(f"run: {command}", f"run: |\n          true\n          {command}"), alone),
+            (DIAGNOSTICS_JOB + f"      - name: Again\n        run: {command}\n", alone),
+            (DIAGNOSTICS_JOB.replace("PYTHONWARNINGS: error", "PYTHONWARNINGS: default"), settings),
+            (DIAGNOSTICS_JOB.replace("          PYTHONDEVMODE: '1'\n", ""), settings),
+            (
+                DIAGNOSTICS_JOB.replace("PYTHONWARNINGS: error\n", "PYTHONWARNINGS: error\n          PYTHONPATH: x\n"),
+                settings,
+            ),
+            (DIAGNOSTICS_JOB.replace("    steps:\n", "    env:\n      PYTHONDEVMODE: '1'\n    steps:\n"), shared),
+            ("env:\n  PYTHONWARNINGS: error\n" + DIAGNOSTICS_JOB, shared),
+            (
+                DIAGNOSTICS_JOB.replace(
+                    "        run: python -m pip",
+                    "        env:\n          PYTHONWARNINGS: error\n        run: python -m pip",
+                ),
+                shared,
+            ),
+            (
+                DIAGNOSTICS_JOB.replace("    steps:\n", "    continue-on-error: true\n    steps:\n"),
+                "goes on after an error",
+            ),
+            (
+                DIAGNOSTICS_JOB.replace("      - name: Run\n", "      - name: Run\n        continue-on-error: true\n"),
+                "goes on after an error",
+            ),
+            (DIAGNOSTICS_JOB.replace("  diagnostics:", "  run:"), "the jobs are ['run'], not ['diagnostics']"),
+        ):
+            with self.subTest(problem=problem, drifted=drifted):
+                self.assertTrue(any(problem in found for found in diagnostics_job_problems(drifted)), drifted)
+
+
 LINUX_VERIFY_LOGS = (
     "jobs:\n  deployable-linux:\n    steps:\n"
     "      - name: First discovery\n        run: |\n"
@@ -3076,6 +3129,7 @@ def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_plac
     required = [
         ".github/workflows/deployable.yml",
         ".github/workflows/mutation.yml",
+        ".github/workflows/python-diagnostics.yml",
         ".github/workflows/runtime-changelogs.yml",
         ".github/workflows/runtime-command-lines.yml",
         ".github/workflows/validate.yml",

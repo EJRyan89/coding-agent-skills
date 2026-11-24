@@ -510,8 +510,8 @@ WORKFLOWS_DIRECTORY = ".github/workflows"
 # secrets. deployable.yml takes only dispatch and a weekly schedule, so it can never be a required status check or run
 # on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run. runtime-command-lines.yml
 # likewise takes only dispatch and a weekly schedule, Wednesday's, the day after deployable.yml's, and
-# runtime-changelogs.yml Thursday's, the day after that. mutation.yml runs on pull requests only, also without
-# pull_request_target, and its job is not the required check.
+# runtime-changelogs.yml Thursday's, the day after that, and python-diagnostics.yml Friday's, the day after that.
+# mutation.yml runs on pull requests only, also without pull_request_target, and its job is not the required check.
 WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
     "deployable.yml": (
         ["workflow_dispatch", "schedule"],
@@ -539,6 +539,11 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
         ["workflow_dispatch", "schedule"],
         {"actions/checkout", "actions/setup-python"},
         ("23 6 * * 4",),
+    ),
+    "python-diagnostics.yml": (
+        ["workflow_dispatch", "schedule"],
+        {"actions/checkout", "actions/setup-python"},
+        ("23 6 * * 5",),
     ),
     "validate.yml": (
         ["pull_request", "push", "schedule", "workflow_dispatch"],
@@ -1880,6 +1885,50 @@ def changelog_job_problems(workflow: str) -> list[str]:
     return problems
 
 
+# What python-diagnostics.yml's one job runs: the diagnostic run on Ubuntu, on the floor in deployer/tools.py and the
+# latest stable release, as the last and only line of a step whose own env holds the settings every Python process it
+# starts inherits. The settings are the step's alone, so the install before it runs without them.
+DIAGNOSTICS_JOB = (
+    "diagnostics",
+    "ubuntu-latest",
+    'python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"',
+)
+DIAGNOSTIC_SETTINGS = {"PYTHONDEVMODE": "1", "PYTHONWARNINGS": "error"}
+DIAGNOSTIC_PYTHONS = ["3.12", "3.x"]
+
+
+def diagnostics_job_problems(workflow: str) -> list[str]:
+    """Report how python-diagnostics.yml departs from its run: one job on its runner and interpreters, running the
+    diagnostic run once, alone in a step whose env sets exactly its settings and that no other env shares, and never
+    told to go on after an error."""
+    name, runner, command = DIAGNOSTICS_JOB
+    tree = read_workflow(workflow)
+    jobs = _mapping(tree, "jobs")
+    if set(jobs) != {name}:
+        return [f"the jobs are {sorted(jobs)}, not [{name!r}]"]
+    job = _mapping(jobs, name)
+    problems = [] if job.get("runs-on") == runner else [f"the {name} job runs on {job.get('runs-on')}, not {runner}"]
+    pythons = _mapping(job, "strategy", "matrix").get("python-version")
+    if pythons != DIAGNOSTIC_PYTHONS:
+        problems.append(f"the {name} job runs Python {pythons}, not {DIAGNOSTIC_PYTHONS}")
+    steps = _steps(job)
+    runs = [step for step in steps if command in _script_lines(step)]
+    if len(runs) != 1 or _script_lines(runs[0]) != [command]:
+        problems.append(f"the {name} job must run {command!r} once, alone in its step")
+    elif _mapping(runs[0], "env") != DIAGNOSTIC_SETTINGS:
+        problems.append(f"the step that runs {command!r} must set exactly {DIAGNOSTIC_SETTINGS} in its env")
+    others = [
+        _mapping(tree, "env"),
+        _mapping(job, "env"),
+        *(_mapping(step, "env") for step in steps if step not in runs),
+    ]
+    if any(setting in other for other in others for setting in DIAGNOSTIC_SETTINGS):
+        problems.append(f"an env other than the run's own step sets {sorted(DIAGNOSTIC_SETTINGS)}")
+    if "continue-on-error" in job or any("continue-on-error" in step for step in steps):
+        problems.append(f"the {name} job goes on after an error, so a diagnostic would not fail it")
+    return problems
+
+
 POSIX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
 
 
@@ -2421,6 +2470,10 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_runtime_changelogs_workflow_runs_the_watch_whose_own_failure_alone_fails_it(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "runtime-changelogs.yml").read_text(encoding="utf-8")
         self.assertEqual([], changelog_job_problems(workflow))
+
+    def test_python_diagnostics_workflow_runs_its_suites_with_the_settings_in_their_step_alone(self) -> None:
+        workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "python-diagnostics.yml").read_text(encoding="utf-8")
+        self.assertEqual([], diagnostics_job_problems(workflow))
 
     def test_mutation_workflow_runs_the_gate_on_pull_requests_outside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "mutation.yml").read_text(encoding="utf-8")

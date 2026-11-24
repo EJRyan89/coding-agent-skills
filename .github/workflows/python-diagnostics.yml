@@ -1,0 +1,57 @@
+name: Python Diagnostics
+
+# A signal, never a gate: it runs weekly, the day after runtime-changelogs.yml, and on dispatch, never on a pull request.
+# It runs tools/python_diagnostics.py, which runs chosen filesystem, subprocess, and parsing suites with PYTHONDEVMODE=1
+# and PYTHONWARNINGS=error in the environment of its step, so every Python process those suites start runs in
+# development mode with warnings as errors, and records each unraisable exception, such as a ResourceWarning raised in a
+# destructor, that a process's exit status never shows. A warning, an unraisable exception, or a failed suite fails the
+# job, named in the step summary with the interpreter and the settings the run exercised. It runs on the floor in
+# deployer/tools.py and on the latest stable release, where a new deprecation first shows. It starts no model and needs
+# no secret.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostics:
+    name: Python diagnostics on Linux, Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.x']
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Installed before the settings take effect, so pip's own warnings are not the run's.
+      - name: Install the development dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+
+      - name: Run the diagnostic suites
+        env:
+          PYTHONDEVMODE: '1'
+          PYTHONWARNINGS: error
+        run: python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"
