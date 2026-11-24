@@ -23,7 +23,6 @@ from hub_state import (
     RECORD_NAME,
     Difference,
     RecordError,
-    changed_paths,
     changes,
     differences,
     escaped_name,
@@ -145,12 +144,32 @@ class DifferenceTests(HubTestCase):
             (self.hub / "two\nlines").write_text("x", encoding="utf-8")
             self.assertEqual([Difference("changed", "it has 1 uncommitted or untracked path: two lines")], self.found())
 
+    def test_a_rename_is_named_once_by_its_new_path_beside_an_edit_and_an_untracked_file(self) -> None:
+        self.commit(self.hub, "old.txt", "renamed")
+        self.git(self.hub, "mv", "old.txt", "new.txt")
+        (self.hub / "README.md").write_text("edited\n", encoding="utf-8")
+        (self.hub / "stray.txt").write_text("stray\n", encoding="utf-8")
+        self.assertEqual(
+            [
+                Difference("changed", "it has 3 uncommitted or untracked paths: README.md, new.txt, stray.txt"),
+                Difference("ahead", "it is 1 commit ahead of origin/main"),
+            ],
+            self.found(),
+        )
+
+    def test_reading_the_hub_never_writes_its_index(self) -> None:
+        # A file whose timestamp moved but whose content did not: a status with optional locks refreshes its index
+        # entry and writes the index back under its lock, which a commit in the hub at that moment needs.
+        readme = self.hub / "README.md"
+        moved = readme.stat().st_mtime + 5
+        os.utime(readme, (moved, moved))
+        index = self.hub / ".git" / "index"
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        self.assertEqual([], self.found())
+        self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns))
+
 
 class ReadingTests(unittest.TestCase):
-    def test_a_rename_names_its_new_path_once(self) -> None:
-        self.assertEqual(["new", "x"], changed_paths(["R  new", "old", "?? x"]))
-        self.assertEqual(["copy"], changed_paths([" C copy", "source"]))
-
     def test_a_checkout_git_cannot_read_raises(self) -> None:
         def run(command: Sequence[str], timeout: float) -> GitResult:
             return GitResult(128, "", "fatal: not a git repository")

@@ -829,6 +829,28 @@ class CheckCommandTests(Repository):
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual((1, "UNCOMMITTED 2"), (code, lines[-1]))
 
+    def test_checking_for_uncommitted_changes_never_writes_the_index(self) -> None:
+        # A file whose timestamp moved but whose content did not: a status with optional locks refreshes its index
+        # entry and writes the index back under its lock, which a commit in the checkout at that moment needs.
+        tool = self.root / "tool.py"
+        moved = tool.stat().st_mtime + 5
+        os.utime(tool, (moved, moved))
+        index = self.root / ".git" / "index"
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((0, "READY"), (code, lines[-1]))
+        self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns))
+
+    def test_a_staged_rename_counts_the_path_it_left_and_the_one_it_made(self) -> None:
+        git(self.root, "mv", "tool.py", "renamed.py")
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((1, "UNCOMMITTED 2"), (code, lines[-1]))
+
+    def test_a_status_git_cannot_read_is_named_with_git_s_reason(self) -> None:
+        broken = self.failing_git("status", result=GitResult(128, "", "fatal: index file corrupt\n"))
+        code, lines = self.run_script("check", *self.files_arguments(), git_client=broken)
+        self.assertEqual((1, "FAILED git status: fatal: index file corrupt"), (code, lines[-1]))
+
     def test_a_title_closing_issues_is_refused_and_each_issue_it_closes_named(self) -> None:
         self.title.write_text("fix: resolves #5 and fixes owner/repo#6\n", encoding="utf-8")
         self.body.write_text(FILLED.replace("Closes #12\nCloses #34\n", "Closes #7\n"), encoding="utf-8")

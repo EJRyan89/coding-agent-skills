@@ -1,4 +1,5 @@
-"""Each concept read in one helper is read only through it: the hub guard's place lookups and closing references.
+"""Each concept read in one helper is read only through it: the hub guard's place lookups, closing references, and a
+checkout's status.
 
 Outside review passes kept finding one concept implemented twice, with one copy fixed and the other left behind. The
 duplication policy catches a copied definition, not a concept implemented again with other code, so this policy holds
@@ -63,6 +64,19 @@ Stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A module that applies the helper's own patterns, as implement-change's pull_request.py applies BARE_CLOSING_LINE to a
   body line, reads the keywords through the helper, and is not refused.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
+
+Status reads. ejryan89-skill-core's git_worktrees.py is the one reader of what `git status` lists for a checkout: its
+`changes` passes `--no-optional-locks`, since a status otherwise refreshes the checkout's index and writes it back
+under its lock, which a session committing in that checkout at the same moment needs. In every non-test module ruff
+formats but the helper, it fails a list or a tuple of git arguments given by position to a call whose subcommand, as
+git_client's `subcommand` reads it past git's own options, is `status`. An element that is not a string literal or a
+name the module binds once at its top level to one is read as a value, so `["-C", path, "status"]` is read as
+`status`. STATUS_SANCTIONS names a module and scope held to none of it, with the reason; an entry that sanctions
+nothing or has no reason fails. Its stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
+- Arguments bound to a name first, joined with `+`, given by keyword, or led by a starred element are not read.
+- An argument list that names the program first, as `["git", "status"]`, reads `git` as its subcommand; every git call
+  goes through GitClient, which names the program itself.
+- A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
 """
 
 from __future__ import annotations
@@ -78,6 +92,7 @@ from pathlib import Path, PurePosixPath
 import closing_references
 import file_presence
 import git_client
+import git_worktrees
 from python_checks import formatted_modules
 from validation_support import (
     REPOSITORY_ROOT,
@@ -555,12 +570,94 @@ def closing_reference_problems(root: Path, files: Iterable[Path] | None = None) 
     return problems
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Status reads
+
+STATUS_HELPER = "skills/ejryan89-skill-core/scripts/git_worktrees.py"
+# The subcommand only the helper runs, read from the helper's own arguments.
+STATUS = git_client.subcommand(git_worktrees.STATUS_ARGUMENTS)
+# An element of an argument list that is not a string the module spells: a value, never an option or a subcommand
+# git would read as `status`.
+VALUE = "<value>"
+# Each scope held to none of the rule, by its module's path and its scope, with the reason.
+STATUS_SANCTIONS: dict[str, dict[str, str]] = {}
+READ_STATUS = (
+    f"read a checkout's status through {STATUS_HELPER}'s changes, which passes --no-optional-locks so the read never "
+    f"takes the checkout's index lock; see {POLICY}"
+)
+
+
+def git_arguments(node: ast.expr, strings: Mapping[str, ast.Constant]) -> list[str] | None:
+    """The arguments a list or a tuple display spells, up to its first starred element, each element that is not a
+    string literal or a name bound to one read as VALUE; None for anything else."""
+    if not isinstance(node, ast.List | ast.Tuple):
+        return None
+    spelled: list[str] = []
+    for element in node.elts:
+        if isinstance(element, ast.Starred):
+            break
+        literal = strings.get(element.id) if isinstance(element, ast.Name) else element
+        text = None if literal is None else _string(literal)
+        spelled.append(VALUE if text is None else text)
+    return spelled
+
+
+def module_status_problems(name: str, tree: ast.Module, sanctioned: Mapping[str, str]) -> list[str]:
+    """Each call in a module given git arguments that run `status`, as its line and its refusal, and each sanction
+    that holds nothing or no reason."""
+    strings = _module_strings(tree)
+    found: list[tuple[int, str]] = []
+    reached: set[str] = set()
+    for node, scope in scoped_nodes(tree.body):
+        if not isinstance(node, ast.Call):
+            continue
+        for argument in node.args:
+            spelled = git_arguments(argument, strings)
+            if spelled is None or git_client.subcommand(spelled) != STATUS:
+                continue
+            if scope in sanctioned:
+                reached.add(scope)
+            else:
+                found.append((argument.lineno, f"{scope} runs git {STATUS} itself; {READ_STATUS}"))
+    problems = [f"{name}:{line} {refusal}" for line, refusal in sorted(set(found))]
+    for scope, reason in sanctioned.items():
+        if not reason.strip():
+            problems.append(f"{name}: STATUS_SANCTIONS gives {scope} no reason")
+        elif scope not in reached:
+            problems.append(f"{name}: STATUS_SANCTIONS sanctions {scope}, which runs no git {STATUS}; remove the entry")
+    return problems
+
+
+def status_modules(root: Path, files: Iterable[Path]) -> list[Path]:
+    """The modules the status rule reads: every non-test module ruff formats but the helper."""
+    return [root / name for name in formatted_modules(root, list(files)) if name != STATUS_HELPER]
+
+
+def status_problems(
+    root: Path, files: Iterable[Path] | None = None, sanctions: Mapping[str, Mapping[str, str]] = STATUS_SANCTIONS
+) -> list[str]:
+    """Report each place a module other than the helper runs git status itself, and each sanction that holds nothing."""
+    listed = repository_files(root) if files is None else list(files)
+    problems: list[str] = []
+    read: set[str] = set()
+    for _, name, tree in python_trees(status_modules(root, listed), root, problems):
+        read.add(name)
+        problems += module_status_problems(name, tree, sanctions.get(name, {}))
+    problems += [
+        f"{name}: STATUS_SANCTIONS names a module the rule does not read" for name in sanctions if name not in read
+    ]
+    return problems
+
+
 class OneHelperPolicies(unittest.TestCase):
     def test_every_path_to_a_place_lookup_treats_any_git_error_as_an_unknown_place(self) -> None:
         self.assertEqual([], place_lookup_problems(REPOSITORY_ROOT))
 
     def test_closing_references_are_read_only_through_their_one_helper(self) -> None:
         self.assertEqual([], closing_reference_problems(REPOSITORY_ROOT))
+
+    def test_a_checkout_s_status_is_read_only_through_its_one_helper(self) -> None:
+        self.assertEqual([], status_problems(REPOSITORY_ROOT))
 
     def test_the_closing_reference_rule_reads_every_module_its_rule_speaks_of(self) -> None:
         listed = repository_files(REPOSITORY_ROOT)

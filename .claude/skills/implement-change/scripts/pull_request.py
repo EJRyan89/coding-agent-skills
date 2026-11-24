@@ -82,6 +82,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import git_worktrees
 import private_folder
 import whole_number
 from closing_references import (
@@ -342,7 +343,12 @@ def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str
         problems.append(f"BEHIND {base} {commit}")
     if output_line(git_output(git, repository, ["rev-list", "--count", f"{commit}..HEAD"])) == "0":
         problems.append(f"NO_COMMITS {base}")
-    changed = git_output(git, repository, ["status", "--porcelain", "--no-renames", "-z"]).split("\0")[:-1]
+    # Read without the index refresh a status otherwise writes back, so the check never takes the index lock; a
+    # rename counts as the path it left and the one it made.
+    try:
+        changed = git_worktrees.changes(git, repository, "--no-renames")
+    except GitError as exc:
+        raise PullRequestError(f"{command_name(git_worktrees.STATUS_ARGUMENTS)}: {flat_text(str(exc))}") from exc
     if changed:
         problems.append(f"UNCOMMITTED {len(changed)}")
     return [f"BASE {base} {commit}"], problems

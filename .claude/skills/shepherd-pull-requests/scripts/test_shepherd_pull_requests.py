@@ -30,7 +30,7 @@ import premerge_review
 import shepherd_pull_requests as shepherd
 import whole_number
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
-from git_client import GitClient, GitError, GitResult, subprocess_runner
+from git_client import GitClient, GitError, GitResult, subcommand, subprocess_runner
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient, GitHubError
 from review_records import RecordError
@@ -827,14 +827,15 @@ class HubTest(FixtureTestCase):
         )
 
     def test_a_hub_git_cannot_read_is_named_with_git_s_reason(self) -> None:
-        names = GitClient.names
+        output = GitClient.output
 
-        def refuse_status(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
-            if arguments[0] == "status" and "--untracked-files=normal" in arguments:
+        # The fast-forward's own status, which leaves untracked files out, is read; only hub_state's is refused.
+        def refuse_status(client: GitClient, arguments: Sequence[str], **options: Any) -> str:
+            if subcommand(arguments) == "status" and "--untracked-files=no" not in arguments:
                 raise GitError("fatal: index file corrupt", returncode=128)
-            return names(client, arguments, **options)
+            return output(client, arguments, **options)
 
-        with mock.patch.object(GitClient, "names", refuse_status):
+        with mock.patch.object(GitClient, "output", refuse_status):
             status, lines = self.tick(StubGh(), dry_run=True)
         self.assertEqual(1, status)
         self.assertEqual(
@@ -972,14 +973,16 @@ class HubTest(FixtureTestCase):
         )
 
     def test_a_hub_neither_check_can_read_for_one_reason_is_named_once(self) -> None:
-        names = GitClient.names
+        output = GitClient.output
 
-        def refuse_both(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
-            if arguments[0] in {"status", "config"}:
+        # hub_state's status and its configuration read are refused; the fast-forward's own status, which leaves
+        # untracked files out, is read.
+        def refuse_both(client: GitClient, arguments: Sequence[str], **options: Any) -> str:
+            if subcommand(arguments) in {"status", "config"} and "--untracked-files=no" not in arguments:
                 raise GitError("fatal: index file corrupt", returncode=128)
-            return names(client, arguments, **options)
+            return output(client, arguments, **options)
 
-        with mock.patch.object(GitClient, "names", refuse_both):
+        with mock.patch.object(GitClient, "output", refuse_both):
             status, lines = self.tick(StubGh(), dry_run=True)
         self.assertEqual(1, status)
         self.assertEqual(
@@ -988,15 +991,16 @@ class HubTest(FixtureTestCase):
         )
 
     def test_a_hub_neither_check_can_read_for_different_reasons_is_named_for_each(self) -> None:
-        names = GitClient.names
+        output = GitClient.output
         reasons = {"status": "fatal: index file corrupt", "config": "fatal: bad config line 1"}
 
-        def refuse_both(client: GitClient, arguments: Sequence[str], **options: Any) -> list[str]:
-            if arguments[0] in reasons:
-                raise GitError(reasons[arguments[0]], returncode=128)
-            return names(client, arguments, **options)
+        def refuse_both(client: GitClient, arguments: Sequence[str], **options: Any) -> str:
+            reason = reasons.get(subcommand(arguments) or "")
+            if reason is not None and "--untracked-files=no" not in arguments:
+                raise GitError(reason, returncode=128)
+            return output(client, arguments, **options)
 
-        with mock.patch.object(GitClient, "names", refuse_both):
+        with mock.patch.object(GitClient, "output", refuse_both):
             status, lines = self.tick(StubGh(), dry_run=True)
         self.assertEqual(1, status)
         self.assertEqual(
@@ -2536,6 +2540,24 @@ class MergedTest(FixtureTestCase):
         self.assertEqual(
             "not fast-forwarded: it is on a detached HEAD, not main", shepherd.fast_forward(GitClient(), self.hub, True)
         )
+
+    def test_checking_the_hub_for_uncommitted_changes_never_writes_its_index(self) -> None:
+        # A file whose timestamp moved but whose content did not: a status with optional locks refreshes its index
+        # entry and writes the index back under its lock, which a commit in the hub at that moment needs.
+        readme = self.hub / "README.md"
+        moved = readme.stat().st_mtime + 5
+        os.utime(readme, (moved, moved))
+        index = self.hub / ".git" / "index"
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        self.assertEqual(f"current at {head[:7]}", shepherd.fast_forward(GitClient(), self.hub, True))
+        self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns))
+
+    def test_an_untracked_file_in_the_hub_never_stops_its_fast_forward(self) -> None:
+        self.advance_origin()
+        (self.hub / "stray.md").write_text("stray\n", encoding="utf-8")
+        happened = shepherd.fast_forward(GitClient(), self.hub, False)
+        self.assertTrue(happened.startswith("fast-forwarded"), happened)
 
     def test_a_pull_is_behind_only_when_git_answers_that_main_is_no_ancestor(self) -> None:
         unknown = dataclasses.replace(shepherd.pull_of(pull(10)), merge_state="UNKNOWN")
