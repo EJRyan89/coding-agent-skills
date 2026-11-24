@@ -52,7 +52,7 @@ from review_runtime import (
     declared_reviewer_files,
     validate_adapter_manifest,
 )
-from review_specialists import parse_unified_diff, renamed_from, route, uncovered
+from review_specialists import ignores_uncovered, parse_unified_diff, renamed_from, route, uncovered
 from review_synthesis import TYPES as RECOMMENDATION_TYPES
 from review_vocabularies import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_vocabularies import SEVERITY_RANK
@@ -956,11 +956,13 @@ def reviewer_reach(
 ) -> dict[str, list[str]]:
     """The changed files each reviewer could ever review, by the pipeline's own routing, with every `when` condition
     taken as open, since a run decides those: each specialist `route` routes on the pull request's title, and the
-    generic reviewer's, the files no specialist covers (`uncovered`), every changed file without a manifest."""
+    generic reviewer's, the files no specialist covers (`uncovered`), none of them when the manifest leaves them to no
+    reviewer (`ignores_uncovered`), and every changed file without a manifest."""
     if manifest is None:
         return {GENERIC_SPECIALIST: changed}
     reach = route(manifest, changed, lambda _condition: True, renamed, title=title)
-    return {**reach, GENERIC_SPECIALIST: uncovered(manifest, changed, renamed)}
+    outside = uncovered(manifest, changed, renamed)
+    return {**reach, GENERIC_SPECIALIST: [] if ignores_uncovered(manifest, changed, outside) else outside}
 
 
 def scenario_reach(
@@ -999,20 +1001,67 @@ def _spans(numbers: Sequence[int]) -> str:
     return ", ".join(str(run[0]) if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs)
 
 
+def unscoped_sources(expectations: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The source of each `no_finding_above` that names its source and no paths, which judges every file its reviewer
+    reviews."""
+    return [
+        item["source"].strip()
+        for item in expectations
+        if item["kind"] == "no_finding_above" and "source" in item and "paths" not in item
+    ]
+
+
 def _judged(scenario: Scenario, spec: Mapping[str, Any], checkout: Path) -> None:
-    """Refuse an expectation no review could ever judge: one that names its source and a path that reviewer can never
-    review (`_reached`), and one whose path, or whose lines of it, hold no added line of a fixture scenario's change
-    (`_added`). The change is read once, for both."""
+    """Refuse a fixture scenario whose change adds no line (`_adds`), and an expectation no review could ever judge:
+    one that names its source and a path that reviewer can never review (`_reached`), one that names its source and
+    no paths when that reviewer reaches no file with an added line (`_anchored`), and one whose path, or whose lines of
+    it, hold no added line of a fixture scenario's change (`_added`). The change is read once, for all of them."""
     scoped = scoped_paths(spec["expectations"])
+    unscoped = unscoped_sources(spec["expectations"])
     judged = judged_paths(spec["expectations"])
-    if not scoped and not judged:
-        return
     # A document scenario's added lines come from review-document's extraction of its document, not a diff of trees.
     change = None if scenario.document is not None else fixture_diff(scenario)
-    if scoped:
-        _reached(scoped, scenario_reach(scenario, spec, checkout, change))
+    if change is not None:
+        _adds(change.diff)
+    if scoped or unscoped:
+        reach = scenario_reach(scenario, spec, checkout, change)
+        _reached(scoped, reach)
+        if change is not None:
+            _anchored(unscoped, reach, change.diff)
     if change is not None:
         _added(judged, change.diff)
+
+
+def _may_add(path: str, diff: Mapping[str, Mapping[str, Any]]) -> bool:
+    """Whether the change may add a line to `path`: it adds one there, or the path is a document file, one
+    `document_format` names a format for, whose added lines are those of its extracted text, which the loader does not
+    extract."""
+    return document_format(path) is not None or bool(diff.get(path, {}).get("added"))
+
+
+def _adds(diff: Mapping[str, Mapping[str, Any]]) -> None:
+    """Refuse a change that adds no line to any file, such as one that only deletes or moves files: a reviewer anchors
+    a finding only on an added line, so no review of it could raise one, every `no_finding_above` there passes, and
+    every verdict is decided by a review that could raise nothing."""
+    if not any(_may_add(path, diff) for path in diff):
+        changed = ", ".join(diff) if diff else "no file"
+        raise ScenarioError(
+            f"the scenario's change adds no line to any file it changes ({changed}), and a reviewer anchors a finding "
+            "only on an added line"
+        )
+
+
+def _anchored(sources: Sequence[str], reach: Mapping[str, list[str]], diff: Mapping[str, Mapping[str, Any]]) -> None:
+    """Refuse a `no_finding_above` that names its source and no paths when that reviewer reaches no file the change
+    adds a line to: nothing it raises could sit anywhere, so the expectation passes unjudged."""
+    for source in sources:
+        files = reach.get(source, [])
+        if not any(_may_add(path, diff) for path in files):
+            reached = f"only {', '.join(files)}, which the change adds no line to" if files else "none of them"
+            raise ScenarioError(
+                f"no_finding_above of {source} judges no added line: of the scenario's changed files, its route "
+                f"reaches {reached}, and a reviewer anchors a finding only on an added line"
+            )
 
 
 def _added(judged: Sequence[tuple[str, str, tuple[int, ...] | None]], diff: Mapping[str, Mapping[str, Any]]) -> None:

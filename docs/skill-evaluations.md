@@ -107,16 +107,20 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   shows nothing. So it stands in for the verdict a scenario expecting no finding otherwise names. `open-spelling` likewise expects the specialist's own catch and no verdict,
   since other reviewers' findings could bring `CHANGES_REQUESTED` without it. A scoped expectation's `path`, or each
   of its `paths`, must be a changed file its reviewer's route reaches, decided by the pipeline's own routing on the
-  scenario's changed files and title with every `when` condition taken as open; a scenario naming a file that
+  scenario's changed files and title with every `when` condition taken as open, and giving the generic reviewer no
+  file once a specialist matches one when the manifest sets `uncovered` to `ignore`; a scenario naming a file that
   reviewer never reviews fails to load, since nothing the reviewer raises would ever be judged there.
 - **An expectation on added lines:** a reviewer anchors a finding only on an added line of a file it reviews, so a
   fixture scenario's `finding`, `repeats`, or `no_finding_above`, scoped or not, fails to load when its path, or one
   of its `paths`, holds no added line of the scenario's change, such as a file the change deletes, only removes lines
-  from, or moves unchanged, or when its `lines` are none of that path's added lines. Such a `finding` could never be
-  met and such a `repeats` or `no_finding_above` could never fail. The added lines come from the same diff that
+  from, or moves unchanged, or when its `lines` are none of that path's added lines. A scoped `no_finding_above` that
+  names no `paths` fails to load when its reviewer's route reaches no file with an added line, and so does a fixture
+  scenario whose change adds no line to any file, which no review could raise a finding in. Such a `finding` could
+  never be met and such a `repeats` or `no_finding_above` could never fail. The added lines come from the same diff that
   decides a reviewer's reach, as the pipeline parses it. Two kinds of expectation are not held to them, since a run
   diffs a Word document's or a PDF's extracted text rather than its bytes, and loading a scenario would then need the
-  PDF extractor: a document scenario's, and one on a Word document or a PDF in a fixture scenario.
+  PDF extractor: a document scenario's, and one on a Word document or a PDF in a fixture scenario, which counts as a
+  file the change may add a line to.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double

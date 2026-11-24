@@ -192,26 +192,27 @@ An unknown kind, a field a kind does not take, an initial review's scenario that
 verdict, which an INCOMPLETE review that raised nothing would pass, unless it holds a `no_finding_above` with a
 `source`, which fails such a review itself, a `category` the scenario's manifest does not list, ignoring case, a
 `source` that is no reviewer of the scenario, a `finding` or `no_finding_above` that names its `source` and a path
-that reviewer never reviews, or a `finding`, `repeats`, or `no_finding_above`, scoped or not, whose path, or one of
+that reviewer never reviews, a `finding`, `repeats`, or `no_finding_above`, scoped or not, whose path, or one of
 whose `paths`, holds no added line of a fixture scenario's change, or whose `lines` are none of that path's added
-lines, fails the whole run before anything is judged. A reviewer anchors a finding only on an added line of a file it
-reviews, so such a `finding` is never met and such a `repeats` or `no_finding_above` never fails: a file the change
-deletes, one it only removes lines from, and one it moves unchanged hold none. The added lines are the ones
-review_specialists' `parse_unified_diff` records from the same diff that decides which files a reviewer reaches, read
-once. Two kinds of expectation are not checked, since a run diffs a document's extracted text, not its bytes, and a
-loader that extracted it would need the PDF extractor installed to load a scenario: a document scenario's, and one
-on a Word document or a PDF in a fixture scenario, a file review_documents' `document_format` names a format for. The
-manifest is the one the
-fixture's pull.json names in its base tree, the checkout's for a repository reviewer's scenario, or review-document's
-design manifest for a document scenario. Which files a reviewer reviews is decided by the pipeline's own routing,
-review_specialists' `route` and `uncovered`, on the scenario's changed files, a renamed one by either path, and its
-pull request's title, every `when` condition taken as open, since a run decides those: a fixture's changed files are
-the ones the diff git computes between its trees names, a repository reviewer's fixture as its run's copy holds it,
-and a document scenario's is its document alone, under the path review-document reviews it by. An entrypoint
-manifest routes nothing, so a path-scoped expectation with one fails the load. A manifest that sets
-`uncovered` to `ignore` is still read as giving the generic reviewer the files no specialist covers, though it gives
-it none of them once a specialist matches any; no manifest here sets it, and a scoped expectation of the generic
-reviewer there fails as one of a reviewer that did not run.
+lines, a `no_finding_above` that names its `source` and no `paths` when that reviewer reaches no file the change
+adds a line to, and a fixture scenario whose change adds no line to any file fails the whole run before anything is
+judged. A reviewer anchors a finding only on an added line of a file it reviews, so such a `finding` is never met,
+such a `repeats` or `no_finding_above` never fails, and a review of a change that adds no line raises nothing
+whatever its verdict: a file the change deletes, one it only removes lines from, and one it moves unchanged hold
+none. The added lines are the ones review_specialists' `parse_unified_diff` records from the same diff that decides
+which files a reviewer reaches, read once. Two kinds of expectation are not checked, since a run diffs a document's
+extracted text, not its bytes, and a loader that extracted it would need the PDF extractor installed to load a
+scenario: a document scenario's, and one on a Word document or a PDF in a fixture scenario, a file review_documents'
+`document_format` names a format for, which counts as one the change may add a line to. The manifest is the one the
+fixture's pull.json names in its base tree, the checkout's for a repository reviewer's scenario, or
+review-document's design manifest for a document scenario. Which files a reviewer reviews is decided by the
+pipeline's own routing, review_specialists' `route`, `uncovered`, and `ignores_uncovered`, on the scenario's changed
+files, a renamed one by either path, and its pull request's title, every `when` condition taken as open, since a run
+decides those: a fixture's changed files are the ones the diff git computes between its trees names, a repository
+reviewer's fixture as its run's copy holds it, and a document scenario's is its document alone, under the path
+review-document reviews it by. An entrypoint manifest routes nothing, so a path-scoped expectation with one fails
+the load. A manifest that sets `uncovered` to `ignore` gives the generic reviewer no file once a specialist matches
+any, as the pipeline decides it.
 
 Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
