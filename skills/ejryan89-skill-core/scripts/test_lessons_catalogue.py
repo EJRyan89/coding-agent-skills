@@ -80,14 +80,19 @@ def test_a_field_ends_at_a_line_it_does_not_indent_and_a_heading_keeps_its_first
 
 
 def test_a_fields_clauses_split_at_each_semicolon_outside_a_code_span() -> None:
-    # Two spans after a `;` share its clause; a `;` that ends a line splits from the next, as one that opens it does.
-    text = "## Patterns\n\n### P\n\n- **Search for:** `a` and `b`; `c { x; }` and `c2`;\n  `d`\n  ; `e`.\n"
+    # Two spans after a `;` share its clause; a `;` that ends a line splits from the next, as one that opens it does;
+    # and a clause that a line's own `;` opens runs on into the next line.
+    text = (
+        "## Patterns\n\n### P\n\n- **Search for:** `a` and `b`; `c { x; }` and `c2`;\n  `d`; `d2` and\n  `d3`\n"
+        "  ; `e`.\n"
+    )
     (pattern,) = patterns(text)
     assert pattern.clauses("Search for") == [
         [(5, "a"), (5, "b")],
         [(5, "c { x; }"), (5, "c2")],
         [(6, "d")],
-        [(7, "e")],
+        [(6, "d2"), (7, "d3")],
+        [(8, "e")],
     ]
     assert pattern.clauses("Guard") == []
 
