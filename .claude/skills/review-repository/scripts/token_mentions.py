@@ -8,7 +8,7 @@ CODE_REVIEW_DIFF_FILE and the file to write in CODE_REVIEW_CONDITION_OUTPUT. It 
 nothing of the snapshot, which `--source-root` names only because every condition is given it.
 
 Each run of a file's consecutive added lines is read as one text, so a sentence wrapped across comment lines is read
-whole, each line in Unicode's compatibility form, NFKC, with its format characters, such as a soft hyphen or a
+whole, each character in Unicode's compatibility form, NFKC, and each format character, such as a soft hyphen or a
 zero-width space, dropped, so an invisible character inside a word does not hide it. A line mentions the token when
 it names a credential by one of NAMED_CREDENTIALS, in any ASCII case, or the word "token" stands within MENTION_REACH
 characters of a word in WORKFLOW_WORDS, such as "job", "step", "workflow", or this repository's "gate" and "check", in
@@ -18,9 +18,10 @@ a confusable letter, such as a Cyrillic o (U+043E) in "token", or a hyphen insid
 The diff is the pull request author's, so everything it writes from the diff is quoted data. It writes each mentioning
 line as `MENTION <file>:<line> <what> (added lines <first>-<last>)`, the file a JSON string and `<what>` either
 `names <credential>`, a spelling of one of NAMED_CREDENTIALS, or `token near <word>`, one of WORKFLOW_WORDS, then
-`TEXT <line>`, the added line as the condition read it, cut to MAX_LINE_CHARACTERS around where it mentions the
-token, and written as one JSON string with every character outside ASCII escaped, so no line of the author's starts a
-line of its own, forges a `MENTION` line, or hides a control character. It writes at most MAX_MENTIONS of them, in diff
+`TEXT <line>`, the added line as the author wrote it, cut to MAX_LINE_CHARACTERS around where it mentions the token,
+and written as one JSON string with every character outside ASCII escaped, so no line of the author's starts a line of
+its own or forges a `MENTION` line, and a control, format, or bidirectional character the author wrote, such as a
+right-to-left override, shows escaped for the reviewer to see. It writes at most MAX_MENTIONS of them, in diff
 order, while the file stays within MAX_FILE_BYTES, with an `OMITTED <n>` line for the rest.
 
 A hunk header whose line number is not a whole number whole_number reads ends it with `FAILED ValueError: ...`.
@@ -105,7 +106,7 @@ class Mention:
     first: int
     last: int
     what: str
-    text: str  # the line as the condition read it
+    text: str  # the line as the author wrote it, stripped of surrounding whitespace
     at: int  # where in `text` it mentions the token
 
 
@@ -133,11 +134,18 @@ def added_runs(file: FileDiff) -> list[list[tuple[int, str]]]:
     return [run for run in runs if run]
 
 
-def folded(text: str) -> str:
-    """A line as the condition reads it: in NFKC, with every format character (Unicode category Cf) dropped."""
-    return "".join(
-        character for character in unicodedata.normalize("NFKC", text) if unicodedata.category(character) != "Cf"
-    )
+def folded(text: str) -> tuple[str, list[int]]:
+    """A line as the condition reads it, each character in NFKC and every format character (Unicode category Cf)
+    dropped, and for each character of it the index in `text` of the character it came from."""
+    read: list[str] = []
+    origins: list[int] = []
+    for index, character in enumerate(text):
+        if unicodedata.category(character) == "Cf":
+            continue
+        normal = unicodedata.normalize("NFKC", character)
+        read.append(normal)
+        origins.extend([index] * len(normal))
+    return "".join(read), origins
 
 
 def _what(text: str, start: int, end: int) -> tuple[str, int] | None:
@@ -158,17 +166,17 @@ def mentions(files: list[FileDiff]) -> list[Mention]:
     for file in files:
         for run in added_runs(file):
             joined = ""
-            spans: list[tuple[int, int]] = []
+            spans: list[tuple[int, int, list[int]]] = []
             for _, text in run:
-                seen = folded(text)
-                spans.append((len(joined), len(joined) + len(seen)))
+                seen, origins = folded(text)
+                spans.append((len(joined), len(joined) + len(seen), origins))
                 joined += seen + " "
-            for (number, _), (start, end) in zip(run, spans, strict=True):
+            for (number, raw), (start, end, origins) in zip(run, spans, strict=True):
                 if (named := _what(joined, start, end)) is not None:
                     what, at = named
-                    line = joined[start:end]
-                    lead = len(line) - len(line.lstrip())
-                    mention = Mention(file.path, number, run[0][0], run[-1][0], what, line.strip(), at - start - lead)
+                    lead = len(raw) - len(raw.lstrip())
+                    position = origins[at - start] - lead
+                    mention = Mention(file.path, number, run[0][0], run[-1][0], what, raw.strip(), position)
                     found.append(mention)
     return found
 
