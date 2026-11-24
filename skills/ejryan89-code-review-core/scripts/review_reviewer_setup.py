@@ -59,6 +59,7 @@ from review_snapshot import _route_reads, describe_fallback, ensure_local_commit
 from review_specialists import (
     condition_reads,
     evaluate_condition,
+    ignores_uncovered,
     parse_unified_diff,
     renamed_from,
     route,
@@ -713,7 +714,7 @@ def _routing_lines(
         lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
         return lines
     lines.extend(f"UNCOVERED {path}" for path in outside)
-    if outside and manifest.get("uncovered", "review") == "ignore":
+    if ignores_uncovered(manifest, changed, outside):
         left = unreviewed(manifest, outside, routes)
         if left:
             lines.append(f"UNREVIEWED files={len(left)} (the manifest sets uncovered to ignore; the record lists them)")
