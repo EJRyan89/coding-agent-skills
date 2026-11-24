@@ -31,6 +31,7 @@ from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE, flat_text, single_line
 from git_client import GitClient, GitError, Runner, output_line, subprocess_runner
 from github_logins import LOGIN, is_login
+from github_remote import REPOSITORY_CHARACTERS
 from path_containment import resolved_path, within
 from path_keys import path_key
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
@@ -46,8 +47,8 @@ SCHEMA_VERSION = 1
 # an archive path built from one would not be the folder it names. repository_folders refuses the other names a
 # folder cannot hold as written where an identity becomes folders.
 # references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
-# suite's repository probes hold the two in agreement.
-REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
+# suite's repository probes hold the two in agreement. The characters are ejryan89-skill-core's
+# github_remote.REPOSITORY_CHARACTERS, the one spelling every reader of an `owner/name` builds on.
 # The owner of a review of something not on GitHub, as review-document's fixture of a local file is: no login holds a
 # dot, so an identity it owns, and the pull request URL a record of it carries, names nobody's repository.
 LOCAL_OWNER = "review-document.local"

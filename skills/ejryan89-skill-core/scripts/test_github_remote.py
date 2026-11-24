@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import github_remote
 from github_remote import github_repository
 
 
@@ -85,3 +86,36 @@ def test_a_userinfo_holding_a_fragment_or_query_mark_is_on_the_host_before_it_ne
 def test_each_accepted_url_is_on_github_com_as_urlsplit_reads_its_host(url: str) -> None:
     assert urlsplit(url).hostname == "github.com"
     assert github_repository(url) == "owner/repo"
+
+
+def test_the_repository_characters_are_github_s_name_characters() -> None:
+    # Pinned against an independent literal: every reader of an owner/name builds on this one class.
+    assert github_remote.REPOSITORY_CHARACTERS == "A-Za-z0-9_.-"
+    assert github_remote.OWNER_AND_NAME == "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+
+
+# The owner/name spellings a remote's URL names, as the reader read them before the class moved here: any run of the
+# repository characters on each side of one `/`, a `.git` it ends with left off, and nothing else.
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("o/r", "o/r"),
+        ("O-1/r.2", "O-1/r.2"),
+        ("o_/_r", "o_/_r"),
+        (".github/.github", ".github/.github"),
+        ("o/.", "o/."),
+        ("o/..", "o/.."),
+        ("-o/r-", "-o/r-"),
+        ("o/r.git", "o/r"),
+        ("a/b/c", None),
+        ("o r/x", None),
+        ("\u00f6/r", None),
+        ("o/r!", None),
+        ("/r", None),
+        ("o/", None),
+        ("o", None),
+        ("o/r\u0661", None),
+    ],
+)
+def test_each_owner_and_name_spelling_is_read_as_before(written: str, expected: str | None) -> None:
+    assert github_repository(f"https://github.com/{written}") == expected
