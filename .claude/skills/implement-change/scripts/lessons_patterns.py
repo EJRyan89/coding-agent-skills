@@ -45,7 +45,11 @@ The limits, each a form the session reads itself, which its pattern's prose plac
   matched;
 - a `<module>:<class>.<member>` mechanism is used by a read of the attribute `member` on any object once the module is
   imported, since which class an object is takes running the code to know: an ast walker that imports `git_client`
-  and reads `node.names` counts as using `git_client:GitClient.names`.
+  and reads `node.names` counts as using `git_client:GitClient.names`;
+- an rg glob with a `/` is matched by fnmatch, whose `*` crosses folders where rg's stops at a `/`, so `tools/*.py`
+  also holds `tools/a/b.py`; every glob the catalogue writes names a file's extension alone;
+- a place a clause names as where a form must not occur, such as `outside path_keys.py`, is read as where it
+  matters.
 
 `listing` returns each line's fields, never a printed line, for a later fix brief (EJRyan89/coding-agent-skills#2177)
 to call for the lessons patterns of the files an issue names.
@@ -482,7 +486,8 @@ class Corpus:
         # A form common among the files of its kind, or among the files of every kind, as a word is in a kind with
         # too few files to say, tells the change nothing.
         within_kind = self.common(("form", suffix, form.text), suffix, holds)
-        return within_kind or self.common(("form", "", form.text), None, holds)
+        # The count over every kind has a key of its own, which no kind's suffix, the empty one included, can take.
+        return within_kind or self.common(("form of every kind", form.text), None, holds)
 
 
 def _in_place(name: str, place: str) -> bool:

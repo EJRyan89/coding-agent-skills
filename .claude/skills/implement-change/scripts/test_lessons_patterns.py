@@ -293,6 +293,15 @@ def test_a_pattern_is_met_by_a_search_for_form_once_whatever_lines_name_it(
     assert run(root, "tools\\walk.py", capsys=capsys) == (0, [f"{WALKS}{holds}"])
 
 
+def test_a_file_with_no_extension_is_judged_apart_from_every_kind(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Twelve Python walkers make the form common among every kind, while no other file without an extension holds it.
+    walkers = {f"tools/walk{index}.py": "os.walk(top)\n" for index in range(COMMON)}
+    root = repository(tmp_path, {**walkers, "tools/clean": "os.walk(top)\nshutil.rmtree(top)\n"})
+    assert run(root, "tools/clean", capsys=capsys) == (0, [f"{WALKS}\ttools/clean:2 holds shutil.rmtree("])
+
+
 def test_a_form_common_among_its_kind_is_cut_there_alone(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # Twelve Python walkers make the form common among Python files; 200 more notes keep it rare among every kind.
     walkers = {f"tools/walk{index}.py": "os.walk(top)\n" for index in range(COMMON)}
