@@ -28,7 +28,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import IO, Any, ClassVar
+from typing import IO, Any, ClassVar, cast
 from unittest import mock
 from xml.parsers import expat
 
@@ -58,7 +58,7 @@ from review_archive import latest_record, list_versions, pull_directory, record_
 from review_config import ConfigurationError, write_config
 from review_github import GitHubClient, PullFiles
 from review_operation import reviewed_head
-from review_records import ReviewRecord
+from review_records import Comment, ReviewRecord
 from review_runtime import materialize_source_snapshot, verify_github_tarball
 from test_review_archive import unlistable
 from test_review_documents import StubPdftotext, body_xml, paragraph, pdf_document, word_document
@@ -185,8 +185,8 @@ class ScratchGitHub(GitHubClient):
         )
         return replace_undecodable(raw.decode("utf-8", "surrogateescape"))
 
-    def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
-        return self.threads
+    def list_open_review_threads(self, repository: str, number: int) -> list[Comment]:
+        return cast("list[Comment]", self.threads)
 
     def list_closing_issues(self, repository: str, number: int, *, first: int) -> tuple[list[dict[str, Any]], int]:
         self.closing_reads += 1

@@ -60,7 +60,16 @@ from review_canary import validate_fixture_pull
 from review_config import validate_config
 from review_flags import add_flag, load_store, validate_store
 from review_operation import legacy_index
-from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result, validate_record
+from review_records import (
+    CarriedFinding,
+    ClosingIssues,
+    Comment,
+    ReviewRecord,
+    build_record,
+    carried_findings,
+    validate_adapter_result,
+    validate_record,
+)
 from review_runtime import AdapterRequest, build_adapter_request, validate_adapter_manifest
 from review_specialists import load_role_result
 from review_state import validate_state
@@ -486,7 +495,7 @@ def _disposition(identifier: str, value: str, key: str = "finding_id") -> Any:
     return {key: identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
-COMMENTS: list[dict[str, Any]] = [
+COMMENTS: list[Comment] = [
     {
         "id": "C1",
         "author": "octocat",
@@ -510,7 +519,7 @@ COMMENTS: list[dict[str, Any]] = [
 
 # The account of the closing issues a specialist was given, as given_closing_issues writes it: this repository's issue
 # with its body cut, another repository's without its text, and one GitHub counts but no longer resolves.
-CLOSING_ISSUES: dict[str, Any] = review_runtime.given_closing_issues(
+CLOSING_ISSUES: ClosingIssues = review_runtime.given_closing_issues(
     [
         {"repository": "example/one", "number": 4, "state": "OPEN", "title": "Totals", "body": "B" * 30_000},
         {"repository": "example/two", "number": 9, "state": "CLOSED", "title": "Other", "body": "Elsewhere."},
@@ -1494,7 +1503,7 @@ def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
     return accepts
 
 
-def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[AdapterRequest]:
+def request_fixtures(scratch: Path, prior: list[CarriedFinding]) -> list[AdapterRequest]:
     """Requests as `build_adapter_request` writes them: one with a head branch, prior findings, review comments, a
     changed file the snapshot could not hold, and a changed binary of a type the review does not read, and one with
     none of them."""
