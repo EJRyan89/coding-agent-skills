@@ -2179,6 +2179,28 @@ class TwinTests(Fixture):
         self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
         self.assertIn(f'- `"tools/escapes twin.py:1"`: `{json.dumps(only)}`', self.briefs(lines)["twins"])
 
+    def test_a_construct_line_longer_than_git_grep_takes_is_searched_by_a_part_and_matched_whole(self) -> None:
+        # git built with PCRE refuses a fixed pattern past the size PCRE compiles, 32,764 bytes on git 2.56.1 on macOS,
+        # with "fatal: In '-' at 1, ..." that quotes the whole pattern; this line is over 40,000 bytes of UTF-8. On a
+        # git that searches fixed text without PCRE the run passes either way; on every platform the part-only line
+        # below is no hit.
+        long = "notes = '" + "a long line, € by € " * 1800 + "'"
+        self.assertGreater(len(long.encode("utf-8")), 40_000)
+        # A line holding the start git is given, but not the whole construct line, is no twin.
+        part = long.encode("utf-8")[:8000].decode("utf-8", "ignore")
+        write(self.root, {"docs/long.md": f"{long}\n", "docs/long twin.md": f"{part}\n{long}\n"})
+        self.commit("feat: add the long line")
+        base = git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"docs/long.md": "notes = short()\n"})
+        self.commit("fix: shorten the long line")
+        fix = git(self.root, "rev-parse", "HEAD")
+        code, lines = self.run_main("twins", "--since", base)
+        self.assertEqual(0, code, [line[:200] for line in lines])
+        self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
+        self.assertIn(
+            f'- `"docs/long twin.md:2"`: `{json.dumps(long, ensure_ascii=False)}`', self.briefs(lines)["twins"]
+        )
+
     def test_a_title_holding_the_field_separator_is_read_whole(self) -> None:
         write(self.root, {"README.md": "readme, changed again\n"})
         self.commit("fix: a unit\x1fseparator in the title")
@@ -2466,6 +2488,51 @@ def test_a_search_with_no_hit_is_empty_and_any_other_failure_is_named() -> None:
         assert reason in str(raised.value)
 
 
+def test_git_grep_is_given_at_most_eight_thousand_bytes_of_a_long_line_ending_at_a_character() -> None:
+    # 3,000 euro signs are 9,000 bytes of UTF-8: the first 8,000 end one byte into the 2,667th sign, which is left out.
+    assert audit.grep_pattern("€" * 3000) == "€" * 2666
+    assert audit.grep_pattern("a" * 8001) == "a" * 8000
+    assert audit.grep_pattern("a" * 8000) == "a" * 8000
+    # A backslash-E line's longest part is cut the same way.
+    assert audit.grep_pattern("short\\E" + "b" * 9000) == "b" * 8000
+
+
+def test_a_long_construct_line_reaches_git_as_its_part_and_a_hit_holds_it_whole() -> None:
+    head = "f" * 40
+    long = "x" * 20_000 + "y" * 20_000
+    given: list[bytes] = []
+
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        raise AssertionError("git grep is given its patterns on stdin")
+
+    def answer(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+        given.append(input_bytes)
+        # git finds the part on both lines; only the second holds the whole construct line.
+        return GitResult(0, f"{head}:a.md\x001\0{'x' * 9000}\n{head}:b.md\x002\0 {long} \n", "")
+
+    hits, cut = audit.search_construct(GitClient(run, input_runner=answer), Path("r"), head, [long])
+    assert given == [b"x" * 8000 + b"\n"]
+    assert (hits, cut) == ([audit.Hit("b.md", 2, long)], False)
+
+
+def test_a_git_grep_failure_quoting_a_long_pattern_keeps_git_s_reason_on_a_bounded_line() -> None:
+    # git cuts its own message at 4,096 bytes, quoting the pattern it refused.
+    stderr = "fatal: In '-' at 1, '" + "a" * 4075
+
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        raise AssertionError("git grep is given its patterns on stdin")
+
+    def answer(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+        return GitResult(128, "", stderr)
+
+    with pytest.raises(audit.AuditError) as raised:
+        audit.search_construct(GitClient(run, input_runner=answer), Path("r"), "HEAD", ["a construct line"])
+    reason = str(raised.value)
+    assert reason.startswith("git grep: fatal: In '-' at 1, 'aaa")
+    assert reason.endswith("a...")
+    assert len(reason) == len("git grep: ") + 500 + len("...")
+
+
 def test_a_twin_brief_is_written_whole() -> None:
     fixes = [
         audit.Fix(
@@ -2663,6 +2730,36 @@ def test_a_tag_or_search_git_cannot_read_is_labelled_with_its_git_command() -> N
         audit.released_tag(GitClient(run), Path("r"), "HEAD")
     with pytest.raises(audit.AuditError, match=r"^git grep: fatal: bad object$"):
         audit.search_construct(GitClient(run, input_runner=given), Path("r"), "HEAD", ["a line"])
+
+
+@pytest.mark.parametrize(
+    ("command", "call"),
+    [
+        pytest.param("git rev-parse", lambda git: audit.commit_of(git, Path("r"), "v" * 4000), id="commit_of"),
+        pytest.param("git for-each-ref", lambda git: audit.released_tag(git, Path("r"), "HEAD"), id="released_tag"),
+        pytest.param("git log", lambda git: audit.git_output(git, Path("r"), ["log"]), id="git_output"),
+    ],
+)
+def test_every_git_call_s_failure_keeps_git_s_reason_on_a_bounded_line(
+    command: str, call: Callable[[GitClient], object]
+) -> None:
+    # git quotes what it was given, here a 4,000-character ref, in the message it fails with.
+    def run(arguments: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: ambiguous argument '" + "v" * 4000 + "': unknown revision\n")
+
+    with pytest.raises(audit.AuditError) as raised:
+        call(GitClient(run))
+    reason = str(raised.value)
+    assert reason.startswith(f"{command}: fatal: ambiguous argument 'vvv")
+    assert len(reason) == len(f"{command}: ") + 500 + len("...")
+
+
+def test_a_ref_in_a_folder_git_finds_no_repository_in_is_named_by_the_folder() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: not a git repository (or any of the parent directories): .git\n")
+
+    with pytest.raises(audit.AuditError, match=r"^some folder/r is not a Git repository$"):
+        audit.commit_of(GitClient(run), Path("some folder", "r"), "HEAD")
 
 
 class FixtureTemplateTests(AuditTestCase):
