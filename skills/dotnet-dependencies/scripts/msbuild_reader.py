@@ -221,13 +221,15 @@ def examined_tree(base: Path) -> Path:
 TREE_READ_ALLOWED = {
     "examined_tree": (
         "finds the tree a run reads in, from the top down, before any tree is bound; it follows a link only while no "
-        "checkout lies above it, the user's own choice of where to look, and judges each marker from its own metadata"
+        "checkout lies above it, the user's own choice of where to look, and judges each marker from its own metadata",
+        ("dependency_graph:checkout_tree",),
     ),
     "exists_above_tree": (
         "MSBuild's search for the nearest file goes on above the examined tree, as the dotnet-dependencies row of "
         "docs/design.md states (the searches may go on above the tree on the local drive, as MSBuild's do, and a file "
         "one finds is read only inside the tree), so whether a file is there is asked of each folder above it, from "
-        "the place's own metadata and its target's kind, and no file there is read"
+        "the place's own metadata and its target's kind, and no file there is read",
+        ("nearest_file",),
     ),
 }
 

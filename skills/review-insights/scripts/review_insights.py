@@ -32,7 +32,10 @@ findings. Finding IDs restart in every review, so a flag is never matched agains
 synthesized recommendation links instead the open flags its synthesis named, whether or not they name a finding. Links
 are computed when the report is written, so `decide` resolves exactly the flags it listed. A decision is recorded in
 the report before any flag is resolved, so a flag store that fails partway leaves the decision recorded with the flags
-it did resolve, and deciding again resolves the rest.
+it did resolve, and deciding again resolves the rest. A report, its Markdown, or a flag store the decision resolves
+flags in that is read-only, and a report or Markdown that is not a file, is refused before anything is written, the
+lock's folder beside the report included, by every command that writes a report, and so is any of them whose folder
+takes no new file; `report` refuses the synthesis input and context beside the report the same way.
 
 Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
 lose each other's decisions.
@@ -75,6 +78,7 @@ import review_guidance
 import review_signals
 import review_synthesis as synthesis_stage
 import whole_number
+from atomic_file import is_read_only, refuse_uncreatable
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
@@ -90,7 +94,14 @@ from review_config import (
     selected_repository_set,
     validate_repository_identity,
 )
-from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, load_store, resolve_flag
+from review_flags import (
+    FlagAlreadyResolved,
+    FlagError,
+    default_flags_path,
+    load_store,
+    refuse_read_only,
+    resolve_flag,
+)
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
@@ -126,22 +137,86 @@ SCHEMA_VERSION = 9
 READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 UNKNOWN_MODEL = "unknown"
 # The reads outside the checkout whose guidance review_guidance reads through a tree reader, each with why: none reads a
-# file of a repository the skill examines.
+# file of a repository the skill examines. The code-review pipeline's own store, never a checkout under review, is read
+# through ejryan89-code-review-core's readers: the configuration itself (the --config the user names, else
+# CODE_REVIEW_CONFIG, else its file under the home), the record archive under the configuration's archive_root, and the
+# flag store (CODE_REVIEW_FLAGS, else its file in the home's code-review folder, whatever the configuration says). The
+# tree reader is bound to a checkout's guidance, which none of them lies in.
 TREE_READ_ALLOWED = {
-    "<module>": (
-        "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "
-        "scripts folder beside this skill's own, no path of a tree the skill examines"
+    "working_scope": (
+        "reads the code-review configuration the user names with --config, else where CODE_REVIEW_CONFIG or the home "
+        "places it: the pipeline's own store",
+        ("main",),
+    ),
+    "RecordPairs.read": (
+        "reads a review record pair under the configured archive_root: the pipeline's own store. It is reached through "
+        "an instance, so its callers are not read; collect_records and read_ledgers call it with a pair they found"
+    ),
+    "collect_records": (
+        "lists a repository's review records under the configured archive_root: the pipeline's own store",
+        ("create_report",),
+    ),
+    "read_ledgers": (
+        "lists a pull request's review versions under the configured archive_root: the pipeline's own store",
+        ("create_report",),
+    ),
+    "load_report": (
+        "reads an insights report the skill wrote under the configured summary_root, or one the user names: the "
+        "skill's own output",
+        ("_run_synthesize", "create_report", "decide", "decide_custom", "synthesize"),
+    ),
+    "report_from_config": (
+        "reads the code-review configuration the user names with --config, else where CODE_REVIEW_CONFIG or the home "
+        "places it, and the flag store where CODE_REVIEW_FLAGS or the home places it: the pipeline's own store",
+        ("main",),
+    ),
+    "_open_flags": (
+        "reads the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, for the flags "
+        "a recommendation links: the pipeline's own store",
+        ("decide", "decide_custom"),
+    ),
+    "_refuse_store_with_open": (
+        "reads the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, for whether a "
+        "flag a decision names is still open: the pipeline's own store",
+        ("decide", "decide_custom"),
+    ),
+    "_refuse_unchangeable_store": (
+        "whether the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, is read-only "
+        "or in a folder that takes no new file: the pipeline's own store",
+        ("_refuse_store_with_open", "_refuse_unchangeable_decision"),
+    ),
+    "_resolve_recorded": (
+        "resolves a flag in the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, "
+        "reading it first: the pipeline's own store",
+        ("decide", "decide_custom"),
     ),
     "current_repository": (
         "compares the working directory and git's common directory with each configured checkout path, resolved, to "
-        "choose the repository; it reads no file of a checkout"
+        "choose the repository; it reads no file of a checkout",
+        ("working_scope",),
     ),
-    "create_report": "whether the insights report the skill wrote earlier is there: the skill's own output",
+    "create_report": (
+        "whether the insights report the skill wrote earlier is there: the skill's own output",
+        ("report_from_config",),
+    ),
+    "refuse_unchangeable": (
+        "whether the insights report, its Markdown, and the synthesis files the skill wrote earlier beside it can be "
+        "replaced: the skill's own output",
+        ("write_report", "create_report", "_existing_report_lock", "_refuse_unchangeable_decision"),
+    ),
+    "refuse_uncreatable_target": (
+        "whether the folder of the report, its Markdown, or the flag store a decision resolves flags in takes the copy "
+        "a replace writes: the skill's own output and the code-review flag store",
+        ("refuse_unchangeable", "_refuse_unchangeable_store"),
+    ),
     "synthesize": (
-        "compares the synthesis result path the agent gives with the one the report named: the skill's own run"
+        "compares the synthesis result path the agent gives with the one the report named, and reads that result: "
+        "the skill's own run",
+        ("_run_synthesize",),
     ),
     "_existing_report_lock": (
-        "whether the insights report the user names is a file before its lock is made: the skill's own output"
+        "whether the insights report the user names is a file before its lock is made: the skill's own output",
+        ("decide", "decide_custom", "synthesize"),
     ),
 }
 REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}
@@ -154,6 +229,8 @@ REC_ID = re.compile(r"REC-(\d{3,})")
 EXAMPLES_PRINTED = 3
 # What a refused report lock tells the user to keep on a local disk: the report sits under `summary_root`.
 REPORT_LOCK_PLACE = "the review-insights reports"
+# The files a pending synthesis stages beside its report, which a report write replaces before the report.
+SYNTHESIS_FILES = (synthesis_stage.CONTEXT_NAME, synthesis_stage.INPUT_NAME)
 EVIDENCE_RENDERED = 10
 # The options whose values are a subject as a report printed it or a note as the user gave it, each with how many
 # values it takes. Such a value may begin with `-`, which argparse would read as an option, so each is bound to its
@@ -881,11 +958,36 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [*report["recommendations"], *(item for run in superseded for item in run["recommendations"])]
 
 
+def refuse_unchangeable(json_path: Path, *beside: Path) -> None:
+    """Refuse a report, its Markdown, or a file `beside` it that the write replaces first, such as the synthesis
+    input and context, that is read-only, anything but a file, or in a folder that takes no new file, before the first
+    is written: each replace would refuse its own file only when its turn came, after the files before it were
+    replaced."""
+    for path in (json_path, json_path.with_suffix(".md"), *beside):
+        reason = file_presence.refusal_reason(path)
+        if reason not in (None, file_presence.MISSING):
+            raise InsightError(f"{path} {reason}, so the report cannot be written")
+        if is_read_only(path):
+            raise InsightError(f"{path} is read-only; make it writable for the report to be written")
+        refuse_uncreatable_target(path)
+
+
+def refuse_uncreatable_target(path: Path) -> None:
+    """Refuse a file whose folder takes no new file, the copy its replace writes, as an InsightError naming it."""
+    try:
+        refuse_uncreatable(path)
+    except OSError as exc:
+        raise InsightError(f"Cannot write {path}: {exc}") from exc
+
+
 def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_stage.Staged | None = None) -> Path:
     """Write the report and its Markdown, after the synthesis files `synthesis` stages beside it and the run its agent
     works in, when the report takes that synthesis rather than keeping a recorded one. A report larger than
     `load_report` reads is refused before anything is written beside it and with its run removed, so the script never
-    writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed."""
+    writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed; so is a report or
+    Markdown, or a synthesis file it stages, that is read-only or not a file (refuse_unchangeable), before the run is
+    staged or any file written."""
+    refuse_unchangeable(json_path, *(synthesis.files if synthesis is not None else ()))
     if synthesis is not None and report["synthesis"] is synthesis.synthesis:
         synthesis.stage_run()
     try:
@@ -942,6 +1044,9 @@ def create_report(
     json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     pairs = RecordPairs()
     records = collect_records(archive_root, repositories, start, end, pairs)
+    # Refused before the lock makes its folder beside the report: the synthesis files are those a pending synthesis
+    # stages there, which write_report checks again, as the report stages them, under the lock.
+    refuse_unchangeable(json_path, *(json_path.parent / name for name in SYNTHESIS_FILES))
     with services.report_lock(json_path):
         # A report it cannot stat fails here, never read as no report and its decisions written over.
         earlier = load_report(json_path) if file_presence.is_present(json_path) else None
@@ -1088,7 +1193,8 @@ def synthesize(
     every check. A `guarded` result, one a Claude Code subagent wrote, is recorded only once the reviewer guard claimed
     its role; the self-check, `check`, is the agent's own and leaves that to recording."""
     services = services or Services()
-    with _existing_report_lock(report_path, services):
+    # The self-check writes nothing, so a report it could not replace is left for recording to refuse.
+    with _existing_report_lock(report_path, services, writes=not check):
         report = load_report(report_path)
         synthesis = report["synthesis"]
         if synthesis is None or synthesis["status"] == "skipped":
@@ -1130,12 +1236,18 @@ def synthesize(
         return added
 
 
-def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[object]:
+def _existing_report_lock(
+    report_path: Path, services: Services, *, writes: bool = True
+) -> AbstractContextManager[object]:
     """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
     instead of creating directories there. A report a stat cannot examine, or one that is not a file, is named so,
-    never as missing."""
+    never as missing, and, for a command that `writes` the report, a report or Markdown refuse_unchangeable refuses is
+    refused before the lock is made."""
     if reason := file_presence.refusal_reason(report_path):
         raise InsightError(f"Cannot read insights report {report_path}: it {reason}")
+    # A report or Markdown it could not replace is refused before the lock makes its folder beside the report.
+    if writes:
+        refuse_unchangeable(report_path)
     return services.report_lock(report_path)
 
 
@@ -1166,6 +1278,10 @@ def decide(
         raise InsightError("Name exactly one subject: a category, an analyzer, or a synthesized title")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
+    if decision == "accepted":
+        # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
+        # resolves are read again under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_store_with_open(flags, services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         matching = [item for item in report["recommendations"] if item["id"] == recommendation_id]
@@ -1187,12 +1303,40 @@ def decide(
             )
         resolution = f"Accepted review-insights recommendation {item['id']} ({describe(item)}) in {report_path}"
         pending, skipped = _open_flags(item["linked_flags"], services) if decision == "accepted" else ([], [])
+        _refuse_unchangeable_decision(report_path, pending, services)
         entry = _record_decision(item, decision, note, pending, services)
         write_report(report_path, report)
         resolved, already = _resolve_recorded(
             report_path, report, [entry], _resolution_text(resolution, note), services
         )
         return resolved, [*skipped, *already]
+
+
+def _refuse_unchangeable_decision(report_path: Path, pending: list[str], services: Services) -> None:
+    """Refuse, before the decision is recorded, a report or Markdown it could not replace, and, when the decision
+    resolves flags, a flag store it could not, read-only or in a folder that takes no new file: a refusal the platform
+    reports up front leaves every file as it was,
+    where a failure no check can know ahead, such as a store another process holds open, leaves the decision recorded
+    with the flags it did resolve (see _resolve_recorded)."""
+    refuse_unchangeable(report_path)
+    if pending:
+        _refuse_unchangeable_store(services)
+
+
+def _refuse_store_with_open(flags: list[str], services: Services) -> None:
+    """Refuse a flag store it could not change when any of `flags` is still open in it, so a decision that would resolve
+    one is refused before anything is written; flags all resolved already change no store, which stays unjudged."""
+    if not flags:
+        return
+    status = {flag["id"]: flag["status"] for flag in load_store(services.flags_path())["flags"]}
+    if any(status.get(flag) == "open" for flag in flags):
+        _refuse_unchangeable_store(services)
+
+
+def _refuse_unchangeable_store(services: Services) -> None:
+    """Refuse a flag store that is read-only or in a folder that takes no new file."""
+    refuse_read_only(services.flags_path())
+    refuse_uncreatable_target(services.flags_path())
 
 
 def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:
@@ -1273,6 +1417,10 @@ def decide_custom(
         raise InsightError(f"Decision must be one of: {', '.join(DECISIONS)}")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
+    if decision == "accepted":
+        # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
+        # resolves are read again under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_store_with_open(flags, services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         items = custom_candidates(report)
@@ -1292,6 +1440,7 @@ def decide_custom(
             )
         resolution = f"Accepted the custom-candidate analyzer recommendations in {report_path}"
         pending, skipped = _open_flags(linked, services) if decision == "accepted" else ([], [])
+        _refuse_unchangeable_decision(report_path, pending, services)
         entries = [
             _record_decision(item, decision, note, [flag for flag in item["linked_flags"] if flag in pending], services)
             for item in items

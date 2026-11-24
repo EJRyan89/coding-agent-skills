@@ -877,7 +877,11 @@ or removed fails validation until its pattern follows it.
   `tests/deployer/test_rendering_locking.py::LockTests::test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run`,
   `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`,
   `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`, which
-  compares the home, the work folder, and each output a driver names before and after every refused run of every entry point
+  compares the home, the work folder, and each output a driver names before and after every refused run of every entry point,
+  `tests/malformed_input/test_faults_unchangeable.py::test_each_command_refuses_a_read_only_file_it_changes_before_its_first_change`,
+  which makes each file but the first that each shipped skill command changing several files, or one in place, changes read-only,
+  and `tests/malformed_input/test_change_places.py::test_every_place_that_changes_a_file_is_held_or_named_not_held_and_every_row_a_place`,
+  which holds every place a skill's script changes a file in to such a command or a reason it changes no file of the user's
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
   as a destination judged in the step that creates it; a refusal added to a write the commit makes, such as

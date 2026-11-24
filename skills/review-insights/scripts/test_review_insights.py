@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1005,7 +1006,8 @@ class DecideTests(InsightFixture):
         before = period()
         with unstatable(json_path, times=1):
             result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
-        self.assertFailed(result, f"Permission denied: {str(json_path)!r}")
+        # The stat that fails is the one the check before the report lock makes, which refuses it as unexamined.
+        self.assertFailed(result, f"{json_path} cannot be examined: Permission denied")
         self.assertEqual(before, period())
 
     def test_a_decision_for_another_category_is_refused(self) -> None:
@@ -1870,6 +1872,205 @@ class RecordingTests(InsightFixture):
         )
         item = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][0]
         self.assertEqual([[first], [second]], [entry["resolved_flags"] for entry in item["decision_history"]])
+
+    def written(self, *paths: Path) -> list[bytes | None]:
+        return [path.read_bytes() if path.is_file() else None for path in paths]
+
+    def test_a_read_only_flag_store_is_refused_before_the_decision_is_recorded(self) -> None:
+        # Refused only when its turn came, the store would leave the decision recorded and its flag open, though the
+        # platform reports a read-only store before anything is written.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        paths = (json_path, json_path.with_suffix(".md"), self.flags)
+        before = self.written(*paths)
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(*paths))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_flag_store_whose_folder_takes_no_new_file_is_refused_before_the_decision_is_recorded(self) -> None:
+        # Linux and macOS: the store's replace writes its copy beside it, which its folder's permission refuses, and the
+        # report lies in another folder, so the decision would be recorded before the store refused.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        paths = (json_path, json_path.with_suffix(".md"), self.flags)
+        before = self.written(*paths)
+        self.flags.parent.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"Cannot write {self.flags}: [Errno 13] its folder takes no new file, so it cannot be replaced",
+            )
+        finally:
+            self.flags.parent.chmod(stat.S_IRWXU)
+        self.assertEqual(before, self.written(*paths))
+
+    def test_a_markdown_it_cannot_replace_is_refused_before_the_report_is(self) -> None:
+        # The report is written first, so a Markdown refused only when its turn came would leave the report replaced.
+        self.commit("owner/repo", 7, ["Correctness"])
+        json_path, _ = self.report()
+        markdown = json_path.with_suffix(".md")
+        before = self.written(json_path)
+        markdown.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{markdown} is read-only; make it writable for the report to be written",
+            )
+        finally:
+            markdown.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(json_path))
+        markdown.unlink()
+        markdown.mkdir()
+        self.assertFailed(
+            self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+            f"{markdown} is not a file, so the report cannot be written",
+        )
+        self.assertEqual(before, self.written(json_path))
+
+    def test_a_synthesis_file_it_cannot_replace_is_refused_before_the_context_beside_it_is(self) -> None:
+        # The context is replaced before the input, so an input refused only when its turn came would leave the context
+        # changed and the earlier report's seal no longer matching it.
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.flag("guideline")
+        json_path, _ = self.report()
+        context, staged = (json_path.parent / name for name in ri.SYNTHESIS_FILES)
+        context.write_bytes(b"stale\n")
+        before = self.written(context, json_path)
+        staged.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{staged} is read-only; make it writable for the report to be written",
+            )
+        finally:
+            staged.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(context, json_path))
+
+    def test_a_report_or_store_it_cannot_change_is_refused_before_the_lock_makes_its_folder(self) -> None:
+        # Refused only under the lock, each command would leave the lock's folder beside the report.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        markdown, locks = json_path.with_suffix(".md"), json_path.parent / ".locks"
+        cases: dict[str, tuple[Path, Callable[[], tuple[int, str, str]], str]] = {
+            "report": (
+                markdown,
+                lambda: self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{markdown} is read-only",
+            ),
+            "decide": (
+                markdown,
+                lambda: self.decide(json_path, "REC-001", "Correctness", flag),
+                f"{markdown} is read-only",
+            ),
+            "decide's flag store": (
+                self.flags,
+                lambda: self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only",
+            ),
+        }
+        for name, (path, call, refusal) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(locks)
+                path.chmod(stat.S_IREAD)
+                try:
+                    self.assertFailed(call(), refusal)
+                finally:
+                    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+                self.assertFalse(locks.exists())
+                locks.mkdir()
+
+    def test_a_read_only_store_is_left_alone_when_every_flag_it_names_is_resolved_already(self) -> None:
+        # A decision that resolves no flag changes no store, so a read-only one is no refusal.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        resolve_flag(self.flags, flag, "Resolved elsewhere")
+        store = self.flags.read_bytes()
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            code, out, err = self.decide(json_path, "REC-001", "Correctness", flag)
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(
+            (0, [f"FLAG_ALREADY_RESOLVED {flag}", "DECIDED REC-001 accepted"], ""), (code, out.splitlines(), err)
+        )
+        self.assertEqual(store, self.flags.read_bytes())
+
+    def test_decide_custom_refuses_a_read_only_store_before_the_lock_makes_its_folder(self) -> None:
+        self.commit("owner/repo", 7, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
+        self.flag("rule", finding="F001")
+        json_path, lines = self.report(decide=True)
+        printed = shlex.split(lines[-1].removeprefix("DECIDE_CUSTOM "))
+        locks = json_path.parent / ".locks"
+        shutil.rmtree(locks)
+        before = self.written(json_path, json_path.with_suffix(".md"), self.flags)
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("decide-custom", "--report", str(json_path), *printed, "accepted"),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertFalse(locks.exists())
+        self.assertEqual(before, self.written(json_path, json_path.with_suffix(".md"), self.flags))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_report_whose_folder_takes_no_new_file_is_refused_and_nothing_changes(self) -> None:
+        # Linux and macOS: the folder's permission refuses the copy each replace writes beside the report.
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.flag("guideline")
+        json_path, _ = self.report()
+        folder = json_path.parent
+
+        def period() -> dict[str, bytes]:
+            return {str(path): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+
+        before = period()
+        folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        finally:
+            folder.chmod(stat.S_IRWXU)
+        self.assertFailed(result, f"Cannot write {json_path}: [Errno 13] its folder takes no new file")
+        self.assertEqual(before, period())
+
+    def test_a_store_made_read_only_after_the_check_before_the_lock_is_refused_under_it(self) -> None:
+        # The check before the lock passed; the store turned read-only once the lock was taken is caught by the check
+        # under it, before the decision is recorded.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        markdown = json_path.with_suffix(".md")
+        before = self.written(json_path, markdown)
+        taken = self.services.report_lock
+
+        @contextlib.contextmanager
+        def locked_then_read_only(path: Path) -> Iterator[None]:
+            with taken(path):
+                self.flags.chmod(stat.S_IREAD)
+                yield
+
+        self.services.report_lock = locked_then_read_only
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+            self.services.report_lock = taken
+        self.assertEqual(before, self.written(json_path, markdown))
 
     def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])

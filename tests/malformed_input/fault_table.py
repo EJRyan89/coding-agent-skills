@@ -3,9 +3,10 @@ point that the harness runs under them.
 
 An entry point is what tests/validation/exit_tables.py finds: a module whose `__main__` block calls run_main. A
 driver names one of its commands, the arguments that run it in a throwaway fixture, the files of that fixture the
-command reads, which the file faults are placed at one at a time, and whether it runs git or gh, which the git and gh
-faults replace. faults.py gathers the drivers, grouped by area in the faults_*.py modules beside it, and names each
-entry point or command the harness cannot drive, with the reason, in FAULTS_NOT_RUN.
+command reads, which the file faults are placed at one at a time, the files it changes, each of which but the first
+the change faults are placed at, and whether it runs git or gh, which the git and gh faults replace. faults.py gathers
+the drivers, grouped by area in the faults_*.py modules beside it, and names each entry point or command the harness
+cannot drive, with the reason, in FAULTS_NOT_RUN.
 """
 
 from __future__ import annotations
@@ -27,7 +28,14 @@ STAT_RAISES = "stat_raises"
 GIT_EXIT = "git_exit_128"
 GIT_TIMEOUT = "git_timeout"
 GH_FAILURE = "gh_failure"
+READ_ONLY = "read_only"
+READ_ONLY_FOLDER = "read_only_folder"
 FILE_FAULTS = (UNREADABLE, DIRECTORY, MISSING, LINK_TO_NOTHING, STAT_RAISES)
+# The faults placed at each file a command changes but the first, each one the platform reports before anything is
+# written, so a command that checks every file before its first change refuses with all of them as it found them.
+# The read-only folder fault holds on Linux and macOS alone: Windows gives a folder no permission that refuses a change
+# inside it, and its read-only attribute on a folder refuses nothing, so test_faults_unchangeable.py skips it there.
+CHANGE_FAULTS = (READ_ONLY, READ_ONLY_FOLDER, DIRECTORY)
 GIT_FAULTS = (GIT_EXIT, GIT_TIMEOUT)
 GH_FAULTS = (GH_FAILURE,)
 FAULTS = {
@@ -42,6 +50,12 @@ FAULTS = {
     GIT_EXIT: "every git command exits 128 with the reason git gives for a broken checkout",
     GIT_TIMEOUT: "every git command runs past its time limit",
     GH_FAILURE: "every gh command fails with an answer GitHub gives for a request it refuses",
+    READ_ONLY: "a file the command changes, made read-only: its owner's write permission cleared, which Windows "
+    "reads as the read-only attribute; every platform refuses a replace of it through atomic_file, and Windows a "
+    "delete, where Linux and macOS delete it unless the command refuses it first",
+    READ_ONLY_FOLDER: "the folder holding a file the command changes, its write permission cleared, on Linux and "
+    "macOS: there a folder's permission, not the file's, refuses a delete, a rename, and a new file in it, the copy "
+    "an atomic replace writes beside its target included",
 }
 # The reason a stat fault does not apply to a file a command opens and reads without a stat.
 OPENED_ONLY = "the command opens and reads the file without a stat, so a stat that raises never reaches it"
@@ -122,12 +136,14 @@ class Driver:
     `entry` is the entry point's path from the repository root, and `command` its subcommand, or "" for one that has
     none. `arguments` are its command line, each formatted with the fixture's `{root}`, `{home}`, `{work}`, and
     `{checkout}`, the copy of this checkout a `from_checkout` driver runs from. `prepare` builds the fixture before each
-    run; `inputs` are the files below the fixture root the command reads, each run under every file fault; `git` and
-    `gh` say it runs that program, so it is run under its faults. `not_run` names each fault of its kinds it is not run
-    under, or `<fault> <input>` for one input alone, with the reason. A driver `from_checkout` runs the entry point's
-    copy in the fixture's checkout, for a command that reads the repository it lies in; `outputs` are the files and
-    folders it would write, beside the home and the work folder, which a refused run leaves as it found them. `inputs`
-    and `outputs` are formatted as the arguments are.
+    run; `inputs` are the files below the fixture root the command reads, each run under every file fault; `changes`
+    are the files it deletes, renames, or rewrites in place, in the order it changes them, each but the first run under
+    every change fault, and watched with the rest; `git` and `gh` say it runs that program, so it is run under its
+    faults. `not_run` names each fault of its kinds it is not run under, or `<fault> <input>` for one input or changed
+    file alone, with the reason. A driver `from_checkout` runs the entry point's copy in the fixture's checkout, for a
+    command that reads the repository it lies in; `outputs` are the files and folders it would write, beside the home
+    and the work folder, which a refused run leaves as it found them. `inputs`, `changes`, and `outputs` are formatted
+    as the arguments are.
     """
 
     entry: str
@@ -147,6 +163,14 @@ class Driver:
     # elsewhere, since the writer's write would follow the link and create the file it leads to. Each is formatted as
     # the arguments are.
     handed_to_writer: tuple[str, ...] = ()
+    # The files the command changes, in the order it changes them, each formatted as the arguments are. Each change
+    # fault is placed at each but the first, one at a time, so a command that changes a file before it checks a later
+    # one is caught, whichever later one it is; an unfaulted run must change every one (test_faults_unchangeable.py).
+    changes: tuple[str, ...] = ()
+    # Each change fault the command's docstring refuses for the faulted file alone, changing the rest of `changes`,
+    # as a fixer that checks each file it may write does: that file must stay as it was, a refusal line name it, and
+    # no FAILED line show the run stopping part way.
+    refused_alone: tuple[str, ...] = ()
     # Each run whose refusal is a line led by a word its docstring does not name, by its fault, or `<fault> <input>`
     # for one input alone, with the open issue that gives it a FAILED or documented line, as `#<number> <what it
     # lacks>`, in a literal dict that tests/validation/known_failures.py reads from the source to hold the issue
@@ -171,13 +195,22 @@ class Driver:
         return (MISSING in self.not_run or f"{MISSING} {path}" in self.not_run) and path not in self.handed_to_writer
 
     def runs(self) -> list[tuple[str, str | None]]:
-        """Each fault the driver runs, with the input it is placed at, or None for git's and gh's."""
+        """Each fault the driver runs, with the input or the changed file it is placed at, or None for git's and gh's.
+        A change fault already run at a changed file as an input's is run there once."""
         found: list[tuple[str, str | None]] = [
             (fault, path)
             for path in self.inputs
             for fault in FILE_FAULTS
             if fault not in self.not_run and f"{fault} {path}" not in self.not_run
         ]
+        # Each changed file but the first, which a command that checks one file at a time as it goes changes before
+        # it meets the fault at any later one; a command that changes one file is faulted at that one.
+        for place in self.changes[1:] or self.changes:
+            found += [
+                (fault, place)
+                for fault in CHANGE_FAULTS
+                if (fault, place) not in found and fault not in self.not_run and f"{fault} {place}" not in self.not_run
+            ]
         found += [(fault, None) for fault in GIT_FAULTS if self.git and fault not in self.not_run]
         found += [(fault, None) for fault in GH_FAULTS if self.gh and fault not in self.not_run]
         return found

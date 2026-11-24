@@ -112,6 +112,33 @@ def is_read_only(path: Path) -> bool:
     return False
 
 
+def refuse_uncreatable(path: Path) -> None:
+    """Raise when the folder `path` lies in takes no new file, as a replace of `path` would find only when it writes
+    its copy beside it, so a caller that replaces several files asks this of each before it changes the first.
+
+    It creates a file there named as a replace names its copy, `.<name>.<random>.tmp`, so one left behind is known for
+    one, and removes it at once; it makes no folder and writes nothing else. The folder's refusal, or anything but a
+    folder in its place, is raised as the OSError of the creation's kind and errno, naming `path`. A probe file that
+    cannot be removed raises UnfinishedCopyError naming it. Its stated limits: a folder that is not there is not probed,
+    since the replace makes it and a refusal there is the replace's own, and a refusal no probe can foresee, such as one
+    another process makes after it, is still the replace's to raise."""
+    if not is_occupied(path.parent):
+        return
+    try:
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    except OSError as refusal:
+        reason = f"its folder takes no new file, so it cannot be replaced: {refusal.strerror or refusal}"
+        raise type(refusal)(refusal.errno, reason, str(path)) from refusal
+    probe = Path(name)
+    try:
+        os.close(descriptor)
+    finally:
+        try:
+            probe.unlink()
+        except OSError as removal:
+            raise UnfinishedCopyError(target=path, copy=probe, failure=removal, removal=removal) from removal
+
+
 def replace_text(path: Path, content: str, *, mode: int = 0o600) -> None:
     """Replace `path` with `content` encoded as UTF-8, as replace_bytes does. Content that UTF-8 cannot encode raises
     its UnicodeEncodeError before a copy exists, and `path` is untouched."""
