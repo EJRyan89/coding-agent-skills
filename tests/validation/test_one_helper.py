@@ -769,6 +769,20 @@ class StatusTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual([], self.problems({"tools/reader.py": text}))
 
+    def test_a_run_of_strings_given_to_another_call_is_refused_until_its_scope_states_why(self) -> None:
+        # A stated limit: a call that is not git's, given `status` and then a word that starts with `-`, reads as git's.
+        for name, call in {
+            "a default": 'entry.get("status", "-")',
+            "an option": 'parser.add_argument("status", "-s")',
+        }.items():
+            with self.subTest(name):
+                text = f"def f(entry, parser):\n    return {call}\n"
+                problems = self.problems({"tools/reader.py": text})
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("f runs git status itself", problems[0])
+                sanctioned = 'STATUS_READ_ALLOWED = {"f": "not a git call"}\n\n\n' + text
+                self.assertEqual([], self.problems({"tools/reader.py": sanctioned}))
+
     def test_the_subcommand_and_allowance_are_the_ones_the_rule_names(self) -> None:
         # Pinned against independent literals: the helper, the subcommand refused outside it, and the allowance.
         self.assertEqual("skills/ejryan89-skill-core/scripts/git_worktrees.py", STATUS_HELPER)

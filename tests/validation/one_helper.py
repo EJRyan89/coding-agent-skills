@@ -79,10 +79,14 @@ stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A run of strings given one at a time ends at the first argument that is not one, so `git("-C", path, "status")` is
   not read, and a run with no option after `status`, as `git("status")`, is not read, since a word given alone, as
   `entry.get("status")`, is spelled alike.
+- A run of strings given one at a time to a call that is not git's, where `status` is followed by a word that starts
+  with `-`, as `entry.get("status", "-")` or `parser.add_argument("status", "-s")`, is refused all the same, and its
+  scope states why in STATUS_READ_ALLOWED; no repository code writes one.
 - An argument list that names the program first, as `["git", "status"]`, reads `git` as its subcommand; every git call
   goes through GitClient, which names the program itself.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read; no Bash or PowerShell script in the
-  repository runs `git status` without `--no-optional-locks`.
+  repository but the suites runs `git status` without `--no-optional-locks`, and the suites' own, as the update
+  fixture's self-tests of its setup helper, read throwaway repositories.
 """
 
 from __future__ import annotations
