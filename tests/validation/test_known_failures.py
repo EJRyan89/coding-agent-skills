@@ -360,6 +360,10 @@ class PendingShapeTests(KnownFailureFixture):
             "match {}:\n    case PENDING:\n        pass",
             "match []:\n    case [*PENDING]:\n        pass",
             "TABLES = [PENDING for PENDING in ()]",
+            "type PENDING = dict[str, int]",
+            "def read[PENDING]():\n    pass",
+            "class Table[*PENDING]:\n    pass",
+            "type Table[**PENDING] = int",
         )
         for write in writes:
             with self.subTest(write=write):
