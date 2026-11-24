@@ -1248,6 +1248,16 @@ class MarkdownLiteralTests(InsightFixture):
             f"Note {UNTRUSTED}",
         )
         self.assertEqual((0, f"DECIDED {identifier} accepted\n"), (code, out), err)
+        # insights.json keeps the record's text: only the Markdown is literal.
+        stored = next(
+            item
+            for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]
+            if item["id"] == identifier
+        )
+        self.assertEqual(
+            f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
+            stored["recommendation"],
+        )
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         self.assertLiteral(markdown)
         link, mention = "&#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;", "&#64;user"

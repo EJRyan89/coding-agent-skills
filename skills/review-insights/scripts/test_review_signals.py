@@ -534,7 +534,8 @@ class RenderTests(unittest.TestCase):
         # With record text that holds no ASCII punctuation, each line renders byte for byte as before the change, up to
         # its stored differences and reports: the severities, finding references, and labels the report writes itself
         # stay as they are. A flip's difference and a disagreement's report join a path or a reviewer's source with
-        # the report's own text into one stored line, so each is written literal as a whole.
+        # the report's own text into one stored line, so each is written literal as a whole. A flip's differences are
+        # joined with `; `, and a flip with none ends at its verdicts.
         signals: review_signals.Signals = {
             "severity_drift": [
                 {
@@ -555,8 +556,20 @@ class RenderTests(unittest.TestCase):
                     "head_sha": HEAD,
                     "versions": [1, 2],
                     "verdicts": ["APPROVE", "REQUEST_CHANGES"],
-                    "differences": ["Makefile:3 MUST_FIX -> absent owner/repo#7 v1 F001"],
-                }
+                    "differences": [
+                        "Makefile:3 MUST_FIX -> absent owner/repo#7 v1 F001",
+                        "Makefile:9 absent -> SUGGESTION owner/repo#7 v2 F002",
+                    ],
+                },
+                {
+                    "id": "V2",
+                    "repository": "owner/repo",
+                    "pull_number": 8,
+                    "head_sha": HEAD,
+                    "versions": [1, 2],
+                    "verdicts": ["APPROVE", "COMMENT"],
+                    "differences": [],
+                },
             ],
             "reviewer_disagreements": [
                 {
@@ -585,7 +598,9 @@ class RenderTests(unittest.TestCase):
                 "### Verdicts that changed without a code change",
                 "",
                 "- V1 owner/repo#7 at cccccccccccc: v1 APPROVE, v2 REQUEST_CHANGES — "
-                "Makefile&#58;3 MUST&#95;FIX &#45;&gt; absent owner&#47;repo&#35;7 v1 F001",
+                "Makefile&#58;3 MUST&#95;FIX &#45;&gt; absent owner&#47;repo&#35;7 v1 F001; "
+                "Makefile&#58;9 absent &#45;&gt; SUGGESTION owner&#47;repo&#35;7 v2 F002",
+                "- V2 owner/repo#8 at cccccccccccc: v1 APPROVE, v2 COMMENT",
                 "",
                 "### Reviewer disagreement",
                 "",

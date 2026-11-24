@@ -1119,6 +1119,10 @@ class DeployableReportTests(unittest.TestCase):
         )
         self.assertIn(f"\n| first deploy | codex | FAILED | {literal} |\n", text)
 
+    def test_a_result_with_no_detail_has_an_empty_detail_cell(self) -> None:
+        passes = [{"label": "first deploy", "results": [{"runtime": "codex", "status": "PASSED"}]}]
+        self.assertIn("\n| first deploy | codex | PASSED |  |\n", report.render_summary(passes, [], []))
+
     def test_the_summary_is_a_no_op_without_a_summary_file(self) -> None:
         self.results_file.write_text("[]", encoding="utf-8")
         code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")

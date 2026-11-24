@@ -1138,8 +1138,8 @@ class RenderTests(SynthesisFixture):
             ],
             comparison={
                 "persistent": [f"Kept {UNTRUSTED}", "Other"],
-                "new": [f"New {UNTRUSTED}"],
-                "resolved": [f"Gone {UNTRUSTED}"],
+                "new": [f"New {UNTRUSTED}", "Other"],
+                "resolved": [f"Gone {UNTRUSTED}", "Other"],
                 "previous_recommendations": [{"id": "REC-002", "assessment": f"Assessed {UNTRUSTED}"}],
             },
         )
@@ -1164,8 +1164,8 @@ class RenderTests(SynthesisFixture):
             f"\n- Least useful: Least {LITERAL}\n",
             f"\n- False-positive candidates: Candidate {LITERAL}; Second\n",
             f"\n- Persistent: Kept {LITERAL}; Other\n",
-            f"\n- New: New {LITERAL}\n",
-            f"\n- Resolved: Gone {LITERAL}\n",
+            f"\n- New: New {LITERAL}; Other\n",
+            f"\n- Resolved: Gone {LITERAL}; Other\n",
             f"\n- REC-002: Assessed {LITERAL}\n",
         ):
             with self.subTest(expected=expected):
@@ -1174,6 +1174,109 @@ class RenderTests(SynthesisFixture):
 
 class StageTests(unittest.TestCase):
     """The synthesis stage's own choices, without a report around them."""
+
+    def synthesized_report(self) -> dict[str, Any]:
+        """A report with two synthesized recommendations and a recorded synthesis whose lists are empty, or hold two
+        finding references or addressed titles."""
+
+        def synthesized(identifier: str, title: str) -> dict[str, Any]:
+            return {
+                "kind": "synthesized",
+                "id": identifier,
+                "title": title,
+                "priority": "high",
+                "type": "strengthen-rule",
+                "target": {"repository": "owner/repo", "path": GUIDE},
+                "decision": "deferred",
+                "linked_flags": [],
+                "change": "Change",
+                "rationale": "Why",
+                "evidence": [],
+            }
+
+        return {
+            "recommendations": [synthesized("REC-001", "First"), synthesized("REC-002", "Second")],
+            "synthesis": {
+                "status": "complete",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+                "previous_report": "insights-december.json",
+                "themes": [{"theme": "Time handling", "count": 2, "areas": [], "examples": ["owner/repo#7 v1 F001"]}],
+                "mistakes": [],
+                "persistent_patterns": [
+                    {
+                        "pattern": "Left",
+                        "count": 2,
+                        "likely_reason": "Reason",
+                        "examples": ["owner/repo#7 v1 F001", "owner/repo#8 v1 F002"],
+                    }
+                ],
+                "reviewer_effectiveness": {"most_useful": "a", "least_useful": "b", "false_positive_candidates": []},
+                "comparison": {"persistent": [], "new": [], "resolved": [], "previous_recommendations": []},
+                "custom_rule_patterns": [
+                    {
+                        "pattern": "Retry loops",
+                        "rules": ["Roslyn retry"],
+                        "assessment": "Worth a rule",
+                        "addressed_by": ["First", "Second"],
+                    }
+                ],
+            },
+        }
+
+    def test_the_analysis_joins_references_with_a_comma_and_writes_its_own_word_for_an_empty_list(self) -> None:
+        # Finding references and the recommendations a pattern is addressed by are the report's own, joined with `, `;
+        # an empty list of areas, candidates, or compared texts is written as the report's word for none.
+        lines = rs.render(self.synthesized_report(), lambda item: [])
+        self.assertEqual(
+            [
+                "### Themes",
+                "",
+                "- **Time handling** (2) — no area; e.g. owner/repo#7 v1 F001",
+                "",
+                "### Findings left in place",
+                "",
+                "- **Left** (2) — Reason; e.g. owner/repo#7 v1 F001, owner/repo#8 v1 F002",
+                "",
+                "### Reviewer effectiveness",
+                "",
+                "- Most useful: a",
+                "- Least useful: b",
+                "- False-positive candidates: none",
+                "",
+                "### Compared with insights-december.json",
+                "",
+                "- Persistent: none",
+                "- New: none",
+                "- Resolved: none",
+                "",
+                "### Custom-rule patterns",
+                "",
+                "- **Retry loops** (1 rules: Roslyn retry) — Worth a rule Addressed by: REC-001, REC-002",
+                "",
+            ],
+            lines[lines.index("### Themes") :],
+        )
+
+    def test_a_categorys_topic_joins_its_examples_and_the_recommendations_addressing_it_with_a_comma(self) -> None:
+        entry = {
+            "topics": [{"topic": "Topic", "count": 2, "examples": ["owner/repo#7 v1 F001", "owner/repo#8 v1 F002"]}],
+            "assessment": "Assessed",
+            "addressed_by": ["First", "Second"],
+            "findings": [],
+        }
+        self.assertEqual(
+            [
+                "Topics:",
+                "",
+                "- Topic (2) — e.g. owner/repo#7 v1 F001, owner/repo#8 v1 F002",
+                "",
+                "Assessed",
+                "",
+                "Addressed by: REC-001, REC-002",
+                "",
+            ],
+            rs.category_markdown(self.synthesized_report(), entry),
+        )
 
     def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> rs.Pair:
         """The parts of a record and a finding that grouping reads, typed as the validated ones it takes."""
