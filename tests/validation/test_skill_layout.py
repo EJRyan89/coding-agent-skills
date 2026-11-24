@@ -1990,3 +1990,8 @@ def test_the_runtime_statement_policy_reports_an_unreadable_record_and_pages_wit
         "could not measure: no sentence of docs/codex-support.md, docs/copilot-support.md states how a runtime "
         "behaves, so none was held to its source"
     ]
+
+
+def test_the_runtime_programs_a_code_span_may_start_are_each_runtimes_command() -> None:
+    # Derived from the deployer's tool catalogue by leaving Git out, so pinned against each runtime's own command.
+    assert {"claude", "codex", "copilot"} == skill_layout.RUNTIME_PROGRAMS
