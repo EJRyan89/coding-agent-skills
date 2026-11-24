@@ -36,6 +36,7 @@ import review_synthesis
 import skill_roots
 import whole_number
 from git_client import GitClient
+from markdown_literal import markdown_line
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import FlagError, add_flag, load_store, resolve_flag
@@ -49,6 +50,16 @@ DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
 # Each character Python's str.splitlines breaks a line at that record text, a path a pull request named, or an older
 # flag's finding ID may hold.
 LINE_BREAKS = ("\u2028", "\u2029", "\x85", "\r", "\n")
+# Text a reviewer, a person, or the model wrote that Markdown would read as markup: an HTML comment that hides the rest
+# of the report, a link, a mention, a table cell's border, and a backslash, which escapes what follows it.
+UNTRUSTED = "<!-- hidden [x](https://example.com) @user | \\ end"
+# The same text as insights.md must hold it, each ASCII punctuation character a character entity, so it renders as
+# the text it is and nothing else.
+LITERAL = (
+    "&lt;&#33;&#45;&#45; hidden &#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41; &#64;user &#124; &#92; end"
+)
+# Markup any of these would open, none of which a report the script writes holds.
+MARKUP = ("<!--", "](", "@user", "\\|", "| \\")
 
 
 def reviewer(identifier: str, model: str | None = None) -> dict[str, Any]:
@@ -375,10 +386,10 @@ class ReportTests(InsightFixture):
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         self.assertIn(
             "| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
-            "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 1 | 0 | 0 |\n",
+            "| --- | --- | --- | --- | --- | --- |\n| security | claude&#45;opus&#45;5&#45;5 | 2 | 1 | 0 | 0 |\n",
             markdown,
         )
-        self.assertIn("| legacy\\|b | unknown | 1 | 0 | 0 | 0 |\n", markdown)
+        self.assertIn("| legacy&#124;b | unknown | 1 | 0 | 0 | 0 |\n", markdown)
 
     def test_later_dispositions_count_findings_addressed_and_still_present_by_reviewer_and_category(self) -> None:
         policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
@@ -474,7 +485,7 @@ class ReportTests(InsightFixture):
         )
         self.assertIn(
             "| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
-            "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 0 | 1 | 1 |\n",
+            "| --- | --- | --- | --- | --- | --- |\n| security | claude&#45;opus&#45;5&#45;5 | 2 | 0 | 1 | 1 |\n",
             json_path.with_suffix(".md").read_text(encoding="utf-8"),
         )
 
@@ -914,7 +925,7 @@ class DecideTests(InsightFixture):
             item["decision_history"],
         )
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
-        self.assertIn(f"accepted — Add a null-check rule (resolved {correctness})", markdown)
+        self.assertIn(f"accepted — Add a null&#45;check rule (resolved {correctness})", markdown)
         code, out, _ = self.decide(json_path, "REC-001", "Correctness", correctness, "accepted")
         self.assertEqual([f"FLAG_ALREADY_RESOLVED {correctness}", "DECIDED REC-001 accepted"], out.splitlines())
 
@@ -1202,6 +1213,67 @@ class DecideTests(InsightFixture):
             )
 
 
+class MarkdownLiteralTests(InsightFixture):
+    def assertLiteral(self, markdown: str) -> None:
+        """No text a record or a person wrote opens markup in the report."""
+        for markup in MARKUP:
+            with self.subTest(markup=markup):
+                self.assertNotIn(markup, markdown)
+
+    def test_record_text_and_a_decision_note_reach_the_markdown_as_literal_text(self) -> None:
+        # A reviewer's finding headline, category, analyzer tool and rule, reviewer ID, and model, and the note a person
+        # decides with, are each text the script did not write.
+        tool, rule, category = "[x](https://example.com)", "@user", f"Cat {UNTRUSTED}"
+        shared = record(
+            "owner/repo",
+            7,
+            [covered("available", tool, rule), category],
+            reviewers=[reviewer(f"rev {UNTRUSTED}", f"model {UNTRUSTED}")],
+        )
+        shared["findings"][0]["title"] = f"Title {UNTRUSTED}"
+        commit_record(self.archive, "owner/repo", 7, shared, expected_latest_version=None)
+        json_path, lines = self.report()
+        identifier = next(line.split(" ")[1] for line in lines if line.startswith("RECOMMENDATION "))
+        code, out, err = self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            identifier,
+            "--category",
+            category,
+            "--flags",
+            "none",
+            "accepted",
+            "--note",
+            f"Note {UNTRUSTED}",
+        )
+        self.assertEqual((0, f"DECIDED {identifier} accepted\n"), (code, out), err)
+        # insights.json keeps the record's text: only the Markdown is literal.
+        stored = next(
+            item
+            for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]
+            if item["id"] == identifier
+        )
+        self.assertEqual(
+            f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
+            stored["recommendation"],
+        )
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        self.assertLiteral(markdown)
+        link, mention = "&#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;", "&#64;user"
+        for expected in (
+            f"### {identifier} — Cat {LITERAL}\n",
+            f"Review recurring Cat {LITERAL} findings and decide whether guidance or reviewer rules should change.\n",
+            f"| rev {LITERAL} | model {LITERAL} | 1 | 0 | 0 | 0 |\n",
+            f": accepted — Note {LITERAL}\n",
+            f"— available: {mention} ({link})\n",
+            f"{link}, which owner/repo already has, provides {mention}, but the rule is not enforced.",
+            f"- owner/repo#7 v1 F001 Title {LITERAL}\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, markdown)
+
+
 class AnalyzerTests(InsightFixture):
     def commit_covered(self) -> None:
         stylecop = {"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515"}
@@ -1327,14 +1399,15 @@ class AnalyzerTests(InsightFixture):
         unnumbered = [re.sub(r" REC-\d{3}( —)?", "", line, count=1) for line in [*lines, *markdown]]
         for index, character in enumerate(LINE_BREAKS, start=1):
             with self.subTest(character=repr(character)):
-                example = f"owner/repo#{index} v1 F001 src/a{index} FORGED b.cs:3"
+                location = f"owner/repo#{index} v1 F001"
+                path = f"src/a{index} FORGED b.cs:3"
                 for start in (
                     f"REVIEWER rev{index} FORGED a model=model-b ",
                     f"REVIEWER old{index} FORGED c model=unknown ",
-                    f"EXAMPLE {example}",
-                    f"| rev{index} FORGED a | model-b |",
+                    f"EXAMPLE {location} {path}",
+                    f"| rev{index} FORGED a | {markdown_line('model-b')} |",
                     f"### Cat{index} FORGED",
-                    f"- {example}",
+                    f"- {location} {markdown_line(path)}",
                 ):
                     self.assertTrue(any(line.startswith(start) for line in unnumbered), (start, unnumbered))
 
@@ -1397,7 +1470,7 @@ class AnalyzerTests(InsightFixture):
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         self.assertLess(markdown.index("### REC-002 — Style"), markdown.index("## Analyzer opportunities"))
         self.assertIn(
-            "### REC-003 — available: SA1515 (StyleCop.Analyzers)\n\nFinding count: 2\nRepositories: owner/repo\n",
+            "### REC-003 — available: SA1515 (StyleCop&#46;Analyzers)\n\nFinding count: 2\nRepositories: owner/repo\n",
             markdown,
         )
         self.assertIn("Findings:\n\n- owner/repo#7 v1 F002 Headline 1\n- owner/repo#7 v1 F003 Headline 2\n", markdown)

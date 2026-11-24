@@ -25,6 +25,7 @@ from itertools import pairwise
 from typing import TypedDict, cast
 
 from flat_text import flat_text
+from markdown_literal import markdown_line
 from review_guidance import GuidanceOverlap, UnsuppliedReference
 from review_records import Finding, FindingReference, LedgerKey, ReviewRecord, finding_reference, source_parts
 from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline, review_key
@@ -592,12 +593,17 @@ def facts(signals: Signals) -> list[str]:
 
 
 def render(signals: Signals) -> list[str]:
-    """The report's Markdown section of signals, or nothing when there are none."""
+    """The report's Markdown section of signals, or nothing when there are none. A record's category, headline, path,
+    and reviewer ID, and a guidance file's path, text, and reference, are literal, through `markdown_line`; the
+    report's own text and finding references are written as they are. A flip's difference and a disagreement's report
+    each join a path or a reviewer's source with the report's own severities and references into one stored line,
+    which is literal as a whole, since its parts are not stored apart."""
     sections = [
         (
             "Severity drift",
             [
-                f"{item['id']} ({item['basis']}) {item['repository']} {item['category']}: {item['headline']} — "
+                f"{item['id']} ({item['basis']}) {item['repository']} {markdown_line(item['category'])}: "
+                f"{markdown_line(item['headline'])} — "
                 f"{_severities(item['severity'])}; e.g. {'; '.join(item['examples'])}"
                 for item in signals["severity_drift"]
             ],
@@ -609,15 +615,15 @@ def render(signals: Signals) -> list[str]:
                 + ", ".join(
                     f"v{version} {verdict}" for version, verdict in zip(item["versions"], item["verdicts"], strict=True)
                 )
-                + (f" — {'; '.join(item['differences'])}" if item["differences"] else "")
+                + (f" — {'; '.join(map(markdown_line, item['differences']))}" if item["differences"] else "")
                 for item in signals["verdict_flips"]
             ],
         ),
         (
             "Reviewer disagreement",
             [
-                f"{item['id']} {item['repository']}#{item['pull_number']} {item['path']}:{item['line']} — "
-                f"{'; '.join(item['reports'])}"
+                f"{item['id']} {item['repository']}#{item['pull_number']} {markdown_line(item['path'])}:{item['line']} "
+                f"— {'; '.join(map(markdown_line, item['reports']))}"
                 for item in signals["reviewer_disagreements"]
             ],
         ),
@@ -626,7 +632,7 @@ def render(signals: Signals) -> list[str]:
             [
                 f"{item['id']} {item['relation']} ({item['similarity']}) {item['repository']}: "
                 + " / ".join(
-                    f"{path}:{line} “{text}”"
+                    f"{markdown_line(path)}:{line} “{markdown_line(text)}”"
                     for path, line, text in zip(item["paths"], item["lines"], item["texts"], strict=True)
                 )
                 for item in signals["guidance_overlaps"]
@@ -635,8 +641,8 @@ def render(signals: Signals) -> list[str]:
         (
             "Guidance references not given to the reviewer",
             [
-                f"{item['id']} {item['repository']} {item['reviewer']}: {item['path']}:{item['line']} names "
-                f"{item['reference']}"
+                f"{item['id']} {item['repository']} {markdown_line(item['reviewer'])}: {markdown_line(item['path'])}:"
+                f"{item['line']} names {markdown_line(item['reference'])}"
                 for item in signals["unsupplied_references"]
             ],
         ),
