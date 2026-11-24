@@ -957,6 +957,7 @@ removed fails validation until its pattern follows it.
   `git_client:output_line`, which takes off only the newline ending a one-line answer, where strip() also drops
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
+  `tools.plugin_canary:Judged`, which carries whether each line the plugin canary prints fails the run beside it;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
   `text_lines:program_lines`, built on output_lines, which splits a program's output, a runtime's skill catalog and
   the canary's records among it, on a newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
@@ -1016,7 +1017,8 @@ removed fails validation until its pattern follows it.
   `startswith` test guards, such as one that reads the fact's word from its own first field, a split of an attribute
   such as `self.line`, a line built from its word without the space, as `" ".join(("<FACT>", value))`, a test
   through a `match` statement or a `while` loop, a split by `re.split()` or another function given the line, and a
-  regex read of the module's own fact line, as `re.match(r"^<FACT> (\S+)", line)`;
+  regex read of the module's own fact line, as `re.match(r"^<FACT> (\S+)", line)`, and a substring read of it, as
+  `" <WORD> " in line`, which finds the word inside a quoted value the line holds too;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one passed on
   as a value it does not follow, returned by a function, held in a container, bound by `functools.partial` or bound
@@ -1026,7 +1028,7 @@ removed fails validation until its pattern follows it.
   `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2242, #2248, #2564
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2242, #2248, #2564, #3160
 
 ### A folder that holds items by their own names keeps its own files under names no item can take
 
