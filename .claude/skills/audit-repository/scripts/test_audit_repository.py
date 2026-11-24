@@ -2732,6 +2732,36 @@ def test_a_tag_or_search_git_cannot_read_is_labelled_with_its_git_command() -> N
         audit.search_construct(GitClient(run, input_runner=given), Path("r"), "HEAD", ["a line"])
 
 
+@pytest.mark.parametrize(
+    ("command", "call"),
+    [
+        pytest.param("git rev-parse", lambda git: audit.commit_of(git, Path("r"), "v" * 4000), id="commit_of"),
+        pytest.param("git for-each-ref", lambda git: audit.released_tag(git, Path("r"), "HEAD"), id="released_tag"),
+        pytest.param("git log", lambda git: audit.git_output(git, Path("r"), ["log"]), id="git_output"),
+    ],
+)
+def test_every_git_call_s_failure_keeps_git_s_reason_on_a_bounded_line(
+    command: str, call: Callable[[GitClient], object]
+) -> None:
+    # git quotes what it was given, here a 4,000-character ref, in the message it fails with.
+    def run(arguments: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: ambiguous argument '" + "v" * 4000 + "': unknown revision\n")
+
+    with pytest.raises(audit.AuditError) as raised:
+        call(GitClient(run))
+    reason = str(raised.value)
+    assert reason.startswith(f"{command}: fatal: ambiguous argument 'vvv")
+    assert len(reason) == len(f"{command}: ") + 500 + len("...")
+
+
+def test_a_ref_in_a_folder_git_finds_no_repository_in_is_named_by_the_folder() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: not a git repository (or any of the parent directories): .git\n")
+
+    with pytest.raises(audit.AuditError, match=r"^some folder/r is not a Git repository$"):
+        audit.commit_of(GitClient(run), Path("some folder", "r"), "HEAD")
+
+
 class FixtureTemplateTests(AuditTestCase):
     def test_each_copied_fixture_matches_a_freshly_built_one(self) -> None:
         for template, build in (

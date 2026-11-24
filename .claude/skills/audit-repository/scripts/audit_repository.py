@@ -487,9 +487,7 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
     try:
         commit = git.commit_of(ref, directory=repository)
     except GitError as exc:
-        if exc.kind == "not_repository":
-            raise AuditError(f"{repository.as_posix()} is not a Git repository") from exc
-        raise AuditError(f"git rev-parse: {exc}") from exc
+        raise git_failure(repository, "git rev-parse", exc) from exc
     if commit is None:
         raise AuditError(f"{ref} names no commit in {repository.as_posix()}")
     return commit
