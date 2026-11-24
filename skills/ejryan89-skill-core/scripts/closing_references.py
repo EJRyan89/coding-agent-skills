@@ -47,13 +47,14 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 import whole_number
+from github_remote import OWNER_AND_NAME
 from hidden_comments import Reading, hidden_spans, read_comments
 from text_lines import text_lines
 
 # GitHub's closing keywords, as a pattern a caller may build on.
 CLOSING_KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
-# A repository as GitHub names one in a reference: an owner and a name of letters, digits, `_`, `.`, and `-`.
-REPOSITORY = r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+# A repository as GitHub names one in a reference: an owner and a name of github_remote's repository characters.
+REPOSITORY = OWNER_AND_NAME
 # What may come between a keyword and its reference: Markdown's `*` emphasis, spaces or tabs, one optional colon, and
 # a URL's opening angle bracket. The colon splits the run into two classes that cannot both take one character, so a
 # long run after a keyword is read once, never backtracked through.
