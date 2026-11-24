@@ -698,6 +698,49 @@ class LessonsLedgerPolicy(unittest.TestCase):
             problems,
         )
 
+    PROMPTED = (
+        "# Lessons\n\n## Patterns\n\n### Coded\n\n- **Rule:** One sentence.\n- **Why:** A line.\n"
+        "- **Search for:** `int(`\n- **No guard:** A reader cannot tell.\n\n## Prompt patterns\n\n### Asked\n\n"
+        "- **Rule:** One sentence.\n- **Why:** A line.\n- **Search for:** `int(`\n"
+        "- **Prompt:** `docs/guide.md#a`\n- **No guard:** A reader cannot tell.\n"
+    )
+
+    def test_a_prompt_that_is_not_utf8_is_named_with_the_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"docs/lessons.md": self.PROMPTED})
+            (root / "docs" / "guide.md").write_bytes(b"# A\n\xff\n")
+            problems = lessons_ledger_problems(root)
+        self.assertEqual(
+            [
+                "docs/lessons.md:19 the pattern 'Asked' names the prompt docs/guide.md#a, but docs/guide.md cannot be "
+                "read: 'utf-8' codec can't decode byte 0xff in position 4: invalid start byte"
+            ],
+            problems,
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows reads a file whatever its POSIX mode bits say")
+    def test_a_prompt_that_cannot_be_read_is_named_with_the_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"docs/lessons.md": self.PROMPTED, "docs/guide.md": "# A\n"})
+            guide = root / "docs" / "guide.md"
+            guide.chmod(0)
+            try:
+                problems = lessons_ledger_problems(root)
+            finally:
+                guide.chmod(0o644)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(
+            problems[0].startswith(
+                "docs/lessons.md:19 the pattern 'Asked' names the prompt docs/guide.md#a, but docs/guide.md cannot be "
+                "read: [Errno 13]"
+            ),
+            problems,
+        )
+
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
         self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
         # A folder in the catalogue's place is named so, never as a catalogue that does not exist.

@@ -368,7 +368,11 @@ def _prompt_problem(root: Path, span: str) -> str | None:
         return None
     if not name.endswith(".md"):
         return f"names the prompt {span}, but {name} is not Markdown, whose headings a fragment names"
-    if fragment not in heading_slugs((root / name).read_text(encoding="utf-8")):
+    try:
+        text = (root / name).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return f"names the prompt {span}, but {name} cannot be read: {error}"
+    if fragment not in heading_slugs(text):
         return f"names the prompt {span}, which names no heading of {name}"
     return None
 
