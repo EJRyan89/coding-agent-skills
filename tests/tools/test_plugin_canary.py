@@ -132,8 +132,8 @@ def test_a_main_session_the_guard_denied_or_that_never_read_fails() -> None:
     assert unread.fails
 
 
-# #3160: a line's reason is text the canary does not write, a tool result's or a stream error's, so it may hold the word
-# a passing line prints; the old judgment found that word anywhere in the line and read these failing lines as passes.
+# A line's reason is text the canary does not write, a tool result's or a stream error's, so it may hold the word
+# a passing line prints; a judgment that found that word anywhere in the line read these failing lines as passes.
 
 
 def test_a_main_session_denial_whose_reason_names_passed_fails() -> None:
@@ -509,7 +509,7 @@ def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None
 
 
 def test_a_probe_that_never_ran_fails_though_the_models_last_line_says_it_ran(tmp_path: Path) -> None:
-    # #3160: the reason ends with the model's last line, which may name the word a passing line prints.
+    # The reason ends with the model's last line, which may name the word a passing line prints.
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
     installed.mkdir(parents=True)
     (tmp_path / STATE).mkdir()
@@ -622,7 +622,7 @@ def test_a_result_the_guard_claimed_or_no_result_fails_the_check(tmp_path: Path)
 
 
 def test_a_reviewer_that_wrote_no_result_fails_though_the_models_last_line_says_refused(tmp_path: Path) -> None:
-    # #3160: the reason ends with the model's last line, which may name the word a passing line prints.
+    # The reason ends with the model's last line, which may name the word a passing line prints.
     session = unguarded_session(tmp_path, False, False, [], says="Write was REFUSED by the hook")
     lines = canary.unguarded(session, "claude", {}, "p")
     assert lines[0] == canary.Judged(
@@ -780,7 +780,7 @@ def test_nothing_checked_when_claude_is_not_installed_fails_the_run(
         ([canary.Judged('BUILT a "x"'), canary.Judged("VALIDATED claude a")], 0),
         ([canary.Judged("VALIDATED claude a"), canary.Judged("UNDISCOVERED claude a:b skill", fails=True)], 1),
         ([canary.Judged('RUNTIME claude a:b RAN "s" "c"'), canary.Judged("GUARD claude main-session PASSED")], 0),
-        # #3160: the run is judged from what each line carries, never from its text, which may read as a pass.
+        # The run is judged from what each line carries, never from its text, which may read as a pass.
         ([canary.Judged('UNGUARDED claude a:b FAILED "Write was REFUSED by the hook"', fails=True)], 1),
         ([canary.Judged('RUNTIME claude a:b FAILED "the model said it RAN the script"', fails=True)], 1),
     ],
