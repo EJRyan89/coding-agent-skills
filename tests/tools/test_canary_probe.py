@@ -70,7 +70,7 @@ def test_in_the_plugin_canarys_installed_copy_it_records_beside_the_copy(tmp_pat
 
     session = plugin_canary.Session(tmp_path, shell, {}, 30)
     lines = plugin_canary.probe(session, "claude", {plugin.name: str(installed)}, plugin.name)
-    assert lines[0] == (
+    assert lines[0] == plugin_canary.Judged(
         f'RUNTIME claude {plugin.name}:{FIXTURE_SKILL} RAN "{script.resolve().as_posix()}" "{tmp_path.as_posix()}"'
     )
 
