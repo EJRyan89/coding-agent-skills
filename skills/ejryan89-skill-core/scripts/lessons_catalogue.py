@@ -52,6 +52,20 @@ class Pattern:
             (number, [span.text.strip() for span in code_spans(text)]) for number, text in self.fields.get(field, [])
         ]
 
+    def clauses(self, field: str) -> list[list[tuple[int, str]]]:
+        """The `;`-separated clauses of `field`, each the code spans it holds with the line each stands on, each
+        stripped. A `;` inside a code span, such as `{ ...; }`, separates nothing, and a clause runs on across the
+        field's continuation lines."""
+        clauses: list[list[tuple[int, str]]] = [[]]
+        for number, text in self.fields.get(field, []):
+            column = 0
+            for span in code_spans(text):
+                clauses += [[] for _ in range(text.count(";", column, span.start))]
+                clauses[-1].append((number, span.text.strip()))
+                column = span.end
+            clauses += [[] for _ in range(text.count(";", column))]
+        return [clause for clause in clauses if clause]
+
 
 def _fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[int, str]]], list[tuple[int, str]]]:
     """A pattern's fields, each the lines of its list item, and the problems, by line, of a field the catalogue does

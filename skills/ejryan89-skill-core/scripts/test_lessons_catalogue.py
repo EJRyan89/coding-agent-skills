@@ -79,6 +79,12 @@ def test_a_field_ends_at_a_line_it_does_not_indent_and_a_heading_keeps_its_first
     ]
 
 
+def test_a_fields_clauses_split_at_each_semicolon_outside_a_code_span() -> None:
+    (pattern,) = patterns("## Patterns\n\n### P\n\n- **Search for:** `a` and `b`; `c { x; }` then\n  `d`; `e`.\n")
+    assert pattern.clauses("Search for") == [[(5, "a"), (5, "b")], [(5, "c { x; }"), (6, "d")], [(6, "e")]]
+    assert pattern.clauses("Guard") == []
+
+
 def test_a_fields_spans_are_its_code_spans_by_line() -> None:
     first = patterns(CATALOGUE)[0]
     assert first.spans("Use") == [(13, ["json_reader:read_json", "deployer.config:Config.load"])]

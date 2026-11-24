@@ -21,18 +21,20 @@ three ways:
   matches a file's name, one with a `/` its path, a leading `**/` any folder, and one negated with `!` leaves files
   out. Any other form is searched as its text, each `<placeholder>` and `...` in it standing for any text on the same
   line. A span that names a place in the repository, a tracked file by its path or its name or a folder holding tracked
-  files, such as `deployer/` or `update.sh`, is no form: it says where the pattern's forms matter.
+  files, such as `deployer/` or `update.sh`, is no form: it says where the forms of its own `;`-separated clause of
+  the Search for matter, read through lessons_catalogue's `Pattern.clauses`.
 
 A use or a form is common, and too common to tell the change anything, when more than ten of the repository's other
-tracked files hold it and more than four in a hundred of them do: among the files of the target's kind, by its
-extension, for a use or a form, or among the files of every kind, for a form, so a word is common in a kind with too
-few files to say, such as the shell scripts. The files the change touches never count toward their own. A common use
-or form meets no pattern, except a form in a file inside a place its pattern's Search for names; a file that is the
-module itself always meets it. The tracked files are git's `ls-files`, run through ejryan89-skill-core's git_client
-when a file meets a pattern by a use or a form, or a pattern's Search for may name a place; one that is not there,
-not UTF-8, or Python that does not parse holds nothing. A file not there yet is met through its own module alone. The
-lister writes nothing, and reads the catalogue, the tracked files, and the paths given, each judged inside the
-repository by path_containment's `refusal` before it is opened.
+tracked files hold it and more than four in a hundred of them do, among the files of the target's kind, by its
+extension, or, for a form only, among the files of every kind, so a word is common in a kind with too few files to say,
+such as the shell scripts. The files the change touches never count toward their own. A common use meets no pattern;
+a common form meets one only in a file inside a place its own clause names. A file that is the module itself always
+meets its pattern. The tracked files are git's `ls-files`, run through ejryan89-skill-core's git_client when a file
+meets a pattern by a use or a form, or a pattern's Search for may name a place; one whose name path_containment's
+`refusal` refuses, such as a tracked link that leads out of the repository, one that is not there, one that is not
+UTF-8, and Python that does not parse hold nothing. A file not there yet is met through its own module alone. The
+lister writes nothing, and reads the catalogue, the tracked files, and the paths given, each tracked file and given
+path judged inside the repository by `refusal` before it is opened.
 
 The limits, each a form the session reads itself, which its pattern's prose places:
 - a form that is nothing but placeholders is not searched;
@@ -40,7 +42,10 @@ The limits, each a form the session reads itself, which its pattern's prose plac
   expressions do; one it cannot compile, an rg option the lister does not read, and a command after a `|` that is not
   `rg` are each listed as UNSEARCHED, once for the pattern;
 - a relative import that climbs above the top of its file's package names no module, as Python refuses it, and is not
-  matched.
+  matched;
+- a `<module>:<class>.<member>` mechanism is used by a read of the attribute `member` on any object once the module is
+  imported, since which class an object is takes running the code to know: an ast walker that imports `git_client`
+  and reads `node.names` counts as using `git_client:GitClient.names`.
 
 `listing` returns each line's fields, never a printed line, for a later fix brief (EJRyan89/coding-agent-skills#2177)
 to call for the lessons patterns of the files an issue names.
@@ -424,10 +429,15 @@ class Corpus:
         return span.rstrip("/") in self._places
 
     def text(self, name: str) -> str | None:
-        """A tracked file's text; None when it is not there or not UTF-8, which holds nothing; its OSError when it
-        cannot be examined or read."""
+        """A tracked file's text; None when path_containment's `refusal` refuses its name, or it is not there or not
+        UTF-8, which holds nothing; its OSError when it cannot be examined or read."""
         if name not in self._texts:
             path = self.root / name
+            # A name git lists is judged inside the repository before it is opened, so a tracked link that leads out
+            # of it is never read; such a file holds nothing.
+            if refusal(name, self.root) is not None:
+                self._texts[name] = None
+                return None
             try:
                 self._texts[name] = path.read_text(encoding="utf-8") if file_presence.is_present(path) else None
             except (UnicodeDecodeError, file_presence.NotAFile):
@@ -533,23 +543,21 @@ def _use_evidence(pattern: Pattern, targets: list[Target], corpus: Corpus) -> li
 
 def _search_evidence(pattern: Pattern, targets: list[Target], corpus: Corpus, facts: list[Fact]) -> list[str]:
     """What meets a pattern through its Search for: each form a target holds, where the target lies in a place the
-    Search for names or the form is not common among the other tracked files of its kind; a span that names a place
-    is no form. A form the lister cannot search is appended to `facts`, for a pattern any target was read for."""
+    form's own `;`-separated clause names or the form is not common; a span that names a place is no form. A form the
+    lister cannot search is appended to `facts` once, for a pattern any target was read for."""
     evidence: list[str] = []
     readable = [(target, target.text) for target in targets if target.text is not None]
-    spans = [span for _, line_spans in pattern.spans("Search for") for span in line_spans]
-    places = [span.rstrip("/") for span in spans if readable and corpus.is_place(span)]
-    seen = set(places) | {f"{place}/" for place in places}
-    for number, line_spans in pattern.spans("Search for"):
-        for text in line_spans:
-            if text in seen:
+    unsearchable: set[str] = set()
+    for clause in pattern.clauses("Search for") if readable else []:
+        places = [text.rstrip("/") for _, text in clause if corpus.is_place(text)]
+        for number, text in clause:
+            if text.rstrip("/") in places or text in unsearchable:
                 continue
-            seen.add(text)
             try:
                 form = Form.of(text)
             except Unsearchable as error:
-                if readable:
-                    facts.append(("UNSEARCHED", f"{CATALOGUE}:{number}", pattern.name, text, str(error)))
+                unsearchable.add(text)
+                facts.append(("UNSEARCHED", f"{CATALOGUE}:{number}", pattern.name, text, str(error)))
                 continue
             for target, text_read in readable:
                 found = form.first_line(target.name, text_read)

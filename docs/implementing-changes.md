@@ -107,10 +107,12 @@ mechanism it names, and each mechanism or guard that does not resolve.
 Before a change is planned, or implemented when the size gate skips the plan, the `implement-change` repository
 skill's `lessons_patterns.py` lists the catalogue's patterns the files the change will touch meet: each pattern whose
 **Use** names a module a file is or a mechanism it uses, and each whose **Search for** forms occur in a file. A use or
-a form more than ten of the repository's other tracked files hold, and more than four in a hundred of them, is left
-out, unless the file lies in a place the pattern's **Search for** names. The author reads
-those patterns before writing code and names the ones that apply in the plan or the pull request, so a known pattern is
-met while planning rather than in review. `change-skill` runs the same step before it plans a skill.
+a form is left out as common when more than ten of the repository's other tracked files hold it and more than four in a
+hundred of them do, among the files of its kind or, for a form only, among the files of every kind. A common form
+still counts in a file inside a place its own `;`-separated clause of the **Search for** names, and a file that is the
+module always counts. The author reads those patterns before writing code and names the ones that apply in the plan or
+the pull request, so a known pattern is met while planning rather than in review. `change-skill` runs the same step
+before it plans a skill.
 
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy

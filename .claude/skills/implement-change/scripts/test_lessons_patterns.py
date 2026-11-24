@@ -62,7 +62,7 @@ CATALOGUE = """# Lessons
 - **Why:** A second listing drifts.
 - **Use:** `git_client:GitClient.names` and `frontmatter:Frontmatter.user_only`.
 - **No guard:** none yet.
-- **Search for:** `DeployError(` under `deployer/`.
+- **Search for:** `DeployError(` under `deployer/`; `raise` in any module.
 """
 READER = "PATTERN\tdocs/lessons.md:5\tReads through the one reader"
 WALKS = "PATTERN\tdocs/lessons.md:14\tWalks leave out sidecars"
@@ -174,7 +174,7 @@ def test_a_relative_import_is_resolved_against_the_files_own_package(
     )
 
 
-def test_a_mechanism_more_than_three_files_in_a_hundred_use_is_too_common_to_meet_a_pattern(
+def test_a_mechanism_more_than_ten_other_files_use_is_too_common_to_meet_a_pattern(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     users = {f"tools/user{index}.py": "import json_reader\n\njson_reader.read_json(path)\n" for index in range(COMMON)}
@@ -248,16 +248,20 @@ def test_a_class_member_is_matched_on_the_attribute_a_file_reads(
     )
 
 
-def test_a_common_form_still_meets_a_file_in_a_place_its_pattern_names(
+def test_a_common_form_still_meets_a_file_in_a_place_its_own_clause_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # `DeployError(` shares a clause with `deployer/` and keeps its place; `raise`, in the next clause, does not; and a
+    # common use is cut inside the place as anywhere, since a place says where forms matter.
     raisers = {f"tools/raise{index}.py": "raise DeployError(reason)\n" for index in range(COMMON)}
+    listers = {f"tools/lister{index}.py": "import git_client\n\ngit.names([])\n" for index in range(COMMON)}
     # A file that only names the place in its text holds no form: the place says where the forms matter.
     mention = {"tools/mention.py": "PLACE = 'deployer/thing.py'\n"}
-    root = repository(tmp_path, {**raisers, **mention, "deployer/thing.py": "raise DeployError(reason)\n"})
+    thing = "import git_client\n\nraise DeployError(git.names([]))\n"
+    root = repository(tmp_path, {**raisers, **listers, **mention, "deployer/thing.py": thing})
     assert run(root, "deployer/thing.py", "tools/raise0.py", "tools/mention.py", capsys=capsys) == (
         0,
-        [f"{CLIENTS}\tdeployer/thing.py:1 holds DeployError("],
+        [f"{CLIENTS}\tdeployer/thing.py:3 holds DeployError("],
     )
 
 
@@ -544,6 +548,18 @@ def test_the_script_runs_as_a_program_from_any_folder(tmp_path: Path) -> None:
         check=False,
     )
     assert (finished.returncode, finished.stdout, finished.stderr) == (0, "NEW\tno/such/file.txt\n", "")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link needs a privilege Windows grants few accounts")
+def test_a_tracked_link_out_of_the_repository_is_never_read(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Nine other walkers and the catalogue, which names the form, keep it at ten, the floor; the link out of the
+    # repository would make it eleven if it were read.
+    walkers = {f"tools/walk{index}.py": "os.walk(top)\n" for index in range(10)}
+    root = repository(tmp_path, walkers)
+    (tmp_path / "outside.py").write_bytes(b"os.walk(top)\n")
+    (root / "tools" / "link.py").symlink_to(tmp_path / "outside.py")
+    TRACKED[root].append("tools/link.py")
+    assert run(root, "tools/walk0.py", capsys=capsys) == (0, [f"{WALKS}\ttools/walk0.py:1 holds os.walk("])
 
 
 def test_the_repositorys_own_catalogue_and_tracked_files_are_read(capsys: pytest.CaptureFixture[str]) -> None:
