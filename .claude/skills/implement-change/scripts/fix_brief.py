@@ -75,6 +75,7 @@ from console import run_main
 from flat_text import fact_line, flat_text
 from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from implementation_profile import CONTRACT_FILES_HEADING, PROFILE
 from lessons_catalogue import CATALOGUE, CatalogueError
 from markdown_sections import code_block_lines, code_spans, prose_code_spans
 from path_containment import posix_within
@@ -84,9 +85,6 @@ from text_lines import text_lines
 REPOSITORY = Path(__file__).resolve().parents[4]
 # The rules every fix session meets, which the brief carries as written.
 RULES = Path(__file__).resolve().parents[1] / "references" / "brief.md"
-# The implementation profile and its section of the files whose change is a contract change.
-PROFILE = "docs/implementing-changes.md"
-CONTRACT_HEADING = "## Contract files"
 # The reviewer whose catalogue of spellings the author's construct section answers.
 SPELLINGS_REVIEWER = ".claude/skills/review-repository/references/sibling-spellings.md"
 # The bounds of each list the brief holds.
@@ -268,7 +266,7 @@ def contract_entries(root: Path, paths: Sequence[str]) -> list[tuple[int, str, s
         raise BriefError(f"cannot read {PROFILE}: {flat_text(str(error))}") from error
     fenced = code_block_lines(lines)
     prose = [index for index in range(len(lines)) if index not in fenced]
-    start = next((index for index in prose if lines[index].rstrip() == CONTRACT_HEADING), None)
+    start = next((index for index in prose if lines[index].rstrip() == CONTRACT_FILES_HEADING), None)
     if start is None:
         return None
     end = next((index for index in prose if index > start and lines[index].startswith("## ")), len(lines))

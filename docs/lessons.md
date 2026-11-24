@@ -1794,7 +1794,7 @@ brief repeats or stands in for.
 - **Why:** Given "run the title and body checks" or "mypy on the changed files", an agent picks its own command, and
   picks either the full local validation or a cousin of the job continuous integration fails.
 - **Prompt:** `.claude/skills/implement-change/SKILL.md#7-implement`, `docs/implementing-changes.md#validation`,
-  `.claude/skills/change-skill/SKILL.md#5-verify`
+  `.claude/skills/change-skill/SKILL.md#5-verify`, `.claude/skills/implement-change/references/brief.md`
 - **Use:** `pull_request:type_checks`, which prints the type-check jobs a change runs with the runner's command for
   each.
 - **Guard:** `tests/test_run_validation.py::PullRequestOnlySelection::test_a_title_or_a_body_alone_runs_only_the_pull_request_checks_and_says_so`,
@@ -1814,7 +1814,8 @@ brief repeats or stands in for.
   when continuous integration or a reviewer refuses the work, and then again by the next change that follows the same
   prompt.
 - **Prompt:** `.claude/skills/change-skill/SKILL.md#5-verify`,
-  `.claude/skills/implement-change/SKILL.md#4-size-gate-and-lessons`
+  `.claude/skills/implement-change/SKILL.md#4-size-gate-and-lessons`,
+  `.claude/skills/implement-change/references/brief.md`
 - **Use:** `change_skill:owed`, the regenerations and gates a skill change owes, read from its diff;
   `lessons_patterns:listing`, the patterns the files a change will touch meet, listed before it is planned.
 - **Guard:** `.claude/skills/change-skill/scripts/test_change_skill.py::GateTests`,
