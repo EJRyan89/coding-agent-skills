@@ -248,7 +248,7 @@ An absent issue template configuration on `main` leaves blank issues enabled, so
 
 ## Gates the maintainer runs
 
-Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging. `runtime-canary` and `evaluate-skill` refuse, before anything runs, a checkout whose branch follows a remote other than `origin`, since `gh pr checkout` gives another author's pull request from a fork that same upstream; for a branch of your own pushed with `git push -u fork`, run `git branch --unset-upstream` first:
+Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging. `runtime-canary` and `evaluate-skill` refuse, before anything runs, a checkout whose branch follows a remote other than `origin`, since `gh pr checkout` gives another author's pull request from a fork that same upstream; for a branch of your own pushed with `git push -u fork`, run `git branch --unset-upstream` first, since a later push without `-u` leaves the upstream set:
 
 - `runtime-canary`, for a change to skill paths, `allowed-tools`, runtime adapters, or agents. It needs Claude Code, Codex, and Copilot CLI installed and signed in, and each run calls a model.
 - `evaluate-skill`, for a change to a skill's prompt, description, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.

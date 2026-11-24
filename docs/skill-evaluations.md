@@ -51,7 +51,7 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   `origin`'s fetch refspecs write from its branches alone, so a pull request's head mirrored under
   `refs/remotes/origin` is not one. A branch pushed to the author's own fork with `git push -u` is refused too, since
   `gh pr checkout` gives another author's pull request from a fork that same upstream; the refusal names the way out,
-  `git branch --unset-upstream` or a push to the fork without `-u`. A branch with no upstream, or one that follows a
+  `git branch --unset-upstream`, then a push to the fork without `-u` from then on. A branch with no upstream, or one that follows a
   branch of `origin` or a local branch, is the user's own, so an author runs their own branch's scenarios before its
   pull request merges.
 - **A repository reviewer's scenarios**, such as `review-repository`'s, sit under the reviewer's name, and each

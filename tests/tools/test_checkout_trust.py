@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
 from checkout_fixture import (
+    AUTHOR,
     BRANCHES_REFSPEC,
     FOREIGN,
     PULL_REQUESTS_REFSPEC,
@@ -84,13 +85,13 @@ class CheckoutTests(unittest.TestCase):
         cases = {
             "someone": (
                 "its branch main follows someone, a remote other than origin, as gh pr checkout sets for a fork's pull"
-                " request; if the branch is your own, run git branch --unset-upstream, or push it to your fork"
-                " without -u"
+                " request; if the branch is your own, run git branch --unset-upstream, and push it to your fork"
+                " without -u from then on"
             ),
             "https://github.com/someone/fork.git": (
                 "its branch main follows https://github.com/someone/fork.git, a remote other than origin, as gh pr"
                 " checkout sets for a fork's pull request; if the branch is your own, run git branch"
-                " --unset-upstream, or push it to your fork without -u"
+                " --unset-upstream, and push it to your fork without -u from then on"
             ),
         }
         for remote, reason in cases.items():
@@ -101,7 +102,14 @@ class CheckoutTests(unittest.TestCase):
     def test_a_branch_pushed_to_the_user_s_own_fork_with_u_is_refused_until_its_upstream_is_unset(self) -> None:
         push_to_own_fork(self.root, self.git, "-u")
         self.assertEqual(another_remote("main", "fork"), self.foreign())
+        # A later push without -u leaves the upstream -u set, so it is no way out on its own.
+        self.git.output([*AUTHOR, "commit", "-q", "--allow-empty", "-m", "three"], directory=self.root)
+        self.git.output(["push", "-q", "fork", "main"], directory=self.root)
+        self.assertEqual(another_remote("main", "fork"), self.foreign())
         self.git.output(["branch", "--unset-upstream"], directory=self.root)
+        self.assertIsNone(self.foreign())
+        self.git.output([*AUTHOR, "commit", "-q", "--allow-empty", "-m", "four"], directory=self.root)
+        self.git.output(["push", "-q", "fork", "main"], directory=self.root)
         self.assertIsNone(self.foreign())
 
     def test_a_branch_pushed_to_the_user_s_own_fork_without_u_is_accepted(self) -> None:

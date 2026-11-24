@@ -9,7 +9,8 @@ A branch that follows a branch of a remote other than origin is refused even whe
 `gh pr checkout` writes that same upstream for another author's pull request from a fork, tracking the fork's branch
 under its remote's name when the fork is a configured remote and under its URL when maintainers may edit the pull
 request (cli/cli pkg/cmd/pr/checkout/checkout.go, cmdsForExistingRemote and cmdsForMissingRemote), so the upstream
-cannot tell the two apart. A branch with no upstream is the user's own, so the refusal names that way out.
+cannot tell the two apart. A branch with no upstream is the user's own, so the refusal names the way out: unset the
+upstream, which a later push without -u leaves unset, since a push without -u never clears one.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ from git_client import GitClient, GitError, output_line, output_lines
 OWN_REMOTES = frozenset({"", ".", "origin"})
 
 # The way out for a branch of the user's own that follows their fork, after the refusal names why it is refused.
-OWN_FORK_STEP = "if the branch is your own, run git branch --unset-upstream, or push it to your fork without -u"
+OWN_FORK_STEP = (
+    "if the branch is your own, run git branch --unset-upstream, and push it to your fork without -u from then on"
+)
 
 
 # A branch's name on a remote: the source a fetch refspec maps a branch of origin from.

@@ -17,7 +17,8 @@ def another_remote(branch: str, remote: str) -> str:
     """The reason tools/checkout_trust.py gives for the branch `branch` following a branch of `remote`, not origin."""
     return (
         f"its branch {branch} follows {remote}, a remote other than origin, as gh pr checkout sets for a fork's pull"
-        " request; if the branch is your own, run git branch --unset-upstream, or push it to your fork without -u"
+        " request; if the branch is your own, run git branch --unset-upstream, and push it to your fork without -u from"
+        " then on"
     )
 
 
