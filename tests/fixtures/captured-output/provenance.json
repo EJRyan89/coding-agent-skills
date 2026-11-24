@@ -124,6 +124,21 @@
       "versions": {"copilot-cli": "1.0.103"},
       "captured": "2026-10-24",
       "how": "The stdout of `copilot skill list --json` through deployer/discovery.py's converse, signed out, in the home codex/app-server-skills-list.jsonl was captured in, with the throwaway folder written <temp>."
+    },
+    "gh/pr-view.json": {
+      "versions": {"gh": "2.104.0"},
+      "captured": "2026-11-24",
+      "how": "The stdout of `gh pr view 3286 --repo EJRyan89/coding-agent-skills --json` with the fields PULL_FIELDS in .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py names, a merged pull request answered as one item of the shepherd's `gh pr list --json` answer is. Its body is cut to its first two paragraphs, and its autoMergeRequest's enabledBy keeps only its login and is_bot, without its node id and display name; the rest is byte for byte."
+    },
+    "gh/run-view.json": {
+      "versions": {"gh": "2.104.0"},
+      "captured": "2026-11-24",
+      "how": "The stdout of `gh run view 45469148132 --repo EJRyan89/coding-agent-skills --json` with the fields RUN_FIELDS in the shepherd's script names, the failed first Validation run on the head 037e1e05 of merged pull request 3286, byte for byte."
+    },
+    "gh/run-list.json": {
+      "versions": {"gh": "2.104.0"},
+      "captured": "2026-11-24",
+      "how": "The stdout of `gh run list --repo EJRyan89/coding-agent-skills --workflow Validation --commit 037e1e05619f66364418b7e96182a726dced9c45 --event pull_request --json databaseId`, the listing the shepherd's newest_run reads, of the head gh/run-view.json's run ran on, byte for byte."
     }
   }
 }

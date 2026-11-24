@@ -1,5 +1,5 @@
-"""Tests for tools/captured_samples.py: every captured sample has its provenance, holds no machine's paths, and is
-reported once a newer release of its runtime leaves it behind."""
+"""Tests for tools/captured_samples.py: every captured sample has its provenance, holds no machine's paths, token, or
+email address, and is reported once a newer release of its runtime leaves it behind."""
 
 from __future__ import annotations
 
@@ -26,6 +26,13 @@ PROVENANCE = "provenance.json"
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 # A path into a real profile or home, as a capture names it before its folders are written <temp> and <home>.
 MACHINE_PATHS = re.compile(r"[A-Za-z]:[\\/]+(?:Users|Documents and Settings)\b|(?<![\w.<>])/(?:home|Users)/\w")
+# A credential or an address a capture can carry: a GitHub token by its documented prefixes, an Anthropic or OpenAI
+# key, and an email address, as gh's answers name an author's or the one who armed auto-merge.
+SECRETS = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{20,})|[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+)
+# The programs other than the runtimes whose output is captured, each under the folder of its name.
+PROGRAM_FOLDERS = {"gh": "gh"}
 
 
 def recorded() -> dict[str, dict[str, object]]:
@@ -51,6 +58,46 @@ def test_the_record_is_read_whole() -> None:
 def test_no_sample_names_a_machines_profile_or_home(sample: str) -> None:
     text = (CAPTURED / sample).read_text(encoding="utf-8")
     assert MACHINE_PATHS.findall(text) == []
+
+
+@pytest.mark.parametrize("sample", sorted(recorded()))
+def test_no_sample_holds_a_token_or_an_email_address(sample: str) -> None:
+    text = (CAPTURED / sample).read_text(encoding="utf-8")
+    assert SECRETS.findall(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("ghp_" + "a1" * 18, id="classic-token"),
+        pytest.param("gho_" + "B2" * 18, id="oauth-token"),
+        pytest.param("github_pat_" + "c3_" * 10, id="fine-grained-token"),
+        pytest.param("sk-ant-api03-" + "d4" * 10, id="anthropic-key"),
+        pytest.param('"authorEmail":"someone@example.com"', id="email"),
+        pytest.param("12345+someone@users.noreply.github.com", id="noreply-email"),
+    ],
+)
+def test_a_token_or_an_email_address_is_found(text: str) -> None:
+    assert SECRETS.findall(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param('"authorEmail":null', id="null-email"),
+        pytest.param('"login":"someone"', id="login"),
+        pytest.param("ghp_short", id="short-prefix"),
+    ],
+)
+def test_a_null_field_a_login_or_a_short_prefix_is_no_secret(text: str) -> None:
+    assert SECRETS.findall(text) == []
+
+
+@pytest.mark.parametrize(("program", "folder"), sorted(PROGRAM_FOLDERS.items()))
+def test_every_sample_of_a_programs_output_records_that_programs_version_alone(program: str, folder: str) -> None:
+    samples = [sample for sample in captured_samples.read(REPOSITORY, RUNTIMES) if sample.path.startswith(f"{folder}/")]
+    assert samples, f"no sample of {program}'s output is recorded"
+    assert {sample.path: set(sample.versions) for sample in samples} == {sample.path: {program} for sample in samples}
 
 
 @pytest.mark.parametrize(
@@ -89,12 +136,13 @@ GOOD = {"versions": {"codex": "0.163.0"}, "captured": "2026-10-24", "how": "code
         pytest.param([], "names no sample", id="not-an-object"),
         pytest.param({"samples": {}}, "names no sample", id="no-sample"),
         pytest.param({"samples": {"a": {**GOOD, "extra": 1}}}, "exactly versions, captured, and how", id="extra-key"),
-        pytest.param({"samples": {"a": {**GOOD, "versions": {}}}}, "names no runtime", id="no-runtime"),
+        pytest.param({"samples": {"a": {**GOOD, "versions": {}}}}, "names no runtime or program", id="no-runtime"),
         pytest.param(
-            {"samples": {"a": {**GOOD, "versions": {"gh": "2.0.0"}}}},
-            "a: versions maps a runtime of claude-code, codex, copilot-cli to a version, not gh",
-            id="unknown-runtime",
+            {"samples": {"a": {**GOOD, "versions": {"node": "2.0.0"}}}},
+            "a: versions maps one of claude-code, codex, copilot-cli, gh, git to a version, not node",
+            id="unknown-program",
         ),
+        pytest.param({"samples": {"a": {**GOOD, "versions": {"gh": "2.104"}}}}, "not gh", id="short-program-version"),
         pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.163"}}}}, "not codex", id="short-version"),
         pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.1.2.3"}}}}, "not codex", id="long-version"),
         # A digit class matched an Arabic-Indic digit, and a part past the digit limit then read as no version at all.
@@ -117,6 +165,21 @@ def test_a_record_of_another_shape_is_refused(tmp_path: Path, record: object, re
         captured_samples.read(write_record(tmp_path, record), RUNTIMES)
 
 
+@pytest.mark.parametrize(
+    ("versions", "read"),
+    [
+        pytest.param({"gh": "2.104.0"}, {"gh": (2, 104, 0)}, id="gh"),
+        pytest.param({"git": "2.50.1"}, {"git": (2, 50, 1)}, id="git"),
+        pytest.param({"gh": "2.104.0", "codex": "0.163.0"}, {"gh": (2, 104, 0), "codex": (0, 163, 0)}, id="beside"),
+    ],
+)
+def test_a_programs_version_is_read_beside_the_runtimes(
+    tmp_path: Path, versions: dict[str, str], read: dict[str, tuple[int, ...]]
+) -> None:
+    top = write_record(tmp_path, {"samples": {"gh/a.json": {**GOOD, "versions": versions}}})
+    assert captured_samples.read(top, RUNTIMES) == [Sample("gh/a.json", read, "2026-10-24", "codex --version")]
+
+
 def test_a_record_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     top = write_record(tmp_path, {})
     (top / "tests" / "fixtures" / "captured-output" / PROVENANCE).write_bytes(b'{"samples": "\xe9"}')
@@ -135,6 +198,7 @@ SAMPLES = [
     Sample("codex/a.txt", {"codex": (0, 163, 0)}, "2026-10-24", "a"),
     Sample("both.json", {"codex": (0, 160, 0), "copilot-cli": (1, 0, 103)}, "2026-10-24", "b"),
     Sample("copilot/c.txt", {"copilot-cli": (1, 0, 100)}, "2026-10-24", "c"),
+    Sample("gh/d.json", {"gh": (2, 0, 0)}, "2026-10-24", "d"),
 ]
 
 
@@ -152,6 +216,11 @@ def test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not
     ]
     assert captured_samples.behind(SAMPLES, "claude-code", (9, 0, 0)) == []
     assert captured_samples.behind(SAMPLES, "codex", (0, 159, 0)) == []
+    # No watch reads a program's release, but a program's sample is never behind a runtime's.
+    assert captured_samples.behind(SAMPLES, "codex", (9, 0, 0)) == [
+        captured_samples.Behind("codex", "codex/a.txt", "0.163.0", "9.0.0"),
+        captured_samples.Behind("codex", "both.json", "0.160.0", "9.0.0"),
+    ]
 
 
 def string_constants(source: str) -> set[str]:
@@ -172,11 +241,18 @@ def named_samples(samples: list[str], source: str) -> set[str]:
     }
 
 
+def reading_modules() -> list[Path]:
+    """The suites, and the malformed-input corpus's reader tables, whose well-formed documents the corpus suite
+    reads."""
+    tests = REPOSITORY / "tests"
+    return sorted([*tests.rglob("test_*.py"), *(tests / "malformed_input").glob("readers_*.py")])
+
+
 def test_every_sample_is_named_by_a_suite_that_reads_it() -> None:
     # A sample no suite names is real output no reader is held to, as an unread capture of --version was.
     samples = sorted(recorded())
     named: set[str] = set()
-    for suite in sorted(REPOSITORY.joinpath("tests").rglob("test_*.py")):
+    for suite in reading_modules():
         if suite.resolve() != Path(__file__).resolve() and CAPTURED not in suite.resolve().parents:
             named |= named_samples(samples, suite.read_text(encoding="utf-8"))
     assert sorted(set(samples) - named) == []
