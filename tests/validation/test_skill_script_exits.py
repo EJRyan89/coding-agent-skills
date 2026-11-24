@@ -134,6 +134,32 @@ CODES_MODULE = "STALE = 4\nDONE = 0\nMADE = int('4')\n"
             [exits(4)],
             id="a package's constant",
         ),
+        # An import a function binds itself is read through what it names, as at the module's top.
+        pytest.param(
+            {
+                "run.py": "import sys\ndef main():\n    from codes import STALE\n    sys.exit(STALE)\n",
+                "codes.py": CODES_MODULE,
+            },
+            [exits(4)],
+            id="a constant main imports by its name",
+        ),
+        pytest.param(
+            {
+                "run.py": "import sys\ndef main():\n    import codes\n    sys.exit(codes.STALE)\n",
+                "codes.py": CODES_MODULE,
+            },
+            [exits(4)],
+            id="a constant through a module main imports",
+        ),
+        pytest.param(
+            {
+                "run.py": "def main(fresh):\n    from codes import STALE\n    if fresh:\n        STALE = 0\n"
+                "    return STALE\n",
+                "codes.py": CODES_MODULE,
+            },
+            [exits_unread("STALE")],
+            id="a constant main imports and binds again",
+        ),
         pytest.param(
             {
                 "run.py": "import sys\nINTERRUPTED = 130\ndef main():\n    try:\n        pass\n    except:\n"
@@ -189,6 +215,25 @@ CODES_MODULE = "STALE = 4\nDONE = 0\nMADE = int('4')\n"
         ),
         pytest.param(
             {"run.py": "import sys\ndef main():\n    sys.exit('FAILED x')\n    return True\n"}, [], id="a message"
+        ),
+        pytest.param(
+            {"run.py": "def main():\n    from codes import DONE\n    return DONE\n", "codes.py": CODES_MODULE},
+            [],
+            id="an imported 0 main imports",
+        ),
+        # Only a module-level main's own returns are its exit: not a function it defines, nor a method named main.
+        pytest.param(
+            {
+                "run.py": "NAME = 'x'\nSTALE = 4\ndef main():\n    def pick():\n        return NAME\n"
+                "    def late():\n        return STALE\n    return 0\n"
+            },
+            [],
+            id="a return of a function main defines",
+        ),
+        pytest.param(
+            {"run.py": "STALE = 4\nclass Tool:\n    def main(self):\n        return STALE\n"},
+            [],
+            id="a return of a method named main",
         ),
     ],
 )

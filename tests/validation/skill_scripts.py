@@ -2493,29 +2493,37 @@ def _call_breaches(
 class _ExitCodes:
     """The codes one script's exits give, as "Script results" holds them: an int literal, a name of a constant, or one
     an import names, read through ejryan89-skill-core's exit_constants as validation's exit tables and audit-skill's
-    inventory read it, in modules `locate` finds, and either arm of a conditional. A name that starts at one a function,
-    a lambda, a comprehension, or a class body binds itself, a local or a parameter, holds a value the run computes,
-    which the exit tables follow, so it is not read here; a name of the module's or an import's that exit_constants
-    cannot settle is unread, a breach of its own, never a pass. Stated limits, forms no repository code writes: a
-    local that hides a module constant of the same name in a function nested inside the one that binds it is read as
-    the local, and a name that starts at a class's own body is not read."""
+    inventory read it, in modules `locate` finds, and either arm of a conditional. An import a function, a lambda, or a
+    class body binds itself is read through what that import names, as `from codes import STALE` inside `main` is. Any
+    other name that starts at one such a scope or a comprehension binds itself, a local or a parameter, holds a value
+    the run computes, which the exit tables follow, so it is not read here; a name of the module's or an import's that
+    exit_constants cannot settle is unread, a breach of its own, never a pass. Stated limits, forms no repository code
+    writes: a local that hides a module constant of the same name in a function nested inside the one that binds it is
+    read as the local; a name that starts at a class's own body is not read; and an exit given any other expression,
+    such as arithmetic, `and` or `or`, a subscript, or a unary minus, is not read."""
 
     def __init__(self, tree: ast.Module, resolver: CallableResolver, locate: exit_constants.Locate) -> None:
         self.resolver = resolver
         self.constants = exit_constants.read(tree, import_aliases(tree))
         self.locate = locate
 
-    def _of_module(self, node: ast.expr) -> bool:
-        """Whether an expression is a dotted name that starts at a name no function, lambda, comprehension, or class
-        body binds itself: one of the module's, an import's, or none at all."""
+    def _constants_of(self, node: ast.expr) -> exit_constants.ModuleConstants | None:
+        """The constants a dotted name is read against: the module's, for one that starts at a name no function,
+        lambda, comprehension, or class body binds itself; for one that starts at an import such a scope binds, that
+        import alone, through what the scope's names give it, so an import bound again there is unread; and None for
+        any other expression, a local or a parameter among them, which is not read."""
         root = node
         while isinstance(root, ast.Attribute):
             root = root.value
         if not isinstance(root, ast.Name):
-            return False
+            return None
         scope = self.resolver.scopes.get(id(root))
         owner = scope.owner(root.id) if scope is not None else None
-        return owner is None or owner.parent is None
+        if owner is None or owner.parent is None:
+            return self.constants
+        if root.id in owner.imports:
+            return exit_constants.ModuleConstants({}, frozenset(), {root.id: self.resolver.aliases(root)[root.id]})
+        return None
 
     def breaches(self, node: ast.expr, allowed: frozenset[int]) -> list[str]:
         """What an exit given `node` breaks: each code it can give outside `allowed`, or a name it cannot read."""
@@ -2523,8 +2531,8 @@ class _ExitCodes:
             return self.breaches(node.body, allowed) + self.breaches(node.orelse, allowed)
         if isinstance(node, ast.Constant):
             numbers = frozenset({node.value}) if type(node.value) is int else frozenset()
-        elif self._of_module(node):
-            read = exit_constants.resolve(node, self.constants, self.locate)
+        elif (constants := self._constants_of(node)) is not None:
+            read = exit_constants.resolve(node, constants, self.locate)
             if read is None:
                 return [
                     f"exits {ast.unparse(node)}, a code validation cannot read; give 0, 1, or 2 as an int literal or "
@@ -2581,7 +2589,8 @@ class _ConstantsFinder:
 
 
 # The codes a script exits with: the contract's, and run_main's Ctrl+C code, which "Script results" lists beside them,
-# where an except clause that names KeyboardInterrupt gives it.
+# where an except clause that names KeyboardInterrupt gives it. A stated limit, a form no repository code writes: 130 is
+# allowed anywhere lexically inside such a clause, in a function or lambda defined there and called elsewhere too.
 INTERRUPTED_EXIT_CODES = frozenset({*CONTRACT_EXIT_CODES, INTERRUPTED_EXIT})
 
 
@@ -2614,14 +2623,14 @@ def _contract_breaches(tree: ast.Module, locate: exit_constants.Locate) -> list[
     def allowed(node: ast.AST) -> frozenset[int]:
         return INTERRUPTED_EXIT_CODES if id(node) in interrupted else frozenset(CONTRACT_EXIT_CODES)
 
-    entry_points = [
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}
-    ]
+    # The module-level main or _main, whose own returns run_main exits with, not those of the functions it defines:
+    # each return holders gives it, the innermost function that holds the return.
+    entry_points = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}]
     for entry_point in entry_points:
         breaches.extend(
             (node.lineno, breach)
             for node in ast.walk(entry_point)
-            if isinstance(node, ast.Return) and node.value is not None
+            if isinstance(node, ast.Return) and node.value is not None and holders.get(id(node)) is entry_point
             for breach in codes.breaches(node.value, allowed(node))
         )
     for node in ast.walk(tree):
@@ -3749,7 +3758,8 @@ def script_contract_problems(root: Path) -> list[str]:
     Python script's read as _ExitCodes reads it, with each module its imports name found as _ConstantsFinder finds
     it, and a Bash script's as the digits its exit is given. A module that must speak another protocol says why in
     EXIT_CONTRACT_EXEMPT. Stated limits, forms no repository code writes: a Bash script's exit given anything but
-    digits, as `exit "$CODE"`, and a PowerShell script's exit are not read."""
+    digits, as `exit "$CODE"`, and a PowerShell script's exit are not read, and neither are those _ExitCodes and
+    INTERRUPTED_EXIT_CODES state."""
     problems: list[str] = []
     finder = _ConstantsFinder(root)
     for path in sorted(
