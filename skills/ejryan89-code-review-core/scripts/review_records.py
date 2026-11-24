@@ -377,6 +377,28 @@ class Comment(TypedDict):
     url: str
 
 
+class CarriedFlag(TypedDict):
+    """A flag in the flag store naming a carried finding: its ID, its category, and its body as the rationale."""
+
+    id: str
+    category: str
+    rationale: str
+
+
+class CarriedFinding(TypedDict):
+    """A prior finding a re-review disposes, as `carried_findings` builds it: its ledger ID and where it was last
+    reported, with the flags that name it, if any."""
+
+    id: str
+    severity: Severity
+    category: str
+    path: str
+    line: int
+    title: NotRequired[str]
+    body: str
+    flags: NotRequired[list[CarriedFlag]]
+
+
 class Artifacts(TypedDict):
     payload_sha256: str
     markdown_sha256: str
@@ -876,7 +898,7 @@ def ledger_history(records: Iterable[ReviewRecord]) -> dict[int, list[LedgerEntr
     return history
 
 
-def carried_findings(records: Iterable[ReviewRecord], flags: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+def carried_findings(records: Iterable[ReviewRecord], flags: Iterable[dict[str, Any]] = ()) -> list[CarriedFinding]:
     """The prior findings a re-review disposes: every open or unverified entry of the latest ledger, where it was
     last reported. A finding a review only judged stays here until a review closes it. An entry with flags in the
     flag store (`flags`) carries each one's ID, category, and rationale, so the reviewer can weigh it."""
@@ -887,7 +909,7 @@ def carried_findings(records: Iterable[ReviewRecord], flags: Iterable[dict[str, 
     by_version: dict[int, ReviewRecord] = {record["review"]["version"]: record for record in records}
     latest = by_version[max(history)]
     flagged = flagged_entries(history[max(history)], flags, latest["repository"], latest["pull_request"]["number"])
-    carried = []
+    carried: list[CarriedFinding] = []
     for entry in history[max(history)]:
         if entry["state"] == "closed":
             continue
@@ -900,22 +922,25 @@ def carried_findings(records: Iterable[ReviewRecord], flags: Iterable[dict[str, 
         if finding is None:
             raise RecordError(f"Review v{where['version']} with finding {where['id']} is missing from the archive")
         identifier = ledger_id(entry["version"], entry["id"])
-        flags_on = [
+        flags_on: list[CarriedFlag] = [
             {"id": flag["id"], "category": flag["category"], "rationale": flag["body"]}
             for flag in flagged.get(identifier, [])
         ]
-        carried.append(
-            {
-                "id": identifier,
-                "severity": entry["severity"],
-                "category": entry["category"],
-                "path": finding["path"],
-                "line": finding["line"],
-                **({"title": finding["title"]} if "title" in finding else {}),
-                "body": finding["body"],
-                **({"flags": flags_on} if flags_on else {}),
-            }
-        )
+        # A title comes before the body, so it is written in its place and dropped when the finding has none.
+        item: CarriedFinding = {
+            "id": identifier,
+            "severity": entry["severity"],
+            "category": entry["category"],
+            "path": finding["path"],
+            "line": finding["line"],
+            "title": finding.get("title", ""),
+            "body": finding["body"],
+        }
+        if "title" not in finding:
+            del item["title"]
+        if flags_on:
+            item["flags"] = flags_on
+        carried.append(item)
     return carried
 
 

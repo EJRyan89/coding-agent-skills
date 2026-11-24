@@ -25,7 +25,7 @@ from review_documents import EXTRACTED_WHEN_TEXT, ExtractionRefused, document_di
 from review_github import DiffOverLimit
 from review_io import atomic_write_text, read_diff
 from review_operation import validate_canary_pull
-from review_records import DIFF_SOURCES, DiffFallback
+from review_records import DIFF_SOURCES, Comment, DiffFallback
 from review_run import PipelineError, Services
 from review_runtime import (
     GIT_DIFF_OPTIONS,
@@ -132,7 +132,7 @@ class ChangeRead(NamedTuple):
     changed: list[str]
     gaps: list[str]
     patches: dict[str, dict[str, Any]]
-    comments: list[dict[str, Any]]
+    comments: list[Comment]
     fallback: DiffFallback | None
 
 

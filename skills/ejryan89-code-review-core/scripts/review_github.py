@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import github_client
 from github_client import Clock, GitHubError, GitHubErrorKind, Runner, Sleeper, subprocess_runner
 from review_config import ConfigurationError, validate_repository_identity
+from review_records import Comment
 from review_state import utc_date
 from typed_fields import FieldError, FieldReader
 
@@ -423,7 +424,7 @@ class GitHubClient:
         except (binascii.Error, ValueError) as exc:
             raise GitHubError("Blob response is not base64", kind="malformed") from exc
 
-    def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
+    def list_open_review_threads(self, repository: str, number: int) -> list[Comment]:
         """Unresolved review threads a person started, as C1, C2, ... in thread order.
 
         Each is the thread's first comment: the request a reviewer must give a disposition for. Resolved
@@ -438,11 +439,21 @@ class GitHubClient:
             {"owner": owner, "name": name, "number": number},
             ("repository", "pullRequest", "reviewThreads"),
         )
-        comments: list[dict[str, Any]] = []
+        comments: list[Comment] = []
         for index, thread in enumerate(threads):
             comment = _open_thread_comment(thread, f"review threads[{index}]")
             if comment is not None:
-                comments.append({"id": f"C{len(comments) + 1}", **comment})
+                comments.append(
+                    {
+                        "id": f"C{len(comments) + 1}",
+                        "author": comment["author"],
+                        "path": comment["path"],
+                        "line": comment["line"],
+                        "outdated": comment["outdated"],
+                        "body": comment["body"],
+                        "url": comment["url"],
+                    }
+                )
         return comments
 
     def list_closing_issues(self, repository: str, number: int, *, first: int) -> tuple[list[dict[str, Any]], int]:

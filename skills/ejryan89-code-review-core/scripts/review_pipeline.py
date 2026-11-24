@@ -119,6 +119,9 @@ from review_operation import (
 )
 from review_records import (
     RE_REVIEW_SCOPES,
+    CarriedFinding,
+    ClosingIssues,
+    Comment,
     ReviewRecord,
     Scope,
     carried_findings,
@@ -298,7 +301,7 @@ def _review_history(
     re_review: bool,
     force: bool,
     notes: list[str],
-) -> tuple[str, ReviewRecord | None, list[dict[str, Any]]] | str:
+) -> tuple[str, ReviewRecord | None, list[CarriedFinding]] | str:
     """What the archive says a review of `pull` starts from: its mode, the previous record, and the prior findings.
     The reason to skip it instead when `_already_reviewed` gives one and the review is not forced."""
     number = pull["number"]
@@ -332,8 +335,8 @@ def _write_request(
     diff_path: Path,
     source: Path,
     manifest: dict[str, Any],
-    prior: list[dict[str, Any]],
-    comments: list[dict[str, Any]],
+    prior: list[CarriedFinding],
+    comments: list[Comment],
     gaps: list[str],
     unreviewed_suffixes: tuple[str, ...] = (),
     closing_issues: tuple[list[dict[str, Any]], int] | None = None,
@@ -345,7 +348,7 @@ def _write_request(
     body = pull.get("body", "")
     body_path = request_path.parent / PULL_REQUEST_BODY_FILE
     atomic_write_text(body_path, given_body(body))
-    closing: tuple[Path, dict[str, Any]] | None = None
+    closing: tuple[Path, ClosingIssues] | None = None
     if closing_issues is not None:
         issues_file, account = given_closing_issues(*closing_issues, repository)
         closing = (request_path.parent / CLOSING_ISSUES_FILE, account)
@@ -487,7 +490,7 @@ class _Review:
     pull: dict[str, Any]  # validated by validate_canary_pull
     mode: str
     previous: ReviewRecord | None  # the record a re-review starts from
-    prior: list[dict[str, Any]]  # the findings it carries
+    prior: list[CarriedFinding]  # the findings it carries
     base: dict[str, Any]  # the archive state finalize must still find
     reviewer: dict[str, Any]
     checkout: Path | None  # the configured checkout, which reviewers are kept out of
@@ -554,7 +557,7 @@ def prepare(
     entry = _configured_entry(config, repository, re_review=re_review, scope=scope, force=force, canary=canary)
     pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
     mode = "re-review" if re_review else "initial"
-    prior: list[dict[str, Any]] = []
+    prior: list[CarriedFinding] = []
     previous: ReviewRecord | None = None
     notes: list[str] = []
     # A canary records under a new, empty archive root.
