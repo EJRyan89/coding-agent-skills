@@ -34,7 +34,7 @@ are computed when the report is written, so `decide` resolves exactly the flags 
 the report before any flag is resolved, so a flag store that fails partway leaves the decision recorded with the flags
 it did resolve, and deciding again resolves the rest. A report, its Markdown, or a flag store the decision resolves
 flags in that is read-only, and a report or Markdown that is not a file, is refused before anything is written, by
-every command that writes a report.
+every command that writes a report, and so is any of them whose folder takes no new file.
 
 Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
 lose each other's decisions.
@@ -77,7 +77,7 @@ import review_guidance
 import review_signals
 import review_synthesis as synthesis_stage
 import whole_number
-from atomic_file import is_read_only
+from atomic_file import is_read_only, refuse_uncreatable
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
@@ -149,6 +149,10 @@ TREE_READ_ALLOWED = {
     "create_report": "whether the insights report the skill wrote earlier is there: the skill's own output",
     "refuse_unchangeable": (
         "whether the insights report and Markdown the skill wrote earlier can be replaced: the skill's own output"
+    ),
+    "refuse_uncreatable_target": (
+        "whether the folder of the report, its Markdown, or the flag store a decision resolves flags in takes the copy "
+        "a replace writes: the skill's own output and the code-review flag store"
     ),
     "synthesize": (
         "compares the synthesis result path the agent gives with the one the report named: the skill's own run"
@@ -895,14 +899,24 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def refuse_unchangeable(json_path: Path) -> None:
-    """Refuse a report or its Markdown that is read-only or anything but a file, before the first is written: each
-    replace would refuse its own file only when its turn came, after the report before it was replaced."""
+    """Refuse a report or its Markdown that is read-only, anything but a file, or in a folder that takes no new file,
+    before the first is written: each replace would refuse its own file only when its turn came, after the report
+    before it was replaced."""
     for path in (json_path, json_path.with_suffix(".md")):
         reason = file_presence.refusal_reason(path)
         if reason not in (None, file_presence.MISSING):
             raise InsightError(f"{path} {reason}, so the report cannot be written")
         if is_read_only(path):
             raise InsightError(f"{path} is read-only; make it writable for the report to be written")
+        refuse_uncreatable_target(path)
+
+
+def refuse_uncreatable_target(path: Path) -> None:
+    """Refuse a file whose folder takes no new file, the copy its replace writes, as an InsightError naming it."""
+    try:
+        refuse_uncreatable(path)
+    except OSError as exc:
+        raise InsightError(f"Cannot write {path}: {exc}") from exc
 
 
 def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_stage.Staged | None = None) -> Path:
@@ -1224,12 +1238,14 @@ def decide(
 
 def _refuse_unchangeable_decision(report_path: Path, pending: list[str], services: Services) -> None:
     """Refuse, before the decision is recorded, a report or Markdown it could not replace, and, when the decision
-    resolves flags, a flag store it could not: a refusal the platform reports up front leaves every file as it was,
+    resolves flags, a flag store it could not, read-only or in a folder that takes no new file: a refusal the platform
+    reports up front leaves every file as it was,
     where a failure no check can know ahead, such as a store another process holds open, leaves the decision recorded
     with the flags it did resolve (see _resolve_recorded)."""
     refuse_unchangeable(report_path)
     if pending:
         refuse_read_only(services.flags_path())
+        refuse_uncreatable_target(services.flags_path())
 
 
 def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:

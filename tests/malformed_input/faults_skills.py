@@ -147,7 +147,8 @@ SOURCE_FILE = "{work}/src/App/Program.cs"
 OTHER_SOURCE = "{work}/src/App/Other.cs"
 # A C# file whose #endregion takes a trailing description, which check --fix removes.
 FIXABLE_TEXT = "namespace App\n{\n    #region Main\n    class Program { }\n    #endregion Main\n}\n"
-GRAPH_OUTPUT = "{root}/graph.dot"
+# In a folder of its own, which the folder fault makes read-only, away from the harness's own files.
+GRAPH_OUTPUT = "{root}/graph/graph.dot"
 EDITORCONFIG = "{work}/.editorconfig"
 FILE_LIST = "{root}/file-list.txt"
 TOOLS = "{root}/bin"
@@ -220,7 +221,9 @@ def two_fixes(fixture: Fixture) -> None:
 def graph_output(fixture: Fixture) -> None:
     """As `solution`, with an earlier graph at GRAPH_OUTPUT, which graph --output replaces."""
     solution(fixture)
-    Path(GRAPH_OUTPUT.format(**fixture.values())).write_bytes(b"digraph earlier {}\n")
+    output = Path(GRAPH_OUTPUT.format(**fixture.values()))
+    output.parent.mkdir()
+    output.write_bytes(b"digraph earlier {}\n")
 
 
 def empty_solution(fixture: Fixture) -> None:

@@ -37,10 +37,12 @@ from fault_check import (
     TRACEBACK,
     changes,
     environment,
+    evidence,
     judged,
     named_another_kind,
     nowhere,
     placed,
+    reached_at,
     read_as_absent,
     run_entry,
     run_ids,
@@ -60,6 +62,7 @@ from fault_table import (
     LINK_TO_NOTHING,
     MISSING,
     READ_ONLY,
+    READ_ONLY_FOLDER,
     STAT_RAISES,
     UNREADABLE,
     Driver,
@@ -260,9 +263,34 @@ def test_a_change_fault_is_placed_once_at_the_last_file_a_driver_changes() -> No
     assert changing.runs() == [
         *((fault, "{work}/a.json") for fault in FILE_FAULTS),
         (READ_ONLY, "{work}/a.json"),
+        (READ_ONLY_FOLDER, "{work}/a.json"),
     ]
     excused = Driver("tools/one.py", "", (), changes=("{work}/a.json", "{work}/b.json"), not_run={DIRECTORY: "why"})
-    assert excused.runs() == [(READ_ONLY, "{work}/b.json")]
+    assert excused.runs() == [(READ_ONLY, "{work}/b.json"), (READ_ONLY_FOLDER, "{work}/b.json")]
+
+
+def test_the_folder_fault_is_reached_at_its_folder_and_named_by_any_entry_of_it(tmp_path: Path) -> None:
+    target = tmp_path / "store" / "b.json"
+    target.parent.mkdir()
+    (target.parent / "a.json").write_bytes(b"{}")
+    target.write_bytes(b"{}")
+    assert reached_at(READ_ONLY_FOLDER, target) == target.parent
+    assert reached_at(READ_ONLY, target) == target
+    assert evidence(READ_ONLY_FOLDER, target) == ("store", "a.json", "b.json")
+    assert evidence(READ_ONLY, target) == ("b.json",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows gives a folder no permission that refuses a new file")
+def test_the_folder_fault_refuses_a_new_file_in_the_folder_and_puts_its_mode_back(tmp_path: Path) -> None:
+    # Linux and macOS, where a folder's permission refuses a new file in it.
+    target = tmp_path / "store" / "b.json"
+    target.parent.mkdir()
+    target.write_bytes(b"{}")
+    mode = stat.S_IMODE(target.parent.stat().st_mode)
+    with placed(READ_ONLY_FOLDER, target), pytest.raises(PermissionError):
+        (target.parent / "new").write_bytes(b"")
+    assert stat.S_IMODE(target.parent.stat().st_mode) == mode
+    assert target.read_bytes() == b"{}"
 
 
 # The harness itself: a fixture entry point, run through fault_runner.py, shows each stop and each injected fault.

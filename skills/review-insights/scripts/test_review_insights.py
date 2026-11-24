@@ -1893,6 +1893,25 @@ class RecordingTests(InsightFixture):
             self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
         self.assertEqual(before, self.written(*paths))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_flag_store_whose_folder_takes_no_new_file_is_refused_before_the_decision_is_recorded(self) -> None:
+        # Linux and macOS: the store's replace writes its copy beside it, which its folder's permission refuses, and the
+        # report lies in another folder, so the decision would be recorded before the store refused.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        paths = (json_path, json_path.with_suffix(".md"), self.flags)
+        before = self.written(*paths)
+        self.flags.parent.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"Cannot write {self.flags}: [Errno 13] its folder takes no new file, so it cannot be replaced",
+            )
+        finally:
+            self.flags.parent.chmod(stat.S_IRWXU)
+        self.assertEqual(before, self.written(*paths))
+
     def test_a_markdown_it_cannot_replace_is_refused_before_the_report_is(self) -> None:
         # The report is written first, so a Markdown refused only when its turn came would leave the report replaced.
         self.commit("owner/repo", 7, ["Correctness"])

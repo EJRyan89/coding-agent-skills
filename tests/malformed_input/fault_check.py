@@ -49,6 +49,7 @@ from fault_table import (
     LINK_TO_NOTHING,
     MISSING,
     READ_ONLY,
+    READ_ONLY_FOLDER,
     STAT_RAISES,
     UNREADABLE,
     Driver,
@@ -172,6 +173,10 @@ def placed(fault: str, path: Path | None) -> Iterator[None]:
         with read_only(path):
             yield
         return
+    if fault == READ_ONLY_FOLDER:
+        with read_only(path.parent):
+            yield
+        return
     try:
         if fault == UNREADABLE:
             with corpus.denied(path):
@@ -196,8 +201,8 @@ def placed(fault: str, path: Path | None) -> Iterator[None]:
 
 @contextmanager
 def read_only(path: Path) -> Iterator[None]:
-    """The file at path read-only while the context lasts, its owner's write permission cleared, which Windows reads as
-    the read-only attribute, and its mode as it was afterwards."""
+    """The file or folder at path read-only while the context lasts, every write permission cleared, which Windows reads
+    as a file's read-only attribute, and its mode as it was afterwards."""
     mode = stat.S_IMODE(path.stat().st_mode)
     path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
     try:
@@ -246,6 +251,9 @@ def evidence(fault: str, target: Path | None) -> tuple[str, ...]:
     if fault == GH_FAILURE:
         return ("Validation Failed", "422")
     assert target is not None
+    if fault == READ_ONLY_FOLDER:
+        # The folder refuses a change to anything in it, so the run may meet it at any of its entries first.
+        return (target.parent.name, *sorted(entry.name for entry in target.parent.iterdir()))
     return (target.name,)
 
 
@@ -431,6 +439,12 @@ def changes(
     return [f"it changed {shown_names}{more} before it refused"] if changed else []
 
 
+def reached_at(fault: str, target: Path | None) -> Path | None:
+    """Where the runner notes a run reaching the fault: the folder for the read-only folder fault, which a run meets at
+    whichever of the folder's entries it reaches first, and otherwise the fault's own path."""
+    return target.parent if fault == READ_ONLY_FOLDER and target is not None else target
+
+
 def stopped_part_way(finished: subprocess.CompletedProcess[str]) -> list[str]:
     """A problem when a run that refuses a file alone, changing the rest, printed a FAILED line, its stop part way."""
     failed = [line for line in (finished.stdout + finished.stderr).splitlines() if line.startswith("FAILED")]
@@ -505,16 +519,16 @@ def check(driver: Driver, fault: str, path: str | None) -> None:
             if alone:
                 assert target is not None, f"{driver.name} refuses {fault} alone, which is no file's fault"
                 watched = [target]
-            # A read-only file stays where it was, so it is compared with the rest; any other fault's own path is
-            # left aside, since the fault itself changed it.
-            aside = None if fault == READ_ONLY else target
+            # A read-only file, or one in a read-only folder, stays where it was, so it is compared with the rest; any
+            # other fault's own path is left aside, since the fault itself changed it.
+            aside = None if fault in {READ_ONLY, READ_ONLY_FOLDER} else target
             with placed(fault, target):
                 before = {str(each): tree(each) for each in watched if each != aside}
                 finished, record = run_entry(
                     repository / driver.entry,
                     [argument.format(**values) for argument in driver.arguments],
                     fault,
-                    target,
+                    reached_at(fault, target),
                     fixture,
                     environment(fixture, driver),
                     repository,

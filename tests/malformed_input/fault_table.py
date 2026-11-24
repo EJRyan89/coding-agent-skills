@@ -29,10 +29,13 @@ GIT_EXIT = "git_exit_128"
 GIT_TIMEOUT = "git_timeout"
 GH_FAILURE = "gh_failure"
 READ_ONLY = "read_only"
+READ_ONLY_FOLDER = "read_only_folder"
 FILE_FAULTS = (UNREADABLE, DIRECTORY, MISSING, LINK_TO_NOTHING, STAT_RAISES)
 # The faults placed at the last file a command changes, each one the platform reports before anything is written, so
 # a command that checks every file before its first change refuses with all of them as it found them.
-CHANGE_FAULTS = (READ_ONLY, DIRECTORY)
+# The read-only folder fault holds on Linux and macOS alone: Windows gives a folder no permission that refuses a change
+# inside it, and its read-only attribute on a folder refuses nothing, so test_faults_unchangeable.py skips it there.
+CHANGE_FAULTS = (READ_ONLY, READ_ONLY_FOLDER, DIRECTORY)
 GIT_FAULTS = (GIT_EXIT, GIT_TIMEOUT)
 GH_FAULTS = (GH_FAILURE,)
 FAULTS = {
@@ -48,7 +51,11 @@ FAULTS = {
     GIT_TIMEOUT: "every git command runs past its time limit",
     GH_FAILURE: "every gh command fails with an answer GitHub gives for a request it refuses",
     READ_ONLY: "a file the command changes, made read-only: its owner's write permission cleared, which Windows "
-    "reads as the read-only attribute",
+    "reads as the read-only attribute; every platform refuses a replace of it through atomic_file, and Windows a "
+    "delete, where Linux and macOS delete it unless the command refuses it first",
+    READ_ONLY_FOLDER: "the folder holding a file the command changes, its write permission cleared, on Linux and "
+    "macOS: there a folder's permission, not the file's, refuses a delete, a rename, and a new file in it, the copy "
+    "an atomic replace writes beside its target included",
 }
 # The reason a stat fault does not apply to a file a command opens and reads without a stat.
 OPENED_ONLY = "the command opens and reads the file without a stat, so a stat that raises never reaches it"
