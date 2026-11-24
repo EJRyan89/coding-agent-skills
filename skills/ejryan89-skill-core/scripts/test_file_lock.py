@@ -66,6 +66,8 @@ class FileLockTests(unittest.TestCase):
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         assert child.stdout is not None
+        # Closed when the test ends, before the holder is killed and waited on, so no pipe is left for the collector.
+        self.addCleanup(child.stdout.close)
         self.assertEqual("held", child.stdout.readline().strip())
         self.assertIsNone(file_lock.take(self.path))
         self.assertTrue(file_lock.held_elsewhere(self.path))

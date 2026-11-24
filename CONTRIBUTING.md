@@ -145,6 +145,26 @@ A job that raises anything other than a failed check is reported as a failed job
 
 `git_isolation_problems` in `tests/validation/suite_discovery.py` holds the root `conftest.py`'s git isolation, which [Adding a skill](docs/adding-a-skill.md#validation) describes: it fails when a fixture is missing or is not autouse at its scope, and on a nearer `conftest.py` or a definition or parametrize of a fixture's name, which would take its place. `pytest_configuration_problems` beside it pins the pytest configuration, which selects, deselects, and skips nothing.
 
+### Python diagnostics
+
+Ruff and mypy read the code; the diagnostic run watches it run. `.github/workflows/python-diagnostics.yml` runs `tools/python_diagnostics.py` weekly and on dispatch, on Linux, on the floor in `deployer/tools.py` and on the latest stable release, and never on a pull request or as a required check. It runs the filesystem, subprocess, and parsing suites `DIAGNOSTIC_SUITES` in that file names, each as the runner runs a suite, with `PYTHONDEVMODE=1` and `PYTHONWARNINGS=error` in the environment, so every Python process they start runs in development mode with warnings as errors: a file, pipe, or process left open, or a call a later Python deprecates, raises. In a suite's own process that fails the test. In a process a suite starts, a warning raised in a destructor is an unraisable exception that Python prints and the process's exit status never shows, so the run puts a recorder, `tools/unraisable_record.py`, first on `PYTHONPATH` as `sitecustomize`, and fails the suite on each one recorded. Before the suites it starts one Python process, which leaves a file open, to show that a child takes both settings and the recorder. Its first lines name the interpreter and the settings it ran with, and each suite then prints `PASSED`, `FAILED` with pytest's output, or `UNRAISABLE` with the process and the exception; its docstring lists every line. A process started with `-I`, `-E`, or an environment built without the run's takes neither setting nor the recorder, so the run does not see it.
+
+Reproduce it from the repository root with the development dependencies installed. It refuses to start without both settings in its own environment. In Bash:
+
+```bash
+PYTHONDEVMODE=1 PYTHONWARNINGS=error python -B tools/python_diagnostics.py
+```
+
+In PowerShell:
+
+```powershell
+$env:PYTHONDEVMODE = '1'; $env:PYTHONWARNINGS = 'error'
+python -B tools/python_diagnostics.py
+Remove-Item -Path Env:PYTHONDEVMODE, Env:PYTHONWARNINGS
+```
+
+Name suites after it, as in `python -B tools/python_diagnostics.py tests/deployer/test_fsops.py`, to run those instead of its own. Fix a diagnostic where it is raised, never with a warning filter.
+
 ### Python checks
 
 This section is the one full account of the Python format, lint, and type checks; `CLAUDE.md` keeps the rules an agent session acts on, and [Adding a skill](docs/adding-a-skill.md#validation) adds what a skill's scripts need.

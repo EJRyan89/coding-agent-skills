@@ -40,7 +40,8 @@ def git() -> str:
 SPAWNING_PROGRAM = (
     "import os, subprocess, sys, time\n"
     "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-    "open(sys.argv[1] + '.partial', 'w').write(str(child.pid))\n"
+    "with open(sys.argv[1] + '.partial', 'w') as written:\n"
+    "    written.write(str(child.pid))\n"
     "os.replace(sys.argv[1] + '.partial', sys.argv[1])\n"
     "time.sleep(120)\n"
 )
@@ -665,8 +666,11 @@ class SubprocessRunnerTests(unittest.TestCase):
 
     def test_a_program_a_finished_command_left_running_is_ended_with_it(self) -> None:
         program = (
-            "import subprocess, sys\n"
-            "print(subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']).pid)\n"
+            "import os, subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(child.pid, flush=True)\n"
+            # It ends with no finalizer, so nothing waits on the program it leaves running or warns that it still runs.
+            "os._exit(0)\n"
         )
         result = git_client.subprocess_runner([sys.executable, "-c", program], 60)
         self.assertEqual(0, result.returncode)
@@ -901,11 +905,13 @@ class StreamTests(unittest.TestCase):
 
     def test_a_program_git_left_running_is_ended_once_the_stream_closes(self) -> None:
         program = (
-            "import subprocess, sys\n"
+            "import os, subprocess, sys\n"
             "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
             "sys.stdout.write(str(child.pid) + chr(10))\n"
             "sys.stdout.flush()\n"
             "sys.stdin.read()\n"
+            # It ends with no finalizer, so nothing waits on the program it leaves running or warns that it still runs.
+            "os._exit(0)\n"
         )
         with (
             mock.patch.object(git_client, "located_command", return_value=[sys.executable, "-c", program]),
