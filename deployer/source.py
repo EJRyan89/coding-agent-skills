@@ -3,7 +3,9 @@
 The menu's closures, expand, root_names, and is_opt_in, are ejryan89-skill-core's skill_menu, which audit-skill's script
 reads a source's plugins through too; they are imported here for the deployer's modules. So are its readers of a source
 file, deploy-meta's entries, a source ID, a list of names, and bundles, which read_menu reads a source through too, so
-the two take and refuse alike.
+the two take and refuse a file's content alike. Links are the stated exception: the deployer refuses a link at
+source.json, skills/, agents/, or deploy-meta/, or anywhere below them, before it reads through one, while audit-skill's
+readers, read_menu and read_metadata through read_source_file, follow one, since they write a report and deploy nothing.
 """
 
 from __future__ import annotations

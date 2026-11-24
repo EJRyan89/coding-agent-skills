@@ -19,7 +19,9 @@ a file, the folder's entries, a source ID, a list of names, and bundles, which t
 a well-formed source says, and fails on what names no skill or cannot be read at all, a list of names of another kind
 included. A null list of names or null bundles is none to both, as an absent one is, a byte-order mark before a file's
 JSON is passed over, and an entry of deploy-meta/ that is no file, such as a folder named like a skill's metadata, is
-passed over.
+passed over. Links are the stated exception: the loader refuses a link for source.json, at deploy-meta/, or anywhere in
+it before it reads through one, while read_menu, like audit-skill's read_metadata through read_source_file, follows
+one, since both write a report and deploy nothing.
 """
 
 from __future__ import annotations
@@ -267,7 +269,8 @@ def carriers(menu: Menu, skill: str) -> tuple[list[str], dict[str, str]]:
 def read_source_file(path: Path) -> object:
     """The JSON value source.json or a deploy-meta/ file holds, as the deployer's loader, read_menu, and audit-skill's
     read_metadata all read one: UTF-8 with or without a leading byte-order mark, since a person edits these files and
-    an editor may save one with it. It raises as json_reader.read_file does."""
+    an editor may save one with it. It raises as json_reader.read_file does, and follows a link: the deployer's loader
+    refuses a link before it calls this, and read_menu and read_metadata, which deploy nothing, follow one."""
     return json_reader.read_file(path, byte_order_mark=True)
 
 
@@ -275,8 +278,9 @@ def is_metadata_file(entry: Path) -> bool:
     """Whether an entry of deploy-meta/ that a listing found is a metadata file, as the deployer's loader and read_menu
     both choose them: a regular file, followed through a link. Anything else, such as a folder named like a skill's
     metadata, is passed over, and a stat that fails raises its OSError, so a metadata file is never dropped unread.
-    The deployer refuses a link at deploy-meta/ or anywhere in it, and a link for source.json, before it asks, so only
-    read_menu, which reads a source for audit-skill and deploys nothing, follows one."""
+    The deployer refuses a link at deploy-meta/ or anywhere in it before it asks, so a link is followed only by
+    audit-skill's readers, read_menu here and read_metadata through read_source_file, which write a report and deploy
+    nothing."""
     return file_presence.is_present(entry, other_is_absent=True)
 
 

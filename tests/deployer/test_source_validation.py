@@ -748,6 +748,14 @@ class SourceRootLinkTests(DeployerTestCase):
             self.assert_link_refused(document, "Symlink", *arguments)
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to nothing needs a privilege on Windows")
+    def test_a_symbolic_link_to_nothing_for_source_json_is_refused_not_read_as_missing(self) -> None:
+        # A presence check follows a link and reads one to nothing as no source.json, so the link is judged first.
+        document = self.source / "source.json"
+        document.unlink()
+        document.symlink_to(self.root / "nowhere.json")
+        self.assert_link_refused(document, "Symlink", "--all")
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to nothing needs a privilege on Windows")
     def test_a_symbolic_link_to_nothing_at_a_root_is_refused_not_read_as_absent(self) -> None:
         # agents/ and deploy-meta/ may be absent, and a link to nothing reads as missing, so the link is judged first.
         for root in ("agents", "deploy-meta"):
