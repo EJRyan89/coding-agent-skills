@@ -60,9 +60,9 @@ CATALOGUE = """# Lessons
 
 - **Rule:** A listing goes through the client.
 - **Why:** A second listing drifts.
-- **Use:** `git_client:GitClient.names` and `frontmatter:Frontmatter.user_only`.
+- **Use:** `git_client:GitClient.output`, `git_client:GitClient.names` and `frontmatter:Frontmatter.user_only`.
 - **No guard:** none yet.
-- **Search for:** `DeployError(` under `deployer/`; `raise` in any module.
+- **Search for:** `DeployError(` under `deployer/sub/`; `raise` in any module; `update.sh` running `git pull`.
 """
 READER = "PATTERN\tdocs/lessons.md:5\tReads through the one reader"
 WALKS = "PATTERN\tdocs/lessons.md:14\tWalks leave out sidecars"
@@ -188,7 +188,9 @@ def test_a_mechanism_more_than_ten_other_files_use_is_too_common_to_meet_a_patte
 def test_each_mechanism_is_judged_common_on_its_own_uses(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     users = {f"tools/user{index}.py": "import json_reader\n\njson_reader.read_json(path)\n" for index in range(COMMON)}
     both = "import json_reader\nfrom deployer import config\n\njson_reader.read_json(path)\nconfig.load_config()\n"
-    root = repository(tmp_path, {**users, "tools/both.py": both})
+    # 200 more notes keep the use rare among every kind: a use is judged among the Python files alone.
+    notes = {f"docs/note{index}.md": "A note.\n" for index in range(200)}
+    root = repository(tmp_path, {**users, **notes, "tools/both.py": both})
     assert run(root, "tools/both.py", capsys=capsys) == (
         0,
         [f"{READER}\ttools/both.py uses deployer.config:load_config"],
@@ -233,7 +235,7 @@ def test_a_class_member_is_matched_on_the_attribute_a_file_reads(
         for index in range(COMMON)
     }
     files = {
-        "tools/lister.py": "import git_client\n\ngit.names([])\n",
+        "tools/lister.py": "import git_client\n\ngit.output([])\ngit.names([])\n",
         "tools/variable.py": "import git_client\n\nnames = []\n",
         "tools/front.py": "from frontmatter import Frontmatter\n\nFrontmatter.parse(text)\n",
         "tools/flagged.py": "import frontmatter\n\nfront.user_only\n",
@@ -251,17 +253,23 @@ def test_a_class_member_is_matched_on_the_attribute_a_file_reads(
 def test_a_common_form_still_meets_a_file_in_a_place_its_own_clause_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # `DeployError(` shares a clause with `deployer/` and keeps its place; `raise`, in the next clause, does not; and a
-    # common use is cut inside the place as anywhere, since a place says where forms matter.
+    # `DeployError(` shares a clause with the nested folder `deployer/sub/` and keeps its place; `raise`, in the next
+    # clause, does not; `git pull` keeps the place `update.sh`, a file named by its name, which opens its clause; and a
+    # common use is cut inside a place as anywhere, since a place says where forms matter.
     raisers = {f"tools/raise{index}.py": "raise DeployError(reason)\n" for index in range(COMMON)}
     listers = {f"tools/lister{index}.py": "import git_client\n\ngit.names([])\n" for index in range(COMMON)}
+    pullers = {f"tools/pull{index}.sh": "git pull\n" for index in range(COMMON)}
     # A file that only names the place in its text holds no form: the place says where the forms matter.
-    mention = {"tools/mention.py": "PLACE = 'deployer/thing.py'\n"}
-    thing = "import git_client\n\nraise DeployError(git.names([]))\n"
-    root = repository(tmp_path, {**raisers, **listers, **mention, "deployer/thing.py": thing})
-    assert run(root, "deployer/thing.py", "tools/raise0.py", "tools/mention.py", capsys=capsys) == (
+    mention = {"tools/mention.py": "PLACE = 'deployer/sub/thing.py'\n"}
+    targets = {
+        "deployer/sub/thing.py": "import git_client\n\nraise DeployError(git.names([]))\n",
+        "skills/up/scripts/update.sh": "git pull\n",
+        "tools/other.sh": "git pull\n",
+    }
+    root = repository(tmp_path, {**raisers, **listers, **pullers, **mention, **targets})
+    assert run(root, *targets, "tools/raise0.py", "tools/mention.py", capsys=capsys) == (
         0,
-        [f"{CLIENTS}\tdeployer/thing.py:3 holds DeployError("],
+        [f"{CLIENTS}\tdeployer/sub/thing.py:3 holds DeployError(\tskills/up/scripts/update.sh:1 holds git pull"],
     )
 
 
@@ -358,6 +366,7 @@ def test_a_match_across_lines_is_numbered_at_each_line_end_text_lines_reads(
         ("rg -n -- -x", "a.py", "a\nb -x\n", 2),
         ("rg -n x .", "deep/a.py", "x\n", 1),
         ("rg -n x", "a.py", "y\n", None),
+        ("rg x tools", "tools/a.py", "tools\n", None),
         ("rg -q", "a.py", "run rg -q here\n", 1),
         ("if not <input>:", "a.py", "if not\nvalue:\n", None),
         ("a ... b", "a.py", "a then b\n", 1),
@@ -421,6 +430,17 @@ def test_a_form_the_lister_cannot_search_is_named_once_for_its_pattern(
 def test_a_file_no_pattern_meets_prints_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = repository(tmp_path, {"tools/plain.py": "import os\n\nVALUE = os.sep\n", "notes.txt": "nothing here\n"})
     assert run(root, "tools/plain.py", "notes.txt", capsys=capsys) == (0, [])
+
+
+def test_no_clause_is_read_when_no_file_given_could_hold_a_form(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    catalogue = (
+        CATALOGUE
+        + "\n### Typed\n\n- **Rule:** r.\n- **Why:** w.\n- **No guard:** none.\n- **Search for:** `rg -t py x`.\n"
+    )
+    root = repository(tmp_path, {}, catalogue)
+    assert run(root, "tools/new.py", capsys=capsys) == (0, ["NEW\ttools/new.py"])
 
 
 def test_a_file_not_there_yet_is_met_through_its_module_alone(
