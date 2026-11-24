@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
-import json_writer
 import lessons_catalogue
 from evaluation_results import TableError, measured_scenarios
 from link_destinations import link_destinations
@@ -310,7 +309,7 @@ def _scenario_problem(root: Path, span: str, skill: str, scenario: str) -> str |
         return f"cites {span}, but {EVALUATIONS_DOC}, which records each scenario's runs, is not a file"
     try:
         measured = measured_scenarios(results.read_text(encoding="utf-8"), skill)
-    except (OSError, UnicodeDecodeError, TableError, json_writer.JsonWriteRefused) as error:
+    except (OSError, UnicodeDecodeError, TableError) as error:
         return f"cites {span}, but {EVALUATIONS_DOC} cannot be read: {error}"
     if scenario not in measured:
         return f"cites {span}, which no row of {EVALUATIONS_DOC} records as run for {skill}"

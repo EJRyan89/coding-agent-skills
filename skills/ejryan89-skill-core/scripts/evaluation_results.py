@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-import json_writer
+from flat_text import single_line
 from text_lines import LINE_BREAK
 
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
@@ -66,7 +66,7 @@ def read_table(
         if found is None or len(found) != len(header) or not found[0]:
             raise TableError(
                 f"line {number} of the results file is not a row of the table's {len(header)} columns naming a "
-                f"skill: {json_writer.dumps(row, ensure_ascii=False)}"
+                f'skill: "{single_line(row)}"'
             )
     return begin, end, table[2:]
 
