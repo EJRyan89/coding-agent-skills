@@ -83,6 +83,7 @@ import known_failures
 import line_numbering
 import literal_escapes
 import markdown_links
+import one_helper
 import pull_request_body
 import pull_request_title
 import python_checks
@@ -146,6 +147,7 @@ POLICY_MODULES = (
     line_numbering,
     literal_escapes,
     markdown_links,
+    one_helper,
     pull_request_body,
     pull_request_title,
     python_checks,
