@@ -11,16 +11,16 @@ holds one table, in the form "Script results" in docs/adding-a-skill.md settles:
       1  what exit 1 means, a row's text continuing on lines
          indented further
 
-A row's code is a whole number; the rows run in ascending order, each code once. The table names every code the
-module can exit with, and no other: 1, which run_main exits with on a failure no handler caught; 2 when the code it
-reaches parses arguments with argparse, whose usage error exits 2; each code an exit call or a raised SystemExit
-is given, in any function the entry point reaches, where none or None exits 0, a string exits 1, and any other
-argument is read as a return is; and each code the function run_main runs returns, read through what it returns: a
-number, a module constant bound to one, either branch of a conditional, a local name bound to one of those, and the
-result of a function it calls, a function of its own module or one an import names, by name, through a parameter
-given a function, or through a table of functions it indexes or looks up. A function that ends without a return
-returns None, which exits 0. Ctrl+C's 130 is run_main's alike for every entry point, stated once in "Script
-results", so a table names it only where the code gives it a meaning of its own.
+A row's code is a whole number; the rows run in ascending order, each code once. The table names every code the module
+can exit with, and no other: 1, which run_main exits with on a failure no handler caught; 2 when the code it reaches
+parses arguments with argparse, whose usage error exits 2; each code an exit call or a raised SystemExit is given, in
+any function the entry point reaches, where none or None exits 0, a string exits 1, and any other argument is read as a
+return is; and each code the function run_main runs returns, read through what it returns: a number, a constant bound to
+numbers, as ejryan89-skill-core's exit_constants reads one in its own module or one an import names, either branch of a
+conditional, a local name bound to one of those, and the result of a function it calls, a function of its own module or
+one an import names, by name, through a parameter given a function, or through a table of functions it indexes or looks
+up. A function that ends without a return returns None, which exits 0. Ctrl+C's 130 is run_main's alike for every entry
+point, stated once in "Script results", so a table names it only where the code gives it a meaning of its own.
 
 A return or an exit call whose code the reader cannot follow, such as an attribute of an object, is named with where
 its codes come from in a module-level `EXIT_CODES_ALLOWED = {"<expression as written>": "<reason>"}` in the module
@@ -40,6 +40,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import exit_constants
 import file_presence
 import whole_number
 from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, call_code, exit_argument
@@ -177,7 +178,10 @@ class Module:
     path: Path
     tree: ast.Module
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = field(default_factory=dict)
-    constants: dict[str, int] = field(default_factory=dict)
+    # Its int constants, as ejryan89-skill-core's exit_constants reads them.
+    constants: exit_constants.ModuleConstants = field(
+        default_factory=lambda: exit_constants.ModuleConstants({}, frozenset(), {})
+    )
     dictionaries: dict[str, ast.Dict] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     allowed: dict[str, str] = field(default_factory=dict)
@@ -192,6 +196,7 @@ class Module:
     def read(cls, path: Path, tree: ast.Module, package: str = "") -> Module:
         module = cls(path, tree, aliases={**relative_import_aliases(tree, package), **import_aliases(tree)})
         module.parsers = parser_names(tree, module.aliases)
+        module.constants = exit_constants.read(tree, module.aliases)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 module.functions[node.name] = node
@@ -211,11 +216,7 @@ class Module:
             )
             value = getattr(node, "value", None)
             for target in targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if isinstance(value, ast.Constant) and type(value.value) is int:
-                    module.constants[target.id] = value.value
-                elif isinstance(value, ast.Dict):
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
                     module.dictionaries[target.id] = value
         allowed = module_allowance(tree, ALLOWANCE)
         module.allowed = allowed or {}
@@ -483,11 +484,10 @@ class CodeReader:
                 return None
         return self.modules[path]
 
-    def code_of(self, module: Module, node: ast.expr) -> int | None:
-        """The number an expression is: a literal, or a name constant as `constant` reads it."""
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
-        return self.constant(module, node)
+    def code_of(self, module: Module, node: ast.expr) -> frozenset[int] | None:
+        """The numbers an expression is: a literal, or a name's constant as ejryan89-skill-core's exit_constants
+        resolves it, in its own module or in one an import names, which module_named finds."""
+        return exit_constants.resolve(node, module.constants, self.constants_named)
 
     def error_defaults(self) -> set[int]:
         """Each default a parameter named exit_code takes in a module the reader followed."""
@@ -508,20 +508,15 @@ class CodeReader:
                 found |= {
                     number
                     for parameter, default in pairs
-                    if parameter.arg == ERROR_CODE
-                    and default is not None
-                    and (number := self.code_of(module, default)) is not None
+                    if parameter.arg == ERROR_CODE and default is not None
+                    for number in self.code_of(module, default) or ()
                 }
         return found
 
-    def constant(self, module: Module, node: ast.expr) -> int | None:
-        """The number a name stands for: a constant of its own module, or one an import names."""
-        if isinstance(node, ast.Name) and node.id in module.constants and node.id not in module.aliases:
-            return module.constants[node.id]
-        dotted = qualified_name(node, module.aliases)
-        owner, _, name = dotted.rpartition(".")
-        other = self.module_named(owner) if owner else None
-        return other.constants.get(name) if other is not None else None
+    def constants_named(self, dotted: str) -> exit_constants.ModuleConstants | None:
+        """The constants of the module a dotted name names, as module_named finds it."""
+        other = self.module_named(dotted)
+        return other.constants if other is not None else None
 
     def module_named(self, dotted: str) -> Module | None:
         relative = Path(*dotted.split("."))
@@ -832,8 +827,8 @@ class CodeReader:
         """Add the codes one returned expression can be, or the item at `element` of the tuple it is."""
         if element is not None and isinstance(node, ast.Tuple) and element < len(node.elts):
             self.value(node.elts[element], scope)
-        elif element is None and (code := self.code(node, scope)) is not None:
-            self.reading.codes.add(code)
+        elif element is None and (codes := self.code(node, scope)) is not None:
+            self.reading.codes |= codes
         elif isinstance(node, ast.IfExp):
             self.value(node.body, scope, element)
             self.value(node.orelse, scope, element)
@@ -855,10 +850,11 @@ class CodeReader:
         else:
             self._unread(node, scope)
 
-    def code(self, node: ast.expr | None, scope: Scope) -> int | None:
-        """The code an expression is as it stands: None returned, which exits 0, a number, or a name bound to one."""
+    def code(self, node: ast.expr | None, scope: Scope) -> frozenset[int] | None:
+        """The codes an expression is as it stands: None returned, which exits 0, a number, or a name bound to
+        numbers."""
         if node is None or (isinstance(node, ast.Constant) and node.value is None):
-            return 0
+            return frozenset({0})
         return self.code_of(scope.module, node)
 
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
@@ -916,8 +912,8 @@ class CodeReader:
                 if not isinstance(node, ast.Call):
                     continue
                 for keyword in node.keywords:
-                    if keyword.arg == ERROR_CODE and (number := self.code_of(module, keyword.value)) is not None:
-                        self.error_codes.add(number)
+                    if keyword.arg == ERROR_CODE and (numbers := self.code_of(module, keyword.value)) is not None:
+                        self.error_codes |= numbers
                 name = qualified_name(node.func, module.aliases)
                 if name in EXIT_CALLS:
                     self.exits(node, name, self.scope(module, function, (), None))

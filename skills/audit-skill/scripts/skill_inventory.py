@@ -217,18 +217,23 @@ link leads out of, as the Files paragraph says. A status word is an upper-case n
 SKILL_FILE. A script prints every status word its strings hold, outside docstrings, and the FAILED line
 ejryan89-skill-core's run_main adds; it prints a line starting with a word when the word leads an f-string, a string a
 print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a word, a space, and
-more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with run_main, and 2 with
-argparse. A Bash script, read through the Bash grammar, holds the status words of its commands' words, its functions'
-names, and its here-documents' bodies, but none of a comment's; prints a line starting with the word an echo or printf
-command's first word after its options starts with; and exits with each code an exit command names, one in a trap's
-action included. A PowerShell script is read line by line, outside comment lines. UNPRINTED <file> <line> <word> is a
-word that leads a code span on a prose line about output (one that says print, line, output, report, ends with, or exit)
-that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code
-the prose states that no script uses. UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts
-with a word the Markdown never names, for a script in the skill's folder or outside every skills folder, such as a
-repository tool; a sibling skill's script is that skill's to explain. A skill with no script of its own that runs none
-prints none of these. SCRIPT_MISSING <file> <line> <script> is a command that runs, through ${CLAUDE_SKILL_DIR} or from
-the repository root, a script that does not exist, so nothing it would print is compared.
+more. It exits 0, a code an int-returning function returns or an exit call takes, 1 and 130 with run_main, and 2 with
+argparse; a code is a literal or a name a constant binds, which ejryan89-skill-core's exit_constants reads as validation
+does, an int literal bound at the module's top or in a module-level block, annotated or not, or one an import names in a
+script the scan reads, from the script's own folder or ejryan89-skill-core's. A name no such reading reaches is an
+unread exit, never one the script does not take; a local or a parameter is not read. A Bash script, read through the
+Bash grammar, holds the status words of its commands' words, its functions' names, and its here-documents' bodies, but
+none of a comment's; prints a line starting with the word an echo or printf command's first word after its options
+starts with; and exits with each code an exit command names, one in a trap's action included. A PowerShell script is
+read line by line, outside comment lines. UNPRINTED <file> <line> <word> is a word that leads a code span on a prose
+line about output (one that says print, line, output, report, ends with, or exit) that no script prints, unless "such
+as" brings it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code the prose states that no script uses,
+and EXIT_UNREAD <file> <line> <code> one when some script has an unread exit, which may give it. UNEXPLAINED <script>
+<line> <word> is a line a script the Markdown runs starts with a word the Markdown never names, for a script in the
+skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script is that skill's to
+explain. A skill with no script of its own that runs none prints none of these. SCRIPT_MISSING <file> <line> <script> is
+a command that runs, through ${CLAUDE_SKILL_DIR} or from the repository root, a script that does not exist, so nothing
+it would print is compared.
 
 Runtime needs: in a skill source tree, tools derives what the skill needs through ejryan89-skill-core's
 runtime_support, as repository validation does, and prints RUNTIME_NEEDS <capability> <evidence> for each: grant
@@ -260,6 +265,7 @@ import check_provenance
 import command_wrappers
 import dotnet_solution
 import exit_calls
+import exit_constants
 import frontmatter
 import git_subcommands
 import json_reader
@@ -629,6 +635,7 @@ CHECK_LINES = frozenset(
         "DOC_NO_TOC",
         "DUPLICATE_BLOCK",
         "EXIT_MISMATCH",
+        "EXIT_UNREAD",
         "EXPANDS",
         "GRANTED_REPOSITORY_CODE",
         "HIDDEN_ALLOWED",
@@ -2742,6 +2749,8 @@ class ScriptFacts:
     prefixes: set[str] = field(default_factory=set)  # a word's start a formatted value completes, such as CONFIG_
     lines: dict[str, int] = field(default_factory=dict)  # the word each line it prints starts with, and where
     codes: set[int] = field(default_factory=lambda: {0})
+    # each exit whose code is a name no constant reading reaches, by its line and the name as written
+    unread: list[tuple[int, str]] = field(default_factory=list)
 
 
 def docstring_ids(tree: ast.Module) -> set[int]:
@@ -2793,35 +2802,102 @@ def string_facts(facts: ScriptFacts, node: ast.Constant, value: str, parents: di
             facts.lines.setdefault(match.group(1), node.lineno)
 
 
-def exit_codes(tree: ast.Module) -> set[int]:
-    """The literal codes a script exits with: what a function annotated to return an int returns, and what an exit
-    call or SystemExit takes, read by ejryan89-skill-core's exit_calls as validation's exit tables read it: no code,
-    or a SystemExit raised as the class, exits 0, a message exits 1, a call Python refuses for its arguments, such as
-    `sys.exit(code=4)`, exits 1, and otherwise a number or a module-level name bound to one. A call is an exit call by
-    the dotted name the module's imports resolve it to, so `from sys import exit as leave` is one and a method such as
-    `smtp.quit()` or `parser.exit()` is not."""
-    aliases = import_aliases(tree)
-    constants = {
-        target.id: node.value.value
-        for node in tree.body
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and type(node.value.value) is int
-        for target in node.targets
-        if isinstance(target, ast.Name)
+def no_modules(_dotted: str) -> exit_constants.ModuleConstants | None:
+    """A module locator that finds none, so a constant only an import names is unread."""
+    return None
+
+
+# What binds a name in the scope that holds it by a name field: a definition, an except clause, or a match capture.
+NAMED_BINDINGS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
+
+
+def local_names(function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> set[str]:
+    """The names a function or lambda binds in its own scope: its parameters and what its own body stores, outside the
+    functions, lambdas, and classes it defines, but the names it declares global or nonlocal."""
+    arguments = function.args
+    names = {
+        each.arg
+        for each in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+        if each is not None
     }
+    declared: set[str] = set()
+    pending: list[ast.AST] = [*ast.iter_child_nodes(function)]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            names.add(node.id)
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            declared.update(node.names)
+        elif isinstance(node, NAMED_BINDINGS) and node.name:
+            names.add(node.name)
+        if not isinstance(node, exit_constants.SCOPE_NODES):
+            pending.extend(ast.iter_child_nodes(node))
+    return names - declared
 
-    def literal(node: ast.AST) -> list[int]:
+
+class ExitReading:
+    """The codes one script's exit expressions give: each literal, and each name a constant binds, read by
+    ejryan89-skill-core's exit_constants through the module's imports and the modules `locate` finds; each name no
+    such reading reaches is recorded as unread, by its line and the name as written."""
+
+    def __init__(self, tree: ast.Module, locate: exit_constants.Locate) -> None:
+        self.aliases = import_aliases(tree)
+        self.constants = exit_constants.read(tree, self.aliases)
+        self.locate = locate
+        self.parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        self.locals_of: dict[int, set[str]] = {}
+        self.unread: dict[tuple[int, str], None] = {}
+
+    def is_local(self, node: ast.Name) -> bool:
+        """Whether a function or lambda that holds the name binds it itself."""
+        holder = self.parents.get(id(node))
+        while holder is not None:
+            if isinstance(holder, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                if id(holder) not in self.locals_of:
+                    self.locals_of[id(holder)] = local_names(holder)
+                if node.id in self.locals_of[id(holder)]:
+                    return True
+            holder = self.parents.get(id(holder))
+        return False
+
+    def literal(self, node: ast.expr) -> list[int]:
+        """The codes an exit expression gives: both arms of a conditional, an int literal, or a constant's values."""
         if isinstance(node, ast.IfExp):
-            return literal(node.body) + literal(node.orelse)
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return [node.value]
-        return [constants[node.id]] if isinstance(node, ast.Name) and node.id in constants else []
+            return self.literal(node.body) + self.literal(node.orelse)
+        if isinstance(node, ast.Constant):
+            return [node.value] if type(node.value) is int else []
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        # Only a dotted name names a constant, and one that starts at a name a function binds is that function's.
+        if not isinstance(root, ast.Name) or self.is_local(root):
+            return []
+        values = exit_constants.resolve(node, self.constants, self.locate)
+        if values is None:
+            self.unread[(node.lineno, ast.unparse(node))] = None
+            return []
+        return sorted(values)
 
+
+def exit_codes(tree: ast.Module, locate: exit_constants.Locate = no_modules) -> tuple[set[int], list[tuple[int, str]]]:
+    """The literal codes a script exits with, and each exit whose code is a name it cannot read, by its line and the
+    name as written: what a function annotated to return an int returns, and what an exit call or SystemExit takes,
+    read by ejryan89-skill-core's exit_calls as validation's exit tables read it: no code, or a SystemExit raised as
+    the class, exits 0, a message exits 1, a call Python refuses for its arguments, such as `sys.exit(code=4)`, exits
+    1, and otherwise a number or a name a constant binds, read by ejryan89-skill-core's exit_constants as validation's
+    exit tables read it: an int literal bound at the module's top or in a module-level block, annotated or not, or one
+    an import names in a module `locate` finds. A name no such reading reaches is unread, never a code the script does
+    not exit with; a name a function binds itself, a local or a parameter, is not read. A call is an exit call by the
+    dotted name the module's imports resolve it to, so `from sys import exit as leave` is one and a method such as
+    `smtp.quit()` or `parser.exit()` is not."""
+    reading = ExitReading(tree, locate)
+    aliases = reading.aliases
     codes: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and isinstance(node.returns, ast.Name) and node.returns.id == "int":
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Return) and inner.value is not None:
-                    codes.update(literal(inner.value))
+                    codes.update(reading.literal(inner.value))
         elif isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
             raised = qualified_name(node.exc, aliases)
             codes.update([exit_calls.NO_CODE] if raised == exit_calls.SYSTEM_EXIT else [])
@@ -2830,11 +2906,13 @@ def exit_codes(tree: ast.Module) -> set[int]:
             if fixed is not None:
                 codes.add(fixed)
             elif (argument := exit_calls.exit_argument(node, function)) is not None:
-                codes.update(literal(argument))
-    return codes
+                codes.update(reading.literal(argument))
+    return codes, list(reading.unread)
 
 
-def python_facts(text: str) -> ScriptFacts:
+def python_facts(text: str, locate: exit_constants.Locate = no_modules) -> ScriptFacts:
+    """What a Python script prints and exits with, following an exit code an import names into each module `locate`
+    finds."""
     tree = python_reader.parse(text)
     facts = ScriptFacts()
     docstrings = docstring_ids(tree)
@@ -2844,7 +2922,8 @@ def python_facts(text: str) -> ScriptFacts:
             string_facts(facts, node, node.value, parents)
         elif isinstance(node, ast.Constant) and isinstance(node.value, bytes):
             string_facts(facts, node, node.value.decode("latin-1"), parents)
-    facts.codes |= exit_codes(tree)
+    codes, facts.unread = exit_codes(tree, locate)
+    facts.codes |= codes
     names = {
         alias.name for node in ast.walk(tree) if isinstance(node, ast.Import | ast.ImportFrom) for alias in node.names
     }
@@ -2902,10 +2981,11 @@ def bash_facts(text: str) -> ScriptFacts:
     return facts
 
 
-def script_facts(path: Path, text: str | None = None) -> ScriptFacts:
-    """What a script prints and exits with, from its text, which the caller read or `require_text` reads. One that is
-    not UTF-8 text, not valid Python, or Bash the grammar refuses, fails: what it prints cannot be measured, and reading
-    it as printing nothing would compare the Markdown with less than the skill runs."""
+def script_facts(path: Path, text: str | None = None, locate: exit_constants.Locate = no_modules) -> ScriptFacts:
+    """What a script prints and exits with, from its text, which the caller read or `require_text` reads, a Python
+    script's exit codes followed into each module `locate` finds. One that is not UTF-8 text, not valid Python, or Bash
+    the grammar refuses, fails: what it prints cannot be measured, and reading it as printing nothing would compare the
+    Markdown with less than the skill runs."""
     if text is None:
         text = require_text(path)
     if path.suffix.casefold() != ".py":
@@ -2914,9 +2994,43 @@ def script_facts(path: Path, text: str | None = None) -> ScriptFacts:
         except BashSyntaxError as exc:
             raise InputError(f"cannot read {posix(path)}: not Bash the grammar reads ({exc})") from exc
     try:
-        return python_facts(text)
+        return python_facts(text, locate)
     except python_reader.CONTENT_ERRORS as exc:
         raise InputError(f"cannot read {posix(path)}: not valid Python") from exc
+
+
+def python_constants(texts: dict[Path, str]) -> dict[Path, exit_constants.ModuleConstants]:
+    """The constants of each Python script of `texts` that parses, by the path the runtime opens it at; one that does
+    not parse is left to script_facts to fail on."""
+    found: dict[Path, exit_constants.ModuleConstants] = {}
+    for path, text in texts.items():
+        if path.suffix.casefold() != ".py":
+            continue
+        try:
+            tree = python_reader.parse(text)
+        except python_reader.CONTENT_ERRORS:
+            continue
+        found[opened_path(path)] = exit_constants.read(tree, import_aliases(tree))
+    return found
+
+
+def module_locator(
+    path: Path, folders: list[Path], modules: dict[Path, exit_constants.ModuleConstants]
+) -> exit_constants.Locate:
+    """Find a module a script at `path` imports, by its dotted name, as Python finds it from the script's own folder and
+    then from `folders`, ejryan89-skill-core's scripts, which a skill's script puts on its path: among the scripts the
+    audit read alone, so a module outside them is not found and a constant it names is unread."""
+
+    def locate(dotted: str) -> exit_constants.ModuleConstants | None:
+        relative = Path(*dotted.split("."))
+        for folder in (path.parent, *folders):
+            for candidate in (folder / relative.with_suffix(".py"), folder / relative / "__init__.py"):
+                found = modules.get(opened_path(candidate))
+                if found is not None:
+                    return found
+        return None
+
+    return locate
 
 
 def repository_root(folder: Path) -> Path | None:
@@ -3081,10 +3195,12 @@ def stated_code(digits: str) -> int | str:
     return digits if code is None else code
 
 
-def stated_codes(path: Path, lines: list[str], codes: set[int]) -> list[str]:
+def stated_codes(path: Path, lines: list[str], codes: set[int], unread: bool = False) -> list[str]:
+    """An EXIT_MISMATCH line for each exit code a prose line states that no script exits with, or, when some exit's
+    code is a name the scripts' reading could not follow, an EXIT_UNREAD line, since the code may be that one."""
     languages, _ = parse_fences(lines)
     return [
-        f"EXIT_MISMATCH {posix(path)} {index + 1} {code}"
+        f"EXIT_UNREAD {posix(path)} {index + 1} {code}" if unread else f"EXIT_MISMATCH {posix(path)} {index + 1} {code}"
         for index in range(body_start(lines), len(lines))
         if languages[index] is None
         for match in EXIT_STATED.finditer(lines[index])
@@ -3124,18 +3240,21 @@ def status_lines(folder: Path) -> list[str]:
     ]
     facts = ScriptFacts()
     first_lines: dict[str, tuple[Path, int]] = {}
-    for path in dict.fromkeys(reading):
-        found = script_facts(path, script_text(folder, path))
+    texts = {path: script_text(folder, path) for path in dict.fromkeys(reading)}
+    modules = python_constants(texts)
+    for path, text in texts.items():
+        found = script_facts(path, text, module_locator(path, cores, modules))
         facts.words |= found.words
         facts.prefixes |= found.prefixes
         facts.codes |= found.codes
+        facts.unread += found.unread
         if path in runs:
             for word, number in found.lines.items():
                 first_lines.setdefault(word, (path, number))
     output = [
         line for path, lines in markdown for line in stated_lines(folder, path, lines, facts.words, facts.prefixes)
     ]
-    output += [line for path, lines in markdown for line in stated_codes(path, lines, facts.codes)]
+    output += [line for path, lines in markdown for line in stated_codes(path, lines, facts.codes, bool(facts.unread))]
     named = "\n".join("\n".join(body) for body in bodies)
     unnamed = [
         (shown_path(folder, path), number, word)

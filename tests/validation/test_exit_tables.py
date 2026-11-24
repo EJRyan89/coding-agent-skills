@@ -1179,6 +1179,62 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
         assert reader.reading.unread == []
 
 
+@pytest.mark.parametrize(
+    ("body", "modules", "codes"),
+    [
+        pytest.param(
+            "import sys\nif sys.platform == 'win32':\n    STOP = 3\nelse:\n    STOP = 4\n"
+            "def main() -> int:\n    return STOP\n",
+            {},
+            {1, 3, 4},
+            id="a constant each branch of a module-level if binds",
+        ),
+        pytest.param(
+            "try:\n    import fast\nexcept ImportError:\n    STOP = 5\ndef main() -> int:\n    return STOP\n",
+            {},
+            {1, 5},
+            id="a constant a module-level try's handler binds",
+        ),
+        pytest.param(
+            "from relay import USAGE\ndef main() -> int:\n    return USAGE\n",
+            {"codes.py": "from typing import Final\nUSAGE: Final = 6\n", "relay.py": "from codes import USAGE\n"},
+            {1, 6},
+            id="a final constant another module re-exports",
+        ),
+        pytest.param(
+            "STOP = 3\nSTOP += 1\ndef main() -> int:\n    return STOP\n",
+            {},
+            None,
+            id="a constant a later binding changes",
+        ),
+        pytest.param(
+            "from codes import STOP\nSTOP = 3\ndef main() -> int:\n    return STOP\n",
+            {"codes.py": "STOP = 4\n"},
+            None,
+            id="a constant an import and an assignment both bind",
+        ),
+    ],
+)
+def test_the_reader_reads_a_constant_as_ejryan89_skill_core_s_exit_constants_reads_it(
+    body: str, modules: dict[str, str], codes: set[int] | None
+) -> None:
+    # The reader took a constant only from a module-level assignment at the top, the last one winning, so a constant
+    # a block or a re-export binds was unread, and one another binding changes was read as a literal it replaces.
+    source = f"from console import run_main\n{body}if __name__ == '__main__':\n    run_main(main)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for name, text in modules.items():
+            (root / name).write_text(text, encoding="utf-8")
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    if codes is None:
+        assert reader.reading.unread, reader.reading
+    else:
+        assert reader.reading.codes == codes
+        assert reader.reading.unread == []
+
+
 PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main)\n"
 # A parser bound in a class's body, and a class Tool whose property calls error on a receiver, with a main the reader
 # reaches it from: the reader follows into a method through a property a return reads.
