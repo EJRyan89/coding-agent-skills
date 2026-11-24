@@ -371,6 +371,31 @@ class SkillGrantsFixtures(unittest.TestCase):
                 status_line_problems(root),
             )
 
+    def test_status_line_policy_fails_a_stated_code_an_unread_constant_leaves_unchecked(self) -> None:
+        # The inventory reports a stated code as EXIT_UNREAD when an exit's constant is one it cannot read, so the
+        # code may or may not be one the script exits with; validation refuses it as it refuses EXIT_MISMATCH.
+        script = "import sys\n\nSTALE = 1 + 2\n\ndef main() -> None:\n    sys.exit(STALE)\n"
+        run = '---\nname: {0}\n---\n\n```bash\npython -B "${{CLAUDE_SKILL_DIR}}/scripts/widget.py"\n```\n\n{1}\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/unread.json": "{}",
+                    "skills/unread/scripts/widget.py": script,
+                    "skills/unread/SKILL.md": run.format("unread", "It exits 3 when the plan is stale."),
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/unread/SKILL.md:9 states exit code 3, which no exit the inventory reads gives, and a "
+                    "script the skill reads exits with a constant the inventory cannot read; bind that constant to an "
+                    "int literal in the script, or import it from a script beside it or ejryan89-skill-core's; see "
+                    f"{RESULTS_DOC}"
+                ],
+                status_line_problems(root),
+            )
+
     def test_grant_policy_fails_a_sibling_grant_that_does_not_name_its_script(self) -> None:
         sibling = 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/'
         command = f'{sibling}y.py" run'
