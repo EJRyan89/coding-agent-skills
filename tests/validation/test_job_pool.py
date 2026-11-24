@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_pool
+import validation_notes
 from job_pool import (
     OUTPUT_LOCK,
     Job,
@@ -36,6 +37,7 @@ from job_pool import (
 )
 from job_selection import stale_job_seconds_problems
 from process_identity import process_status
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support
@@ -123,7 +125,7 @@ class JobPoolFixtures(unittest.TestCase):
             Job("also passes", "also passes", 0, lambda: ran.append("also passes")),
         ]
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            failures, _ = run_jobs(jobs, verbose=False, workers=1)
+            failures = run_jobs(jobs, verbose=False, workers=1).failures
         self.assertEqual(["passes", "also passes"], ran, "a raising job stops neither the pool nor the jobs after it")
         self.assertEqual(["cannot read", "check fails", "exits"], [failure.job.label for failure in failures])
         failed = {failure.job.label: failure for failure in failures}
@@ -153,7 +155,7 @@ class JobPoolFixtures(unittest.TestCase):
 
         jobs = [Job("waits", "waits", 1, job), Job("fails", "fails", 2, lambda: self.fail("2 suite failures"))]
         with contextlib.redirect_stdout(io.StringIO()):
-            result, (failures, _) = run_beside(foreground, jobs, verbose=False, workers=2)
+            result, (failures, _, _) = run_beside(foreground, jobs, verbose=False, workers=2)
         self.assertEqual("policies passed", result)
         self.assertEqual(["fails"], [failure.job.label for failure in failures])
 
@@ -173,7 +175,7 @@ class JobPoolFixtures(unittest.TestCase):
                 return printed.getvalue()
 
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            during, (failures, _) = run_beside(foreground, [Job("fails", "fails", 1, job)], verbose=False, workers=1)
+            during, (failures, _, _) = run_beside(foreground, [Job("fails", "fails", 1, job)], verbose=False, workers=1)
         self.assertEqual("", during)
         self.assertEqual(["fails"], [failure.job.label for failure in failures])
         self.assertRegex(printed.getvalue(), r"\AFAIL +[0-9.]+s fails\n\Z")
@@ -286,7 +288,7 @@ class TerminationFixtures(unittest.TestCase):
     def test_a_job_ended_before_output_is_started_once_more_and_reported_when_it_passes(self) -> None:
         job, started = job_running("bash suite", ENDED, PASSES)
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            failures, retries = run_jobs([job], verbose=False, workers=1)
+            failures, retries, _ = run_jobs([job], verbose=False, workers=1)
         self.assertEqual([ENDED, PASSES], started)
         self.assertEqual([], failures)
         ending = f"{Path(sys.executable).name} was ended with status {STATUS} before its first line of output: "
@@ -317,7 +319,7 @@ class TerminationFixtures(unittest.TestCase):
     def test_a_second_ending_is_a_failed_job_that_names_each_status(self) -> None:
         job, started = job_running("bash suite", ENDED)
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            failures, retries = run_jobs([job], verbose=False, workers=1)
+            failures, retries, _ = run_jobs([job], verbose=False, workers=1)
         self.assertEqual([ENDED, ENDED], started, "started once more, and no more")
         self.assertEqual(["bash suite"], [failure.job.label for failure in failures])
         failure = failures[0]
@@ -336,7 +338,7 @@ class TerminationFixtures(unittest.TestCase):
         failing, failing_started = job_running("fails", FAILS_AFTER_OUTPUT, PASSES)
         ended, ended_started = job_running("ended after output", ENDED_AFTER_OUTPUT, PASSES)
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            failures, retries = run_jobs([failing, ended], verbose=False, workers=1)
+            failures, retries, _ = run_jobs([failing, ended], verbose=False, workers=1)
         self.assertEqual(([FAILS_AFTER_OUTPUT], [ENDED_AFTER_OUTPUT]), (failing_started, ended_started))
         self.assertEqual(["ended after output", "fails"], [failure.job.label for failure in failures])
         self.assertEqual([(False, False), (False, False)], [(f.terminated, f.raised) for f in failures])
@@ -347,7 +349,7 @@ class TerminationFixtures(unittest.TestCase):
     def test_a_retry_that_fails_reports_the_ending_and_the_retry_s_result(self) -> None:
         job, started = job_running("bash suite", ENDED, FAILS_AFTER_OUTPUT)
         with contextlib.redirect_stdout(io.StringIO()):
-            failures, retries = run_jobs([job], verbose=False, workers=1)
+            failures, retries, _ = run_jobs([job], verbose=False, workers=1)
         self.assertEqual([ENDED, FAILS_AFTER_OUTPUT], started)
         self.assertEqual(["failed"], [retry.result for retry in retries])
         report = failures[0].report
@@ -368,7 +370,7 @@ class TerminationFixtures(unittest.TestCase):
                 raise attempts.pop(0)
 
             with self.subTest(raised=type(raised).__name__), contextlib.redirect_stdout(io.StringIO()):
-                failures, retries = run_jobs([Job("bash suite", "bash suite", 1, run)], verbose=False, workers=1)
+                failures, retries, _ = run_jobs([Job("bash suite", "bash suite", 1, run)], verbose=False, workers=1)
                 self.assertEqual(["failed"], [retry.result for retry in retries])
                 self.assertEqual([flags], [(f.timed_out, f.raised, f.terminated) for f in failures])
 
@@ -398,6 +400,219 @@ class TerminationFixtures(unittest.TestCase):
             f"  {ended}\n  It passed.\n  ```\n\n",
             text,
         )
+
+
+MARK = validation_notes.NOTE_MARKER
+# A program that passes after writing a note on each stream, one after other output on its line, as pytest's progress
+# comes before what a test prints, and a line of its own.
+NOTES = (
+    "import sys\n"
+    f"print({MARK + 'the volume stays attached  '!r}, flush=True)\n"
+    "print('a line with no note', flush=True)\n"
+    f"print({'test_a.py ' + MARK + 'after the progress'!r}, flush=True)\n"
+    f"print({MARK + 'from the error stream'!r}, file=sys.stderr, flush=True)\n"
+)
+# A suite that passes and reports a test volume left attached through test_atomic_file.py's own report.
+LEFT_ATTACHED = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "sys.path.insert(0, {scripts!r})\n"
+    "from test_atomic_file import report_volume_left\n"
+    "def test_passes_with_a_volume_left_attached():\n"
+    "    report_volume_left('MS-DOS', Path('mount'), 'hdiutil detach exited with status 16: busy')\n"
+)
+
+
+class NoteFixtures(unittest.TestCase):
+    """A passing job's notes: the lines its programs write starting with NOTE_MARKER, which the runner keeps."""
+
+    def test_the_pool_reads_the_line_suites_write(self) -> None:
+        # One constant, which test_validation_notes.py pins and test_atomic_file.py's teardown writes through.
+        self.assertEqual(
+            ["a volume stays attached"], job_pool.program_notes(validation_notes.note_line("a volume stays attached"))
+        )
+
+    def test_what_follows_the_marker_on_a_line_is_a_note(self) -> None:
+        self.assertEqual(
+            ["one", "after progress", f"two {MARK}kept whole", "three"],
+            job_pool.program_notes(
+                f"{MARK}one  \nno note\ntest_a.py .{MARK}after progress\n",
+                f"{MARK}two {MARK}kept whole\r\n",
+                f"{MARK}three",
+            ),
+        )
+        self.assertEqual(
+            [],
+            job_pool.program_notes("", f"{MARK.rstrip()}\n {MARK.lower()}x\n{MARK.rstrip()}x\n{MARK}   \n"),
+        )
+
+    def test_a_passing_job_keeps_its_notes_prints_them_and_a_failing_one_keeps_none(self) -> None:
+        noted, _ = job_running("noted suite", [sys.executable, "-c", NOTES])
+        quiet, _ = job_running("quiet suite", PASSES)
+        failing, _ = job_running("failing suite", [sys.executable, "-c", NOTES + "sys.exit(1)\n"])
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([quiet, failing, noted], verbose=False, workers=2)
+        self.assertEqual(["failing suite"], [failure.job.label for failure in result.failures])
+        self.assertIn(f"{MARK}the volume stays attached", result.failures[0].report, "its output is whole")
+        self.assertEqual(
+            {"noted suite": ["the volume stays attached", "after the progress", "from the error stream"]}, result.notes
+        )
+        lines = printed.getvalue().splitlines()
+        self.assertRegex(
+            lines[lines.index("NOTE noted suite: the volume stays attached") - 1], r"^ok +[0-9.]+s noted suite$"
+        )
+        self.assertIn("NOTE noted suite: from the error stream", lines)
+        self.assertFalse([line for line in lines if "quiet suite" in line], "a quiet job prints nothing unless verbose")
+        self.assertFalse([line for line in lines if line.startswith("NOTE failing suite")])
+
+    def test_a_retried_job_keeps_only_its_last_attempt_s_notes_and_prints_each_once(self) -> None:
+        # The first attempt passes one program with a note, then a program is ended before any output, so the job
+        # starts once more and passes both: the note is its retry's, once.
+        noting = [sys.executable, "-c", f"print({MARK + 'kept once'!r})"]
+        attempts: list[int] = []
+
+        def run() -> None:
+            attempts.append(1)
+            run_process(noting)
+            run_process(ENDED if len(attempts) == 1 else PASSES)
+
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([Job("retried suite", "retried suite", 1, run)], verbose=False, workers=1)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual(([], ["passed"]), (result.failures, [retry.result for retry in result.retries]))
+        self.assertEqual({"retried suite": ["kept once"]}, result.notes)
+        self.assertEqual(1, printed.getvalue().count("NOTE retried suite: kept once\n"), printed.getvalue())
+
+    def test_a_job_that_fails_after_a_program_kept_a_note_keeps_none(self) -> None:
+        noting = [sys.executable, "-c", f"print({MARK + 'from a program that passed'!r})"]
+
+        def run() -> None:
+            run_process(noting)
+            run_process(FAILS_AFTER_OUTPUT)
+
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([Job("failing suite", "failing suite", 1, run)], verbose=False, workers=1)
+        self.assertEqual(["failing suite"], [failure.job.label for failure in result.failures])
+        self.assertEqual({}, result.notes, "a failed job's report is its own; it keeps no notes")
+        self.assertNotIn("NOTE failing suite", printed.getvalue())
+
+    def test_a_verbose_run_prints_every_job_s_line_and_a_quiet_one_only_a_noted_job_s(self) -> None:
+        for verbose in (True, False):
+            quiet, _ = job_running("quiet suite", PASSES)
+            with self.subTest(verbose=verbose), contextlib.redirect_stdout(io.StringIO()) as printed:
+                run_jobs([quiet], verbose=verbose, workers=1)
+            if verbose:
+                self.assertRegex(printed.getvalue(), r"\Aok +[0-9.]+s quiet suite\n\Z")
+            else:
+                self.assertEqual("", printed.getvalue())
+
+    def test_the_retries_come_back_in_label_order_whatever_order_the_jobs_ran_in(self) -> None:
+        # The heaviest job starts first, so "b" runs before "a" on one worker.
+        light, _ = job_running("a retried", ENDED, PASSES)
+        heavy, _ = job_running("b retried", ENDED, PASSES)
+        heavy = Job(heavy.label, heavy.name, 2, heavy.run)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            result = run_jobs([light, heavy], verbose=False, workers=1)
+        self.assertLess(printed.getvalue().index("b retried"), printed.getvalue().index("a retried"), "b ran first")
+        self.assertEqual(["a retried", "b retried"], [retry.job.label for retry in result.retries])
+
+    def test_a_job_s_notes_stay_its_own_and_none_outlive_it(self) -> None:
+        jobs = [
+            job_running(f"suite {index}", [sys.executable, "-c", f"print({MARK + str(index)!r})"])[0]
+            for index in range(6)
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run_jobs(jobs, verbose=False, workers=3)
+        self.assertEqual({f"suite {index}": [str(index)] for index in range(6)}, result.notes)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_process([sys.executable, "-c", NOTES])
+        self.assertFalse(hasattr(job_pool._JOB_NOTES, "kept"), "a program outside a job keeps no note")
+
+    def test_a_note_line_leaves_the_seconds_recorder_reading_the_job_s_own_line(self) -> None:
+        job, _ = job_running(
+            "tests/test_a.py [shard 1/2]", [sys.executable, "-c", "import time; time.sleep(0.3)\n" + NOTES]
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            run_jobs([job], verbose=False, workers=1)
+        leg = "Linux shard 1/2, Python 3.11\tRun repository validation\t2026-10-23T06:17:04.0000000Z "
+        log = "\n".join(f"{leg}{line}" for line in printed.getvalue().splitlines())
+        self.assertEqual(["tests/test_a.py"], list(record_job_seconds.job_seconds_from_log(log)["Linux"]))
+
+    def test_a_suite_that_passes_keeps_the_report_of_a_test_volume_left_attached(self) -> None:
+        # test_atomic_file.py's teardown report, from a passing pytest run under the repository's pytest configuration,
+        # as the runner starts a suite: its report reaches the runner's output and the step summary.
+        scripts = REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts"
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = Path(temporary) / "test_left_attached.py"
+            suite.write_text(LEFT_ATTACHED.format(scripts=str(scripts)), encoding="utf-8")
+            # The repository's configuration, read where the suite sits outside the repository, would have pytest
+            # walk every folder above the suite up to the drive, the shared temporary folder included, whose entries
+            # other suites remove while it lists them; --confcutdir keeps the walk inside the suite's own folder.
+            command = pytest_command(
+                str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"), "--confcutdir", temporary
+            )
+            job = Job("left attached", "left attached", 1, lambda: run_process(command, PYTEST_ENVIRONMENT))
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                result = run_jobs([job], verbose=False, workers=1)
+        # A failed run ends its message with the end of the suite's own output, where pytest says why, so a reader
+        # that quotes only the end of this suite's output, as the mutation gate's reach run does, still shows it.
+        self.assertEqual(
+            [],
+            [failure.job.label for failure in result.failures],
+            "".join(failure.report[-1500:] for failure in result.failures),
+        )
+        report = f"the MS-DOS test volume at {Path('mount')} stays attached: hdiutil detach exited with status 16: busy"
+        self.assertEqual({"left attached": [report]}, result.notes)
+        self.assertIn(f"NOTE left attached: {report}\n", printed.getvalue())
+        summary = step_summary((3, 12, 0), {}, "Mode.", 1, 1, 1.0, [], notes=result.notes)
+        self.assertTrue(summary.endswith(f"- Noted: `left attached`\n\n  ```text\n  {report}\n  ```\n\n"), summary)
+
+
+class NotedReportFixtures(unittest.TestCase):
+    """The runner's report of a run whose jobs kept notes: report_run's output and its step summary."""
+
+    def report(self, pool: PoolResult) -> tuple[bool, str, str]:
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "summary.md"
+            passed = run_validation.report_run(
+                unittest.TestResult(),
+                pool,
+                2,
+                run_validation.Run("Mode.", None, {}, 1.0),
+                out,
+                {"GITHUB_STEP_SUMMARY": str(summary)},
+            )
+            return passed, out.getvalue(), summary.read_text(encoding="utf-8")
+
+    def test_a_passing_job_s_notes_are_reported_indented_and_leave_the_run_passing(self) -> None:
+        notes = {"tests/a.py": ["ERROR: a volume stays attached", "a second note"]}
+        passed, out, summary = self.report(PoolResult([], [], notes))
+        self.assertTrue(passed, "a note is no failure")
+        self.assertIn(
+            f"\n{'=' * 70}\nNOTED tests/a.py\n{'-' * 70}\n  ERROR: a volume stays attached\n  a second note\n", out
+        )
+        self.assertTrue(out.rstrip().endswith("validation passed."), out)
+        self.assertIn(
+            "- Noted: `tests/a.py`\n\n  ```text\n  ERROR: a volume stays attached\n  a second note\n  ```\n", summary
+        )
+        self.assertIn("**validation passed**", summary)
+
+    def test_a_failing_job_s_output_is_reported_whole_as_before_and_never_as_notes(self) -> None:
+        failing, _ = job_running(
+            "failing suite", [sys.executable, "-c", NOTES + "print('1 test failed')\nsys.exit(1)\n"]
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            pool = run_jobs([failing], verbose=False, workers=1)
+        self.assertEqual({}, pool.notes)
+        passed, out, summary = self.report(pool)
+        self.assertFalse(passed)
+        self.assertNotIn("NOTED", out)
+        self.assertNotIn("Noted", summary)
+        block = out[out.index(f"{'=' * 70}\nFAILED failing suite\n{'-' * 70}\nCommand failed with exit code 1: ") :]
+        for line in (f"{MARK}the volume stays attached", "a line with no note", "1 test failed"):
+            self.assertIn(f"\n{line}", block)
+        self.assertIn(f"{MARK}from the error stream", block)
 
 
 class RunnerDefaultEnvironment(unittest.TestCase):

@@ -405,9 +405,14 @@ def report_run(
     out: TextIO | io.TextIOBase,
     environment: Mapping[str, str],
 ) -> bool:
-    """Print each retried and failed job and the closing line to out, append the step summary to the file environment
-    names, and return whether the run passed."""
-    failures, retries = pool
+    """Print each passing job's notes, each retried and failed job, and the closing line to out, append the step
+    summary to the file environment names, and return whether the run passed."""
+    failures, retries, notes = pool
+    # Each note is indented, so no line a suite wrote starts a line a reader of the log takes for the runner's own.
+    for label, kept in notes.items():
+        print(
+            f"\n{'=' * 70}\nNOTED {label}\n{'-' * 70}\n" + "\n".join(f"  {note}" for note in kept), file=out, flush=True
+        )
     retried = {retry.job.label: f"{retry.ending}\nStarted once more, it {retry.result}." for retry in retries}
     for label, note in retried.items():
         print(f"\n{'=' * 70}\nRETRIED {label}\n{'-' * 70}\n{note}", file=out, flush=True)
@@ -443,6 +448,7 @@ def report_run(
         details,
         run.leg,
         retried,
+        notes,
     )
     append_step_summary(environment, summary)
     return passed

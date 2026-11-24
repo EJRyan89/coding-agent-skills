@@ -121,9 +121,10 @@ def replace_text(path: Path, content: str, *, mode: int = 0o600) -> None:
 def replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     """Replace `path` with `data` through a synced copy beside it, given `mode`, making its folder first.
 
-    A read-only `path` raises ReadOnlyTargetError before a copy exists. On any failure, including a folder that
-    cannot be made, `path` is untouched, the copy is removed, and the failure is raised as it was. A copy that cannot
-    be removed raises UnfinishedCopyError, which names it.
+    A read-only `path` raises ReadOnlyTargetError before a copy exists. A replace refused with PermissionError, as
+    Windows refuses one while another process holds `path` open, is tried again after short waits by _replace_waiting.
+    On any failure, including a folder that cannot be made, `path` is untouched, the copy is removed, and the failure
+    is raised as it was. A copy that cannot be removed raises UnfinishedCopyError, which names it.
 
     The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
     that closed it first would free its number for another thread's open, and a second close would close that file.
@@ -133,7 +134,7 @@ def replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
         if is_read_only(target):
             raise ReadOnlyTargetError(target)
 
-    _publish(path, data, mode=mode, refuse=refuse, place=Path.replace, creates=False)
+    _publish(path, data, mode=mode, refuse=refuse, place=_replace_waiting, creates=False)
 
 
 def create_bytes(path: Path, data: bytes, *, mode: int = 0o600, allow_empty_reservation: bool = False) -> None:
@@ -203,13 +204,14 @@ def _link_new(copy: Path, target: Path, *, reserve: bool) -> bool:
 
 def _replace_reservation(copy: Path, target: Path) -> None:
     """Reserve `target` empty with an exclusive create, which raises FileExistsError where any entry is, then replace
-    the reservation with `copy`. Whatever is raised once the reservation is made, _remove_reservation removes what is
-    at `target` and the failure is raised as it was. An interrupt that lands as os.open returns, or as _reserve hands
-    back the checked reservation, is raised outside every clean-up, so it leaves the reservation, as a kill does."""
+    the reservation with `copy` as _replace_waiting does, since a reader may hold the empty reservation open. Whatever
+    is raised once the reservation is made, _remove_reservation removes what is at `target` and the failure is raised
+    as it was. An interrupt that lands as os.open returns, or as _reserve hands back the checked reservation, is raised
+    outside every clean-up, so it leaves the reservation, as a kill does."""
     descriptor = _reserve(target)
     try:
         os.close(descriptor)
-        copy.replace(target)
+        _replace_waiting(copy, target)
     except BaseException as failure:
         _remove_reservation(target, failure)
         raise
@@ -280,6 +282,29 @@ def _publish(
             if made and isinstance(failure, OSError):
                 return
         raise
+
+
+def _replace_waiting(copy: Path, target: Path) -> None:
+    """Replace `target` with `copy`, trying again after each of its waits while a try is refused with PermissionError,
+    and raise the last try's error when every one is refused. Any other error, an interrupt in a wait included, is
+    raised as it was, at once.
+
+    The waits, in seconds, are for a target another process holds open for a moment, as a reader of a small file does:
+    Windows refuses to replace a file while a handle holds it open without delete sharing, as Python's `open` holds
+    every file it opens, with WinError 5, access denied, which Python raises as PermissionError. That code is also
+    the one an access control refusal gives, so no finer test tells the two apart, and no other error is tried again.
+    A read-only target is refused before a copy exists, so a PermissionError no wait clears, such as a folder its
+    user may not write, is raised as it was by the last try. The waits are as short and few as _remove_copy_name's,
+    so a replace that keeps being refused raises within about a third of a second, and are kept here for the same
+    reason."""
+    for wait in (0.01, 0.02, 0.04, 0.08, 0.16):
+        try:
+            copy.replace(target)
+        except PermissionError:
+            time.sleep(wait)
+        else:
+            return
+    copy.replace(target)
 
 
 def _remove_copy_name(copy: Path) -> None:
