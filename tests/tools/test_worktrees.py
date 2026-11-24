@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import typing
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -281,6 +282,34 @@ class ListTests(WorktreesTestCase):
         rows = self.rows()
         self.assertEqual(["trunk", "hub · off main", "?", "?", "0"], rows["trunk"][:5])
         self.assertEqual(["feat/demo", "unknown", "?", "?", "0"], rows["feat/demo"][:5])
+
+    def test_new_and_list_refuse_a_checkout_git_cannot_read_of_any_kind_naming_git_s_reason(self) -> None:
+        # Every kind of GitError the place lookup raises is an unknown place, refused with an ERROR line, never a
+        # traceback or a checkout read as absent.
+        for kind in typing.get_args(git_client.GitErrorKind):
+            for arguments in (["new", "fix", "unread"], ["list"]):
+                failure = git_client.GitError(f"git said no\nfor {kind}", kind=kind)
+                with (
+                    self.subTest(kind=kind, command=arguments[0]),
+                    mock.patch.object(worktrees, "checkout_of", side_effect=failure),
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                ):
+                    self.assertEqual(1, worktrees.main(arguments))
+                    expected = f"ERROR: git could not tell which checkout holds {Path.cwd()}: git said no for {kind}\n"
+                    self.assertEqual(expected, stderr.getvalue())
+        self.assertFalse((self.worktrees / "fix-unread").exists())
+
+    def test_a_checkout_git_cannot_read_is_named_on_one_line_whatever_its_directory_holds(self) -> None:
+        directory = Path(self.root, "\n".join(("line", "break")))
+        failure = git_client.GitError("git said no")
+        with (
+            mock.patch.object(Path, "cwd", return_value=directory),
+            mock.patch.object(worktrees, "checkout_of", side_effect=failure),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            self.assertEqual(1, worktrees.main(["list"]))
+        flat = str(directory).replace("\n", " ")
+        self.assertEqual(f"ERROR: git could not tell which checkout holds {flat}: git said no\n", stderr.getvalue())
 
 
 class CheckoutTests(WorktreesTestCase):
