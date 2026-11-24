@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -891,6 +892,28 @@ def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() 
     # mypy names a program given with -c as <string>, and ends its lines with CRLF on Windows.
     errors = re.findall(r"(?m)^(.*?):(\d+): error: .*?\r?$", str(raised.value))
     assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]
+
+
+def test_every_optional_mypy_code_is_enabled_or_recorded() -> None:
+    # Every code the installed mypy leaves off by default is enabled in enable_error_code or named here with where its
+    # decision is recorded, so a code a new mypy release adds fails until it is tried and recorded, and an entry here
+    # mypy no longer has fails too. mypy's table marks a code a flag gates (unreachable, explicit-any,
+    # no-any-unimported) as on, so this sees none of them; test_type_check_configuration_is_pinned pins their flags.
+    # A regression suite may import mypy: this reads its table of codes and runs no check.
+    from mypy import errorcodes
+
+    configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
+    recorded = {
+        # --strict sets warn_unused_ignores, and every root has a run of its own with --strict.
+        "unused-ignore": "enabled by --strict",
+        "mutable-override": 'declined: "Considered and declined" in docs/design.md',
+        # The maintainer chose to adopt it; a pull request of its own adds @override everywhere it reports.
+        "explicit-override": "adopted, and enabled by the pull request that adds its @override decorators",
+    }
+    enabled = set(configuration["enable_error_code"])
+    assert set() == enabled & set(recorded)
+    optional = {code.code for code in errorcodes.error_codes.values() if not code.default_enabled}
+    assert sorted(enabled | set(recorded)) == sorted(optional)
 
 
 # A module that builds a fact line by `build` in one function and reads lines by `body` in another.
