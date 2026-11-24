@@ -103,13 +103,15 @@ RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target reposito
 TREE_READ_ALLOWED = {
     "handshake_root": (
         "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
-        "the tree the reader is bound to"
+        "the tree the reader is bound to",
+        ("main",),
     ),
     "resolve_command": (
         "finds the program a server's command names: a bare name on the search path, outside the repository by "
         "design; an absolute command where it names, which runs as configured, wherever it points, so shutil.which "
         "stats it there; and a relative one with a directory part where a client starts it, which outside_problem "
-        "judged inside the repository first"
+        "judged inside the repository first",
+        ("handshake",),
     ),
 }
 OWNER_ONLY_ALLOWED = {

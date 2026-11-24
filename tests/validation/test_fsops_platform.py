@@ -26,6 +26,7 @@ from fsops_platform import (
     core_table_problems,
     filesystem_write_problems,
     platform_code_problems,
+    sibling_folders,
     tree_read_problems,
 )
 from validation_support import write_fixture_tree
@@ -2019,8 +2020,135 @@ def test_tree_read_policy_takes_a_scoped_allowance_and_refuses_a_stale_or_malfor
     assert found == [
         f"{SCRIPTS}/allowed.py:5 reads a path with Path.read_bytes; {TREE_READ_ADVICE}",
         f"{SCRIPTS}/allowed.py: TREE_READ_ALLOWED allows gone, which holds nothing it sanctions; remove the entry",
-        f"{SCRIPTS}/malformed.py: TREE_READ_ALLOWED must map each function, class, or assignment to its reason",
+        f"{SCRIPTS}/malformed.py: {TREE_READ_MALFORMED}",
         f"{SCRIPTS}/malformed.py:3 reads a path with Path.read_bytes; {TREE_READ_ADVICE}",
+    ]
+
+
+TREE_READ_MALFORMED = (
+    "TREE_READ_ALLOWED must map each function, class, or assignment to its reason, or to its reason and a tuple of the "
+    "scopes that call it"
+)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("('a path the user names',)", id="a reason alone in a tuple"),
+        pytest.param("('a path the user names', ())", id="no callers"),
+        pytest.param("('a path the user names', 'main')", id="callers that are no tuple"),
+        pytest.param("('a path the user names', ('main', ''))", id="an empty caller"),
+        pytest.param("('', ('main',))", id="an empty reason"),
+        pytest.param("('a path the user names', ('main',), 'more')", id="a third member"),
+    ],
+)
+def test_tree_read_policy_refuses_an_entry_of_another_shape(value: str) -> None:
+    # An entry is its reason, or its reason and a non-empty tuple of the scopes that call it, nothing else.
+    source = f"TREE_READ_ALLOWED = {{'given': {value}}}\ndef given(path):\n    return path.resolve()\n"
+    assert tree_read_findings({f"{SCRIPTS}/shaped.py": source}) == [
+        f"{SCRIPTS}/shaped.py: {TREE_READ_MALFORMED}",
+        f"{SCRIPTS}/shaped.py:3 reads a path with Path.resolve; {TREE_READ_ADVICE}",
+    ]
+
+
+def called_from(scope: str, holder: str = "this module's", name: str = "") -> str:
+    """The refusal of a call of the sanctioned `given` from a scope its entry does not name."""
+    return (
+        f"calls given, which {holder} TREE_READ_ALLOWED sanctions, from {scope}, which its entry does not name among "
+        f"the callers; name {name or scope} among them, or read through ejryan89-skill-core's tree_reader"
+    )
+
+
+def test_tree_read_policy_refuses_a_call_of_a_sanctioned_scope_from_a_caller_its_entry_does_not_name() -> None:
+    # A sanctioned reader that takes its path from its caller is no general escape: each scope that calls it, or
+    # passes it as a value, is named in its entry, and a call from any other fails.
+    reader = "def given(path):\n    return path.resolve()\n"
+    unnamed = (
+        "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
+        f"{reader}"
+        "def main(path):\n    return given(path)\n"
+        "def each(paths):\n    return list(map(given, paths))\n"
+    )
+    named = (
+        "TREE_READ_ALLOWED = {'given': ('a path the user names', ('main',))}\n"
+        f"{reader}"
+        "def main(path):\n    return given(path)\n"
+        "def stray(path):\n    return given(path)\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/named.py": named, f"{SCRIPTS}/unnamed.py": unnamed})
+    assert found == [
+        f"{SCRIPTS}/named.py:7 {called_from('stray')}",
+        f"{SCRIPTS}/unnamed.py:5 {called_from('main')}",
+        f"{SCRIPTS}/unnamed.py:7 {called_from('each')}",
+    ]
+
+
+def test_tree_read_policy_passes_each_caller_its_entry_names_and_the_scope_itself() -> None:
+    # A named caller in the module, one in another module of the scripts folder named by its module and scope, a
+    # method called on self within its class, and a scope nested in the sanctioned one, which is part of it.
+    sanctioned = (
+        "TREE_READ_ALLOWED = {\n"
+        "    'given': ('a path the user names', ('main', 'Walker.run', 'caller:other')),\n"
+        "    'Walker.peek': ('a path the user names', ('Walker.run',)),\n"
+        "}\n"
+        "def given(path):\n"
+        "    def again(inner):\n"
+        "        return given(inner)\n"
+        "    return path.resolve()\n"
+        "def main(path):\n    return given(path)\n"
+        "class Walker:\n"
+        "    def peek(self, path):\n        return path.exists()\n"
+        "    def run(self, path):\n        return self.peek(given(path))\n"
+    )
+    caller = "import sanctioned\ndef other(path):\n    return sanctioned.given(path)\n"
+    files = {f"{SCRIPTS}/sanctioned.py": sanctioned, f"{SCRIPTS}/caller.py": caller}
+    assert tree_read_findings(files) == []
+
+
+def test_tree_read_policy_refuses_a_call_from_another_module_and_a_method_called_on_self_unnamed() -> None:
+    sanctioned = (
+        "TREE_READ_ALLOWED = {'given': 'a path the user names', 'Walker.peek': 'a path the user names'}\n"
+        "def given(path):\n    return path.resolve()\n"
+        "class Walker:\n"
+        "    def peek(self, path):\n        return path.exists()\n"
+        "    def run(self, path):\n        return self.peek(path)\n"
+    )
+    caller = "from sanctioned import given\ndef other(path):\n    return given(path)\n"
+    found = tree_read_findings({f"{SCRIPTS}/sanctioned.py": sanctioned, f"{SCRIPTS}/caller.py": caller})
+    assert found == [
+        f"{SCRIPTS}/caller.py:3 {called_from('other', f'{SCRIPTS}/sanctioned.py' + chr(39) + 's', 'caller:other')}",
+        f"{SCRIPTS}/sanctioned.py:8 calls Walker.peek, which this module's TREE_READ_ALLOWED sanctions, from "
+        "Walker.run, which its entry does not name among the callers; name Walker.run among them, or read through "
+        "ejryan89-skill-core's tree_reader",
+    ]
+
+
+def test_tree_read_policy_refuses_a_named_caller_that_no_longer_calls_and_a_module_level_entry_or_call() -> None:
+    # A caller named but gone is stale; <module> names no one statement, as an entry or as the scope of a call, so
+    # the read or the call moves into a function or a named assignment.
+    stale = (
+        "TREE_READ_ALLOWED = {'given': ('a path the user names', ('main', 'gone'))}\n"
+        "def given(path):\n    return path.resolve()\n"
+        "def main(path):\n    return given(path)\n"
+    )
+    module_level = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "TREE_READ_ALLOWED = {'<module>': 'the module setup', 'given': ('a path the user names', ('<module>',))}\n"
+        "Path('x').resolve()\n"
+        "def given(path):\n    return path.resolve()\n"
+        "sys.path.insert(0, str(given(Path('y'))))\n"
+    )
+    found = tree_read_findings({f"{SCRIPTS}/module_level.py": module_level, f"{SCRIPTS}/stale.py": stale})
+    assert found == [
+        f"{SCRIPTS}/module_level.py: TREE_READ_ALLOWED allows <module>, which names no one statement; move the read "
+        "into a function or a named assignment and allow that",
+        f"{SCRIPTS}/module_level.py:4 reads a path with Path.resolve; {TREE_READ_ADVICE}",
+        f"{SCRIPTS}/module_level.py:7 calls given, which this module's TREE_READ_ALLOWED sanctions, from <module>, "
+        "which its entry does not name among the callers; move the call into a function or a named assignment, or "
+        "read through ejryan89-skill-core's tree_reader",
+        f"{SCRIPTS}/stale.py: TREE_READ_ALLOWED names gone among the callers of given, but it does not call it; remove "
+        "it from the entry",
     ]
 
 
@@ -2036,8 +2164,7 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
     unlisted = "import zipfile\ndef read(path):\n    return zipfile.is_zipfile(path)\n"
     # Path.group shares its name with a regular expression match's group(), which no reader can tell apart.
     group = "def read(path):\n    return path.group()\n"
-    # A core reader reached through another core module that imports it, a judge given another tree, and a
-    # sanctioned function called from another scope.
+    # A core reader reached through another core module that imports it, and a judge given another tree.
     through = (
         "import dotnet_solution\nimport tree_reader\nfrom tree_reader import read_bounded\n"
         "def read(path):\n"
@@ -2046,12 +2173,14 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         "    return tree_reader.file_presence.is_present(path)\n"
     )
     judge = "from folder_walk import followed_inside\ndef read(path, other):\n    return followed_inside(path, other)\n"
-    # A reader in a sibling skill's scripts the module loads through sibling_scripts, which core_reads does not derive.
-    sibling = "from review_io import read_json\ndef read(path):\n    return read_json(path)\n"
-    sanctioned = (
-        "TREE_READ_ALLOWED = {'given': 'a path the user names'}\n"
-        "def given(path):\n    return path.resolve()\n"
-        "def use(path):\n    return given(path)\n"
+    # A sanctioned method called through an instance, which names no class, and a named caller handing on a path its
+    # own caller gave it, since only the direct caller is named.
+    instance = (
+        "TREE_READ_ALLOWED = {'Walker.peek': 'a path the user names', 'main': ('a path the user names', ('use',))}\n"
+        "class Walker:\n    def peek(self, path):\n        return path.exists()\n"
+        "def use(path):\n    return Walker().peek(main(path))\n"
+        "def main(path):\n    return path.resolve()\n"
+        "def further(path):\n    return use(path)\n"
     )
     files = {
         f"{SCRIPTS}/unbound.py": unbound,
@@ -2061,8 +2190,7 @@ def test_tree_read_policy_states_what_it_does_not_read() -> None:
         f"{SCRIPTS}/group.py": group,
         f"{SCRIPTS}/through.py": through,
         f"{SCRIPTS}/judge.py": judge,
-        f"{SCRIPTS}/sibling.py": sibling,
-        f"{SCRIPTS}/sanctioned.py": sanctioned,
+        f"{SCRIPTS}/instance.py": instance,
     }
     assert tree_read_findings(files) == []
 
@@ -2187,7 +2315,8 @@ def test_core_reads_derives_each_reading_function_transitively_but_judges_other_
         write_fixture_tree(core, files)
         assert core_reads(core) == frozenset({"paths.read", "wrap.carry", "wrap.hand"})
         assert core_table_problems(core) == [
-            f"skills/ejryan89-skill-core/scripts: {table} names {name}, which ejryan89-skill-core does not define"
+            f"tests/validation/fsops_platform.py: {table} names {name}, which neither ejryan89-skill-core nor a "
+            "sibling skill's scripts a policed module loads define; rename or remove the entry"
             for table, entries in (("TREE_JUDGES", TREE_JUDGES), ("OTHER_PLACE_READS", OTHER_PLACE_READS))
             for name in sorted(entries.keys() - {judge, other})
         ]
@@ -2214,6 +2343,151 @@ def test_core_reads_marks_the_helpers_the_reader_stands_in_for_in_the_real_core(
     }
     assert expected <= found
     assert not (TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()) & found
+
+
+def test_core_reads_derives_a_sibling_skills_readers_through_the_core_and_its_own_modules() -> None:
+    # A sibling's function reads through a core reader it imports and through another of its own modules, and one
+    # calling neither reads nothing; the derivation runs across both folders.
+    with tempfile.TemporaryDirectory() as temporary:
+        core, sibling = Path(temporary) / "core", Path(temporary) / "sibling"
+        write_fixture_tree(core, {"paths.py": "def read(path):\n    return path.read_bytes()\n"})
+        write_fixture_tree(
+            sibling,
+            {
+                "sib_io.py": "from paths import read\ndef load(path):\n    return read(path)\n",
+                "sib_batch.py": "from sib_io import load\ndef run_list(path):\n    return load(path)\n"
+                "def count(items):\n    return len(items)\n",
+            },
+        )
+        assert core_reads(core) == frozenset({"paths.read"})
+        assert core_reads(core, (sibling,)) == frozenset({"paths.read", "sib_io.load", "sib_batch.run_list"})
+
+
+def test_core_table_problems_accepts_a_sibling_defined_entry_and_reports_it_once_the_sibling_drops_it() -> None:
+    # review_documents.extract, an OTHER_PLACE_READS entry ejryan89-code-review-core defines, is accepted when a
+    # sibling folder defines it, and reported as stale when no folder read does.
+    entry = "review_documents.extract"
+    assert entry in OTHER_PLACE_READS
+    stale = (
+        f"tests/validation/fsops_platform.py: OTHER_PLACE_READS names {entry}, which neither ejryan89-skill-core nor "
+        "a sibling skill's scripts a policed module loads define; rename or remove the entry"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        core, sibling, dropped = (Path(temporary) / name for name in ("core", "sibling", "dropped"))
+        write_fixture_tree(core, {"paths.py": "def read(path):\n    return path.read_bytes()\n"})
+        write_fixture_tree(sibling, {"review_documents.py": "def extract(form, content):\n    return content\n"})
+        write_fixture_tree(dropped, {"review_documents.py": "def extracted(form, content):\n    return content\n"})
+        assert stale not in core_table_problems(core, (sibling,))
+        assert stale in core_table_problems(core, (dropped,))
+        assert stale in core_table_problems(core)
+
+
+def test_core_reads_marks_the_code_review_cores_run_list_and_json_readers_in_the_real_repository() -> None:
+    # Named as literals: review-document's report_runs reads the run list through these, which the policy now sees.
+    repository = Path(__file__).resolve().parents[2]
+    found = core_reads(
+        repository / "skills" / "ejryan89-skill-core" / "scripts",
+        (repository / "skills" / "ejryan89-code-review-core" / "scripts",),
+    )
+    assert {"review_io.read_json", "review_batches.load_run_list", "review_config.load_config"} <= found
+    assert not (TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()) & found
+
+
+SIBLING_HEADER = (
+    "import sys\nfrom skill_roots import sibling_scripts\nsys.path.insert(0, str(sibling_scripts('fixture-sibling')))\n"
+)
+SIBLING_FILES = {
+    "skills/fixture-sibling/scripts/sib_io.py": "def load(path):\n    return path.read_bytes()\n",
+    "skills/fixture-sibling/scripts/sib_batch.py": "import sys\n"
+    "from skill_roots import sibling_scripts\n"
+    "sys.path.insert(0, str(sibling_scripts('fixture-farther')))\n"
+    "from sib_io import load\n"
+    "def run_list(path):\n    return load(path)\n",
+    "skills/fixture-farther/scripts/far_io.py": "def scan(path):\n    return list(path.iterdir())\n",
+}
+
+
+def test_tree_read_policy_refuses_a_call_into_a_reader_of_a_sibling_skills_scripts_it_loads() -> None:
+    # The policed module loads fixture-sibling through sibling_scripts, and fixture-sibling loads fixture-farther, so
+    # a call into either sibling's reader, directly or through the sibling's own module, is a read; one sanctioned in
+    # TREE_READ_ALLOWED passes.
+    source = (
+        f"{SIBLING_HEADER}"
+        "import sib_batch\n"
+        "from far_io import scan\n"
+        "def report(path):\n    return sib_batch.run_list(path)\n"
+        "def listing(path):\n    return scan(path)\n"
+    )
+    sanctioned = (
+        f"TREE_READ_ALLOWED = {{'report': 'the pipeline run list', 'listing': 'the skill own folder'}}\n{source}"
+    )
+    found = tree_read_findings({**SIBLING_FILES, f"{SCRIPTS}/loads.py": source})
+    assert found == [
+        f"{SCRIPTS}/loads.py:7 reads a path with sib_batch.run_list; {TREE_READ_ADVICE}",
+        f"{SCRIPTS}/loads.py:9 reads a path with far_io.scan; {TREE_READ_ADVICE}",
+    ]
+    assert tree_read_findings({**SIBLING_FILES, f"{SCRIPTS}/loads.py": sanctioned}) == []
+
+
+SIBLING_PROBLEM = (
+    "a policed module loads it through sibling_scripts, but it holds no script to read, so no reader of it is "
+    "derived; name a sibling skill whose scripts are there"
+)
+
+
+def loader(*names: str) -> str:
+    """A policed module that puts each named sibling's scripts on sys.path and calls into fixture-sibling's reader."""
+    lines = "".join(f"sys.path.insert(0, str(sibling_scripts('{name}')))\n" for name in names)
+    return (
+        f"import sys\nfrom skill_roots import sibling_scripts\n{lines}"
+        "import sib_batch\ndef report(path):\n    return sib_batch.run_list(path)\n"
+    )
+
+
+def test_tree_read_policy_refuses_a_loaded_sibling_whose_scripts_folder_holds_no_script() -> None:
+    # A sibling whose scripts folder is missing, or holds only its suites, gives no reader to derive, so a call into it
+    # would pass unread: the folder is a problem, as a policed skill's own empty folder is.
+    files = {
+        f"{SCRIPTS}/loads.py": loader("fixture-missing", "fixture-suites"),
+        "skills/fixture-suites/scripts/test_only.py": "def test_x():\n    pass\n",
+    }
+    assert tree_read_findings(files) == [
+        f"skills/fixture-missing/scripts: {SIBLING_PROBLEM}",
+        f"skills/fixture-suites/scripts: {SIBLING_PROBLEM}",
+    ]
+    present = {**SIBLING_FILES, f"{SCRIPTS}/loads.py": loader("fixture-sibling")}
+    assert tree_read_findings(present) == [
+        f"{SCRIPTS}/loads.py:6 reads a path with sib_batch.run_list; {TREE_READ_ADVICE}"
+    ]
+
+
+def test_tree_read_policy_derives_siblings_that_load_each_other_and_leaves_the_core_to_itself() -> None:
+    # Two siblings that put each other on sys.path end the derivation with each read once, and a module naming
+    # ejryan89-skill-core through sibling_scripts adds no sibling folder: the findings are the plain load's.
+    looped = {
+        **SIBLING_FILES,
+        "skills/fixture-farther/scripts/far_back.py": "import sys\n"
+        "from skill_roots import sibling_scripts\n"
+        "sys.path.insert(0, str(sibling_scripts('fixture-sibling')))\n"
+        "VALUE = 1\n",
+    }
+    expected = [f"{SCRIPTS}/loads.py:7 reads a path with sib_batch.run_list; {TREE_READ_ADVICE}"]
+    files = {**looped, f"{SCRIPTS}/loads.py": loader("fixture-sibling", "ejryan89-skill-core")}
+    assert tree_read_findings(files) == expected
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        trees = [ast.parse((root / f"{SCRIPTS}/loads.py").read_text(encoding="utf-8"))]
+        assert sibling_folders(root, trees) == (
+            root / "skills" / "fixture-farther" / "scripts",
+            root / "skills" / "fixture-sibling" / "scripts",
+        )
+
+
+def test_tree_read_policy_reads_no_sibling_a_module_does_not_load() -> None:
+    # The same calls in a module whose scripts folder loads no sibling name no reader the policy derived, so they pass.
+    source = "import sib_batch\ndef report(path):\n    return sib_batch.run_list(path)\n"
+    assert tree_read_findings({**SIBLING_FILES, f"{SCRIPTS}/plain.py": source}) == []
 
 
 def test_tree_read_policy_counts_a_path_method_on_self_its_class_does_not_define() -> None:
