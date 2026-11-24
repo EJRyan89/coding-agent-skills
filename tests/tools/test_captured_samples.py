@@ -138,10 +138,17 @@ SAMPLES = [
 ]
 
 
+def lines_behind(samples: list[Sample], runtime: str, version: tuple[int, ...], label: str | None = None) -> list[str]:
+    return [item.line for item in captured_samples.behind(samples, runtime, version, label)]
+
+
 def test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not() -> None:
-    assert captured_samples.behind(SAMPLES, "codex", (0, 163, 0)) == ["SAMPLE_BEHIND codex both.json 0.160.0 0.163.0"]
-    assert captured_samples.behind(SAMPLES, "copilot-cli", (1, 0, 103), "copilot") == [
+    assert lines_behind(SAMPLES, "codex", (0, 163, 0)) == ["SAMPLE_BEHIND codex both.json 0.160.0 0.163.0"]
+    assert lines_behind(SAMPLES, "copilot-cli", (1, 0, 103), "copilot") == [
         "SAMPLE_BEHIND copilot copilot/c.txt 1.0.100 1.0.103"
+    ]
+    assert captured_samples.behind(SAMPLES, "codex", (0, 163, 0)) == [
+        captured_samples.Behind("codex", "both.json", "0.160.0", "0.163.0")
     ]
     assert captured_samples.behind(SAMPLES, "claude-code", (9, 0, 0)) == []
     assert captured_samples.behind(SAMPLES, "codex", (0, 159, 0)) == []

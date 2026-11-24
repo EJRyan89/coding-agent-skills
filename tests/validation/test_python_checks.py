@@ -893,6 +893,182 @@ def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() 
     assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]
 
 
+# A module that builds a fact line by `build` in one function and reads lines by `body` in another.
+FACT_BUILD = "lines.append(f'FACT {value}')"
+
+
+def _fact_module(body: str, build: str = FACT_BUILD) -> str:
+    """The module, with the module-level names a test given one reads, and no others, since an unread name's literal
+    is a string the module builds."""
+    built = "".join(f"    {line}\n" for line in build.splitlines())
+    read = "".join(f"    {line}\n" for line in body.splitlines())
+    names = {
+        "PREFIXES": ["('OTHER ', 'FACT ')"],
+        "PREFIX": ["'FACT '"],
+        "WORD": ["'FACT'"],
+        "TWICE": ["'OTHER '", "'FACT '"],
+    }
+    bound = "".join(
+        f"{name} = {value}\n"
+        for name, values in names.items()
+        if re.search(rf"\b{name}\b", body + build)
+        for value in values
+    )
+    return f"import re\n\n{bound}\n\ndef build(lines, value):\n{built}\n\ndef read(line, lines, other):\n{read}"
+
+
+# Each form the fact-split policy refuses, as the reading function's body and the line's build.
+FACT_SPLIT_FORMS = (
+    ("in an if branch", "if line.startswith('FACT '):\n    return line.split()[1]", FACT_BUILD),
+    (
+        "in an elif branch",
+        "if line.startswith('OTHER '):\n    return ''\nelif line.startswith('FACT '):\n    return line.split()[1]",
+        FACT_BUILD,
+    ),
+    ("under an and", "if other and line.startswith('FACT '):\n    return line.split()[1]", FACT_BUILD),
+    ("under an or", "if line.startswith('FACT ') or other:\n    return line.split()[1]", FACT_BUILD),
+    ("in a conditional expression", "return line.split()[1] if line.startswith('FACT ') else ''", FACT_BUILD),
+    ("tested by a tuple", "if line.startswith(('OTHER ', 'FACT ')):\n    return line.split()[1]", FACT_BUILD),
+    ("tested by a module-level name", "if line.startswith(PREFIX):\n    return line.split()[1]", FACT_BUILD),
+    ("tested by a module-level tuple", "if line.startswith(PREFIXES):\n    return line.split()[1]", FACT_BUILD),
+    ("by rsplit", "if line.startswith('FACT '):\n    return line.rsplit(' ', 1)[1]", FACT_BUILD),
+    ("by partition", "if line.startswith('FACT '):\n    return line.partition(' ')[2]", FACT_BUILD),
+    ("by rpartition", "if line.startswith('FACT '):\n    return line.rpartition(' ')[2]", FACT_BUILD),
+    ("by an unbound split", "if line.startswith('FACT '):\n    return str.split(line)[1]", FACT_BUILD),
+    ("through a method call", "if line.startswith('FACT '):\n    return line.strip().split()[1]", FACT_BUILD),
+    ("through a subscript", "if line.startswith('FACT '):\n    return line[5:].split()[0]", FACT_BUILD),
+    ("in a list comprehension", "return [line.split()[1] for line in lines if line.startswith('FACT ')]", FACT_BUILD),
+    ("in a set comprehension", "return {line.split()[1] for line in lines if line.startswith('FACT ')}", FACT_BUILD),
+    ("in a generator", "return next(line.split()[1] for line in lines if line.startswith('FACT '))", FACT_BUILD),
+    (
+        "in a dict comprehension",
+        "return {line: line.split()[1] for line in lines if line.startswith('FACT ')}",
+        FACT_BUILD,
+    ),
+    (
+        "in a later if clause",
+        "return [line for line in lines if line.startswith('FACT ') if line.split()[1]]",
+        FACT_BUILD,
+    ),
+    (
+        "in a later for clause",
+        "return [f for line in lines if line.startswith('FACT ') for f in line.split()]",
+        FACT_BUILD,
+    ),
+    ("built as a literal", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append('FACT value')"),
+    ("built by a +", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append('FACT ' + value)"),
+    (
+        "built by format()",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append('FACT {}'.format(value))",
+    ),
+    ("built by a %", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append('FACT %s' % value)"),
+    # "A name rebound inside the branch is still read as the tested line."
+    (
+        "from a name rebound in the branch",
+        "if line.startswith('FACT '):\n    line = other\n    return line.split()[1]",
+        FACT_BUILD,
+    ),
+    # A tested or compared formatted string builds no line, but excuses none the module builds elsewhere.
+    (
+        "built beside a tested formatted string",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        f"{FACT_BUILD}\nlines.append(lines[0].startswith(f'FACT {{value}}'))",
+    ),
+    (
+        "built beside a compared formatted string",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        f"{FACT_BUILD}\nlines.append(f'FACT {{value}}' in lines)",
+    ),
+)
+# Each form the fact-split policy passes: one its paragraph leaves out, a stated limit, or a carried value.
+FACT_SPLIT_PASSES = (
+    (
+        "with its value carried beside it",
+        "return [value for line, value in lines if line.startswith('FACT ')]",
+        FACT_BUILD,
+    ),
+    ("built only in another module", "if line.startswith('FACT '):\n    return line.split()[1]", "lines.append(value)"),
+    ("under a not", "if not line.startswith('FACT '):\n    return line.split()[1]", FACT_BUILD),
+    (
+        "in the else branch",
+        "if line.startswith('FACT '):\n    return ''\nelse:\n    return line.split()[1]",
+        FACT_BUILD,
+    ),
+    ("of another name in the branch", "if line.startswith('FACT '):\n    return other.split()[1]", FACT_BUILD),
+    ("tested without its space", "if line.startswith('FACT'):\n    return line.split()[1]", FACT_BUILD),
+    (
+        "with the tested literal its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(value)\nlines.append(line.startswith('FACT '))",
+    ),
+    (
+        "with a compared literal its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append('FACT value' in lines)",
+    ),
+    (
+        "with a docstring its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        '"FACT lines are built here."\nlines.append(value)',
+    ),
+    (
+        "built with the word after its start",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(f'{value}FACT {value}')",
+    ),
+    # Stated limits: "a split after a test that guards it by an early `continue`, `return`, or `raise` rather than a
+    # branch; a split no startswith() test guards ...; a line another module builds; a string whose literal holds the
+    # word without its space ...; a test or a split of an attribute ...; a test through a `match` statement or a
+    # `while` loop; a split by re.split() or another function given the line".
+    ("after an early return", "if not line.startswith('FACT '):\n    return ''\nreturn line.split()[1]", FACT_BUILD),
+    ("unguarded", "kind, value = line.split(' ', 1)\nreturn value if kind == 'FACT' else ''", FACT_BUILD),
+    (
+        "built from the word by a join",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(' '.join(('FACT', value)))",
+    ),
+    ("as an attribute", "if other.line.startswith('FACT '):\n    return other.line.split()[1]", FACT_BUILD),
+    ("in a while loop", "while line.startswith('FACT '):\n    line = line.split(' ', 1)[1]\nreturn line", FACT_BUILD),
+    ("through a match", "match line.split():\n    case ['FACT', value]:\n        return value\nreturn ''", FACT_BUILD),
+    ("by re.split", "if line.startswith('FACT '):\n    return re.split(' ', line)[1]", FACT_BUILD),
+    # "a startswith() argument built by a `+` or a formatted string, or a line built from a name holding the word".
+    ("tested by a +", "if line.startswith(WORD + ' '):\n    return line.split()[1]", FACT_BUILD),
+    ("tested by a formatted string", "if line.startswith(f'{WORD} '):\n    return line.split()[1]", FACT_BUILD),
+    (
+        "built from a name holding the word",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(f'{WORD} {value}')",
+    ),
+    # "a split in the `else` branch of a `not` test, or in the test itself".
+    (
+        "in the else branch of a not test",
+        "if not line.startswith('FACT '):\n    return ''\nelse:\n    return line.split()[1]",
+        FACT_BUILD,
+    ),
+    (
+        "in the test itself",
+        "if line.startswith('FACT ') and (parts := line.split()):\n    return parts[1]\nreturn ''",
+        FACT_BUILD,
+    ),
+    # A tested or compared formatted string is no line the module builds.
+    (
+        "with a tested formatted string its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(lines[0].startswith(f'FACT {value}'))",
+    ),
+    (
+        "with a compared formatted string its only build",
+        "if line.startswith('FACT '):\n    return line.split()[1]",
+        "lines.append(f'FACT {value}' in lines)",
+    ),
+    # A split after a test of a word the module builds no line of, though it builds another's.
+    ("tested for another word than it builds", "if line.startswith('OTHER '):\n    return line.split()[1]", FACT_BUILD),
+    # A module-level name bound twice is no constant, so a test given it is not read.
+    ("tested by a name bound twice", "if line.startswith(TWICE):\n    return line.split()[1]", FACT_BUILD),
+)
+
+
 # Each form a policy's documentation names, as a minimal file that must be refused, and each form it deliberately
 # leaves out, as one that must pass, with the reason beside it. The documentation is the policy's paragraph in
 # "Validation" in docs/adding-a-skill.md or "Python checks" in CONTRIBUTING.md; a new policy, or a change to what a
@@ -2346,6 +2522,18 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "import argparse\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--ratio', type=float)\n",
         refused=False,
     ),
+    # "a split(), rsplit(), partition(), or rpartition() of a name, bound or unbound as str.split(line), or of a method
+    # call's result or a subscript on the name ... inside the branch of an `if` or a conditional expression whose test
+    # ... calls the name's startswith() with a fact word and a space ... or in a comprehension one of whose `if` clauses
+    # does, where the module builds a string that starts with that word and a space".
+    **{
+        f"a fact line split back {form}": _form(python_checks.fact_split_problems, _fact_module(body, build))
+        for form, body, build in FACT_SPLIT_FORMS
+    },
+    **{
+        f"a fact line read {form}": _form(python_checks.fact_split_problems, _fact_module(body, build), refused=False)
+        for form, body, build in FACT_SPLIT_PASSES
+    },
 }
 
 
@@ -2767,6 +2955,57 @@ def own(value):
 
 JSON_PARSE_ALLOWED = {"own": "parses the text it just serialized", "stale": "a reason"}
 """
+
+
+FACT_SPLIT_SOURCE = """\
+def build(lines, value):
+    lines.append(f"FACT {value}")
+
+
+def kept(line):
+    if line.startswith("FACT "):
+        return line.split()[1]
+    return ""
+
+
+def refused(lines):
+    return {line.split()[1] for line in lines if line.startswith("FACT ")}
+
+
+FACT_SPLIT_ALLOWED = {"kept": "the value is one of a fixed set of words", "stale": "a reason"}
+"""
+# A module whose only string that starts with its fact word is its own allowance's reason, which builds no line.
+FACT_SPLIT_SELF_EXCUSED = """\
+def kept(line):
+    if line.startswith("SELF "):
+        return line.split()[1]
+    return ""
+
+
+FACT_SPLIT_ALLOWED = {"kept": "SELF lines hold one word"}
+"""
+
+
+def test_fact_split_policy_refuses_an_unsanctioned_split_and_a_stale_or_self_kept_entry() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                SCRIPT: FACT_SPLIT_SOURCE,
+                "skills/alpha/scripts/test_alpha.py": FACT_SPLIT_SOURCE,
+                "tools/self_excused.py": FACT_SPLIT_SELF_EXCUSED,
+                "tools/broken.py": "FACT_SPLIT_ALLOWED = {'scope': ''}\n",
+            },
+        )
+        found = python_checks.fact_split_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        f"{SCRIPT}:12 splits its own FACT line back into fields with split() of line: a value that holds a space moves "
+        "every later field; carry each value beside the line where it is built, or state why in FACT_SPLIT_ALLOWED",
+        f"{SCRIPT}: FACT_SPLIT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: FACT_SPLIT_ALLOWED must map each function, class, or assignment to its reason",
+        "tools/self_excused.py: FACT_SPLIT_ALLOWED allows kept, which holds nothing it sanctions; remove the entry",
+    ]
 
 
 def test_json_parse_policy_refuses_a_parse_outside_json_reader() -> None:

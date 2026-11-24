@@ -193,7 +193,6 @@ DECLARED_RUNTIME = {"claude": "claude-code", "codex": "codex", "copilot": "copil
 # The outcome a partial skill reaches where the runtime lacks the capability; any other limit lies past the first
 # script the canary asks for, so the skill still runs that far.
 PARTIAL_OUTCOME = {"user-only-start": "UNSUPPORTED"}
-OUTCOME_LINE = re.compile(r"^RUNTIME (\S+) (\S+) ([A-Z_]+)\b")
 # The RUNTIME outcomes the canary reaches without starting the runtime, which therefore check nothing.
 UNSTARTED = ("NOT_ATTEMPTED", "UNSUPPORTED")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
@@ -614,20 +613,32 @@ def expected(support: runtime_support.Support) -> str:
     return "RAN"
 
 
-def outcome_of(line: str) -> str | None:
-    """The outcome a RUNTIME line names, or None for any other line."""
-    match = OUTCOME_LINE.match(line)
-    return match.group(3) if match else None
+@dataclass(frozen=True)
+class Verdict:
+    """A run's outcome, such as RAN or FAILED, and what follows it on its RUNTIME line."""
+
+    word: str
+    detail: str
+
+    @property
+    def text(self) -> str:
+        return f"{self.word} {self.detail}"
 
 
-def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
-    """One MATRIX line per runtime and skill, from its last RUNTIME line, since an UNCOUNTED run is followed by
-    another: whether what ran is what the skill's declared support expects."""
-    last: dict[tuple[str, str], str] = {}
-    for line in lines:
-        match = OUTCOME_LINE.match(line)
-        if match is not None:
-            last[match.group(1), match.group(2)] = match.group(3)
+@dataclass(frozen=True)
+class Outcome:
+    """The runtime, the skill, and the outcome a RUNTIME line reports, carried beside the line for the matrix and the
+    checks, never read back from it, since a value that holds a space would move every later field."""
+
+    runtime: str
+    skill: str
+    word: str
+
+
+def compare(outcomes: Sequence[Outcome], declared: Declarations) -> list[str]:
+    """One MATRIX line per runtime and skill, from its last outcome, since an UNCOUNTED run is followed by another:
+    whether what ran is what the skill's declared support expects."""
+    last = {(item.runtime, item.skill): item.word for item in outcomes}
     result = []
     for (runtime, skill), outcome in last.items():
         support = (declared.get(skill) or {}).get(DECLARED_RUNTIME[runtime])
@@ -643,13 +654,12 @@ def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
     return result
 
 
-def checks(line: str) -> bool:
-    """Whether the line shows its runtime checked: a listing that found the canary's copy or missed it, or a run the
-    canary started. DISCOVERY_FAILED read nothing, and NOT_ATTEMPTED and UNSUPPORTED started nothing."""
-    match = OUTCOME_LINE.match(line)
-    if match is not None:
-        return match.group(3) not in UNSTARTED
-    return line.startswith(("DISCOVERED ", "UNDISCOVERED "))
+def checks(lines: Sequence[str], outcomes: Sequence[Outcome]) -> bool:
+    """Whether the lines and outcomes show a runtime checked: a listing that found the canary's copy or missed it, or
+    a run the canary started. DISCOVERY_FAILED read nothing, and NOT_ATTEMPTED and UNSUPPORTED started nothing."""
+    return any(item.word not in UNSTARTED for item in outcomes) or any(
+        line.startswith(("DISCOVERED ", "UNDISCOVERED ")) for line in lines
+    )
 
 
 def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
@@ -936,13 +946,13 @@ def installed_roots(profile: Path) -> list[Path]:
     return [profile / folder / "skills" for folder in (".claude", ".agents", ".codex", ".copilot")]
 
 
-def ran_line(skill: str, script: str, cwd: str, status: int | None, timed_out: bool) -> str:
+def ran_line(skill: str, script: str, cwd: str, status: int | None, timed_out: bool) -> Verdict:
     """RAN with the exit status when it was recorded and `timed-out` when the session ran out of time afterwards, or
     FAILED for the fixture when it exited otherwise than 0."""
     if skill == FIXTURE_SKILL and status not in (None, 0):
-        return f"FAILED {quote(f'ran {script} but it exited with code {status}')}"
+        return Verdict("FAILED", quote(f"ran {script} but it exited with code {status}"))
     exited = "" if status is None else f" exit={status}"
-    return f"RAN {quote(script)} {quote(cwd)}{exited}{' timed-out' if timed_out else ''}"
+    return Verdict("RAN", f"{quote(script)} {quote(cwd)}{exited}{' timed-out' if timed_out else ''}")
 
 
 def verdict(
@@ -959,7 +969,7 @@ def verdict(
     rejected: Sequence[str] = (),
     unread: Sequence[str] = (),
     cause: str = "",
-) -> str:
+) -> Verdict:
     """RAN with the script and directory, BLOCKED by the runtime's policy, UNCOUNTED when the run started a script
     under one of the `installed` folders, the real profile's by default, or FAILED with what went wrong.
 
@@ -982,19 +992,19 @@ def verdict(
     if ran and skill == FIXTURE_SKILL and ran[0][2] not in (None, 0):
         return ran_line(skill, *ran[0], completed.timed_out)
     if ran and skill == FIXTURE_SKILL:
-        return f"FAILED {quote(f'ran {ran[0][0]} but it wrote no marker; was the write denied?')}"
+        return Verdict("FAILED", quote(f"ran {ran[0][0]} but it wrote no marker; was the write denied?"))
     if ran:
         return ran_line(skill, *ran[0], completed.timed_out)
     roots = installed_roots(platform_support.home_directory()) if installed is None else installed
     for script, _, _ in scripts:
         if any(inside(script, root) for root in roots):
-            return f"UNCOUNTED {quote(f'ran the installed copy {script}, not the canary copy')}"
+            return Verdict("UNCOUNTED", quote(f"ran the installed copy {script}, not the canary copy"))
     if scripts:
-        return f"FAILED {quote(f'ran {scripts[0][0]} instead of a script under {forward(skills_root / skill)}')}"
+        return Verdict("FAILED", quote(f"ran {scripts[0][0]} instead of a script under {forward(skills_root / skill)}"))
     if rejected:
         count = f"{len(rejected)} command{'' if len(rejected) == 1 else 's'}"
         reason = f"{rejected[0]}; the runtime refused {count} before any script ran"
-        return f"BLOCKED {quote(f'{reason}; {cause}' if cause else reason)}"
+        return Verdict("BLOCKED", quote(f"{reason}; {cause}" if cause else reason))
     if completed.error:
         reason = completed.error
     elif completed.timed_out:
@@ -1011,7 +1021,7 @@ def verdict(
             f"; the runtime logged {count} in a shape the canary does not read, so whether its policy or sandbox "
             f"refused them is unknown: {unread[0]}"
         )
-    return f"FAILED {quote(reason)}"
+    return Verdict("FAILED", quote(reason))
 
 
 def marked(probes: list[dict[str, Any]], run: str) -> list[dict[str, Any]]:
@@ -1031,8 +1041,9 @@ def run_skill(
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     version: tuple[int, ...] | None = None,
     attempt: int = 1,
-) -> list[str]:
-    """The lines of one run of the skill; a run after the first names its files with its number."""
+) -> list[tuple[str, Outcome | None]]:
+    """The lines of one run of the skill, the RUNTIME line with the outcome it reports beside it and None beside each
+    other line; a run after the first names its files with its number."""
     state = home / STATE
     probe_log = state / "probe.jsonl"
     name = f"{runtime}-{skill}" if attempt == 1 else f"{runtime}-{skill}-run{attempt}"
@@ -1065,7 +1076,7 @@ def run_skill(
     try:
         probes, started = marked(read_records(probe_log), run), read_records(script_log)
     except (OSError, RecordRefused) as exc:
-        outcome = f"FAILED {quote(unreadable(exc, probe_log))}"
+        outcome = Verdict("FAILED", quote(unreadable(exc, probe_log)))
     else:
         outcome = verdict(
             skill,
@@ -1081,11 +1092,14 @@ def run_skill(
             cause=blocked_cause(runtime, codex_sandbox),
         )
     if runtime == "claude" and (nothing := discovery_failure(completed.stdout)):
-        outcome = f"FAILED {quote(nothing)}"
+        outcome = Verdict("FAILED", quote(nothing))
     return [
-        *lines,
-        f"RUNTIME {runtime} {skill} {outcome} KEPT {quote(KEPT[runtime])}",
-        f"TRANSCRIPT {runtime} {skill} {quote(forward(transcript))}",
+        *((line, None) for line in lines),
+        (
+            f"RUNTIME {runtime} {skill} {outcome.text} KEPT {quote(KEPT[runtime])}",
+            Outcome(runtime, skill, outcome.word),
+        ),
+        (f"TRANSCRIPT {runtime} {skill} {quote(forward(transcript))}", None),
     ]
 
 
@@ -1110,29 +1124,33 @@ class RuntimeChecks:
 
 def check_runtime(
     runtime: str, executable: str, run: RuntimeChecks, version: tuple[int, ...] | None = None
-) -> Iterator[str]:
+) -> Iterator[tuple[str, Outcome | None]]:
     """Each line of the checks of the runtime whose `--version` named `version`, given as soon as it is known, so a run
-    that fails later loses none."""
+    that fails later loses none, with the outcome a RUNTIME line reports carried beside it, and None beside any other
+    line."""
     # Claude Code has no listing; its run reports the skills it found.
     if runtime in discovery.RUNTIMES:
         listing_environment = environment(run.base, run.home / STATE / "scripts" / "listing.jsonl", run.home)
         try:
             found = discovery.list_skills(runtime, executable, run.home, listing_environment, run.timeout, run.talk)
         except discovery.ListingError as exc:
-            yield f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}"
+            yield f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}", None
         else:
-            yield from discovery_lines(runtime, run.skills, found, run.home, run.unadapted)
+            yield from ((line, None) for line in discovery_lines(runtime, run.skills, found, run.home, run.unadapted))
     if run.discovery_only:
         return
-    yield from (f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, run.codex_sandbox))
+    yield from ((f"SUPPLIED {runtime} {quote(setting)}", None) for setting in supplied(runtime, run.codex_sandbox))
     for skill in run.skills:
         support = ((run.declared or {}).get(skill) or {}).get(DECLARED_RUNTIME[runtime])
         if support is not None and support.level == runtime_support.NONE:
-            yield f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}"
+            yield (
+                f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}",
+                Outcome(runtime, skill, "NOT_ATTEMPTED"),
+            )
             continue
         reason = unsupported(runtime, skill, run.home)
         if reason:
-            yield f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}"
+            yield f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}", Outcome(runtime, skill, "UNSUPPORTED")
             continue
         reachable = run.closure.get(skill, [skill])
         # A run that started the installed copy tested nothing, so the skill runs again, up to run.attempts runs, and
@@ -1152,7 +1170,7 @@ def check_runtime(
                 attempt,
             )
             yield from lines
-            if not any(outcome_of(line) == "UNCOUNTED" for line in lines):
+            if not any(outcome is not None and outcome.word == "UNCOUNTED" for _, outcome in lines):
                 break
 
 
@@ -1260,6 +1278,7 @@ def checked(
         attempts=attempts,
     )
     printed = []
+    outcomes: list[Outcome] = []
     reasons = []
     for runtime in runtimes:
         executable = which(runtime)
@@ -1270,18 +1289,21 @@ def checked(
         version = read_version(executable, runner, base, home)
         versions[runtime] = version_text(version)
         lines = []
-        for line in check_runtime(runtime, executable, run, version):
+        found: list[Outcome] = []
+        for line, outcome in check_runtime(runtime, executable, run, version):
             say(line)
             lines.append(line)
+            found += [outcome] if outcome is not None else []
         printed += lines
-        if not any(checks(line) for line in lines):
+        outcomes += found
+        if not checks(lines, found):
             reasons.append(unchecked(runtime, lines, discovery_only))
-    matrix = compare(printed, declared)
+    matrix = compare(outcomes, declared)
     for line in matrix:
         say(line)
     # A runtime whose skill list could not be read proves nothing about it, so it fails the run as a miss does, and
     # so does a run that checked no runtime, as `deploy.py verify` fails when it finds none to verify.
-    nothing = not any(checks(line) for line in printed)
+    nothing = not checks(printed, outcomes)
     if nothing:
         what = "discovery" if discovery_only else "discovery or run"
         say(f"NOTHING_CHECKED {quote(f'no runtime was checked for {what}: ' + '; '.join(reasons))}")
