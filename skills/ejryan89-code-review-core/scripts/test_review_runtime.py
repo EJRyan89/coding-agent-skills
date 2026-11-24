@@ -6,6 +6,7 @@ import contextlib
 import gzip
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -1931,7 +1932,7 @@ class ClosingIssuesFileTests(unittest.TestCase):
 
 
 class AdapterRequestPathTests(unittest.TestCase):
-    def request(self, *, body: Path | None = None, closing: Path | None = None) -> dict[str, Any]:
+    def request(self, *, body: Path | None = None, closing: Path | None = None) -> review_runtime.AdapterRequest:
         return build_adapter_request(
             mode="initial",
             repository="example/one",
@@ -1981,3 +1982,72 @@ class AdapterRequestPathTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeContractError, "snapshot") as refused:
             self.request(body=self.present, closing=self.present)
         self.assertNotIn("must name an existing absolute file", str(refused.exception))
+
+    def test_the_written_request_holds_each_optional_pull_request_field_only_when_given(self) -> None:
+        # The request file for every combination of the optional head branch, description, and closing issues, byte
+        # for byte, so a change to how the envelope is built cannot add, drop, or alter what a reviewer is given.
+        account = {"total": 1, "issues": [{"repository": "example/one", "number": 3, "state": "OPEN"}]}
+        present = str(self.present)
+        optional: list[tuple[dict[str, Any], dict[str, Any]]] = [
+            ({"head_ref": "feature/x"}, {"head_ref": "feature/x"}),
+            ({"body": (self.present, 5)}, {"body_file": present, "body_characters": 5, "body_given": 5}),
+            (
+                {"closing_issues": (self.present, account)},
+                {"closing_issues": {"file": present, "total": 1, "issues": account["issues"]}},
+            ),
+        ]
+        written = self.root / "request.json"
+        for chosen in itertools.product((False, True), repeat=len(optional)):
+            arguments: dict[str, Any] = {}
+            fields: dict[str, Any] = {}
+            for (given, expected), included in zip(optional, chosen, strict=True):
+                if included:
+                    arguments.update(given)
+                    fields.update(expected)
+            with (
+                self.subTest(given=sorted(arguments)),
+                mock.patch.object(review_runtime, "verify_source_snapshot", return_value={"excluded_paths": {}}),
+            ):
+                review_runtime.write_adapter_request(written, self.request_with(**arguments))
+                expected_request = {
+                    "protocol_version": 1,
+                    "mode": "initial",
+                    "repository": "example/one",
+                    "pull_number": 12,
+                    "pull_request": {
+                        "title": "Fixture",
+                        "url": "https://github.com/example/one/pull/12",
+                        "base_ref": "main",
+                        "base_sha": "a" * 40,
+                        "head_sha": "b" * 40,
+                        **fields,
+                    },
+                    "diff_path": str(self.diff),
+                    "source_snapshot": {
+                        "root": str(self.root / "snapshot"),
+                        "manifest_path": str(self.root / "snapshot" / "source-snapshot.json"),
+                        "source_commit": "b" * 40,
+                    },
+                    "prior_findings": [],
+                    "github_comments": [],
+                    "coverage": {"unavailable_sources": [], "unreviewed_files": {}},
+                }
+                self.assertEqual(
+                    json.dumps(expected_request, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                    written.read_text(encoding="utf-8"),
+                )
+
+    def request_with(self, **optional: Any) -> review_runtime.AdapterRequest:
+        return build_adapter_request(
+            mode="initial",
+            repository="example/one",
+            pull_number=12,
+            base_ref="main",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            title="Fixture",
+            url="https://github.com/example/one/pull/12",
+            diff_path=self.diff,
+            source_snapshot_root=self.root / "snapshot",
+            **optional,
+        )

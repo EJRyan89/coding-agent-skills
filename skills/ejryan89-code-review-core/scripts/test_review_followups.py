@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1167,7 +1167,7 @@ class EnumerateBatchTests(unittest.TestCase):
 class CoverageTests(unittest.TestCase):
     POLICY: ClassVar[dict[str, Any]] = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 
-    def request(self, exclude: tuple[str, ...] = ()) -> tuple[dict[str, Any], Path]:
+    def request(self, exclude: tuple[str, ...] = ()) -> tuple[review_runtime.AdapterRequest, Path]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -1202,7 +1202,10 @@ class CoverageTests(unittest.TestCase):
         return request, root
 
     def record(
-        self, request: dict[str, Any], findings: list[dict[str, Any]], uncovered: list[str] | None = None
+        self,
+        request: review_runtime.AdapterRequest,
+        findings: list[dict[str, Any]],
+        uncovered: list[str] | None = None,
     ) -> ReviewRecord:
         from review_records import build_record
 
@@ -1219,7 +1222,8 @@ class CoverageTests(unittest.TestCase):
             "prior_dispositions": [],
         }
         return build_record(
-            review_operation.request_to_record_input(request, adapter, uncovered_files=uncovered),
+            # Finalize reads the request back from its file, untyped; this hands it over directly.
+            review_operation.request_to_record_input(cast(dict[str, Any], request), adapter, uncovered_files=uncovered),
             result,
             version=1,
             policy=self.POLICY,

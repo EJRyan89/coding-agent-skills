@@ -10,10 +10,10 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,6 +27,7 @@ import review_guidance as rg
 import review_synthesis as rs
 from git_client import GitClient
 from review_config import load_config, write_config
+from review_records import ReviewRecord
 from test_review_insights import InsightFixture
 from test_time_in_proportion import assert_time_in_proportion
 
@@ -63,15 +64,16 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def reviewed(name: str, stamp: str, files: dict[str, str], commit: str | None = None) -> dict[str, Any]:
-    """The parts of a record the guidance reader uses: a repository-scoped reviewer built from `files`."""
+def reviewed(name: str, stamp: str, files: dict[str, str], commit: str | None = None) -> ReviewRecord:
+    """The parts of a record the guidance reader uses: a repository-scoped reviewer built from `files`, typed as the
+    validated record the reader takes, of which it reads no other field."""
     adapter = {
         "name": name,
         "scope": "repository",
         "source_commit": commit,
         "source_hashes": {path: digest(text) for path, text in files.items()},
     }
-    return {"repository": "owner/repo", "review": {"reviewed_at": stamp, "adapter": adapter}}
+    return cast(ReviewRecord, {"repository": "owner/repo", "review": {"reviewed_at": stamp, "adapter": adapter}})
 
 
 class RuleTests(unittest.TestCase):
@@ -208,7 +210,7 @@ class RuleTests(unittest.TestCase):
 
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]
-        candidate = rg.compare(first, second) or {}
+        candidate: Mapping[str, object] = rg.compare(first, second) or {}
         self.assertEqual(
             ("conflict", ["must_fix", "suggestion"], ["a.md", "b.md"], [3, 7]),
             (candidate.get("relation"), candidate.get("differs"), candidate.get("paths"), candidate.get("lines")),
@@ -218,9 +220,10 @@ class RuleTests(unittest.TestCase):
         conventions, checklist = rg.rules("a.md", CONVENTIONS), rg.rules("b.md", CHECKLIST)
         duplicate = rg.compare(conventions[1], checklist[1])
         threshold = rg.compare(conventions[2], checklist[2])
+        found: list[Mapping[str, object]] = [duplicate or {}, threshold or {}]
         self.assertEqual(
             [("duplicate", 1.0, []), ("conflict", 1.0, ["3", "5"])],
-            [(item["relation"], item["similarity"], item["differs"]) for item in (duplicate or {}, threshold or {})],
+            [(item["relation"], item["similarity"], item["differs"]) for item in found],
         )
         self.assertIsNone(rg.compare(conventions[0], checklist[1]), "unrelated rules make no candidate")
 
@@ -242,7 +245,7 @@ class OverlapBoundTests(unittest.TestCase):
         """A stand-in for `compare` that fails once it has been called more than `limit` times."""
         real = rg.compare
 
-        def compare(first: rg.Rule, second: rg.Rule) -> dict[str, Any] | None:
+        def compare(first: rg.Rule, second: rg.Rule) -> rg.OverlapCandidate | None:
             if stand_in.call_count > limit:
                 raise AssertionError(f"compared more than {limit} rule pairs")
             return real(first, second)
@@ -340,7 +343,7 @@ class ReadTests(unittest.TestCase):
 
     def test_each_repository_s_candidates_and_stopped_search_are_kept_beside_the_others(self) -> None:
         # Two repositories with the same guidance: the second's search adds to the first's, never replaces it.
-        both = {
+        both: dict[Path, ReviewRecord] = {
             **self.records,
             **{Path(f"other-{path}"): {**record, "repository": "owner/other"} for path, record in self.records.items()},
         }
