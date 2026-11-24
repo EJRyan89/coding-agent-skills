@@ -611,3 +611,28 @@ def test_a_given_path_that_is_tracked_is_not_new_and_one_the_issue_names_is_list
     assert result.section("Files") == (
         "- `tools/reader.py`: named by the issue\n- `deploy/run.sh`: given with `--path`"
     )
+
+
+@pytest.mark.parametrize(
+    "spans",
+    [
+        "`tools/reader.py::test_x`",
+        "`tools/reader.py:4-9`",
+        "`./tools/reader.py`",
+        "`tools/reader.py::test_x` `tools/reader.py:4-9` `./tools/reader.py`",
+    ],
+)
+def test_a_path_with_a_test_a_line_range_or_a_leading_dot_names_its_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], spans: str
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue(spans), "7")
+    assert result.section("Files") == "- `tools/reader.py`: named by the issue"
+
+
+def test_a_called_capitals_name_is_a_symbol_and_a_lone_status_word_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`DEPLOY()` `FAILED`"), "7")
+    assert re.findall(r"^### `([^`]+)`", result.section("Callers"), re.MULTILINE) == ["DEPLOY"]
