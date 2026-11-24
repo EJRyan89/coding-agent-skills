@@ -4,7 +4,6 @@ last recorded run, and replacing them."""
 from __future__ import annotations
 
 import datetime
-import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -12,29 +11,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from evaluation_results import NOT_RUN, RESULTS_HEADER, cells, results_table, samples_layout, samples_table
 from text_lines import LINE_BREAK
 
 from tools.skill_evals_judging import Outcome, counts
 from tools.skill_evals_records import JUDGMENT, REVIEWER_EFFORT, Index, RoutePin
 from tools.skill_evals_runs import Run, RunKey, run_keys
-from tools.skill_evals_scenarios import TRIGGER, Scenario, ScenarioError, quote
+from tools.skill_evals_scenarios import TRIGGER, Scenario, ScenarioError
 
-RESULTS_BEGIN = "<!-- skill-evals:begin -->"
-RESULTS_END = "<!-- skill-evals:end -->"
-RESULTS_HEADER = (
-    "| Skill | Model | Model ID | Reviewer effort | Route pins | Passed | Runs | By scenario | Session model "
-    "| Claude Code | Date |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-)
 # The reviewer effort of a row whose scenarios start no reviewer, only trigger sessions.
 NO_REVIEWER = "none"
 # The route pins of a row whose scenarios' manifests pin no route's model or effort.
 NO_PINS = "none"
-
-
-# A results table's cell border, a pipe its cell does not escape, and a separator cell, aligned or not.
-CELL_BORDER = re.compile(r"(?<!\\)\|")
-SEPARATOR_CELL = re.compile(r":?-{3,}:?")
 
 
 def _cell(text: str) -> str:
@@ -89,12 +77,12 @@ def result_rows(
             theirs = counted
             identifier = ", ".join(reviewers) or "none"
             detail = ", ".join(
-                f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} not run"
+                f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} {NOT_RUN}"
                 for scenario in scenarios
                 for judged in [[outcome for outcome in theirs if outcome.scenario == scenario.name]]
             )
         else:
-            identifier = "not run"
+            identifier = NOT_RUN
             detail = next((run.recorded for _, run in mine if run.recorded), "no run")
         passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         effort = REVIEWER_EFFORT[model] if reviewed else NO_REVIEWER
@@ -104,65 +92,21 @@ def result_rows(
     return rows
 
 
-def _cells(line: str) -> list[str] | None:
-    """A table line's cells, stripped, or None when the line is not one: it starts and ends with a cell border."""
-    stripped = line.strip()
-    borders = [match.start() for match in CELL_BORDER.finditer(stripped)]
-    if len(borders) < 2 or borders[0] != 0 or borders[-1] != len(stripped) - 1:
-        return None
-    return [cell.strip() for cell in CELL_BORDER.split(stripped[1:-1])]
-
-
 def _row_skill(row: str) -> str:
     """The skill a row of a table results_table read names."""
-    return (_cells(row) or [""])[0]
-
-
-def _table(text: str, markers: tuple[str, str], header_lines: tuple[str, str], what: str) -> tuple[int, int, list[str]]:
-    """The line indexes of one table's markers in docs/skill-evaluations.md and its rows between them, each as
-    written. Raise ScenarioError when the markers are not there once each and in order, or when anything between them
-    is not the header, its separator, and then rows of the header's columns, each naming a skill."""
-    lines = LINE_BREAK.split(text)
-    opening, closing = markers
-    if lines.count(opening) != 1 or lines.count(closing) != 1:
-        raise ScenarioError(f"the results file needs one {opening} line and one {closing} line")
-    begin, end = lines.index(opening), lines.index(closing)
-    if end < begin:
-        raise ScenarioError(f"{closing} comes before {opening} in the results file")
-    header = _cells(header_lines[0]) or []
-    table = lines[begin + 1 : end]
-    if not table or _cells(table[0]) != header:
-        raise ScenarioError(f"the {what} must start with the header {header_lines[0]}")
-    separator = _cells(table[1]) if len(table) > 1 else None
-    if separator is None or len(separator) != len(header) or not all(map(SEPARATOR_CELL.fullmatch, separator)):
-        raise ScenarioError(f"the {what}'s header must be followed by its separator {header_lines[1]}")
-    for number, row in enumerate(table[2:], begin + 4):
-        cells = _cells(row)
-        if cells is None or len(cells) != len(header) or not cells[0]:
-            raise ScenarioError(
-                f"line {number} of the results file is not a row of the table's {len(header)} columns naming a "
-                f"skill: {quote(row)}"
-            )
-    return begin, end, table[2:]
-
-
-def results_table(text: str) -> tuple[int, int, list[str]]:
-    """The line indexes of the results markers in docs/skill-evaluations.md and the table's rows between them, each
-    as written. Raise ScenarioError when the markers are not there once each and in order, or when anything between
-    them is not the header, its separator, and then rows of the header's columns, each naming a skill."""
-    return _table(text, (RESULTS_BEGIN, RESULTS_END), RESULTS_HEADER, "results table")
+    return (cells(row) or [""])[0]
 
 
 def _row_model(row: str) -> str:
     """The model a row of the results table names."""
-    return (_cells(row) or ["", ""])[1]
+    return (cells(row) or ["", ""])[1]
 
 
 def kept_models(text: str, skill: str, models: Sequence[str], outcomes: Sequence[Outcome]) -> list[str]:
     """The models, in run order, whose committed row of the skill a write keeps: each no record of which counted,
     since every outcome of it failed with a run or record kind, and of which the skill has a row. Such a run
     measured nothing of the model, so its new row would replace a measured one with `not run` or a pass count of 0; a
-    model the skill has no row of loses nothing, and its new row is written. Raise ScenarioError when results_table
+    model the skill has no row of loses nothing, and its new row is written. Raise TableError when results_table
     cannot read its table. A judgment made on the session's calls alone is the session's, on its own model, so it
     measures nothing of the row's model either."""
     committed = {_row_model(row) for row in results_table(text)[2] if _row_skill(row) == skill}
@@ -174,7 +118,7 @@ def kept_models(text: str, skill: str, models: Sequence[str], outcomes: Sequence
 
 def replace_results(text: str, skill: str, rows: Sequence[str], keep: Sequence[str] = ()) -> str:
     """The results file with the skill's rows replaced by these, except that each model in keep keeps its committed
-    row in place of its new one, and every other skill's rows kept as written, sorted by skill; raise ScenarioError
+    row in place of its new one, and every other skill's rows kept as written, sorted by skill; raise TableError
     when results_table cannot read its table."""
     lines = LINE_BREAK.split(text)
     begin, end, existing = results_table(text)
@@ -185,28 +129,13 @@ def replace_results(text: str, skill: str, rows: Sequence[str], keep: Sequence[s
     return "\n".join([*lines[: begin + 1], *RESULTS_HEADER, *table, *lines[end:]])
 
 
-def samples_layout() -> tuple[tuple[str, str], tuple[str, str]]:
-    """The transcript samples table's markers, and its header with its separator."""
-    return (
-        ("<!-- skill-evals-samples:begin -->", "<!-- skill-evals-samples:end -->"),
-        ("| Skill | Scenario | Model | Run | Date | Transcript |", "| --- | --- | --- | --- | --- | --- |"),
-    )
-
-
-def samples_table(text: str) -> tuple[int, int, list[str]]:
-    """The line indexes of the samples markers in docs/skill-evaluations.md and the table's rows between them, read
-    as results_table reads its own, and refused as it refuses its own."""
-    markers, header = samples_layout()
-    return _table(text, markers, header, "samples table")
-
-
 def pick_sample(
     skill: str, scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequence[Outcome], text: str
 ) -> tuple[str, str, Index] | None:
     """The run whose transcript is read this time, as its scenario, model, and run: of the runs that passed every
     expectation, the first after the scenario and model the skill's samples row names, in scenario order and then
     model order, wrapping round, so successive recorded runs read each scenario on each model in turn. It is the first
-    passing run when the skill has no row, and None when no run passed. Raise ScenarioError when samples_table cannot
+    passing run when the skill has no row, and None when no run passed. Raise TableError when samples_table cannot
     read its table."""
     failed = {(outcome.scenario, outcome.model, outcome.run) for outcome in outcomes if outcome.failure is not None}
     passing: dict[tuple[str, str], Index] = {}
@@ -214,7 +143,7 @@ def pick_sample(
         if (outcome.scenario, outcome.model, outcome.run) not in failed:
             passing.setdefault((outcome.scenario, outcome.model), outcome.run)
     order = [(scenario.name, model) for scenario in scenarios for model in models]
-    previous = [(cells[1], cells[2]) for row in samples_table(text)[2] if (cells := _cells(row) or [])[0] == skill]
+    previous = [(found[1], found[2]) for row in samples_table(text)[2] if (found := cells(row) or [])[0] == skill]
     after = order.index(previous[0]) + 1 if previous and previous[0] in order else 0
     for key in order[after:] + order[:after]:
         if key in passing:
@@ -224,29 +153,29 @@ def pick_sample(
 
 def replace_sample(text: str, skill: str, sample: tuple[str, str, Index], today: datetime.date) -> str:
     """The results file with the skill's samples row replaced by one naming this run, its transcript unread, and every
-    other skill's row kept as written, sorted by skill; raise ScenarioError when samples_table cannot read its
+    other skill's row kept as written, sorted by skill; raise TableError when samples_table cannot read its
     table."""
     lines = LINE_BREAK.split(text)
     begin, end, existing = samples_table(text)
     scenario, model, index = sample
-    cells = [skill, scenario, model, str(index or 1), today.isoformat(), "unread"]
+    written = [skill, scenario, model, str(index or 1), today.isoformat(), "unread"]
     kept = [row for row in existing if _row_skill(row) != skill]
-    table = sorted([*kept, f"| {' | '.join(_cell(cell) for cell in cells)} |"], key=_row_skill)
+    table = sorted([*kept, f"| {' | '.join(_cell(cell) for cell in written)} |"], key=_row_skill)
     return "\n".join([*lines[: begin + 1], *samples_layout()[1], *table, *lines[end:]])
 
 
 def read_sample(text: str, skill: str, reading: str) -> str:
     """The results file with the skill's unread samples row marked with the reader's reading: `agrees` when the
     transcript shows what the script's verdict on each expectation says, and `disagrees` otherwise. Raise
-    ScenarioError when samples_table cannot read its table, or the skill has no unread row."""
+    TableError when samples_table cannot read its table, and ScenarioError when the skill has no unread row."""
     lines = LINE_BREAK.split(text)
     begin, _, existing = samples_table(text)
     for number, row in enumerate(existing):
-        cells = _cells(row) or []
-        if cells[0] != skill:
+        found = cells(row) or []
+        if found[0] != skill:
             continue
-        if cells[-1] != "unread":
-            raise ScenarioError(f"{skill}'s sampled transcript is already read: {cells[-1]}")
-        lines[begin + 3 + number] = f"| {' | '.join(_cell(cell) for cell in [*cells[:-1], reading])} |"
+        if found[-1] != "unread":
+            raise ScenarioError(f"{skill}'s sampled transcript is already read: {found[-1]}")
+        lines[begin + 3 + number] = f"| {' | '.join(_cell(cell) for cell in [*found[:-1], reading])} |"
         return "\n".join(lines)
     raise ScenarioError(f"the samples table has no row of {skill}; a run with --write samples one")

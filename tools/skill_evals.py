@@ -431,6 +431,7 @@ import whole_number
 from agent_skills import NAME_PATTERN
 from bounded_process import without_repository_variables
 from console import run_main
+from evaluation_results import TableError, results_table, samples_table
 from git_client import GitClient
 from path_containment import resolved_path
 from seconds_option import positive_seconds
@@ -447,8 +448,6 @@ from tools.skill_evals_results import (
     replace_results,
     replace_sample,
     result_rows,
-    results_table,
-    samples_table,
 )
 from tools.skill_evals_runs import (
     NO_REVIEW,
@@ -572,7 +571,8 @@ class Seams:
 
 def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     """Claude Code's path and, with --write, the results file's text; raise ScenarioError before any run when
-    something a run needs is missing or the checkout follows another repository's pull request."""
+    something a run needs is missing or the checkout follows another repository's pull request, and TableError when
+    the results file's tables are not as written."""
     executable = seams.which("claude")
     if executable is None:
         raise ScenarioError("Claude Code (claude) is not installed")
@@ -598,7 +598,7 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
     base = without_repository_variables(os.environ if seams.environment is None else seams.environment)
     try:
         executable, results_text = preflight(options.write, seams)
-    except ScenarioError as exc:
+    except (ScenarioError, TableError) as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
     try:
@@ -706,6 +706,7 @@ def record_reading(skill: str, reading: str, results: Path) -> int:
         UnicodeDecodeError,
         json_writer.JsonWriteRefused,
         ScenarioError,
+        TableError,
     ) as exc:  # a results file missing, not UTF-8, or not as read
         print(f"FAILED {quote(str(exc))}")
         return 1

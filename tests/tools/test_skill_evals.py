@@ -36,6 +36,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import evaluation_results
 import file_presence
 import frontmatter
 import review_document
@@ -3307,19 +3308,19 @@ RESULTS_TEXT = "\n".join(
     [
         "# Skill evaluations",
         "",
-        skill_evals_results.RESULTS_BEGIN,
-        *skill_evals_results.RESULTS_HEADER,
+        evaluation_results.RESULTS_BEGIN,
+        *evaluation_results.RESULTS_HEADER,
         "| alpha | opus | claude-opus-5-5 | high | none | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
         "| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
         "| zeta | opus | claude-opus-5-5 | high | none | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
-        skill_evals_results.RESULTS_END,
+        evaluation_results.RESULTS_END,
         "",
         "Written by hand after the table.",
         "",
-        skill_evals_results.samples_layout()[0][0],
-        *skill_evals_results.samples_layout()[1],
+        evaluation_results.samples_layout()[0][0],
+        *evaluation_results.samples_layout()[1],
         "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
-        skill_evals_results.samples_layout()[0][1],
+        evaluation_results.samples_layout()[0][1],
         "",
     ]
 )
@@ -3488,12 +3489,12 @@ class ResultsTests(unittest.TestCase):
         rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")
         written = skill_evals_results.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
-        begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
+        begin, end = written.index(evaluation_results.RESULTS_BEGIN), written.index(evaluation_results.RESULTS_END)
         self.assertEqual(
-            [*skill_evals_results.RESULTS_HEADER, original[5], rows[0], original[7]], written[begin + 1 : end]
+            [*evaluation_results.RESULTS_HEADER, original[5], rows[0], original[7]], written[begin + 1 : end]
         )
         self.assertEqual(original[:begin], written[:begin])
-        self.assertEqual(original[original.index(skill_evals_results.RESULTS_END) + 1 :], written[end + 1 :])
+        self.assertEqual(original[original.index(evaluation_results.RESULTS_END) + 1 :], written[end + 1 :])
         self.assertEqual("Written by hand after the table.", written[end + 2])
 
     def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
@@ -3509,9 +3510,9 @@ class ResultsTests(unittest.TestCase):
         text = "\n".join(lines)
         rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         written = skill_evals_results.replace_results(text, "review-prs", rows).split("\n")
-        begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
+        begin, end = written.index(evaluation_results.RESULTS_BEGIN), written.index(evaluation_results.RESULTS_END)
         self.assertEqual(
-            [*skill_evals_results.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end]
+            [*evaluation_results.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end]
         )
 
     def test_a_model_no_record_of_which_counted_keeps_its_committed_row(self) -> None:
@@ -3537,20 +3538,20 @@ class ResultsTests(unittest.TestCase):
         written = skill_evals_results.replace_results(text, "review-prs", rows, kept)
         self.assertEqual(
             [RESULTS_TEXT.split("\n")[5], haiku, rows[1], rows[2], RESULTS_TEXT.split("\n")[7]],
-            skill_evals_results.results_table(written)[2],
+            evaluation_results.results_table(written)[2],
         )
 
     def test_a_table_it_cannot_read_is_refused(self) -> None:
-        empty = "\n".join([skill_evals_results.RESULTS_BEGIN, skill_evals_results.RESULTS_END])
-        with self.assertRaisesRegex(ScenarioError, "must start with the header"):
-            skill_evals_results.results_table(empty)
+        empty = "\n".join([evaluation_results.RESULTS_BEGIN, evaluation_results.RESULTS_END])
+        with self.assertRaisesRegex(evaluation_results.TableError, "must start with the header"):
+            evaluation_results.results_table(empty)
 
     def test_the_shipped_results_file_has_its_table(self) -> None:
         text = skill_evals.RESULTS.read_text(encoding="utf-8")
-        begin, end, _ = skill_evals_results.results_table(text)
+        begin, end, _ = evaluation_results.results_table(text)
         lines = text.split("\n")
-        self.assertEqual(list(skill_evals_results.RESULTS_HEADER), lines[begin + 1 : begin + 3])
-        columns = len(skill_evals_results.RESULTS_HEADER[0].split("|"))
+        self.assertEqual(list(evaluation_results.RESULTS_HEADER), lines[begin + 1 : begin + 3])
+        columns = len(evaluation_results.RESULTS_HEADER[0].split("|"))
         for row in lines[begin + 3 : end]:
             self.assertEqual(columns, len(row.replace("\\|", "").split("|")), row)
 
@@ -3742,7 +3743,7 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertIn(
             "| review-prs | clean-change | sonnet | 1 | 2026-10-08 | unread |",
-            skill_evals_results.samples_table(self.results.read_text(encoding="utf-8"))[2],
+            evaluation_results.samples_table(self.results.read_text(encoding="utf-8"))[2],
         )
 
     def test_every_session_starts_in_its_model_s_home_made_its_own_git_root_after_the_deployment(self) -> None:
@@ -3883,7 +3884,7 @@ class EvaluateTests(unittest.TestCase):
                 "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
                 "| review-prs | clean-change | haiku | 1 | 2026-10-08 | unread |",
             ],
-            skill_evals_results.samples_table(written)[2],
+            evaluation_results.samples_table(written)[2],
         )
         self.assertNotIn("| review-prs | opus | old |", written)
         for arguments, cwd, environment in claude.calls:
@@ -4061,7 +4062,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |", written)
         self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | high | none | 0/22 |", written)
         self.assertEqual(
-            ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
+            ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], evaluation_results.samples_table(written)[2]
         )
 
     def test_a_run_whose_stream_holds_a_json_line_that_is_no_object_counts_for_nothing_by_its_line(self) -> None:
@@ -4146,7 +4147,7 @@ class EvaluateTests(unittest.TestCase):
             ["KEPT haiku", "SAMPLE clean-change sonnet", f"WROTE {runtime_canary.forward(self.results)}"],
             self.output[self.output.index("CITATION END") + 1 :],
         )
-        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        rows = evaluation_results.results_table(self.results.read_text(encoding="utf-8"))[2]
         self.assertEqual(
             [
                 RESULTS_TEXT.split("\n")[5],
@@ -4283,7 +4284,7 @@ class EvaluateTests(unittest.TestCase):
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), only=["design-gaps"])
         self.assertEqual(0, status, lines)
         self.assertEqual([], [line for line in lines if line.startswith(("NOT_COUNTED ", "FAIL "))])
-        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        rows = evaluation_results.results_table(self.results.read_text(encoding="utf-8"))[2]
         for model in skill_evals_records.MODELS:
             with self.subTest(model=model):
                 self.assertIn(
@@ -4311,7 +4312,7 @@ class EvaluateTests(unittest.TestCase):
             with self.subTest(model=model):
                 effort = frontmatter.read(home / skill_evals_runs.REVIEWER_AGENT).string("effort")
                 self.assertEqual(skill_evals_records.REVIEWER_EFFORT[model], effort)
-        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        rows = evaluation_results.results_table(self.results.read_text(encoding="utf-8"))[2]
         self.assertIn(
             "| review-prs | haiku | claude-haiku-5-5 | high | design-review: effort low | 5/5 | 1 "
             "| design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
@@ -5099,24 +5100,24 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
 )
 def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -> None:
     text = "\n".join([*RESULTS_LINES[:index], line, *RESULTS_LINES[index + 1 :]])
-    with pytest.raises(ScenarioError, match=reason):
-        skill_evals_results.results_table(text)
-    with pytest.raises(ScenarioError, match=reason):
+    with pytest.raises(evaluation_results.TableError, match=reason):
+        evaluation_results.results_table(text)
+    with pytest.raises(evaluation_results.TableError, match=reason):
         skill_evals_results.replace_results(text, "review-prs", [])
 
 
 @pytest.mark.parametrize(
     "text",
-    ["no markers", f"{skill_evals_results.RESULTS_END}\n{skill_evals_results.RESULTS_BEGIN}", RESULTS_TEXT * 2],
+    ["no markers", f"{evaluation_results.RESULTS_END}\n{evaluation_results.RESULTS_BEGIN}", RESULTS_TEXT * 2],
     ids=["no markers", "out of order", "twice each"],
 )
 def test_the_markers_are_required_once_each_in_order(text: str) -> None:
-    with pytest.raises(ScenarioError):
-        skill_evals_results.results_table(text)
+    with pytest.raises(evaluation_results.TableError):
+        evaluation_results.results_table(text)
 
 
 def samples_text(*rows: str) -> str:
-    (begin, end), header = skill_evals_results.samples_layout()
+    (begin, end), header = evaluation_results.samples_layout()
     return "\n".join(["# Skill evaluations", "", begin, *header, *rows, end, ""])
 
 
@@ -5192,7 +5193,7 @@ def test_the_sample_replaces_the_skill_s_row_unread_and_keeps_the_others_sorted(
         "| zeta | one | opus | 1 | 2026-01-01 | agrees |",
     )
     again = skill_evals_results.replace_sample(written, "alpha", ("one", "haiku", None), datetime.date(2026, 10, 9))
-    assert skill_evals_results.samples_table(again)[2][0] == "| alpha | one | haiku | 1 | 2026-10-09 | unread |"
+    assert evaluation_results.samples_table(again)[2][0] == "| alpha | one | haiku | 1 | 2026-10-09 | unread |"
 
 
 def test_the_samples_rows_are_ordered_by_skill_however_a_kept_row_is_spaced() -> None:
@@ -5201,7 +5202,7 @@ def test_the_samples_rows_are_ordered_by_skill_however_a_kept_row_is_spaced() ->
         "|  zeta | one | opus | 1 | 2026-01-01 | agrees |", "|alpha| one | opus | 1 | 2026-01-01 | agrees |"
     )
     written = skill_evals_results.replace_sample(text, "beta", ("two", "haiku", None), datetime.date(2026, 10, 8))
-    assert skill_evals_results.samples_table(written)[2] == [
+    assert evaluation_results.samples_table(written)[2] == [
         "|alpha| one | opus | 1 | 2026-01-01 | agrees |",
         "| beta | two | haiku | 1 | 2026-10-08 | unread |",
         "|  zeta | one | opus | 1 | 2026-01-01 | agrees |",
@@ -5211,7 +5212,7 @@ def test_the_samples_rows_are_ordered_by_skill_however_a_kept_row_is_spaced() ->
 def test_the_results_file_s_tables_are_read_and_written_where_commonmark_ends_a_line() -> None:
     # A file saved with lone CRs: each table is found, and each writer gives the file the lines an LF one gets.
     text = RESULTS_TEXT.replace("\n", "\r")
-    assert skill_evals_results.results_table(text)[2] == skill_evals_results.results_table(RESULTS_TEXT)[2]
+    assert evaluation_results.results_table(text)[2] == evaluation_results.results_table(RESULTS_TEXT)[2]
     rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
     assert skill_evals_results.replace_results(text, "review-prs", rows) == skill_evals_results.replace_results(
         RESULTS_TEXT, "review-prs", rows
@@ -5266,16 +5267,16 @@ def test_a_reading_marks_the_skill_s_unread_row_once() -> None:
     ids=["no markers", "no end marker", "no begin marker", "out of order", "a short row", "another header"],
 )
 def test_a_samples_table_it_cannot_read_is_refused(text: str, message: str) -> None:
-    with pytest.raises(ScenarioError) as raised:
-        skill_evals_results.samples_table(text)
+    with pytest.raises(evaluation_results.TableError) as raised:
+        evaluation_results.samples_table(text)
     assert str(raised.value).startswith(message)
 
 
 def test_the_results_table_s_refusal_names_the_results_table_and_its_header() -> None:
-    text = RESULTS_TEXT.replace(skill_evals_results.RESULTS_HEADER[0], "| Skill | Model |")
-    with pytest.raises(ScenarioError) as raised:
-        skill_evals_results.results_table(text)
-    assert str(raised.value) == f"the results table must start with the header {skill_evals_results.RESULTS_HEADER[0]}"
+    text = RESULTS_TEXT.replace(evaluation_results.RESULTS_HEADER[0], "| Skill | Model |")
+    with pytest.raises(evaluation_results.TableError) as raised:
+        evaluation_results.results_table(text)
+    assert str(raised.value) == f"the results table must start with the header {evaluation_results.RESULTS_HEADER[0]}"
 
 
 def test_a_near_miss_named_in_both_lists_is_refused_in_those_words(tmp_path: Path) -> None:
@@ -5293,7 +5294,7 @@ def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tm
     with contextlib.redirect_stdout(output):
         status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=seams)
     assert (status, output.getvalue()) == (0, f"WROTE {runtime_canary.forward(results)}\n")
-    assert skill_evals_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
+    assert evaluation_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
         "| alpha | one | opus | 1 | 2026-01-01 | agrees |"
     ]
     output = io.StringIO()
@@ -5396,7 +5397,7 @@ def test_sample_read_takes_agrees_or_disagrees_and_nothing_else(tmp_path: Path) 
     )
     with contextlib.redirect_stdout(io.StringIO()):
         assert skill_evals.main(["alpha", "--sample-read", "disagrees"], seams=skill_evals.Seams(results=results)) == 0
-    assert skill_evals_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
+    assert evaluation_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
         "| alpha | one | opus | 1 | 2026-01-01 | disagrees |"
     ]
     # The option's entry, the last of the help, whole: its choices and then its help text, read without the wrapping.
@@ -5437,7 +5438,7 @@ def test_sample_read_reads_and_writes_the_results_file_as_utf_8_with_lf_endings(
 
 
 def test_no_committed_sample_is_left_unread() -> None:
-    rows = skill_evals_results.samples_table(skill_evals.RESULTS.read_text(encoding="utf-8"))[2]
+    rows = evaluation_results.samples_table(skill_evals.RESULTS.read_text(encoding="utf-8"))[2]
     assert [row for row in rows if row.rstrip().endswith("| unread |")] == []
 
 
@@ -5445,10 +5446,10 @@ def notes_problems(text: str) -> list[str]:
     """Each scenario a row of the results table shows `not run` that no note explains, and each note saying a
     scenario was not run that every row of its skill ran, as docs/skill-evaluations.md's notes promise."""
     shown = set()
-    by_scenario = [cell.strip() for cell in skill_evals_results.RESULTS_HEADER[0].strip()[1:-1].split("|")].index(
+    by_scenario = [cell.strip() for cell in evaluation_results.RESULTS_HEADER[0].strip()[1:-1].split("|")].index(
         "By scenario"
     )
-    for row in skill_evals_results.results_table(text)[2]:
+    for row in evaluation_results.results_table(text)[2]:
         cells = [cell.strip() for cell in row.strip()[1:-1].split("|")]
         shown |= {
             (cells[0], part.removesuffix(" not run"))
@@ -5478,10 +5479,10 @@ def test_a_note_that_disagrees_with_the_rows_is_found_either_way() -> None:
     note = "- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` met the floor.\n"
     text = "\n".join(
         [
-            skill_evals_results.RESULTS_BEGIN,
-            *skill_evals_results.RESULTS_HEADER,
+            evaluation_results.RESULTS_BEGIN,
+            *evaluation_results.RESULTS_HEADER,
             row.format("not run"),
-            skill_evals_results.RESULTS_END,
+            evaluation_results.RESULTS_END,
             "",
             "### Notes",
             "",
@@ -7619,7 +7620,7 @@ def test_a_write_keeps_a_committed_row_whose_model_only_the_session_s_resolve_ju
         "| 2.1.291 | 2026-01-01 |"
     )
     text = case.results.read_text(encoding="utf-8")
-    header_end = text.index(skill_evals_results.RESULTS_HEADER[1]) + len(skill_evals_results.RESULTS_HEADER[1])
+    header_end = text.index(evaluation_results.RESULTS_HEADER[1]) + len(evaluation_results.RESULTS_HEADER[1])
     case.results.write_text(f"{text[:header_end]}\n{committed}{text[header_end:]}", encoding="utf-8")
     claude = StubClaude(case, review=False, subagent=False)
     status, lines = case.evaluate(

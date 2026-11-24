@@ -1,13 +1,15 @@
-"""The one reader of the lessons catalogue, docs/lessons.md, which validation's ledger check and the
-`implement-change` repository skill's pattern lister share.
+"""The one reader of the lessons catalogue, docs/lessons.md, which validation's ledger check and the `implement-change`
+repository skill's pattern lister share.
 
 A pattern is a `###` heading under one of the catalogue's sections, `SECTIONS`: `## Patterns`, the patterns of code,
 which the catalogue must hold, and `## Prompt patterns`, the patterns of the prompts that do the work, which it may,
 each section once, with the lines after the heading up to the next heading of either level two or three. Each pattern
-names the section it stands in. A line inside a fenced code block, which markdown_sections' `outside_fences`
-blanks, is read as blank, so a heading or a field a fence shows is none. A field is a list item that opens with its
-bold name and a colon, `- **Rule:** ...`; a line indented under it continues it, and any other line ends it. A field's
-code spans are read through markdown_sections' `code_spans`, as CommonMark pairs backtick runs.
+names the section it stands in. Limit: a `###` heading under any other `##` heading, a misspelled or closing-hash `##
+Prompt patterns` included, is no pattern, and nothing checks it. A line inside a fenced code block, which
+markdown_sections' `outside_fences` blanks, is read as blank, so a heading or a field a fence shows is none. A field is
+a list item that opens with its bold name and a colon, `- **Rule:** ...`; a line indented under it continues it, and any
+other line ends it. A field's code spans are read through markdown_sections' `code_spans`, as CommonMark pairs backtick
+runs.
 
 A mechanism a pattern names under **Use** is `<module>:<name>` or `<module>:<class>.<name>`, the form
 `pkgutil.resolve_name` reads, `MECHANISM`, whose module is importable from one of `mechanism_bases`: the repository

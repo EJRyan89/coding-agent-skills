@@ -320,12 +320,16 @@ class LessonsLedgerPolicy(unittest.TestCase):
         "which is not a test ID, a skill's step, a workflow, or an evaluation scenario by its path from the repository "
         "root"
     )
-    # The results table of docs/skill-evaluations.md, as tools/skill_evals_results.py writes it, with one skill's row.
+    # The results table of docs/skill-evaluations.md, as the evaluation runner writes it: one skill's row whose
+    # model ran, with a scenario it records as not run, and one whose model did not, whose By scenario holds a reason
+    # that opens with that scenario's name.
     EVALUATIONS = (
         "# Skill evaluations\n\n<!-- skill-evals:begin -->\n"
         "| Skill | Model | Model ID | Reviewer effort | Route pins | Passed | Runs | By scenario | Session model "
         "| Claude Code | Date |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        "| a | haiku | id | none | none | 9/9 | 1 | by-name 2/2, description 7/7 | id | 1.0.0 | 2026-01-01 |\n"
+        "| a | haiku | id | none | none | 9/9 | 1 | by-name 2/2, description 7/7, unrecorded not run | id | 1.0.0 "
+        "| 2026-01-01 |\n"
+        "| a | sonnet | not run | none | none | 0/1 | 1 | unrecorded 1/1 was refused | unknown | 1.0.0 | 2026-01-01 |\n"
         "<!-- skill-evals:end -->\n"
     )
 
@@ -622,8 +626,9 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 f"docs/lessons.md:10 {prefix}/a/gone, but tests/fixtures/skill-evals/a/gone does not exist",
                 f"docs/lessons.md:10 {prefix}/b/description, but tests/fixtures/skill-evals/b/description does not "
                 "exist",
-                f"docs/lessons.md:11 {prefix}/a/unrecorded, which no row of docs/skill-evaluations.md records for a",
-                f"docs/lessons.md:11 {prefix}/a/by, which no row of docs/skill-evaluations.md records for a",
+                f"docs/lessons.md:11 {prefix}/a/unrecorded, which no row of docs/skill-evaluations.md records as run "
+                "for a",
+                f"docs/lessons.md:11 {prefix}/a/by, which no row of docs/skill-evaluations.md records as run for a",
                 f"docs/lessons.md:12 {prefix}/a/file, but tests/fixtures/skill-evals/a/file is not a folder",
             ],
             self.problems(ledger, {"tests/fixtures/skill-evals/a/file": "{}\n"}),
@@ -639,6 +644,27 @@ class LessonsLedgerPolicy(unittest.TestCase):
             ],
             self.problems(unread, {"docs/skill-evaluations.md": "# Skill evaluations\n"}),
         )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(
+                root, {"docs/lessons.md": unread, "tests/fixtures/skill-evals/a/description/scenario.json": "{}\n"}
+            )
+            self.assertEqual(
+                [
+                    f"docs/lessons.md:10 {prefix}/a/description, but docs/skill-evaluations.md, which records each "
+                    "scenario's runs, does not exist"
+                ],
+                lessons_ledger_problems(root),
+            )
+            (root / "docs" / "skill-evaluations.md").mkdir()
+            self.assertEqual(
+                [
+                    f"docs/lessons.md:10 {prefix}/a/description, but docs/skill-evaluations.md, which records each "
+                    "scenario's runs, is not a file"
+                ],
+                lessons_ledger_problems(root),
+            )
 
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
         self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))

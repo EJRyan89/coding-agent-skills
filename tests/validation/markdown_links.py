@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+import json_writer
 import lessons_catalogue
+from evaluation_results import TableError, measured_scenarios
 from link_destinations import link_destinations
 from markdown_sections import ATX_HEADING, code_spans, outside_fences
 from text_lines import text_lines
@@ -26,9 +28,6 @@ from validation_support import (
     repository_files,
 )
 
-from tools.skill_evals_results import CELL_BORDER, RESULTS_HEADER, results_table
-from tools.skill_evals_scenarios import ScenarioError
-
 # GitHub's heading slug keeps letters, digits, underscores, hyphens, and spaces, then turns each space into a hyphen.
 SLUG_REMOVED = re.compile(r"[^\w\- ]")
 # The fields only a pattern under the catalogue's Prompt patterns has.
@@ -37,11 +36,8 @@ PROMPT_FIELDS = ("Prompt", "Caught by")
 PROMPT_PLACE = re.compile(r"([\w.-]+(?:/[\w.-]+)*)(?:#([\w-]+))?")
 # An evaluation scenario a lesson names as its guard, by its folder: the skill, and the scenario.
 EVALUATION_SCENARIO = re.compile(r"tests/fixtures/skill-evals/([\w.-]+)/([\w.-]+)")
-# The document whose results table records each skill's evaluation runs, and the column naming each scenario's counts.
+# The document whose results table records each skill's evaluation runs.
 EVALUATIONS_DOC = "docs/skill-evaluations.md"
-RESULTS_SCENARIO_COLUMN = [cell.strip() for cell in CELL_BORDER.split(RESULTS_HEADER[0].strip()[1:-1])].index(
-    "By scenario"
-)
 
 
 PRESENCE_ALLOWED = {
@@ -297,25 +293,28 @@ def cited_test_problems(root: Path) -> list[str]:
 
 def _scenario_problem(root: Path, span: str, skill: str, scenario: str) -> str | None:
     """Why an evaluation scenario a lesson names as its guard does not resolve, or None when it does: its folder is
-    there, and a row of the results table in docs/skill-evaluations.md, read through tools/skill_evals_results.py's
-    `results_table`, names the skill and, under By scenario, the scenario with its counts."""
-    # As for a skill step: a stat that fails raises, and a scenario of the wrong kind is named so.
+    there, and a row of the results table in docs/skill-evaluations.md records it as measured, as
+    ejryan89-skill-core's evaluation_results reads the table through `measured_scenarios`, never as not run."""
+    # As for a skill step: a stat that fails raises, and a scenario or a results file of the wrong kind is named so.
     try:
         present = file_presence.is_directory(root / span)
     except file_presence.NotADirectory:
         return f"cites {span}, but {span} is not a folder"
     if not present:
         return f"cites {span}, but {span} does not exist"
+    results = root / EVALUATIONS_DOC
     try:
-        rows = results_table((root / EVALUATIONS_DOC).read_text(encoding="utf-8"))[2]
-    except (UnicodeDecodeError, ScenarioError) as error:
+        if not file_presence.is_present(results):
+            return f"cites {span}, but {EVALUATIONS_DOC}, which records each scenario's runs, does not exist"
+    except file_presence.NotAFile:
+        return f"cites {span}, but {EVALUATIONS_DOC}, which records each scenario's runs, is not a file"
+    try:
+        measured = measured_scenarios(results.read_text(encoding="utf-8"), skill)
+    except (OSError, UnicodeDecodeError, TableError, json_writer.JsonWriteRefused) as error:
         return f"cites {span}, but {EVALUATIONS_DOC} cannot be read: {error}"
-    for row in rows:
-        cells = [cell.strip() for cell in CELL_BORDER.split(row.strip()[1:-1])]
-        counts = cells[RESULTS_SCENARIO_COLUMN].split(", ") if len(cells) > RESULTS_SCENARIO_COLUMN else []
-        if cells[0] == skill and any(count.startswith(f"{scenario} ") for count in counts):
-            return None
-    return f"cites {span}, which no row of {EVALUATIONS_DOC} records for {skill}"
+    if scenario not in measured:
+        return f"cites {span}, which no row of {EVALUATIONS_DOC} records as run for {skill}"
+    return None
 
 
 def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> str | None:

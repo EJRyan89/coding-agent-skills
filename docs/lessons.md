@@ -14,7 +14,9 @@ covers it, adds one here, as [Validation](implementing-changes.md#validation) in
 release procedure in [releasing.md](releasing.md) say. A fix that adds a mechanism or a guard adds it to its pattern.
 
 Each pattern is a `###` heading under [Patterns](#patterns), or, for a pattern of the prompts that do the work, under
-[Prompt patterns](#prompt-patterns), that names it, followed by these fields, each a list item of its own:
+[Prompt patterns](#prompt-patterns), that names it. A `###` heading under any other `##` heading, a misspelled or
+closing-hash `## Prompt patterns` included, is no pattern, and nothing checks it. A pattern's heading is followed by
+these fields, each a list item of its own:
 
 - **Rule:** the pattern, in one sentence.
 - **Why:** the behavior it protects, in a line.
