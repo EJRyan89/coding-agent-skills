@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -684,6 +685,7 @@ REFUSED_STATUS = {
     "one at a time to a wrapper": 'def f(services, root):\n    return git(services, root, "status", "--porcelain")\n',
     "one at a time to a method": 'class F:\n    def f(self):\n        return self.git("status", "--porcelain")\n',
     "one at a time after git's options": 'def f(fixture):\n    return fixture.git("-c", "x=y", "status", "-z")\n',
+    "before a starred element": 'def f(git, o):\n    return git.output(["status", "-z", *o])\n',
 }
 # Modules that read status through the helper, or give a call arguments whose subcommand is not status.
 PASSED_STATUS = {
@@ -762,6 +764,7 @@ class StatusTests(unittest.TestCase):
             "a value inside the run": 'def f(fixture, path):\n    return fixture.git("-C", path, "status", "-z")\n',
             # A run with no option after status is not read.
             "status given alone": 'def f(fixture):\n    return fixture.git("status")\n',
+            "alone after git's options": 'def f(fixture):\n    return fixture.git("--no-pager", "status")\n',
             # An argument list that names the program first reads it as its subcommand.
             "the program named first": 'def f(run):\n    return run(["git", "status"])\n',
         }
@@ -788,6 +791,20 @@ class StatusTests(unittest.TestCase):
         self.assertEqual("skills/ejryan89-skill-core/scripts/git_worktrees.py", STATUS_HELPER)
         self.assertEqual("status", one_helper.STATUS)
         self.assertEqual("STATUS_READ_ALLOWED", one_helper.STATUS_ALLOWANCE)
+
+    def test_every_module_s_refusals_are_reported(self) -> None:
+        reader = 'def f(git):\n    return git.output(["status"])\n'
+        problems = self.problems({"tools/first.py": reader, "tools/second.py": reader})
+        self.assertEqual(["tools/first.py:2", "tools/second.py:2"], sorted(problem.split()[0] for problem in problems))
+
+    def test_with_no_files_given_the_rule_reads_what_a_commit_could_include(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"tools/reader.py": 'def f(git):\n    return git.output(["status"])\n'})
+            problems = status_problems(root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/reader.py:2 f runs git status"), problems)
 
     def test_a_module_that_does_not_parse_is_named(self) -> None:
         problems = self.problems({"tools/broken.py": "def f(:\n"})
