@@ -126,22 +126,65 @@ SCHEMA_VERSION = 9
 READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 UNKNOWN_MODEL = "unknown"
 # The reads outside the checkout whose guidance review_guidance reads through a tree reader, each with why: none reads a
-# file of a repository the skill examines.
+# file of a repository the skill examines. The code-review pipeline's own store, never a checkout under review, is read
+# through ejryan89-code-review-core's readers where the configuration places it: the configuration itself
+# (CODE_REVIEW_CONFIG, else its file under the home), the record archive under its archive_root, and the flag store
+# (CODE_REVIEW_FLAGS, else beside the configuration). The tree reader is bound to a checkout's guidance, which none of
+# them lies in.
 TREE_READ_ALLOWED = {
-    "<module>": (
-        "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "
-        "scripts folder beside this skill's own, no path of a tree the skill examines"
+    "working_scope": (
+        "reads the code-review configuration where CODE_REVIEW_CONFIG or the home places it: the pipeline's own store",
+        ("main",),
+    ),
+    "RecordPairs.read": (
+        "reads a review record pair collect_records or read_ledgers found under the configured archive_root: the "
+        "pipeline's own store"
+    ),
+    "collect_records": (
+        "lists a repository's review records under the configured archive_root: the pipeline's own store",
+        ("create_report",),
+    ),
+    "read_ledgers": (
+        "lists a pull request's review versions under the configured archive_root: the pipeline's own store",
+        ("create_report",),
+    ),
+    "load_report": (
+        "reads an insights report the skill wrote under the configured summary_root, or one the user names: the "
+        "skill's own output",
+        ("_run_synthesize", "create_report", "decide", "decide_custom", "synthesize"),
+    ),
+    "report_from_config": (
+        "reads the code-review configuration and the flag store where CODE_REVIEW_CONFIG, CODE_REVIEW_FLAGS, or the "
+        "home places them: the pipeline's own store",
+        ("main",),
+    ),
+    "_open_flags": (
+        "reads the flag store where CODE_REVIEW_FLAGS or the configuration's folder places it, for the flags a "
+        "recommendation links: the pipeline's own store",
+        ("decide", "decide_custom"),
+    ),
+    "_resolve_recorded": (
+        "resolves a flag in the flag store where CODE_REVIEW_FLAGS or the configuration's folder places it, reading it "
+        "first: the pipeline's own store",
+        ("decide", "decide_custom"),
     ),
     "current_repository": (
         "compares the working directory and git's common directory with each configured checkout path, resolved, to "
-        "choose the repository; it reads no file of a checkout"
+        "choose the repository; it reads no file of a checkout",
+        ("working_scope",),
     ),
-    "create_report": "whether the insights report the skill wrote earlier is there: the skill's own output",
+    "create_report": (
+        "whether the insights report the skill wrote earlier is there: the skill's own output",
+        ("report_from_config",),
+    ),
     "synthesize": (
-        "compares the synthesis result path the agent gives with the one the report named: the skill's own run"
+        "compares the synthesis result path the agent gives with the one the report named, and reads that result: "
+        "the skill's own run",
+        ("_run_synthesize",),
     ),
     "_existing_report_lock": (
-        "whether the insights report the user names is a file before its lock is made: the skill's own output"
+        "whether the insights report the user names is a file before its lock is made: the skill's own output",
+        ("decide", "decide_custom", "synthesize"),
     ),
 }
 REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}

@@ -552,22 +552,32 @@ TREE_READ_ALLOWED = {
     "given_path": (
         "a --root, a --project, a NuGet cache folder, or the graph file the user names or the skill wrote, resolved "
         "with its links followed to find where it lies, before any tree or reader is bound to it, or to name the file "
-        "written"
+        "written",
+        ("as_given", "as_named", "graph_query", "named_below", "named_project", "nuget_cache", "resolve_root"),
     ),
     "given_key": (
         "a --project's leading parts and the root's, keyed as the file system compares them to find the root among "
-        "them, before any of them is read"
+        "them, before any of them is read",
+        ("named_below",),
     ),
     "regular_file": (
         "whether a --root, a solution in it, or a --project the user names is a regular file, after as_given and "
-        "linked_root judged its links inside its checkout"
+        "linked_root judged its links inside its checkout",
+        ("resolve_root", "root_solutions", "unsearched"),
     ),
-    "root_reason": "why the --root the user names is no solution or folder, after as_given judged its links",
+    "root_reason": (
+        "why the --root the user names is no solution or folder, after as_given judged its links",
+        ("resolve_root",),
+    ),
     "nuget_cache": (
         "whether each NuGet cache folder the environment and the home name is a folder, through any link to it, "
-        "before it is resolved and a reader is bound to it (packages_reader)"
+        "before it is resolved and a reader is bound to it (packages_reader)",
+        ("build_closure",),
     ),
-    "write_graph": "the mode of the graph file the user names with --output, which the skill replaces",
+    "write_graph": (
+        "the mode of the graph file the user names with --output, which the skill replaces",
+        ("graph_query",),
+    ),
 }
 
 

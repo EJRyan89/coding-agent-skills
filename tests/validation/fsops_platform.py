@@ -14,7 +14,9 @@ from itertools import pairwise
 from pathlib import Path
 
 import file_presence
+import python_reader
 from call_tables import OTHER_OPENS, TEXT_METHODS, TEXT_OPENERS
+from module_assignments import assigned_names, sole_assignment
 from python_checks import (
     GLOB_FUNCTIONS,
     GLOB_METHODS,
@@ -22,9 +24,9 @@ from python_checks import (
     PRESENCE_FUNCTIONS,
     PRESENCE_PREDICATES,
     SKILL_CORE_SCRIPTS,
-    sanctioned_problems,
 )
 from python_names import TYPE_PARAMETERS
+from skill_roots import SKILL_CORE
 from validation_support import (
     COMPUTED_NAME,
     MODULE_LOADERS,
@@ -43,6 +45,7 @@ from validation_support import (
     python_trees,
     qualified_name,
     scoped_nodes,
+    scripts_put_on_path,
 )
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
@@ -1208,29 +1211,36 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # outside each stated in TREE_READ_ALLOWED. Each keeps it through ejryan89-skill-core's
 # tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
 # stat, open, read, listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a
-# direct read there, or a read through an ejryan89-skill-core function that reads a path, which core_reads derives
-# from the core modules' own reads, transitively, is refused, and one that must stay, such as of a file the skill
-# itself wrote under the temporary directory or of the root a user names before any tree is bound, states why beside
-# the code in a module-level TREE_READ_ALLOWED = {scope: reason}. The suites under a skill's scripts are not read. A
-# call is read through the module's imports, and a callable passed as a value counts as a call of it. A path method is
-# read on any receiver that is not an imported module, since a reader cannot tell a path from another value; the ones
-# that take no positional argument count only when given none, so a method of another object sharing the name and
-# taking one, such as an evaluation's exists(text), does not, none counts on Path(__file__), the script's own file,
-# and none on self or cls naming a method the enclosing class defines, as an evaluation's own walk. A skill
-# TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so a renamed or emptied folder is
-# never read as conforming. Stated limits: Path.group, which a regular expression's match shares by name, so it is not
-# read; a read reached by a name computed at run time, as getattr(path, name); a path method a module's own function
-# wraps under another name; a path method called unbound on its class with the path as its argument, as
+# direct read there, or a read through a function that reads a path, of ejryan89-skill-core or of a sibling skill's
+# scripts a policed module puts on sys.path, as through sibling_scripts, which core_reads derives from those modules'
+# own reads, transitively, is refused, and one that must stay, such as of a file the skill itself wrote under the
+# temporary directory or of the root a user names before any tree is bound, states why beside the code in a
+# module-level TREE_READ_ALLOWED = {scope: reason}. A sanctioned function, class, or method that a scope of its module
+# or of another module of its scripts folder calls, or passes as a value, names each such caller, so a new caller
+# cannot hand it a path of the tree unseen: TREE_READ_ALLOWED = {scope: (reason, (caller, ...))}, a caller in the same
+# module by its scope, as outside_lines or resolve.wanted, and one in another by its module and scope, as
+# csharp_layout:main; a call from a scope the entry does not name is refused, and so is a named caller that no longer
+# calls it. A scope nested in the sanctioned one is part of it, and a method called on self or cls is the enclosing
+# class's. A module-level statement that assigns no one name has no scope an entry can name, so <module> is refused as
+# an entry or a caller: move the read or the call into a function or a named assignment. The suites under a skill's
+# scripts are not read. A call is read through the module's imports, and a callable passed as a value counts as a call
+# of it. A path method is read on any receiver that is not an imported module, since a reader cannot tell a path from
+# another value; the ones that take no positional argument count only when given none, so a method of another object
+# sharing the name and taking one, such as an evaluation's exists(text), does not, none counts on Path(__file__), the
+# script's own file, and none on self or cls naming a method the enclosing class defines, as an evaluation's own walk.
+# A skill TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so a renamed or emptied
+# folder is never read as conforming. Stated limits: Path.group, which a regular expression's match shares by name, so
+# it is not read; a read reached by a name computed at run time, as getattr(path, name); a path method a module's own
+# function wraps under another name; a path method called unbound on its class with the path as its argument, as
 # Path.exists(path); a call in a module that imports both os and os.path, which the shared resolver leaves unnamed; a
 # module read DIRECT_TREE_READS does not list, such as zipfile.is_zipfile, zipfile.Path, shutil.disk_usage,
-# shutil.unpack_archive, or os.pathconf; a read in a method of an ejryan89-skill-core class, reached through an
-# instance, which names no class; a core reader reached through another core module that imports it, as
+# shutil.unpack_archive, or os.pathconf; a read in a method of an ejryan89-skill-core or sibling class, reached through
+# an instance, which names no class; a core reader reached through another core module that imports it, as
 # tree_reader.read_bounded, dotnet_solution.path_key, or tree_reader.file_presence.is_present, which core_reads names
 # only by the module that defines it; a TREE_JUDGES function called with a tree other than the one the skill examines;
-# a function TREE_READ_ALLOWED sanctions, called from another scope on a path of the tree; a core function defined
-# inside a module-level if or try, which core_reads never derives; and a reader in a sibling skill's scripts a policed
-# module loads through sibling_scripts, as ejryan89-code-review-core's review_io.read_json, which core_reads does not
-# derive, so a call of it is not read.
+# a sanctioned method called through an instance, which names no class, so its caller is not read; a named caller that
+# hands a sanctioned function a path its own caller gave it, since only the direct caller is named; and a core or
+# sibling function defined inside a module-level if or try, which core_reads never derives.
 TREE_READ_SKILLS = (
     "skills/dotnet-format/scripts",
     "skills/dotnet-dependencies/scripts",
@@ -1286,8 +1296,9 @@ TREE_JUDGES: dict[str, str] = {
     "dotnet_solution.entry_key": "keys a path by same_path only once refusal and outside_link_refusal keep it inside",
     "dotnet_solution.project_keys": "entry_key of each entry a solution's text lists",
 }
-# The ejryan89-skill-core functions that read only a place other than a tree a skill examines, so a call of one is no
-# tree read and a function calling one reads no tree by it.
+# The ejryan89-skill-core functions, and those of a sibling skill's scripts a policed module loads, that read only a
+# place other than a tree a skill examines, so a call of one is no tree read and a function calling one reads no tree
+# by it.
 OTHER_PLACE_READS: dict[str, str] = {
     "executable_locator.find_program": "looks a program up on the search path",
     "executable_locator.located_command": "find_program's lookup of the command's program",
@@ -1296,6 +1307,14 @@ OTHER_PLACE_READS: dict[str, str] = {
     "atomic_file.replace_text": "replace_bytes of encoded text",
     "github_client.subprocess_runner": "starts gh in a folder the caller names",
     "skill_roots.skills_directory_holding": "finds the skills directory holding a path, to refuse writing inside it",
+    "skill_roots.sibling_scripts": (
+        "finds the scripts folder of the sibling skill it names, beside ejryan89-skill-core in the skills folder, and "
+        "the plugin holding them when it is missing"
+    ),
+    "review_documents.extract": (
+        "extracts a document's text from its bytes, already read: a package it opens in memory, or a PDF it copies "
+        "for pdftotext into a folder of its own under the private temporary directory; it is given no path"
+    ),
 }
 
 
@@ -1396,58 +1415,89 @@ def _tree_read(node: ast.AST, resolver: CallableResolver, references: set[int], 
     return name if name in helpers else None
 
 
-@functools.cache
-def core_reads(core: Path) -> frozenset[str]:
-    """Each module-level function of the ejryan89-skill-core modules in `core`, but the tree reader's, that reads a
-    path, as `<module>.<function>`: one that makes a direct read, or calls, or passes as a value, a function that
-    does, through its module's imports, transitively. A judge (TREE_JUDGES) and a read of another place
-    (OTHER_PLACE_READS) neither count nor carry. A method of a class is not followed, since a call through an instance
-    names no class."""
-    exempt = TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()
-    paths = [
-        path
-        for path in file_presence.matching(core, "*.py")
-        if not path.name.startswith("test_") and path.stem != TREE_READER_MODULE
+def _derived_paths(core: Path, siblings: tuple[Path, ...]) -> list[tuple[Path, Path]]:
+    """Each module core_reads derives from, with its folder: the ejryan89-skill-core modules in `core` but the tree
+    reader's, and the modules of each sibling skill's scripts folder in `siblings`, suites aside."""
+    return [
+        (folder, path)
+        for folder in (core, *siblings)
+        for path in file_presence.matching(folder, "*.py")
+        if not path.name.startswith("test_") and not (folder == core and path.stem == TREE_READER_MODULE)
     ]
+
+
+@functools.cache
+def core_reads(core: Path, siblings: tuple[Path, ...] = ()) -> frozenset[str]:
+    """Each module-level function of the ejryan89-skill-core modules in `core`, but the tree reader's, and of the
+    sibling skills' scripts folders in `siblings`, that reads a path, as `<module>.<function>`: one that makes a direct
+    read, or calls, or passes as a value, a function that does, through its module's imports, transitively, across
+    every folder. A judge (TREE_JUDGES) and a read of another place (OTHER_PLACE_READS) neither count nor carry. A
+    method of a class is not followed, since a call through an instance names no class."""
+    exempt = TREE_JUDGES.keys() | OTHER_PLACE_READS.keys()
     reading: set[str] = set()
     calls: dict[str, set[str]] = {}
-    for path, _, tree in python_trees(paths, core, []):
-        module = path.stem
-        resolver = CallableResolver(tree)
-        references = _value_references(tree)
-        functions = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for node, scope in scoped_nodes(tree.body):
-            key = f"{module}.{scope.split('.')[0]}"
-            if scope.split(".")[0] not in functions or key in exempt:
-                continue
-            if _direct_tree_read(node, resolver, references) is not None:
-                reading.add(key)
-            name = _called_name(node, resolver, references)
-            if name.startswith(f"{LOCAL_NAME}."):
-                name = f"{module}.{name.split('.')[1]}"
-            if name:
-                calls.setdefault(key, set()).add(name)
+    for folder, path in _derived_paths(core, siblings):
+        for _, _, tree in python_trees([path], folder, []):
+            module = path.stem
+            resolver = CallableResolver(tree)
+            references = _value_references(tree)
+            functions = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            for node, scope in scoped_nodes(tree.body):
+                key = f"{module}.{scope.split('.')[0]}"
+                if scope.split(".")[0] not in functions or key in exempt:
+                    continue
+                if _direct_tree_read(node, resolver, references) is not None:
+                    reading.add(key)
+                name = _called_name(node, resolver, references)
+                if name.startswith(f"{LOCAL_NAME}."):
+                    name = f"{module}.{name.split('.')[1]}"
+                if name:
+                    calls.setdefault(key, set()).add(name)
     while added := {key for key, called in calls.items() if key not in reading and called & reading}:
         reading |= added
     return frozenset(reading)
 
 
-def core_table_problems(core: Path) -> list[str]:
-    """Each TREE_JUDGES or OTHER_PLACE_READS entry naming a function the ejryan89-skill-core modules in `core` do not
-    define, so a renamed function is never left exempt by its old name."""
+def core_table_problems(core: Path, siblings: tuple[Path, ...] = ()) -> list[str]:
+    """Each TREE_JUDGES or OTHER_PLACE_READS entry naming a function neither the ejryan89-skill-core modules in `core`
+    nor the sibling skills' scripts in `siblings` define, so a renamed function is never left exempt by its old
+    name."""
     defined: set[str] = set()
-    paths = [path for path in file_presence.matching(core, "*.py") if not path.name.startswith("test_")]
-    for path, _, tree in python_trees(paths, core, []):
-        defined |= {
-            f"{path.stem}.{node.name}"
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+    paths = [
+        (folder, path)
+        for folder in (core, *siblings)
+        for path in file_presence.matching(folder, "*.py")
+        if not path.name.startswith("test_")
+    ]
+    for folder, path in paths:
+        for _, _, tree in python_trees([path], folder, []):
+            defined |= {
+                f"{path.stem}.{node.name}"
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
     return [
-        f"{SKILL_CORE_SCRIPTS}: {table} names {name}, which ejryan89-skill-core does not define"
+        f"{PLATFORM_POLICY_MODULE}: {table} names {name}, which neither ejryan89-skill-core nor a sibling skill's "
+        "scripts a policed module loads define; rename or remove the entry"
         for table, entries in (("TREE_JUDGES", TREE_JUDGES), ("OTHER_PLACE_READS", OTHER_PLACE_READS))
         for name in sorted(entries.keys() - defined)
     ]
+
+
+def sibling_folders(root: Path, trees: list[ast.Module]) -> tuple[Path, ...]:
+    """The scripts folder of each sibling skill the modules in `trees` put on sys.path, as scripts_put_on_path reads
+    them, and of each sibling those folders' own modules put there in turn, ejryan89-skill-core aside, under `root`."""
+    pending = sorted({name for tree in trees for name in scripts_put_on_path(tree)} - {SKILL_CORE})
+    found: dict[str, Path] = {}
+    while pending:
+        name = pending.pop()
+        if name in found:
+            continue
+        found[name] = folder = root / "skills" / name / "scripts"
+        paths = [path for path in file_presence.matching(folder, "*.py") if not path.name.startswith("test_")]
+        for _, _, tree in python_trees(paths, folder, []):
+            pending += [named for named in scripts_put_on_path(tree) if named not in found and named != SKILL_CORE]
+    return tuple(found[name] for name in sorted(found))
 
 
 def _value_references(tree: ast.Module) -> set[int]:
@@ -1495,13 +1545,200 @@ def _tree_read_scanned_files(root: Path) -> list[Path]:
 
 # Why a skill TREE_READ_SKILLS names is a problem when its scripts folder holds nothing to read.
 TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to read; name the skill's scripts folder"
+# How a caller in another module of the scripts folder is named in a TREE_READ_ALLOWED entry: its module, then its
+# scope.
+CALLER_MODULE_SEPARATOR = ":"
+
+
+@dataclass(frozen=True)
+class TreeReadSanction:
+    """A TREE_READ_ALLOWED entry: why its scope reads outside the tree, and the scopes allowed to call it."""
+
+    reason: str
+    callers: frozenset[str]
+
+
+def _sanction(value: object) -> TreeReadSanction | None:
+    """A TREE_READ_ALLOWED entry's value as a sanction: a non-empty reason, or a non-empty reason and a non-empty
+    tuple of non-empty caller scopes; None for anything else."""
+    reason: object = value
+    callers: tuple[object, ...] = ()
+    if isinstance(value, tuple):
+        if len(value) != 2 or not isinstance(value[1], tuple) or not value[1]:
+            return None
+        reason, callers = value
+    named = [caller for caller in callers if isinstance(caller, str) and caller.strip()]
+    if not isinstance(reason, str) or not reason.strip() or len(named) != len(callers):
+        return None
+    return TreeReadSanction(reason, frozenset(named))
+
+
+def tree_read_allowance(tree: ast.Module) -> dict[str, TreeReadSanction] | None:
+    """A module's TREE_READ_ALLOWED, each entry a non-empty reason or a reason and a non-empty tuple of the scopes
+    that call it; empty when the module has none, and None when it holds anything else or is bound in another form."""
+    for node in tree.body:
+        if TREE_READ_ALLOWANCE not in assigned_names(node):
+            continue
+        assigned = sole_assignment(node)
+        if assigned is None:
+            return None
+        try:
+            allowance = python_reader.literal(assigned[1])
+        except python_reader.CONTENT_ERRORS:
+            return None
+        if not isinstance(allowance, dict):
+            return None
+        sanctions = {scope: _sanction(value) for scope, value in allowance.items()}
+        if not all(isinstance(scope, str) for scope in sanctions):
+            return None
+        kept = {scope: sanction for scope, sanction in sanctions.items() if sanction is not None}
+        return kept if len(kept) == len(sanctions) else None
+    return {}
+
+
+@dataclass(frozen=True)
+class PolicedModule:
+    """A script the tree read policy reads: its repository path, its module name, its tree, and its allowance, None
+    when malformed."""
+
+    name: str
+    module: str
+    tree: ast.Module
+    allowed: dict[str, TreeReadSanction] | None
+
+
+def _callable_scopes(tree: ast.Module) -> frozenset[str]:
+    """The scopes a call can name: each module-level function and class, and each method of a module-level class, as
+    `<class>.<method>`."""
+    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    scopes = {node.name for node in tree.body if isinstance(node, definitions)}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            scopes |= {f"{node.name}.{child.name}" for child in node.body if isinstance(child, definitions)}
+    return frozenset(scopes)
+
+
+def _called_scope(node: ast.AST, scope: str, resolver: CallableResolver, references: set[int]) -> tuple[str, str]:
+    """The module and the scope a call, or a callable passed as a value, names: ("", scope) for one of its own module,
+    a method on self or cls naming the enclosing class's, (module, scope) for one it imports, and ("", "") for none."""
+    if isinstance(node, ast.Call):
+        function = node.func
+        if (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and function.value.id in {"self", "cls"}
+            and "." in scope
+        ):
+            return "", f"{scope.split('.')[0]}.{function.attr}"
+    name = _called_name(node, resolver, references)
+    if name.startswith(f"{LOCAL_NAME}."):
+        return "", name.removeprefix(f"{LOCAL_NAME}.")
+    module, _, called = name.partition(".")
+    return module, called
+
+
+def _sanction_calls(modules: list[PolicedModule]) -> dict[tuple[str, str], list[tuple[str, int, str, str]]]:
+    """Each call of a sanctioned scope of a module from another scope of a module in its scripts folder, keyed by the
+    sanctioned module's path and scope, as the caller's path, line, scope, and the name an entry gives that caller."""
+    by_module = {(Path(module.name).parent, module.module): module for module in modules}
+    sanctioned = {
+        (module.name, scope)
+        for module in modules
+        for scope in (module.allowed or {}).keys() & _callable_scopes(module.tree)
+    }
+    found: dict[tuple[str, str], list[tuple[str, int, str, str]]] = {}
+    for caller in modules:
+        resolver = CallableResolver(caller.tree)
+        references = _value_references(caller.tree)
+        for node, scope in scoped_nodes(caller.tree.body):
+            if isinstance(node, ast.ImportFrom | ast.Import):
+                continue
+            module, called = _called_scope(node, scope, resolver, references)
+            holder = by_module.get((Path(caller.name).parent, module)) if module else caller
+            if holder is None or (holder.name, called) not in sanctioned:
+                continue
+            if holder is caller and (scope == called or scope.startswith(f"{called}.")):
+                continue
+            named = scope if holder is caller else f"{caller.module}{CALLER_MODULE_SEPARATOR}{scope}"
+            found.setdefault((holder.name, called), []).append((caller.name, getattr(node, "lineno", 0), scope, named))
+    return found
+
+
+def _caller_problems(modules: list[PolicedModule]) -> dict[str, list[str]]:
+    """Each call of a sanctioned scope from a scope its entry does not name, by the caller's path, and each named
+    caller that does not call it, by the sanctioned module's path."""
+    calls = _sanction_calls(modules)
+    problems: dict[str, list[str]] = {}
+    for module in modules:
+        for scope, sanction in sorted((module.allowed or {}).items()):
+            made = calls.get((module.name, scope), [])
+            for caller, line, caller_scope, named in made:
+                if named in sanction.callers and caller_scope != MODULE_SCOPE:
+                    continue
+                step = (
+                    "move the call into a function or a named assignment"
+                    if caller_scope == MODULE_SCOPE
+                    else f"name {named} among them"
+                )
+                holder = "this module's" if caller == module.name else f"{module.name}'s"
+                problems.setdefault(caller, []).append(
+                    f"{caller}:{line} calls {scope}, which {holder} {TREE_READ_ALLOWANCE} sanctions, from "
+                    f"{caller_scope}, which its entry does not name among the callers; {step}, or read through "
+                    "ejryan89-skill-core's tree_reader"
+                )
+            problems.setdefault(module.name, []).extend(
+                f"{module.name}: {TREE_READ_ALLOWANCE} names {named} among the callers of {scope}, but it does not "
+                "call it; remove it from the entry"
+                for named in sorted(sanction.callers - {named for _, _, _, named in made})
+            )
+    return problems
+
+
+def _policed_problems(module: PolicedModule, helpers: frozenset[str]) -> list[str]:
+    """Each read of a policed module that no TREE_READ_ALLOWED entry sanctions, each entry that sanctions nothing, an
+    allowance of another shape, and a <module> entry, which names no one statement."""
+    name = module.name
+    problems: list[str] = []
+    allowed = module.allowed
+    if allowed is None:
+        problems.append(
+            f"{name}: {TREE_READ_ALLOWANCE} must map each function, class, or assignment to its reason, or to its "
+            "reason and a tuple of the scopes that call it"
+        )
+        allowed = {}
+    if MODULE_SCOPE in allowed:
+        problems.append(
+            f"{name}: {TREE_READ_ALLOWANCE} allows {MODULE_SCOPE}, which names no one statement; move the read into a "
+            "function or a named assignment and allow that"
+        )
+        allowed = {scope: sanction for scope, sanction in allowed.items() if scope != MODULE_SCOPE}
+    found = tree_reads(module.tree, helpers)
+    problems += [
+        f"{name}:{line} reads a path with {read}; read it through ejryan89-skill-core's tree_reader, or state why in "
+        f"{TREE_READ_ALLOWANCE}"
+        for line, scope, read in found
+        if scope not in allowed
+    ]
+    problems += [
+        f"{name}: {TREE_READ_ALLOWANCE} allows {scope}, which holds nothing it sanctions; remove the entry"
+        for scope in sorted(set(allowed) - {scope for _, scope, _ in found})
+    ]
+    return problems
+
+
+@functools.cache
+def repository_siblings() -> tuple[Path, ...]:
+    """The sibling skills' scripts folders the repository's own policed modules load, which the policy's tables are
+    held to, as the core modules are, whatever tree a run reads."""
+    paths = _tree_read_scanned_files(REPOSITORY_ROOT)
+    return sibling_folders(REPOSITORY_ROOT, [tree for _, _, tree in python_trees(paths, REPOSITORY_ROOT, [])])
 
 
 def tree_read_problems(root: Path) -> list[str]:
     """Report each read of a path in the scripts of the skills TREE_READ_SKILLS names, the .NET skills, audit-skill,
     review-document, audit-ai-config, curate-agent-memory, and review-insights, that does not go through
-    ejryan89-skill-core's tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions
-    nothing."""
+    ejryan89-skill-core's tree_reader and that no TREE_READ_ALLOWED entry sanctions, each entry that sanctions
+    nothing, and each call of a sanctioned scope from a scope its entry does not name."""
     problems: list[str] = []
     scanned = _tree_read_scanned_files(root)
     problems += [
@@ -1509,21 +1746,17 @@ def tree_read_problems(root: Path) -> list[str]:
         for folder in TREE_READ_SKILLS
         if not any(path.parent == root / folder for path in scanned)
     ]
-    core = REPOSITORY_ROOT / SKILL_CORE_SCRIPTS
-    helpers = core_reads(core)
-    problems += core_table_problems(core)
     ordered = sorted(scanned, key=lambda path: path.relative_to(root).as_posix())
-    for _, name, tree in python_trees(ordered, root, problems):
-        found = [
-            (
-                line,
-                scope,
-                f"reads a path with {read}; read it through ejryan89-skill-core's tree_reader, or state why in "
-                f"{TREE_READ_ALLOWANCE}",
-            )
-            for line, scope, read in tree_reads(tree, helpers)
-        ]
-        problems += sanctioned_problems(name, tree, TREE_READ_ALLOWANCE, found)
+    modules = [
+        PolicedModule(name, path.stem, tree, tree_read_allowance(tree))
+        for path, name, tree in python_trees(ordered, root, problems)
+    ]
+    core = REPOSITORY_ROOT / SKILL_CORE_SCRIPTS
+    helpers = core_reads(core, sibling_folders(root, [module.tree for module in modules]))
+    problems += core_table_problems(core, repository_siblings())
+    callers = _caller_problems(modules)
+    for module in modules:
+        problems += _policed_problems(module, helpers) + callers.get(module.name, [])
     return problems
 
 
