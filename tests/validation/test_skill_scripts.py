@@ -726,6 +726,29 @@ class SkillScriptsFixtures(unittest.TestCase):
         typed = f"import subprocess\n{types_only}    return isinstance(process, subprocess.Popen)\n"
         self.assertFalse(CommandReader(ast.parse(typed)).starts_process())
         self.assertEqual([], CommandReader(ast.parse(typed)).problems(path))
+        # A type statement and a type parameter bind a name to nothing the reader reads.
+        script = (
+            "import subprocess\n"
+            'COMMAND = ["ruby", "x"]\n'
+            "type COMMAND = list[str]\n"
+            "subprocess.run(COMMAND)\n"  # 4
+            'PROGRAM = ["ruby", "y"]\n'
+            "def run[PROGRAM]():\n"
+            "    subprocess.run(PROGRAM)\n"  # 7
+            "class Runner[*PROGRAM]:\n"
+            "    subprocess.run(PROGRAM)\n"  # 9
+            # A type statement's value and a type parameter's bound use a runner as a type, which starts nothing.
+            "type Started = subprocess.Popen\n"
+            "def typed[P: subprocess.Popen](process: P) -> Started:\n"
+            "    return process\n"
+        )
+        self.assertEqual(
+            [
+                unreadable(path, line, f"the program in `{name}`, which the module binds to nothing it reads")
+                for line, name in ((4, "COMMAND"), (7, "PROGRAM"), (9, "PROGRAM"))
+            ],
+            CommandReader(ast.parse(script)).problems(path),
+        )
 
     def test_command_policies_read_a_runner_from_a_module_looked_up_by_name(self) -> None:
         computed = (

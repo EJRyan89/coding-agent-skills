@@ -911,6 +911,8 @@ class ToolsTests(TemporaryTestCase):
             ('RUNS_REPOSITORY_CODE, OTHER = "starts a server", 1\n', False),
             ('RUNS_REPOSITORY_CODE = "starts a server"\nRUNS_REPOSITORY_CODE = ""\n', False),
             ('RUNS_REPOSITORY_CODE = ""\nRUNS_REPOSITORY_CODE += "starts a server"\n', False),
+            ('RUNS_REPOSITORY_CODE = "starts a server"\ntype RUNS_REPOSITORY_CODE = str\n', False),
+            ('RUNS_REPOSITORY_CODE = "starts a server"\ndef f[RUNS_REPOSITORY_CODE](): pass\n', True),
         ):
             with self.subTest(source=source):
                 write(script, source)
@@ -5796,10 +5798,30 @@ def test_the_module_locator_finds_a_module_a_package_or_a_dotted_module_among_th
             {3},
             id="a name one function binds and another reads as the module's",
         ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\ndef stop[STALE]() -> None:\n    sys.exit(STALE)\n",
+            set(),
+            id="a name its function's type parameter binds",
+        ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\nclass Holder[*STALE]:\n    def stop(self) -> None:\n        sys.exit(STALE)\n",
+            set(),
+            id="a name its class's type parameter binds",
+        ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\ndef stop[**STALE](code: int = sys.exit(STALE)) -> None:\n    pass\n",
+            {3},
+            id="a default, which runs outside its function's type parameters",
+        ),
     ],
 )
 def test_exit_codes_reads_returns_conditionals_and_each_function_s_own_names(script: str, codes: set[int]) -> None:
     assert skill_inventory.exit_codes(ast.parse(script)) == (codes, [])
+
+
+def test_exit_codes_leaves_a_constant_a_type_statement_binds_again_unread() -> None:
+    script = "import sys\n\nSTALE = 3\ntype STALE = int\n\ndef stop() -> None:\n    sys.exit(STALE)\n"
+    assert skill_inventory.exit_codes(ast.parse(script)) == (set(), [(7, "STALE")])
 
 
 def test_python_constants_reads_each_python_script_past_a_shell_script_or_one_that_does_not_parse(

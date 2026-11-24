@@ -236,6 +236,36 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_a_type_parameter_or_a_type_statement_binds_a_temporary_directory_name_to_something_else(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+                "}\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "work = tempfile.mkdtemp()\n"
+            )
+            files = {
+                "deployer/kept.py": allowance + "shutil.rmtree(work)\n",
+                # Inside each generic definition `work` is its type parameter, never the directory mkdtemp made.
+                "deployer/function.py": allowance + "def run[work]():\n    shutil.rmtree(work)\n",  # 9
+                "deployer/variadic.py": allowance + "class Run[*work]:\n    shutil.rmtree(work)\n",  # 9
+                "deployer/specification.py": allowance + "def run[**work]():\n    shutil.rmtree(work)\n",  # 9
+                "deployer/alias.py": allowance + "type work = str\nshutil.rmtree(work)\n",  # 9
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows shutil.rmtree only under the system temporary directory, and this call may "
+                "write elsewhere"
+            )
+            self.assertEqual(
+                [f"deployer/{module}.py:9 {message}" for module in ("alias", "function", "specification", "variadic")],
+                filesystem_write_problems(root),
+            )
+
     def test_every_destination_of_an_allowed_write_must_be_under_the_system_temporary_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

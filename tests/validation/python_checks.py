@@ -49,6 +49,7 @@ from git_client import GLOBAL_VALUE_OPTIONS
 from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, relative_within
+from python_names import TYPE_PARAMETERS
 from runtime_support import names_git
 from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
@@ -1084,9 +1085,9 @@ def _parameter_default(node: ast.arg, parent: ast.AST | None) -> ast.expr | None
 
 
 def _scope_bindings(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[str, dict[str, list[_Binding]]]:
-    """Each scope's bindings of each name: a store of the name, a parameter, with its default, an import, which binds
-    a value of another module, an item stored into it, and a call of a method that adds to it, as `found.append(p)`
-    is, each with the value it binds and its guards."""
+    """Each scope's bindings of each name: a store of the name, a parameter, with its default, a type parameter, an
+    import, which binds a value of another module, an item stored into it, and a call of a method that adds to it, as
+    `found.append(p)` is, each with the value it binds and its guards."""
     found: dict[str, dict[str, list[_Binding]]] = {}
     for node, scope in scoped_nodes(tree.body):
         names: list[str] = []
@@ -1097,6 +1098,8 @@ def _scope_bindings(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[str, 
             names, value = [node.id], _bound_value(node, parent, parents)
         elif isinstance(node, ast.arg):
             names, default = [node.arg], _parameter_default(node, parent)
+        elif isinstance(node, TYPE_PARAMETERS):
+            names = [node.name]
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
         elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
@@ -6939,6 +6942,8 @@ def _top_level_bindings(node: ast.stmt) -> list[tuple[str, str]]:
         return [(name, kind) for target in targets for name in _stored_names(target)]
     if isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor):
         return [(name, "") for name in _stored_names(node.target)]
+    if isinstance(node, ast.TypeAlias):
+        return [(node.name.id, "")]
     if isinstance(node, ast.With | ast.AsyncWith):
         return [(name, "") for item in node.items for name in _stored_names(item.optional_vars)]
     return []

@@ -34,6 +34,7 @@ from python_names import ModuleImport as ModuleImport
 from python_names import import_aliases as import_aliases
 from python_names import module_imports as module_imports
 from python_names import qualified_name as qualified_name
+from python_names import type_parameter_names
 from skill_menu import MenuEntry, MenuError, SourceMenu, declared_names, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
@@ -397,7 +398,10 @@ DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 def statement_scope(node: ast.stmt) -> str:
-    """The scope a module-level statement other than a definition is: the one name it assigns, or MODULE_SCOPE."""
+    """The scope a module-level statement other than a definition is: the one name it assigns, a type statement's
+    included, or MODULE_SCOPE."""
+    if isinstance(node, ast.TypeAlias):
+        return node.name.id
     targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
     if len(targets) == 1 and isinstance(targets[0], ast.Name):
         return targets[0].id
@@ -559,10 +563,12 @@ class _BindingReader(ast.NodeVisitor):
             for value in self.values.get(id(node), [None]):
                 self.scope.bind(node.id, value)
 
-    def _argument_expressions(self, arguments: ast.arguments) -> None:
+    def _argument_defaults(self, arguments: ast.arguments) -> None:
         for expression in [*arguments.defaults, *arguments.kw_defaults]:
             if expression is not None:
                 self.visit(expression)
+
+    def _argument_annotations(self, arguments: ast.arguments) -> None:
         for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
             if argument.annotation is not None:
                 self.visit(argument.annotation)
@@ -606,21 +612,51 @@ class _BindingReader(ast.NodeVisitor):
             if owner is not None:
                 owner.imports.add(name)
 
+    def _annotation_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias) -> None:
+        """Enter the annotation scope a function's, a class's, or a type statement's type parameters bind their names
+        in, each a local value, as a definition's name is: the scope its annotations, a class's bases, a type
+        statement's value, and its body see. A node with no type parameters opens none.
+
+        Stated limit: a generic method's annotation scope sits under the module or function around its class, as its
+        body does, so an annotation or a bound there reads a name its class binds as the enclosing scope's."""
+        names = type_parameter_names(node)
+        if not names:
+            return
+        outer = self.scope
+        while not isinstance(node, (ast.ClassDef, ast.TypeAlias)) and outer.is_class and outer.parent is not None:
+            outer = outer.parent
+        self.scope = _NameScope(outer)
+        for name in names:
+            self.scope.bind(name, f"<local>.{name}")
+
     def _definition(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
         self.scope.bind(node.name, f"<local>.{node.name}")
-        for child in ast.iter_child_nodes(node):
-            if child not in node.body and not isinstance(child, ast.arguments):
-                self.visit(child)
         parent = self.scope
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            self._argument_expressions(node.args)
-        enclosing = parent
-        while enclosing.is_class and enclosing.parent is not None:
+        arguments = node.args if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+        generic = bool(node.type_params)
+        # A generic definition's decorators and defaults run outside its annotation scope, and the rest inside it; one
+        # with no type parameters reads them all in its parent, in the order it always has.
+        outside = [*node.decorator_list] if generic else []
+        for decorator in outside:
+            self.visit(decorator)
+        if arguments is not None and generic:
+            self._argument_defaults(arguments)
+        self._annotation_scope(node)
+        for child in ast.iter_child_nodes(node):
+            held = [*node.body, *outside]
+            if not any(child is item for item in held) and not isinstance(child, ast.arguments):
+                self.visit(child)
+        if arguments is not None and not generic:
+            self._argument_defaults(arguments)
+        if arguments is not None:
+            self._argument_annotations(arguments)
+        enclosing = self.scope if generic else parent
+        while arguments is not None and not generic and enclosing.is_class and enclosing.parent is not None:
             enclosing = enclosing.parent
-        self.scope = _NameScope(parent if isinstance(node, ast.ClassDef) else enclosing, isinstance(node, ast.ClassDef))
+        self.scope = _NameScope(enclosing, isinstance(node, ast.ClassDef))
         self._declare(node)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            self._parameters(node.args)
+        if arguments is not None:
+            self._parameters(arguments)
         for statement in node.body:
             self.visit(statement)
         self.scope = parent
@@ -634,8 +670,17 @@ class _BindingReader(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._definition(node)
 
+    def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+        self.visit(node.name)
+        parent = self.scope
+        self._annotation_scope(node)
+        for child in [*node.type_params, node.value]:
+            self.visit(child)
+        self.scope = parent
+
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._argument_expressions(node.args)
+        self._argument_defaults(node.args)
+        self._argument_annotations(node.args)
         parent = self.scope
         self.scope = _NameScope(parent)
         self._parameters(node.args)

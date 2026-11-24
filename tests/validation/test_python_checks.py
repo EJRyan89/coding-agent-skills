@@ -7436,6 +7436,11 @@ PRESENCE_REFUSED = {
     **PRESENCE_HANDLED,
 }
 PRESENCE_PASSED = {
+    # A type parameter binds its name in the function's scope, so the suppress the module binds to it is not this one.
+    "a type parameter that shadows a suppress the module binds": (
+        "import contextlib\n\nquiet = contextlib.suppress(OSError)\n\n\ndef f[quiet](p):\n    with quiet:\n"
+        "        return p.stat()\n    return None\n"
+    ),
     # A stated limit of the presence policy: a parameter's default is read in its own function's scope, where Python
     # evaluates it in the scope around, so this suppress leads back to its own name and is not read as one.
     "a suppress given as a parameter's default of its own name": (
@@ -8940,6 +8945,14 @@ POLICED_CALL_ROWS = {
     ),
     "a constant bound to a literal twice": (
         "WAIT = 30\nWAIT = 60\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant a type statement binds again": (
+        "WAIT = 30\ntype WAIT = int\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant a type parameter shadows": (
+        "WAIT = 30\n\n\ndef f[WAIT](p):\n"
         "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
     ),
 }

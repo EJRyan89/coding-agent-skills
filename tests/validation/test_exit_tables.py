@@ -1219,6 +1219,25 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
             None,
             id="a constant an import and an assignment both bind",
         ),
+        pytest.param(
+            "STOP = 3\ntype STOP = int\ndef main() -> int:\n    return STOP\n",
+            {},
+            None,
+            id="a constant a type statement binds again",
+        ),
+        pytest.param(
+            "STOP = 3\ndef main[STOP]() -> int:\n    return STOP\n",
+            {},
+            None,
+            id="a constant its function's type parameter hides",
+        ),
+        pytest.param(
+            "STOP = 3\nclass Result[STOP]:\n    @property\n    def exit_code(self) -> int:\n        return STOP\n"
+            "def main() -> int:\n    return Result().exit_code\n",
+            {},
+            None,
+            id="a constant its method's class's type parameter hides",
+        ),
     ],
 )
 def test_the_reader_reads_a_constant_as_ejryan89_skill_core_s_exit_constants_reads_it(

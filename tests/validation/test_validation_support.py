@@ -221,6 +221,44 @@ class CallableResolverFixtures(unittest.TestCase):
         rebound = ast.parse("import os\nenv = os.environ\nenv = {}\nenv |= {}\nenv\n")
         self.assertEqual("", CallableResolver(rebound, in_place_updates=True).name(last_expression(rebound)))
 
+    def test_a_type_parameter_shadows_an_import_in_its_body_annotations_and_value_but_not_its_decorator_or_default(
+        self,
+    ) -> None:
+        tree = ast.parse(
+            "import shutil\n"
+            "@shutil.decorate\n"
+            "def one[shutil](x: shutil.Path = shutil.default) -> shutil.Out:\n"
+            "    shutil.rmtree(x)\n"
+            "class Two[*shutil](shutil.Base):\n"
+            "    def method(self):\n"
+            "        shutil.rmtree(1)\n"
+            "class Three:\n"
+            "    def method[**shutil](self):\n"
+            "        shutil.rmtree(1)\n"
+            "type Four[shutil] = shutil.rmtree\n"
+            "type shutil = int\n"
+        )
+        resolver = CallableResolver(tree)
+        names = {
+            (node.lineno, ast.unparse(node)): resolver.name(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+        }
+        self.assertEqual(
+            {
+                (2, "shutil.decorate"): "",
+                (3, "shutil.default"): "",
+                (3, "shutil.Path"): "<local>.shutil.Path",
+                (3, "shutil.Out"): "<local>.shutil.Out",
+                (4, "shutil.rmtree"): "<local>.shutil.rmtree",
+                (5, "shutil.Base"): "<local>.shutil.Base",
+                (7, "shutil.rmtree"): "<local>.shutil.rmtree",
+                (10, "shutil.rmtree"): "<local>.shutil.rmtree",
+                (11, "shutil.rmtree"): "<local>.shutil.rmtree",
+            },
+            names,
+        )
+
     def test_dynamic_callable_construction_is_not_a_simple_assignment_alias(self) -> None:
         resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))
         self.assertEqual([], resolver.problems("fixture.py"))
@@ -668,6 +706,13 @@ class ScopeAndGuardFixtures(unittest.TestCase):
             calls,
         )
         self.assertEqual(["TABLE", MODULE_SCOPE], [statement_scope(statement) for statement in tree.body[:2]])
+
+    def test_a_type_statement_is_the_scope_of_the_name_it_binds_and_a_generic_definition_holds_its_parameters(
+        self,
+    ) -> None:
+        tree = ast.parse("type Alias[T: bound()] = make()\ndef generic[T: limit()](): pass\n")
+        calls = {ast.unparse(node.func): scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.Call)}
+        self.assertEqual({"bound": "Alias", "make": "Alias", "limit": "generic"}, calls)
 
     def test_words_are_listed_with_a_comma_before_the_conjunction_only_past_two(self) -> None:
         self.assertEqual("a", listed(["a"]))
