@@ -70,18 +70,69 @@ class ReadTests(unittest.TestCase):
             "after an if": ("if X:\n    STALE = 3\nelse:\n    STALE = 5\nSTALE = 4\n", {4}),
             "an if with no else": ("STALE = 3\nif X:\n    STALE = 4\n", {3, 4}),
             "a loop's body": ("STALE = 3\nwhile X:\n    STALE = 4\n", {3, 4}),
-            "a loop's else": ("STALE = 3\nfor x in y:\n    pass\nelse:\n    STALE = 4\n", {4}),
+            "a loop's else, which a break may skip": (
+                "STALE = 3\nfor x in y:\n    pass\nelse:\n    STALE = 4\n",
+                {3, 4},
+            ),
             "a try's paths": (
                 "STALE = 1\ntry:\n    STALE = 2\n    STALE = 3\nexcept E:\n    pass\nelse:\n    STALE = 4\n",
                 {1, 2, 3, 4},
             ),
             "a try's finally": ("try:\n    STALE = 2\nexcept E:\n    STALE = 3\nfinally:\n    STALE = 4\n", {4}),
             "a match with no case taken": ("STALE = 3\nmatch X:\n    case 1:\n        STALE = 4\n", {3, 4}),
-            "a with block": ("STALE = 3\nwith X:\n    STALE = 4\n", {4}),
+            "a with block, which may suppress an error": ("STALE = 3\nwith X:\n    STALE = 4\n", {3, 4}),
         }
         for case, (source, values) in cases.items():
             with self.subTest(case):
                 self.assertEqual({"STALE": frozenset(values)}, constants(source).values)
+
+    def test_a_block_that_may_stop_partway_keeps_every_value_python_can_leave(self) -> None:
+        # Reading a loop, a try's body, or a with's body as run to its end left out values a break, a continue, an
+        # error a handler or a context manager catches, or an inner handler's error leave, so a code the program exits
+        # with went unread. Each set is what running the probe on every path leaves; the reader may hold more, never
+        # less. X() is any truth value, R() may raise E, IT() yields any number of items, and SUP() suppresses E.
+        cases = {
+            "a break after a binding": ("C = 3\nwhile True:\n    C = 4\n    if X():\n        break\n    C = 5\n", {4}),
+            "a for's break": ("C = 3\nfor _ in IT():\n    C = 4\n    if X():\n        break\n    C = 5\n", {3, 4, 5}),
+            "a continue": ("C = 3\nfor _ in IT():\n    C = 4\n    if X():\n        continue\n    C = 5\n", {3, 4, 5}),
+            "a for's else a break skips": (
+                "C = 3\nfor _ in IT():\n    C = 4\n    if X():\n        break\nelse:\n    C = 5\n",
+                {4, 5},
+            ),
+            "a continue in a loop's handler": (
+                "C = 1\nfor _ in IT():\n    try:\n        C = 2\n        R()\n        C = 3\n    except E:\n"
+                "        continue\n    C = 4\n",
+                {1, 2, 4},
+            ),
+            "a break in a loop's handler": (
+                "C = 1\nwhile True:\n    try:\n        C = 2\n        R()\n    except E:\n        break\n"
+                "    C = 3\n    break\n",
+                {2, 3},
+            ),
+            "an error inside an if of a try's body": (
+                "C = 1\ntry:\n    if X():\n        C = 4\n        R()\n        C = 5\nexcept E:\n    pass\n",
+                {1, 4, 5},
+            ),
+            "an error inside a with of a try's body": (
+                "C = 1\ntry:\n    with CM():\n        C = 4\n        R()\n        C = 5\nexcept E:\n    pass\n",
+                {4, 5},
+            ),
+            "an error inside a for of a try's body": (
+                "C = 1\ntry:\n    for _ in IT():\n        C = 4\n        R()\n        C = 5\nexcept E:\n    pass\n",
+                {1, 4, 5},
+            ),
+            "an inner handler that raises to an outer try": (
+                "C = 1\ntry:\n    try:\n        C = 2\n        R()\n        C = 3\n    except E:\n        C = 4\n"
+                "        R()\n        C = 5\nexcept E:\n    pass\n",
+                {3, 4, 5},
+            ),
+            "a with that suppresses an error": ("C = 3\nwith SUP():\n    R()\n    C = 4\n", {3, 4}),
+            "an except star": ("C = 1\ntry:\n    C = 2\n    R()\n    C = 3\nexcept* E:\n    pass\n", {2, 3}),
+        }
+        for case, (source, python) in cases.items():
+            with self.subTest(case):
+                found = constants(source).values.get("C", frozenset())
+                self.assertLessEqual(python, found, "a value Python can leave is missing")
 
     def test_an_annotation_alone_binds_nothing_and_a_bool_or_other_value_is_no_constant(self) -> None:
         found = constants("DECLARED: int\nFLAG = True\nTEXT = 'x'\nSUM = 2 + 1\n")

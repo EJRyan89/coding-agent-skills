@@ -1241,6 +1241,35 @@ def test_the_reader_reads_a_constant_as_ejryan89_skill_core_s_exit_constants_rea
         assert reader.reading.unread == []
 
 
+@pytest.mark.parametrize(
+    ("body", "table", "missing"),
+    [
+        pytest.param(
+            "import sys\nC = 3\nfor _ in sys.argv:\n    if _ == 'x':\n        break\nelse:\n    C = 5\n",
+            "  1  failed\n  5  five\n",
+            3,
+            id="a for's else a break skips",
+        ),
+        pytest.param(
+            "import sys\nC = 3\ntry:\n    if sys.argv:\n        C = 4\n        import fast\n        C = 5\n"
+            "except ImportError:\n    pass\n",
+            "  1  failed\n  3  three\n  5  five\n",
+            4,
+            id="an if in a try's body an error leaves partway",
+        ),
+    ],
+)
+def test_a_table_that_leaves_out_a_code_a_block_stopped_partway_leaves_is_refused(
+    body: str, table: str, missing: int
+) -> None:
+    # The constant reading took a loop's else and a statement nested in a try's body as run to their end, so a
+    # table that left out the code a break or a failed import leaves C at passed, though the program exits with it.
+    body += "def main() -> int:\n    return C\nif __name__ == '__main__':\n    run_main(main)\n"
+    found = problems({"tools/tool.py": script(f"A tool.\n\nExit status:\n{table}", body)})
+    assert len(found) == 1, found
+    assert found[0].startswith(f"tools/tool.py can exit {missing}, which its exit table does not name"), found
+
+
 REFUSED = (
     "class Refused(Exception):\n    def __init__(self, exit_code={default}):\n        self.exit_code = exit_code\n"
     "def main() -> int:\n    try:\n        check()\n    except Refused as error:\n        return error.exit_code\n"

@@ -518,7 +518,9 @@ class CodeReader:
         """The codes an exit_code keyword or default gives, or None, recording it in error_unread, when the reader
         cannot read it. A parameter named exit_code passed on as itself, or another error's exit_code passed on, as
         `exit_code=refusal.exit_code`, gives nothing of its own: each default and keyword that sets one is read where
-        it is written."""
+        it is written. A stated limit, a form no repository code writes: a code an error is given by position, and a
+        local or any other attribute named exit_code passed on as `exit_code=`, are not read, so a code only they give
+        is neither read nor unread."""
         if (isinstance(node, ast.Name) and node.id == ERROR_CODE) or (
             isinstance(node, ast.Attribute) and node.attr == ERROR_CODE
         ):

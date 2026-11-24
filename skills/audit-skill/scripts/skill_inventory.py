@@ -3019,7 +3019,9 @@ def module_locator(
 ) -> exit_constants.Locate:
     """Find a module a script at `path` imports, by its dotted name, as Python finds it from the script's own folder and
     then from `folders`, ejryan89-skill-core's scripts, which a skill's script puts on its path: among the scripts the
-    audit read alone, so a module outside them is not found and a constant it names is unread."""
+    audit read alone, so a module outside them is not found and a constant it names is unread. The scan reads a
+    folder's own files and none of its subfolders', so a package's `__init__.py` and its modules are among them only
+    when a command runs one or sits beside one it runs; otherwise a constant a package holds is unread."""
 
     def locate(dotted: str) -> exit_constants.ModuleConstants | None:
         relative = Path(*dotted.split("."))
