@@ -545,7 +545,12 @@ class NoteFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             suite = Path(temporary) / "test_left_attached.py"
             suite.write_text(LEFT_ATTACHED.format(scripts=str(scripts)), encoding="utf-8")
-            command = pytest_command(str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"))
+            # The repository's configuration, read where the suite sits outside the repository, would have pytest
+            # walk every folder above the suite up to the drive, the shared temporary folder included, whose entries
+            # other suites remove while it lists them; --confcutdir keeps the walk inside the suite's own folder.
+            command = pytest_command(
+                str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"), "--confcutdir", temporary
+            )
             job = Job("left attached", "left attached", 1, lambda: run_process(command, PYTEST_ENVIRONMENT))
             with contextlib.redirect_stdout(io.StringIO()) as printed:
                 result = run_jobs([job], verbose=False, workers=1)
