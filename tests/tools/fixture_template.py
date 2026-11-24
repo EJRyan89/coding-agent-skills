@@ -25,6 +25,13 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePath
 
+STATUS_READ_ALLOWED = {
+    "repository_shape": (
+        "compares a throwaway fixture's status, its `## branch` header included, which git_worktrees.changes does not "
+        "give, between a fresh build and a copy no other process reads"
+    ),
+}
+
 
 def remove_tree(path: Path) -> None:
     """Remove a folder and everything in it, git's read-only object files included, which Windows will not delete

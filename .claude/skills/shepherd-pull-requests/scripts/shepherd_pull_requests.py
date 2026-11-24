@@ -142,6 +142,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import git_worktrees
 import whole_number
 from console import run_main
 from flat_text import flat_text, reason_line, single_line
@@ -356,7 +357,9 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     name = output_line(git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "")
     if name != BASE:
         return f"not fast-forwarded: it is on {flat_text(name) or 'a detached HEAD'}, not {BASE}"
-    if git.names(["status", "--porcelain", "--untracked-files=no"], directory=hub):
+    # Read without the index refresh a status otherwise writes back, so the check never takes the hub's index lock;
+    # git takes the later untracked-files mode, so untracked files are not counted.
+    if git_worktrees.changes(git, hub, "--untracked-files=no"):
         return "not fast-forwarded: it has uncommitted changes"
     before = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     if dry_run:

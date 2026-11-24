@@ -41,6 +41,13 @@ BASE = ("--base", "origin/main")
 # A GitHub repository origin may name, which no run reaches: gh's runner is the fault's, and git's never contacts it.
 GITHUB_ORIGIN = "https://github.com/example/fixture.git"
 
+STATUS_READ_ALLOWED = {
+    "pushed_branch": (
+        "refreshes the throwaway fixture's index on purpose, with the status's optional lock, so a run that compares "
+        "the work folder before and after finds an index no later status rewrites"
+    ),
+}
+
 
 def formatted(fixture: Fixture, template: str) -> Path:
     return Path(template.format(**fixture.values()))
