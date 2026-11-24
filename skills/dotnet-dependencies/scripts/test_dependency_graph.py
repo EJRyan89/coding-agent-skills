@@ -910,13 +910,19 @@ class PathWalkBoundTests(Fixture):
     counts the walk's steps, never the time it takes."""
 
     def walk_steps(self, *arguments: str) -> tuple[int, list[list[str]]]:
-        """Run the script and count every package and project the why walk enters."""
+        """Run the script and count every package and project the why walk enters. It keeps as `sets_read` how many
+        sets of what can reach the name were read, and as `references_read` how many times a project's references
+        were read, so a set read again, or a project read again on another path, shows in the count."""
         finder = dependency_graph.PathFinder
+        project = dependency_graph.Project
         with (
             mock.patch.object(finder, "from_package", autospec=True, side_effect=finder.from_package) as packages,
             mock.patch.object(finder, "from_project", autospec=True, side_effect=finder.from_project) as projects,
+            mock.patch.object(dependency_graph, "reaching_keys", wraps=dependency_graph.reaching_keys) as sets,
+            mock.patch.object(project, "references_for", autospec=True, side_effect=project.references_for) as listed,
         ):
             _, rows = self.run_main(*arguments)
+        self.sets_read, self.references_read = sets.call_count, listed.call_count
         return packages.call_count + projects.call_count, rows
 
     def test_a_package_ladder_of_diamonds_is_walked_only_as_far_as_the_chains_it_prints(self) -> None:
@@ -938,6 +944,7 @@ class PathWalkBoundTests(Fixture):
         # The walk stopping once a chain past the limit truncates the answer takes 626 steps; one going on through
         # every chain takes 3 * 2 ** LADDER_DEPTH + 1, which is 49,153.
         self.assertLess(steps, 800)
+        self.assertEqual(2, self.sets_read)  # the target's packages and the projects, each read once
         # A package beside the ladder is answered without entering the ladder's rungs.
         steps, rows = self.walk_steps("why", "Beside.Pkg", "--root", str(self.root))
         self.assertEqual(
@@ -945,6 +952,7 @@ class PathWalkBoundTests(Fixture):
         )
         self.assertEqual([], self.lines(rows, "TRUNCATED"))
         self.assertLess(steps, 10)
+        self.assertEqual(2, self.sets_read)  # the target's packages and the projects, each read once
 
     def test_a_project_ladder_of_diamonds_is_walked_only_as_far_as_the_chains_it_prints(self) -> None:
         rungs = [[f"Rung{rung}A", f"Rung{rung}B"] for rung in range(LADDER_DEPTH)]
@@ -965,12 +973,16 @@ class PathWalkBoundTests(Fixture):
         )
         self.assertEqual([["App/App.csproj", "-", "Floor", "200"]], self.lines(rows, "TRUNCATED"))
         self.assertLess(steps, 800)
+        self.assertLess(self.references_read, 500)
         # A package only App holds is answered without entering the ladder's rungs.
         steps, rows = self.walk_steps("why", "Beside.Pkg", *app)
         self.assertEqual(
             [["App/App.csproj", "-", "Beside.Pkg", "graph", "Beside.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
         )
         self.assertLess(steps, 10)
+        # Each of the 30 projects has its references read once to learn what can reach the name, and App once more
+        # as the walk enters it.
+        self.assertEqual(31, self.references_read)
 
 
 API_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
