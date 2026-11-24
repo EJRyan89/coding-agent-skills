@@ -31,6 +31,7 @@ LOADED = sorted(
             f"skills/ejryan89-skill-core/scripts/{module}.py"
             for module in (
                 "apple_double",
+                "atomic_file",
                 "bounded_process",
                 "closing_references",
                 "console",

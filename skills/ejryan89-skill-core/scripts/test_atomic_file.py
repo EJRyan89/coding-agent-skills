@@ -527,12 +527,16 @@ class CreateTests(unittest.TestCase):
         # Holds on every platform, by injected refusals of the copy's removal, as a file system may refuse it while
         # another reader holds the new file open, and such a reader lets go after a moment.
         real_unlink = Path.unlink
-        cases: tuple[tuple[str, int | None, BaseException | None], ...] = (
-            ("refused for a while", 5, None),
-            ("refused throughout", None, None),
-            ("interrupted in a wait", 1, KeyboardInterrupt()),
+        # Any OSError is tried again, not only the PermissionError Windows gives: another file system may refuse the
+        # removal as busy.
+        cases: tuple[tuple[str, int | None, BaseException | None, int], ...] = (
+            ("refused for a while", 5, None, errno.EACCES),
+            ("busy for a while", 5, None, errno.EBUSY),
+            ("refused throughout", None, None, errno.EACCES),
+            ("busy throughout", None, None, errno.EBUSY),
+            ("interrupted in a wait", 1, KeyboardInterrupt(), errno.EACCES),
         )
-        for name, refusals, interrupt in cases:
+        for name, refusals, interrupt, code in cases:
             removals: list[Path] = []
             waits: list[float] = []
 
@@ -541,10 +545,11 @@ class CreateTests(unittest.TestCase):
                 missing_ok: bool = False,
                 refusals: int | None = refusals,
                 removals: list[Path] = removals,
+                code: int = code,
             ) -> None:
                 removals.append(self)
                 if refusals is None or len(removals) <= refusals:
-                    raise PermissionError(errno.EACCES, "the file is being used by another process", str(self))
+                    raise OSError(code, "the file is being used by another process", str(self))
                 real_unlink(self, missing_ok=missing_ok)
 
             def wait(seconds: float, waits: list[float] = waits, interrupt: BaseException | None = interrupt) -> None:

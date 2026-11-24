@@ -25,12 +25,13 @@ import review_guidance
 import review_insights as ri
 import review_synthesis as rs
 from json_writer import JsonWriteRefused
+from markdown_literal import markdown_line
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_io import PersistenceError
 from review_records import Finding, ReviewRecord, build_record, write_record_pair
 from test_review_archive import unstatable
-from test_review_insights import DECIDED_AT, LINE_BREAKS, InsightFixture, covered, record
+from test_review_insights import DECIDED_AT, LINE_BREAKS, LITERAL, MARKUP, UNTRUSTED, InsightFixture, covered, record
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
 PYTHON = "python" if sys.platform == "win32" else "python3"
@@ -43,6 +44,130 @@ REPOSITORY_ADAPTER = {
     "source_hashes": {GUIDE: "b" * 64, ".agents/review.md": "c" * 64},
 }
 TITLE = "Name the timezone in every scheduling rule"
+# A report of record, person, and model text with no ASCII punctuation, as the renderer wrote it before such text
+# went through markdown_line, but for its target, a path, whose punctuation is encoded; up to its Evidence section,
+# which names the archive's temporary paths.
+ORDINARY_REPORT = "\n".join(
+    [
+        "# Code-review insights",
+        "",
+        "Repository set: both (owner/other, owner/repo)",
+        "Range: 2026-01-01 to 2026-01-31",
+        "Records analyzed: 3",
+        "Findings analyzed: 4",
+        "",
+        "## Synthesis",
+        "",
+        "Recorded 2026-02-03T09:30:00+00:00.",
+        "",
+        "### High priority",
+        "",
+        "#### REC-004 — Name the timezone in every scheduling rule",
+        "",
+        "Type: strengthen-rule",
+        "Target: owner&#47;repo&#58;docs&#47;guide&#46;md",
+        "Decision: deferred",
+        "Linked flags: RF-000002",
+        "",
+        "Add that every scheduling rule names its timezone",
+        "",
+        "Rationale: Two findings and a flag",
+        "",
+        "Evidence: owner/repo#7 v1 F001",
+        "",
+        "### Themes",
+        "",
+        "- **Time handling** (2) — scheduling; e.g. owner/repo#7 v1 F001",
+        "",
+        "### Recurring mistakes",
+        "",
+        "- **Local time where UTC is needed** (2: 2 SHOULD_FIX); e.g. owner/other#3 v1 F001",
+        "",
+        "### Reviewer effectiveness",
+        "",
+        "- Most useful: Repository reviewer",
+        "- Least useful: fixture",
+        "- False-positive candidates: Style nits",
+        "",
+        "## Recommendations",
+        "",
+        "### REC-001 — Correctness",
+        "",
+        "Finding count: 3",
+        "Decision: accepted",
+        "Linked flags: none",
+        "",
+        "Topics:",
+        "",
+        "- Correctness topic (1) — e.g. owner/other#3 v1 F001",
+        "",
+        "What the Correctness findings show",
+        "",
+        "Addressed by: REC-004",
+        "",
+        "Findings:",
+        "",
+        "- owner/other#3 v1 F001: Valid and acted on",
+        "- owner/other#4 v1 F001: Valid and acted on",
+        "- owner/repo#7 v1 F001: Valid and acted on",
+        "",
+        "| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| fixture | unknown | 3 | 0 | 1 | 0 |",
+        "",
+        "Decision history:",
+        "",
+        "- 2026-02-03T09:30:00+00:00: accepted — Add a rule",
+        "",
+        "### REC-002 — Style",
+        "",
+        "Finding count: 1",
+        "Decision: deferred",
+        "Linked flags: RF-000001",
+        "",
+        "Topics:",
+        "",
+        "- Style topic (1) — e.g. owner/repo#7 v1 F002",
+        "",
+        "What the Style findings show",
+        "",
+        "Addressed by: REC-004",
+        "",
+        "Findings:",
+        "",
+        "- owner/repo#7 v1 F002: Valid and acted on",
+        "",
+        "| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| fixture | unknown | 1 | 1 | 0 | 0 |",
+        "",
+        "## Analyzer opportunities",
+        "",
+        "Findings reviewers said a diagnostic analyzer could catch, cheapest first: rules in analyzers the "
+        "repositories already have, then rules in analyzers they do not use, then patterns that would need a "
+        "custom rule.",
+        "",
+        "### REC-003 — available: CA2000 (Roslyn)",
+        "",
+        "Finding count: 1",
+        "Repositories: owner/other",
+        "Decision: deferred",
+        "Linked flags: none",
+        "",
+        "Roslyn, which owner/other already has, provides CA2000, but the rule is not enforced. Enable it or raise "
+        "its severity in the analyzer's configuration so the build reports it instead of a reviewer.",
+        "",
+        "| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| fixture | unknown | 1 | 0 | 0 | 0 |",
+        "",
+        "Findings:",
+        "",
+        "- owner/other#4 v1 F001 Headline 0",
+        "",
+        "",
+    ]
+)
 # A reviewer whose manifest routes a specialist to the profile the suite ships records it under its reference, which
 # names no file of the reviewed repository.
 SUITE_PROFILE = "suite:design-review"
@@ -716,8 +841,8 @@ class RecordTests(SynthesisFixture):
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         style = markdown[markdown.index("### REC-002 — Style") :]
         self.assertIn(
-            "Topics:\n\n- Style topic (1) — e.g. owner/repo#7 v1 F002\n\nWhat the Style findings show.\n\n"
-            "Addressed by: REC-003\n\nFindings:\n\n- owner/repo#7 v1 F002: Valid; acted on.\n",
+            "Topics:\n\n- Style topic (1) — e.g. owner/repo#7 v1 F002\n\nWhat the Style findings show&#46;\n\n"
+            "Addressed by: REC-003\n\nFindings:\n\n- owner/repo#7 v1 F002: Valid&#59; acted on&#46;\n",
             style,
         )
         self.assertNotIn("Review recurring Style findings", markdown)
@@ -878,13 +1003,13 @@ class RenderTests(SynthesisFixture):
                     f"#### REC-003 — {TITLE}",
                     "",
                     "Type: strengthen-rule",
-                    f"Target: owner/repo:{GUIDE}",
+                    f"Target: {markdown_line(f'owner/repo:{GUIDE}')}",
                     "Decision: deferred",
                     f"Linked flags: {self.unlinked}",
                     "",
-                    "Add: every scheduling rule names the timezone it is evaluated in.",
+                    "Add&#58; every scheduling rule names the timezone it is evaluated in&#46;",
                     "",
-                    "Rationale: Two findings and a missed-finding flag.",
+                    "Rationale: Two findings and a missed&#45;finding flag&#46;",
                     "",
                     "Evidence: owner/repo#7 v1 F001",
                     "",
@@ -898,7 +1023,7 @@ class RenderTests(SynthesisFixture):
                     "",
                     "### Reviewer effectiveness",
                     "",
-                    "- Most useful: repository-reviewer",
+                    "- Most useful: repository&#45;reviewer",
                     "- Least useful: fixture",
                     "- False-positive candidates: Style nits",
                     "",
@@ -908,9 +1033,250 @@ class RenderTests(SynthesisFixture):
             section,
         )
 
+    def test_a_report_whose_untrusted_text_holds_no_punctuation_renders_byte_for_byte_as_before(self) -> None:
+        # Record, person, and model text of letters, digits, and spaces is unchanged by the literal encoding, so such
+        # a report renders exactly as the renderer wrote it before every such text went through markdown_line, the
+        # lines the script writes itself included; only the target's path, which holds punctuation, differs.
+        self.commit("owner/other", 4, [covered("available", "Roslyn", "CA2000")])
+        json_path, _ = self.run_report()
+        categories = self.categories(json_path)
+        for entry in categories:
+            entry["assessment"] = f"What the {entry['category']} findings show"
+            for finding in entry["findings"]:
+                finding["assessment"] = "Valid and acted on"
+        result = self.valid_result(json_path, categories=categories)
+        result["recommendations"][0].update(
+            change="Add that every scheduling rule names its timezone", rationale="Two findings and a flag"
+        )
+        result["reviewer_effectiveness"]["most_useful"] = "Repository reviewer"
+        self.assertEqual(0, self.synthesize(json_path, self.write_result(json_path, result))[0])
+        code, _, err = self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            "REC-001",
+            "--category",
+            "Correctness",
+            "--flags",
+            "none",
+            "accepted",
+            "--note",
+            "Add a rule",
+        )
+        self.assertEqual(0, code, err)
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        self.assertEqual(ORDINARY_REPORT, markdown[: markdown.index("## Evidence")])
+
+    def test_text_the_synthesis_wrote_reaches_the_markdown_as_literal_text(self) -> None:
+        # A topic, an assessment, a finding's assessment, a recommendation's change and rationale, a theme, a mistake,
+        # and a reviewer's name are the model's text, which the prompt already calls untrusted data.
+        json_path, _ = self.run_report()
+        categories = self.categories(json_path)
+        for entry in categories:
+            entry["topics"][0]["topic"] = f"Topic {UNTRUSTED}"
+            entry["assessment"] = f"Assessed {UNTRUSTED}"
+            for finding in entry["findings"]:
+                finding["assessment"] = f"Finding {UNTRUSTED}"
+        result = self.valid_result(json_path, categories=categories)
+        result["recommendations"][0].update(change=f"Change {UNTRUSTED}", rationale=f"Because {UNTRUSTED}")
+        result["themes"][0]["theme"] = f"Theme {UNTRUSTED}"
+        result["mistakes"][0]["mistake"] = f"Mistake {UNTRUSTED}"
+        result["reviewer_effectiveness"]["most_useful"] = f"Reviewer {UNTRUSTED}"
+        self.assertEqual(0, self.synthesize(json_path, self.write_result(json_path, result))[0])
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        for markup in MARKUP:
+            with self.subTest(markup=markup):
+                self.assertNotIn(markup, markdown)
+        for expected in (
+            f"\n- Topic {LITERAL} (1) — e.g. ",
+            f"\n\nAssessed {LITERAL}\n\n",
+            f": Finding {LITERAL}\n",
+            f"\n\nChange {LITERAL}\n\n",
+            f"\nRationale: Because {LITERAL}\n",
+            f"\n- **Theme {LITERAL}** (2) — scheduling; e.g. ",
+            f"\n- **Mistake {LITERAL}** (2: 2 SHOULD_FIX); e.g. ",
+            f"\n- Most useful: Reviewer {LITERAL}\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, markdown)
+
+    def test_every_other_text_the_synthesis_wrote_reaches_the_markdown_as_literal_text(self) -> None:
+        # A title, a custom-rule pattern with its rules and assessment, a pattern left in place with its likely reason,
+        # a theme's areas, the least useful reviewer and the false-positive candidates, and a comparison with the
+        # previous period are the model's text, or a reviewer's for a custom rule's tool; a title may hold no
+        # backslash, so its text leaves that one out.
+        self.commit("owner/repo", 5, ["Correctness"], reviewed_at="2025-12-20T12:00:00+00:00")
+        december, _ = self.run_report("2025-12-01", "2025-12-31")
+        previous = self.valid_result(december, themes=[], mistakes=[])
+        previous["recommendations"][0]["evidence"] = ["owner/repo#5 v1 F001"]
+        self.assertEqual(0, self.synthesize(december, self.write_result(december, previous))[0])
+        self.commit("owner/other", 4, [covered("custom-candidate", "[x](https://example.com)@user", "retry-loop")])
+        json_path, _ = self.run_report()
+        title = "Title <!-- hidden [x](https://example.com) @user | end"
+        categories = self.categories(json_path)
+        for entry in categories:
+            entry["addressed_by"] = [title]
+        context = json.loads((json_path.parent / rs.CONTEXT_NAME).read_text(encoding="utf-8"))
+        result = self.valid_result(
+            json_path,
+            categories=categories,
+            custom_rule_patterns=[
+                {
+                    "pattern": f"Pattern {UNTRUSTED}",
+                    "rules": context["custom_rules"],
+                    "assessment": f"Worth {UNTRUSTED}",
+                    "addressed_by": [],
+                }
+            ],
+            persistent_patterns=[
+                {
+                    "pattern": f"Left {UNTRUSTED}",
+                    "count": 1,
+                    "likely_reason": f"Reason {UNTRUSTED}",
+                    "examples": [context["refs"][0]],
+                }
+            ],
+            comparison={
+                "persistent": [f"Kept {UNTRUSTED}", "Other"],
+                "new": [f"New {UNTRUSTED}", "Other"],
+                "resolved": [f"Gone {UNTRUSTED}", "Other"],
+                "previous_recommendations": [{"id": "REC-002", "assessment": f"Assessed {UNTRUSTED}"}],
+            },
+        )
+        result["recommendations"][0]["title"] = title
+        result["themes"][0]["areas"] = [f"Area {UNTRUSTED}", "Other"]
+        result["reviewer_effectiveness"].update(
+            least_useful=f"Least {UNTRUSTED}", false_positive_candidates=[f"Candidate {UNTRUSTED}", "Second"]
+        )
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual(0, code, out + err)
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        for markup in MARKUP:
+            with self.subTest(markup=markup):
+                self.assertNotIn(markup, markdown)
+        link = "&#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;"
+        for expected in (
+            f" — Title &lt;&#33;&#45;&#45; hidden {link} &#64;user &#124; end\n\nType: strengthen-rule\n",
+            f"\n- **Pattern {LITERAL}** (1 rules: {link}&#64;user retry&#45;loop) — Worth {LITERAL} "
+            "Addressed by: none\n",
+            f"\n- **Left {LITERAL}** (1) — Reason {LITERAL}; e.g. ",
+            f"\n- **Time handling** (2) — Area {LITERAL}, Other; e.g. ",
+            f"\n- Least useful: Least {LITERAL}\n",
+            f"\n- False-positive candidates: Candidate {LITERAL}; Second\n",
+            f"\n- Persistent: Kept {LITERAL}; Other\n",
+            f"\n- New: New {LITERAL}; Other\n",
+            f"\n- Resolved: Gone {LITERAL}; Other\n",
+            f"\n- REC-002: Assessed {LITERAL}\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, markdown)
+
 
 class StageTests(unittest.TestCase):
     """The synthesis stage's own choices, without a report around them."""
+
+    def synthesized_report(self) -> dict[str, Any]:
+        """A report with two synthesized recommendations and a recorded synthesis whose lists are empty, or hold two
+        finding references or addressed titles."""
+
+        def synthesized(identifier: str, title: str) -> dict[str, Any]:
+            return {
+                "kind": "synthesized",
+                "id": identifier,
+                "title": title,
+                "priority": "high",
+                "type": "strengthen-rule",
+                "target": {"repository": "owner/repo", "path": GUIDE},
+                "decision": "deferred",
+                "linked_flags": [],
+                "change": "Change",
+                "rationale": "Why",
+                "evidence": [],
+            }
+
+        return {
+            "recommendations": [synthesized("REC-001", "First"), synthesized("REC-002", "Second")],
+            "synthesis": {
+                "status": "complete",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+                "previous_report": "insights-december.json",
+                "themes": [{"theme": "Time handling", "count": 2, "areas": [], "examples": ["owner/repo#7 v1 F001"]}],
+                "mistakes": [],
+                "persistent_patterns": [
+                    {
+                        "pattern": "Left",
+                        "count": 2,
+                        "likely_reason": "Reason",
+                        "examples": ["owner/repo#7 v1 F001", "owner/repo#8 v1 F002"],
+                    }
+                ],
+                "reviewer_effectiveness": {"most_useful": "a", "least_useful": "b", "false_positive_candidates": []},
+                "comparison": {"persistent": [], "new": [], "resolved": [], "previous_recommendations": []},
+                "custom_rule_patterns": [
+                    {
+                        "pattern": "Retry loops",
+                        "rules": ["Roslyn retry"],
+                        "assessment": "Worth a rule",
+                        "addressed_by": ["First", "Second"],
+                    }
+                ],
+            },
+        }
+
+    def test_the_analysis_joins_references_with_a_comma_and_writes_its_own_word_for_an_empty_list(self) -> None:
+        # Finding references and the recommendations a pattern is addressed by are the report's own, joined with `, `;
+        # an empty list of areas, candidates, or compared texts is written as the report's word for none.
+        lines = rs.render(self.synthesized_report(), lambda item: [])
+        self.assertEqual(
+            [
+                "### Themes",
+                "",
+                "- **Time handling** (2) — no area; e.g. owner/repo#7 v1 F001",
+                "",
+                "### Findings left in place",
+                "",
+                "- **Left** (2) — Reason; e.g. owner/repo#7 v1 F001, owner/repo#8 v1 F002",
+                "",
+                "### Reviewer effectiveness",
+                "",
+                "- Most useful: a",
+                "- Least useful: b",
+                "- False-positive candidates: none",
+                "",
+                "### Compared with insights-december.json",
+                "",
+                "- Persistent: none",
+                "- New: none",
+                "- Resolved: none",
+                "",
+                "### Custom-rule patterns",
+                "",
+                "- **Retry loops** (1 rules: Roslyn retry) — Worth a rule Addressed by: REC-001, REC-002",
+                "",
+            ],
+            lines[lines.index("### Themes") :],
+        )
+
+    def test_a_categorys_topic_joins_its_examples_and_the_recommendations_addressing_it_with_a_comma(self) -> None:
+        entry = {
+            "topics": [{"topic": "Topic", "count": 2, "examples": ["owner/repo#7 v1 F001", "owner/repo#8 v1 F002"]}],
+            "assessment": "Assessed",
+            "addressed_by": ["First", "Second"],
+            "findings": [],
+        }
+        self.assertEqual(
+            [
+                "Topics:",
+                "",
+                "- Topic (2) — e.g. owner/repo#7 v1 F001, owner/repo#8 v1 F002",
+                "",
+                "Assessed",
+                "",
+                "Addressed by: REC-001, REC-002",
+                "",
+            ],
+            rs.category_markdown(self.synthesized_report(), entry),
+        )
 
     def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> rs.Pair:
         """The parts of a record and a finding that grouping reads, typed as the validated ones it takes."""
@@ -1352,7 +1718,8 @@ class ChangeTypeTests(SynthesisFixture):
         )
         self.assertIn(f"TARGET REC-003 owner/repo:{GUIDE}+.agents/review.md", lines)
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
-        self.assertIn(f"Type: consolidate\nTarget: owner/repo:{GUIDE}+.agents/review.md\n", markdown)
+        shown = markdown_line(f"owner/repo:{GUIDE}+.agents/review.md")
+        self.assertIn(f"Type: consolidate\nTarget: {shown}\n", markdown)
         code, out, err = self.decide(json_path, "REC-003", "Merge the timezone rules")
         self.assertEqual(
             (0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()), err
@@ -1392,7 +1759,8 @@ class ChangeTypeTests(SynthesisFixture):
         )
         self.assertIn("TARGET REC-003 owner/repo:tools/check_timezones.py", lines)
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
-        self.assertIn("Type: move-to-script\nTarget: owner/repo:tools/check_timezones.py\n", markdown)
+        shown = markdown_line("owner/repo:tools/check_timezones.py")
+        self.assertIn(f"Type: move-to-script\nTarget: {shown}\n", markdown)
         code, out, err = self.decide(json_path, "REC-003", "Scan added lines for local time")
         self.assertEqual(
             (0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()), err

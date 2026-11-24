@@ -80,6 +80,7 @@ import json_writer
 import private_folder
 import whole_number
 from console import run_main
+from markdown_literal import markdown_line
 from text_lines import program_lines
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
@@ -364,7 +365,8 @@ def render_summary(passes: list[dict[str, Any]], versions: list[tuple[str, str]]
     lines += ["", "### Runtime discovery", "", "| Pass | Runtime | Result | Detail |", "|---|---|---|---|"]
     for item in passes:
         for result in item.get("results", []):
-            detail = str(result.get("detail", "")).replace("|", "\\|").replace("\n", " ")
+            # A runtime's own output, so literal text on one line, whatever pipes, backslashes, or Markdown it holds.
+            detail = markdown_line(str(result.get("detail", "")))
             lines.append(f"| {item.get('label', '')} | {result['runtime']} | {result['status']} | {detail} |")
     for item in passes:
         if "left" in item:

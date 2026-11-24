@@ -24,6 +24,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import atomic_file
 import nesting_depth
 import whole_number
 
@@ -149,8 +150,15 @@ def read_file(path: Path, *, byte_order_mark: bool = False) -> Any:
     when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, and a refusal of a
     leading byte-order mark, which a program's own record never holds. With `byte_order_mark`, one leading UTF-8
     byte-order mark is passed over, as the `utf-8-sig` codec reads it, for a file a person edits and an editor may
-    save with one, such as Windows PowerShell 5.1's `Out-File -Encoding utf8`."""
-    return loads(path.read_bytes().decode("utf-8-sig" if byte_order_mark else "utf-8"))
+    save with one, such as Windows PowerShell 5.1's `Out-File -Encoding utf8`.
+
+    A read refused with PermissionError is tried again after `atomic_file.while_refused`'s short waits, and the last
+    try's error raised: on Windows, an open that meets another process's replace of the file through `atomic_file` may
+    be refused while the replace holds the old file for delete, as CI's Windows runner showed, and a try after the
+    replace reads the new file whole. Every try reads the whole file afresh, so a read gives the old file or the new
+    one, never part of either. Any other error is raised at once."""
+    data = atomic_file.while_refused(lambda: path.read_bytes())
+    return loads(data.decode("utf-8-sig" if byte_order_mark else "utf-8"))
 
 
 # The characters JSON allows between tokens.

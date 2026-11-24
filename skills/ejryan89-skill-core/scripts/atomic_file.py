@@ -284,46 +284,42 @@ def _publish(
         raise
 
 
-def _replace_waiting(copy: Path, target: Path) -> None:
-    """Replace `target` with `copy`, trying again after each of its waits while a try is refused with PermissionError,
-    and raise the last try's error when every one is refused. Any other error, an interrupt in a wait included, is
-    raised as it was, at once.
+def while_refused[T](action: Callable[[], T], refusal: type[OSError] = PermissionError) -> T:
+    """What `action` returns, trying it again after each of its waits while a try raises `refusal`, and raising the
+    last try's error when every one does. Any other error, an interrupt in a wait included, is raised as it was, at
+    once.
 
-    The waits, in seconds, are for a target another process holds open for a moment, as a reader of a small file does:
-    Windows refuses to replace a file while a handle holds it open without delete sharing, as Python's `open` holds
-    every file it opens, with WinError 5, access denied, which Python raises as PermissionError. That code is also
-    the one an access control refusal gives, so no finer test tells the two apart, and no other error is tried again.
-    A read-only target is refused before a copy exists, so a PermissionError no wait clears, such as a folder its
-    user may not write, is raised as it was by the last try. The waits are as short and few as _remove_copy_name's,
-    so a replace that keeps being refused raises within about a third of a second, and are kept here for the same
-    reason."""
+    It is the one table of waits for a file another process holds for a moment, which the replace and the removal of a
+    copy here and `json_reader.read_file` share. The waits, in seconds, are 10, 20, 40, 80, and 160 ms, so an action
+    refused throughout raises within about a third of a second, well inside a hook's time limit, and are kept inside the
+    function rather than at module level so only the suites that run a retried action reach them."""
     for wait in (0.01, 0.02, 0.04, 0.08, 0.16):
         try:
-            copy.replace(target)
-        except PermissionError:
+            return action()
+        except refusal:
             time.sleep(wait)
-        else:
-            return
-    copy.replace(target)
+    return action()
+
+
+def _replace_waiting(copy: Path, target: Path) -> None:
+    """Replace `target` with `copy`, trying again by while_refused while a try is refused with PermissionError.
+
+    The waits are for a target another process holds open for a moment, as a reader of a small file does: Windows
+    refuses to replace a file while a handle holds it open without delete sharing, as Python's `open` holds every file
+    it opens, with WinError 5, access denied, which Python raises as PermissionError. That code is also the one an
+    access control refusal gives, so no finer test tells the two apart, and no other error is tried again. A read-only
+    target is refused before a copy exists, so a PermissionError no wait clears, such as a folder its user may not
+    write, is raised as it was by the last try."""
+    while_refused(lambda: copy.replace(target))
 
 
 def _remove_copy_name(copy: Path) -> None:
-    """Remove `copy`, a created copy's own name, trying again after each of its waits once a try raises an OSError,
-    and raise the last try's OSError when every one fails. A name already gone is removed at once. Anything else, an
-    interrupt in a wait included, is raised as it was.
+    """Remove `copy`, a created copy's own name, trying again by while_refused once a try raises an OSError. A name
+    already gone is removed at once. Anything else, an interrupt in a wait included, is raised as it was.
 
-    The waits, in seconds, are for a file system that refuses the removal for a moment, as Windows does a name of a file
-    another handle holds open without delete sharing, since the copy and the target are one file once linked. They are
-    short and few, so a removal that keeps failing raises within about a third of a second, well inside a hook's time
-    limit, and are kept here rather than at module level so only the suites that run a create reach them."""
-    for wait in (0.01, 0.02, 0.04, 0.08, 0.16):
-        try:
-            copy.unlink(missing_ok=True)
-        except OSError:
-            time.sleep(wait)
-        else:
-            return
-    copy.unlink(missing_ok=True)
+    The waits are for a file system that refuses the removal for a moment, as Windows does a name of a file another
+    handle holds open without delete sharing, since the copy and the target are one file once linked."""
+    while_refused(lambda: copy.unlink(missing_ok=True), OSError)
 
 
 def _reserve(target: Path) -> int:
