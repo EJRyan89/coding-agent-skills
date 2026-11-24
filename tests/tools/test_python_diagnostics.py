@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from flat_text import flat_text
 from suite_discovery import regression_suites
 
 from tools import python_diagnostics, unraisable_record
@@ -114,7 +115,8 @@ class FixtureRunTests(unittest.TestCase):
         return {fields[0]: fields[1:] for fields in facts(self.completed.stdout, key)}
 
     def test_the_run_names_its_interpreter_and_settings_and_that_a_child_took_them(self) -> None:
-        self.assertEqual([[sys.executable, sys.version]], facts(self.completed.stdout, "INTERPRETER"))
+        # The version as a fact line prints it, its runs of spaces made one, as a Windows build's date has.
+        self.assertEqual([[sys.executable, flat_text(sys.version)]], facts(self.completed.stdout, "INTERPRETER"))
         self.assertEqual([["PYTHONDEVMODE=1", "PYTHONWARNINGS=error"]], facts(self.completed.stdout, "SETTINGS"))
         [child] = facts(self.completed.stdout, "CHILD")
         self.assertEqual("True", child[0])
