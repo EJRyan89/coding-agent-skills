@@ -20,6 +20,7 @@ from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import apple_double
 import file_presence
 import json_reader
 import python_reader
@@ -1455,16 +1456,35 @@ def continued_lines(text: str, marks: str = SHELL_CONTINUATIONS) -> list[tuple[i
 
 
 def repository_files(root: Path) -> list[Path]:
-    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include.
+    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include, but the AppleDouble
+    sidecars macOS writes beside each file on a FAT, exFAT, or SMB volume, which no ignore rule names, as
+    `_is_own_file` judges each.
 
     Raises ReleaseNotesError naming the command when git cannot run or cannot list them.
     """
     listed = git_output(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    folders: dict[Path, frozenset[str] | None] = {}
     return [
         root / name
         for name in listed.split("\0")
-        if name and file_presence.is_present(root / name, other_is_absent=True)
+        if name and file_presence.is_present(root / name, other_is_absent=True) and _is_own_file(root / name, folders)
     ]
+
+
+def _is_own_file(path: Path, folders: dict[Path, frozenset[str] | None]) -> bool:
+    """Whether a file git lists is the checkout's own rather than a sidecar: whether `file_presence.listed`, which
+    judges a `._<name>` entry by its sibling in the same listing, its own metadata, and its header, keeps it. Only a
+    `._` name has its folder listed, once, kept in `folders`; a folder it cannot list keeps the file, whose own read
+    reports it."""
+    if not path.name.startswith(apple_double.PREFIX):
+        return True
+    if path.parent not in folders:
+        try:
+            folders[path.parent] = frozenset(entry.name for entry in file_presence.listed(path.parent))
+        except OSError:
+            folders[path.parent] = None
+    kept = folders[path.parent]
+    return kept is None or path.name in kept
 
 
 # ejryan89-skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line

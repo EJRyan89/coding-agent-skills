@@ -67,6 +67,11 @@ from validation_support import (
 
 from tools.release_notes import ReleaseNotesError
 
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
+
 SOURCE = (
     "import os.path\n"
     "import subprocess as sp, json\n"
@@ -871,6 +876,31 @@ class RepositoryFilesFixtures(unittest.TestCase):
             write_fixture_tree(checkout, {"moved.txt/inner.txt": "inner\n"})
             self.assertEqual(
                 [checkout / "kept.txt", checkout / "moved.txt" / "inner.txt"], sorted(repository_files(checkout))
+            )
+
+    def test_a_sidecar_macos_writes_beside_a_file_is_no_repository_file_and_any_other_dot_underscore_file_is(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            self.repository(checkout, {"tool.py": "VALUE = 1\n", "tools/inner.py": "VALUE = 2\n"})
+            # Untracked, and named by no ignore rule, as macOS writes them beside each file it sets an attribute on.
+            (checkout / "._tool.py").write_bytes(SIDECAR_BYTES)
+            (checkout / "tools" / "._inner.py").write_bytes(SIDECAR_BYTES)
+            (checkout / "._tools").write_bytes(SIDECAR_BYTES)
+            # No `alone.py` beside it, and one beside its file that does not open with the header.
+            (checkout / "._alone.py").write_bytes(SIDECAR_BYTES)
+            (checkout / "tools" / "._other.py").write_bytes(b"VALUE = 3\n")
+            (checkout / "tools" / "other.py").write_bytes(b"VALUE = 4\n")
+            self.assertEqual(
+                [
+                    checkout / "._alone.py",
+                    checkout / "tool.py",
+                    checkout / "tools" / "._other.py",
+                    checkout / "tools" / "inner.py",
+                    checkout / "tools" / "other.py",
+                ],
+                sorted(repository_files(checkout)),
             )
 
 

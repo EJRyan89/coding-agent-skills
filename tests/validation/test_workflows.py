@@ -218,6 +218,27 @@ class WorkflowsFixtures(unittest.TestCase):
             [".github/workflows/validate.yml is missing"], unknown_workflow_problems(directory, ["validate.yml"])
         )
 
+    def test_a_sidecar_macos_writes_beside_a_workflow_is_no_workflow_and_any_other_dot_underscore_file_is(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            known = ("deployable.yml", "validate.yml")
+            for name in known:
+                (directory / name).write_bytes(b"on: push\n")
+            (directory / "._validate.yml").write_bytes(SIDECAR_BYTES)
+            self.assertEqual([], unknown_workflow_problems(directory, known))
+            # No `alone.yml` beside it, and a `._deployable.yml` that does not open with the header.
+            (directory / "._alone.yml").write_bytes(SIDECAR_BYTES)
+            (directory / "._deployable.yml").write_bytes(b"on: [pull_request_target]\n")
+            self.assertEqual(
+                [
+                    ".github/workflows/._alone.yml is not a workflow the policy knows; add it to WORKFLOW_GUARDS with "
+                    "its triggers, actions, and crons",
+                    ".github/workflows/._deployable.yml is not a workflow the policy knows; add it to WORKFLOW_GUARDS "
+                    "with its triggers, actions, and crons",
+                ],
+                unknown_workflow_problems(directory, known),
+            )
+
 
 @pytest.mark.parametrize(
     "expression",
@@ -239,6 +260,11 @@ def test_the_allowed_github_fields_and_other_contexts_pass(expression: str) -> N
     workflow = clean + f"      - run: echo '${{{{ {expression} }}}}'\n"
     assert workflow_guard_problems(workflow, ["push"], set()) == []
 
+
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
 
 BARE_CONDITION = (
     "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    if: {job}\n    steps:\n"
