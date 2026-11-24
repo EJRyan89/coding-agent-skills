@@ -972,7 +972,7 @@ def test_main_refuses_a_checkout_following_another_repositorys_pull_request_befo
     monkeypatch.setattr(canary, "create_home", unreachable)
     monkeypatch.setattr(canary, "canary", unreachable)
     assert canary.main(["--discovery-only"]) == 1
-    refusal = "the checkout follows another repository's pull request: " + reason
+    refusal = "the checkout may follow another repository's pull request: " + reason
     assert capsys.readouterr().out.splitlines() == [f"FAILED {quote(refusal)}"]
     assert read == [REPOSITORY_ROOT]
 
