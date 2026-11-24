@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Callable, Iterable, Sequence
 from functools import partial
@@ -863,6 +864,51 @@ class TrackerTests(unittest.TestCase):
                 update_dashboard_rows(source, dashboard, "reviewer", detector=detector)
             self.assertEqual([], detector.calls)
             self.assertEqual(b"No markers\n", dashboard.read_bytes())
+
+
+class DashboardReadRefusedForAMomentTests(unittest.TestCase):
+    """A dashboard whose read another process refuses for a moment, as Windows refuses one that meets a concurrent
+    run's replace of it through atomic_file."""
+
+    DASHBOARD = f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode()
+
+    def update(self, refusals: int | None) -> tuple[Any, list[float], list[OSError], bytes]:
+        """update_dashboard_rows over a dashboard whose reads are refused with PermissionError `refusals` times, or
+        every time for None. Returns its rows or what it raised, the waits, each refusal, and the dashboard's bytes."""
+        real_read_bytes = Path.read_bytes
+        raised: list[OSError] = []
+        waits: list[float] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(Path(temporary), self.DASHBOARD)
+
+            def read_bytes(self: Path) -> bytes:
+                if self == dashboard and (refusals is None or len(raised) < refusals):
+                    raised.append(PermissionError(13, "Permission denied", str(self)))
+                    raise raised[-1]
+                return real_read_bytes(self)
+
+            with mock.patch.object(Path, "read_bytes", read_bytes), mock.patch.object(time, "sleep", waits.append):
+                try:
+                    result: Any = update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
+                except TrackerError as error:
+                    result = error
+            return result, waits, raised, dashboard.read_bytes()
+
+    def test_a_dashboard_read_refused_for_a_while_is_read_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals.
+        rows, waits, _raised, written = self.update(2)
+        self.assertIsInstance(rows, list)
+        self.assertEqual([0.01, 0.02], waits)
+        self.assertNotEqual(self.DASHBOARD, written, "the update wrote the dashboard")
+
+    def test_a_dashboard_read_refused_throughout_fails_from_the_last_refusal_before_github_is_asked(self) -> None:
+        # Holds on every platform. The back-off is pinned against literals: five waits of 10, 20, 40, 80, and 160 ms.
+        error, waits, raised, written = self.update(None)
+        self.assertIsInstance(error, TrackerError)
+        self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits)
+        self.assertEqual(6, len(raised))
+        self.assertIs(raised[-1], error.__cause__, "the failure names the last try's refusal")
+        self.assertEqual(self.DASHBOARD, written)
 
 
 class RecordingDetector(FakeDetector):

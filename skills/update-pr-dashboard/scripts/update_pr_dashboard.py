@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from atomic_file import while_refused
 from file_presence import is_occupied
 from markdown_literal import markdown_line, navigation_url
 from skill_roots import sibling_scripts
@@ -955,9 +956,11 @@ def splice(
 
 
 def _read_dashboard(dashboard: Path) -> str:
-    """The dashboard exactly as stored: decoded without newline translation, so its line endings survive."""
+    """The dashboard exactly as stored: decoded without newline translation, so its line endings survive. A read
+    refused with PermissionError is tried again after `atomic_file.while_refused`'s short waits, since on Windows a read
+    that meets a concurrent run's replace of the dashboard may be refused while the replace runs."""
     try:
-        return dashboard.read_bytes().decode("utf-8")
+        return while_refused(lambda: dashboard.read_bytes()).decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise TrackerError(str(exc)) from exc
 

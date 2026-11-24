@@ -345,12 +345,15 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
         real_read_bytes = Path.read_bytes
         tries: list[Path] = []
         waits: list[float] = []
+        refused: list[OSError] = []
+        self.refused = refused
 
         def read_bytes(self: Path) -> bytes:
             tries.append(self)
             if refusals is None or len(tries) <= refusals:
                 self.write_bytes(b'{"replace": 2}')
-                raise PermissionError(errno.EACCES, "Permission denied", str(self))
+                refused.append(PermissionError(errno.EACCES, "Permission denied", str(self)))
+                raise refused[-1]
             if failure is not None:
                 raise failure
             return real_read_bytes(self)
@@ -380,8 +383,7 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
         # Holds on every platform. The back-off is pinned against literals: five waits of 10, 20, 40, 80, and 160 ms,
         # 0.31 s in all, and a try after each.
         raised, waits, tries = self.read(None)
-        self.assertIs(PermissionError, type(raised), "the refusal is raised as it was")
-        self.assertEqual("Permission denied", getattr(raised, "strerror", None))
+        self.assertIs(self.refused[-1], raised, "the last try's refusal is raised as it was")
         self.assertEqual(([0.01, 0.02, 0.04, 0.08, 0.16], 6), (waits, tries))
         self.assertAlmostEqual(0.31, sum(waits), msg="about a third of a second in all")
 

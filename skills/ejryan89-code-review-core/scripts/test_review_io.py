@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,6 +57,58 @@ class ReadJsonTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.path.write_text(text, encoding="utf-8")
                 self.assertEqual(value, read_json(self.path))
+
+
+class ReadJsonRefusedForAMomentTests(unittest.TestCase):
+    """read_json of a file whose read another process refuses for a moment, as Windows refuses one that meets a
+    replace through atomic_file, such as a concurrent run's write of the batch state or the dashboard's record."""
+
+    def read(self, refusals: int | None, failure: OSError | None = None) -> tuple[Any, list[float], list[OSError]]:
+        """read_json of a file whose read is refused with PermissionError `refusals` times, or every time for None,
+        then fails with `failure` if given. Returns what it gave or raised, the waits, and each error a try raised."""
+        real_read_text = Path.read_text
+        raised: list[OSError] = []
+        waits: list[float] = []
+
+        def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            if refusals is None or len(raised) < refusals:
+                raised.append(PermissionError(13, "Permission denied", str(self)))
+                raise raised[-1]
+            if failure is not None:
+                raised.append(failure)
+                raise failure
+            return real_read_text(self, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b'{"x": 1}')
+            with mock.patch.object(Path, "read_text", read_text), mock.patch.object(time, "sleep", waits.append):
+                try:
+                    value: Any = read_json(path)
+                except review_io.FileUnreadable as error:
+                    value = error
+        return value, waits, raised
+
+    def test_a_read_refused_for_a_while_is_read_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals.
+        self.assertEqual(({"x": 1}, [0.01, 0.02]), self.read(2)[:2])
+        self.assertEqual(({"x": 1}, []), self.read(0)[:2], "a read not refused never waits")
+
+    def test_a_read_refused_throughout_is_unreadable_from_the_last_refusal_after_a_bounded_back_off(self) -> None:
+        # Holds on every platform. The back-off is pinned against literals: five waits of 10, 20, 40, 80, and 160 ms.
+        error, waits, raised = self.read(None)
+        self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits)
+        self.assertEqual(6, len(raised))
+        self.assertIs(raised[-1], error.__cause__, "the unreadable file names the last try's refusal")
+        self.assertRegex(str(error), r"\ACannot read valid JSON from .*Permission denied")
+
+    def test_any_other_failure_is_unreadable_at_once(self) -> None:
+        # Holds on every platform: only a PermissionError is tried again.
+        for failure in (FileNotFoundError(2, "No such file or directory"), OSError("synthetic read")):
+            with self.subTest(failure=repr(failure)):
+                error, waits, raised = self.read(0, failure)
+                self.assertEqual(([], [failure]), (waits, raised))
+                self.assertIs(failure, error.__cause__)
 
 
 class LockOwnerSizeTests(unittest.TestCase):
