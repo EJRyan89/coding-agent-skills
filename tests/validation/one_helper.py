@@ -133,7 +133,7 @@ repo-cleanup's pr_status.py, and the review core's review_config.py build on; re
 its narrower rule, a login for the owner and a name never made only of dots, on top of the class. The policy reads the
 class from the helper. In every non-test module ruff formats but the helper, it fails a string literal that spells an
 owner/name pattern with its own class: a character class that takes exactly the characters the helper's takes, of
-printable ASCII and a letter outside it, then a quantifier, lazy or not, a `/`, escaped or not, and the same class
+every ASCII character and a letter outside it, then a quantifier, lazy or not, a `/`, escaped or not, and the same class
 again, its characters in any order, either class in a group or not: plain, non-capturing, or named, as
 `(?P<owner>[...]+)/(?P<name>[...]+)` with the class in each group. A class `re` cannot compile, as `[\\q]`, measures
 as nothing, so it neither raises nor reads as the helper's. A module states why a scope spells one in a module-level
@@ -821,7 +821,7 @@ def _reads_listing(call: ast.Call) -> bool:
     return name == PULL_FILES_READER
 
 
-def module_pull_files_problems(name: str, tree: ast.Module) -> list[tuple[int, str, str]]:
+def module_pull_files_problems(tree: ast.Module) -> list[tuple[int, str, str]]:
     """Each place a module spells GitHub's files endpoint of a pull request, and each call of the helper's reader whose
     listing its scope does not bind to a name and check with every one of LISTING_CHECKS, as its line, its scope, and
     its refusal."""
@@ -871,7 +871,7 @@ def pull_files_problems(
     problems: list[str] = []
     held: set[tuple[str, str]] = set()
     for _, name, tree in python_trees(pull_files_modules(root, listed), root, problems):
-        for line, scope, refusal in module_pull_files_problems(name, tree):
+        for line, scope, refusal in module_pull_files_problems(tree):
             if scope in sanctions.get(name, {}):
                 held.add((name, scope))
             else:
@@ -969,9 +969,9 @@ def snapshot_path_problems(root: Path, files: Iterable[Path] | None = None) -> l
 REPOSITORY_HELPER = "skills/ejryan89-skill-core/scripts/github_remote.py"
 # The helper's class of the characters an owner and a name hold, read from the helper.
 REPOSITORY_CLASS = f"[{github_remote.REPOSITORY_CHARACTERS}]"
-# The characters a class is measured over: printable ASCII, and a letter outside it, so `[\w.-]`, which also takes
-# that letter, is another class.
-CLASS_SAMPLE = "".join(chr(code) for code in range(0x20, 0x7F)) + "\u00e9"
+# The characters a class is measured over: every ASCII character, control characters among them, and a letter
+# outside it, so `[\w.-]`, which also takes that letter, and a class that adds a tab or a space are other classes.
+CLASS_SAMPLE = "".join(map(chr, range(0x80))) + "\u00e9"
 # A character class as a pattern writes one, its body escapes included, and what may stand between an owner's class
 # and a name's: a quantifier, lazy or not, then a `/`, escaped or not.
 CHARACTER_CLASS = re.compile(r"\[(?:\\.|[^\]\\])+\]")

@@ -1006,6 +1006,40 @@ class PullFilesTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual([], self.problems({"tools/reader.py": text}))
 
+    def test_a_reader_called_by_its_bare_name_or_after_another_call_is_read_as_its_callee_names_it(self) -> None:
+        bare = "def f():\n    listing = list_pull_files('o/r', 1)\n    return listing.files\n"
+        problems = self.problems({"tools/reader.py": bare})
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("f reads list_pull_files's listing without checking cut, moved_from", problems[0])
+        called = "def f(make, head):\n    return make()(head)\n"
+        self.assertEqual([], self.problems({"tools/reader.py": called}))
+
+    def test_a_check_of_an_attribute_s_attribute_is_no_check_of_a_name(self) -> None:
+        text = (
+            "def f(self, github, head):\n"
+            "    listing = github.list_pull_files('o/r', 1)\n"
+            "    return self.listing.cut or self.listing.moved_from(head) or listing.files\n"
+        )
+        problems = self.problems({"tools/reader.py": text})
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("without checking cut, moved_from", problems[0])
+
+    def test_every_unchecked_read_in_a_module_is_reported_after_a_checked_one(self) -> None:
+        checked = PASSED_PULL_FILES["both checks"]
+        unchecked = "\n\ndef g(github):\n    listing = github.list_pull_files('o/r', 1)\n    return listing.files\n"
+        problems = self.problems({"tools/reader.py": checked + unchecked})
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("g reads list_pull_files's listing without checking", problems[0])
+
+    def test_with_no_files_given_the_rule_reads_what_a_commit_could_include(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"tools/reader.py": REFUSED_PULL_FILES["literal endpoint"][0]})
+            problems = pull_files_problems(root, sanctions={})
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/reader.py:1 ENDPOINT spells"), problems)
+
     def test_the_shepherd_s_suite_holds_the_test_its_sanction_names(self) -> None:
         # The sanction's reason rests on the shepherd's own test of a short listing and a moved head.
         suite, owner, test = one_helper.SHEPHERD_FILES_TEST.split("::")
@@ -1026,7 +1060,7 @@ class PullFilesTests(unittest.TestCase):
     def test_the_helper_spells_the_endpoint_the_rule_refuses_elsewhere(self) -> None:
         # The rule's endpoint is the one the helper reads: read alone, the helper's module would be refused.
         tree = ast.parse((REPOSITORY_ROOT / PULL_FILES_HELPER).read_text(encoding="utf-8"))
-        problems = one_helper.module_pull_files_problems(PULL_FILES_HELPER, tree)
+        problems = one_helper.module_pull_files_problems(tree)
         self.assertIn("GitHubClient.list_pull_files", [scope for _, scope, _ in problems])
 
     def test_a_module_that_does_not_parse_is_named(self) -> None:
@@ -1169,6 +1203,35 @@ class SnapshotPathTests(unittest.TestCase):
         self.assertEqual("diff_paths.snapshot_path", one_helper.SNAPSHOT_READER)
         self.assertEqual("SNAPSHOT_PATH_READ_ALLOWED", one_helper.SNAPSHOT_PATH_ALLOWANCE)
 
+    def test_a_join_of_several_judged_names_names_each(self) -> None:
+        text = (
+            "from diff_paths import unsafe_snapshot_name\n\n\n"
+            "def f(root, folder, name):\n"
+            "    if unsafe_snapshot_name(folder) or unsafe_snapshot_name(name):\n"
+            "        return None\n"
+            "    return root.joinpath(folder, name)\n"
+        )
+        problems = self.problems({"tools/reader.py": text})
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("f joins folder, name, a name it judges itself", problems[0])
+
+    def test_every_module_s_refusals_are_reported(self) -> None:
+        reader = REFUSED_SNAPSHOT_PATHS["slash"]
+        problems = self.problems({"tools/broken.py": "def f(:\n", "tools/first.py": reader, "tools/second.py": reader})
+        self.assertEqual(
+            ["tools/broken.py", "tools/first.py:5", "tools/second.py:5"],
+            sorted(problem.split()[0] for problem in problems),
+        )
+
+    def test_with_no_files_given_the_rule_reads_what_a_commit_could_include(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"tools/reader.py": REFUSED_SNAPSHOT_PATHS["slash"]})
+            problems = snapshot_path_problems(root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/reader.py:5 f joins relative"), problems)
+
     def test_each_further_stated_limit_reads_as_its_docstring_says(self) -> None:
         judged = "from pathlib import Path\n\nfrom diff_paths import unsafe_snapshot_name\n\n\ndef f(root, relative):\n"
         limits = {
@@ -1288,6 +1351,35 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual("skills/ejryan89-skill-core/scripts/github_remote.py", REPOSITORY_HELPER)
         self.assertEqual("[A-Za-z0-9_.-]", one_helper.REPOSITORY_CLASS)
         self.assertEqual("REPOSITORY_PATTERN_ALLOWED", one_helper.REPOSITORY_ALLOWANCE)
+
+    def test_a_class_that_adds_a_space_a_tab_or_a_control_character_is_another_class(self) -> None:
+        for added in [" ", "\\t", "\\x00", "\\x7f"]:
+            with self.subTest(repr(added)):
+                pair = f"[A-Za-z0-9_.{added}-]+/[A-Za-z0-9_.{added}-]+"
+                self.assertEqual([], self.problems({"tools/reader.py": f'PAIR = r"{pair}"\n'}))
+
+    def test_a_class_holding_a_set_operation_anywhere_in_its_body_is_never_measured(self) -> None:
+        for operation in ["[", "--", "&&", "~~", "||"]:
+            for spelled in [f"[{operation}a]", f"[a{operation}b]", f"[a{operation}]"]:
+                with self.subTest(spelled):
+                    self.assertIsNone(one_helper.class_members(spelled))
+
+    def test_every_module_s_refusals_are_reported(self) -> None:
+        reader = REFUSED_REPOSITORIES["spelled in another order"]
+        problems = self.problems({"tools/broken.py": "def f(:\n", "tools/first.py": reader, "tools/second.py": reader})
+        self.assertEqual(
+            ["tools/broken.py", "tools/first.py:1", "tools/second.py:1"],
+            sorted(problem.split()[0] for problem in problems),
+        )
+
+    def test_with_no_files_given_the_rule_reads_what_a_commit_could_include(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"tools/reader.py": REFUSED_REPOSITORIES["spelled in another order"]})
+            problems = repository_problems(root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/reader.py:1 PATTERN spells"), problems)
 
     def test_a_class_re_cannot_compile_is_never_read_as_the_helper_s(self) -> None:
         # A class re refuses, as `[\q]`, whose escape names no character, measures as nothing, so it neither raises
