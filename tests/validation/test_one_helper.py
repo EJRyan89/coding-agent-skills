@@ -932,6 +932,11 @@ class PullFilesTests(unittest.TestCase):
             PULL_FILES_HELPER: reader,
             "skills/x/scripts/test_reader.py": reader,
             "skills/x/scripts/reader.sh": "gh api repos/o/r/pulls/1/files\n",
+            "skills/x/scripts/reader.ps1": "gh api repos/o/r/pulls/1/files\n",
+            ".github/workflows/reader.yml": (
+                "on: push\njobs:\n  r:\n    steps:\n      - run: gh api repos/o/r/pulls/1/files\n"
+            ),
+            "docs/reader.md": f"```python\n{reader}```\n",
             "skills/x/scripts/reader.py": reader,
         }
         problems = self.problems(files)
@@ -1170,6 +1175,11 @@ class SnapshotPathTests(unittest.TestCase):
             ],
             self.problems({"tools/reader.py": stale}),
         )
+        blank = SANCTIONED_SNAPSHOT_PATH.replace('"a reason"', '" "')
+        self.assertEqual(
+            ["tools/reader.py: SNAPSHOT_PATH_READ_ALLOWED must map each function, class, or assignment to its reason"],
+            self.problems({"tools/reader.py": blank})[:1],
+        )
 
     def test_each_stated_limit_reads_as_its_docstring_says(self) -> None:
         limits = {
@@ -1330,6 +1340,11 @@ class RepositoryTests(unittest.TestCase):
                 "remove the entry"
             ],
             self.problems({"tools/reader.py": stale}),
+        )
+        blank = SANCTIONED_REPOSITORY.replace('"a reason"', '" "')
+        self.assertEqual(
+            ["tools/reader.py: REPOSITORY_PATTERN_ALLOWED must map each function, class, or assignment to its reason"],
+            self.problems({"tools/reader.py": blank})[:1],
         )
 
     def test_each_stated_limit_reads_as_its_docstring_says(self) -> None:
