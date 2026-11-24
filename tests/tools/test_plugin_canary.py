@@ -77,12 +77,12 @@ def test_the_main_session_reading_and_the_reviewer_denied_is_a_pass() -> None:
             event("user", [result([{"type": "text", "text": "the reviewer reports"}])]),
         ]
     )
-    lines = canary.guard_lines(stream, AGENT, MARKER)
-    assert lines == [
+    judged = canary.guard_lines(stream, AGENT, MARKER)
+    assert [item.text for item in judged] == [
         "GUARD claude main-session PASSED",
         f'GUARD claude {AGENT} DENIED "Code-review reviewer boundary: read the prompt file your task names first"',
     ]
-    assert not any(canary.failed(line) for line in lines)
+    assert not any(item.fails for item in judged)
 
 
 @pytest.mark.parametrize(
@@ -100,9 +100,9 @@ def test_the_main_session_reading_and_the_reviewer_denied_is_a_pass() -> None:
     ],
 )
 def test_a_reviewer_that_read_the_file_or_met_no_guard_fails(stream: list[str], expected: str) -> None:
-    lines = canary.guard_lines("\n".join(stream), AGENT, MARKER)
-    assert lines[1].startswith(expected)
-    assert canary.failed(lines[1])
+    reviewer = canary.guard_lines("\n".join(stream), AGENT, MARKER)[1]
+    assert reviewer.text.startswith(expected)
+    assert reviewer.fails
 
 
 def test_a_stream_holding_a_json_line_that_is_no_object_fails_both_guard_lines_by_its_line() -> None:
@@ -115,18 +115,47 @@ def test_a_stream_holding_a_json_line_that_is_no_object_fails_both_guard_lines_b
         ]
     )
     reason = "line 2 of the session's stream is a JSON string, not an event object"
-    lines = canary.guard_lines(stream, AGENT, MARKER)
-    assert lines == [f'GUARD claude main-session FAILED "{reason}"', f'GUARD claude {AGENT} FAILED "{reason}"']
-    assert all(canary.failed(line) for line in lines)
+    judged = canary.guard_lines(stream, AGENT, MARKER)
+    assert [item.text for item in judged] == [
+        f'GUARD claude main-session FAILED "{reason}"',
+        f'GUARD claude {AGENT} FAILED "{reason}"',
+    ]
+    assert all(item.fails for item in judged)
 
 
 def test_a_main_session_the_guard_denied_or_that_never_read_fails() -> None:
     denied = canary.guard_lines(event("user", [result(DENIED, error=True)]), AGENT, MARKER)[0]
-    assert denied.startswith('GUARD claude main-session DENIED "Code-review reviewer boundary')
+    assert denied.text.startswith('GUARD claude main-session DENIED "Code-review reviewer boundary')
     unread = canary.guard_lines(event("user", [result("other")]), AGENT, MARKER)[0]
-    assert unread == 'GUARD claude main-session FAILED "the session never read the marker file"'
-    assert canary.failed(denied)
-    assert canary.failed(unread)
+    assert unread.text == 'GUARD claude main-session FAILED "the session never read the marker file"'
+    assert denied.fails
+    assert unread.fails
+
+
+# #3160: a line's reason is text the canary does not write, a tool result's or a stream error's, so it may hold the word
+# a passing line prints; the old judgment found that word anywhere in the line and read these failing lines as passes.
+
+
+def test_a_main_session_denial_whose_reason_names_passed_fails() -> None:
+    denied = canary.guard_lines(
+        event("user", [result(f"{canary.BOUNDARY}: the read PASSED", error=True)]), AGENT, MARKER
+    )[0]
+    assert denied.text == f'GUARD claude main-session DENIED "{canary.BOUNDARY}: the read PASSED"'
+    assert denied.fails
+
+
+def test_a_stream_error_whose_reason_names_the_passing_words_fails_both_guard_lines() -> None:
+    key = "the main-session PASSED and the reviewer was DENIED it"
+    stream = json.dumps({key: 1})[:-1] + f", {json.dumps(key)}: 2}}"
+    judged = canary.guard_lines(stream, AGENT, MARKER)
+    reason = (
+        f"line 1 of the session's stream is JSON the reader refuses: the JSON repeats the key {key!r} in one object"
+    )
+    assert [item.text for item in judged] == [
+        f"GUARD claude main-session FAILED {quote(reason)}",
+        f"GUARD claude {AGENT} FAILED {quote(reason)}",
+    ]
+    assert all(item.fails for item in judged)
 
 
 def test_a_plugin_expects_the_hooks_its_hooks_file_names_and_none_without_one() -> None:
@@ -152,25 +181,6 @@ def test_the_component_inventory_is_read_from_plugin_details() -> None:
         "agent": {"code-review-reviewer"},
         "hook": {"PreToolUse"},
     }
-
-
-@pytest.mark.parametrize(
-    ("line", "fails"),
-    [
-        ("VALIDATED claude a", False),
-        ('VALIDATION_FAILED claude a "x"', True),
-        ('INSTALL_FAILED claude a "x"', True),
-        ("UNDISCOVERED claude a:b skill", True),
-        ('RUNTIME claude a:b RAN "s" "c"', False),
-        ('RUNTIME claude a:b FAILED "x"', True),
-        ("INSTALLED claude a 1.0.0", False),
-        ('UNGUARDED claude a:b REFUSED "x"', False),
-        ("UNGUARDED claude a:b ACCEPTED", True),
-        ('UNGUARDED claude a:b FAILED "x"', True),
-    ],
-)
-def test_each_kind_of_line_passes_or_fails_the_run(line: str, fails: bool) -> None:
-    assert canary.failed(line) is fails
 
 
 class FakeClaude:
@@ -226,13 +236,14 @@ def test_the_plugins_are_built_validated_installed_and_listed_in_the_throwaway_c
     assert (tmp_path / "coding-agent-skills" / "hooks" / "hooks.json").is_file()
     runner = FakeClaude(tmp_path)
     runner.plugins = plugins
-    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    judged = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    lines = [item.text for item in judged]
     assert lines[:3] == [f"VALIDATED claude {plugin.name}" for plugin in plugins]
     assert "INSTALLED claude coding-agent-skills 0.0.0-dev" in lines
     assert "DISCOVERED claude coding-agent-skills:code-review-reviewer agent" in lines
     assert "DISCOVERED claude coding-agent-skills:PreToolUse hook" in lines
     assert "DISCOVERED claude runtime-canary:runtime-canary-probe skill" in lines
-    assert not any(canary.failed(line) for line in lines)
+    assert not any(item.fails for item in judged)
     paths = json.loads(lines[-1].removeprefix("PATHS "))
     assert paths["runtime-canary"] == str(tmp_path / "cache" / "runtime-canary")
     # A plugin with a required option is installed with a value for it: a folder of the throwaway home.
@@ -290,8 +301,8 @@ def test_a_component_the_installed_plugin_does_not_list_is_undiscovered(tmp_path
     plugins = canary.build(tmp_path, [FIXTURE_SOURCE])
     runner = FakeClaude(tmp_path, listed={"skill": set()})
     runner.plugins = plugins
-    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
-    assert "UNDISCOVERED claude runtime-canary:runtime-canary-probe skill" in lines
+    judged = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    assert canary.Judged("UNDISCOVERED claude runtime-canary:runtime-canary-probe skill", fails=True) in judged
 
 
 def test_a_plugin_that_fails_validation_or_install_is_reported(tmp_path: Path) -> None:
@@ -300,11 +311,11 @@ def test_a_plugin_that_fails_validation_or_install_is_reported(tmp_path: Path) -
     def refusing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         return Completed(1, "", "✘ Validation failed\n")
 
-    lines = list(canary.install(canary.Session(tmp_path, refusing, {}, 30), "claude", plugins))
-    assert lines == [
-        'VALIDATION_FAILED claude runtime-canary "✘ Validation failed"',
-        'INSTALL_FAILED claude runtime-canary "✘ Validation failed"',
-        "PATHS {}",
+    judged = list(canary.install(canary.Session(tmp_path, refusing, {}, 30), "claude", plugins))
+    assert judged == [
+        canary.Judged('VALIDATION_FAILED claude runtime-canary "✘ Validation failed"', fails=True),
+        canary.Judged('INSTALL_FAILED claude runtime-canary "✘ Validation failed"', fails=True),
+        canary.Judged("PATHS {}"),
     ]
 
 
@@ -336,12 +347,14 @@ def test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_n
     working = tmp_path / "working"
     working.mkdir()
     monkeypatch.chdir(working)
-    lines = list(canary.checks(canary.Session(home, runner, {}, 30), "claude", discovery_only=False))
+    judged = list(canary.checks(canary.Session(home, runner, {}, 30), "claude", discovery_only=False))
+    lines = [item.text for item in judged]
     refusal = reason.format(path=path)
-    assert f"INSTALL_FAILED claude runtime-canary {quote(refusal)}" in lines
+    assert canary.Judged(f"INSTALL_FAILED claude runtime-canary {quote(refusal)}", fails=True) in judged
     assert not any(line.startswith("INSTALLED claude runtime-canary") for line in lines)
-    assert lines[-1] == (
-        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "a plugin the sessions load is not installed"'
+    assert judged[-1] == canary.Judged(
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "a plugin the sessions load is not installed"',
+        fails=True,
     )
     # Nothing is written outside the throwaway home: not in the working directory, and not beside the home.
     assert list(working.iterdir()) == []
@@ -383,12 +396,12 @@ def test_a_listing_that_is_not_a_list_of_plugin_objects_lists_no_plugin(tmp_path
     plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
     runner = ListingClaude(tmp_path, listing)
     runner.plugins = plugins
-    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    judged = list(canary.install(session(tmp_path, runner), "claude", plugins))
     refusal = quote("claude plugin list --json does not list it")
-    assert [line for line in lines if line.startswith("INSTALL")] == [
-        f"INSTALL_FAILED claude {plugin.name} {refusal}" for plugin in plugins
+    assert [item for item in judged if item.text.startswith("INSTALL")] == [
+        canary.Judged(f"INSTALL_FAILED claude {plugin.name} {refusal}", fails=True) for plugin in plugins
     ]
-    assert lines[-1] == "PATHS {}"
+    assert judged[-1] == canary.Judged("PATHS {}")
 
 
 def test_a_plugin_the_canary_cannot_place_leaves_the_later_plugins_checked(tmp_path: Path) -> None:
@@ -396,7 +409,8 @@ def test_a_plugin_the_canary_cannot_place_leaves_the_later_plugins_checked(tmp_p
     entry = {"id": "coding-agent-skills@canary", "version": "0.0.0-dev"}
     runner = FakeClaude(tmp_path, entries={"coding-agent-skills": entry})
     runner.plugins = plugins
-    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    judged = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    lines = [item.text for item in judged]
     refusal = quote("claude plugin list --json gives it no installPath")
     assert f"INSTALL_FAILED claude coding-agent-skills {refusal}" in lines
     assert "INSTALLED claude coding-agent-skills-dotnet 0.0.0-dev" in lines
@@ -427,8 +441,10 @@ def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path)
     lines = canary.probe(
         canary.Session(tmp_path, probing, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} RAN "{script.as_posix()}"')
-    assert lines[1].startswith("TRANSCRIPT claude probe ")
+    assert lines[0].text.startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} RAN "{script.as_posix()}"')
+    assert not lines[0].fails
+    assert lines[1].text.startswith("TRANSCRIPT claude probe ")
+    assert not lines[1].fails
 
 
 def test_a_probe_record_the_canary_will_not_read_fails_by_name_and_keeps_its_transcript(tmp_path: Path) -> None:
@@ -444,11 +460,12 @@ def test_a_probe_record_the_canary_will_not_read_fails_by_name_and_keeps_its_tra
     lines = canary.probe(
         canary.Session(tmp_path, oversized, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0].startswith(
+    assert lines[0].fails
+    assert lines[0].text.startswith(
         f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in '
         f"{records.as_posix()}: line 1: the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits"
     )
-    assert lines[1].startswith("TRANSCRIPT claude probe ")
+    assert lines[1].text.startswith("TRANSCRIPT claude probe ")
 
 
 def test_a_probe_record_error_naming_no_file_fails_naming_the_marker_file(
@@ -469,9 +486,10 @@ def test_a_probe_record_error_naming_no_file_fails_naming_the_marker_file(
         "runtime-canary",
     )
     records = (installed.parent / STATE / "probe.jsonl").as_posix()
-    assert lines[0] == (
+    assert lines[0] == canary.Judged(
         f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in {records}: '
-        'Permission denied"'
+        'Permission denied"',
+        fails=True,
     )
 
 
@@ -486,8 +504,27 @@ def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None
     lines = canary.probe(
         canary.Session(tmp_path, silent, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "the installed copy')
-    assert canary.failed(lines[0])
+    assert lines[0].text.startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "the installed copy')
+    assert lines[0].fails
+
+
+def test_a_probe_that_never_ran_fails_though_the_models_last_line_says_it_ran(tmp_path: Path) -> None:
+    # #3160: the reason ends with the model's last line, which may name the word a passing line prints.
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+
+    def claiming(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        return Completed(0, "the model said it RAN the script\n", "")
+
+    lines = canary.probe(
+        canary.Session(tmp_path, claiming, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
+    )
+    assert lines[0] == canary.Judged(
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "the installed copy of the probe never ran: the model '
+        'said it RAN the script"',
+        fails=True,
+    )
 
 
 def test_a_probe_session_that_discovered_no_skill_fails_as_a_bare_session_would(tmp_path: Path) -> None:
@@ -501,11 +538,11 @@ def test_a_probe_session_that_discovered_no_skill_fails_as_a_bare_session_would(
     lines = canary.probe(
         canary.Session(tmp_path, bare, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0] == (
+    assert lines[0] == canary.Judged(
         f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "Claude Code discovered no skill, as a session in bare '
-        'mode does"'
+        'mode does"',
+        fails=True,
     )
-    assert canary.failed(lines[0])
 
 
 def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker(tmp_path: Path) -> None:
@@ -527,13 +564,18 @@ def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker
     task = REVIEWER_TASK.format(prompt=tmp_path / "outside.txt")
     assert f"subagent_type {AGENT}, with exactly this prompt: {task}" in seen[0][2]
     assert lines[:2] == [
-        "GUARD claude main-session PASSED",
-        f'GUARD claude {AGENT} DENIED "Code-review reviewer boundary: read the prompt file your task names first"',
+        canary.Judged("GUARD claude main-session PASSED"),
+        canary.Judged(
+            f'GUARD claude {AGENT} DENIED "Code-review reviewer boundary: read the prompt file your task names first"'
+        ),
     ]
 
 
-def unguarded_session(home: Path, writes: bool, claims: bool, seen: list[list[str]]) -> canary.Session:
-    """A session whose reviewer writes its role's result, or not, and whose guard claims the role, or not."""
+def unguarded_session(
+    home: Path, writes: bool, claims: bool, seen: list[list[str]], says: str = "the reviewer reports"
+) -> canary.Session:
+    """A session whose reviewer writes its role's result, or not, and whose guard claims the role, or not, and whose
+    last line of output is `says`."""
 
     def reviewing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         seen.append(arguments)
@@ -543,7 +585,7 @@ def unguarded_session(home: Path, writes: bool, claims: bool, seen: list[list[st
             (run / "work" / f"reads-{canary.UNGUARDED_ROLE}.log").touch()
         if writes:
             (run / f"{canary.UNGUARDED_ROLE}.json").write_text('{"canary": true}', encoding="utf-8")
-        return Completed(0, "the reviewer reports", "")
+        return Completed(0, says, "")
 
     (home / STATE).mkdir(parents=True)
     return canary.Session(home, reviewing, {"PATH": "x"}, 30)
@@ -562,30 +604,41 @@ def test_a_reviewer_with_every_hook_off_writes_a_result_check_refuses(tmp_path: 
     assert f"subagent_type {AGENT}, with exactly this prompt: {task}" in command[2]
     roles = json.loads((tmp_path / canary.UNGUARDED_RUN / "run.json").read_text(encoding="utf-8"))["roles"]
     assert [role["prompt_file"] for role in roles] == [str(prompt)]
-    assert lines[0].startswith(f'UNGUARDED claude {AGENT} REFUSED "the reviewer ran without its guard: ')
-    assert lines[0].endswith('or prepare the review again with --inline"')
-    assert not canary.failed(lines[0])
+    assert lines[0].text.startswith(f'UNGUARDED claude {AGENT} REFUSED "the reviewer ran without its guard: ')
+    assert lines[0].text.endswith('or prepare the review again with --inline"')
+    assert not lines[0].fails
 
 
 def test_a_result_the_guard_claimed_or_no_result_fails_the_check(tmp_path: Path) -> None:
     claimed = canary.unguarded(unguarded_session(tmp_path / "claimed", True, True, []), "claude", {}, "p")
-    assert claimed[0] == "UNGUARDED claude p:code-review-reviewer ACCEPTED"
+    assert claimed[0].text == "UNGUARDED claude p:code-review-reviewer ACCEPTED"
     silent = canary.unguarded(unguarded_session(tmp_path / "silent", False, False, []), "claude", {}, "p")
     assert (
-        silent[0]
+        silent[0].text
         == 'UNGUARDED claude p:code-review-reviewer FAILED "the reviewer wrote no result: the reviewer reports"'
     )
-    assert canary.failed(claimed[0])
-    assert canary.failed(silent[0])
+    assert claimed[0].fails
+    assert silent[0].fails
+
+
+def test_a_reviewer_that_wrote_no_result_fails_though_the_models_last_line_says_refused(tmp_path: Path) -> None:
+    # #3160: the reason ends with the model's last line, which may name the word a passing line prints.
+    session = unguarded_session(tmp_path, False, False, [], says="Write was REFUSED by the hook")
+    lines = canary.unguarded(session, "claude", {}, "p")
+    assert lines[0] == canary.Judged(
+        'UNGUARDED claude p:code-review-reviewer FAILED "the reviewer wrote no result: Write was REFUSED by the hook"',
+        fails=True,
+    )
 
 
 def test_a_result_of_another_kind_fails_the_check_naming_its_kind_never_as_no_result(tmp_path: Path) -> None:
     session = unguarded_session(tmp_path, False, False, [])
     (tmp_path / canary.UNGUARDED_RUN / f"{canary.UNGUARDED_ROLE}.json").mkdir(parents=True)
     lines = canary.unguarded(session, "claude", {}, "p")
-    assert lines[0] == (
+    assert lines[0] == canary.Judged(
         'UNGUARDED claude p:code-review-reviewer FAILED "the reviewer left a result that is not a file: the reviewer '
-        'reports"'
+        'reports"',
+        fails=True,
     )
 
 
@@ -724,21 +777,25 @@ def test_nothing_checked_when_claude_is_not_installed_fails_the_run(
     ("said", "code"),
     [
         ([], 1),
-        (['BUILT a "x"', "VALIDATED claude a"], 0),
-        (["VALIDATED claude a", "UNDISCOVERED claude a:b skill"], 1),
-        (['RUNTIME claude a:b RAN "s" "c"', "GUARD claude main-session PASSED"], 0),
-        (["GUARD claude main-session PASSED", 'GUARD claude a:b DENIED "x"', 'UNGUARDED claude a:b REFUSED "x"'], 0),
-        (["GUARD claude a:b PASSED"], 1),
-        (['GUARD claude main-session DENIED "x"'], 1),
+        ([canary.Judged('BUILT a "x"'), canary.Judged("VALIDATED claude a")], 0),
+        ([canary.Judged("VALIDATED claude a"), canary.Judged("UNDISCOVERED claude a:b skill", fails=True)], 1),
+        ([canary.Judged('RUNTIME claude a:b RAN "s" "c"'), canary.Judged("GUARD claude main-session PASSED")], 0),
+        # #3160: the run is judged from what each line carries, never from its text, which may read as a pass.
+        ([canary.Judged('UNGUARDED claude a:b FAILED "Write was REFUSED by the hook"', fails=True)], 1),
+        ([canary.Judged('RUNTIME claude a:b FAILED "the model said it RAN the script"', fails=True)], 1),
     ],
 )
 def test_the_run_fails_when_nothing_was_said_or_any_line_fails(
-    said: list[str], code: int, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    said: list[canary.Judged],
+    code: int,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(canary, "checks", lambda session, executable, discovery_only: iter(said))
     found, output = run_canary(tmp_path / "home", capsys)
     assert found == code, output
-    assert recorded(output)[1:] == [line for line in said if line.split(" ", 1)[0] in canary.RECORDED]
+    assert recorded(output)[1:] == [item.text for item in said if item.text.split(" ", 1)[0] in canary.RECORDED]
 
 
 def test_main_keeps_the_home_of_a_failed_run_and_removes_one_that_passed(

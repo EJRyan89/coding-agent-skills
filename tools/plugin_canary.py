@@ -156,7 +156,16 @@ RECORDED = (
     "GUARD",
     "UNGUARDED",
 )
-FAILING = ("VALIDATION_FAILED", "INSTALL_FAILED", "UNDISCOVERED")
+
+
+@dataclass(frozen=True)
+class Judged:
+    """A line the canary prints and whether it fails the run, decided where the line is built and carried beside it,
+    never read back from its text, since a quoted reason, a model's last line of output among them, may hold the word
+    a passing line prints."""
+
+    text: str
+    fails: bool = False
 
 
 @dataclass(frozen=True)
@@ -282,7 +291,7 @@ def details_command(executable: str, identifier: str) -> list[str]:
     return [executable, "plugin", "details", identifier]
 
 
-def install(session: Session, executable: str, plugins: list[plugin_build.Plugin]) -> Iterator[str]:
+def install(session: Session, executable: str, plugins: list[plugin_build.Plugin]) -> Iterator[Judged]:
     """Validate, install, and list each plugin in the throwaway configuration; the installed copies' paths are yielded
     last, as one `PATHS` line of JSON, for the sessions that load them."""
     for plugin in plugins:
@@ -291,9 +300,9 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
         )
         ok = result.returncode == 0 and not result.error
         yield (
-            f"VALIDATED claude {plugin.name}"
+            Judged(f"VALIDATED claude {plugin.name}")
             if ok
-            else f"VALIDATION_FAILED claude {plugin.name} {quote(last_line(result))}"
+            else Judged(f"VALIDATION_FAILED claude {plugin.name} {quote(last_line(result))}", fails=True)
         )
     added = session.runner(marketplace_command(executable, session.home), session.home, session.config, session.timeout)
     paths: dict[str, str] = {}
@@ -308,26 +317,29 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
                 session.timeout,
             )
         if result.returncode != 0 or result.error:
-            yield f"INSTALL_FAILED claude {plugin.name} {quote(last_line(result))}"
+            yield Judged(f"INSTALL_FAILED claude {plugin.name} {quote(last_line(result))}", fails=True)
             continue
         listing = session.runner(list_command(executable), session.home, session.config, session.timeout)
         installed = listed_entry(listing.stdout, identifier)
         if installed is None:
-            yield f"INSTALL_FAILED claude {plugin.name} {quote('claude plugin list --json does not list it')}"
+            unlisted = quote("claude plugin list --json does not list it")
+            yield Judged(f"INSTALL_FAILED claude {plugin.name} {unlisted}", fails=True)
             continue
         path, refusal = install_path(session.home, installed)
         if refusal:
-            yield f"INSTALL_FAILED claude {plugin.name} {quote(refusal)}"
+            yield Judged(f"INSTALL_FAILED claude {plugin.name} {quote(refusal)}", fails=True)
             continue
         paths[plugin.name] = path
-        yield f"INSTALLED claude {plugin.name} {installed.get('version', 'unknown')}"
+        yield Judged(f"INSTALLED claude {plugin.name} {installed.get('version', 'unknown')}")
         shown = session.runner(details_command(executable, identifier), session.home, session.config, session.timeout)
         listed = details(shown.stdout)
         for kind, names in expected(plugin).items():
             for name in sorted(names):
                 known = name in listed[kind]
-                yield f"{'DISCOVERED' if known else 'UNDISCOVERED'} claude {plugin.name}:{name} {kind}"
-    yield f"PATHS {json_writer.dumps(paths)}"
+                yield Judged(
+                    f"{'DISCOVERED' if known else 'UNDISCOVERED'} claude {plugin.name}:{name} {kind}", fails=not known
+                )
+    yield Judged(f"PATHS {json_writer.dumps(paths)}")
 
 
 def result_text(content: object) -> str:
@@ -363,28 +375,32 @@ def denial(text: str) -> str:
     return reason.split(";", 1)[0].split("\n", 1)[0]
 
 
-def guard_lines(output: str, agent: str, marker: str) -> list[str]:
-    """Whether the main session read the marker file and the reviewer was denied it, from the session's stream."""
+def guard_lines(output: str, agent: str, marker: str) -> list[Judged]:
+    """Whether the main session read the marker file and the reviewer was denied it, from the session's stream: the
+    main session's line passes only when it read the file, and the reviewer's only when the guard denied it."""
     try:
         results = list(tool_results(output))
     except StreamError as exc:
-        return [f"GUARD claude {who} FAILED {quote(str(exc))}" for who in ("main-session", agent)]
+        return [Judged(f"GUARD claude {who} FAILED {quote(str(exc))}", fails=True) for who in ("main-session", agent)]
     main = [(error, text) for parent, error, text in results if parent is None]
     reviewer = [(error, text) for parent, error, text in results if parent is not None]
     if any(marker in text and not error for error, text in main):
-        lines = ["GUARD claude main-session PASSED"]
+        lines = [Judged("GUARD claude main-session PASSED")]
     elif any(BOUNDARY in text for _, text in main):
-        lines = [f"GUARD claude main-session DENIED {quote(denial(next(t for _, t in main if BOUNDARY in t)))}"]
+        reason = quote(denial(next(t for _, t in main if BOUNDARY in t)))
+        lines = [Judged(f"GUARD claude main-session DENIED {reason}", fails=True)]
     else:
-        lines = [f"GUARD claude main-session FAILED {quote('the session never read the marker file')}"]
+        unread = quote("the session never read the marker file")
+        lines = [Judged(f"GUARD claude main-session FAILED {unread}", fails=True)]
     if any(marker in text and not error for error, text in reviewer):
-        lines.append(f"GUARD claude {agent} PASSED")
+        lines.append(Judged(f"GUARD claude {agent} PASSED", fails=True))
     elif any(error and BOUNDARY in text for error, text in reviewer):
         lines.append(
-            f"GUARD claude {agent} DENIED {quote(denial(next(t for e, t in reviewer if e and BOUNDARY in t)))}"
+            Judged(f"GUARD claude {agent} DENIED {quote(denial(next(t for e, t in reviewer if e and BOUNDARY in t)))}")
         )
     else:
-        lines.append(f"GUARD claude {agent} FAILED {quote('the reviewer made no call the guard answered')}")
+        unanswered = quote("the reviewer made no call the guard answered")
+        lines.append(Judged(f"GUARD claude {agent} FAILED {unanswered}", fails=True))
     return lines
 
 
@@ -433,14 +449,14 @@ def unguarded_command(executable: str, request: str, paths: Mapping[str, str]) -
     ]
 
 
-def transcript(session: Session, name: str, completed: Completed) -> str:
+def transcript(session: Session, name: str, completed: Completed) -> Judged:
     path = session.home / STATE / "transcripts" / f"claude-{name}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(completed.stdout, encoding="utf-8")
-    return f"TRANSCRIPT claude {name} {quote(forward(path))}"
+    return Judged(f"TRANSCRIPT claude {name} {quote(forward(path))}")
 
 
-def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: str) -> list[str]:
+def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: str) -> list[Judged]:
     """Start the fixture's probe from its installed copy, whose script records the run beside that copy."""
     installed = Path(paths[fixture])
     state = installed.parent / STATE
@@ -472,10 +488,14 @@ def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: 
         outcome = f"FAILED {quote(f'timed out after {session.timeout:g} seconds before the probe ran')}"
     else:
         outcome = f"FAILED {quote('the installed copy of the probe never ran: ' + last_line(completed))}"
-    return [f"RUNTIME claude {skill} {outcome}", transcript(session, "probe", completed)]
+    return [
+        # An unread record leaves ran empty, so the line passes exactly when it reports RAN.
+        Judged(f"RUNTIME claude {skill} {outcome}", fails=not ran),
+        transcript(session, "probe", completed),
+    ]
 
 
-def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: str) -> list[str]:
+def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: str) -> list[Judged]:
     """Read a marker file outside every review run in the main session, then have the plugin's reviewer read it."""
     marker = session.home / "outside.txt"
     text = f"{GUARD_MARKER}-{secrets.token_hex(4)}"
@@ -497,7 +517,7 @@ def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: s
     return [*guard_lines(completed.stdout, agent, text), transcript(session, "guard", completed)]
 
 
-def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugin: str) -> list[str]:
+def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugin: str) -> list[Judged]:
     """Have the plugin's reviewer work a review run's one role with every hook off, then hold its result to the guard's
     claim as `check` does: with no hook, no guard claimed the role, so the result is refused."""
     run = session.home / UNGUARDED_RUN
@@ -520,6 +540,7 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
         command, session.home, environment(session.base, script_log, session.home), session.timeout
     )
     reason = file_presence.refusal_reason(result)
+    refused: dict[str, str] = {}
     if reason == file_presence.MISSING:
         outcome = f"FAILED {quote('the reviewer wrote no result: ' + last_line(completed))}"
     elif reason is not None:
@@ -529,42 +550,33 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
         state = cast(RunState, {"runtime": "claude-code", "dispatch": "subagents", "reads": {}})
         refused = unguarded_roles(run, state, [UNGUARDED_ROLE])
         outcome = f"REFUSED {quote(refused[UNGUARDED_ROLE])}" if refused else "ACCEPTED"
-    return [f"UNGUARDED claude {agent} {outcome}", transcript(session, "unguarded", completed)]
+    # The line passes only when check refused the result, which no FAILED branch reaches.
+    return [
+        Judged(f"UNGUARDED claude {agent} {outcome}", fails=not refused),
+        transcript(session, "unguarded", completed),
+    ]
 
 
-def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[str]:
+def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[Judged]:
     plugins = build(session.home, [REPOSITORY_ROOT, FIXTURE_SOURCE])
-    yield from (f"BUILT {plugin.name} {quote(forward(session.home / plugin.name))}" for plugin in plugins)
+    yield from (Judged(f"BUILT {plugin.name} {quote(forward(session.home / plugin.name))}") for plugin in plugins)
     paths: dict[str, str] = {}
-    for line in install(session, executable, plugins):
-        if line.startswith("PATHS "):
-            paths = json_reader.loads(line[len("PATHS ") :])
+    for item in install(session, executable, plugins):
+        if item.text.startswith("PATHS "):
+            paths = json_reader.loads(item.text[len("PATHS ") :])
         else:
-            yield line
+            yield item
     if discovery_only:
         return
     fixture = skill_menu.plugin_name(plugin_build.load_source(FIXTURE_SOURCE).source_id)
     reviewers = [plugin.name for plugin in plugins if REVIEWER in plugin.agents]
     if fixture not in paths or not reviewers or reviewers[0] not in paths:
-        yield f"RUNTIME claude {fixture}:{FIXTURE_SKILL} FAILED {quote('a plugin the sessions load is not installed')}"
+        uninstalled = quote("a plugin the sessions load is not installed")
+        yield Judged(f"RUNTIME claude {fixture}:{FIXTURE_SKILL} FAILED {uninstalled}", fails=True)
         return
     yield from probe(session, executable, paths, fixture)
     yield from guard(session, executable, paths, reviewers[0])
     yield from unguarded(session, executable, paths, reviewers[0])
-
-
-def failed(line: str) -> bool:
-    kind = line.split(" ", 1)[0]
-    if kind in FAILING:
-        return True
-    if kind == "RUNTIME":
-        return " RAN " not in line
-    if kind == "UNGUARDED":
-        return " REFUSED " not in line
-    if kind == "GUARD":
-        main = " main-session " in line
-        return not (" PASSED" in line if main else " DENIED " in line)
-    return False
 
 
 def canary(
@@ -586,19 +598,19 @@ def canary(
         print(f"NOTHING_CHECKED {quote('claude is not installed where deploy.py check looks')}")
         return 1
     session = Session(home, runner, dict(os.environ if base is None else base), timeout)
-    said: list[str] = []
-    for line in checks(session, executable, discovery_only):
-        print(line, flush=True)
-        said.append(line)
+    said: list[Judged] = []
+    for item in checks(session, executable, discovery_only):
+        print(item.text, flush=True)
+        said.append(item)
     version = runtime_version(executable, runner, session.base, home)
     paths = places(home)
     print("RECORD_BEGIN", flush=True)
     print(f"VERSION claude {version}")
-    for line in said:
-        if line.split(" ", 1)[0] in RECORDED:
-            print(placeholders(line, paths))
+    for item in said:
+        if item.text.split(" ", 1)[0] in RECORDED:
+            print(placeholders(item.text, paths))
     print("RECORD_END", flush=True)
-    return 1 if not said or any(failed(line) for line in said) else 0
+    return 1 if not said or any(item.fails for item in said) else 0
 
 
 def main(arguments: list[str] | None = None) -> int:
