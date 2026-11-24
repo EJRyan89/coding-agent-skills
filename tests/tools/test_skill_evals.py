@@ -4354,7 +4354,7 @@ class EvaluateTests(unittest.TestCase):
             "needs one": (["--write"], {"results": no_table}),
             "is not a row": (["--write"], {"results": stray}),
             "codec can't decode byte 0xff": (["--write"], {"results": undecodable}),
-            "follows another repository's pull request: its branch x follows refs/pull/7/head": (
+            "may follow another repository's pull request: its branch x follows refs/pull/7/head": (
                 [],
                 {"checkout": lambda: "its branch x follows refs/pull/7/head, a pull request's ref"},
             ),
