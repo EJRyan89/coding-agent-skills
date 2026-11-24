@@ -181,6 +181,18 @@ run_subject "$CLONE" main
 expect_failed "FAILED cannot read the pin with main's deploy.py: the clone has neither refs/heads/main nor refs/remotes/origin/main" \
   "no main to read the pin with"
 expect_nothing_run "no main to read the pin with"
+# origin/main is looked up exactly too: a tag whose own name is refs/remotes/origin/main, at the branch's commit, which
+# git's lookup rules would find for the absent refs/remotes/origin/main, never stands in for it.
+begin_case "no main, a tag named refs/remotes/origin/main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" branch -D main
+git_quiet -C "$CLONE" update-ref -d refs/remotes/origin/main
+git_quiet -C "$CLONE" tag refs/remotes/origin/main
+run_subject "$CLONE" main
+expect_failed "FAILED cannot read the pin with main's deploy.py: the clone has neither refs/heads/main nor refs/remotes/origin/main" \
+  "no main, a tag named refs/remotes/origin/main"
+expect_nothing_run "no main, a tag named refs/remotes/origin/main"
 
 # Main's tree that cannot be written out, here as git refuses the archive or mktemp the folder, stops before anything
 # runs, and leaves no folder behind.

@@ -463,6 +463,13 @@ PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="show-ref --verify --quiet refs/heads/
 expect_failed "FAILED cannot look up refs/heads/main: git show-ref exited 3 and printed nothing" \
   "git silent with another status"
 expect_not_deployed "git silent with another status"
+# The second call of the exact lookup, which reads the object of a ref the first found, is named the same way when it
+# fails without a word.
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="show-ref --verify --hash refs/heads/main=>1" \
+  run_subject "$CLONE" release --cross-major
+expect_failed "FAILED cannot look up refs/heads/main: git show-ref exited 1 and printed nothing" \
+  "git silent reading main's object"
+expect_nothing_run "git silent reading main's object"
 begin_case 'git names no branch'
 git_quiet -C "$CLONE" checkout -q -b silent-aside
 PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="symbolic-ref --quiet --short HEAD=>0" run_subject "$CLONE" release --cross-major
