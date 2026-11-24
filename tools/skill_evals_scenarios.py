@@ -796,15 +796,20 @@ def _raise(error: OSError) -> None:
 
 
 def _files_below(folder: Path) -> list[Path]:
-    """Every entry below `folder` that is not a folder, sorted, or none when nothing is at `folder`. Raise ScenarioError
-    for a folder it cannot examine or list, or a file in its place: os.walk raises there, where rglob would match
-    nothing."""
+    """Every entry below `folder` that is not a folder, sorted, or none when nothing is at `folder`, but the AppleDouble
+    sidecars macOS writes beside each file on a FAT, exFAT, or SMB volume, which `file_presence.listed` leaves out of
+    each folder's listing. Raise ScenarioError for a folder it cannot examine or list, or a file in its place: os.walk
+    raises there, where rglob would match nothing."""
+    found: list[Path] = []
     try:
         if not file_presence.is_directory(folder):
             return []
-        return sorted(Path(base, name) for base, _, names in os.walk(folder, onerror=_raise) for name in names)
+        for base, _, names in os.walk(folder, onerror=_raise):
+            own = {path.name for path in file_presence.listed(Path(base))}
+            found += [Path(base, name) for name in names if name in own]
     except OSError as exc:
         raise ScenarioError(f"cannot read {folder}: {exc}") from exc
+    return sorted(found)
 
 
 def _occupied(path: Path) -> bool:

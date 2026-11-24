@@ -864,8 +864,11 @@ def _outside_claim_span(name: str, text: str) -> str:
 
 def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:
     """Every entry of the workflows directory the policy does not know by name, which GitHub may run unguarded, and
-    every known workflow the directory lacks."""
-    entries = {entry.name for entry in directory.iterdir()} if file_presence.is_directory(directory) else set()
+    every known workflow the directory lacks. The AppleDouble sidecars macOS writes beside each workflow on a FAT,
+    exFAT, or SMB volume are no workflow, and `file_presence.listed` leaves them out."""
+    entries = (
+        {entry.name for entry in file_presence.listed(directory)} if file_presence.is_directory(directory) else set()
+    )
     problems = [
         f"{WORKFLOWS_DIRECTORY}/{name} is not a workflow the policy knows; add it to WORKFLOW_GUARDS with its triggers,"
         " actions, and crons"
