@@ -14,7 +14,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lessons_catalogue import MECHANISM, CatalogueError, Pattern, mechanism_bases, patterns, read_patterns
+from lessons_catalogue import (
+    MECHANISM,
+    PATTERNS,
+    PROMPT_PATTERNS,
+    CatalogueError,
+    Pattern,
+    mechanism_bases,
+    patterns,
+    read_patterns,
+)
 
 CATALOGUE = """# Lessons
 
@@ -119,6 +128,42 @@ def test_a_mechanism_is_a_module_a_name_and_a_member(span: str, groups: tuple[st
 @pytest.mark.parametrize("span", ["json_reader", "json_reader:", "tests/test_a.py::Tests"])
 def test_anything_else_is_no_mechanism(span: str) -> None:
     assert MECHANISM.fullmatch(span) is None
+
+
+def test_the_prompt_patterns_are_read_after_the_patterns_of_code_each_naming_its_section() -> None:
+    # Prompt patterns may stand before the patterns of code, and a section the catalogue does not read, between them,
+    # holds no pattern; each section's patterns end at the next heading of level two.
+    text = (
+        "# Lessons\n\n## Prompt patterns\n\n### Asked\n\n- **Prompt:** `a/SKILL.md`\n- **Caught by:** CI\n\n"
+        "## Patterns\n\n### Coded\n\n- **Rule:** r\n\n## Notes\n\n### Elsewhere\n"
+    )
+    assert patterns(text) == [
+        Pattern(5, "Asked", {"Prompt": [(7, "`a/SKILL.md`")], "Caught by": [(8, "CI")]}, [], PROMPT_PATTERNS),
+        Pattern(12, "Coded", {"Rule": [(14, "r")]}, [], PATTERNS),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        (
+            "## Patterns\n\n### A\n\n## Patterns\n\n### B\n",
+            "docs/lessons.md has more than one '## Patterns' section",
+        ),
+        (
+            "## Patterns\n\n### A\n\n## Prompt patterns\n\n### B\n\n## Prompt patterns\n\n### C\n",
+            "docs/lessons.md has more than one '## Prompt patterns' section",
+        ),
+        ("## Prompt patterns\n\n### A\n", "docs/lessons.md has no '## Patterns' section"),
+        (
+            "## Patterns\n\nNone yet.\n\n## Prompt patterns\n\n### A\n",
+            "docs/lessons.md has no pattern under '## Patterns'",
+        ),
+    ],
+)
+def test_a_section_named_twice_or_a_catalogue_with_prompt_patterns_alone_is_refused(text: str, reason: str) -> None:
+    with pytest.raises(CatalogueError, match=f"^{re.escape(reason)}$"):
+        patterns(text)
 
 
 @pytest.mark.parametrize(

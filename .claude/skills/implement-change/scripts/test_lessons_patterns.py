@@ -596,3 +596,25 @@ def test_the_repositorys_own_catalogue_and_tracked_files_are_read(capsys: pytest
     assert lessons_patterns.main([folder_walk]) == 0
     lines = capsys.readouterr().out.split("\n")[:-1]
     assert any(line.startswith("PATTERN\t") and f"\t{folder_walk} is folder_walk" in line for line in lines)
+
+
+def test_a_prompt_pattern_is_listed_through_the_one_reader_only_for_a_file_holding_its_form(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A pattern under the catalogue's Prompt patterns is read with those under its Patterns and met the same way: its
+    # form, scoped by its glob to Markdown, meets a step that names a check without its command, and a module holding
+    # the same words meets nothing.
+    prompt = (
+        "\n## Prompt patterns\n\n### A prompt names its command\n\n- **Rule:** A step names the command.\n"
+        "- **Why:** An agent picks its own.\n- **Prompt:** `skills/a/SKILL.md`\n- **No guard:** none yet.\n"
+        "- **Search for:** `rg -n 'title and body checks' -g '*.md'`\n"
+    )
+    files = {"skills/a/SKILL.md": "Run the title and body checks.\n", "tools/x.py": "# the title and body checks\n"}
+    root = repository(tmp_path, files, CATALOGUE + prompt)
+    assert run(root, *files, capsys=capsys) == (
+        0,
+        [
+            "PATTERN\tdocs/lessons.md:47\tA prompt names its command\t"
+            "skills/a/SKILL.md:1 holds rg -n 'title and body checks' -g '*.md'"
+        ],
+    )

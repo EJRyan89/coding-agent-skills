@@ -316,6 +316,18 @@ class LessonsLedgerPolicy(unittest.TestCase):
     )
     SKILL = "---\nname: a\n---\n\n# A\n\n## 3. Bug class\n\nSearch.\n"
     ENTRY = "- **Rule:** One sentence.\n- **Why:** A line.\n- **Search for:** `int(` on a `.group(`.\n"
+    NOT_A_GUARD = (
+        "which is not a test ID, a skill's step, a workflow, or an evaluation scenario by its path from the repository "
+        "root"
+    )
+    # The results table of docs/skill-evaluations.md, as tools/skill_evals_results.py writes it, with one skill's row.
+    EVALUATIONS = (
+        "# Skill evaluations\n\n<!-- skill-evals:begin -->\n"
+        "| Skill | Model | Model ID | Reviewer effort | Route pins | Passed | Runs | By scenario | Session model "
+        "| Claude Code | Date |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| a | haiku | id | none | none | 9/9 | 1 | by-name 2/2, description 7/7 | id | 1.0.0 | 2026-01-01 |\n"
+        "<!-- skill-evals:end -->\n"
+    )
 
     def problems(self, ledger: str | None, files: Mapping[str, str] | None = None) -> list[str]:
         tree = {
@@ -328,6 +340,10 @@ class LessonsLedgerPolicy(unittest.TestCase):
             "skills/y/scripts/twin.py": "LIMIT = 1\n",
             ".claude/skills/a/SKILL.md": self.SKILL,
             ".github/workflows/watch.yml": "on: workflow_dispatch\n",
+            "docs/skill-evaluations.md": self.EVALUATIONS,
+            "tests/fixtures/skill-evals/a/description/scenario.json": "{}\n",
+            "tests/fixtures/skill-evals/a/unrecorded/scenario.json": "{}\n",
+            "tests/fixtures/skill-evals/a/by/scenario.json": "{}\n",
             **(files or {}),
         }
         if ledger is not None:
@@ -438,15 +454,12 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 f"{prefix} cites tests/test_a.py::helper, which tests/test_a.py does not define as a test or a test "
                 "class",
                 f"{prefix} cites tests/test_gone.py::test_held, but tests/test_gone.py does not exist",
-                f"{prefix} names test_a.py::test_held, which is not a test ID, a skill's step, or a workflow by its "
-                "path from the repository root",
+                f"{prefix} names test_a.py::test_held, {self.NOT_A_GUARD}",
                 f"{prefix} cites .claude/skills/a/SKILL.md#4-gone, which names no heading of .claude/skills/a/SKILL.md",
                 f"{prefix} cites .claude/skills/b/SKILL.md#a, but .claude/skills/b/SKILL.md does not exist",
-                f"{prefix} names docs/guide.md#a, which is not a test ID, a skill's step, or a workflow by its path "
-                "from the repository root",
+                f"{prefix} names docs/guide.md#a, {self.NOT_A_GUARD}",
                 f"{prefix} cites .github/workflows/gone.yml, but .github/workflows/gone.yml does not exist",
-                f"{prefix} names GuardTests, which is not a test ID, a skill's step, or a workflow by its path from "
-                "the repository root",
+                f"{prefix} names GuardTests, {self.NOT_A_GUARD}",
                 "docs/lessons.md:11 the pattern 'Gone' cites tests/test_a.py::GoneTests, which tests/test_a.py does "
                 "not define as a test or a test class",
             ],
@@ -531,6 +544,100 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 "docs/lessons.md:12 the pattern 'Counted' names the field 'Lesson', which a pattern does not have",
             ],
             self.problems(ledger),
+        )
+
+    def test_prompt_patterns_whose_prompt_and_guard_resolve_pass(self) -> None:
+        # A prompt is a file, or a heading of a Markdown one, and a guard may be an evaluation scenario a row records.
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Coded\n\n{self.ENTRY}- **No guard:** A reader cannot tell.\n\n"
+            f"## Prompt patterns\n\n### Asked\n\n{self.ENTRY}"
+            "- **Prompt:** `.claude/skills/a/SKILL.md#3-bug-class`, `.github/workflows/watch.yml`, and\n"
+            "  `.claude/skills/a/SKILL.md`.\n"
+            "- **Guard:** `tests/fixtures/skill-evals/a/description`, `tests/fixtures/skill-evals/a/by-name`,\n"
+            "  `tests/test_a.py::GuardTests`.\n"
+            "- **Caught by:** CI.\n- **Examples:** #12\n\n"
+            f"### Unguarded\n\n{self.ENTRY}- **Prompt:** `.claude/skills/a/SKILL.md`\n"
+            "- **No guard:** A brief lives outside the repository.\n"
+        )
+        self.assertEqual([], self.problems(ledger, {"tests/fixtures/skill-evals/a/by-name/scenario.json": "{}\n"}))
+
+    def test_a_prompt_field_outside_prompt_patterns_or_a_prompt_pattern_without_one_fails(self) -> None:
+        guard = "- **No guard:** A reader cannot tell.\n"
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Coded\n\n{self.ENTRY}- **Prompt:** `.claude/skills/a/SKILL.md`\n"
+            f"- **Caught by:** CI.\n{guard}\n## Prompt patterns\n\n### Unplaced\n\n{self.ENTRY}{guard}\n"
+            f"### Empty\n\n{self.ENTRY}- **Prompt:**\n{guard}\n"
+            f"### In prose\n\n{self.ENTRY}- **Prompt:** the brief\n{guard}\n"
+            f"### Coloured\n\n{self.ENTRY}- **Prompt:** `.claude/skills/a/SKILL.md`\n- **Colour:** red\n{guard}"
+        )
+        self.assertEqual(
+            [
+                "docs/lessons.md:10 the pattern 'Coded' names the field 'Prompt', which only a pattern under "
+                "'## Prompt patterns' has",
+                "docs/lessons.md:11 the pattern 'Coded' names the field 'Caught by', which only a pattern under "
+                "'## Prompt patterns' has",
+                "docs/lessons.md:16 the pattern 'Unplaced' states no Prompt",
+                "docs/lessons.md:23 the pattern 'Empty' states no Prompt",
+                "docs/lessons.md:36 the pattern 'In prose' names no prompt in a code span",
+                "docs/lessons.md:45 the pattern 'Coloured' names the field 'Colour', which a pattern does not have",
+            ],
+            self.problems(ledger),
+        )
+
+    def test_a_prompt_that_does_not_resolve_fails(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Coded\n\n{self.ENTRY}- **No guard:** A reader cannot tell.\n\n"
+            f"## Prompt patterns\n\n### Gone\n\n{self.ENTRY}- **Prompt:** `.claude/skills/a/SKILL.md#4-gone`,"
+            " `.claude/skills/b/SKILL.md`, `tests/test_a.py#a`, `../outside.md`, `/root.md`, `a b.md`, and\n"
+            "  `.claude/skills/c/SKILL.md`.\n- **No guard:** A reader cannot tell.\n"
+        )
+        prefix = "docs/lessons.md:19 the pattern 'Gone'"
+        form = "which is not a file by its path from the repository root, with a heading's fragment"
+        self.assertEqual(
+            [
+                f"{prefix} names the prompt .claude/skills/a/SKILL.md#4-gone, which names no heading of "
+                ".claude/skills/a/SKILL.md",
+                f"{prefix} names the prompt .claude/skills/b/SKILL.md, but .claude/skills/b/SKILL.md does not exist",
+                f"{prefix} names the prompt tests/test_a.py#a, but tests/test_a.py is not Markdown, whose headings a "
+                "fragment names",
+                f"{prefix} names ../outside.md, {form}",
+                f"{prefix} names /root.md, {form}",
+                f"{prefix} names a b.md, {form}",
+                "docs/lessons.md:20 the pattern 'Gone' names the prompt .claude/skills/c/SKILL.md, but "
+                ".claude/skills/c/SKILL.md is not a file",
+            ],
+            self.problems(ledger, {".claude/skills/c/SKILL.md/inner.md": ""}),
+        )
+
+    def test_an_evaluation_scenario_that_is_missing_or_unrecorded_fails(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Scenarios\n\n{self.ENTRY}- **Guard:**"
+            " `tests/fixtures/skill-evals/a/gone`, `tests/fixtures/skill-evals/b/description`,\n"
+            "  `tests/fixtures/skill-evals/a/unrecorded`, `tests/fixtures/skill-evals/a/by`, and\n"
+            "  `tests/fixtures/skill-evals/a/file`.\n"
+        )
+        prefix = "the pattern 'Scenarios' cites tests/fixtures/skill-evals"
+        self.assertEqual(
+            [
+                f"docs/lessons.md:10 {prefix}/a/gone, but tests/fixtures/skill-evals/a/gone does not exist",
+                f"docs/lessons.md:10 {prefix}/b/description, but tests/fixtures/skill-evals/b/description does not "
+                "exist",
+                f"docs/lessons.md:11 {prefix}/a/unrecorded, which no row of docs/skill-evaluations.md records for a",
+                f"docs/lessons.md:11 {prefix}/a/by, which no row of docs/skill-evaluations.md records for a",
+                f"docs/lessons.md:12 {prefix}/a/file, but tests/fixtures/skill-evals/a/file is not a folder",
+            ],
+            self.problems(ledger, {"tests/fixtures/skill-evals/a/file": "{}\n"}),
+        )
+        unread = (
+            f"# Lessons\n\n## Patterns\n\n### Scenarios\n\n{self.ENTRY}"
+            "- **Guard:** `tests/fixtures/skill-evals/a/description`\n"
+        )
+        self.assertEqual(
+            [
+                f"docs/lessons.md:10 {prefix}/a/description, but docs/skill-evaluations.md cannot be read: the "
+                "results file needs one <!-- skill-evals:begin --> line and one <!-- skill-evals:end --> line"
+            ],
+            self.problems(unread, {"docs/skill-evaluations.md": "# Skill evaluations\n"}),
         )
 
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
