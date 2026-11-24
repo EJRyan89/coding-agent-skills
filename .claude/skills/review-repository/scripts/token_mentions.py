@@ -13,7 +13,9 @@ zero-width space, dropped, so an invisible character inside a word does not hide
 it names a credential by one of NAMED_CREDENTIALS, in any ASCII case, or the word "token" stands within MENTION_REACH
 characters of a word in WORKFLOW_WORDS, such as "job", "step", "workflow", or this repository's "gate" and "check", in
 that text. A line a removal or the context holds never counts: the reviewer anchors a finding on an added line. Limits:
-a confusable letter, such as a Cyrillic o (U+043E) in "token", or a hyphen inside the word hides a mention.
+a confusable letter, such as a Cyrillic o (U+043E) in "token", or a hyphen inside the word hides a mention; and a
+diff line of many megabytes is read through a map of each character's origin, so it may take memory many times its
+size and end at the review's condition timeout, which fails the review rather than closing the route.
 
 The diff is the pull request author's, so everything it writes from the diff is quoted data. It writes each mentioning
 line as `MENTION <file>:<line> <what> (added lines <first>-<last>)`, the file a JSON string and `<what>` either
@@ -82,11 +84,12 @@ NAMED_CREDENTIALS = re.compile(r"(?<!\w)(?:gh_token|github_token|github\.token)(
 # The word "token", singular or plural, alone: not the end of a longer name such as `EXPRESSION_TOKEN`.
 TOKEN_WORD = re.compile(r"(?<![\w-])tokens?(?![\w-])", re.IGNORECASE | re.ASCII)
 # The words that place a token in a workflow run: what holds it, what runs it, and what grants it, this repository's
-# own names for its CI jobs among them, such as "the mutation gate", "the deployable check", and "validation". ASCII
+# own names for its CI jobs among them, such as "the mutation gate", "the deployable check", "validation", "a shard",
+# and "a suite". ASCII
 # alone, so a dotless or dotted i matches no word and every word the condition file names is ASCII.
 WORKFLOW_WORDS = re.compile(
     r"(?<![\w-])(?:workflows?|jobs?|steps?|legs?|runs?|runners?|actions?|ci|permissions?|checkouts?|checks?|gates?"
-    r"|validation|matrix)(?![\w-])",
+    r"|validation|matrix|shards?|suites?)(?![\w-])",
     re.IGNORECASE | re.ASCII,
 )
 # How far from "token" a workflow word may stand, in characters of the joined text: about a sentence's length.

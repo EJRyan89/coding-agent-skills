@@ -3181,7 +3181,9 @@ def test_each_retired_token_claim_a_pull_request_adds_opens_the_workflow_token_r
     text: str, retired: str, tmp_path: Path
 ) -> None:
     # A claim the condition missed would reach no reviewer, so every spelling the patterns refuse, in each of the
-    # suite's four spellings, opens the route too, with the condition's script run as a review runs it.
+    # suite's four spellings, opens the route too, with the condition's script run as a review runs it. Stated limit: a
+    # refused sentence that names no workflow word, as "They hold no token." does, is the policy's alone to refuse; the
+    # route does not open on it, so every row here names its holder.
     added = "".join(f"+{line}\n" for line in text.splitlines())
     diff = tmp_path / "pull.diff"
     diff.write_bytes(

@@ -101,6 +101,8 @@ class TokenMentionsTests(unittest.TestCase):
             "check": "The deployable check receives no token.",
             "validation": "Validation never sees the token.",
             "matrix": "No matrix entry is handed a token.",
+            "shard": "No shard is handed the token.",
+            "suite": "No suite receives the token.",
         }
         for word, sentence in sentences.items():
             with self.subTest(word=word):
@@ -169,7 +171,8 @@ class TokenMentionsTests(unittest.TestCase):
         self.assertLess(given, token_mentions.MAX_MENTIONS)
         self.assertEqual(f"MENTIONS {token_mentions.MAX_MENTIONS} given={given}\n", stdout)
         self.assertTrue(written.endswith(f"OMITTED {token_mentions.MAX_MENTIONS - given}\n"), written[-80:])
-        self.assertLessEqual(len(written.encode("utf-8")), token_mentions.MAX_FILE_BYTES + 64)
+        # The review keeps the first 32 KiB of the file, its CONDITION_FILE_BYTES, so the OMITTED line must fit in it.
+        self.assertLessEqual(len(written.encode("utf-8")), 32 * 1024)
 
     def test_a_token_far_from_any_workflow_word_or_inside_a_longer_name_is_no_mention(self) -> None:
         diff = changed(
