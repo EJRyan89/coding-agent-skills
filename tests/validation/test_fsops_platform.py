@@ -2080,12 +2080,16 @@ def test_tree_read_policy_refuses_a_named_skill_folder_that_holds_no_script() ->
     [
         pytest.param("skills/audit-skill/scripts", "skill_inventory.py", id="audit-skill"),
         pytest.param("skills/review-document/scripts", "review_document.py", id="review-document"),
+        pytest.param("skills/audit-ai-config/scripts", "audit_ai_config.py", id="audit-ai-config"),
+        pytest.param("skills/curate-agent-memory/scripts", "memory_audit.py", id="curate-agent-memory"),
+        pytest.param("skills/review-insights/scripts", "review_guidance.py", id="review-insights"),
     ],
 )
 def test_tree_read_policy_reads_audit_skills_and_review_documents_scripts(folder: str, module: str) -> None:
-    # audit-skill's inventory reads the skill folder it examines through the reader, and review-document the document,
-    # the checkout around it, and the working directory resolve searches, so a direct read in either's scripts fails,
-    # and one stated in TREE_READ_ALLOWED passes; a suite is not read.
+    # audit-skill's inventory reads the skill folder it examines through the reader, review-document the document,
+    # the checkout around it, and the working directory resolve searches, audit-ai-config the repository,
+    # curate-agent-memory the memory store and the repository, and review-insights a guidance file's working-tree copy,
+    # so a direct read in any one's scripts fails, and one stated in TREE_READ_ALLOWED passes; a suite is not read.
     direct = "def size(path):\n    return path.read_bytes()\n"
     allowed = f"TREE_READ_ALLOWED = {{'size': 'a place outside the examined folder'}}\n{direct}"
     placeholder = {f"{SCRIPTS}/placeholder.py": "VALUE = 1\n"}

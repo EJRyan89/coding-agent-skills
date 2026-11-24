@@ -1202,7 +1202,10 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # The .NET skills promise to read only inside the tree they examine, audit-skill reads the skill folder it audits
 # through a reader bound to that folder, and review-document reads the document it reviews, the checkout around it,
 # and the working directory resolve searches through readers bound to the document's folder, that checkout, and that
-# directory, the places outside each stated in TREE_READ_ALLOWED. Each keeps it through ejryan89-skill-core's
+# directory, audit-ai-config reads the repository it audits through a reader bound to it, curate-agent-memory the
+# memory store and the repository through a reader bound to each, and
+# review-insights a guidance file's working-tree copy through a reader bound to the configured checkout, the places
+# outside each stated in TREE_READ_ALLOWED. Each keeps it through ejryan89-skill-core's
 # tree_reader, a reader bound to that tree which judges each path by its text and its links before touching it. Every
 # stat, open, read, listing, and walk of a path in the scripts of a skill TREE_READ_SKILLS names goes through it: a
 # direct read there, or a read through an ejryan89-skill-core function that reads a path, which core_reads derives
@@ -1233,6 +1236,9 @@ TREE_READ_SKILLS = (
     "skills/dotnet-dependencies/scripts",
     "skills/audit-skill/scripts",
     "skills/review-document/scripts",
+    "skills/audit-ai-config/scripts",
+    "skills/curate-agent-memory/scripts",
+    "skills/review-insights/scripts",
 )
 TREE_READ_ALLOWANCE = "TREE_READ_ALLOWED"
 # What the resolver names a name the module binds to anything but an import, such as a parameter.
@@ -1492,9 +1498,10 @@ TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to
 
 
 def tree_read_problems(root: Path) -> list[str]:
-    """Report each read of a path in the .NET skills', audit-skill's, and review-document's scripts that does not go
-    through ejryan89-skill-core's tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that
-    sanctions nothing."""
+    """Report each read of a path in the scripts of the skills TREE_READ_SKILLS names, the .NET skills, audit-skill,
+    review-document, audit-ai-config, curate-agent-memory, and review-insights, that does not go through
+    ejryan89-skill-core's tree_reader and that no TREE_READ_ALLOWED entry sanctions, and each entry that sanctions
+    nothing."""
     problems: list[str] = []
     scanned = _tree_read_scanned_files(root)
     problems += [

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
 from test_path_containment import resolving_as_python_312
+from tree_reader import TreeReader
 
 
 def temporary_store_folds_case() -> bool:
@@ -105,6 +107,55 @@ def directory_link(link: Path, target: Path) -> Path:
     else:
         link.symlink_to(target, target_is_directory=True)
     return link
+
+
+def outside_folder(case: unittest.TestCase) -> Path:
+    """A folder outside every tree a test examines, one level down in a temporary folder of its own, so it is no
+    entry of any folder the tree reader asks how it compares names: deciding whether a path lies in a tree asks
+    each folder above the tree, the temporary directory included, and may look up any one entry there by its own
+    metadata, never following it, as the tree reader's stated limit says."""
+    container = Path(tempfile.mkdtemp()).resolve()
+    case.addCleanup(shutil.rmtree, container, ignore_errors=True)
+    folder = container / "outside"
+    folder.mkdir()
+    return folder
+
+
+@contextmanager
+def looks_past(links: Sequence[Path], outside: Path) -> Iterator[list[str]]:
+    """Record each stat, listing, or followed stat that reaches past one of `links` or into `outside`: an os.stat,
+    os.lstat, os.scandir, or os.listdir of a path below a link or inside `outside`, however spelled, and an os.stat of a
+    link itself, which follows it. An os.lstat of a link reads only its own metadata and is not recorded."""
+
+    def key(path: object) -> str:
+        return os.path.normcase(Path(os.fsdecode(path)).absolute())  # type: ignore[arg-type]  # a path-like the call took
+
+    linked = [key(link) for link in links]
+    far = {key(outside), key(os.path.realpath(outside))}
+    looked: list[str] = []
+
+    def past(path: object, follows: bool) -> bool:
+        if isinstance(path, int):
+            return False
+        named = key(path)
+        below = any(named.startswith(top + os.sep) for top in [*linked, *far]) or named in far
+        return below or (follows and named in linked)
+
+    def recorded(name: str) -> Callable[..., Any]:
+        real = getattr(os, name)
+
+        def call(path: object = ".", *arguments: object, **options: object) -> Any:
+            follows = name != "lstat" and options.get("follow_symlinks", True) is not False
+            if past(path, follows):
+                looked.append(f"{name} {os.fsdecode(path)}")  # type: ignore[arg-type]  # the same
+            return real(path, *arguments, **options)
+
+        return call
+
+    with ExitStack() as stack:
+        for name in ("stat", "lstat", "scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, recorded(name)))
+        yield looked
 
 
 def memory(name: str, body: str, kind: str = "feedback") -> str:
@@ -193,7 +244,9 @@ class CommandLineContractTests(unittest.TestCase):
 class MemoryAuditTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self._temporary.name)
+        # Resolved, so a path a memory cites by its absolute spelling holds no Windows short name such as RUNNER~1,
+        # whose `~` no cited path holds.
+        self.root = Path(self._temporary.name).resolve()
         self.memory_dir = self.root / "memory"
         self.repo = self.root / "repo"
         self.memory_dir.mkdir()
@@ -437,6 +490,209 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(3, overlaps[0]["line"])
         self.assertEqual(0, self.by_file(self.run_audit())["sut.md"]["overlaps_omitted"])
 
+    def elsewhere(self) -> Path:
+        """A folder outside the repository and the memory store, in a temporary folder of its own, so it is no sibling
+        of either: deciding whether a path lies in a tree asks the tree's parent how it compares names, which on Windows
+        looks up a sibling's own entry, never following it, as the tree reader's stated limit says."""
+        return outside_folder(self)
+
+    def outside_rule(self) -> Path:
+        """A folder outside the repository and the memory store holding a rule a memory overlaps."""
+        outside = self.elsewhere()
+        write(
+            outside / "guidelines.md",
+            "# Tests\n\n- Name the object under test after its class, never the generic sut variable name.\n",
+        )
+        write(
+            self.memory_dir / "sut.md",
+            memory("sut", "Never name the object under test sut; derive the variable name from its class."),
+        )
+        return outside
+
+    def test_a_linked_folder_leading_out_of_the_repository_is_never_followed_for_overlaps(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, where a destination pattern's folder is: the
+        # repository's reader judges the link from its own metadata and text, so nothing it leads to is listed, stat,
+        # or read, and the rule there draws no overlap.
+        outside = self.outside_rule()
+        links = [directory_link(self.repo / "docs", outside), directory_link(self.repo / "nested", outside)]
+        with looks_past(links, outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked, "nothing past the links is looked at")
+        self.assertEqual([], self.by_file(report)["sut.md"]["overlaps"])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_destination_file_linked_out_of_the_repository_is_passed_over_unread(self) -> None:
+        outside = self.outside_rule()
+        links = [self.repo / "CLAUDE.md", self.repo / "README.md", self.repo / "notes" / "AGENTS.md"]
+        for link in links:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(outside / "guidelines.md")
+        with looks_past(links, outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked, "no link is followed, not even to learn what it is")
+        self.assertEqual([], self.by_file(report)["sut.md"]["overlaps"])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_user_claude_md_linked_from_dotfiles_is_measured_where_a_repository_link_out_is_not(self) -> None:
+        # The user's configuration directory is the user's own, so its CLAUDE.md linked from a dotfiles checkout is
+        # read through the link, as Claude Code loads it; the same link in the repository, which the user may not have
+        # written, is still passed over unread.
+        dotfiles = self.outside_rule()
+        user_dir = self.root / "user-config"
+        user_dir.mkdir()
+        (user_dir / "CLAUDE.md").symlink_to(dotfiles / "guidelines.md")
+        overlaps = memory_audit.audit(self.memory_dir, self.repo, user_dir=user_dir)["memories"][0]["overlaps"]
+        self.assertEqual([str(user_dir / "CLAUDE.md")], [overlap["file"] for overlap in overlaps])
+        (self.repo / "CLAUDE.md").symlink_to(dotfiles / "guidelines.md")
+        overlaps = memory_audit.audit(self.memory_dir, self.repo)["memories"][0]["overlaps"]
+        self.assertEqual([], overlaps)
+
+    def test_a_cited_path_through_a_link_out_of_the_repository_is_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the cited path is not reported as there or not,
+        # but as one the repository's reader refuses, with the link it names and where it leads.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        link = directory_link(self.repo / "shared", outside)
+        write(self.memory_dir / "paths.md", memory("paths", "Read `shared/rule.md`."))
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        [cited] = self.by_file(report)["paths.md"]["cited_paths"]
+        self.assertEqual(("shared/rule.md", None), (cited["path"], cited["exists"]))
+        self.assertIn("outside the examined tree", cited["unreadable"])
+
+    def test_an_absolute_cited_path_into_the_repository_through_a_link_out_is_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: an absolute path naming a place in the repository
+        # is looked up through the repository's reader, as the same path written relative is.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        link = directory_link(self.repo / "shared", outside)
+        cited = (self.repo / "shared" / "rule.md").as_posix()
+        write(self.memory_dir / "paths.md", memory("paths", f"Read `{cited}`."))
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        [found] = self.by_file(report)["paths.md"]["cited_paths"]
+        self.assertEqual((cited, None), (found["path"], found["exists"]))
+        self.assertIn("outside the examined tree", found["unreadable"])
+
+    def test_a_cited_path_naming_a_tree_by_its_text_is_judged_by_that_trees_reader_however_written(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, in the repository and in the store: each spelling
+        # names a place in one of them once its `..` is taken as text, whatever base it was written from, so that
+        # tree's reader refuses it, with nothing past the link looked at; a path naming neither is looked up where it
+        # names.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        links = [directory_link(self.repo / "shared", outside), directory_link(self.memory_dir / "slink", outside)]
+        root = self.root.as_posix()
+        refused = [
+            "../repo/shared/rule.md",
+            f"{root}/repo/../repo/shared/rule.md",
+            f"{root}/repo/sub/../../repo/shared/rule.md",
+            "~/../repo/shared/rule.md",
+            "../memory/slink/rule.md",
+        ]
+        write(self.memory_dir / "paths.md", memory("paths", " ".join(f"Read `{path}`." for path in refused)))
+        with (
+            mock.patch.object(memory_audit, "absolute_home", return_value=self.root / "home"),
+            looks_past(links, outside) as looked,
+        ):
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        cited = {entry["path"]: entry for entry in self.by_file(report)["paths.md"]["cited_paths"]}
+        self.assertEqual(sorted(refused), sorted(cited))
+        for path in refused:
+            with self.subTest(path=path):
+                self.assertIsNone(cited[path]["exists"])
+                self.assertTrue(cited[path]["unreadable"])
+        found = os.path.relpath(outside / "rule.md", self.repo).replace(os.sep, "/")
+        write(self.memory_dir / "paths.md", memory("paths", f"Read `{found}`."))
+        [named] = self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        self.assertEqual((found, True), (named["path"], named["exists"]), "a path naming neither tree is looked up")
+
+    def test_a_cited_path_climbing_out_after_a_link_inside_is_judged_by_the_repositorys_reader(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: `deep` leads deeper into the repository, so a path
+        # whose own `..` then climbs past the repository's top names, as the system opens it, the repository's
+        # `shared`, a link out; its text names no place in the repository, but the link it meets first lies inside, so
+        # the repository's reader refuses it, with nothing past `shared` looked at.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        (self.repo / "a" / "b").mkdir(parents=True)
+        directory_link(self.repo / "deep", self.repo / "a" / "b")
+        shared = directory_link(self.repo / "shared", outside)
+        refused = [
+            "deep/../../../repo/shared/rule.md",
+            f"{self.repo.as_posix()}/deep/../../../repo/shared/rule.md",
+            "../repo/deep/../../../repo/shared/rule.md",
+        ]
+        if sys.platform != "win32":
+            # A relative link to a folder needs a symbolic link, which needs a privilege on Windows.
+            (self.repo / "rdeep").symlink_to("a/b", target_is_directory=True)
+            refused.append("rdeep/../../../repo/shared/rule.md")
+        write(self.memory_dir / "paths.md", memory("paths", " ".join(f"Read `{path}`." for path in refused)))
+        with looks_past([shared], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        cited = {entry["path"]: entry for entry in self.by_file(report)["paths.md"]["cited_paths"]}
+        self.assertEqual(sorted(refused), sorted(cited))
+        for path in refused:
+            with self.subTest(path=path):
+                self.assertIsNone(cited[path]["exists"])
+                self.assertTrue(cited[path]["unreadable"])
+
+    def test_a_cited_path_whose_dot_dot_follows_a_link_inside_is_judged_by_the_repositorys_reader(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: `top` leads to the repository itself, so
+        # `top/../outside/rule.md` names the repository's parent through it, which its reader refuses rather than the
+        # path being looked up where its text names.
+        directory_link(self.repo / "top", self.repo)
+        write(self.root / "outside" / "rule.md", "Rule.\n")
+        write(self.memory_dir / "paths.md", memory("paths", "Read `top/../outside/rule.md`."))
+        [cited] = self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        self.assertEqual(("top/../outside/rule.md", None), (cited["path"], cited["exists"]))
+        self.assertTrue(cited["unreadable"])
+
+    def test_a_cited_path_whose_dot_dot_climbs_out_past_a_link_is_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: `a/../../x.md` names the repository's parent as
+        # written, but Linux and macOS open it as <outside>/x.md, through the link, so the reader refuses it.
+        outside = self.elsewhere()
+        write(outside / "x.md", "Here.\n")
+        (outside / "1" / "2").mkdir(parents=True)
+        link = directory_link(self.repo / "a", outside / "1" / "2")
+        write(self.memory_dir / "paths.md", memory("paths", "Read `a/../../x.md`."))
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        [found] = self.by_file(report)["paths.md"]["cited_paths"]
+        self.assertEqual(("a/../../x.md", None), (found["path"], found["exists"]))
+        self.assertIn("outside the examined tree", found["unreadable"])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_memory_linked_out_of_the_store_is_unreadable_and_never_followed(self) -> None:
+        outside = self.elsewhere()
+        write(outside / "kept.md", memory("kept", "Kept body."))
+        link = self.memory_dir / "kept.md"
+        link.symlink_to(outside / "kept.md")
+        write(self.memory_dir / "MEMORY.md", "- [Kept](kept.md) — hook\n")
+        with looks_past([link], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked, "the link is judged from its own metadata alone")
+        self.assertEqual([], report["memories"])
+        self.assertEqual([{"file": "kept.md", "reason": "not a regular file"}], report["unreadable"])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_index_linked_out_of_the_store_is_refused_unread(self) -> None:
+        outside = self.elsewhere()
+        write(outside / "MEMORY.md", "- [Kept](kept.md) — hook\n")
+        index = self.memory_dir / "MEMORY.md"
+        index.symlink_to(outside / "MEMORY.md")
+        with looks_past([index], outside) as looked:
+            code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir))
+        self.assertEqual([], looked)
+        prefix = f"FAILED {self.memory_dir} is not a memory directory: its MEMORY.md cannot be read: "
+        self.assertEqual((1, ""), (code, stderr))
+        self.assertTrue(stdout.startswith(prefix), stdout)
+        self.assertIn("outside the examined tree", stdout)
+
     def test_overlaps_past_the_limit_are_counted_as_left_out(self) -> None:
         rule = "- Name the object under test after its class, never the generic sut variable name.\n\n"
         write(self.repo / "docs" / "guidelines.md", "# Tests\n\n" + rule * (memory_audit.OVERLAP_LIMIT + 1))
@@ -509,15 +765,61 @@ class MemoryAuditTests(unittest.TestCase):
             with self.subTest(path=path):
                 found = memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
                 self.assertIn(str(path), [o["file"] for o in found["memories"][0]["overlaps"]])
-                with stat_failing_at(path), self.assertRaises(PermissionError) as raised:
+                # The repository's reader refuses its file with TreeRefused, an OSError naming the path as `path`.
+                with stat_failing_at(path), self.assertRaises(OSError) as raised:
                     memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
-                self.assertEqual(str(path), raised.exception.filename)
+                self.assertEqual(str(path), str(getattr(raised.exception, "path", None) or raised.exception.filename))
         write(self.memory_dir / "MEMORY.md", "")
-        with stat_failing_at(named):
-            code, stdout, _ = run_main(
-                "audit", "--memory-dir", str(self.memory_dir), "--repo", str(self.repo), "--instructions", str(named)
-            )
-        self.assertEqual((1, f"FAILED Permission denied: {named}\n"), (code, stdout))
+        for path in (named, self.repo / "docs" / "a.md"):
+            with self.subTest(path=path), stat_failing_at(path):
+                code, stdout, _ = run_main(
+                    "audit",
+                    "--memory-dir",
+                    str(self.memory_dir),
+                    "--repo",
+                    str(self.repo),
+                    "--instructions",
+                    str(named),
+                )
+            self.assertEqual((1, f"FAILED Permission denied: {path}\n"), (code, stdout))
+
+    def test_a_link_inside_the_repository_the_reader_refuses_fails_the_audit_never_passed_over(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, to a folder inside the repository whose name
+        # cannot be examined: the reader refuses it, but it does not lead out, so the audit fails naming it rather than
+        # passing the instruction file over as one a link leads out to.
+        write(self.repo / "locked" / "guides" / "a.md", "- Rule.\n")
+        directory_link(self.repo / "docs", self.repo / "locked" / "guides")
+        write(self.memory_dir / "MEMORY.md", "")
+        with stat_failing_at(self.repo / "locked" / "guides"):
+            code, stdout, _ = run_main("audit", "--memory-dir", str(self.memory_dir), "--repo", str(self.repo))
+        self.assertEqual(1, code)
+        self.assertTrue(stdout.startswith("FAILED "), stdout)
+        self.assertIn("Permission denied", stdout)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_instruction_file_that_is_a_link_to_itself_fails_the_audit_never_passed_over(self) -> None:
+        (self.repo / "CLAUDE.md").symlink_to("CLAUDE.md")
+        write(self.memory_dir / "MEMORY.md", "")
+        code, stdout, _ = run_main("audit", "--memory-dir", str(self.memory_dir), "--repo", str(self.repo))
+        self.assertEqual(1, code)
+        self.assertTrue(stdout.startswith("FAILED "), stdout)
+        self.assertIn("links lie on the way to it", stdout)
+
+    def test_a_memory_directory_or_repository_holding_dot_dot_is_read_as_the_folder_it_names(self) -> None:
+        # The reader refuses a `..` that climbs above its tree, so each is made absolute, each `..` taken as text,
+        # before a reader is bound to it: audit and reindex read the store, and audit the repository, as named.
+        write(self.memory_dir / "kept.md", memory("kept", "Kept body."))
+        write(self.memory_dir / "MEMORY.md", "- [Kept](kept.md) — hook\n")
+        (self.root / "links").mkdir()
+        store = f"{(self.root / 'links').as_posix()}/../memory"
+        repo = f"{(self.root / 'links').as_posix()}/../repo"
+        output = self.root / "report.json"
+        code, stdout, _ = run_main("audit", "--memory-dir", store, "--repo", repo, "--output", str(output))
+        self.assertEqual((0, f"REPORT {output}\n"), (code, stdout))
+        self.assertEqual(["kept.md"], [entry["file"] for entry in json.loads(output.read_text("utf-8"))["memories"]])
+        code, stdout, _ = run_main("reindex", "--memory-dir", store)
+        self.assertEqual(0, code, stdout)
+        self.assertIn("INDEX_LINE kept.md", stdout)
 
     def test_an_instruction_file_that_cannot_be_read_fails_the_audit_rather_than_losing_its_overlaps(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
@@ -803,14 +1105,15 @@ class MemoryAuditTests(unittest.TestCase):
         ]
         self.assertEqual(not_regular, report["unreadable"])
         self.assertEqual([], report["index"]["missing_files"], "a dangling link is there, just not a memory")
-        original = Path.read_text
+        original = Path.open
 
-        def read_text(path: Path, *arguments: object, **options: object) -> str:
+        def opened(path: Path, *arguments: object, **options: object) -> object:
             if path.name == "locked.md":
                 raise PermissionError(13, "Access is denied", str(path))
-            return original(path, *arguments, **options)  # type: ignore[arg-type]  # forwards read_text's own options
+            return original(path, *arguments, **options)  # type: ignore[call-overload]  # forwards open's own options
 
-        with mock.patch.object(Path, "read_text", autospec=True, side_effect=read_text):
+        # The tree reader reads a memory through Path.open, within its bound.
+        with mock.patch.object(Path, "open", autospec=True, side_effect=opened):
             result = self.run_audit()
         self.assertEqual(["a.md"], [entry["file"] for entry in result["memories"]])
         self.assertEqual(
@@ -1792,8 +2095,16 @@ class ReindexTests(unittest.TestCase):
 
     def test_an_unreadable_memory_is_a_failed_line(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
-        with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Access is denied", "one.md")):
-            self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
+        # The tree reader reads a memory through Path.open and names the file it could not read.
+        original = Path.open
+
+        def opened(path: Path, *arguments: object, **options: object) -> object:
+            if path.name == "one.md":
+                raise PermissionError(13, "Access is denied", str(path))
+            return original(path, *arguments, **options)  # type: ignore[call-overload]  # forwards open's own options
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=opened):
+            self.assertEqual([f"FAILED Access is denied: {self.memory_dir / 'one.md'}"], self.reindex(code=1))
 
     def test_an_entry_it_cannot_inspect_is_a_failed_line_and_nothing_is_written(self) -> None:
         # A memory whose stat fails may be one it cannot read, so the rebuild fails rather than keep it as a
@@ -2530,12 +2841,12 @@ class ResolveTests(unittest.TestCase):
         )
         for supplied, patch in (
             ("tracked", None),
-            ("a link", mock.patch.object(memory_audit, "is_link_or_junction", return_value=True)),
+            ("a link", mock.patch.object(TreeReader, "is_link", return_value=True)),
             ("unknown to git", mock.patch.object(GitClient, "run", side_effect=GitError("no git"))),
             # A folder whose own metadata cannot be read cannot tell either.
             (
                 "unreadable",
-                mock.patch.object(memory_audit, "is_link_or_junction", side_effect=PermissionError(13, "no")),
+                mock.patch.object(TreeReader, "is_link", side_effect=PermissionError(13, "no")),
             ),
         ):
             with self.subTest(supplied=supplied):
@@ -2893,6 +3204,20 @@ class ResolveTests(unittest.TestCase):
         self.assertIsNone(self.resolve()["memory_dir"])
         write(settings, "{not json")
         self.assertIsNone(self.resolve()["memory_dir"])
+
+    def test_a_repository_settings_folder_linked_out_of_the_repository_is_refused_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the repository's settings are read through its
+        # reader, so a .claude folder leading out of it is refused, failing resolve as an unreadable settings file
+        # does, and the settings where it leads are never read to choose the memory directory.
+        outside = outside_folder(self)
+        write(outside / "settings.json", json.dumps({"autoMemoryDirectory": str(outside / "memory")}))
+        link = directory_link(self.repo / ".claude", outside)
+        with looks_past([link], outside) as looked:
+            lines = self.resolve_lines(code=1)
+        self.assertEqual([], looked)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED cannot read the settings file "), lines)
+        self.assertIn("outside the examined tree", lines[0])
 
     def test_a_settings_file_that_cannot_be_read_fails_rather_than_leaving_the_directory_unresolved(self) -> None:
         # A settings file git or the disk cannot give is not one that sets nothing: the directory it may choose is
@@ -3310,13 +3635,15 @@ def link_folder(target: Path, link: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
-def test_a_target_reached_through_a_linked_folder_is_the_file_it_names(tmp_path: Path) -> None:
+def test_a_target_through_a_linked_folder_out_of_the_store_is_keyed_by_its_text_never_followed(tmp_path: Path) -> None:
+    # A junction on Windows, a symbolic link on Linux and macOS: the store's reader keys a target by its text once a
+    # link on its way leads out of the store, so the folder it leads to is never reached to compare it.
     memory, real = tmp_path / "memory", tmp_path / "real"
     memory.mkdir()
     real.mkdir()
     link_folder(real, memory / "shared")
     named = memory_audit.target_identity(memory, "shared/note.md")
-    assert named == memory_audit.target_identity(real, "note.md")
+    assert named != memory_audit.target_identity(real, "note.md")
     assert named == memory_audit.target_identity(memory, "./shared/note.md")
     assert named != memory_audit.target_identity(memory, "note.md")
 
@@ -3337,6 +3664,18 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_file_s
     # keeps two files, and both are read. The file system decides, never the platform's name.
     expected = [notes] if path_keys.folds_case(real) else [notes, lower]
     assert memory_audit.destination_files(None, [notes, lower]) == expected
+
+
+def test_a_destination_named_and_found_by_a_pattern_is_read_once_through_the_repositorys_reader(tmp_path: Path) -> None:
+    notes = write(tmp_path / "CLAUDE.md", "rules\n")
+    sources = memory_audit.destination_sources(tmp_path, [tmp_path / "." / "CLAUDE.md"])
+    assert list(sources) == [tmp_path / "." / "CLAUDE.md"]
+    assert memory_audit.destination_files(tmp_path, [notes]) == [notes]
+    found = memory_audit.destination_sources(tmp_path, [])
+    assert list(found) == [notes]
+    reader = found[notes]
+    assert reader is not None
+    assert reader.tree == tmp_path
 
 
 def test_a_destination_pattern_match_under_a_skipped_folder_below_the_top_is_passed_over(tmp_path: Path) -> None:
@@ -3683,6 +4022,6 @@ def test_a_folder_the_destination_walk_could_not_list_raises_the_error_the_walk_
     walk = folder_walk.Walk(
         not_entered=[folder_walk.NotEntered(tmp_path / "docs" / "notes", "unlistable", "cannot be listed", recorded)]
     )
-    with mock.patch.object(folder_walk, "walk_files", return_value=walk), pytest.raises(PermissionError) as raised:
+    with mock.patch.object(TreeReader, "search", return_value=walk), pytest.raises(PermissionError) as raised:
         memory_audit.pattern_files(tmp_path, "docs/**/*.md")
     assert raised.value is recorded

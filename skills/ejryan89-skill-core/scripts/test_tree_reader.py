@@ -11,12 +11,14 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import file_presence
+import folder_walk
 from dotnet_solution import refusal, same_path
-from folder_walk import LINKED, LINKED_OUT_REASON, NotEntered
+from folder_walk import LINKED, LINKED_OUT_REASON, LINKED_REASON, LOOP, LOOP_REASON, NotEntered
 from test_folder_walk import link_folder, reached, recording, remove_link
 from tree_reader import CLIMBS_OUT, TreeReader, TreeRefused
 
@@ -224,6 +226,75 @@ class FileLinkTests(TreeReaderCase):
         self.assertEqual([], reached(touched, [], self.outside))
 
 
+class OpensAsTests(TreeReaderCase):
+    def test_a_name_in_a_folder_inside_the_tree_answers_as_the_folder_compares_names(self) -> None:
+        project = self.root / "Lib" / "Lib.csproj"
+        self.assertTrue(self.reader.opens_as(project, "Lib.csproj"))
+        self.assertFalse(self.reader.opens_as(project, "Other.csproj"))
+
+    @unittest.skipIf(sys.platform == "linux", "Linux's file systems keep case")
+    def test_a_case_folded_name_is_the_entry_where_the_folder_folds_case(self) -> None:
+        # Windows' NTFS and macOS's default APFS fold case, so the folder gives Lib.csproj for LIB.CSPROJ.
+        self.assertTrue(self.reader.opens_as(self.root / "Lib" / "Lib.csproj", "LIB.CSPROJ"))
+
+    def test_a_folder_a_link_leads_out_of_the_tree_is_refused_with_nothing_outside_reached(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS.
+        out = self.link(self.outside / "sub", "Out")
+        touched: list[tuple[str, bool]] = []
+        with recording(touched), self.assertRaises(TreeRefused) as caught:
+            self.reader.opens_as(out / "Deep.csproj", "Deep.csproj")
+        self.assertEqual(self.outside_reason(out, self.outside / "sub"), caught.exception.reason)
+        self.assertEqual([], reached(touched, [out], self.outside))
+
+
+class LeadsOutTests(TreeReaderCase):
+    def test_a_folder_link_leading_out_leads_out_and_one_staying_inside_does_not(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS.
+        out = self.link(self.outside / "sub", "Out")
+        inside = self.link(self.root / "Lib", "Shared")
+        self.assertTrue(self.reader.leads_out(out / "Deep.csproj"))
+        self.assertFalse(self.reader.leads_out(inside / "Lib.csproj"))
+        self.assertFalse(self.reader.leads_out(self.root / "Lib" / "Lib.csproj"))
+
+    def test_a_path_outside_the_tree_by_its_text_leads_out(self) -> None:
+        self.assertTrue(self.reader.leads_out(self.outside / "Out.csproj"))
+        self.assertTrue(self.reader.leads_out(self.root / ".." / "outside" / "Out.csproj"))
+
+    def test_a_link_refused_for_its_unreadable_metadata_does_not_lead_out(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, to a folder inside the tree whose name cannot be
+        # examined, as a folder without search permission makes it: refused, but not as a way out.
+        inside = self.link(self.root / "Lib", "Shared")
+        locked = self.root / "Lib"
+        real_lstat = os.lstat
+
+        def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(path) == locked:
+                raise PermissionError(13, "Access is denied")
+            return real_lstat(path, *rest, **options)
+
+        with mock.patch.object(os, "lstat", lstat):
+            self.assertIsNotNone(self.reader.refusal(inside / "Lib.csproj"))
+            self.assertFalse(self.reader.leads_out(inside / "Lib.csproj"))
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+class LeadsOutFileLinkTests(TreeReaderCase):
+    def test_a_links_dot_dot_climbing_out_leads_out(self) -> None:
+        (self.root / "Rel.csproj").symlink_to("../outside/Out.csproj")
+        self.assertTrue(self.reader.leads_out(self.root / "Rel.csproj"))
+
+    def test_a_loop_and_a_chain_past_the_link_limit_are_refused_but_do_not_lead_out(self) -> None:
+        loop = self.root / "Loop.csproj"
+        loop.symlink_to("Loop.csproj")
+        chain = self.root / "Chain.csproj"
+        chain.symlink_to("Lib/Lib.csproj")
+        self.assertIsNotNone(self.reader.refusal(loop))
+        self.assertFalse(self.reader.leads_out(loop))
+        with mock.patch.object(folder_walk, "LINK_LIMIT", 0):
+            self.assertIsNotNone(self.reader.refusal(chain))
+            self.assertFalse(self.reader.leads_out(chain))
+
+
 class FolderLinkTests(TreeReaderCase):
     def test_a_folder_link_leading_outside_is_refused_listed_or_read_below_with_nothing_outside_reached(
         self,
@@ -251,6 +322,37 @@ class FolderLinkTests(TreeReaderCase):
         self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
         self.assertEqual([NotEntered(out, LINKED, LINKED_OUT_REASON)], walk.not_entered)
         self.assertEqual([], reached(touched, [out], self.outside))
+
+    def test_a_followed_walk_offers_follow_no_link_out_and_enters_one_that_stays_inside(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the link leading out is reported as LINKED without
+        # ever being offered to follow, and the one that stays inside is offered and entered.
+        out = self.link(self.outside / "sub", "Out")
+        inside = self.link(self.root / "Lib", "Shared")
+        offered: list[Path] = []
+
+        def follow(path: Path) -> bool:
+            offered.append(path)
+            return True
+
+        touched: list[tuple[str, bool]] = []
+        with recording(touched):
+            walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"), follow=follow)
+        self.assertEqual([inside], offered)
+        self.assertEqual([self.root / "Lib" / "Lib.csproj", inside / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(out, LINKED, LINKED_OUT_REASON)], walk.not_entered)
+        self.assertEqual([], reached(touched, [out], self.outside))
+
+    def test_a_followed_link_back_into_the_walk_is_a_loop_and_the_walk_ends(self) -> None:
+        loop = self.link(self.root, "Lib/Back")
+        walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"), follow=lambda _path: True)
+        self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(loop, LOOP, LOOP_REASON)], walk.not_entered)
+
+    def test_a_walk_without_follow_enters_no_folder_link(self) -> None:
+        inside = self.link(self.root / "Lib", "Shared")
+        walk = self.reader.search(self.root, lambda name: name.endswith(".csproj"))
+        self.assertEqual([self.root / "Lib" / "Lib.csproj"], walk.files)
+        self.assertEqual([NotEntered(inside, LINKED, LINKED_REASON)], walk.not_entered)
 
     def test_a_walk_or_climb_from_outside_the_tree_is_refused_before_it_starts(self) -> None:
         touched: list[tuple[str, bool]] = []

@@ -3,6 +3,9 @@
 
     python -B mcp_handshake.py --root <repository> [--server NAME] [--timeout SECONDS]
 
+A --root holding `..` is taken by its text, each `..` dropping the name before it, as a shell's cd does, as the
+audit takes it.
+
 This STARTS repository-configured commands, so run it only after the user explicitly
 authorizes operational validation of a trusted repository. Each stdio server declared in
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its
@@ -85,6 +88,7 @@ from audit_ai_config import (
 )
 from bounded_process import Streaming, streaming
 from console import run_main
+from dotnet_solution import lexical_absolute
 from executable_locator import find_executable
 from flat_text import flat_text, single_line
 from path_containment import resolved_path
@@ -94,6 +98,20 @@ from text_lines import program_lines
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
 RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target repository configures"
+# Each server's cwd and command are judged inside the repository by audit_ai_config's tree reader (outside_problem),
+# and the configuration files are read through it. The reads that are not, each with why.
+TREE_READ_ALLOWED = {
+    "handshake_root": (
+        "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
+        "the tree the reader is bound to"
+    ),
+    "resolve_command": (
+        "finds the program a server's command names: a bare name on the search path, outside the repository by "
+        "design; an absolute command where it names, which runs as configured, wherever it points, so shutil.which "
+        "stats it there; and a relative one with a directory part where a client starts it, which outside_problem "
+        "judged inside the repository first"
+    ),
+}
 OWNER_ONLY_ALLOWED = {
     "group_servers": "builds a key that compares a user's MCP server definitions, where a TOML nan or date must stay "
     "distinct rather than be refused; it writes no JSON anyone reads",
@@ -423,11 +441,13 @@ def main(arguments: list[str] | None = None) -> int:
         help="seconds per server, from its start to its stop (default 30)",
     )
     args = parser.parse_args(arguments)
-    refusal = not_a_checkout(args.root)
+    # A root holding `..` is made absolute, each `..` taken as text, before a reader is bound to it, as the audit's is.
+    given = lexical_absolute(args.root) if ".." in args.root.parts else args.root
+    refusal = not_a_checkout(given)
     if refusal is not None:
         print(single_line(f"FAILED {refusal}"))
         return 1
-    root = resolved_path(args.root)
+    root = handshake_root(given)
     groups, problems = group_servers(root, args.server)
     refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:
@@ -452,6 +472,12 @@ def main(arguments: list[str] | None = None) -> int:
             failed = True
             print(single_line(f"HANDSHAKE_FAILED {label} {flat_text(str(error))}"))
     return 1 if failed else 0
+
+
+def handshake_root(root: Path) -> Path:
+    """The repository the user names, made absolute with its links followed, as the audit takes its root: the tree
+    whose reader then judges each server's cwd and command."""
+    return resolved_path(root)
 
 
 def starts(entry: dict[str, Any], sources: list[str]) -> bool:
