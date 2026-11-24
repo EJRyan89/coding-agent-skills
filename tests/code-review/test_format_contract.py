@@ -61,7 +61,7 @@ from review_config import validate_config
 from review_flags import add_flag, load_store, validate_store
 from review_operation import legacy_index
 from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result, validate_record
-from review_runtime import build_adapter_request, validate_adapter_manifest
+from review_runtime import AdapterRequest, build_adapter_request, validate_adapter_manifest
 from review_specialists import load_role_result
 from review_state import validate_state
 from update_pr_dashboard import validate_tracker_record
@@ -1494,7 +1494,7 @@ def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
     return accepts
 
 
-def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[AdapterRequest]:
     """Requests as `build_adapter_request` writes them: one with a head branch, prior findings, review comments, a
     changed file the snapshot could not hold, and a changed binary of a type the review does not read, and one with
     none of them."""
