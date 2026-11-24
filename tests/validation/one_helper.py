@@ -135,7 +135,7 @@ class from the helper. In every non-test module ruff formats but the helper, it 
 owner/name pattern with its own class: a character class that takes exactly the characters the helper's takes, of
 printable ASCII and a letter outside it, then a quantifier, lazy or not, a `/`, escaped or not, and the same class
 again, its characters in any order, either class in a group or not: plain, non-capturing, or named, as
-`(?P<owner>[...]+)/(?P<name>[...]+)` with the class in each group. A class `re` cannot compile, as `[z-a]`, measures
+`(?P<owner>[...]+)/(?P<name>[...]+)` with the class in each group. A class `re` cannot compile, as `[\\q]`, measures
 as nothing, so it neither raises nor reads as the helper's. A module states why a scope spells one in a module-level
 REPOSITORY_PATTERN_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its
 stated limits, each one a fixture in tests/validation/test_one_helper.py shows:

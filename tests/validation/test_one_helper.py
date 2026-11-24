@@ -1290,9 +1290,10 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual("REPOSITORY_PATTERN_ALLOWED", one_helper.REPOSITORY_ALLOWANCE)
 
     def test_a_class_re_cannot_compile_is_never_read_as_the_helper_s(self) -> None:
-        # A class re refuses, as `[z-a]`, measures as nothing, so it neither raises nor matches.
-        self.assertIsNone(one_helper.class_members("[z-a]"))
-        self.assertEqual([], self.problems({"tools/reader.py": 'PAIR = r"[z-a]+/[z-a]+|[A-Za-z0-9_.-]+/[z-a]+"\n'}))
+        # A class re refuses, as `[\q]`, whose escape names no character, measures as nothing, so it neither raises
+        # nor matches, on either side of a `|`.
+        self.assertIsNone(one_helper.class_members(r"[\q]"))
+        self.assertEqual([], self.problems({"tools/reader.py": 'PAIR = r"[\\q]+/[\\q]+|[A-Za-z0-9_.-]+/[\\q]+"\n'}))
 
     def test_each_further_stated_limit_reads_as_its_docstring_says(self) -> None:
         limits = {
