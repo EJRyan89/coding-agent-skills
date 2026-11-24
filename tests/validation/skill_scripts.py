@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
+import exit_constants
 import file_presence
 import json_reader
 import python_reader
@@ -49,6 +50,7 @@ from command_wrappers import (
     trap_action,
     unwrapped,
 )
+from console import INTERRUPTED_EXIT
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
@@ -2468,9 +2470,6 @@ def _call_breaches(
         and parsers.is_parser(node.func.value, holder)
     ):
         breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
-    code = exit_argument(node, function) if function in EXIT_CALLS and call_code(node, function) is None else None
-    if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
-        breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
     stream: ast.expr | None = None
     message = node.args[0] if node.args else None
     if function in PRINTS:
@@ -2491,11 +2490,107 @@ def _call_breaches(
     return breaches
 
 
-def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
+class _ExitCodes:
+    """The codes one script's exits give, as "Script results" holds them: an int literal, a name of a constant, or one
+    an import names, read through ejryan89-skill-core's exit_constants as validation's exit tables and audit-skill's
+    inventory read it, in modules `locate` finds, and either arm of a conditional. A name that starts at one a function,
+    a lambda, a comprehension, or a class body binds itself, a local or a parameter, holds a value the run computes,
+    which the exit tables follow, so it is not read here; a name of the module's or an import's that exit_constants
+    cannot settle is unread, a breach of its own, never a pass. Stated limits, forms no repository code writes: a
+    local that hides a module constant of the same name in a function nested inside the one that binds it is read as
+    the local, and a name that starts at a class's own body is not read."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver, locate: exit_constants.Locate) -> None:
+        self.resolver = resolver
+        self.constants = exit_constants.read(tree, import_aliases(tree))
+        self.locate = locate
+
+    def _of_module(self, node: ast.expr) -> bool:
+        """Whether an expression is a dotted name that starts at a name no function, lambda, comprehension, or class
+        body binds itself: one of the module's, an import's, or none at all."""
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        scope = self.resolver.scopes.get(id(root))
+        owner = scope.owner(root.id) if scope is not None else None
+        return owner is None or owner.parent is None
+
+    def breaches(self, node: ast.expr, allowed: frozenset[int]) -> list[str]:
+        """What an exit given `node` breaks: each code it can give outside `allowed`, or a name it cannot read."""
+        if isinstance(node, ast.IfExp):
+            return self.breaches(node.body, allowed) + self.breaches(node.orelse, allowed)
+        if isinstance(node, ast.Constant):
+            numbers = frozenset({node.value}) if type(node.value) is int else frozenset()
+        elif self._of_module(node):
+            read = exit_constants.resolve(node, self.constants, self.locate)
+            if read is None:
+                return [
+                    f"exits {ast.unparse(node)}, a code validation cannot read; give 0, 1, or 2 as an int literal or "
+                    "a constant bound to one"
+                ]
+            numbers = read
+        else:
+            return []
+        return [f"exits {number}; scripts exit only 0, 1, or 2" for number in sorted(numbers - allowed)]
+
+
+def _catches_interrupt(handler: ast.ExceptHandler, resolver: CallableResolver) -> bool:
+    """Whether an except clause names KeyboardInterrupt, alone or in a tuple, through the module's names."""
+    caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(
+        each is not None and resolver.name(each) in {"KeyboardInterrupt", "builtins.KeyboardInterrupt"}
+        for each in caught
+    )
+
+
+class _ConstantsFinder:
+    """Finds the constants of a module a skill's script imports by its dotted name, as Python's import finds it from
+    _import_folders, each module read once a run; None for one it does not find or cannot parse, whose names are
+    unread."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.read: dict[Path, exit_constants.ModuleConstants | None] = {}
+
+    def _constants(self, path: Path) -> exit_constants.ModuleConstants | None:
+        if path not in self.read:
+            try:
+                tree = parse_python(path)
+            except UnreadablePython:
+                self.read[path] = None
+            else:
+                self.read[path] = exit_constants.read(tree, import_aliases(tree))
+        return self.read[path]
+
+    def locator(self, folder: PurePosixPath) -> exit_constants.Locate:
+        """The locator for a script in `folder`, relative to the root."""
+        folders = _import_folders(self.root, folder)
+
+        def locate(dotted: str) -> exit_constants.ModuleConstants | None:
+            relative = PurePosixPath(*dotted.split("."))
+            for each in folders:
+                for candidate in (relative.with_suffix(".py"), relative / "__init__.py"):
+                    path = self.root / each / candidate
+                    if file_presence.is_present(path, other_is_absent=True):
+                        return self._constants(path)
+            return None
+
+        return locate
+
+
+# The codes a script exits with: the contract's, and run_main's Ctrl+C code, which "Script results" lists beside them,
+# where an except clause that names KeyboardInterrupt gives it.
+INTERRUPTED_EXIT_CODES = frozenset({*CONTRACT_EXIT_CODES, INTERRUPTED_EXIT})
+
+
+def _contract_breaches(tree: ast.Module, locate: exit_constants.Locate) -> list[tuple[int, str]]:
     """Where a script reports in a way "Script results" rules out, with what it does instead, each name read through
-    the module's imports and the names it binds to one."""
+    the module's imports and the names it binds to one, and each exit code as _ExitCodes reads it."""
     breaches: list[tuple[int, str]] = []
     resolver = CallableResolver(tree)
+    codes = _ExitCodes(tree, resolver, locate)
     # Each node's names read in its own scope, and an annotation the resolver never visited, such as a function's
     # return annotation, in the module's.
     parsers = parser_names(tree, lambda node: resolver.aliases(node if id(node) in resolver.scopes else tree))
@@ -2508,17 +2603,26 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     }
     handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
     in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
+    interrupted = {
+        id(inner)
+        for handler in handlers
+        if _catches_interrupt(handler, resolver)
+        for statement in handler.body
+        for inner in ast.walk(statement)
+    }
+
+    def allowed(node: ast.AST) -> frozenset[int]:
+        return INTERRUPTED_EXIT_CODES if id(node) in interrupted else frozenset(CONTRACT_EXIT_CODES)
+
     entry_points = [
         node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}
     ]
     for entry_point in entry_points:
         breaches.extend(
-            (node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2")
+            (node.lineno, breach)
             for node in ast.walk(entry_point)
-            if isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Constant)
-            and type(node.value.value) is int
-            and node.value.value not in CONTRACT_EXIT_CODES
+            if isinstance(node, ast.Return) and node.value is not None
+            for breach in codes.breaches(node.value, allowed(node))
         )
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -2526,6 +2630,12 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
                 (node.lineno, breach)
                 for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler, holders.get(id(node)))
             ]
+            function = resolver.name(node.func)
+            code = (
+                exit_argument(node, function) if function in EXIT_CALLS and call_code(node, function) is None else None
+            )
+            if code is not None:
+                breaches += [(node.lineno, breach) for breach in codes.breaches(code, allowed(node))]
     return sorted(breaches)
 
 
@@ -3635,9 +3745,13 @@ def temporary_folder_problems(root: Path) -> list[str]:
 
 def script_contract_problems(root: Path) -> list[str]:
     """Report skill scripts that break "Script results": a failure through parser.error or on stderr, JSON output,
-    or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
-    EXIT_CONTRACT_EXEMPT."""
+    or an exit code other than 0, 1, and 2, or 130 where an except clause that names KeyboardInterrupt gives it, a
+    Python script's read as _ExitCodes reads it, with each module its imports name found as _ConstantsFinder finds
+    it, and a Bash script's as the digits its exit is given. A module that must speak another protocol says why in
+    EXIT_CONTRACT_EXEMPT. Stated limits, forms no repository code writes: a Bash script's exit given anything but
+    digits, as `exit "$CODE"`, and a PowerShell script's exit are not read."""
     problems: list[str] = []
+    finder = _ConstantsFinder(root)
     for path in sorted(
         path for scripts in skill_script_directories(root) for path in file_presence.matching(scripts, "*")
     ):
@@ -3656,7 +3770,10 @@ def script_contract_problems(root: Path) -> list[str]:
             if exemption is None:
                 problems.append(f"{name}: {CONTRACT_EXEMPTION} must be a non-empty string saying why")
             elif not exemption:
-                problems += [f"{name}:{line} {breach}; see {RESULTS_DOC}" for line, breach in _contract_breaches(tree)]
+                locate = finder.locator(PurePosixPath(name).parent)
+                problems += [
+                    f"{name}:{line} {breach}; see {RESULTS_DOC}" for line, breach in _contract_breaches(tree, locate)
+                ]
         elif path.suffix in {".sh", ".bash"}:
             for number, line in enumerate(text.split("\n"), 1):
                 for code in SHELL_EXIT.findall(line.split("#", 1)[0]):
