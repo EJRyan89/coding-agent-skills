@@ -36,7 +36,7 @@ from review_config import (
 )
 from review_io import FileUnreadable
 from review_records import ReviewRecord
-from review_runtime import RuntimeContractError, RuntimeContractFieldError
+from review_runtime import RequestCoverage, RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 from skill_roots import sibling_scripts
 from test_private_folder import judged_folder_calls, recording_temporary_folders
@@ -1289,7 +1289,7 @@ class CoverageTests(unittest.TestCase):
         validate_record(incomplete)
         self.assertIn("**Not reviewed in full:**", render_markdown(incomplete, record_payload_hash="0" * 64))
         self.assertEqual("CHANGES_REQUESTED", self.record(request, [self.finding("MUST_FIX")])["review"]["verdict"])
-        request["coverage"] = {"unavailable_sources": []}
+        request["coverage"] = cast(RequestCoverage, {"unavailable_sources": []})
         complete = self.record(request, [self.finding("SUGGESTION")])
         self.assertEqual("APPROVED", complete["review"]["verdict"])
         self.assertNotIn("coverage", complete["review"])
@@ -1305,7 +1305,7 @@ class CoverageTests(unittest.TestCase):
         from review_records import RecordError, RecordFieldError, render_markdown, validate_record
 
         request, _ = self.request()
-        request["coverage"] = {"unavailable_sources": []}
+        request["coverage"] = cast(RequestCoverage, {"unavailable_sources": []})
         record = self.record(request, [self.finding("SUGGESTION")], uncovered=["README.md", ".github/ci.yml"])
         self.assertEqual("APPROVED", record["review"]["verdict"], "a deliberate opt-out is not a coverage gap")
         self.assertEqual(

@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import job_tree
 import review_runtime
 import review_specialists as rs
-from review_records import validate_adapter_result
+from review_records import CarriedFinding, Comment, validate_adapter_result
 from review_runtime import (
     GENERIC_SPECIALIST,
     RuntimeContractError,
@@ -1996,7 +1996,10 @@ class SpecialistFixture:
     def plan(self, prior: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         mode = "re-review" if prior else "initial"
         write_adapter_request(
-            self.request_path, build_adapter_request(mode=mode, prior_findings=prior, **self.request_args)
+            self.request_path,
+            build_adapter_request(
+                mode=mode, prior_findings=cast("list[CarriedFinding] | None", prior), **self.request_args
+            ),
         )
         work = self.root / f"work-{mode}"
         return rs.build_plan(self.request_path, self.reviewer, work)
@@ -2851,7 +2854,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                 self.assertEqual(f"csharp-review: {message}", rs.check(plan)["csharp-review"])
 
     def test_review_comments_go_to_the_owning_specialist_and_unowned_to_generic(self) -> None:
-        comments: list[dict[str, Any]] = [
+        comments: list[Comment] = [
             {
                 "id": "C1",
                 "author": "dev",
@@ -3061,7 +3064,9 @@ class UncoveredFilesTests(SpecialistFixture, unittest.TestCase):
         write_adapter_request(
             self.request_path,
             build_adapter_request(
-                mode="re-review", prior_findings=[{"id": "F001", "path": "README.md", "line": 1}], **self.request_args
+                mode="re-review",
+                prior_findings=cast("list[CarriedFinding]", [{"id": "F001", "path": "README.md", "line": 1}]),
+                **self.request_args,
             ),
         )
         plan = rs.build_plan(self.request_path, self.reviewer_with(uncovered="ignore"), self.root / "work-prior")
