@@ -500,7 +500,9 @@ def runtime_statement_source_problems(root: Path) -> list[str]:
     Limits: a name read as a verb's subject is a guess: a verb that follows the name after more than a possessive and
     one word, or more than one adverb, is not read, as in `Codex CLI before 0.88.0 does not say`, and a name followed
     by a verb it is not the subject of, as in `when Codex is installed`, is read as a statement. A link that sits in
-    another block, such as a list of sources below the paragraph, does not count for it.
+    another block, such as a list of sources below the paragraph, does not count for it. Only the runtime support
+    pages RUNTIME_PAGES names are read, so a runtime statement in another document, such as docs/installation.md,
+    is not.
     """
     try:
         record = guidance_record.read(root / guidance_record.GUIDANCE_PATH, [*RUNTIMES, guidance_record.PYTHON_SUBJECT])
