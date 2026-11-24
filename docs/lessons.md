@@ -1,9 +1,10 @@
 # Lessons
 
 This catalogue records the design patterns the repository learned from the defects and drift found after a change
-merged. Each pattern states a rule, the mechanism that applies it, the guard that refuses a violation, and the forms a
-violation takes, so a contributor or agent learns which rule to follow, which helper to call, and what to search for,
-not which issues happened.
+merged, and, under [Prompt patterns](#prompt-patterns), from the times an agent had to be set right because a prompt
+left something out. Each pattern states a rule, the mechanism that applies it, the guard that refuses a violation, and
+the forms a violation takes, so a contributor or agent learns which rule to follow, which helper to call, and what to
+search for, not which issues happened.
 
 ## Using the catalogue
 
@@ -12,11 +13,16 @@ violated and runs that pattern's **Search for** across the repository, fixing or
 covers it, adds one here, as [Validation](implementing-changes.md#validation) in the implementation profile and the
 release procedure in [releasing.md](releasing.md) say. A fix that adds a mechanism or a guard adds it to its pattern.
 
-Each pattern is a `###` heading under [Patterns](#patterns) that names it, followed by these fields, each a list item
-of its own:
+Each pattern is a `###` heading under [Patterns](#patterns), or, for a pattern of the prompts that do the work, under
+[Prompt patterns](#prompt-patterns), that names it. A `###` heading under any other `##` heading, a misspelled or
+closing-hash `## Prompt patterns` included, is no pattern, and nothing checks it. A pattern's heading is followed by
+these fields, each a list item of its own:
 
 - **Rule:** the pattern, in one sentence.
 - **Why:** the behavior it protects, in a line.
+- **Prompt:** a prompt pattern's alone, and required there: each place its instruction lives, in a code span by its
+  path from the repository root, a Markdown file's heading by its fragment, `<path>#<fragment>`, such as a step of a
+  skill, a reviewer's instructions, or a skill whose description it concerns.
 - **Use:** the mechanism that applies the rule, each in a code span as a module and a name it binds,
   `<module>:<name>`, or a name one of its classes binds, `<module>:<class>.<name>`, the form `pkgutil.resolve_name`
   reads. The module is importable from the repository root, such as `deployer.config`, or from one skill's or
@@ -24,17 +30,22 @@ of its own:
   on `sys.path`; a module name more than one of them holds is ambiguous and fails.
 - **Guard:** each guard that refuses a violation, in a code span by its path from the repository root: a test, which a
   validation policy is too, by its test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`; a step
-  of a skill, `<path>/SKILL.md#<fragment>`, by the fragment GitHub gives its heading; or a workflow,
-  `.github/workflows/<file>`.
+  of a skill, `<path>/SKILL.md#<fragment>`, by the fragment GitHub gives its heading; a workflow,
+  `.github/workflows/<file>`; or an evaluation scenario, `tests/fixtures/skill-evals/<skill>/<scenario>`, by its
+  folder, which a row of [skill-evaluations.md](skill-evaluations.md) records. evaluate-skill runs a scenario on
+  models before a pull request, never validation, so it guards a prompt only when its gate is run.
 - **No guard:** in place of **Guard**, the reason no guard refuses a violation yet, and what holds the rule instead.
 - **Search for:** the forms a violation takes, each in a code span a reader can search for, with the context that
   tells a violation from an innocent use.
+- **Caught by:** optional, and a prompt pattern's alone: what found the misses, such as continuous integration,
+  review-prs, an evaluation, an outside pass, or the maintainer.
 - **Examples:** optional, issues or pull requests that show the pattern. They illustrate it; nothing counts them.
 
-`lessons_ledger_problems` in `tests/validation/markdown_links.py` fails a pattern that states no **Rule** or **Why**,
+`lessons_ledger_problems` in `tests/validation/markdown_links.py` fails a pattern that states no **Rule** or **Why**, a
+prompt pattern that states no **Prompt**, a pattern of code that states a **Prompt** or a **Caught by**, a pattern that
 names no **Search for** form, names neither a **Guard** nor a **No guard** reason, even when it names a mechanism under
-**Use**, or names both a guard and a reason, and each mechanism or guard that does not resolve, so one renamed or
-removed fails validation until its pattern follows it.
+**Use**, or names both a guard and a reason, and each prompt, mechanism, or guard that does not resolve, so one renamed
+or removed fails validation until its pattern follows it.
 
 ## Patterns
 
@@ -1767,3 +1778,107 @@ removed fails validation until its pattern follows it.
   deployer reads (a test double over fixtures that tag a commit directly is innocent); a flag or format atom a
   program's release notes say was added or changed, read with no version floor in `deployer/tools.py`.
 - **Examples:** #2762
+
+## Prompt patterns
+
+These patterns are about the prompts that do the work: a skill's steps and description, a reviewer's instructions,
+and the brief a session or subagent is started with. Each records a time an agent had to be set right because a prompt
+left something out or never pointed it at a rule, and each **Prompt** names where the instruction lives in the
+repository. A brief written for one session lives outside it, so its pattern names the repository's prompt that the
+brief repeats or stands in for.
+
+### A prompt names the exact command for each check it asks for
+
+- **Rule:** A step or a brief that asks for a check names the command that runs it, or a script that prints that
+  command, never the check by name alone.
+- **Why:** Given "run the title and body checks" or "mypy on the changed files", an agent picks its own command, and
+  picks either the full local validation or a cousin of the job continuous integration fails.
+- **Prompt:** `.claude/skills/implement-change/SKILL.md#7-implement`, `docs/implementing-changes.md#validation`,
+  `.claude/skills/change-skill/SKILL.md#5-verify`
+- **Use:** `pull_request:type_checks`, which prints the type-check jobs a change runs with the runner's command for
+  each.
+- **Guard:** `tests/test_run_validation.py::PullRequestOnlySelection::test_a_title_or_a_body_alone_runs_only_the_pull_request_checks_and_says_so`,
+  `.claude/skills/implement-change/scripts/test_pull_request.py::TypeChecksCommandTests`
+- **Search for:** `rg -n '[Tt]itle and body checks|on the changed files|[Pp]olicies pass' -g '*.md'` where no command
+  follows on the same line or the next; a brief's checks line that names a check, such as the policies or mypy,
+  without its `-k` selector or the script that prints it.
+- **Caught by:** the maintainer, and continuous integration's strict type-check job.
+- **Examples:** #1790, #1792, #2021, #3113
+
+### A prompt reaches every rule its step must meet
+
+- **Rule:** A step's prompt states each rule held elsewhere that the step must meet, or sends its reader to it by a
+  command or a named section, and a lesson learned from a miss is carried into that prompt in the change that learns
+  it, not left only where it is recorded.
+- **Why:** A rule in `CLAUDE.md`, a design row, or this catalogue that the followed prompt never reaches is met only
+  when continuous integration or a reviewer refuses the work, and then again by the next change that follows the same
+  prompt.
+- **Prompt:** `.claude/skills/change-skill/SKILL.md#5-verify`,
+  `.claude/skills/implement-change/SKILL.md#4-size-gate-and-lessons`
+- **Use:** `change_skill:owed`, the regenerations and gates a skill change owes, read from its diff;
+  `lessons_patterns:listing`, the patterns the files a change will touch meet, listed before it is planned.
+- **Guard:** `.claude/skills/change-skill/scripts/test_change_skill.py::GateTests`,
+  `.claude/skills/implement-change/scripts/test_lessons_patterns.py::test_a_pattern_is_met_by_a_file_that_is_a_module_its_use_names`,
+  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_module_a_trust_boundary_module_imports_is_routed_or_named_outside_the_boundary`
+- **Search for:** `rg -n '^- A pull request that changes|cites its .evaluate-skill. run' -g CLAUDE.md`, each gate
+  checked against what `.claude/skills/change-skill/SKILL.md` runs; a new import into a module
+  `TRUST_BOUNDARY_SCRIPTS` lists with no route in `specialists.json`; a review finding on a pull request that a
+  pattern of `docs/lessons.md` already names.
+- **Caught by:** a quality pass over a repository skill, continuous integration's routing test, and review-prs.
+- **Examples:** #1134, #1136, #2924, #3130, #3163
+
+### A step whose answer is fixed is a script, not prose
+
+- **Rule:** A step whose outcome follows from its inputs, such as finding a named file, counting matches, or working
+  out which gates a diff owes, is a tested script the prompt runs, and the prompt says to act on the lines it prints.
+- **Why:** Left to prose, each runtime and model does the step its own way with whatever tool it has, ties and hidden
+  folders are decided differently from run to run, and no test holds any of it.
+- **Prompt:** `skills/review-document/SKILL.md`, `.claude/skills/change-skill/SKILL.md#5-verify`
+- **Use:** `review_document:resolve`, the one path a document named by its file name alone is at;
+  `change_skill:owed`.
+- **Guard:** `skills/review-document/scripts/test_review_document.py::ResolveTests`,
+  `tests/fixtures/skill-evals/review-document/by-name`, which evaluate-skill runs on each model and judges by whether
+  the session ran the resolve command rather than searching,
+  `skills/audit-skill/scripts/test_skill_inventory.py::test_a_deterministic_prose_shape_is_its_cue`
+- **Search for:** `rg -n '[Ff]ind (it|the [a-z]+) (under|in) |[Ss]earch for the |[Ww]ork out which ' -g SKILL.md`
+  in a step that runs no script for it; a `SKILL.md` step that lists the cases an agent decides by reading its own diff.
+- **Caught by:** review-prs, a quality pass, and evaluate-skill.
+- **Examples:** #1136, #2991, #2995, #3001, #3049
+
+### A skill's description and model fit the smallest model that reads them
+
+- **Rule:** A skill's description names the requests that start it, so that the smallest model a runtime may run is
+  led to the skill before it acts, and no skill pins the model its steps run on.
+- **Why:** A description a small model does not follow lets it do the work by hand with `git diff`, `find`, or
+  `gh pr diff`, and a pinned small model holds for the whole turn and misses findings a larger one reports.
+- **Prompt:** `skills/curate-agent-memory/SKILL.md`, `skills/review-document/SKILL.md`, `skills/review-prs/SKILL.md`,
+  `skills/audit-skill/SKILL.md`
+- **Guard:** `tests/ai-config/test_cross_skill_contracts.py::CrossSkillContractTests::test_no_skill_pins_a_model`,
+  `tests/fixtures/skill-evals/curate-agent-memory/description`,
+  `tests/fixtures/skill-evals/review-document/description`, `tests/fixtures/skill-evals/review-prs/description`, the
+  trigger scenarios evaluate-skill runs on each model
+- **Search for:** `rg -n '^model:' -g SKILL.md`; `rg -n 'description [0-9]+/[0-9]+' -g skill-evaluations.md`, a row
+  whose description count passed fewer than it ran, on any model.
+- **Caught by:** evaluate-skill's trigger scenarios, and use.
+- **Examples:** #1549, #2957, #2963, #2965
+
+### A reviewer prompt is read against the code and the platforms it describes
+
+- **Rule:** A reviewer's instructions state only what the code they describe does now, name only tools every runtime
+  the reviewer runs on gives it, and, for a check of a fix's siblings, name the other forms the fixed effect takes; a
+  change to that code changes the instructions in the same pull request.
+- **Why:** A reviewer led by a rule the code replaced, or told to use a tool its runtime leaves out, misjudges or
+  cannot search, and passes what it should report.
+- **Prompt:** `agents/code-review-reviewer.md`, `.claude/skills/review-repository/references/untested-changes.md`,
+  `.claude/skills/review-repository/references/sibling-spellings.md`
+- **No guard:** Whether an instruction still matches the code it describes is a judgment no policy can read:
+  validation compares each rendered reviewer prompt with its sample under `docs/runtime-prompts/`, which shows a
+  change in the prompt but not drift in the code it describes. The release audit and the twin sweep before each tag
+  read the instructions against the code, and "Documentation" in
+  [implementing-changes.md](implementing-changes.md#documentation) states the rule.
+- **Search for:** `Grep or Glob` or `Glob and Grep` in a reviewer prompt or `agents/code-review-reviewer.md`, where a
+  runtime that lists `Bash` leaves both out; a sentence of a file under `.claude/skills/review-repository/references/`
+  or `skills/ejryan89-code-review-core/references/` that names a rule or an output line a script in the same change
+  replaced.
+- **Caught by:** an outside audit, the guidance audit, and outside review passes.
+- **Examples:** #1642, #2144, #2471, #2698
