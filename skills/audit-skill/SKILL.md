@@ -94,6 +94,7 @@ The same command compares the status words the skill's Markdown names with what 
 
 - `UNPRINTED <file> <line> <word>` → **MUST FIX** when the word names a line the skill acts on: no script prints it, so the agent waits for a line that never comes. Recommend the word a script prints, or the script change. Drop it when the word names another program's line, a variable, or a value.
 - `EXIT_MISMATCH <file> <line> <code>` → **MUST FIX**: the prose states an exit code no script uses. Recommend the code a script exits with, or acting on the printed line instead.
+- `EXIT_UNREAD <file> <line> <code>` → read the scripts by hand: the prose states an exit code no exit the inventory read uses, and some script exits with a constant it could not read, such as one bound to an expression or imported from a module outside the scan. **MUST FIX** as `EXIT_MISMATCH` when no script exits with the code; drop it when one does.
 - `UNEXPLAINED <script> <line> <word>` → SUGGESTION: the agent meets a line it was not told about. Recommend naming it beside the command that prints it; drop it for a command the skill never runs, or one whose lines the body sends the agent to a list of.
 - `SCRIPT_MISSING <file> <line> <script>` → **MUST FIX**: the command runs a script that does not exist, so it fails on every run and its lines go uncompared. Recommend correcting the path or adding the script.
 

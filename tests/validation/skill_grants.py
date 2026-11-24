@@ -130,7 +130,8 @@ def skill_grant_problems(
 def status_line_problems(root: Path, skill_files: list[Path] | None = None) -> list[str]:
     """Report each status line a skill's Markdown and its scripts disagree on: a line a script the skill runs prints
     whose first word the Markdown never names, a status word the Markdown names as output that none of its scripts
-    prints, and an exit code it states that none of them uses.
+    prints, and an exit code it states that none of them uses, or none uses as far as the inventory reads when a script
+    exits with a constant it cannot read.
 
     The comparison is the audit-skill inventory's status_lines, so the audit and this policy cannot disagree. A line
     the agent need not act on is named as such in the Markdown, which is how a reader learns it needs nothing.
@@ -162,6 +163,13 @@ def status_line_problems(root: Path, skill_files: list[Path] | None = None) -> l
             elif kind == "EXIT_MISMATCH":
                 problems.append(
                     f"{where} states exit code {word}, which no script the skill reads exits with; see {RESULTS_DOC}"
+                )
+            elif kind == "EXIT_UNREAD":
+                problems.append(
+                    f"{where} states exit code {word}, which no exit the inventory reads gives, and a script the "
+                    f"skill reads exits with a constant the inventory cannot read; bind that constant to an int "
+                    f"literal in the script, or import it from a script beside it or ejryan89-skill-core's; see "
+                    f"{RESULTS_DOC}"
                 )
     return problems
 

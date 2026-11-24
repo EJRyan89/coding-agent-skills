@@ -1179,6 +1179,160 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
         assert reader.reading.unread == []
 
 
+@pytest.mark.parametrize(
+    ("body", "modules", "codes"),
+    [
+        pytest.param(
+            "import sys\nif sys.platform == 'win32':\n    STOP = 3\nelse:\n    STOP = 4\n"
+            "def main() -> int:\n    return STOP\n",
+            {},
+            {1, 3, 4},
+            id="a constant each branch of a module-level if binds",
+        ),
+        pytest.param(
+            "try:\n    import fast\nexcept ImportError:\n    STOP = 5\ndef main() -> int:\n    return STOP\n",
+            {},
+            {1, 5},
+            id="a constant a module-level try's handler binds",
+        ),
+        pytest.param(
+            "from relay import USAGE\ndef main() -> int:\n    return USAGE\n",
+            {"codes.py": "from typing import Final\nUSAGE: Final = 6\n", "relay.py": "from codes import USAGE\n"},
+            {1, 6},
+            id="a final constant another module re-exports",
+        ),
+        pytest.param(
+            "STOP = 3\nSTOP = 4\ndef main() -> int:\n    return STOP\n",
+            {},
+            {1, 4},
+            id="a constant a later assignment replaces",
+        ),
+        pytest.param(
+            "STOP = 3\nSTOP += 1\ndef main() -> int:\n    return STOP\n",
+            {},
+            None,
+            id="a constant a later binding changes",
+        ),
+        pytest.param(
+            "from codes import STOP\nSTOP = 3\ndef main() -> int:\n    return STOP\n",
+            {"codes.py": "STOP = 4\n"},
+            None,
+            id="a constant an import and an assignment both bind",
+        ),
+    ],
+)
+def test_the_reader_reads_a_constant_as_ejryan89_skill_core_s_exit_constants_reads_it(
+    body: str, modules: dict[str, str], codes: set[int] | None
+) -> None:
+    # The reader took a constant only from a module-level assignment at the top, the last one winning, so a constant
+    # a block or a re-export binds was unread, and one another binding changes was read as a literal it replaces.
+    source = f"from console import run_main\n{body}if __name__ == '__main__':\n    run_main(main)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for name, text in modules.items():
+            (root / name).write_text(text, encoding="utf-8")
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    if codes is None:
+        assert reader.reading.unread, reader.reading
+    else:
+        assert reader.reading.codes == codes
+        assert reader.reading.unread == []
+
+
+@pytest.mark.parametrize(
+    ("body", "table", "missing"),
+    [
+        pytest.param(
+            "import sys\nC = 3\nfor _ in sys.argv:\n    if _ == 'x':\n        break\nelse:\n    C = 5\n",
+            "  1  failed\n  5  five\n",
+            3,
+            id="a for's else a break skips",
+        ),
+        pytest.param(
+            "import sys\nC = 3\ntry:\n    if sys.argv:\n        C = 4\n        import fast\n        C = 5\n"
+            "except ImportError:\n    pass\n",
+            "  1  failed\n  3  three\n  5  five\n",
+            4,
+            id="an if in a try's body an error leaves partway",
+        ),
+    ],
+)
+def test_a_table_that_leaves_out_a_code_a_block_stopped_partway_leaves_is_refused(
+    body: str, table: str, missing: int
+) -> None:
+    # The constant reading took a loop's else and a statement nested in a try's body as run to their end, so a
+    # table that left out the code a break or a failed import leaves C at passed, though the program exits with it.
+    body += "def main() -> int:\n    return C\nif __name__ == '__main__':\n    run_main(main)\n"
+    found = problems({"tools/tool.py": script(f"A tool.\n\nExit status:\n{table}", body)})
+    assert len(found) == 1, found
+    assert found[0].startswith(f"tools/tool.py can exit {missing}, which its exit table does not name"), found
+
+
+REFUSED = (
+    "class Refused(Exception):\n    def __init__(self, exit_code={default}):\n        self.exit_code = exit_code\n"
+    "def main() -> int:\n    try:\n        check()\n    except Refused as error:\n        return error.exit_code\n"
+    "    return 0\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("default", "check", "codes", "unread"),
+    [
+        pytest.param(
+            "13", "def check():\n    raise Refused(exit_code=lookup())\n", {0, 1, 13}, ["lookup()"], id="a keyword"
+        ),
+        pytest.param(
+            "lookup()", "def check():\n    raise Refused(exit_code=14)\n", {0, 1, 14}, ["lookup()"], id="a default"
+        ),
+        pytest.param(
+            "13",
+            "def check(exit_code=14):\n    raise Refused(exit_code=exit_code)\n",
+            {0, 1, 13, 14},
+            [],
+            id="a parameter passed on",
+        ),
+        pytest.param(
+            "13",
+            "def check():\n    try:\n        inner()\n    except Refused as refusal:\n"
+            "        raise Refused(exit_code=refusal.exit_code)\ndef inner():\n    raise Refused(exit_code=14)\n",
+            {0, 1, 13, 14},
+            [],
+            id="another error's code passed on",
+        ),
+        pytest.param(
+            "13",
+            "def check(verbose=False, retries=lookup()):\n    raise Refused(exit_code=14)\n",
+            {0, 1, 13, 14},
+            [],
+            id="another parameter's default",
+        ),
+        pytest.param(
+            "13",
+            "def check():\n    if X:\n        raise Refused(exit_code=14)\n    raise Refused(exit_code=15)\n",
+            {0, 1, 13, 14, 15},
+            [],
+            id="two keywords in one function",
+        ),
+    ],
+)
+def test_an_exit_code_keyword_or_default_the_reader_cannot_read_is_unread(
+    default: str, check: str, codes: set[int], unread: list[str]
+) -> None:
+    # A keyword or default whose code_of was None was dropped with no unread mark, so a table that left out the code it
+    # gives passed.
+    source = f"from console import run_main\n{REFUSED.format(default=default)}{check}"
+    source += "if __name__ == '__main__':\n    run_main(main)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    assert reader.reading.codes == codes
+    assert [expression for _, _, expression in reader.reading.unread] == unread
+
+
 PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main)\n"
 # A parser bound in a class's body, and a class Tool whose property calls error on a receiver, with a main the reader
 # reaches it from: the reader follows into a method through a property a return reads.
