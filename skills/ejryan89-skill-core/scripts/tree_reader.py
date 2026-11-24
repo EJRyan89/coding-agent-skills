@@ -57,6 +57,7 @@ from dotnet_solution import decode_text, entry_key, lexical_absolute, read_bound
 from folder_walk import SKIPPED_FOLDERS, Walk, followed_inside, walk_files
 from folders_up import folders_up
 from link_probe import is_link_or_junction
+from path_keys import opens_as
 
 # Why a path is refused when a `..` in it, taken after the links before it are followed, climbs above the tree's top.
 CLIMBS_OUT = "a `..` in it climbs above the examined tree once the links before it are followed"
@@ -123,6 +124,14 @@ class TreeReader:
         (`link_probe`) after the folder holding it is judged, so the link is never followed."""
         self.judged(path.parent)
         return is_link_or_junction(path)
+
+    def opens_as(self, path: Path, name: str) -> bool:
+        """`path_keys.opens_as` after the folder holding `path` is judged: whether that folder gives `path`'s own entry
+        when a program opens `name` there, as the folder's file system compares names. The folder is listed and the
+        entry examined from its own metadata, never through a link; a folder the reader refuses raises
+        `TreeRefused`."""
+        self.judged(path.parent)
+        return opens_as(path, name)
 
     def missing_reason(self, path: Path, *, folder: bool = False) -> str | None:
         """`file_presence.refusal_reason` of a judged path, or `cannot be examined: <reason>` for a refused one, in the

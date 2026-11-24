@@ -151,7 +151,7 @@ from git_client import GitClient, GitError
 from link_destinations import link_destinations, written_destination
 from markdown_sections import ATX_HEADING, CODE, EMPTY_ATX_HEADING, HEADING, blocks, code_spans
 from path_containment import resolved_path, within
-from path_keys import name_key, opens_as, path_key
+from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 from text_lines import text_lines
 from tree_reader import TreeReader, TreeRefused
@@ -289,11 +289,6 @@ TREE_READ_ALLOWED = {
     "destination_key": (
         "keys a destination file by its path with links followed, so a file named with --instructions and found by a "
         "pattern is measured once: a tree file only once its reader judged that no link on its way leads out"
-    ),
-    "opens_under": (
-        "asks the folder holding a file the reader's walk found, which the reader judged inside the tree first, "
-        "whether it gives that file's entry for the name searched for (path_keys.opens_as), from the entries' own "
-        "metadata, following no link"
     ),
     "main_worktree": (
         "compares and resolves the Git directories git names for the repository, to find the main worktree the memory "
@@ -759,18 +754,11 @@ def pattern_files(root: Path, pattern: str) -> list[Path]:
         files = walk.files
     else:
         walk = reader.search(base, lambda found: found.casefold() == name.casefold())
-        files = [path for path in walk.files if opens_under(reader, path, name)]
+        files = [path for path in walk.files if reader.opens_as(path, name)]
     for entry in walk.not_entered:
         if entry.error is not None:
             raise entry.error
     return sorted(files, key=os.fspath)
-
-
-def opens_under(reader: TreeReader, path: Path, name: str) -> bool:
-    """Whether the folder holding `path`, judged inside `reader`'s tree first, gives `path`'s entry when a program opens
-    `name` there (`path_keys.opens_as`); a folder the reader refuses raises `TreeRefused`."""
-    reader.judged(path.parent)
-    return opens_as(path, name)
 
 
 def audit(

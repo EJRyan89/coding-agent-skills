@@ -85,7 +85,6 @@ from markdown_literal import markdown_line
 from markdown_sections import ATX_HEADING, code_block_lines, find_fences, without_code_spans
 from module_assignments import assigned_names, sole_assignment
 from path_containment import posix_within, resolved_path
-from path_keys import opens_as
 from text_lines import text_lines
 from tree_reader import TreeReader
 from typed_fields import FieldError, FieldReader
@@ -97,10 +96,6 @@ from typed_fields import FieldError, FieldReader
 # Every stat, listing, walk, and read of a path below the repository goes through its tree reader (`tree_reader`). The
 # reads that do not, each with why.
 TREE_READ_ALLOWED = {
-    "opened_as": (
-        "asks the folder holding a found file, inside the root, how it compares names: path_keys lists that folder and "
-        "examines the one entry from its own metadata, never following it"
-    ),
     "examined_root": (
         "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
         "the tree the reader is bound to"
@@ -488,22 +483,17 @@ def named_walk(root: Path, names: Collection[str]) -> Listing:
     `unread` whatever their names, as walk_files gives them."""
     folded = {name.casefold() for name in names}
     walk = walk_files(root, root, lambda name: name.casefold() in folded, SKIPPED_FOLDERS)
-    walk.paths = [path for path in walk.paths if opened_name(path, names)]
-    walk.outside = [path for path in walk.outside if path.name.casefold() not in folded or opened_name(path, names)]
+    walk.paths = [path for path in walk.paths if opened_name(root, path, names)]
+    walk.outside = [
+        path for path in walk.outside if path.name.casefold() not in folded or opened_name(root, path, names)
+    ]
     return walk
 
 
-def opened_as(path: Path, name: str) -> bool:
-    """`path_keys.opens_as`: whether the folder holding `path`, a file the root's walk or listing found or a fixed name
-    below the root, gives `path`'s own entry when a runtime opens `name` there, as `agent_skills.is_skill_file` asks
-    for SKILL.md."""
-    return opens_as(path, name)
-
-
-def opened_name(path: Path, names: Collection[str]) -> str | None:
+def opened_name(root: Path, path: Path, names: Collection[str]) -> str | None:
     """Which of `names` a runtime opening it in `path`'s folder reaches `path` by, as the folder's file system gives
     the entry (`path_keys.opens_as`), or None when it is none of them."""
-    return next((name for name in sorted(names) if opened_as(path, name)), None)
+    return next((name for name in sorted(names) if tree_reader(root).opens_as(path, name)), None)
 
 
 def named_files(root: Path, *names: str) -> list[Path]:
@@ -844,7 +834,7 @@ def _inventory_recursive_files(root: Path, walk: Listing) -> list[Finding]:
     """Each nested instruction file the repository walk found, an ERROR for each file it found that cannot be
     examined, or, for an AGENTS.md, read, and each directory or nested-file link that leads out of the repository,
     which the nested-file checks' walks do not follow either."""
-    opened = {path: opened_name(path, NESTED_FILE_NAMES) for path in walk.paths}
+    opened = {path: opened_name(root, path, NESTED_FILE_NAMES) for path in walk.paths}
     found = [
         _inventory_finding(rel, f"Found {rel}")
         for name in RECURSIVE_INVENTORY_NAMES
@@ -1360,7 +1350,7 @@ def manifest_name(root: Path, path: Path) -> str:
     """The path the manifest records a Copilot projection under: a `.github/skills` skill's main file as the runtime
     opens it, `SKILL.md`, which is this file in any case where its folder folds case, and any other file as it is
     spelled on disk. Every lookup of a found projection among the manifest's artifacts goes through it."""
-    skill = path.parent.parent == root / ".github/skills" and opened_as(path, SKILL_FILE)
+    skill = path.parent.parent == root / ".github/skills" and tree_reader(root).opens_as(path, SKILL_FILE)
     return (path.with_name(SKILL_FILE) if skill else path).relative_to(root).as_posix()
 
 
@@ -1382,7 +1372,7 @@ def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> 
 def skill_walk(root: Path, directory: Path) -> Listing:
     """Each skill main file below a skills folder, as walk_files finds it, with the links that lead out of the root.
 
-    A file directly in a skill's folder is its SKILL.md as the folder compares names (opened_as), the file a
+    A file directly in a skill's folder is its SKILL.md as the folder compares names (`TreeReader.opens_as`), the file a
     runtime opens by that name, so any case where the folder folds case; one deeper is taken only as spelled
     `SKILL.md`, since no runtime opens it as a skill's main file, so a lowercase `skill.md` template is never audited.
     A file link the rule turns away leaves `outside` too, so a name no runtime opens draws no finding; the folders
@@ -1391,7 +1381,9 @@ def skill_walk(root: Path, directory: Path) -> Listing:
     walk = walk_files(root, directory, lambda name: name.casefold() == SKILL_FILE.casefold())
 
     def taken(path: Path) -> bool:
-        return opened_as(path, SKILL_FILE) if path.parent.parent == directory else path.name == SKILL_FILE
+        return (
+            tree_reader(root).opens_as(path, SKILL_FILE) if path.parent.parent == directory else path.name == SKILL_FILE
+        )
 
     walk.paths = [path for path in walk.paths if taken(path)]
     walk.outside = [path for path in walk.outside if path.name.casefold() != SKILL_FILE.casefold() or taken(path)]

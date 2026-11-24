@@ -224,6 +224,27 @@ class FileLinkTests(TreeReaderCase):
         self.assertEqual([], reached(touched, [], self.outside))
 
 
+class OpensAsTests(TreeReaderCase):
+    def test_a_name_in_a_folder_inside_the_tree_answers_as_the_folder_compares_names(self) -> None:
+        project = self.root / "Lib" / "Lib.csproj"
+        self.assertTrue(self.reader.opens_as(project, "Lib.csproj"))
+        self.assertFalse(self.reader.opens_as(project, "Other.csproj"))
+
+    @unittest.skipIf(sys.platform == "linux", "Linux's file systems keep case")
+    def test_a_case_folded_name_is_the_entry_where_the_folder_folds_case(self) -> None:
+        # Windows' NTFS and macOS's default APFS fold case, so the folder gives Lib.csproj for LIB.CSPROJ.
+        self.assertTrue(self.reader.opens_as(self.root / "Lib" / "Lib.csproj", "LIB.CSPROJ"))
+
+    def test_a_folder_a_link_leads_out_of_the_tree_is_refused_with_nothing_outside_reached(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS.
+        out = self.link(self.outside / "sub", "Out")
+        touched: list[tuple[str, bool]] = []
+        with recording(touched), self.assertRaises(TreeRefused) as caught:
+            self.reader.opens_as(out / "Deep.csproj", "Deep.csproj")
+        self.assertEqual(self.outside_reason(out, self.outside / "sub"), caught.exception.reason)
+        self.assertEqual([], reached(touched, [out], self.outside))
+
+
 class FolderLinkTests(TreeReaderCase):
     def test_a_folder_link_leading_outside_is_refused_listed_or_read_below_with_nothing_outside_reached(
         self,
