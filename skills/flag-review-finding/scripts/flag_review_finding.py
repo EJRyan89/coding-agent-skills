@@ -16,6 +16,8 @@ Every command prints one fact per line:
             pull request, labelled as its review report labels it, then COUNT <n>. The headline is the finding's
             title, or its body cut like a flag's; the path is collapsed to one line.
 A value that begins with - follows -- after the options, or is joined to its option, as in --body=-x.
+add, edit, and resolve refuse a flag store that is read-only, or anything but a file, before they change anything, the
+lock's folder beside the store included.
 
 Exit status:
   0  the command printed its facts

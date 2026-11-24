@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from atomic_file import while_refused
+from atomic_file import refuse_uncreatable, while_refused
 from file_presence import is_occupied
 from markdown_literal import markdown_line, navigation_url
 from skill_roots import sibling_scripts
@@ -583,7 +583,19 @@ def replacement(path: Path, writer: str = "the update") -> tuple[Path, int]:
     takes the link's own place, so no write creates the file the link leads to. A file with another hard link is
     refused, since a replacement would
     leave that name with the old content, and so is a read-only file, which ejryan89-skill-core's `atomic_file` would
-    refuse only once GitHub had been asked; the refusal names `writer`, the command that would replace it."""
+    refuse only once GitHub had been asked; the refusal names `writer`, the command that would replace it. A folder
+    that takes no new file, which the replace writes its copy in, is refused too (atomic_file's `refuse_uncreatable`),
+    so a caller that asks this of every file before it replaces the first leaves them all as they were."""
+    target, mode = _replacement(path, writer)
+    try:
+        refuse_uncreatable(target)
+    except OSError as exc:
+        raise TrackerError(f"Cannot replace {path} for {writer}: {exc}") from exc
+    return target, mode
+
+
+def _replacement(path: Path, writer: str) -> tuple[Path, int]:
+    """Where the replacement of `path` is written and its mode, or the TrackerError `replacement` names."""
     target = resolved_path(path)
     try:
         status = target.stat()
