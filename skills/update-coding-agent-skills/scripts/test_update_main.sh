@@ -91,6 +91,19 @@ grep -q "notes.txt" <<<"$OUTPUT" || fail "dirty: changed file not listed"
 [ "$(git -C "$CLONE" rev-parse origin/main)" = "$BEFORE" ] || fail "dirty: fetched anyway"
 expect_nothing_run "dirty"
 
+# The check for uncommitted changes never writes the clone's index: a tracked file whose timestamp moved but whose
+# content did not is one a status with optional locks refreshes in the index and writes back under its lock. The
+# edit stops the run at its DIRTY line, before the checkout and fast-forward that write the index on purpose.
+begin_case 'status leaves the index'
+new_clone
+touch -t 200001010000 "$CLONE/deploy.py"
+printf 'edit\n' >>"$CLONE/notes.txt"
+INDEX_BEFORE=$(cksum <"$CLONE/.git/index")
+run_subject "$CLONE" main
+expect_status 1 "status leaves the index"
+expect_first_line "DIRTY" "status leaves the index"
+[ "$(cksum <"$CLONE/.git/index")" = "$INDEX_BEFORE" ] || fail "status leaves the index: the index was rewritten"
+
 # A main with its own commits is never merged, rebased, or reset.
 begin_case 'diverged'
 new_clone

@@ -14,7 +14,9 @@ Each difference is a kind and a sentence:
     ahead     it is <n> commit(s) ahead of <remote>/<default>
     behind    it is <n> commit(s) behind <remote>/<default>
 
-A checkout git cannot read raises GitError with git's reason.
+The changed paths are read through git_worktrees.changes, so reading them never refreshes the hub's index or takes
+its lock, which a session committing or a fast-forward in the hub at that moment needs. A checkout git cannot read
+raises GitError with git's reason.
 
 The hub's git configuration is shared by every worktree, so a program that writes it, which no guard reads, can turn
 the hub guard off by setting `coding-agent-skills.hubGuard` to anything but true, or add a hook path or an alias. The
@@ -78,6 +80,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import git_worktrees
 import json_reader
 import json_writer
 import whole_number
@@ -88,8 +91,6 @@ from typed_fields import FieldError, FieldReader
 
 # How many changed paths a difference names before it counts the rest.
 NAMED_PATHS = 3
-# The status letters of an entry that names the path it came from in a field of its own after its own.
-FROM_FIELD = frozenset("RC")
 # The setting by which a clone opts in to the hub guard, tools/hub_guard.py, which reads it from here.
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 # The record of the previous tick's configuration, in the hub's git directory beside its configuration file.
@@ -126,18 +127,6 @@ def plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def changed_paths(fields: list[str]) -> list[str]:
-    """The paths `git status --porcelain -z` lists, each once: a rename's or a copy's path, never the one it came
-    from."""
-    paths: list[str] = []
-    entries = iter(fields)
-    for entry in entries:
-        paths.append(entry[3:])
-        if entry[:1] in FROM_FIELD or entry[1:2] in FROM_FIELD:
-            next(entries, None)
-    return paths
-
-
 def tracking_commit(git: GitClient, checkout: Path, tracking: str) -> str | None:
     """The commit the one ref `tracking` names, read by its full name alone, or None where git holds no such ref."""
     listed = git.output(["for-each-ref", "--format=%(objectname)%00%(refname)", tracking], directory=checkout)
@@ -152,7 +141,7 @@ def differences(git: GitClient, checkout: Path, branch: str, remote: str = "orig
     """How `checkout` differs from a clean checkout of `branch` at the commit `<remote>/<branch>` holds: none when it
     stands so."""
     found: list[Difference] = []
-    paths = changed_paths(git.names(["status", "--porcelain", "--untracked-files=normal"], directory=checkout))
+    paths = [change.path for change in git_worktrees.changes(git, checkout)]
     if paths:
         named = ", ".join(flat_text(path) for path in paths[:NAMED_PATHS])
         rest = f", and {len(paths) - NAMED_PATHS} more" if len(paths) > NAMED_PATHS else ""
