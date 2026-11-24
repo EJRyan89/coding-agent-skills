@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+import lessons_catalogue
 from link_destinations import link_destinations
-from markdown_sections import ATX_HEADING, code_spans
+from markdown_sections import ATX_HEADING, code_spans, outside_fences
 from text_lines import text_lines
 from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
-    fence_holders,
     listed,
     markdown_section,
     python_trees,
@@ -37,17 +37,11 @@ PRESENCE_ALLOWED = {
 }
 
 
-def _outside_fences(text: str) -> list[str]:
-    """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
-    lines = text_lines(text)
-    return ["" if holder is not None else line for line, holder in zip(lines, fence_holders(lines), strict=True)]
-
-
 def heading_slugs(text: str) -> set[str]:
     """The fragment GitHub gives each heading, numbering a repeated one -1, -2, and so on."""
     slugs: set[str] = set()
     seen: dict[str, int] = {}
-    for line in _outside_fences(text):
+    for line in outside_fences(text_lines(text)):
         heading = ATX_HEADING.match(line)
         if heading:
             slug = SLUG_REMOVED.sub("", heading.group("text").strip().lower()).replace(" ", "-")
@@ -272,7 +266,7 @@ def cited_test_problems(root: Path) -> list[str]:
             or document in CITATIONS_UNREAD_FILES
         ):
             continue
-        for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
+        for number, line in enumerate(outside_fences(text_lines(path.read_text(encoding="utf-8"))), start=1):
             for spans in _sentences(line):
                 files = [span for span in spans if CITED_FILE.fullmatch(span)]
                 for span in spans:
@@ -334,20 +328,11 @@ def _use_problem(root: Path, span: str) -> str | None:
     level, `<module>:<name>`, or a name one of its classes binds, `<module>:<class>.<name>`, as `pkgutil.resolve_name`
     reads an object, where the module is importable from exactly one of the directories a part of the repository puts
     on `sys.path`: the repository root, or a skill's or repository skill's `scripts`."""
-    mechanism = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*):([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?")
-    if not (use := mechanism.fullmatch(span)):
+    if not (use := lessons_catalogue.MECHANISM.fullmatch(span)):
         return f"names {span}, which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
     module, name, member = use.groups()
     parts = module.split(".")
-    bases = [
-        root,
-        *sorted(
-            (
-                *file_presence.matching(root, "skills/*/scripts"),
-                *file_presence.matching(root, ".claude/skills/*/scripts"),
-            )
-        ),
-    ]
+    bases = lessons_catalogue.mechanism_bases(root)
     found = [
         candidate
         for base in bases
@@ -380,55 +365,23 @@ def _use_problem(root: Path, span: str) -> str | None:
     return None
 
 
-def _pattern_fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[int, str]]], list[tuple[int, str]]]:
-    """A pattern's fields, each the lines of its list item, and the problems, by line, of a field the catalogue does
-    not define or one given twice."""
-    known = {"Rule", "Why", "Use", "Guard", "No guard", "Search for", "Examples"}
-    field_line = re.compile(r"^- \*\*([^*:]+):\*\*(.*)$")
-    fields: dict[str, list[tuple[int, str]]] = {}
-    problems: list[tuple[int, str]] = []
-    current: list[tuple[int, str]] | None = None
-    for number, line in entry[1:]:
-        if match := field_line.match(line):
-            name = match.group(1)
-            if name not in known:
-                problems.append((number, f"names the field {name!r}, which a pattern does not have"))
-            elif name in fields:
-                problems.append((number, f"names the field {name!r} more than once"))
-            current = fields.setdefault(name, [])
-            current.append((number, match.group(2).strip()))
-        elif current is not None and line[:1].isspace() and line.strip():
-            # A field's continuation line, indented under its list item, is read with the line it continues.
-            current.append((number, line.strip()))
-        else:
-            current = None
-    return fields, problems
-
-
-def _spans(lines: list[tuple[int, str]]) -> list[tuple[int, list[str]]]:
-    """Each line of a field with the text of the code spans it holds."""
-    return [(number, [span.text.strip() for span in code_spans(text)]) for number, text in lines]
-
-
-def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]]) -> list[str]:
-    """The problems of one pattern, its heading line first and then its lines up to the next heading."""
-    document = "docs/lessons.md"
-    heading_number, heading = entry[0]
-    name = heading[4:].strip()
+def _entry_problems(root: Path, index: _TestIndex, pattern: lessons_catalogue.Pattern) -> list[str]:
+    """The problems of one pattern the catalogue reader read."""
+    document = lessons_catalogue.CATALOGUE
+    heading_number, name, fields = pattern.line, pattern.name, pattern.fields
 
     def at(number: int) -> str:
         return f"{document}:{number} the pattern {name!r}"
 
-    fields, field_problems = _pattern_fields(entry)
-    problems = [f"{at(number)} {problem}" for number, problem in field_problems]
+    problems = [f"{at(number)} {problem}" for number, problem in pattern.problems]
     problems += [
         f"{at(heading_number)} states no {field}"
         for field in ("Rule", "Why")
         if not any(text for _, text in fields.get(field, []))
     ]
-    if not any(spans for _, spans in _spans(fields.get("Search for", []))):
+    if not any(spans for _, spans in pattern.spans("Search for")):
         problems.append(f"{at(heading_number)} names no form a violation takes under Search for, each in a code span")
-    guards, uses = _spans(fields.get("Guard", [])), _spans(fields.get("Use", []))
+    guards, uses = pattern.spans("Guard"), pattern.spans("Use")
     reasons = [text for _, text in fields.get("No guard", []) if text]
     if guards and reasons:
         return [*problems, f"{at(heading_number)} names both a guard and the reason no guard is possible"]
@@ -450,42 +403,24 @@ def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]])
 
 
 def lessons_ledger_problems(root: Path) -> list[str]:
-    """Report each pattern of docs/lessons.md, a `###` heading under its `## Patterns` section, that states no Rule or
-    Why, names no form a violation takes under Search for in a code span, names neither a guard that refuses a
-    violation nor, under No guard, the reason no guard is possible, whatever mechanism it uses, or names both a guard
-    and that reason, or names a field a pattern does not have or one field twice; and each guard and mechanism it
-    names that does not resolve. A guard is a test ID, `<path>::<test>`, `<path>::<class>`, or
-    `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
+    """Report each pattern of docs/lessons.md, read through ejryan89-skill-core's lessons_catalogue, the reader the
+    `implement-change` repository skill's pattern lister shares, that states no Rule or Why, names no form a violation
+    takes under Search for in a code span, names neither a guard that refuses a violation nor, under No guard, the
+    reason no guard is possible, whatever mechanism it uses, or names both a guard and that reason, or names a field a
+    pattern does not have or one field twice; each guard and mechanism it names that does not resolve; and a catalogue
+    that is missing, cannot be read, or holds no pattern. A guard is a test ID, `<path>::<test>`, `<path>::<class>`,
+    or `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
     `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a workflow, `.github/workflows/<file>`,
     that exists. A mechanism is a module importable from exactly one of the repository root and the skills' scripts,
     and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
-    document = "docs/lessons.md"
-    path = root / document
-    # A path whose stat fails raises, and one of the wrong kind is named so, never reported as one that is not there.
     try:
-        present = file_presence.is_present(path)
-    except file_presence.NotAFile:
-        return [f"{document} is not a file"]
-    if not present:
-        return [f"{document} does not exist"]
-    lines = _outside_fences(path.read_text(encoding="utf-8"))
-    start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)
-    if start is None:
-        return [f"{document} has no '## Patterns' section"]
-    entries: list[list[tuple[int, str]]] = []
-    for number, line in enumerate(lines[start + 1 :], start=start + 2):
-        if line.startswith("## "):
-            break
-        if line.startswith("### "):
-            entries.append([])
-        if entries:
-            entries[-1].append((number, line))
-    if not entries:
-        return [f"{document} has no pattern under '## Patterns'"]
+        patterns = lessons_catalogue.read_patterns(root)
+    except lessons_catalogue.CatalogueError as error:
+        return [str(error)]
     problems: list[str] = []
     index = _TestIndex(root, problems)
-    for entry in entries:
-        problems += _entry_problems(root, index, entry)
+    for pattern in patterns:
+        problems += _entry_problems(root, index, pattern)
     return problems
 
 
