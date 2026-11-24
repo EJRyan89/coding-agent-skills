@@ -1650,16 +1650,16 @@ def store_folder_reason(memory_dir: Path) -> str | None:
 
 
 def run(args: argparse.Namespace) -> tuple[int, list[str]]:
-    # A memory directory or repository holding `..` is made absolute with each `..` taken as text before a reader is
-    # bound to it, since the reader refuses a `..` that climbs above its tree; any other spelling is kept as given.
-    for name in ("memory_dir", "repo"):
-        given = getattr(args, name, None)
-        if isinstance(given, Path) and ".." in given.parts:
-            setattr(args, name, lexical_absolute(given))
     if args.command == "resolve":
         return resolve_command(args)
     if args.command == "skill-source":
         return skill_source_lines(args)
+    # A memory directory, or audit's repository, holding `..` is made absolute with each `..` taken as text before a
+    # reader is bound to it, since the reader refuses a `..` that climbs above its tree; any other spelling is kept.
+    if ".." in args.memory_dir.parts:
+        args.memory_dir = lexical_absolute(args.memory_dir)
+    if args.command == "audit" and args.repo is not None and ".." in args.repo.parts:
+        args.repo = lexical_absolute(args.repo)
     if args.command == "audit" and args.output:
         projects = config_directory(absolute_home(), dict(os.environ)) / "projects"
         refused = output_refusal(args.output, args.memory_dir, projects)
