@@ -617,13 +617,15 @@ class _BindingReader(ast.NodeVisitor):
         in, each a local value, as a definition's name is: the scope its annotations, a class's bases, a type
         statement's value, and its body see. A node with no type parameters opens none.
 
-        Stated limit: a generic method's annotation scope sits under the module or function around its class, as its
-        body does, so an annotation or a bound there reads a name its class binds as the enclosing scope's."""
+        A function's or a class's annotation scope sits under the nearest scope around it that is not a class, as a
+        method's body does, so a class around it lends its names to none of it. Stated limit: Python lets the
+        annotations, the bases, and the bounds there read the names of a class around it, which this reads as the
+        enclosing scope's."""
         names = type_parameter_names(node)
         if not names:
             return
         outer = self.scope
-        while not isinstance(node, (ast.ClassDef, ast.TypeAlias)) and outer.is_class and outer.parent is not None:
+        while not isinstance(node, ast.TypeAlias) and outer.is_class and outer.parent is not None:
             outer = outer.parent
         self.scope = _NameScope(outer)
         for name in names:

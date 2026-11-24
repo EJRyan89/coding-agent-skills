@@ -258,6 +258,20 @@ class CallableResolverFixtures(unittest.TestCase):
             },
             names,
         )
+        # A class around a generic definition lends its names to none of it, as it lends none to a method's body.
+        tree = ast.parse(
+            "import shutil\n"
+            "class Outer:\n"
+            "    shutil = 3\n"
+            "    class Inner[T]:\n"
+            "        def method(self):\n"
+            "            shutil.rmtree(1)\n"
+            "    def generic[T](self):\n"
+            "        shutil.rmtree(2)\n"
+        )
+        resolver = CallableResolver(tree)
+        calls = [resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.assertEqual(["shutil.rmtree", "shutil.rmtree"], calls)
 
     def test_dynamic_callable_construction_is_not_a_simple_assignment_alias(self) -> None:
         resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))

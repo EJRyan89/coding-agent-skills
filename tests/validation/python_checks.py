@@ -622,10 +622,11 @@ def _keeps_clear(node: ast.Name, parents: dict[int, ast.AST], given: set[int]) -
 def _cleared_names(tree: ast.Module, resolver: CallableResolver, given: set[int]) -> set[tuple[int, str]]:
     """Each name, by the scope that binds it, bound only to an environment without_repository_variables builds and
     changed in place, if at all, only by keys that name none of git's repository-selecting variables, wherever in the
-    module the name is read, closures included. A parameter is bound by the caller, so it is none. An update in place,
-    such as `env.update(...)`, `env[key] = ...`, or `env |= ...`, keeps the name cleared only when every key it can add
-    is such a constant, as `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as
-    `env.update(os.environ)`, does not, and neither does a read that hands the mapping on (_keeps_clear)."""
+    module the name is read, closures included. A parameter is bound by the caller, and a type parameter to a type, so
+    neither is one. An update in place, such as `env.update(...)`, `env[key] = ...`, or `env |= ...`, keeps the name
+    cleared only when every key it can add is such a constant, as `env.update({"LC_ALL": "C"})`; one that adds keys from
+    elsewhere, such as `env.update(os.environ)`, does not, and neither does a read that hands the mapping on
+    (_keeps_clear)."""
     assigned: dict[int, ast.expr] = {}
     augmented: dict[int, ast.AugAssign] = {}
     parents: dict[int, ast.AST] = {}
@@ -641,6 +642,8 @@ def _cleared_names(tree: ast.Module, resolver: CallableResolver, given: set[int]
     for node in ast.walk(tree):
         if isinstance(node, ast.arg):
             name, cleared = node.arg, False
+        elif isinstance(node, TYPE_PARAMETERS):
+            name, cleared = node.name, False
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             # A proven augmented union leaves the name as its bindings make it; an unproven one makes it not cleared.
             change = _updated_name(augmented[id(node)]) if id(node) in augmented else None
@@ -947,9 +950,10 @@ def resolve_problems(root: Path, files: list[Path]) -> list[str]:
 # a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
 # whose pattern is an `|` of sequence patterns, which reads no item's truth. A parameter's default is read in its own
 # function's scope, where Python evaluates it in the scope around, so a suppress given as `def g(quiet=quiet):` leads
-# back to its own name and is not read. The link tests are no presence
-# predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed
-# stat through.
+# back to its own name and is not read. A suppress the module binds to a name a class's type parameter hides in the
+# class's methods is read as the module's, so the policy refuses there what it should pass. The link tests are no
+# presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a
+# failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )

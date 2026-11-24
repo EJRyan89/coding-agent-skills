@@ -1064,6 +1064,14 @@ class SharedFactPolicy(unittest.TestCase):
         )
         # A name an augmented assignment binds again holds a value no literal shows, so it is not read as `.git`.
         self.assertEqual([], self.problems({canary: 'GIT = ".git"\nGIT += "x"\nfound = name == GIT\n'}))
+        # Nor is one a type statement binds again, to a type alias; the second binding is refused by itself.
+        self.assertEqual(
+            [
+                f"{canary}:2 binds GIT again at module level after line 1, which replaces the first value for every "
+                "caller; keep one binding"
+            ],
+            self.problems({canary: 'GIT = ".git"\ntype GIT = int\nfound = name == GIT\n'}),
+        )
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'

@@ -2712,6 +2712,25 @@ def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository
     ]
 
 
+# A type parameter binds its name to a type, never to a cleared environment, in its body and in the annotation scope
+# around it, which holds its annotations and a type statement's value.
+@pytest.mark.parametrize(
+    ("start", "line"),
+    [
+        pytest.param("def start[env]():\n    return subprocess.run(['x'], env=env)\n", 5, id="in the body"),
+        pytest.param("def start[*env](x: subprocess.run(['x'], env=env)):\n    pass\n", 4, id="in an annotation"),
+        pytest.param("type Start[**env] = subprocess.run(['x'], env=env)\n", 4, id="in a type statement's value"),
+    ],
+)
+def test_process_environment_policy_refuses_an_env_a_type_parameter_binds(start: str, line: int) -> None:
+    source = f"import subprocess\n\n\n{start}"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.process_environment_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
+
+
 CLEARED_PREFIX = """\
 import os
 import subprocess
@@ -7441,6 +7460,14 @@ PRESENCE_PASSED = {
         "import contextlib\n\nquiet = contextlib.suppress(OSError)\n\n\ndef f[quiet](p):\n    with quiet:\n"
         "        return p.stat()\n    return None\n"
     ),
+    "a variadic type parameter that shadows a suppress the module binds": (
+        "import contextlib\n\nquiet = contextlib.suppress(OSError)\n\n\ndef f[*quiet](p):\n    with quiet:\n"
+        "        return p.stat()\n    return None\n"
+    ),
+    "a parameter specification that shadows a suppress the module binds": (
+        "import contextlib\n\nquiet = contextlib.suppress(OSError)\n\n\ndef f[**quiet](p):\n    with quiet:\n"
+        "        return p.stat()\n    return None\n"
+    ),
     # A stated limit of the presence policy: a parameter's default is read in its own function's scope, where Python
     # evaluates it in the scope around, so this suppress leads back to its own name and is not read as one.
     "a suppress given as a parameter's default of its own name": (
@@ -8953,6 +8980,14 @@ POLICED_CALL_ROWS = {
     ),
     "a constant a type parameter shadows": (
         "WAIT = 30\n\n\ndef f[WAIT](p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant a variadic type parameter shadows": (
+        "WAIT = 30\n\n\ndef f[*WAIT](p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant a parameter specification shadows": (
+        "WAIT = 30\n\n\ndef f[**WAIT](p):\n"
         "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
     ),
 }

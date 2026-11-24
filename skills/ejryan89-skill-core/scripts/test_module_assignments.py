@@ -55,6 +55,8 @@ def test_any_other_statement_assigns_no_one_name(source: str) -> None:
         pytest.param("A += 1", ["A"], id="an augmented assignment"),
         pytest.param("type A[T] = list[T]", ["A"], id="a type statement"),
         pytest.param("def f[A](): pass", [], id="a type parameter, which binds no module name"),
+        pytest.param("class C[*A]: pass", [], id="a variadic type parameter, which binds none either"),
+        pytest.param("type T[**A] = int", ["T"], id="a parameter specification, which binds none either"),
         pytest.param("x.A = x[B] = 1", [], id="attribute and subscript targets"),
         pytest.param("if True:\n    A = 1", [], id="a compound statement"),
     ],

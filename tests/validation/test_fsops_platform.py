@@ -265,6 +265,27 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 [f"deployer/{module}.py:9 {message}" for module in ("alias", "function", "specification", "variadic")],
                 filesystem_write_problems(root),
             )
+        # A mode a type parameter or a type statement also binds is no string constant the policy reads.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": 'MODE = "r"\n\n\ndef read(p):\n    open(p, MODE)\n',
+                    "deployer/parameter.py": 'MODE = "r"\n\n\ndef read[MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/variadic.py": 'MODE = "r"\n\n\ndef read[*MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/specification.py": 'MODE = "r"\n\n\ndef read[**MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/alias.py": 'MODE = "r"\ntype MODE = str\n\n\ndef read(p):\n    open(p, MODE)\n',  # 6
+                },
+            )
+            route = "writes with open; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/alias.py:6 {route}",
+                    *(f"deployer/{module}.py:5 {route}" for module in ("parameter", "specification", "variadic")),
+                ],
+                filesystem_write_problems(root),
+            )
 
     def test_every_destination_of_an_allowed_write_must_be_under_the_system_temporary_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -614,7 +614,8 @@ def _writes_scanned_files(root: Path) -> list[Path]:
 
 def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
     """The string constants each name is assigned anywhere in the module, or None for a name that is ever bound to
-    anything else: another value, a parameter, a loop or with target, or an augmented assignment."""
+    anything else: another value, a parameter, a type parameter, a type statement, a loop or with target, or an
+    augmented assignment."""
     bindings: dict[str, set[str] | None] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
@@ -628,6 +629,10 @@ def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
                         bindings[name.id] = None
         elif isinstance(node, ast.arg):
             bindings[node.arg] = None
+        elif isinstance(node, TYPE_PARAMETERS):
+            bindings[node.name] = None
+        elif isinstance(node, ast.TypeAlias):
+            bindings[node.name.id] = None
         elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr, ast.withitem)):
             bound = node.optional_vars if isinstance(node, ast.withitem) else node.target
             for part in ast.walk(bound) if bound is not None else ():

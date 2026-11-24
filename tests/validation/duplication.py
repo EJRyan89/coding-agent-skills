@@ -721,6 +721,9 @@ def _bound_to_git(body: list[ast.stmt]) -> Iterator[str]:
         elif isinstance(statement, ast.AugAssign):
             # An augmented assignment binds the name again, to a value no literal shows.
             pairs = [(statement.target, None)]
+        elif isinstance(statement, ast.TypeAlias):
+            # So does a type statement, to a type alias.
+            pairs = [(statement.name, None)]
         else:
             continue
         for target, value in pairs:

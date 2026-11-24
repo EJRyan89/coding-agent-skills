@@ -5813,6 +5813,16 @@ def test_the_module_locator_finds_a_module_a_package_or_a_dotted_module_among_th
             {3},
             id="a default, which runs outside its function's type parameters",
         ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\ndef stop[*STALE](*, code: int = sys.exit(STALE)) -> None:\n    pass\n",
+            {3},
+            id="a keyword-only default, which runs outside them too",
+        ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\n@sys.exit(STALE)\ndef stop[STALE]() -> None:\n    pass\n",
+            {3},
+            id="a decorator, which runs outside them too",
+        ),
     ],
 )
 def test_exit_codes_reads_returns_conditionals_and_each_function_s_own_names(script: str, codes: set[int]) -> None:

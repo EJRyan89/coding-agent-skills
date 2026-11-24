@@ -737,6 +737,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             "    subprocess.run(PROGRAM)\n"  # 7
             "class Runner[*PROGRAM]:\n"
             "    subprocess.run(PROGRAM)\n"  # 9
+            "def specified[**PROGRAM]():\n"
+            "    subprocess.run(PROGRAM)\n"  # 11
             # A type statement's value and a type parameter's bound use a runner as a type, which starts nothing.
             "type Started = subprocess.Popen\n"
             "def typed[P: subprocess.Popen](process: P) -> Started:\n"
@@ -745,7 +747,7 @@ class SkillScriptsFixtures(unittest.TestCase):
         self.assertEqual(
             [
                 unreadable(path, line, f"the program in `{name}`, which the module binds to nothing it reads")
-                for line, name in ((4, "COMMAND"), (7, "PROGRAM"), (9, "PROGRAM"))
+                for line, name in ((4, "COMMAND"), (7, "PROGRAM"), (9, "PROGRAM"), (11, "PROGRAM"))
             ],
             CommandReader(ast.parse(script)).problems(path),
         )
