@@ -67,6 +67,10 @@ class ReadTests(unittest.TestCase):
         cases = {
             "at the top": ("STALE = 3\nSTALE = 4\n", {4}),
             "in one if arm": ("if X:\n    STALE = 3\n    STALE = 4\nelse:\n    STALE = 5\n", {4, 5}),
+            "in an else arm": ("if X:\n    STALE = 5\nelse:\n    STALE = 3\n    STALE = 4\n", {4, 5}),
+            "in one match case": ("match X:\n    case 1:\n        STALE = 3\n        STALE = 4\n", {4}),
+            "in a try's else": ("try:\n    pass\nexcept E:\n    pass\nelse:\n    STALE = 3\n    STALE = 4\n", {4}),
+            "in a try's handler": ("try:\n    pass\nexcept E:\n    STALE = 3\n    STALE = 4\n", {4}),
             "after an if": ("if X:\n    STALE = 3\nelse:\n    STALE = 5\nSTALE = 4\n", {4}),
             "an if with no else": ("STALE = 3\nif X:\n    STALE = 4\n", {3, 4}),
             "a loop's body": ("STALE = 3\nwhile X:\n    STALE = 4\n", {3, 4}),
@@ -128,6 +132,10 @@ class ReadTests(unittest.TestCase):
             ),
             "a with that suppresses an error": ("C = 3\nwith SUP():\n    R()\n    C = 4\n", {3, 4}),
             "an except star": ("C = 1\ntry:\n    C = 2\n    R()\n    C = 3\nexcept* E:\n    pass\n", {2, 3}),
+            "an error no handler catches, which the finally sees": (
+                "C = 1\ntry:\n    C = 2\n    R()\nexcept E:\n    C = 4\nelse:\n    C = 5\nfinally:\n    pass\n",
+                {2, 4, 5},
+            ),
         }
         for case, (source, python) in cases.items():
             with self.subTest(case):
@@ -156,6 +164,7 @@ class ReadTests(unittest.TestCase):
             "a class": "A = 1\nclass A:\n    pass\n",
             "declared global": "A = 1\ndef rebind():\n    global A\n    A = 2\n",
             "imported too": "A = 1\ntry:\n    from fast import A\nexcept ImportError:\n    pass\n",
+            "a loop target before the literal": "for A in range(3):\n    pass\nA = 1\n",
         }
         for case, source in cases.items():
             with self.subTest(case):
@@ -180,12 +189,22 @@ class ResolveTests(unittest.TestCase):
         self.modules = {
             "codes": constants("from typing import Final\nUSAGE: Final = 2\nREFUSED = 5\nworked = len('x')\n"),
             "relay": constants("from codes import USAGE\nfrom codes import REFUSED as STOPPED\n"),
+            "pkg.codes": constants("HELD = 6\n"),
             "loop.first": constants("from loop.second import CODE\n"),
             "loop.second": constants("from loop.first import CODE\n"),
         }
+        self.located: list[str] = []
 
     def resolve(self, module: str, source: str) -> frozenset[int] | None:
-        return exit_constants.resolve(expression(source), constants(module), self.modules.get)
+        self.located = []
+        return exit_constants.resolve(expression(source), constants(module), self.locate)
+
+    def locate(self, dotted: str) -> exit_constants.ModuleConstants | None:
+        # A bound on the lookups, so a cycle the loop fails to stop fails the test rather than hanging it.
+        self.located.append(dotted)
+        if len(self.located) > len(self.modules):
+            raise AssertionError(f"the cycle was not stopped: {self.located}")
+        return self.modules.get(dotted)
 
     def test_a_literal_or_a_name_of_the_module_s_own_constants_is_its_values(self) -> None:
         self.assertEqual(frozenset({7}), self.resolve("", "7"))
@@ -196,10 +215,15 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(frozenset({5}), self.resolve("from codes import REFUSED as NO\n", "NO"))
         self.assertEqual(frozenset({2}), self.resolve("import codes\n", "codes.USAGE"))
         self.assertEqual(frozenset({2}), self.resolve("import codes as c\n", "c.USAGE"))
+        self.assertEqual(frozenset({6}), self.resolve("import pkg.codes\n", "pkg.codes.HELD"))
 
     def test_a_constant_a_module_re_exports_is_followed_to_the_module_that_binds_it(self) -> None:
         self.assertEqual(frozenset({2}), self.resolve("from relay import USAGE\n", "USAGE"))
         self.assertEqual(frozenset({5}), self.resolve("import relay\n", "relay.STOPPED"))
+
+    def test_a_re_export_cycle_ends_after_each_module_is_located_once(self) -> None:
+        self.assertIsNone(self.resolve("from loop.first import CODE\n", "CODE"))
+        self.assertEqual(["loop.first", "loop.second"], self.located)
 
     def test_a_name_it_cannot_read_is_none_never_a_number(self) -> None:
         cases = {

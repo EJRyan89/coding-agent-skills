@@ -2037,6 +2037,20 @@ class StatusLineTests(TemporaryTestCase):
                 )
                 self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
 
+    def test_an_unread_exit_in_any_script_makes_each_stated_code_no_script_gives_unread(self) -> None:
+        # Each script's unread exits are kept, whichever script is read after it.
+        for unread, plain in (("a_tool.py", "z_tool.py"), ("z_tool.py", "a_tool.py")):
+            with self.subTest(unread):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    "import sys\n\nfrom elsewhere import STALE\n\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                    unread,
+                )
+                write(folder / "scripts" / plain, "import sys\n\nsys.exit(1)\n")
+                self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+                (folder / "scripts" / unread).unlink()
+                (folder / "scripts" / plain).unlink()
+
     def test_a_code_a_function_binds_itself_is_not_read_and_leaves_a_mismatch_a_mismatch(self) -> None:
         # A local or a parameter is the function's own, which the constant reading does not reach, as before.
         folder = self.skill(
@@ -5764,3 +5778,40 @@ def test_the_module_locator_finds_a_module_a_package_or_a_dotted_module_among_th
         assert locate(dotted) is expected, dotted
     assert locate("absent") is None
     assert locate("pkg.absent") is None
+
+
+@pytest.mark.parametrize(
+    ("script", "codes"),
+    [
+        pytest.param("def main() -> int:\n    return 4\n", {4}, id="an int function's return"),
+        pytest.param("def main(x) -> int:\n    return 3 if x else 4\n", {3, 4}, id="both arms of a conditional"),
+        pytest.param(
+            "def main() -> int:\n    return 'text'\n\ndef flag() -> int:\n    return True\n",
+            set(),
+            id="a string or a bool returned",
+        ),
+        pytest.param(
+            "import sys\n\nSTALE = 3\n\ndef held() -> int:\n    STALE = 9\n    return STALE\n\n"
+            "def stop() -> None:\n    sys.exit(STALE)\n",
+            {3},
+            id="a name one function binds and another reads as the module's",
+        ),
+    ],
+)
+def test_exit_codes_reads_returns_conditionals_and_each_function_s_own_names(script: str, codes: set[int]) -> None:
+    assert skill_inventory.exit_codes(ast.parse(script)) == (codes, [])
+
+
+def test_python_constants_reads_each_python_script_past_a_shell_script_or_one_that_does_not_parse(
+    tmp_path: Path,
+) -> None:
+    texts = {tmp_path / "a.sh": "exit 1\n", tmp_path / "b.py": "def (\n", tmp_path / "c.py": "C = 3\n"}
+    found = skill_inventory.python_constants(texts)
+    assert list(found) == [skill_inventory.opened_path(tmp_path / "c.py")]
+    assert found[skill_inventory.opened_path(tmp_path / "c.py")].values == {"C": frozenset({3})}
+
+
+def test_a_stated_code_no_script_exits_with_is_a_mismatch_unless_the_caller_says_an_exit_is_unread() -> None:
+    lines = ["---", "name: alpha", "---", "It exits 3."]
+    assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set()) == ["EXIT_MISMATCH SKILL.md 4 3"]
+    assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set(), True) == ["EXIT_UNREAD SKILL.md 4 3"]

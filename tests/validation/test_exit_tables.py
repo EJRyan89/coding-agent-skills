@@ -1301,6 +1301,20 @@ REFUSED = (
             [],
             id="another error's code passed on",
         ),
+        pytest.param(
+            "13",
+            "def check(verbose=False, retries=lookup()):\n    raise Refused(exit_code=14)\n",
+            {0, 1, 13, 14},
+            [],
+            id="another parameter's default",
+        ),
+        pytest.param(
+            "13",
+            "def check():\n    if X:\n        raise Refused(exit_code=14)\n    raise Refused(exit_code=15)\n",
+            {0, 1, 13, 14, 15},
+            [],
+            id="two keywords in one function",
+        ),
     ],
 )
 def test_an_exit_code_keyword_or_default_the_reader_cannot_read_is_unread(
