@@ -43,7 +43,9 @@
 #                    deployed
 #   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on:
 #                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
-#                    skill, the temporary directory is one another account could rename or cannot be examined, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
+#                    skill, the temporary directory is one another account could rename or cannot be examined, the
+#                    clone has no main to read the pin with or main's tree could not be written out for it,
+#                    `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
 #                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
 #                    lookup or comparison failed rather than answering, git's own reason following, remote_refs.py
 #                    failed, git failed in the clone rather than at origin, or remote_refs.py ended without its
@@ -152,7 +154,9 @@ if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
 fi
 DEPLOY_ERRORS=
 GIT_ERRORS=
-trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"} ${GIT_ERRORS:+"$GIT_ERRORS"}' EXIT
+MAIN_COPY=
+trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"} ${GIT_ERRORS:+"$GIT_ERRORS"}
+  [ -z "$MAIN_COPY" ] || rm -rf -- "$MAIN_COPY"' EXIT
 SCRIPTS=$UPDATE_SKILLS_SCRIPTS
 unset UPDATE_SKILLS_COPY UPDATE_SKILLS_SCRIPTS
 
@@ -194,7 +198,7 @@ done
 # and the upgrade-notes check read too: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1
 # and every other tag are not releases. It runs from the copy of ejryan89-skill-core the deployment that installed this
 # script put beside it, never from the clone, whose later commits may move or rename it before the update has deployed
-# them. deploy.py at the clone's root is the one file the update runs from the clone.
+# them. deploy.py at the root of main's tree is the one file the update runs from the clone.
 RELEASE_TAGS="$SCRIPTS/../../ejryan89-skill-core/scripts/release_tags.py"
 if [ ! -f "$RELEASE_TAGS" ]; then
   echo "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: $RELEASE_TAGS"
@@ -226,6 +230,22 @@ git_quiet() {
   fi
   [ -n "$GIT_REASON" ] || GIT_REASON="git $1 exited $code and printed nothing"
   return 2
+}
+
+# The object a ref names, looked up by its full name exactly, read as git_quiet reads git: status 0 with GIT_OUT the
+# object, 1 when the ref does not exist, and 2 with GIT_REASON when git cannot answer. rev-parse, and every command
+# given a revision, resolves even a full name through git's lookup rules, so with no refs/heads/main a branch whose own
+# name is refs/heads/main (refs/heads/refs/heads/main), or a tag so named, would stand in for it. show-ref --verify
+# takes the full name only; with --quiet it says whether the ref exists, by its quiet exit 1, and prints nothing, so
+# the object is read with a second call, which a ref removed in between fails rather than resolves elsewhere.
+ref_object() {
+  local found=0
+  git_quiet show-ref --verify --quiet "$1" || found=$?
+  [ "$found" -eq 0 ] || return "$found"
+  if ! git_quiet show-ref --verify --hash "$1"; then
+    [ -n "$GIT_REASON" ] || GIT_REASON="git show-ref exited 1 and printed nothing"
+    return 2
+  fi
 }
 
 if ! git_quiet rev-parse --git-dir; then
@@ -307,6 +327,77 @@ raises_breaking() {
   return 2
 }
 
+# Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
+# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. A full name is exact only while
+# the ref exists, as git's lookup rules go on to other refs when it does not, so each lookup whose answer is whether a
+# ref exists goes through ref_object, and a ref is named to git in a revision only once it is known to exist. The
+# checkout and the switch back name a branch by its short name, which checkout resolves as a branch first.
+MAIN=refs/heads/main
+ORIGIN_MAIN=refs/remotes/origin/main
+
+# check runs main's deploy.py, never the one on a branch the clone was left on, such as another author's pull request
+# checked out to look at it, which would otherwise run as the user before anything said the clone is not on main. Main
+# is local main, or origin/main as the clone last fetched it when there is no local main yet, each looked up exactly.
+# When the clone's HEAD holds main's tree, which the DIRTY stop above leaves its tracked files at, check runs in the
+# clone, as the deployment below does; otherwise it runs from main's tree, which git archive writes to a temporary
+# folder. A lookup git cannot answer is a FAILED line with git's reason, never a main the clone lacks.
+FOUND=0
+MAIN_SOURCE=$MAIN
+ref_object "$MAIN" || FOUND=$?
+if [ "$FOUND" -eq 1 ]; then
+  FOUND=0
+  MAIN_SOURCE=$ORIGIN_MAIN
+  ref_object "$ORIGIN_MAIN" || FOUND=$?
+fi
+if [ "$FOUND" -eq 1 ]; then
+  echo "FAILED cannot read the pin with main's deploy.py: the clone has neither $MAIN nor $ORIGIN_MAIN"
+  exit 1
+elif [ "$FOUND" -eq 2 ]; then
+  echo "FAILED cannot look up $MAIN_SOURCE: $GIT_REASON"
+  exit 1
+fi
+if ! git_quiet rev-parse --verify "$GIT_OUT^{tree}"; then
+  echo "FAILED cannot read the tree of $MAIN_SOURCE: ${GIT_REASON:-git answered no}"
+  exit 1
+fi
+MAIN_TREE=$GIT_OUT
+if ! git_quiet rev-parse --verify "HEAD^{tree}"; then
+  echo "FAILED cannot read the tree the clone is on: ${GIT_REASON:-git answered no}"
+  exit 1
+fi
+# Run in the clone, check trusts its untracked and ignored files, as the deployment below does and SECURITY.md
+# states: Python imports a module beside deploy.py first, and switching branches removes another branch's tracked
+# files, so only code the user ran can leave one there.
+CHECK_TREE=$CLONE
+if [ "$GIT_OUT" != "$MAIN_TREE" ]; then
+  if ! MAIN_COPY=$(mktemp -d "$TEMPLATE" 2>&1); then
+    echo "FAILED cannot create a temporary folder for main's tree: $(one_line "$MAIN_COPY")"
+    MAIN_COPY=
+    exit 1
+  fi
+  # The tree is named by its object, the one compared above, so a ref moved meanwhile cannot change what is written.
+  # git archive writes it to a file in the folder, and tar extracts the file beside it: through a pipe, a tar that
+  # stops reading at the archive's end marker, as macOS's does, leaves git writing its padding to a closed pipe, and
+  # git dies of SIGPIPE without a word. tar reads the file on its standard input, as GNU tar, Git for Windows' own,
+  # takes a -f path holding a drive letter's colon for a remote host's. A step that fails without a word is named with
+  # its exit status.
+  MAIN_ARCHIVE="$MAIN_COPY/main.tar"
+  CHECK_TREE="$MAIN_COPY/tree"
+  STEP=0
+  OUTPUT=$(git -C "$CLONE" archive --format=tar -o "$MAIN_ARCHIVE" "$MAIN_TREE" 2>&1) || STEP=$?
+  STEP_NAME="git archive"
+  if [ "$STEP" -eq 0 ]; then
+    STEP_NAME="tar"
+    OUTPUT=$({ mkdir -- "$CHECK_TREE" && tar -x -f - -C "$CHECK_TREE" <"$MAIN_ARCHIVE"; } 2>&1) || STEP=$?
+  fi
+  if [ "$STEP" -ne 0 ]; then
+    REASON=$(one_line "$OUTPUT")
+    echo "FAILED cannot write main's tree out to read the pin with its deploy.py:" \
+      "${REASON:-$STEP_NAME exited $STEP and printed nothing}"
+    exit 1
+  fi
+fi
+
 # check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
 # deployment was made with `deploy.py --at <ref>`. Its exit status alone does not stop the update: a check that reports
 # a missing tool exits 1 and still names the commit. That line is the only word on whether the installation is pinned,
@@ -315,8 +406,12 @@ raises_breaking() {
 PIN_MARK=", pinned with --at "
 PIN_UNKNOWN="FAILED cannot read whether the installation is pinned:"
 CHECK_CODE=0
-CHECK_OUTPUT=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>&1) || CHECK_CODE=$?
+CHECK_OUTPUT=$("$PYTHON" "$CHECK_TREE/deploy.py" check </dev/null 2>&1) || CHECK_CODE=$?
 CHECK_OUTPUT=$(printf '%s' "$CHECK_OUTPUT" | tr -d '\r')
+if [ -n "$MAIN_COPY" ]; then
+  rm -rf -- "$MAIN_COPY"
+  MAIN_COPY=
+fi
 DEPLOYED_LINE=$(grep -m 1 -e "^Deployed commit: " <<<"$CHECK_OUTPUT")
 if [ -z "$DEPLOYED_LINE" ] && [ -z "$CHECK_OUTPUT" ]; then
   echo "$PIN_UNKNOWN deploy.py check exited $CHECK_CODE and printed nothing"
@@ -379,12 +474,6 @@ if [ "$CHANNEL" = main ] && [ -n "$USER_PIN" ]; then
   echo "PINNED $PIN_REF $DEPLOYED"
   exit 1
 fi
-
-# Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
-# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. The checkout and the switch
-# back name a branch by its short name, which checkout resolves as a branch first.
-MAIN=refs/heads/main
-ORIGIN_MAIN=refs/remotes/origin/main
 
 # The two calls to origin, the tag check here and the fetch below, run through remote_refs.py beside this script, which
 # runs git through ejryan89-skill-core's GitClient: with no prompt, no askpass helper that an inherited GIT_ASKPASS,
@@ -515,11 +604,17 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
       [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
       # The commits the update would deploy: from the deployed commit, or from local main when check names none or
-      # the clone does not hold it. A clone with no local main yet, which git's quiet exit 1 alone says, has none to
-      # list from, and any other answer of the lookup is git's reason; either is an UNLISTED line, never an empty list.
+      # the clone does not hold it. A clone with no local main yet, which the exact lookup's quiet exit 1 alone says,
+      # has none to list from, and any other answer of the lookup is git's reason; either is an UNLISTED line, never an
+      # empty list. The deployed commit is an object's full name, which git reads as that object, and main is looked
+      # up exactly.
       LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
       VERIFIED=0
-      git_quiet rev-parse --verify --quiet "$LISTED_FROM^{commit}" || VERIFIED=$?
+      if [ -n "$KNOWN_COMMIT" ]; then
+        git_quiet rev-parse --verify --quiet "$KNOWN_COMMIT^{commit}" || VERIFIED=$?
+      else
+        ref_object "$MAIN" || VERIFIED=$?
+      fi
       if [ "$VERIFIED" -eq 0 ]; then
         log_lines "$LISTED_FROM..$DEPLOY_END"
       elif [ "$VERIFIED" -eq 1 ]; then
@@ -534,11 +629,11 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
 fi
 
 # A diverged main stops before the checkout, so the clone stays on the branch it was found on. A clone with no local
-# main yet, which git's quiet no to the lookup alone says, leaves the decision to the checkout, which creates main from
+# main yet, which the exact lookup's quiet no alone says, leaves the decision to the checkout, which creates main from
 # origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
 # reason, never a diverged main.
 HAS_MAIN=0
-git_quiet rev-parse --verify --quiet "$MAIN^{commit}" || HAS_MAIN=$?
+ref_object "$MAIN" || HAS_MAIN=$?
 if [ "$HAS_MAIN" -eq 2 ]; then
   echo "FAILED cannot look up $MAIN: $GIT_REASON"
   exit 1

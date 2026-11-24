@@ -192,4 +192,23 @@ run_subject "$CLONE" main --force
 expect_status 2 "unknown option"
 expect_not_deployed "unknown option"
 
+# A clone left on a branch whose deploy.py is not main's reads the same pin from the record, which stands for the
+# manifest in the home, through main's deploy.py run from main's tree in a temporary folder, and stops the same way.
+begin_case "pinned, read from main's tree"
+new_clone
+printf '%s\nv1.0.0\n' "$PINNED_COMMIT" >"$CLONE/.fake-deployed"
+checkout_branch_deployer topic
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+publish "after the pin, over a branch's deployer"
+run_subject "$CLONE" main
+expect_status 1 "pinned, read from main's tree"
+[ "$OUTPUT" = "PINNED v1.0.0 $PINNED_COMMIT" ] || fail "pinned, read from main's tree: got: $OUTPUT"
+expect_no_stderr "pinned, read from main's tree"
+[ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] ||
+  fail "pinned, read from main's tree: expected only main's check to run: $(cat "$FAKE_DEPLOY_LOG")"
+[ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pinned, read from main's tree: fetched anyway"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "pinned, read from main's tree: HEAD moved"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "pinned, read from main's tree: branch switched"
+
 echo "update.sh pin tests passed"

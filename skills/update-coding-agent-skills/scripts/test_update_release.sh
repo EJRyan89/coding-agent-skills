@@ -458,11 +458,18 @@ exec "$REAL_GIT" "$@"
 EOF
 chmod +x "$SILENT_SHIM/git"
 begin_case 'git silent with another status'
-PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="rev-parse --verify --quiet refs/heads/main^{commit}=>3" \
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="show-ref --verify --quiet refs/heads/main=>3" \
   run_subject "$CLONE" release --cross-major
-expect_failed "FAILED cannot look up refs/heads/main: git rev-parse exited 3 and printed nothing" \
+expect_failed "FAILED cannot look up refs/heads/main: git show-ref exited 3 and printed nothing" \
   "git silent with another status"
 expect_not_deployed "git silent with another status"
+# The second call of the exact lookup, which reads the object of a ref the first found, is named the same way when it
+# fails without a word.
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="show-ref --verify --hash refs/heads/main=>1" \
+  run_subject "$CLONE" release --cross-major
+expect_failed "FAILED cannot look up refs/heads/main: git show-ref exited 1 and printed nothing" \
+  "git silent reading main's object"
+expect_nothing_run "git silent reading main's object"
 begin_case 'git names no branch'
 git_quiet -C "$CLONE" checkout -q -b silent-aside
 PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="symbolic-ref --quiet --short HEAD=>0" run_subject "$CLONE" release --cross-major
@@ -508,9 +515,20 @@ PATH="$WARNING_SHIM:$PATH" run_subject "$CLONE" release --cross-major
 expect_failed "FAILED cannot tell whether refs/heads/main is an ancestor of refs/remotes/origin/main: warning: ignoring broken ref refs/heads/broken" \
   "ancestry git cannot tell"
 expect_not_deployed "ancestry git cannot tell"
-failing_git "rev-parse --verify --quiet refs/heads/main^{commit}" 1 "$CLONE" release --cross-major
+# main is looked up exactly twice, for the pin check and for this one; the second lookup is the one that fails.
+failing_git "show-ref --verify --quiet refs/heads/main" 2 "$CLONE" release --cross-major
 expect_failed "FAILED cannot look up refs/heads/main: $NOT_A_REPOSITORY" "main git cannot look up"
 expect_not_deployed "main git cannot look up"
+
+# The pin check's lookup of main reads its object with a second exact call once main is known to exist, and then its
+# tree; either failing is a FAILED line with git's reason, never a main the clone lacks.
+begin_case "main's object or tree git cannot read"
+failing_git "show-ref --verify --hash refs/heads/main" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot look up refs/heads/main: $NOT_A_REPOSITORY" "main's object git cannot read"
+expect_nothing_run "main's object git cannot read"
+failing_git "rev-parse --verify $(git -C "$CLONE" rev-parse refs/heads/main)^{tree}" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the tree of refs/heads/main: $NOT_A_REPOSITORY" "main's tree git cannot read"
+expect_nothing_run "main's tree git cannot read"
 
 # A clone git cannot open as a repository names git's reason.
 begin_case 'repository git cannot open'

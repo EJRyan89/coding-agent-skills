@@ -138,9 +138,12 @@ EOF
 # names and the ref as its pin, keeping a user's recorded pin's ref at its own commit unless --unpin is given, as the
 # real one does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, prints $FAKE_CHECK_STDERR to stderr, as the real one prints its errors, when it is
-# set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
+# set, sends the update that started it TERM when $FAKE_CHECK_TERM is set, and exits with $FAKE_CHECK_EXIT. Like the real
+# one, it refuses to replace a
 # recorded pin without --unpin: with --at only a pin at another commit that is not the full name of a release tag
-# naming its commit, and without --at any pin.
+# naming its commit, and without --at any pin. The record stands for the manifest in the home, which the real one reads
+# wherever it runs from, so it is the file $FAKE_DEPLOY_RECORD names, which run_subject sets to the clone's for the run,
+# and without it the one beside the deploy.py that runs.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
@@ -148,7 +151,7 @@ git_quiet init -b main "$SEED"
 cat >"$SEED/deploy.py" <<'EOF'
 import os, re, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
-record = os.path.join(here, ".fake-deployed")
+record = os.environ.get("FAKE_DEPLOY_RECORD") or os.path.join(here, ".fake-deployed")
 arguments = sys.argv[1:]
 with open(os.environ["FAKE_DEPLOY_LOG"], "a", encoding="utf-8") as log:
     log.write(" ".join(arguments) + "\n")
@@ -166,6 +169,11 @@ if arguments == ["check"]:
     if "FAKE_CHECK_STDERR" in os.environ:
         for line in ("", os.environ["FAKE_CHECK_STDERR"], ""):
             print(line, file=sys.stderr)
+    if os.environ.get("FAKE_CHECK_TERM"):
+        import signal
+        # The update runs check in a command substitution, so the update is the parent of check's parent.
+        update = subprocess.run(["ps", "-o", "ppid=", "-p", str(os.getppid())], capture_output=True, text=True, check=True)
+        os.kill(int(update.stdout.strip()), signal.SIGTERM)
     raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")
@@ -249,7 +257,7 @@ run_subject() {
   export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
   : >"$FAKE_DEPLOY_LOG"
   set +e
-  OUTPUT=$(bash "$SUBJECT" "$@" 2>"$FIXTURE/stderr")
+  OUTPUT=$(FAKE_DEPLOY_RECORD="${1:-$FIXTURE}/.fake-deployed" bash "$SUBJECT" "$@" 2>"$FIXTURE/stderr")
   status=$?
   set -e
 }
@@ -280,6 +288,26 @@ expect_deployed() {
 expect_not_deployed() { ! grep -q -e "^--all" "$FAKE_DEPLOY_LOG" || fail "$1: deploy.py ran"; }
 expect_nothing_run() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"; }
 head_of() { git -C "$1" rev-parse --short "$2"; }
+
+# Leaves the clone on a new branch, named by the first argument, whose committed deploy.py is not main's, as another
+# author's pull request checked out to look at it would be: it logs "branch" and its arguments before main's own lines
+# run, so a case tells which deployer ran.
+checkout_branch_deployer() {
+  git_quiet -C "$CLONE" checkout -b "$1"
+  {
+    printf 'import os, sys\n'
+    printf 'with open(os.environ["FAKE_DEPLOY_LOG"], "a", encoding="utf-8") as log:\n'
+    printf '    log.write(" ".join(["branch", *sys.argv[1:]]) + "\\n")\n'
+    cat -- "$CLONE/deploy.py"
+  } >"$FIXTURE/branch deploy.py"
+  mv -- "$FIXTURE/branch deploy.py" "$CLONE/deploy.py"
+  git_quiet -C "$CLONE" commit -a -m "another author's deploy.py"
+}
+# The branch's deploy.py never ran, and main's read the pin with check.
+expect_main_deployer() {
+  ! grep -q -e "^branch" "$FAKE_DEPLOY_LOG" || fail "$1: the branch's deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"
+  grep -q -x -e "check" "$FAKE_DEPLOY_LOG" || fail "$1: main's deploy.py did not run check: $(cat "$FAKE_DEPLOY_LOG")"
+}
 
 # Version tags are published upstream only, so the clone must fetch them to see either side's version. A tag names the
 # seed's HEAD, or the commit the second argument names.

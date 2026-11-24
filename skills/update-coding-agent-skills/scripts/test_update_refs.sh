@@ -75,6 +75,34 @@ esac
 grep -qx "CROSSED unknown..v4.0.0" <<<"$OUTPUT" || fail "no base accepted: crossing not named: $OUTPUT"
 expect_deployed "no base accepted" "--all --at refs/tags/v4.0.0"
 
+# Main is looked up by its full name exactly, so a tag whose own name is refs/heads/main, which git's lookup rules would
+# find for refs/heads/main while the clone has no local main, is never read as main: the commits are still named
+# unlisted, on the stop and once --cross-major accepts it, never listed from the tag.
+begin_case 'no local main, a tag named refs/heads/main'
+for CHANNEL in release main; do
+  new_clone --branch v3.0.0
+  rm -- "$CLONE/.fake-deployed"
+  git_quiet -C "$CLONE" tag refs/heads/main
+  run_subject "$CLONE" "$CHANNEL"
+  expect_status 1 "lookalike tag $CHANNEL"
+  expect_first_line "MAJOR_UPDATE unknown..v4.0.0" "lookalike tag $CHANNEL"
+  END=refs/remotes/origin/main
+  [ "$CHANNEL" = main ] || END=refs/tags/v4.0.0
+  [ "$(printf '%s\n' "$OUTPUT" | wc -l | tr -d ' ')" = "2" ] || fail "lookalike tag $CHANNEL: expected two lines: $OUTPUT"
+  case "${OUTPUT#*$'\n'}" in
+    "UNLISTED refs/heads/main..$END not listed: "?*) ;;
+    *) fail "lookalike tag $CHANNEL: the commits were not named unlisted: $OUTPUT" ;;
+  esac
+done
+run_subject "$CLONE" release --cross-major
+expect_status 0 "lookalike tag accepted"
+expect_first_line "UPDATED unknown..v4.0.0" "lookalike tag accepted"
+case "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" in
+  "UNLISTED refs/heads/main..refs/tags/v4.0.0 not listed: "?*) ;;
+  *) fail "lookalike tag accepted: the commits were not named unlisted: $OUTPUT" ;;
+esac
+expect_deployed "lookalike tag accepted" "--all --at refs/tags/v4.0.0"
+
 # A release whose major or minor is longer than Bash's integers hold is compared exactly, as release_tags.py reads it,
 # so a raised major stops the update as any other does; the tag is then removed so the cases below follow the releases
 # above.
