@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import codecs
+import errno
 import os
 import subprocess
 import sys
@@ -22,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import duplication
+import file_presence
+import python_checks
 import skill_scripts
 import validation_support
 from validation_support import (
@@ -901,6 +904,33 @@ class RepositoryFilesFixtures(unittest.TestCase):
                     checkout / "tools" / "other.py",
                 ],
                 sorted(repository_files(checkout)),
+            )
+
+    def test_a_tracked_sidecar_is_listed_so_every_policy_reads_what_the_commit_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            write_fixture_tree(checkout, {"tools/tool.py": "VALUE = 1\n"})
+            (checkout / "tools" / "._tool.py").write_bytes(SIDECAR_BYTES)
+            # Committed by mistake, as `git add -A` on such a volume does.
+            self.repository(checkout, {})
+            files = repository_files(checkout)
+            self.assertEqual([checkout / "tools" / "._tool.py", checkout / "tools" / "tool.py"], sorted(files))
+            problems = python_checks.encoding_problems(checkout, files)
+            self.assertEqual(1, len(problems), problems)
+            self.assertTrue(problems[0].startswith("tools/._tool.py "), problems)
+
+    def test_a_dot_underscore_file_in_a_folder_it_cannot_list_is_kept_and_the_folder_listed_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            self.repository(checkout, {"tools/one.py": "VALUE = 1\n", "tools/two.py": "VALUE = 2\n"})
+            for name in ("._one.py", "._two.py"):
+                (checkout / "tools" / name).write_bytes(SIDECAR_BYTES)
+            refused = OSError(errno.EACCES, "Access is denied")
+            with mock.patch.object(file_presence, "listed", side_effect=refused) as listing:
+                files = repository_files(checkout)
+            self.assertEqual([mock.call(checkout / "tools")], listing.call_args_list)
+            self.assertEqual(
+                [checkout / "tools" / name for name in ("._one.py", "._two.py", "one.py", "two.py")], sorted(files)
             )
 
 

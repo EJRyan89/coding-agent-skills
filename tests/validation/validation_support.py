@@ -1456,26 +1456,38 @@ def continued_lines(text: str, marks: str = SHELL_CONTINUATIONS) -> list[tuple[i
 
 
 def repository_files(root: Path) -> list[Path]:
-    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include, but the AppleDouble
-    sidecars macOS writes beside each file on a FAT, exFAT, or SMB volume, which no ignore rule names, as
-    `_is_own_file` judges each.
+    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include, but the untracked
+    AppleDouble sidecars macOS writes beside each file on a FAT, exFAT, or SMB volume, which no ignore rule names, as
+    `_untracked_sidecars` finds them. A tracked file is always listed, a sidecar committed by mistake included, so
+    every policy still reads what the commit holds.
 
     Raises ReleaseNotesError naming the command when git cannot run or cannot list them.
     """
     listed = git_output(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-    folders: dict[Path, frozenset[str] | None] = {}
-    return [
-        root / name
-        for name in listed.split("\0")
-        if name and file_presence.is_present(root / name, other_is_absent=True) and _is_own_file(root / name, folders)
+    names = [
+        name for name in listed.split("\0") if name and file_presence.is_present(root / name, other_is_absent=True)
     ]
+    sidecars = _untracked_sidecars(root, names)
+    return [root / name for name in names if name not in sidecars]
+
+
+def _untracked_sidecars(root: Path, names: list[str]) -> frozenset[str]:
+    """The names among `names`, each a file git lists, that are untracked and that `_is_own_file` finds are no file of
+    the checkout's own. Git is asked for the untracked names only when a name has the `._` prefix, so a checkout
+    holding none runs no second listing."""
+    candidates = [name for name in names if name.rpartition("/")[2].startswith(apple_double.PREFIX)]
+    if not candidates:
+        return frozenset()
+    untracked = frozenset(git_output(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0"))
+    folders: dict[Path, frozenset[str] | None] = {}
+    return frozenset(name for name in candidates if name in untracked and not _is_own_file(root / name, folders))
 
 
 def _is_own_file(path: Path, folders: dict[Path, frozenset[str] | None]) -> bool:
-    """Whether a file git lists is the checkout's own rather than a sidecar: whether `file_presence.listed`, which
-    judges a `._<name>` entry by its sibling in the same listing, its own metadata, and its header, keeps it. Only a
-    `._` name has its folder listed, once, kept in `folders`; a folder it cannot list keeps the file, whose own read
-    reports it."""
+    """Whether an untracked file git lists is the checkout's own rather than a sidecar: whether
+    `file_presence.listed`, which judges a `._<name>` entry by its sibling in the same listing, its own metadata, and
+    its header, keeps it. Only a `._` name has its folder listed, once, kept in `folders`; a folder it cannot list
+    keeps the file, whose own read reports it."""
     if not path.name.startswith(apple_double.PREFIX):
         return True
     if path.parent not in folders:
