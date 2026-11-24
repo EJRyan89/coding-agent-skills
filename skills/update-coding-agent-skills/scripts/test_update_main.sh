@@ -221,6 +221,54 @@ expect_nothing_run "main's folder not made"
 [ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
   fail "main's folder not made: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
 
+# A step that fails without a word is named with its exit status, never an empty reason: here git archive, and then
+# tar, each exit without printing anything.
+SILENT_STEPS="$FIXTURE/silent steps"
+mkdir -p "$SILENT_STEPS"
+cat >"$SILENT_STEPS/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" archive "*) [ -z "\${SILENT_ARCHIVE:-}" ] || exit 3 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+cat >"$SILENT_STEPS/tar" <<EOF
+#!/usr/bin/env bash
+[ -z "\${SILENT_TAR:-}" ] || exit 2
+exec "$(command -v tar)" "\$@"
+EOF
+chmod +x "$SILENT_STEPS/git" "$SILENT_STEPS/tar"
+SILENT_ARCHIVE=1 TMPDIR="$FIXTURE/tmp for the archive" PATH="$SILENT_STEPS:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot write main's tree out to read the pin with its deploy.py: git archive exited 3 and printed nothing" \
+  "silent archive"
+expect_nothing_run "silent archive"
+SILENT_TAR=1 TMPDIR="$FIXTURE/tmp for the archive" PATH="$SILENT_STEPS:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot write main's tree out to read the pin with its deploy.py: tar exited 2 and printed nothing" \
+  "silent tar"
+expect_nothing_run "silent tar"
+[ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
+  fail "silent steps: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
+
+# A tar that stops reading before git archive has written everything, as macOS's stops at the archive's end marker
+# with git's padding still to come, never fails the update: git archive writes a file, never into a pipe tar may close.
+# The stand-in tar reads nothing from a pipe and exits; reading a file, it is tar itself.
+begin_case "tar that stops reading early"
+EARLY_TAR="$FIXTURE/early tar"
+mkdir -p "$EARLY_TAR"
+cat >"$EARLY_TAR/tar" <<EOF
+#!/usr/bin/env bash
+if [ -p /dev/stdin ]; then
+  exec 0<&-
+  exit 0
+fi
+exec "$(command -v tar)" "\$@"
+EOF
+chmod +x "$EARLY_TAR/tar"
+PATH="$EARLY_TAR:$PATH" run_subject "$CLONE" main
+expect_status 0 "tar that stops reading early"
+expect_main_deployer "tar that stops reading early"
+expect_deployed "tar that stops reading early"
+
 # An update ended by a signal while main's deploy.py runs check removes main's tree and its own files through its EXIT
 # trap. Main's check sends the update TERM. Windows ends a Git Bash process without running its traps, so the case runs
 # where signals reach bash.

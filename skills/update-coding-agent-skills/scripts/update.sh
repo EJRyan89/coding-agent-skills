@@ -373,11 +373,26 @@ if [ "$GIT_OUT" != "$MAIN_TREE" ]; then
     exit 1
   fi
   # The tree is named by its object, the one compared above, so a ref moved meanwhile cannot change what is written.
-  if ! OUTPUT=$({ git -C "$CLONE" archive --format=tar "$MAIN_TREE" | tar -x -f - -C "$MAIN_COPY"; } 2>&1); then
-    echo "FAILED cannot write main's tree out to read the pin with its deploy.py: $(one_line "$OUTPUT")"
+  # git archive writes it to a file in the folder, and tar extracts the file beside it: through a pipe, a tar that
+  # stops reading at the archive's end marker, as macOS's does, leaves git writing its padding to a closed pipe, and
+  # git dies of SIGPIPE without a word. tar reads the file on its standard input, as GNU tar, Git for Windows' own,
+  # takes a -f path holding a drive letter's colon for a remote host's. A step that fails without a word is named with
+  # its exit status.
+  MAIN_ARCHIVE="$MAIN_COPY/main.tar"
+  CHECK_TREE="$MAIN_COPY/tree"
+  STEP=0
+  OUTPUT=$(git -C "$CLONE" archive --format=tar -o "$MAIN_ARCHIVE" "$MAIN_TREE" 2>&1) || STEP=$?
+  STEP_NAME="git archive"
+  if [ "$STEP" -eq 0 ]; then
+    STEP_NAME="tar"
+    OUTPUT=$({ mkdir -- "$CHECK_TREE" && tar -x -f - -C "$CHECK_TREE" <"$MAIN_ARCHIVE"; } 2>&1) || STEP=$?
+  fi
+  if [ "$STEP" -ne 0 ]; then
+    REASON=$(one_line "$OUTPUT")
+    echo "FAILED cannot write main's tree out to read the pin with its deploy.py:" \
+      "${REASON:-$STEP_NAME exited $STEP and printed nothing}"
     exit 1
   fi
-  CHECK_TREE=$MAIN_COPY
 fi
 
 # check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
