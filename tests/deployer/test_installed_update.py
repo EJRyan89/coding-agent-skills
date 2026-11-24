@@ -381,19 +381,15 @@ def replaced_pin_line(installation: Installation, ref: str, pinned: str) -> str:
     return f"Replaced the deployment pinned with --at {ref} to {source_commit.describe(installation.clone, pinned)}."
 
 
+# Each case below starts from the stop at the user's pin, which stopped_at_the_pin holds, rather than a case of its
+# own that would deploy and update the release once more for the same assertions.
 @pytest.mark.parametrize("form", PIN_FORMS)
-def test_an_update_over_a_users_pin_stops_with_pinned_and_changes_nothing(
+def test_an_update_over_a_users_pin_stops_with_pinned_then_with_unpin_deploys_under_the_pin_of_its_own(
     installation: Installation, form: str
 ) -> None:
-    stopped_at_the_pin(installation, form)
-
-
-@pytest.mark.parametrize("form", PIN_FORMS)
-def test_an_update_with_unpin_over_a_users_pin_deploys_the_release_and_leaves_the_pin_its_own(
-    installation: Installation, form: str
-) -> None:
-    """--unpin deploys the release the update stopped before and replaces the user's pin with the release channel's
-    own, which the next release then moves without --unpin."""
+    """The update stops at the user's pin with PINNED and changes nothing; --unpin then deploys the release it stopped
+    before and replaces the user's pin with the release channel's own, which the next release moves without
+    --unpin."""
     ref, pinned, commit = stopped_at_the_pin(installation, form)
     patch = next_release(installation.release, breaking=False)
     before = git(installation.clone, "rev-parse", "--short", "HEAD")
@@ -410,11 +406,11 @@ def test_an_update_with_unpin_over_a_users_pin_deploys_the_release_and_leaves_th
 
 
 @pytest.mark.parametrize("form", PIN_FORMS)
-def test_deploying_the_updated_clone_with_unpin_over_a_users_pin_clears_it(
+def test_an_update_over_a_users_pin_stops_with_pinned_then_deploying_the_updated_clone_with_unpin_clears_it(
     installation: Installation, form: str
 ) -> None:
-    """The other route the update's PINNED leads to: update the clone, then `deploy.py --all --unpin`, which deploys
-    the clone's HEAD unpinned, so the next update deploys without --unpin."""
+    """The other route from the update's PINNED: update the clone, then `deploy.py --all --unpin`, which deploys the
+    clone's HEAD unpinned, so the next update deploys without --unpin."""
     ref, pinned, commit = stopped_at_the_pin(installation, form)
     git(installation.clone, "pull", "--quiet", "--ff-only", "origin", "main")
     deployed = installation.deploy("--all", "--unpin")
