@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import unittest
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -106,8 +107,8 @@ class SignalFixture(InsightFixture):
         )
         commit_record(self.archive, "owner/repo", number, built, expected_latest_version=version - 1 or None)
 
-    def signal_lines(self) -> tuple[Path, list[str]]:
-        code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+    def signal_lines(self, start: str = "2026-01-01") -> tuple[Path, list[str]]:
+        code, out, err = self.run_main("report", "--start", start, "--end", "2026-01-31")
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         return Path(lines[0].removeprefix("REPORT ")), [line for line in lines if line.startswith(SIGNAL_PREFIXES)]
@@ -205,6 +206,21 @@ class VerdictFlipTests(SignalFixture):
                 "FLIP_DIFFERENCE V1 src/a.cs:3 MUST_FIX -> absent owner/repo#7 v1 F001",
             ],
             lines,
+        )
+
+    def test_a_held_finding_whose_raising_review_is_before_the_range_differs_with_no_location(self) -> None:
+        # The first review raised the finding and falls before the range, so the second holds the ledger entry with
+        # no finding to place it by: it is matched by its entry alone and printed with no location.
+        self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")], head=OTHER_HEAD)
+        self.review(7, 2, [], mode="re-review", dispositions=(("v1:F001", "still_present"),))
+        self.review(7, 3, [], mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        _, lines = self.signal_lines(start="2026-01-12")
+        self.assertEqual(
+            [
+                f"VERDICT_FLIP V1 owner/repo#7 head={HEAD[:12]} v2=CHANGES_REQUESTED v3=APPROVED",
+                "FLIP_DIFFERENCE V1 (no location) MUST_FIX -> absent owner/repo#7 v1 F001",
+            ],
+            [line for line in lines if line.startswith(("VERDICT_FLIP", "FLIP_DIFFERENCE"))],
         )
 
     def test_a_verdict_that_changes_with_the_code_is_no_flip(self) -> None:
@@ -428,13 +444,19 @@ class CapTests(SignalFixture):
         self.assertIn("SIGNALS_OMITTED verdict_flips 1", lines)
 
     def test_a_flip_between_approval_and_requested_changes_outranks_one_from_an_incomplete_review(self) -> None:
-        flip = {
+        flip: review_signals.VerdictFlip = {
             "verdicts": ["APPROVED", "CHANGES_REQUESTED"],
             "repository": "owner/repo",
             "pull_number": 9,
             "versions": [1, 2],
+            "head_sha": HEAD,
+            "differences": [],
         }
-        incomplete = {**flip, "verdicts": ["INCOMPLETE", "CHANGES_REQUESTED"], "pull_number": 1}
+        incomplete: review_signals.VerdictFlip = {
+            **flip,
+            "verdicts": ["INCOMPLETE", "CHANGES_REQUESTED"],
+            "pull_number": 1,
+        }
         self.assertLess(review_signals.flip_rank(flip, 1), review_signals.flip_rank(incomplete, 5))
 
     def test_disagreements_keep_the_widest_spread_then_the_most_findings_not_the_first_pull(self) -> None:
@@ -478,6 +500,26 @@ class UpgradeTests(SignalFixture):
         json_path.write_text(json.dumps({**report, "signals": {"severity_drift": []}}), encoding="utf-8")
         with self.assertRaisesRegex(ri.InsightError, "has invalid signals"):
             ri.load_report(json_path)
+
+
+class ShapeTests(unittest.TestCase):
+    def test_the_signals_table_and_each_shape_name_the_same_signals_in_the_same_order(self) -> None:
+        # `kept` and `empty` spell out each signal's name, so the table and the shapes must name the same signals,
+        # and the report keeps its keys in the order the two have always written them.
+        names = list(review_signals.SIGNALS)
+        self.assertEqual(names, list(review_signals.FIELDS))
+        self.assertEqual(names, list(review_signals.Found.__annotations__))
+        self.assertEqual([*names, "counts"], list(review_signals.Signals.__annotations__))
+        self.assertEqual([*names, "counts"], list(review_signals.empty()))
+        found: review_signals.Found = {
+            "severity_drift": [],
+            "verdict_flips": [],
+            "reviewer_disagreements": [],
+            "guidance_overlaps": [],
+            "unsupplied_references": [],
+        }
+        self.assertEqual(["counts", *names], list(review_signals.kept(found)))
+        self.assertEqual(review_signals.empty(), review_signals.kept(found))
 
 
 def _input(json_path: Path) -> list[dict[str, Any]]:
