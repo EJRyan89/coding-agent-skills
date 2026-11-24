@@ -1100,6 +1100,77 @@ class RenderTests(SynthesisFixture):
             with self.subTest(expected=expected):
                 self.assertIn(expected, markdown)
 
+    def test_every_other_text_the_synthesis_wrote_reaches_the_markdown_as_literal_text(self) -> None:
+        # A title, a custom-rule pattern with its rules and assessment, a pattern left in place with its likely reason,
+        # a theme's areas, the least useful reviewer and the false-positive candidates, and a comparison with the
+        # previous period are the model's text, or a reviewer's for a custom rule's tool; a title may hold no
+        # backslash, so its text leaves that one out.
+        self.commit("owner/repo", 5, ["Correctness"], reviewed_at="2025-12-20T12:00:00+00:00")
+        december, _ = self.run_report("2025-12-01", "2025-12-31")
+        previous = self.valid_result(december, themes=[], mistakes=[])
+        previous["recommendations"][0]["evidence"] = ["owner/repo#5 v1 F001"]
+        self.assertEqual(0, self.synthesize(december, self.write_result(december, previous))[0])
+        self.commit("owner/other", 4, [covered("custom-candidate", "[x](https://example.com)@user", "retry-loop")])
+        json_path, _ = self.run_report()
+        title = "Title <!-- hidden [x](https://example.com) @user | end"
+        categories = self.categories(json_path)
+        for entry in categories:
+            entry["addressed_by"] = [title]
+        context = json.loads((json_path.parent / rs.CONTEXT_NAME).read_text(encoding="utf-8"))
+        result = self.valid_result(
+            json_path,
+            categories=categories,
+            custom_rule_patterns=[
+                {
+                    "pattern": f"Pattern {UNTRUSTED}",
+                    "rules": context["custom_rules"],
+                    "assessment": f"Worth {UNTRUSTED}",
+                    "addressed_by": [],
+                }
+            ],
+            persistent_patterns=[
+                {
+                    "pattern": f"Left {UNTRUSTED}",
+                    "count": 1,
+                    "likely_reason": f"Reason {UNTRUSTED}",
+                    "examples": [context["refs"][0]],
+                }
+            ],
+            comparison={
+                "persistent": [f"Kept {UNTRUSTED}", "Other"],
+                "new": [f"New {UNTRUSTED}"],
+                "resolved": [f"Gone {UNTRUSTED}"],
+                "previous_recommendations": [{"id": "REC-002", "assessment": f"Assessed {UNTRUSTED}"}],
+            },
+        )
+        result["recommendations"][0]["title"] = title
+        result["themes"][0]["areas"] = [f"Area {UNTRUSTED}", "Other"]
+        result["reviewer_effectiveness"].update(
+            least_useful=f"Least {UNTRUSTED}", false_positive_candidates=[f"Candidate {UNTRUSTED}", "Second"]
+        )
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual(0, code, out + err)
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        for markup in MARKUP:
+            with self.subTest(markup=markup):
+                self.assertNotIn(markup, markdown)
+        link = "&#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;"
+        for expected in (
+            f" — Title &lt;&#33;&#45;&#45; hidden {link} &#64;user &#124; end\n\nType: strengthen-rule\n",
+            f"\n- **Pattern {LITERAL}** (1 rules: {link}&#64;user retry&#45;loop) — Worth {LITERAL} "
+            "Addressed by: none\n",
+            f"\n- **Left {LITERAL}** (1) — Reason {LITERAL}; e.g. ",
+            f"\n- **Time handling** (2) — Area {LITERAL}, Other; e.g. ",
+            f"\n- Least useful: Least {LITERAL}\n",
+            f"\n- False-positive candidates: Candidate {LITERAL}; Second\n",
+            f"\n- Persistent: Kept {LITERAL}; Other\n",
+            f"\n- New: New {LITERAL}\n",
+            f"\n- Resolved: Gone {LITERAL}\n",
+            f"\n- REC-002: Assessed {LITERAL}\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, markdown)
+
 
 class StageTests(unittest.TestCase):
     """The synthesis stage's own choices, without a report around them."""

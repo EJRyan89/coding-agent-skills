@@ -530,6 +530,72 @@ def _input(json_path: Path) -> list[dict[str, Any]]:
 
 
 class RenderTests(unittest.TestCase):
+    def test_the_reports_own_text_is_written_as_it_is_and_a_stored_line_literal_as_a_whole(self) -> None:
+        # With record text that holds no ASCII punctuation, each line renders byte for byte as before the change, up to
+        # its stored differences and reports: the severities, finding references, and labels the report writes itself
+        # stay as they are. A flip's difference and a disagreement's report join a path or a reviewer's source with
+        # the report's own text into one stored line, so each is written literal as a whole.
+        signals: review_signals.Signals = {
+            "severity_drift": [
+                {
+                    "id": "D1",
+                    "basis": "group",
+                    "repository": "owner/repo",
+                    "category": "security",
+                    "headline": "Missing check",
+                    "severity": {"MUST_FIX": 1, "SUGGESTION": 1},
+                    "examples": ["MUST_FIX owner/repo#7 v1 F001"],
+                }
+            ],
+            "verdict_flips": [
+                {
+                    "id": "V1",
+                    "repository": "owner/repo",
+                    "pull_number": 7,
+                    "head_sha": HEAD,
+                    "versions": [1, 2],
+                    "verdicts": ["APPROVE", "REQUEST_CHANGES"],
+                    "differences": ["Makefile:3 MUST_FIX -> absent owner/repo#7 v1 F001"],
+                }
+            ],
+            "reviewer_disagreements": [
+                {
+                    "id": "R1",
+                    "repository": "owner/repo",
+                    "pull_number": 7,
+                    "head_sha": HEAD,
+                    "path": "Makefile",
+                    "line": 3,
+                    "reports": ["MUST_FIX owner/repo#7 v1 F001 security", "SUGGESTION owner/repo#7 v2 F002 style"],
+                }
+            ],
+            "guidance_overlaps": [],
+            "unsupplied_references": [],
+            "counts": {},
+        }
+        self.assertEqual(
+            [
+                "## Consistency signals",
+                "",
+                "### Severity drift",
+                "",
+                "- D1 (group) owner/repo security: Missing check — MUST_FIX:1,SUGGESTION:1; "
+                "e.g. MUST_FIX owner/repo#7 v1 F001",
+                "",
+                "### Verdicts that changed without a code change",
+                "",
+                "- V1 owner/repo#7 at cccccccccccc: v1 APPROVE, v2 REQUEST_CHANGES — "
+                "Makefile&#58;3 MUST&#95;FIX &#45;&gt; absent owner&#47;repo&#35;7 v1 F001",
+                "",
+                "### Reviewer disagreement",
+                "",
+                "- R1 owner/repo#7 Makefile:3 — MUST&#95;FIX owner&#47;repo&#35;7 v1 F001 security; "
+                "SUGGESTION owner&#47;repo&#35;7 v2 F002 style",
+                "",
+            ],
+            review_signals.render(signals),
+        )
+
     def test_record_and_guidance_text_reaches_the_markdown_as_literal_text(self) -> None:
         # A category, headline, path, reviewer ID, and finding source are record text, and a guidance file's path, its
         # text, and the reference it names are the repository's, so none of them may open markup in the report.

@@ -594,7 +594,10 @@ def facts(signals: Signals) -> list[str]:
 
 def render(signals: Signals) -> list[str]:
     """The report's Markdown section of signals, or nothing when there are none. A record's category, headline, path,
-    source, and reviewer ID, and a guidance file's path and text, are literal, through `markdown_line`."""
+    and reviewer ID, and a guidance file's path, text, and reference, are literal, through `markdown_line`; the
+    report's own text and finding references are written as they are. A flip's difference and a disagreement's report
+    each join a path or a reviewer's source with the report's own severities and references into one stored line,
+    which is literal as a whole, since its parts are not stored apart."""
     sections = [
         (
             "Severity drift",
