@@ -524,8 +524,12 @@ class ReadTests(unittest.TestCase):
     def test_a_link_leading_out_of_the_checkout_is_never_followed_to_judge_it(self) -> None:
         # A junction on Windows, a symbolic link on Linux and macOS: the reader judges the link from its own metadata,
         # so nothing it leads to outside the checkout is looked at, where resolving the path used to follow it there.
-        outside = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, outside)
+        # The outside folder lies one level down in a temporary folder of its own, so it is no entry of any folder the
+        # reader asks how it compares names, which may look up any one entry there by its own metadata.
+        container = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, container)
+        outside = container / "outside"
+        outside.mkdir()
         (outside / "checklist.md").write_text(CHECKLIST, encoding="utf-8", newline="\n")
         link(outside, self.checkout / "leaving")
         looked: list[str] = []

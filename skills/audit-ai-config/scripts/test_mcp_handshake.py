@@ -8,7 +8,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +25,7 @@ import audit_ai_config
 import bounded_process
 import mcp_handshake
 import nesting_depth
-from test_audit_ai_config import looked_at
+from test_audit_ai_config import _outside_folder, looked_at
 
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
@@ -810,8 +809,7 @@ class HandshakeTests(unittest.TestCase):
         # A junction on Windows, a symbolic link elsewhere: the reader judges the link by its text, where resolving the
         # cwd once followed it outside the repository to learn where it leads. The outside folder is no sibling of the
         # repository, whose parent the reader asks how it compares names.
-        outside = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, outside)
+        outside = _outside_folder(self)
         (outside / "deeper").mkdir()
         link_directory(outside, self.root / "linked")
         self._write(".mcp.json", "mcpServers", {"linked": self._stdio("record", cwd="linked/deeper")})

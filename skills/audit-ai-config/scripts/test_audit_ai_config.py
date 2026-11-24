@@ -7028,8 +7028,7 @@ class PresenceAnswerTests(unittest.TestCase):
     def test_a_git_that_is_a_link_out_of_the_root_is_no_checkout_whatever_it_leads_to(self) -> None:
         # The audit does not follow a link out of the root to learn what is there, so a .git leading out to a real
         # Git directory, or to nothing, is refused, naming the link, and nothing outside is looked at.
-        outside = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, outside)
+        outside = _outside_folder(self)
         (outside / "git").mkdir()
         checkout = self.root / "linked-checkout"
         checkout.mkdir()
@@ -7108,6 +7107,18 @@ class UnlistableDirectoryTests(unittest.TestCase):
             ],
             [row for row in _finding_rows(copilot) if row[0] == "ERROR"],
         )
+
+
+def _outside_folder(case: unittest.TestCase) -> Path:
+    """A folder outside the repository, one level down in a temporary folder of its own, so it is no entry of any
+    folder the tree reader asks how it compares names: deciding whether a path lies in the repository asks each
+    folder above it, the temporary directory included, and may look up any one entry there by its own metadata.
+    """
+    container = Path(tempfile.mkdtemp()).resolve()
+    case.addCleanup(shutil.rmtree, container)
+    folder = container / "outside"
+    folder.mkdir()
+    return folder
 
 
 @contextlib.contextmanager
@@ -7198,8 +7209,7 @@ class OutsideLinkTests(unittest.TestCase):
         # A junction on Windows, a symbolic link elsewhere: the reader judges each link by its text, so the audit never
         # stats, lists, or resolves what lies outside to learn that it leads out, where resolving it once did. The
         # outside folder is no sibling of the repository, whose parent the reader asks how it compares names.
-        elsewhere = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, elsewhere)
+        elsewhere = _outside_folder(self)
         for link in (".github/agents", "vendor", ".claude/rules"):
             _link_directory(elsewhere, self.root / link)
         with looked_at(elsewhere) as looked:

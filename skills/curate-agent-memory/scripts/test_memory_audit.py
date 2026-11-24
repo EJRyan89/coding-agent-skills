@@ -109,6 +109,18 @@ def directory_link(link: Path, target: Path) -> Path:
     return link
 
 
+def outside_folder(case: unittest.TestCase) -> Path:
+    """A folder outside every tree a test examines, one level down in a temporary folder of its own, so it is no
+    entry of any folder the tree reader asks how it compares names: deciding whether a path lies in a tree asks
+    each folder above the tree, the temporary directory included, and may look up any one entry there by its own
+    metadata, never following it, as the tree reader's stated limit says."""
+    container = Path(tempfile.mkdtemp()).resolve()
+    case.addCleanup(shutil.rmtree, container, ignore_errors=True)
+    folder = container / "outside"
+    folder.mkdir()
+    return folder
+
+
 @contextmanager
 def looks_past(links: Sequence[Path], outside: Path) -> Iterator[list[str]]:
     """Record each stat, listing, or followed stat that reaches past one of `links` or into `outside`: an os.stat,
@@ -482,9 +494,7 @@ class MemoryAuditTests(unittest.TestCase):
         """A folder outside the repository and the memory store, in a temporary folder of its own, so it is no sibling
         of either: deciding whether a path lies in a tree asks the tree's parent how it compares names, which on Windows
         looks up a sibling's own entry, never following it, as the tree reader's stated limit says."""
-        folder = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
-        return folder
+        return outside_folder(self)
 
     def outside_rule(self) -> Path:
         """A folder outside the repository and the memory store holding a rule a memory overlaps."""
@@ -3199,8 +3209,7 @@ class ResolveTests(unittest.TestCase):
         # A junction on Windows, a symbolic link on Linux and macOS: the repository's settings are read through its
         # reader, so a .claude folder leading out of it is refused, failing resolve as an unreadable settings file
         # does, and the settings where it leads are never read to choose the memory directory.
-        outside = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        outside = outside_folder(self)
         write(outside / "settings.json", json.dumps({"autoMemoryDirectory": str(outside / "memory")}))
         link = directory_link(self.repo / ".claude", outside)
         with looks_past([link], outside) as looked:
