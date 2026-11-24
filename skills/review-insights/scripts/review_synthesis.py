@@ -182,6 +182,24 @@ PRESENCE_ALLOWED = {
 }
 
 
+# The reads of the skill's own files, outside the checkout whose guidance review_guidance reads through a tree reader,
+# each with why: none is a file of a repository the skill examines.
+TREE_READ_ALLOWED = {
+    "previous_period": (
+        "lists the repository set's summary folder the skill writes its reports in, and asks whether each period's "
+        "report is there: the skill's own output"
+    ),
+    "seal": "reads the input and context files report wrote beside the insights report: the skill's own output",
+    "Staged.stage_run": (
+        "resolves the new run folder the skill makes under the private temporary directory: the skill's own output"
+    ),
+    "remove_run": (
+        "compares the run folder a synthesis names with the temporary directory and reads the run.json the skill "
+        "wrote there, to remove only a run it made: the skill's own output"
+    ),
+}
+
+
 class SynthesisError(ValueError):
     """A result that cannot be recorded, with every problem found."""
 

@@ -30,6 +30,7 @@ from folder_walk import (
     SKIPPED_FOLDERS,
     UNEXAMINED,
     UNLISTABLE,
+    LeadsOutside,
     NotEntered,
     followed_inside,
     is_hidden,
@@ -512,6 +513,40 @@ class OutsideLinkTests(WalkTestCase):
 
         with mock.patch.object(os, "lstat", lstat):
             self.assertEqual("Access is denied", outside_link_refusal(locked / "Lib.csproj", self.root))
+
+    def test_only_a_way_leading_outside_is_typed_leads_outside(self) -> None:
+        # A caller tells a way out of the tree from any other refusal by its type, never by reading its text back.
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "F.csproj").write_text("x\n", encoding="utf-8")
+        (self.root / "Abs.csproj").symlink_to(outside / "F.csproj")
+        (self.root / "Rel.csproj").symlink_to("../outside/F.csproj")
+        for name in ("Abs.csproj", "Rel.csproj"):
+            with self.subTest(name=name):
+                reason = followed_inside(self.root / name, self.root)[1]
+                self.assertIsInstance(reason, LeadsOutside)
+                self.assertIsInstance(reason, str)
+        loop = self.root / "Loop.csproj"
+        loop.symlink_to("Loop.csproj")
+        chain = self.root / "Chain.csproj"
+        chain.symlink_to("Next.csproj")
+        self.write("Next.csproj")
+        locked = self.root / "Locked"
+        real_lstat = os.lstat
+
+        def lstat(path: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(path) == locked:
+                raise PermissionError(13, "Access is denied")
+            return real_lstat(path, *rest, **options)
+
+        with mock.patch.object(folder_walk, "LINK_LIMIT", 0):
+            limited = followed_inside(chain, self.root)[1]
+        with mock.patch.object(os, "lstat", lstat):
+            unreadable = followed_inside(locked / "Lib.csproj", self.root)[1]
+        for name, reason in (("loop", followed_inside(loop, self.root)[1]), ("limit", limited), ("lstat", unreadable)):
+            with self.subTest(name=name):
+                self.assertIsNotNone(reason)
+                self.assertNotIsInstance(reason, LeadsOutside)
 
     def test_a_walk_given_its_tree_follows_no_link_entry_out_of_it_not_even_to_learn_what_it_is(self) -> None:
         # A wanted link to a file outside is given to the caller to refuse, any other link leading outside is reported

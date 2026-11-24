@@ -125,6 +125,25 @@ from typed_fields import FieldError
 SCHEMA_VERSION = 9
 READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 UNKNOWN_MODEL = "unknown"
+# The reads outside the checkout whose guidance review_guidance reads through a tree reader, each with why: none reads a
+# file of a repository the skill examines.
+TREE_READ_ALLOWED = {
+    "<module>": (
+        "puts ejryan89-code-review-core's scripts on sys.path: skill_roots.sibling_scripts finds the sibling skill's "
+        "scripts folder beside this skill's own, no path of a tree the skill examines"
+    ),
+    "current_repository": (
+        "compares the working directory and git's common directory with each configured checkout path, resolved, to "
+        "choose the repository; it reads no file of a checkout"
+    ),
+    "create_report": "whether the insights report the skill wrote earlier is there: the skill's own output",
+    "synthesize": (
+        "compares the synthesis result path the agent gives with the one the report named: the skill's own run"
+    ),
+    "_existing_report_lock": (
+        "whether the insights report the user names is a file before its lock is made: the skill's own output"
+    ),
+}
 REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}
 OUTCOMES = ("addressed", "still_present")
 EVIDENCE_FIELDS = {"repository", "pull_number", "review_version", "finding_id", "path", "line", "title"}
