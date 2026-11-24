@@ -79,6 +79,7 @@ from validation_support import (
     attribute_lookups,
     bound_values,
     call_argument,
+    docstring_ids,
     import_aliases,
     is_test_script,
     listed,
@@ -5346,6 +5347,163 @@ def _target_names(target: ast.expr) -> list[ast.Name]:
     return []
 
 
+# A module that prints a fact line, an upper-case word, a space, and then its fields, as `INVOCATION <invocation>`,
+# takes each value it needs from where it built the line, never by splitting the line back into fields: a value that
+# holds a space, as a path may, moves every later field. So validation fails on a split(), rsplit(), partition(), or
+# rpartition() of a name, bound or unbound as str.split(line), or of a method call's result or a subscript on the name,
+# as line.strip().split() and line[4:].split(), inside the branch of an `if` or a conditional expression whose test,
+# alone or as an operand of an `and` or an `or` and outside a `not`, calls the name's startswith() with a fact word and
+# a space, given as a literal, a tuple of literals, or a name the module's top level binds once to either, and in the
+# result, a later `if` clause, or a later `for` clause's iterable of a comprehension one of whose `if` clauses does,
+# where the module builds a string that starts with that word and a space: a string literal, or a formatted string whose
+# first text does. A tested string, a startswith() argument or a comparison's operand, builds none, nor does a docstring
+# or the module's own FACT_SPLIT_ALLOWED value, so neither a test nor an allowance's reason can keep an entry alive. A
+# name rebound inside the branch is still read as the tested line. Stated limits, not read: a split after a test that
+# guards it by an early `continue`, `return`, or `raise` rather than a branch; a split no startswith() test guards, as
+# of a line whose word the split itself reads; a line another module builds; a string whose literal holds the word
+# without its space, as " ".join(("WORD", value)) builds; a test or a split of an attribute, as self.line, rather than a
+# name; a test through a `match` statement or a `while` loop; a split by re.split() or another function given the line;
+# a startswith() argument built by a `+` or a formatted string, as startswith(FACT + " ") or startswith(f"{FACT} "), and
+# a line built from a name holding the word, as f"{FACT}{value}"; and a split in the `else` branch of a `not` test, or
+# in the test itself, as line.startswith("FACT ") and (parts := line.split()). A split that must stay states why in a
+# module-level FACT_SPLIT_ALLOWED = {scope: reason}.
+FACT_SPLIT_ALLOWANCE = "FACT_SPLIT_ALLOWED"
+# A fact line's word, its letters, digits, and underscores, and the space that ends it, at the start of a string.
+FACT_WORD = re.compile(r"([A-Z][A-Z0-9_]*) ")
+FIELD_SPLITS = frozenset({"split", "rsplit", "partition", "rpartition"})
+FACT_TEST = "startswith"
+
+
+def _string_constants(node: ast.expr | None, constants: Mapping[str, ast.expr]) -> list[ast.Constant]:
+    """Each string literal a startswith() argument tests: itself, a tuple's items, or what a module-level name binds."""
+    if isinstance(node, ast.Name) and node.id in constants:
+        node = constants[node.id]
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node]
+    if isinstance(node, ast.Tuple):
+        return [item for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+    return []
+
+
+def _fact_tests(test: ast.expr, constants: Mapping[str, ast.expr]) -> list[tuple[str, str]]:
+    """Each name and fact word a test asserts the name starts with: a startswith() call on a name, alone or as an
+    operand of an `and` or an `or`, never under a `not`."""
+    if isinstance(test, ast.BoolOp):
+        return [found for operand in test.values for found in _fact_tests(operand, constants)]
+    if not (
+        isinstance(test, ast.Call)
+        and isinstance(test.func, ast.Attribute)
+        and test.func.attr == FACT_TEST
+        and isinstance(test.func.value, ast.Name)
+        and test.args
+    ):
+        return []
+    name = test.func.value.id
+    return [
+        (name, match.group(1))
+        for constant in _string_constants(test.args[0], constants)
+        if (match := FACT_WORD.match(str(constant.value)))
+    ]
+
+
+def _split_name(call: ast.Call) -> tuple[str, str] | None:
+    """The name a split(), rsplit(), partition(), or rpartition() call splits, through a method call's result or a
+    subscript on it, with the method, or None for any other call."""
+    function = call.func
+    if not isinstance(function, ast.Attribute) or function.attr not in FIELD_SPLITS:
+        return None
+    unbound = isinstance(function.value, ast.Name) and function.value.id == "str"
+    receiver: ast.expr | None = (call.args[0] if call.args else None) if unbound else function.value
+    while receiver is not None and not isinstance(receiver, ast.Name):
+        if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Attribute):
+            receiver = receiver.func.value
+        elif isinstance(receiver, ast.Subscript):
+            receiver = receiver.value
+        else:
+            receiver = None
+    return (receiver.id, function.attr) if receiver is not None else None
+
+
+def _guarded_regions(tree: ast.Module, constants: Mapping[str, ast.expr]) -> Iterator[tuple[list[ast.AST], str, str]]:
+    """Each region a startswith() test guards, with the name and the fact word it tests: an `if` statement's body, a
+    conditional expression's, and a comprehension's result, `if` clauses, and later `for` clauses' iterables."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If | ast.IfExp):
+            region: list[ast.AST] = list(node.body) if isinstance(node, ast.If) else [node.body]
+            for name, word in _fact_tests(node.test, constants):
+                yield region, name, word
+        elif isinstance(node, COMPREHENSIONS):
+            results: list[ast.AST] = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            for index, generator in enumerate(node.generators):
+                later = [later.iter for later in node.generators[index + 1 :]]
+                region = [*results, *(test for other in node.generators for test in other.ifs), *later]
+                for test in generator.ifs:
+                    for name, word in _fact_tests(test, constants):
+                        yield region, name, word
+
+
+def _built_fact_words(tree: ast.Module, constants: Mapping[str, ast.expr]) -> set[str]:
+    """The fact word of each string the module builds, a string literal or a formatted string whose first text starts
+    with it and a space. A startswith() argument, a comparison's operand, a docstring, and the module's own
+    FACT_SPLIT_ALLOWED assignment build none."""
+    unread = docstring_ids(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == FACT_TEST:
+            unread.update(id(part) for argument in node.args for part in ast.walk(argument))
+            unread.update(id(constant) for argument in node.args for constant in _string_constants(argument, constants))
+        elif isinstance(node, ast.Compare):
+            unread.update(id(part) for operand in (node.left, *node.comparators) for part in ast.walk(operand))
+    for value in _module_values(tree).get(FACT_SPLIT_ALLOWANCE, []):
+        if value is not None:
+            unread.update(id(part) for part in ast.walk(value))
+    words: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            # The parts after the first are text inside the string, not its start.
+            unread.update(id(part) for part in node.values)
+            if id(node) in unread:
+                continue
+            first = node.values[0] if node.values else None
+            text = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in unread:
+            text = node.value
+        else:
+            continue
+        if match := FACT_WORD.match(text):
+            words.add(match.group(1))
+    return words
+
+
+def fact_split_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each split of a fact line the module builds, read back into fields after a startswith() test of its word, that
+    no FACT_SPLIT_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        # The value of each name the module's top level binds once, which a startswith() given the name tests.
+        constants = {
+            bound: values[0] for bound, values in _module_values(tree).items() if len(values) == 1 and values[0]
+        }
+        built = _built_fact_words(tree, constants)
+        if not built:
+            problems += sanctioned_problems(name, tree, FACT_SPLIT_ALLOWANCE, [])
+            continue
+        scopes = {id(node): scope for node, scope in scoped_nodes(tree.body)}
+        found: dict[tuple[int, str, str], None] = {}
+        for region, tested, word in _guarded_regions(tree, constants):
+            if word not in built:
+                continue
+            for node in (part for top in region for part in ast.walk(top)):
+                if isinstance(node, ast.Call) and (split := _split_name(node)) is not None and split[0] == tested:
+                    refusal = (
+                        f"splits its own {word} line back into fields with {split[1]}() of {tested}: a value that "
+                        "holds a space moves every later field; carry each value beside the line where it is built, "
+                        f"or state why in {FACT_SPLIT_ALLOWANCE}"
+                    )
+                    found[(node.lineno, scopes[id(node)], refusal)] = None
+        problems += sanctioned_problems(name, tree, FACT_SPLIT_ALLOWANCE, sorted(found))
+    return problems
+
+
 # A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
 # GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`,
@@ -7112,6 +7270,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_program_output_is_split_at_its_line_feeds_alone(self) -> None:
         self.assertEqual([], output_split_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_module_splits_a_fact_line_it_builds_back_into_fields(self) -> None:
+        self.assertEqual([], fact_split_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_whether_git_answered_is_read_through_git_error_answered(self) -> None:
         self.assertEqual([], git_answered_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

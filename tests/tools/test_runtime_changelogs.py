@@ -15,7 +15,7 @@ import sys
 import tempfile
 import unittest
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -29,12 +29,23 @@ from presence_denial import denied
 from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_time_in_proportion import assert_time_in_proportion
 
+from tools import captured_samples, runtime_command_lines
 from tools import runtime_changelogs as watch
-from tools import runtime_command_lines
 from tools.runtime_canary import quote
 from tools.runtime_changelogs import Fetched, Term
+from tools.runtime_command_lines import Fact
 
 REPOSITORY = Path(__file__).resolve().parents[2]
+
+
+def printed(facts: Sequence[Fact]) -> list[str]:
+    """Each fact's line, as the watch prints it."""
+    return [fact.line for fact in facts]
+
+
+def shown(fact: Fact | None) -> str | None:
+    return fact.line if fact is not None else None
+
 
 CLAUDE_CHANGELOG = """# Changelog
 
@@ -156,7 +167,9 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual([f"{CODEX.url}?per_page=30&page=1", f"{CODEX.url}?per_page=30&page=2"], fetcher.requested)
 
     def test_kept_entries_name_the_terms_they_mention_each_in_its_own_changelog(self) -> None:
-        claude = watch.changelog_lines(CLAUDE, watch.changelog_releases(CLAUDE, StubFetcher(answers()), 1.0), WATCHED)
+        claude = printed(
+            watch.changelog_lines(CLAUDE, watch.changelog_releases(CLAUDE, StubFetcher(answers()), 1.0), WATCHED)
+        )
         self.assertEqual(
             [
                 "CHANGELOG claude-code 2.1.302 2.1.305 5 3",
@@ -168,7 +181,9 @@ class ChangelogTests(unittest.TestCase):
             ],
             claude,
         )
-        codex = watch.changelog_lines(CODEX, watch.changelog_releases(CODEX, StubFetcher(answers()), 1.0), WATCHED)
+        codex = printed(
+            watch.changelog_lines(CODEX, watch.changelog_releases(CODEX, StubFetcher(answers()), 1.0), WATCHED)
+        )
         self.assertEqual(
             [
                 "CHANGELOG codex 0.163.0 0.164.0 3 2",
@@ -183,7 +198,7 @@ class ChangelogTests(unittest.TestCase):
         recorded = Changelog(CLAUDE.subject, CLAUDE.url, CLAUDE.format, "2.1.305")
         releases = watch.changelog_releases(recorded, StubFetcher(answers()), 1.0)
         self.assertEqual(
-            ["CHANGELOG claude-code 2.1.305 2.1.305 0 0"], watch.changelog_lines(recorded, releases, WATCHED)
+            ["CHANGELOG claude-code 2.1.305 2.1.305 0 0"], printed(watch.changelog_lines(recorded, releases, WATCHED))
         )
 
     def test_a_changelog_that_cannot_be_fetched_or_read_stops_the_watch(self) -> None:
@@ -354,7 +369,7 @@ def test_a_real_copilot_release_without_a_bullet_is_listed_as_unread_beside_the_
     changelog = Changelog("copilot-cli", "https://example.com/copilot.md", "markdown", "1.0.53")
     text = (CAPTURED / "copilot-cli-release-without-entries.md").read_bytes()
     releases = watch.changelog_releases(changelog, StubFetcher({changelog.url: Fetched(200, changelog.url, text)}), 1.0)
-    assert watch.changelog_lines(changelog, releases, WATCHED) == [
+    assert printed(watch.changelog_lines(changelog, releases, WATCHED)) == [
         "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
         'UNREAD copilot-cli 1.0.54 "no bullet in its text: Fixes and changes"',
     ]
@@ -369,7 +384,7 @@ def test_a_real_codex_release_without_a_bullet_is_listed_as_unread_and_its_neigh
         changelog, StubFetcher({url: Fetched(200, url, json.dumps(later).encode())}), 1.0
     )
     full = "https://github.com/openai/codex/compare/rust-v0.149.0...rust-v0.149.1"
-    assert watch.changelog_lines(changelog, releases, [Term("path", ".claude/skills")]) == [
+    assert printed(watch.changelog_lines(changelog, releases, [Term("path", ".claude/skills")])) == [
         "CHANGELOG codex 0.148.0 0.149.1 2 0",
         f'UNREAD codex 0.149.1 "no bullet in its text: Full Changelog: {full}"',
     ]
@@ -382,7 +397,7 @@ def test_a_release_whose_entries_are_a_numbered_list_or_which_is_empty_is_unread
         "## 2.1.302.5\n\n## 2.1.302\n\n- Already read\n"
     )
     releases = watch.changelog_releases(CLAUDE, StubFetcher({CLAUDE.url: Fetched(200, CLAUDE.url, text.encode())}), 1.0)
-    assert watch.changelog_lines(CLAUDE, releases, WATCHED) == [
+    assert printed(watch.changelog_lines(CLAUDE, releases, WATCHED)) == [
         "CHANGELOG claude-code 2.1.302 2.1.303 0 0",
         'UNREAD claude-code 2.1.302.5 "its text is empty"',
         'UNREAD claude-code 2.1.303 "no bullet in its text: 1. Removed the `--allowedTools` flag"',
@@ -431,11 +446,11 @@ def test_github_releases_are_read_past_an_older_backport_to_the_recorded_release
 
 
 def test_a_quoted_reason_keeps_its_runs_of_spaces_in_the_summary() -> None:
-    lines = [
-        "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
-        'UNREAD copilot-cli 1.0.54 " no bullet  in its text:   Fixes  and changes "',
+    facts = [
+        Fact("CHANGELOG", ("copilot-cli", "1.0.53", "1.0.54", "0", "0")),
+        Fact("UNREAD", ("copilot-cli", "1.0.54", " no bullet  in its text:   Fixes  and changes "), (2,)),
     ]
-    assert "| 1.0.54 | none read |  no bullet  in its text:   Fixes  and changes  |\n" in watch.summary(lines)
+    assert "| 1.0.54 | none read |  no bullet  in its text:   Fixes  and changes  |\n" in watch.summary(facts)
 
 
 def test_the_line_for_no_watched_entry_is_pinned_once() -> None:
@@ -444,14 +459,14 @@ def test_the_line_for_no_watched_entry_is_pinned_once() -> None:
 
 
 def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_release() -> None:
-    lines = [
-        "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
-        'UNREAD copilot-cli 1.0.54 "no bullet in its text: Fixes | changes"',
-        "CHANGELOG claude-code 2.1.302 2.1.303 4 0",
-        "CHANGELOG codex 0.163.0 0.164.0 3 1",
-        'ENTRY codex 0.164.0 "-c" "Read -c twice"',
+    facts = [
+        Fact("CHANGELOG", ("copilot-cli", "1.0.53", "1.0.54", "0", "0")),
+        Fact("UNREAD", ("copilot-cli", "1.0.54", "no bullet in its text: Fixes | changes"), (2,)),
+        Fact("CHANGELOG", ("claude-code", "2.1.302", "2.1.303", "4", "0")),
+        Fact("CHANGELOG", ("codex", "0.163.0", "0.164.0", "3", "1")),
+        Fact("ENTRY", ("codex", "0.164.0", "-c", "Read -c twice"), (2, 3)),
     ]
-    text = watch.summary(lines)
+    text = watch.summary(facts)
     assert (
         "\n\n### codex: releases after 0.163.0, up to 0.164.0\n\nEntries read: 3.\n\n| Release | Terms | Entry |\n"
     ) in text
@@ -559,7 +574,7 @@ def test_a_flag_is_matched_only_in_its_own_runtimes_changelog() -> None:
     ],
 )
 def test_a_page_is_reported_only_when_it_moved_is_gone_or_cannot_be_read(fetched: Fetched, line: str | None) -> None:
-    assert watch.page_line("https://example.com/a", fetched) == line
+    assert shown(watch.page_line("https://example.com/a", fetched)) == line
 
 
 VARIABLES_MODULE = """
@@ -732,13 +747,13 @@ class MainTests(unittest.TestCase):
         self.assertEqual(expected, {line.split(" ")[2] for line in lines if line.startswith("SAMPLE_BEHIND ")})
 
     def test_the_summary_tables_each_sample_behind_or_says_none_is(self) -> None:
-        def section(lines: list[str]) -> str:
-            text = watch.summary(lines)
+        def section(facts: list[Fact]) -> str:
+            text = watch.summary(facts)
             return text[text.index("### Captured samples") : text.index("### Guidance pages")]
 
         behind = [
-            "SAMPLE_BEHIND codex codex/version.txt 0.163.0 0.164.0",
-            "SAMPLE_BEHIND copilot-cli copilot/skill-list.json 1.0.103 1.0.104",
+            Fact("SAMPLE_BEHIND", ("codex", "codex/version.txt", "0.163.0", "0.164.0")),
+            Fact("SAMPLE_BEHIND", ("copilot-cli", "copilot/skill-list.json", "1.0.103", "1.0.104")),
         ]
         self.assertEqual(
             "### Captured samples\n\n"
@@ -752,10 +767,20 @@ class MainTests(unittest.TestCase):
             "### Captured samples\n\nNo captured sample is older than its runtime's latest release.\n\n", section([])
         )
 
+    def test_a_sample_whose_path_holds_a_space_keeps_each_value_in_its_own_column(self) -> None:
+        # The summary reads the values the watch carries, so a space in the path moves no later field.
+        samples = [captured_samples.Sample("codex/old run.txt", {"codex": (0, 163, 0)}, "2026-10-01", "a start")]
+        facts = runtime_command_lines.behind_facts(samples, "codex", (0, 164, 0), "codex")
+        self.assertEqual(["SAMPLE_BEHIND codex codex/old run.txt 0.163.0 0.164.0"], printed(facts))
+        self.assertIn("| codex | codex/old run.txt | 0.163.0 | 0.164.0 |\n", watch.summary(facts))
+
     def test_a_blank_line_ends_the_releases_table_before_the_samples_heading(self) -> None:
         # A line that is not blank there would join the releases table and break its rendering in the step summary.
-        lines = ["CHANGELOG codex 0.163.0 0.164.0 1 1", 'ENTRY codex 0.164.0 "-c" "Read -c twice"']
-        self.assertIn("| 0.164.0 | -c | Read -c twice |\n\n### Captured samples\n", watch.summary(lines))
+        facts = [
+            Fact("CHANGELOG", ("codex", "0.163.0", "0.164.0", "1", "1")),
+            Fact("ENTRY", ("codex", "0.164.0", "-c", "Read -c twice"), (2, 3)),
+        ]
+        self.assertIn("| 0.164.0 | -c | Read -c twice |\n\n### Captured samples\n", watch.summary(facts))
 
     def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:
         # Copilot CLI 1.0.103 retired --no-remote, which the code still passes to the releases before it.
@@ -814,7 +839,7 @@ class MainTests(unittest.TestCase):
                 )
 
     def test_each_terms_line_counts_the_watched_terms_of_its_kind(self) -> None:
-        lines = watch.watch(REPOSITORY, StubFetcher(self.table()), 1.0, WATCHED)
+        lines = printed(watch.watch(REPOSITORY, StubFetcher(self.table()), 1.0, WATCHED))
         self.assertEqual(["TERMS flag 3", "TERMS variable 1", "TERMS path 1", "TERMS frontmatter 2"], lines[:4])
 
     def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
@@ -980,7 +1005,7 @@ def test_a_fetch_of_an_address_urllib_cannot_read_fails_as_unreadable_never_rais
     fetched = watch.fetch(url, 5.0)
     assert (fetched.status, fetched.url, fetched.body) == (0, url, b"")
     assert fetched.reason
-    assert watch.page_line(url, fetched) == f"UNREADABLE {url} {quote(fetched.reason)}"
+    assert shown(watch.page_line(url, fetched)) == f"UNREADABLE {url} {quote(fetched.reason)}"
 
 
 def test_a_response_cut_short_fails_as_unreadable_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -973,6 +973,10 @@ removed fails validation until its pattern follows it.
   `tests/validation/python_checks.py::PythonChecksPolicies::test_every_program_output_is_split_at_its_line_feeds_alone`,
   which refuses a split of any program's output, git's among it, at anything but a line feed, by splitlines() of its
   text or its bytes or by text_lines, unless its module states why,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_no_module_splits_a_fact_line_it_builds_back_into_fields`,
+  which refuses a split of a fact line the module builds, read back into fields inside a branch or a comprehension
+  that tests the line for its word, unless its module states why,
+  `tests/validation/test_python_checks.py::test_fact_split_policy_refuses_an_unsanctioned_split_and_a_stale_or_self_kept_entry`,
   `tests/validation/test_python_checks.py::test_output_split_policy_refuses_a_split_of_any_programs_output_but_at_its_line_feeds`,
   `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_an_output_line_keeps_every_character_splitlines_breaks_at_but_lf`,
   `tests/validation/test_python_checks.py::test_each_policy_refuses_every_form_its_documentation_names`,
@@ -1007,8 +1011,12 @@ removed fails validation until its pattern follows it.
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
   output a method's parameter takes through self, a file another module's process start writes, a log another
   process writes that no `OUTPUT_SOURCES` entry declares, or a field of another module's result type; `.split()[`
-  or `.partition(" ")` on a line the same module wrote,
-  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
+  or `.partition(" ")` on a fact line in a shape the fact-split policy does not read: a line another module built,
+  a split after an early `continue` or `return` rather than inside the `startswith("<FACT> ")` branch, a split no
+  `startswith` test guards, such as one that reads the fact's word from its own first field, a split of an attribute
+  such as `self.line`, a line built from its word without the space, as `" ".join(("<FACT>", value))`, a test
+  through a `match` statement or a `while` loop, a split by `re.split()` or another function given the line, and a
+  regex read of the module's own fact line, as `re.match(r"^<FACT> (\S+)", line)`;
   `emit(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an exception, or
   another program's output without `fact_line` or `flat_text`, and a `print` the policy does not read: one passed on
   as a value it does not follow, returned by a function, held in a container, bound by `functools.partial` or bound
@@ -1018,7 +1026,7 @@ removed fails validation until its pattern follows it.
   `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248, #2564
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2242, #2248, #2564
 
 ### A folder that holds items by their own names keeps its own files under names no item can take
 

@@ -43,8 +43,6 @@ NOT_READERS: dict[str, str] = {
     "tools.runtime_canary.starts_only_by_user": "reads a SKILL.md or runtime adapter this run deployed from the "
     "checkout into its throwaway home",
     "tools.runtime_changelogs.frontmatter_terms": "reads the keys of the committed skills/*/SKILL.md and agents/*.md",
-    "tools.runtime_changelogs.summary": "reads the finding lines watch printed in this run, each reason json.dumps "
-    "wrote",
     "tools.runtime_prompts.copilot_entrypoint": "reads the review request prepare_fixture wrote in this render's "
     "throwaway folder",
     "tools.skill_evals_runs.set_reviewer_model": "reads back the reviewer agent it has just written",

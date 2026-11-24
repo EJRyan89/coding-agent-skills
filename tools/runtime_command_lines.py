@@ -65,7 +65,7 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -132,7 +132,9 @@ SESSION_STARTED = {
     "codex": re.compile(r'"type":"thread\.started"'),
     "copilot": re.compile(r"No authentication information found"),
 }
-FAILING = ("MISSING ", "UNSAFE ", "HELP_FAILED ", "REMOVED ", "REFUSED ", "FAILED ")
+# The facts that end the check in exit 1, and those about a runtime rather than one of its command lines.
+FAILING = frozenset({"MISSING", "UNSAFE", "HELP_FAILED", "REMOVED", "REFUSED", "FAILED"})
+RUNTIME_FACTS = frozenset({"VERSION", "MISSING", "UNSAFE"})
 # The summary's verdict when no line failed.
 ALL_ACCEPTED = "Every runtime accepted every command line."
 
@@ -145,6 +147,37 @@ def start(arguments: list[str], cwd: Path, environment: dict[str, str], timeout:
     """Run the program as the runtime canary runs a runtime, within `timeout` in its own process tree, which the limit
     ends with every process it started, with `stdin` all it reads there."""
     return runtime_canary.run_process(arguments, cwd, environment, timeout, stdin.encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class Fact:
+    """One line a watch prints, its word and then its values, which its summary reads from here and never by splitting
+    the line back into fields, since a value that holds a space, as a path may, would move every later one."""
+
+    kind: str
+    values: tuple[str, ...]
+    # The index of each value the line quotes, as text that may hold a space or a quote.
+    quoted: tuple[int, ...] = ()
+
+    def shown(self, start: int = 0) -> str:
+        """The values from `start` on, as the line prints them."""
+        return " ".join(
+            quote(value) if index in self.quoted else value for index, value in enumerate(self.values) if index >= start
+        )
+
+    @property
+    def line(self) -> str:
+        return f"{self.kind} {self.shown()}"
+
+
+def behind_facts(
+    samples: Sequence[captured_samples.Sample], runtime: str, version: tuple[int, ...], label: str
+) -> list[Fact]:
+    """SAMPLE_BEHIND, by `label`, for each of `samples` of `runtime` older than `version`."""
+    return [
+        Fact("SAMPLE_BEHIND", (label, item.path, item.recorded, item.latest))
+        for item in captured_samples.behind(list(samples), runtime, version, label)
+    ]
 
 
 @dataclass(frozen=True)
@@ -318,27 +351,27 @@ def own_message(completed: Completed) -> str:
     return completed.error or f"exited with status {completed.returncode} and printed nothing"
 
 
-def judge(line: CommandLine, completed: Completed, unlisted: Sequence[str], timeout: float) -> str:
+def judge(line: CommandLine, completed: Completed, unlisted: Sequence[str], timeout: float) -> Fact:
     """The one fact the start shows about the command line."""
-    label = f"{line.runtime} {line.name}"
+    label = (line.runtime, line.name)
     if completed.error:
-        return f"FAILED {label} {quote(completed.error)}"
+        return Fact("FAILED", (*label, completed.error), (2,))
     output = f"{completed.stderr}\n{completed.stdout}"
     for pattern in FLAG_REFUSALS:
         found = pattern.search(output)
         if found:
             message = next(text for text in program_lines(output) if found.group(0) in text)
-            return f"REMOVED {label} {found.group('flag')} {quote(single_line(message.strip()))}"
+            return Fact("REMOVED", (*label, found.group("flag"), single_line(message.strip())), (3,))
     refused = ARGUMENT_REFUSALS.search(output)
     if refused:
         message = program_lines(output[refused.start() :])[0]
-        return f"REFUSED {label} {quote(single_line(message.strip()))}"
+        return Fact("REFUSED", (*label, single_line(message.strip())), (2,))
     if (completed.returncode == 0 and not completed.timed_out) or SESSION_STARTED[line.runtime].search(output):
-        return f"ACCEPTED {label}" + (f" UNLISTED {quote(' '.join(unlisted))}" if unlisted else "")
+        return Fact("ACCEPTED", (*label, "UNLISTED", " ".join(unlisted)), (3,)) if unlisted else Fact("ACCEPTED", label)
     if completed.timed_out:
         late = f"it showed no session start within {timeout:g} seconds: {own_message(completed)}"
-        return f"FAILED {label} {quote(late)}"
-    return f"FAILED {label} {quote(own_message(completed))}"
+        return Fact("FAILED", (*label, late), (2,))
+    return Fact("FAILED", (*label, own_message(completed)), (2,))
 
 
 def listed(flag: str, help_text: str) -> bool:
@@ -353,8 +386,8 @@ def check(
     timeout: float,
     environment: dict[str, str],
     samples: Sequence[captured_samples.Sample] = (),
-) -> Iterator[str]:
-    """VERSION, SAMPLE_BEHIND for each of `samples` of the runtime older than it, then one line per command line the
+) -> Iterator[Fact]:
+    """VERSION, SAMPLE_BEHIND for each of `samples` of the runtime older than it, then one fact per command line the
     repository builds for `runtime`."""
     version = runtime_canary.read_version(
         executable,
@@ -362,9 +395,9 @@ def check(
         environment,
         root,
     )
-    yield f"VERSION {runtime} {runtime_canary.version_text(version)}"
+    yield Fact("VERSION", (runtime, runtime_canary.version_text(version)))
     if version:
-        yield from captured_samples.behind(list(samples), DECLARED_RUNTIME[runtime], version, runtime)
+        yield from behind_facts(samples, DECLARED_RUNTIME[runtime], version, runtime)
     helps: dict[tuple[str, ...], tuple[str, str]] = {}
     for line in command_lines(runtime, executable, root, environment, version):
         words = tuple(line.subcommand)
@@ -373,7 +406,7 @@ def check(
             helps[words] = (f"{shown.stdout}\n{shown.stderr}", help_failure(shown, timeout))
         help_text, failure = helps[words]
         if failure:
-            yield f"HELP_FAILED {line.runtime} {line.name} {quote(failure)}"
+            yield Fact("HELP_FAILED", (line.runtime, line.name, failure), (2,))
         unlisted = [] if failure else [flag for flag in line.flags if not listed(flag, help_text)]
         yield judge(line, runner(line.arguments, line.cwd, line.environment, timeout, line.stdin), unlisted, timeout)
 
@@ -406,35 +439,35 @@ def runtime_lines(
     runner: Starter,
     timeout: float,
     samples: Sequence[captured_samples.Sample] = (),
-) -> Iterator[str]:
+) -> Iterator[Fact]:
     if executable is None:
-        yield f"MISSING {runtime} {quote('it is not installed where deploy.py check looks')}"
+        yield Fact("MISSING", (runtime, "it is not installed where deploy.py check looks"), (1,))
         return
     try:
         environment = signed_out(root / "home", executable)
         bound_home(root / "home")
     except Unsafe as exc:
-        yield f"UNSAFE {runtime} {quote(str(exc))}"
+        yield Fact("UNSAFE", (runtime, str(exc)), (1,))
         return
     yield from check(runtime, executable, root, runner, timeout, environment, samples)
 
 
-def failed(lines: Sequence[str]) -> bool:
-    """Whether any line shows a command line refused, a runtime missing, or a start that could not be made safely."""
-    return any(line.startswith(FAILING) for line in lines)
+def failed(facts: Sequence[Fact]) -> bool:
+    """Whether any fact shows a command line refused, a runtime missing, or a start that could not be made safely."""
+    return any(fact.kind in FAILING for fact in facts)
 
 
-def summary(lines: Sequence[str]) -> str:
-    """A Markdown table of the facts, one row per runtime version or command line."""
+def summary(facts: Sequence[Fact]) -> str:
+    """A Markdown table of the facts, one row per runtime version or command line: the runtime, then the command line
+    or the sample a fact names, else the fact's word, then the rest of the fact as its line prints it."""
     rows = ["## Runtime command lines", "", "| Runtime | Command line | Outcome |", "| --- | --- | --- |"]
-    for line in lines:
-        kind, runtime, rest = [*line.split(" ", 2), "", ""][:3]
-        if kind in ("VERSION", "MISSING", "UNSAFE"):
-            rows.append(f"| {runtime} | {kind.lower()} | {rest.replace('|', '&#124;')} |")
+    for fact in facts:
+        if fact.kind in RUNTIME_FACTS:
+            rows.append(f"| {fact.values[0]} | {fact.kind.lower()} | {fact.shown(1).replace('|', '&#124;')} |")
             continue
-        name, _, detail = rest.partition(" ")
-        rows.append(f"| {runtime} | {name} | {(kind + ' ' + detail).strip().replace('|', '&#124;')} |")
-    count = sum(1 for line in lines if line.startswith(FAILING))
+        outcome = f"{fact.kind} {fact.shown(2)}".strip()
+        rows.append(f"| {fact.values[0]} | {fact.values[1]} | {outcome.replace('|', '&#124;')} |")
+    count = sum(1 for fact in facts if fact.kind in FAILING)
     verdict = f"{count} line(s) failed." if count else ALL_ACCEPTED
     return "\n".join([*rows, "", verdict, ""]) + "\n"
 
@@ -447,19 +480,20 @@ def run(
     which: Callable[[str], str | None] = platform_support.find_executable,
     say: Callable[[str], None] = print,
     samples: Sequence[captured_samples.Sample] | None = None,
-) -> list[str]:
-    """Check each runtime's command lines from `root`, printing each line as it is made; return the lines. The
-    samples aged against each runtime's version are `samples`, or those this checkout records."""
+) -> list[Fact]:
+    """Check each runtime's command lines from `root`, printing each fact's line as it is made, with each path under
+    `root`, this checkout, and the profile folder named by its placeholder; return the facts as printed. The samples
+    aged against each runtime's version are `samples`, or those this checkout records."""
     paths = {root: "<temp>", runtime_canary.REPOSITORY_ROOT: "<source>", platform_support.home_directory(): "<home>"}
     if samples is None:
         samples = captured_samples.read(runtime_canary.REPOSITORY_ROOT, RUNTIME_NAMES)
-    lines: list[str] = []
+    facts: list[Fact] = []
     for runtime in runtimes:
-        for line in runtime_lines(runtime, which(runtime), root / runtime, runner, timeout, samples):
-            shown = runtime_canary.placeholders(line, paths)
-            say(shown)
-            lines.append(shown)
-    return lines
+        for fact in runtime_lines(runtime, which(runtime), root / runtime, runner, timeout, samples):
+            shown = replace(fact, values=tuple(runtime_canary.placeholders(value, paths) for value in fact.values))
+            say(shown.line)
+            facts.append(shown)
+    return facts
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -471,11 +505,11 @@ def main(arguments: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(
         prefix="runtime-command-lines-", dir=private_folder.temporary_directory()
     ) as directory:
-        lines = run(namespace.runtime or list(RUNTIMES), namespace.timeout, Path(directory))
+        facts = run(namespace.runtime or list(RUNTIMES), namespace.timeout, Path(directory))
     if namespace.summary is not None:
         with namespace.summary.open("a", encoding="utf-8") as stream:
-            stream.write(summary(lines))
-    return 1 if failed(lines) else 0
+            stream.write(summary(facts))
+    return 1 if failed(facts) else 0
 
 
 if __name__ == "__main__":
