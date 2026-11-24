@@ -310,7 +310,9 @@ def _raise(error: OSError) -> None:
 def _listed(root: Path) -> tuple[list[Path], list[Path]]:
     """The files, every entry that is not a folder, and the folders below the samples folder, each sorted, or none when
     there is no such folder. One whose stat fails, a file in its place, or a folder below it that cannot be listed is
-    a RenderError, never an empty folder: os.walk raises there, where rglob would match nothing."""
+    a RenderError, never an empty folder: os.walk raises there, where rglob would match nothing. The AppleDouble
+    sidecars macOS writes beside each sample on a FAT, exFAT, or SMB volume are no samples: `file_presence.listed`
+    leaves them out of each folder's listing."""
     samples = root / SAMPLES
     files: list[Path] = []
     folders: list[Path] = []
@@ -320,7 +322,8 @@ def _listed(root: Path) -> tuple[list[Path], list[Path]]:
         for folder, _, names in os.walk(samples, onerror=_raise):
             if Path(folder) != samples:
                 folders.append(Path(folder))
-            files.extend(Path(folder, name) for name in names)
+            own = {path.name for path in file_presence.listed(Path(folder))}
+            files.extend(Path(folder, name) for name in names if name in own)
     except OSError as exc:
         raise RenderError(f"cannot read {SAMPLES.as_posix()}: {exc}") from exc
     return sorted(files), sorted(folders)
