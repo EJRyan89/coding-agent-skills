@@ -138,7 +138,8 @@ EOF
 # names and the ref as its pin, keeping a user's recorded pin's ref at its own commit unless --unpin is given, as the
 # real one does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, prints $FAKE_CHECK_STDERR to stderr, as the real one prints its errors, when it is
-# set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
+# set, sends the update that started it TERM when $FAKE_CHECK_TERM is set, and exits with $FAKE_CHECK_EXIT. Like the real
+# one, it refuses to replace a
 # recorded pin without --unpin: with --at only a pin at another commit that is not the full name of a release tag
 # naming its commit, and without --at any pin. The record stands for the manifest in the home, which the real one reads
 # wherever it runs from, so it is the file $FAKE_DEPLOY_RECORD names, which run_subject sets to the clone's for the run,
@@ -168,6 +169,11 @@ if arguments == ["check"]:
     if "FAKE_CHECK_STDERR" in os.environ:
         for line in ("", os.environ["FAKE_CHECK_STDERR"], ""):
             print(line, file=sys.stderr)
+    if os.environ.get("FAKE_CHECK_TERM"):
+        import signal
+        # The update runs check in a command substitution, so the update is the parent of check's parent.
+        update = subprocess.run(["ps", "-o", "ppid=", "-p", str(os.getppid())], capture_output=True, text=True, check=True)
+        os.kill(int(update.stdout.strip()), signal.SIGTERM)
     raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")

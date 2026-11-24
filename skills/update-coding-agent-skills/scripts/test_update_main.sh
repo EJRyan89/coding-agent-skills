@@ -197,6 +197,26 @@ expect_nothing_run "main's folder not made"
 [ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
   fail "main's folder not made: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
 
+# An update ended by a signal while main's deploy.py runs check removes main's tree and its own files through its EXIT
+# trap. Main's check sends the update TERM. Windows ends a Git Bash process without running its traps, so the case runs
+# where signals reach bash.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    begin_case "main's tree removed on a signal"
+    new_clone
+    checkout_branch_deployer topic
+    mkdir -p "$FIXTURE/tmp for a signal"
+    FAKE_CHECK_TERM=1 TMPDIR="$FIXTURE/tmp for a signal" run_subject "$CLONE" main
+    expect_status 143 "main's tree removed on a signal"
+    expect_main_deployer "main's tree removed on a signal"
+    expect_not_deployed "main's tree removed on a signal"
+    [ -z "$(ls -A "$FIXTURE/tmp for a signal")" ] ||
+      fail "main's tree removed on a signal: left behind: $(ls -A "$FIXTURE/tmp for a signal")"
+    [ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "main's tree removed on a signal: branch switched"
+    ;;
+esac
+
 # Uncommitted tracked changes stop everything before the fetch.
 begin_case 'dirty'
 new_clone
