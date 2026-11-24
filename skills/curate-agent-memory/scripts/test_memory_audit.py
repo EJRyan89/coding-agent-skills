@@ -3195,6 +3195,21 @@ class ResolveTests(unittest.TestCase):
         write(settings, "{not json")
         self.assertIsNone(self.resolve()["memory_dir"])
 
+    def test_a_repository_settings_folder_linked_out_of_the_repository_is_refused_never_followed(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: the repository's settings are read through its
+        # reader, so a .claude folder leading out of it is refused, failing resolve as an unreadable settings file
+        # does, and the settings where it leads are never read to choose the memory directory.
+        outside = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        write(outside / "settings.json", json.dumps({"autoMemoryDirectory": str(outside / "memory")}))
+        link = directory_link(self.repo / ".claude", outside)
+        with looks_past([link], outside) as looked:
+            lines = self.resolve_lines(code=1)
+        self.assertEqual([], looked)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED cannot read the settings file "), lines)
+        self.assertIn("outside the examined tree", lines[0])
+
     def test_a_settings_file_that_cannot_be_read_fails_rather_than_leaving_the_directory_unresolved(self) -> None:
         # A settings file git or the disk cannot give is not one that sets nothing: the directory it may choose is
         # unknown, so resolve fails naming it rather than offering the candidates as if no setting chose one.

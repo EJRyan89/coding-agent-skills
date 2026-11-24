@@ -10,6 +10,9 @@ produced one.
 Usage:
     python audit_ai_config.py [--json | --relay] [--provenance] [--root <path>]
 
+A --root holding `..` is taken by its text, each `..` dropping the name before it, as a shell's cd does, before the
+repository's reader is bound to it.
+
 With --relay the report is the plain lines the skill relays as printed: REPOSITORY, AUTHORITY, and SCOPE lines, the
 RESULT and SUMMARY lines, and a tab-separated FINDING line for every ERROR and WARNING finding and every limitation
 and layering INFO finding, its path and message as plain text on one line.

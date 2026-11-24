@@ -3,6 +3,9 @@
 
     python -B mcp_handshake.py --root <repository> [--server NAME] [--timeout SECONDS]
 
+A --root holding `..` is taken by its text, each `..` dropping the name before it, as a shell's cd does, as the
+audit takes it.
+
 This STARTS repository-configured commands, so run it only after the user explicitly
 authorizes operational validation of a trusted repository. Each stdio server declared in
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its

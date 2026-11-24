@@ -26,7 +26,11 @@ file, the settings, and the deployer's manifest are read where they are named, a
 instruction files in the user's configuration directory (--user-dir) are read with their links followed, as Claude Code
 loads a CLAUDE.md linked from a dotfiles checkout: refusing a link guards against a repository the user did not write,
 and that directory is the user's own. A cited path is read only as PATH_LIKE matches one, so a path holding `~` past its
-start, as a Windows short name such as RUNNER~1 does, is not read as a cited path: a stated limit.
+start, as a Windows short name such as RUNNER~1 does, is not read as a cited path: a stated limit. A cited path that
+reaches the repository or the store through a link outside both, such as macOS's /tmp for /private/tmp or a ~/code link
+to where the repository lives, names neither by its text, so it is looked up where it names, its links followed: a
+stated limit. A --memory-dir or --repo holding `..` is taken by its text, each `..` dropping the name before it, as a
+shell's cd does, before a reader is bound to it, and the lines that name it print it made absolute.
 
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
@@ -291,7 +295,7 @@ TREE_READ_ALLOWED = {
     "outside_present": (
         "whether anything is at a path a memory cites that names no place in the repository or the store, its `..` "
         "taken as text, and meets no link inside either on its way: the place it names, outside every tree the audit "
-        "examines"
+        "examines by its text"
     ),
     "named_text": (
         "reads an instruction file the user names with --instructions, where it names, and one a pattern found in the "
@@ -320,7 +324,11 @@ TREE_READ_ALLOWED = {
         "Claude Code's own state, outside every tree the audit examines"
     ),
     "directory_state": "whether anything is at the memory directory resolve chose, before it is taken as a store",
-    "read_settings": "reads a Claude Code settings file, which chooses the memory directory",
+    "named_settings_bytes": (
+        "reads the managed or the user's Claude Code settings file, which chooses the memory directory, where it is, "
+        "its links followed: refusing a link guards against a repository the user did not write, and these are the "
+        "system's and the user's own; a repository's settings are read through its reader"
+    ),
     "project_folder": "resolves a folder in no Git repository, as Claude Code names its project",
     "output_refusal": "judges the --output path the user names for the skill's own report before it is written",
     "manifest_skill_files": "reads the deployer's manifest under the home, which names a skill's source checkout",
@@ -641,7 +649,8 @@ def link_on_way(place: Path, base: Path) -> bool:
     metadata through the base's reader and never followed, answers True. So a place whose own `..` climbs out of the
     base, before or after the link, is still the base's to judge, as the system opens it from where the link leads; one
     that meets no link inside the base, or a name that is not there, is not; one with a name whose metadata cannot be
-    read is, so the base's reader refuses it, naming why."""
+    read is, so the base's reader refuses it, naming why. A path spelled through a link outside every base, then `..`,
+    then a base's own folder name, is given to that base, whose reader refuses it: it fails closed."""
     reader = TreeReader(base)
     current = Path(place.absolute().anchor)
     for name in place.absolute().parts[1:]:
@@ -1227,15 +1236,32 @@ def unresolved(notes: list[str]) -> dict[str, Any]:
     return {"memory_dir": None, "source": None, "exists": False, "notes": notes}
 
 
-def read_settings(path: Path) -> dict[str, Any]:
+# The settings scopes a repository holds, read through the repository's reader.
+REPOSITORY_SCOPES = frozenset({"local", "project"})
+
+
+def scope_reader(scope: str, path: Path) -> TreeReader | None:
+    """The reader of the repository holding a local or project settings file, `<repo>/.claude/<name>`, or None for the
+    managed and the user's settings, which are read where they are."""
+    return TreeReader(path.parent.parent) if scope in REPOSITORY_SCOPES else None
+
+
+def read_settings(path: Path, reader: TreeReader | None = None) -> dict[str, Any]:
     """A settings file's top-level object, empty when the file is absent or holds another value. One that holds no
     readable JSON raises UnreadableSettings, which leaves the directory unresolved; one that cannot be read, or a
     directory or anything else in the file's place, raises OSError naming it, a FAILED line, since the directory it
-    may choose cannot then be known and must never be read as unset."""
+    may choose cannot then be known and must never be read as unset. With `reader`, the repository's, the file is read
+    through it, so one that a link leads out of the repository to is refused so, never followed; without, it is the
+    managed or the user's settings, read where it is (`named_settings_bytes`)."""
     try:
-        if not is_present(path):
-            return {}
-        data = path.read_bytes()
+        if reader is None:
+            data = named_settings_bytes(path)
+            if data is None:
+                return {}
+        else:
+            if not reader.present(path):
+                return {}
+            data = reader.contents(path)
     except OSError as exc:
         raise OSError(exc.errno, f"cannot read the settings file {path}: {reason(exc)}") from exc
     try:
@@ -1243,6 +1269,14 @@ def read_settings(path: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
     return settings if isinstance(settings, dict) else {}
+
+
+def named_settings_bytes(path: Path) -> bytes | None:
+    """The bytes of the managed or the user's settings file, read where it is, its links followed, or None when no file
+    is there."""
+    if not is_present(path):
+        return None
+    return path.read_bytes()
 
 
 def repository_supplied(repo: Path, scope: str) -> bool:
@@ -1278,7 +1312,7 @@ def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
     whether reads are blocked cannot be known from it.
     """
     for scope, path in scopes:
-        permissions = read_settings(path).get("permissions", {})
+        permissions = read_settings(path, scope_reader(scope, path)).get("permissions", {})
         if not isinstance(permissions, dict):
             raise UnreadableSettings(f"Cannot read {path}: its permissions is not an object")
         if permissions.get(BLOCK_READS) is True:
@@ -1306,7 +1340,7 @@ def locate(
     )
     try:
         for scope, path in scopes:
-            value = read_settings(path).get("autoMemoryDirectory")
+            value = read_settings(path, scope_reader(scope, path)).get("autoMemoryDirectory")
             if value is not None:
                 return chosen_directory(repo, home, scopes, (scope, path, value), notes)
     except UnreadableSettings as exc:
