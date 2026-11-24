@@ -31,6 +31,11 @@ from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 from tools import runtime_prompts
 
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
+
 
 def renderer(prompts: dict[str, str]) -> Callable[[Path], dict[str, str]]:
     """A renderer that names its throwaway folder and the checkout in each prompt, as a real one does."""
@@ -82,6 +87,28 @@ class RuntimePromptsTestCase(unittest.TestCase):
         runtime_prompts.write(self.root, renderers)
         self.assertEqual([], runtime_prompts.problems(self.root, renderers))
         self.assertFalse(extra.parent.exists(), "a folder left empty goes with its last sample")
+
+    def test_the_sidecars_macos_writes_beside_a_sample_or_its_folder_are_no_samples(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        samples = self.root / "docs" / "runtime-prompts"
+        sidecars = [samples / "._alpha", samples / "alpha" / "._reviewer.txt"]
+        for sidecar in sidecars:
+            sidecar.write_bytes(SIDECAR_BYTES)
+        self.assertEqual([], runtime_prompts.problems(self.root, renderers))
+        runtime_prompts.write(self.root, renderers)
+        self.assertEqual([SIDECAR_BYTES, SIDECAR_BYTES], [sidecar.read_bytes() for sidecar in sidecars])
+
+        # Any other `._` file is the checkout's: one with no `alone.txt` beside it, and one without the header.
+        (samples / "alpha" / "._alone.txt").write_bytes(SIDECAR_BYTES)
+        sidecars[1].write_bytes(b"plain text, long enough to hold a header\n")
+        self.assertEqual(
+            [
+                f"docs/runtime-prompts/alpha/._alone.txt is no rendered prompt; {runtime_prompts.WRITE_HINT}",
+                f"docs/runtime-prompts/alpha/._reviewer.txt is no rendered prompt; {runtime_prompts.WRITE_HINT}",
+            ],
+            runtime_prompts.problems(self.root, renderers),
+        )
 
     def test_a_prompt_that_still_names_the_temporary_directory_fails_and_leaves_nothing_behind(self) -> None:
         folders: list[Path] = []

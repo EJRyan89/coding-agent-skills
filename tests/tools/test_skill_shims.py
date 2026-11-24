@@ -37,6 +37,10 @@ SHIM = (
     "`.agents` read-only.\n"
 )
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
 
 
 # The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
@@ -309,6 +313,32 @@ class SkillShimsTestCase(unittest.TestCase):
             self.run_main("--write"),
         )
         self.assertTrue((self.root / ".agents/skills/widget-check/scripts/tool.py").is_file())
+
+    def plant(self, relative: str, content: bytes) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def test_the_sidecars_macos_writes_beside_a_shim_folder_and_its_files_are_no_strays(self) -> None:
+        self.write(SHIM_PATH.as_posix(), SHIM)
+        self.plant(".agents/skills/._widget-check", SIDECAR_BYTES)
+        self.plant(".agents/skills/widget-check/._SKILL.md", SIDECAR_BYTES)
+        self.assertEqual((0, ""), self.run_main())
+
+    def test_any_other_dot_underscore_file_beside_the_shims_is_reported_as_the_checkouts_own(self) -> None:
+        self.write(SHIM_PATH.as_posix(), SHIM)
+        # No `alone` beside it, and a SKILL.md beside a `._SKILL.md` that does not open with the header.
+        self.plant(".agents/skills/._alone", SIDECAR_BYTES)
+        self.plant(".agents/skills/widget-check/._SKILL.md", b"plain text, long enough to hold a header\n")
+        self.assertEqual(
+            (
+                1,
+                "STALE .agents/skills/._alone is not a shim folder; delete it\n"
+                "STALE .agents/skills/widget-check/._SKILL.md is no file python tools/skill_shims.py --write writes; "
+                "delete it\n",
+            ),
+            self.run_main(),
+        )
 
     def test_a_folder_without_a_skill_md_and_a_stray_file_are_reported(self) -> None:
         self.write(SHIM_PATH.as_posix(), SHIM)
