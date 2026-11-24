@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import collections
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -15,6 +18,7 @@ import json_writer
 import nesting_depth
 import whole_number
 from json_reader import CONTENT_ERRORS, JsonRefused, loads, raw_decode, read_file
+from validation_notes import note_line
 
 # The refusal of a number whose float is an infinity, spelled here rather than read from the module.
 OVERFLOW = "the JSON holds a number too large for a float"
@@ -231,6 +235,94 @@ class ReadFileTests(unittest.TestCase):
     def test_a_missing_file_is_an_os_error(self) -> None:
         with self.assertRaises(OSError):
             read_file(self.path)
+
+
+# A writer in a process of its own, as the code-review pipeline's `check` replaces a run's run.json: it puts the folder
+# its first argument names first on its path, replaces the file its second names through atomic_file.replace_bytes for
+# as many seconds as its third, each time with an object whose `replace` counts the replaces, says when it starts, and
+# prints the replaces it made and the PermissionErrors that outlasted replace_bytes' own waits, as one JSON object.
+WRITER = """import json, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import atomic_file
+target, seconds = Path(sys.argv[2]), float(sys.argv[3])
+made = refused = 0
+padding = "x" * 4096
+print("ready", flush=True)
+end = time.monotonic() + seconds
+while time.monotonic() < end:
+    try:
+        atomic_file.replace_bytes(target, json.dumps({"replace": made + 1, "padding": padding}).encode("utf-8"))
+    except PermissionError:
+        refused += 1
+    else:
+        made += 1
+print(json.dumps({"made": made, "refused": refused}), flush=True)
+"""
+
+# How long the writer replaces the file while the reader reads it, in seconds.
+RACE_SECONDS = 5
+
+
+@unittest.skipUnless(sys.platform == "win32", "only Windows refuses an open that meets a replace of its file")
+class ReadMeetingAReplaceTests(unittest.TestCase):
+    """A read of a file another process replaces through atomic_file while it reads, as a reviewer guard reads a run's
+    run.json while `check` replaces it. On Windows, a replace that puts its copy in place opens the target for delete,
+    and an open that falls inside that window asks for read access without delete sharing, as Python's open does, which
+    Windows may refuse as a sharing violation."""
+
+    def test_every_read_of_a_file_another_process_keeps_replacing_reads_one_whole_file(self) -> None:
+        # Holds on Windows, where it reproduces or rules out #3146: the reader loops over Python's open and
+        # json_reader.read_file while the writer loops over atomic_file.replace_bytes, and every read gives an object
+        # some replace wrote, whole. It prints, as a validation note, how many reads met how many replaces and what
+        # refused any of them.
+        reads: collections.Counter[str] = collections.Counter()
+        refusals: collections.Counter[str] = collections.Counter()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "run.json"
+            path.write_bytes(b'{"replace": 0}')
+            writer = subprocess.Popen(
+                [sys.executable, "-c", WRITER, str(Path(json_reader.__file__).parent), str(path), str(RACE_SECONDS)],
+                stdout=subprocess.PIPE,
+                encoding="utf-8",
+            )
+            assert writer.stdout is not None
+            try:
+                self.assertEqual("ready\n", writer.stdout.readline(), "the writer did not start")
+                while writer.poll() is None:
+                    for name, read in (("open", self.read_through_open), ("read_file", read_file)):
+                        try:
+                            value = read(path)
+                        except OSError as error:
+                            refusals[self.refusal(name, error)] += 1
+                        else:
+                            self.assertIsInstance(value, dict, f"{name} read part of a file")
+                            self.assertIsInstance(value.get("replace"), int, f"{name} read part of a file")
+                            reads[name] += 1
+                summary = json.loads(writer.stdout.read())
+            finally:
+                if writer.poll() is None:
+                    writer.kill()
+                writer.wait(timeout=30)
+                writer.stdout.close()
+        print(
+            note_line(
+                f"json_reader race on Windows: {reads['open']} reads through open and {reads['read_file']} through "
+                f"read_file met {summary['made']} replaces ({summary['refused']} replaces refused past their waits); "
+                f"refused reads: {dict(refusals) or 'none'}"
+            )
+        )
+        self.assertGreater(summary["made"], 0, "the writer replaced the file")
+        self.assertEqual({}, dict(refusals), "a read that met a replace was refused")
+
+    @staticmethod
+    def read_through_open(path: Path) -> Any:
+        with path.open("rb") as held:
+            return loads(held.read())
+
+    @staticmethod
+    def refusal(name: str, error: OSError) -> str:
+        return f"{name}: {type(error).__name__} errno {error.errno} winerror {getattr(error, 'winerror', None)}"
 
 
 class AcceptanceTests(unittest.TestCase):
