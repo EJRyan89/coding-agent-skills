@@ -56,7 +56,14 @@ from review_config import (
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, parse_json, read_diff
-from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
+from review_records import (
+    SUITE_PROFILE_PREFIX,
+    CarriedFinding,
+    ClosingIssue,
+    ClosingIssues,
+    Comment,
+    is_suite_profile,
+)
 from review_vocabularies import DispatchMode
 from text_lines import LINE_BREAK
 from typed_fields import FieldError, FieldReader
@@ -2687,7 +2694,7 @@ def body_lines(body: str) -> list[str]:
 
 def given_closing_issues(
     issues: Sequence[dict[str, Any]], total: int, repository: str
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], ClosingIssues]:
     """The closing issues' file and the request's account of it, from `issues`, each a `repository`, `number`,
     `state`, `title`, and `body`, of the `total` GitHub links.
 
@@ -2698,7 +2705,7 @@ def given_closing_issues(
     """
     listed = list(issues[:CLOSING_ISSUES_MAXIMUM])
     entries: list[dict[str, Any]] = []
-    account: list[dict[str, Any]] = []
+    account: list[ClosingIssue] = []
     for issue in listed:
         name = {"repository": issue["repository"], "number": issue["number"], "state": issue["state"]}
         same = issue["repository"].casefold() == repository.casefold()
@@ -2712,19 +2719,28 @@ def given_closing_issues(
         else:
             title = LONE_SURROGATE.sub("�", issue["title"])
             entries.append({**name, "title": title, "body_lines": body_lines(given_body(issue["body"]))})
-        account.append(
-            {
-                **name,
-                "same_repository": same,
-                "body_characters": len(body),
-                "body_given": given,
-                **({"unreadable": True} if unreadable else {}),
-            }
-        )
+        named: ClosingIssue = {
+            "repository": issue["repository"],
+            "number": issue["number"],
+            "state": issue["state"],
+            "same_repository": same,
+            "body_characters": len(body),
+            "body_given": given,
+        }
+        if unreadable:
+            named["unreadable"] = True
+        account.append(named)
     return (
         {"total": max(total, len(issues)), "issues": entries},
         {"total": max(total, len(issues)), "issues": account},
     )
+
+
+class RequestClosingIssues(ClosingIssues):
+    """The closing issues as an adapter request names them: the run's file of them, then the account
+    `given_closing_issues` gives of it."""
+
+    file: str
 
 
 class RequestPullRequest(TypedDict):
@@ -2740,7 +2756,7 @@ class RequestPullRequest(TypedDict):
     body_file: NotRequired[str]
     body_characters: NotRequired[int]
     body_given: NotRequired[int]
-    closing_issues: NotRequired[dict[str, Any]]
+    closing_issues: NotRequired[RequestClosingIssues]
 
 
 class RequestSnapshot(TypedDict):
@@ -2749,9 +2765,15 @@ class RequestSnapshot(TypedDict):
     source_commit: str
 
 
+class RequestCoverage(TypedDict):
+    """The changed files reviewers see only as diff, as `review_coverage` gives them."""
+
+    unavailable_sources: list[str]
+    unreviewed_files: dict[str, str]
+
+
 class AdapterRequest(TypedDict):
-    """What `build_adapter_request` returns and `write_adapter_request` writes. The prior findings, review comments,
-    and coverage keep the shapes their builders give them."""
+    """What `build_adapter_request` returns and `write_adapter_request` writes."""
 
     protocol_version: int
     mode: str
@@ -2760,9 +2782,9 @@ class AdapterRequest(TypedDict):
     pull_request: RequestPullRequest
     diff_path: str
     source_snapshot: RequestSnapshot
-    prior_findings: list[dict[str, Any]]
-    github_comments: list[dict[str, Any]]
-    coverage: dict[str, Any]
+    prior_findings: list[CarriedFinding]
+    github_comments: list[Comment]
+    coverage: RequestCoverage
 
 
 def build_adapter_request(
@@ -2777,12 +2799,12 @@ def build_adapter_request(
     url: str,
     diff_path: Path,
     source_snapshot_root: Path,
-    prior_findings: list[dict[str, Any]] | None = None,
-    github_comments: list[dict[str, Any]] | None = None,
+    prior_findings: list[CarriedFinding] | None = None,
+    github_comments: list[Comment] | None = None,
     head_ref: str | None = None,
     snapshot: dict[str, Any] | None = None,
     body: tuple[Path, int] | None = None,
-    closing_issues: tuple[Path, dict[str, Any]] | None = None,
+    closing_issues: tuple[Path, ClosingIssues] | None = None,
     unreviewed_suffixes: Iterable[str] = (),
 ) -> AdapterRequest:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
@@ -2883,7 +2905,7 @@ def probes(suffixes: Iterable[str] = ()) -> Exclusion:
     return lambda relative: document_format(relative) is None and unreviewed_suffix(relative, known) is not None
 
 
-def review_coverage(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> dict[str, Any]:
+def review_coverage(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> RequestCoverage:
     """The changed files reviewers see only as diff: `unavailable_sources`, whose source the snapshot could not
     provide, and `unreviewed_files`, each binary file of a type the review does not read, by its path, with the
     suffix it matched.
