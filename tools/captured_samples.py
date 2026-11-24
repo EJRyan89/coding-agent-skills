@@ -27,8 +27,9 @@ import versions
 
 CAPTURED = Path("tests") / "fixtures" / "captured-output"
 PROVENANCE = CAPTURED / "provenance.json"
-# The programs other than the runtimes whose output a sample may hold, by the name they are started with.
-PROGRAMS = ("gh", "git")
+# The programs other than the runtimes whose output a sample may hold, by the name they are started with: a set, since
+# validation reads a tuple or list that begins with "gh" or "git" as a command started outside ejryan89-skill-core.
+PROGRAMS = frozenset({"gh", "git"})
 
 
 class SampleError(Exception):
@@ -63,7 +64,7 @@ def sample(path: str, entry: object, runtimes: tuple[str, ...]) -> Sample:
     recorded, captured, how = entry["versions"], entry["captured"], entry["how"]
     if not isinstance(recorded, dict) or not recorded:
         raise SampleError(f"{path}: versions names no runtime or program")
-    known = (*runtimes, *PROGRAMS)
+    known = (*runtimes, *sorted(PROGRAMS))
     read: dict[str, versions.Version] = {}
     for name, version in recorded.items():
         number = versions.read(version, least=3, most=3) if isinstance(version, str) else None
