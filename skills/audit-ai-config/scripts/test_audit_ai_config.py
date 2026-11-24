@@ -25,6 +25,7 @@ from unittest import mock
 
 import audit_ai_config as audit
 import check_provenance
+import dotnet_solution
 import folder_walk
 import link_probe
 import markdown_literal
@@ -379,6 +380,17 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(0, code, lines)
         self.assertIn("RESULT COMPLIANT", lines)
 
+    def test_a_root_holding_dot_dot_is_audited_as_the_folder_it_names(self) -> None:
+        # The reader refuses a `..` that climbs above its tree, so the root is made absolute, each `..` taken as text,
+        # before a reader is bound to it.
+        (self.root / ".git").mkdir()
+        _setup_conforming_repo(self.root)
+        (self.root.parent / "links").mkdir()
+        spelled = f"{(self.root.parent / 'links').as_posix()}/../{self.root.name}"
+        code, lines, _ = self._main("--root", spelled)
+        self.assertEqual(0, code, lines)
+        self.assertIn("RESULT COMPLIANT", lines)
+
     def test_an_audit_with_errors_prints_its_result_line_and_exits_1(self) -> None:
         (self.root / ".git").mkdir()
         _setup_conforming_repo(self.root)
@@ -558,7 +570,14 @@ class McpTests(unittest.TestCase):
         (self.root / ".codex").mkdir(exist_ok=True)
         (self.root / ".codex/config.toml").write_text("", encoding="utf-8")
 
-        with mock.patch.object(Path, "read_bytes", side_effect=OSError("access denied")):
+        real_open = Path.open
+
+        def opened(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path.name == "config.toml":
+                raise OSError("access denied")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", opened):
             result = audit.audit(self.root)
 
         self.assertTrue(
@@ -6402,6 +6421,49 @@ def stat_denied(target: Path, *, older: bool, walked: bool = True) -> Iterator[N
         yield
 
 
+def test_a_path_below_a_folder_is_dropped_only_with_the_folders_own_failure() -> None:
+    # A folder whose metadata cannot be read fails every path below it with its own error, which the folder's ERROR
+    # names once; a sibling whose name only starts with the folder's, a path-less ERROR, and a path below that fails
+    # for a reason of its own are kept, and a path equal to the folder is the folder, kept once.
+    denied = f"{audit.UNREAD}[Errno 13] Access is denied: 'a'"
+    own = f"{audit.UNREAD}[Errno 13] Access is denied: 'a/c'"
+
+    def error(path: str | None, message: str) -> audit.Finding:
+        return audit.Finding("ERROR", "inventory", path, message=message)
+
+    findings = [
+        error("a/b", denied),
+        error("a", denied),
+        error("a", denied),
+        error("ab", denied),
+        error(None, denied),
+        error("a/c", own),
+        error("a/b/d", denied),
+    ]
+    kept = [(finding.path, finding.message) for finding in audit._one_unread_error_per_path(findings)]
+    assert kept == [("a", denied), ("ab", denied), (None, denied), ("a/c", own)]
+
+
+def test_a_file_that_cannot_be_read_below_a_folder_that_cannot_be_listed_keeps_its_own_error() -> None:
+    # As a folder at mode 0311 holding a file at mode 000: the folder can be entered but not listed, so the file below
+    # it is examined and fails to open on its own, and both are reported, the file's ERROR never dropped as the
+    # folder's.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve()
+        _setup_conforming_repo(root)
+        github, instructions = root / ".github", root / ".github" / "copilot-instructions.md"
+        real_open = Path.open
+
+        def opened(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path == instructions:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        with listing_denied(github), mock.patch.object(Path, "open", opened):
+            errors = [f.path for f in audit.check_inventory(root) if f.severity == "ERROR"]
+    assert ".github/copilot-instructions.md" in errors, errors
+
+
 class UnexaminedPathTests(unittest.TestCase):
     """A configuration file or folder whose stat fails, or with something else in its place, is a finding at its
     path, never read as no such file or folder."""
@@ -6687,11 +6749,16 @@ class UnexaminedPathTests(unittest.TestCase):
             [("ERROR", "copilot-config")], [row[:2] for row in rows if row[2] == ".github/skills/bin"], rows
         )
 
-    def test_a_projection_it_cannot_examine_keeps_its_limitation_note(self) -> None:
+    def test_a_projection_it_cannot_examine_is_never_read_for_its_marker(self) -> None:
+        # Whether a link on its way leads out cannot be told, so its ownership marker is never read through it, and no
+        # limitation is noted for it; the inventory reports the path as an ERROR.
+        projection = self.root / ".github/agents/reviewer.md"
         _write_fixture(self.root, {".github/agents/reviewer.md": f"<!-- {OWNERSHIP} -->\n"})
-        with stat_denied(self.root / ".github/agents/reviewer.md", older=self.OLDER, walked=False):
+        with stat_denied(projection, older=self.OLDER, walked=False):
             rows = _finding_rows(audit.check_limitations(self.root, {}))
-        self.assertIn(("INFO", "limitation", ".github/agents/reviewer.md"), [row[:3] for row in rows])
+            with self.assertRaises(PermissionError):
+                audit.read_text(self.root, projection)
+        self.assertNotIn(("INFO", "limitation", ".github/agents/reviewer.md"), [row[:3] for row in rows])
 
     def test_a_listing_raises_for_a_folder_it_cannot_list_where_a_glob_matches_nothing(self) -> None:
         folder = self.root / ".github/workflows"
@@ -6842,14 +6909,19 @@ class PresenceAnswerTests(unittest.TestCase):
         file, folder = self.root / "CLAUDE.md", self.root / ".claude/rules"
         self.assertEqual(
             (True, True, False, False),
-            (audit.found_file(file), audit.found_folder(folder), audit.found_file(folder), audit.found_folder(file)),
+            (
+                audit.found_file(self.root, file),
+                audit.found_folder(self.root, folder),
+                audit.found_file(self.root, folder),
+                audit.found_folder(self.root, file),
+            ),
         )
         for older in (True, False):
             with self.subTest(older=older):
                 with stat_denied(file, older=older):
-                    self.assertFalse(audit.found_file(file))
+                    self.assertFalse(audit.found_file(self.root, file))
                 with stat_denied(folder, older=older):
-                    self.assertFalse(audit.found_folder(folder))
+                    self.assertFalse(audit.found_folder(self.root, folder))
 
     def test_the_ci_parity_signal_reads_workflow_files_alone_and_none_in_a_folder_it_cannot_examine(self) -> None:
         _write_fixture(self.root, {".github/workflows/notes.txt": "run: ai_config --check"})
@@ -6949,8 +7021,29 @@ class PresenceAnswerTests(unittest.TestCase):
         )
         checkout = self.root / "checkout"
         checkout.mkdir()
-        (checkout / ".git").symlink_to(self.root / "no-git")
+        (checkout / ".git").symlink_to(checkout / "no-git")
         self.assertEqual(f"{checkout} is not a Git repository (no .git found)", audit.not_a_checkout(checkout))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_git_that_is_a_link_out_of_the_root_is_no_checkout_whatever_it_leads_to(self) -> None:
+        # The audit does not follow a link out of the root to learn what is there, so a .git leading out to a real
+        # Git directory, or to nothing, is refused, naming the link, and nothing outside is looked at.
+        outside = _outside_folder(self)
+        (outside / "git").mkdir()
+        checkout = self.root / "linked-checkout"
+        checkout.mkdir()
+        for target in (outside / "git", outside / "nothing"):
+            with self.subTest(target=target.name):
+                (checkout / ".git").unlink(missing_ok=True)
+                (checkout / ".git").symlink_to(target)
+                with looked_at(outside) as looked:
+                    refusal = audit.not_a_checkout(checkout)
+                self.assertEqual([], looked)
+                self.assertEqual(
+                    f"{checkout} is not a Git repository the audit reads: its .git is a link that leads out of the "
+                    "repository, which the audit does not follow",
+                    refusal,
+                )
 
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
@@ -6988,8 +7081,7 @@ class UnlistableDirectoryTests(unittest.TestCase):
     def test_an_agent_the_walk_cannot_examine_is_still_listed_and_checked(self) -> None:
         # The folder walk leaves an entry whose stat fails out of its files; the agents walk keeps it, since it may be
         # an agent, so the inventory names it, with the ERROR for the stat it could not make, and the Copilot check
-        # still reads it: a stat that fails need not stop a read, so the agent's own ERROR, its missing description,
-        # shows it was checked.
+        # names it too: whether a link on its way leads out cannot be told, so it is never read through one.
         agent = self.root / ".github/agents/reviewer.md"
         agent.write_text("---\nname: reviewer\n---\n", encoding="utf-8")
         with stat_denied(agent, older=True):
@@ -7004,20 +7096,64 @@ class UnlistableDirectoryTests(unittest.TestCase):
             [row[:3] for row in _finding_rows(inventory)],
         )
         self.assertEqual(
-            [("ERROR", "copilot-agent", ".github/agents/reviewer.md", "Agent frontmatter requires description")],
+            [
+                (
+                    "ERROR",
+                    "copilot-config",
+                    ".github/agents/reviewer.md",
+                    f"Could not read: [Errno {errno.EACCES}] Access is denied: {str(agent)!r}",
+                ),
+                ("ERROR", "copilot-agent", ".github/agents/reviewer.md", "Agent frontmatter requires description"),
+            ],
             [row for row in _finding_rows(copilot) if row[0] == "ERROR"],
         )
 
 
+def _outside_folder(case: unittest.TestCase) -> Path:
+    """A folder outside the repository, one level down in a temporary folder of its own, so it is no entry of any
+    folder the tree reader asks how it compares names: deciding whether a path lies in the repository asks each
+    folder above it, the temporary directory included, and may look up any one entry there by its own metadata.
+    """
+    container = Path(tempfile.mkdtemp()).resolve()
+    case.addCleanup(shutil.rmtree, container)
+    folder = container / "outside"
+    folder.mkdir()
+    return folder
+
+
+@contextlib.contextmanager
+def looked_at(outside: Path) -> Iterator[list[str]]:
+    """Every path at or below `outside`, in any spelling, that os.stat, os.lstat, os.scandir, or os.listdir is given
+    while the context is open."""
+    looked: list[str] = []
+    places = tuple({os.path.normcase(os.fspath(outside)), os.path.normcase(os.path.realpath(outside))})
+    real = {name: getattr(os, name) for name in ("stat", "lstat", "scandir", "listdir")}
+
+    def recorded(name: str) -> Callable[..., Any]:
+        def call(path: Any = ".", *args: Any, **kwargs: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and os.path.normcase(os.fspath(path)).startswith(places):
+                looked.append(os.fspath(path))
+            return real[name](path, *args, **kwargs)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in real:
+            stack.enter_context(mock.patch.object(os, name, recorded(name)))
+        yield looked
+
+
 def _link_directory(target: Path, link: Path) -> None:
-    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link. Its target is
+    spelled resolved, as the audit's root is, since the tree reader takes an absolute target naming the root through
+    another spelling, such as macOS's /var for /private/var or a Windows short name, for one that leads out."""
     link.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
         import _winapi
 
-        _winapi.CreateJunction(str(target), str(link))
+        _winapi.CreateJunction(str(target.resolve()), str(link))
     else:
-        link.symlink_to(target, target_is_directory=True)
+        link.symlink_to(target.resolve(), target_is_directory=True)
 
 
 class OutsideLinkTests(unittest.TestCase):
@@ -7025,9 +7161,10 @@ class OutsideLinkTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "repo"
+        # The audit resolves its root and its reader judges a link by its text, so the root is spelled resolved.
+        self.root = Path(self.temp.name).resolve() / "repo"
         _setup_conforming_repo(self.root)
-        self.outside = Path(self.temp.name) / "outside"
+        self.outside = Path(self.temp.name).resolve() / "outside"
         _write_fixture(
             self.outside,
             {
@@ -7067,6 +7204,50 @@ class OutsideLinkTests(unittest.TestCase):
             self.assertNotIn("elsewhere", finding.message, finding)
             self.assertFalse((finding.path or "").startswith(tuple(f"{link}/" for link in links)), finding)
         self.assertFalse(any(f.path == ".github/instructions" and f.severity == "INFO" for f in result.findings))
+
+    def test_nothing_a_link_out_of_the_repository_leads_to_is_looked_at_to_judge_it(self) -> None:
+        # A junction on Windows, a symbolic link elsewhere: the reader judges each link by its text, so the audit never
+        # stats, lists, or resolves what lies outside to learn that it leads out, where resolving it once did. The
+        # outside folder is no sibling of the repository, whose parent the reader asks how it compares names.
+        elsewhere = _outside_folder(self)
+        for link in (".github/agents", "vendor", ".claude/rules"):
+            _link_directory(elsewhere, self.root / link)
+        with looked_at(elsewhere) as looked:
+            result = audit.audit(self.root)
+        self.assertEqual([], looked)
+        self.assertEqual(
+            sorted(("WARNING", "inventory", link) for link in (".github/agents", "vendor", ".claude/rules")),
+            sorted(self._outside_links(result)),
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_link_to_itself_is_an_entry_it_cannot_examine_never_a_link_that_leads_out(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to("loop")
+        result = audit.audit(self.root)
+        self.assertNotIn(("WARNING", "inventory", "loop"), self._outside_links(result))
+        [error] = [f.message for f in result.findings if f.path == "loop" and f.severity == "ERROR"]
+        self.assertIn("cannot be examined", error)
+
+    def test_a_link_inside_refused_for_permission_is_an_entry_it_cannot_examine_never_a_link_out(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS, to a folder inside the root whose name cannot be
+        # examined, as a folder without search permission makes it: refused, but not as a way out of the repository.
+        _write_fixture(self.root, {"locked/inner/AGENTS.md": "# Inner\n"})
+        _link_directory(self.root / "locked" / "inner", self.root / "lnk")
+        with os_stat_denied(self.root / "locked" / "inner"):
+            result = audit.audit(self.root)
+        self.assertNotIn(("WARNING", "inventory", "lnk"), self._outside_links(result))
+        [error] = [f.message for f in result.findings if f.path == "lnk" and f.severity == "ERROR"]
+        self.assertIn("cannot be examined", error)
+
+    def test_a_file_past_the_readers_bound_is_never_read(self) -> None:
+        # The reader reads a regular file within its bound only, so a huge file or a device at a configuration path
+        # never stalls the audit; the bound is lowered here so a small file is past it.
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 4):
+            result = audit.audit(self.root)
+        unread = [f.message for f in result.findings if f.path == "CLAUDE.md" and f.severity == "ERROR"]
+        self.assertEqual(1, len(unread), result.findings)
+        self.assertIn("the file is larger than the reader's bound of 4 bytes, so it is not read", unread[0])
 
     def test_a_folder_whose_parent_links_out_is_neither_listed_nor_walked(self) -> None:
         _link_directory(self.outside, self.root / "linked")

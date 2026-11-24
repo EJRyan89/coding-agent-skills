@@ -40,16 +40,17 @@ from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import TypedDict
 
-import file_presence
+from dotnet_solution import FileRefused
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
 from markdown_sections import PROSE_BLOCKS, blocks, code_spans
-from path_containment import refusal, resolved_path
+from path_containment import resolved_path, written_refusal
 from review_config import safe_repository_path
 from review_records import ReviewRecord, is_suite_profile
 from text_lines import text_lines
+from tree_reader import TreeReader
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"})
 # The text the input carries: each file at most FILE_CHARS, all of them at most TOTAL_CHARS, near 12k tokens.
@@ -57,6 +58,14 @@ FILE_CHARS = 16_000
 TOTAL_CHARS = 48_000
 # A file larger than this is never read, so a stray binary or generated file cannot stall the report.
 READ_BYTES = 1024 * 1024
+# The reads outside the checkout's tree reader, each with why: a guidance file's working-tree copy is read only through
+# a reader bound to the configured checkout, and the checkout itself is resolved before the reader is bound.
+TREE_READ_ALLOWED = {
+    "checkout_tree": (
+        "resolves, its links followed, the checkout the configuration names for a repository, before a reader is bound "
+        "to it, since it chooses the tree the reader is bound to"
+    ),
+}
 RULE_TEXT = 300
 MIN_WORDS = 4
 CONFLICT_SIMILARITY = 0.6
@@ -237,26 +246,53 @@ def is_prose(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in PROSE_SUFFIXES
 
 
-def _working_copy(root: Path, path: str) -> bytes | str | None:
-    """The working tree's copy of `path`; why it is not read when a link lies on its path or it cannot be resolved,
-    such as a `CLAUDE.md` that links to `AGENTS.md`, since the checkout's links are never followed; or None when it is
-    no file there or is too large to read."""
-    refused = refusal(path, root)
-    if refused is not None:
-        return refused
-    target = root.joinpath(*PurePosixPath(path).parts)
-    if file_presence.is_present(target, other_is_absent=True) and target.stat().st_size <= READ_BYTES:
-        return target.read_bytes()
+# Why a guidance file is not read when a symbolic link or junction lies on its path in the checkout.
+LINK_ON_PATH = "a symbolic link or junction lies on the entry's path, which is never followed"
+
+
+def checkout_tree(checkout: Path) -> Path:
+    """The configured checkout, its links followed, the tree a reader is then bound to."""
+    return resolved_path(checkout)
+
+
+def _working_copy(reader: TreeReader, path: str) -> bytes | str | None:
+    """The working tree's copy of `path`, read through `reader`, bound to the checkout; why it is not read when a link
+    lies on its path, wherever it leads, such as a `CLAUDE.md` that links to `AGENTS.md`, since the checkout's links
+    are never followed, not even to learn where they lead, or the reader cannot read it; or None when it is no file
+    there or is too large to read. Each name on the way is judged from its own metadata through the reader, and the
+    file is read through it, within its bound, from a regular file only."""
+    written = written_refusal(path)
+    if written is not None:
+        return written
+    parts = PurePosixPath(path).parts
+    current = reader.tree
+    for part in parts:
+        current = current / part
+        try:
+            linked = reader.is_link(current)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as error:
+            return f"the entry's link state cannot be read: {error.strerror or error}"
+        if linked:
+            return LINK_ON_PATH
+    target = reader.tree.joinpath(*parts)
+    if reader.present(target, other_is_absent=True) and reader.status(target).st_size <= READ_BYTES:
+        try:
+            return reader.contents(target)
+        except FileRefused as refused_read:
+            return f"the entry cannot be read: {refused_read.reason}"
     return None
 
 
 def read_working_copy(checkout: Path, path: str) -> WorkingCopy:
     """The working tree's copy of `path` with its SHA-256; None when it is no file inside the checkout or is too
-    large, and when it is reached through a link or cannot be read, which the result says why."""
+    large, and when the tree reader bound to the checkout refuses it, a link lies on its path, or it cannot be read,
+    which the result says why."""
     if not safe_repository_path(path):
         return WorkingCopy(None)
     try:
-        content = _working_copy(resolved_path(checkout), path)
+        content = _working_copy(TreeReader(checkout_tree(checkout)), path)
     except OSError as exc:
         return WorkingCopy(None, unreadable=flat_text(f"{type(exc).__name__}: {exc.strerror or exc}"))
     if isinstance(content, str):

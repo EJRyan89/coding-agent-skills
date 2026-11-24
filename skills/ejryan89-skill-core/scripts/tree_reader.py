@@ -1,14 +1,16 @@
-"""The one reader of a tree a skill promises to read only inside, for the .NET skills, audit-skill, and review-document.
+"""The one reader of a tree a skill promises to read only inside, for each skill the tree read policy names.
 
 dotnet-dependencies promises to read only inside the tree it examines, and dotnet-format only inside the repository.
 Each keeps the promise through a `TreeReader` bound to that tree: every stat, open, read, listing, and walk of a path in
 their scripts goes through one, and validation refuses a direct read there (the tree read policy in
 `tests/validation/fsops_platform.py`), so a caller that bypasses the reader fails validation rather than waiting for a
 review to find it. dotnet-dependencies reads a package unpacked in the NuGet cache, which lies outside the examined
-tree, through a reader bound to the cache folder, so no link is followed out of that either. audit-skill reads the
-skill folder it audits through a reader bound to that folder too, the places outside it stated in TREE_READ_ALLOWED, and
+tree, through a reader bound to the cache folder, so no link is followed out of that either. audit-skill reads the skill
+folder it audits through a reader bound to that folder too, the places outside it stated in TREE_READ_ALLOWED, and
 review-document the document it reviews, the checkout around it, and the working directory its resolve searches, each
-through a reader bound to it.
+through a reader bound to it. audit-ai-config reads the repository it audits through a reader bound to it,
+curate-agent-memory the memory store and the repository through a reader bound to each, and review-insights a guidance
+file's working-tree copy through a reader bound to the configured checkout.
 
 Each call judges its path before it touches it (`refusal`), from the path's text and then by its links:
 
@@ -52,9 +54,10 @@ from pathlib import Path
 import file_presence
 from atomic_file import is_read_only
 from dotnet_solution import decode_text, entry_key, lexical_absolute, read_bounded, refusal
-from folder_walk import SKIPPED_FOLDERS, Walk, followed_inside, walk_files
+from folder_walk import SKIPPED_FOLDERS, LeadsOutside, Walk, followed_inside, walk_files
 from folders_up import folders_up
 from link_probe import is_link_or_junction
+from path_keys import opens_as
 
 # Why a path is refused when a `..` in it, taken after the links before it are followed, climbs above the tree's top.
 CLIMBS_OUT = "a `..` in it climbs above the examined tree once the links before it are followed"
@@ -92,6 +95,22 @@ class TreeReader:
                 return CLIMBS_OUT
         return None
 
+    def leads_out(self, path: Path) -> bool:
+        """Whether `refusal` refuses `path` because it leads out of the tree: by its text, or through a link on its way,
+        or a `..` a link's text holds, that leads outside (`folder_walk.LeadsOutside`). Any other refusal, a name whose
+        metadata cannot be read, a link whose text cannot be read, a loop of links, or a `..` of the path's own that
+        climbs out once the links before it are followed, is not one, and neither is a path the reader lets through."""
+        absolute = lexical_absolute(path)
+        if refusal(absolute, self.tree, devices=False) is not None:
+            return True
+        for named in dict.fromkeys((path.absolute(), absolute)):
+            inside, linked = followed_inside(named, self.tree)
+            if linked is not None:
+                return isinstance(linked, LeadsOutside)
+            if inside is None:
+                return False
+        return False
+
     def judged(self, path: Path) -> Path:
         """`path`, or `TreeRefused` when `refusal` refuses it."""
         if (refused := self.refusal(path)) is not None:
@@ -121,6 +140,14 @@ class TreeReader:
         (`link_probe`) after the folder holding it is judged, so the link is never followed."""
         self.judged(path.parent)
         return is_link_or_junction(path)
+
+    def opens_as(self, path: Path, name: str) -> bool:
+        """`path_keys.opens_as` after the folder holding `path` is judged: whether that folder gives `path`'s own entry
+        when a program opens `name` there, as the folder's file system compares names. The folder is listed and the
+        entry examined from its own metadata, never through a link; a folder the reader refuses raises
+        `TreeRefused`."""
+        self.judged(path.parent)
+        return opens_as(path, name)
 
     def missing_reason(self, path: Path, *, folder: bool = False) -> str | None:
         """`file_presence.refusal_reason` of a judged path, or `cannot be examined: <reason>` for a refused one, in the
@@ -173,10 +200,16 @@ class TreeReader:
         skipped: frozenset[str] = SKIPPED_FOLDERS,
         prune: Callable[[Path], bool] | None = None,
         limit: int | None = None,
+        follow: Callable[[Path], bool] | None = None,
     ) -> Walk:
         """`folder_walk.walk_files` below a judged `top`, given the tree, so it follows no link entry out of it, not
-        even to learn what it is."""
-        return walk_files(self.judged(top), wanted, skipped=skipped, prune=prune, limit=limit, tree=self.tree)
+        even to learn what it is. `follow` is passed through: a link entry leading out of the tree is never offered to
+        it, since the walk judges such an entry first and reports it as `LINKED`, so only a folder link that stays
+        inside is, and one it accepts is entered, unless it comes back into a folder the walk is inside, which is
+        reported as `LOOP` and not entered, so the walk ends."""
+        return walk_files(
+            self.judged(top), wanted, skipped=skipped, prune=prune, follow=follow, limit=limit, tree=self.tree
+        )
 
     def climb(self, start: Path, stop: Path | None = None) -> Iterator[Path]:
         """`start`, a judged path inside the tree, and each folder above it up to the tree's top, nearest first, as
