@@ -2363,6 +2363,25 @@ def test_core_reads_derives_a_sibling_skills_readers_through_the_core_and_its_ow
         assert core_reads(core, (sibling,)) == frozenset({"paths.read", "sib_io.load", "sib_batch.run_list"})
 
 
+def test_core_table_problems_accepts_a_sibling_defined_entry_and_reports_it_once_the_sibling_drops_it() -> None:
+    # review_documents.extract, an OTHER_PLACE_READS entry ejryan89-code-review-core defines, is accepted when a
+    # sibling folder defines it, and reported as stale when no folder read does.
+    entry = "review_documents.extract"
+    assert entry in OTHER_PLACE_READS
+    stale = (
+        f"tests/validation/fsops_platform.py: OTHER_PLACE_READS names {entry}, which neither ejryan89-skill-core nor "
+        "a sibling skill's scripts a policed module loads define; rename or remove the entry"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        core, sibling, dropped = (Path(temporary) / name for name in ("core", "sibling", "dropped"))
+        write_fixture_tree(core, {"paths.py": "def read(path):\n    return path.read_bytes()\n"})
+        write_fixture_tree(sibling, {"review_documents.py": "def extract(form, content):\n    return content\n"})
+        write_fixture_tree(dropped, {"review_documents.py": "def extracted(form, content):\n    return content\n"})
+        assert stale not in core_table_problems(core, (sibling,))
+        assert stale in core_table_problems(core, (dropped,))
+        assert stale in core_table_problems(core)
+
+
 def test_core_reads_marks_the_code_review_cores_run_list_and_json_readers_in_the_real_repository() -> None:
     # Named as literals: review-document's report_runs reads the run list through these, which the policy now sees.
     repository = Path(__file__).resolve().parents[2]

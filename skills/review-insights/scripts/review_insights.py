@@ -138,8 +138,8 @@ TREE_READ_ALLOWED = {
         ("main",),
     ),
     "RecordPairs.read": (
-        "reads a review record pair collect_records or read_ledgers found under the configured archive_root: the "
-        "pipeline's own store"
+        "reads a review record pair under the configured archive_root: the pipeline's own store. It is reached through "
+        "an instance, so its callers are not read; collect_records and read_ledgers call it with a pair they found"
     ),
     "collect_records": (
         "lists a repository's review records under the configured archive_root: the pipeline's own store",
