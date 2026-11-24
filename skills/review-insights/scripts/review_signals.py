@@ -19,14 +19,16 @@ references are kept in the order found, by reviewer, file, and line.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any
+from typing import TypedDict, cast
 
 from flat_text import flat_text
-from review_records import finding_reference, source_parts
-from review_synthesis import finding_ref, group_key, headline
-from review_vocabularies import SEVERITIES, SEVERITY_RANK
+from review_guidance import GuidanceOverlap, UnsuppliedReference
+from review_records import Finding, FindingReference, LedgerKey, ReviewRecord, finding_reference, source_parts
+from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline, review_key
+from review_vocabularies import SEVERITIES, SEVERITY_RANK, Severity
 from typed_fields import FieldReader
 
 ANCHOR_WINDOW = 3
@@ -46,35 +48,116 @@ SIGNALS = {
     "unsupplied_references": ("U", "guidance-unsupplied"),
 }
 
-Pair = tuple[Mapping[str, Any], Mapping[str, Any], Any]
-FindingKey = tuple[str, int, int, str]
-Read = Callable[[Any, str], Any]
+# A field's reader: JSON not yet read, which `read` types as Signals once every field is read.
+Read = Callable[[object, str], object]
 READ = FieldReader()
+# A finding with the record that holds it.
+Member = tuple[ReviewRecord, Finding]
 
 
-def _text(value: Any, path: str) -> str:
+class SeverityDrift(TypedDict):
+    basis: str
+    repository: str
+    category: str
+    headline: str
+    severity: dict[str, int]
+    examples: list[str]
+
+
+class VerdictFlip(TypedDict):
+    repository: str
+    pull_number: int
+    head_sha: str
+    versions: list[int]
+    verdicts: list[str]
+    differences: list[str]
+
+
+class ReviewerDisagreement(TypedDict):
+    repository: str
+    pull_number: int
+    head_sha: str
+    path: str
+    line: int
+    reports: list[str]
+
+
+# Each signal as the report keeps it: numbered by its `id`, as FIELDS reads it.
+class DriftSignal(SeverityDrift):
+    id: str
+
+
+class FlipSignal(VerdictFlip):
+    id: str
+
+
+class DisagreementSignal(ReviewerDisagreement):
+    id: str
+
+
+class OverlapSignal(GuidanceOverlap):
+    id: str
+
+
+class UnsuppliedSignal(UnsuppliedReference):
+    id: str
+
+
+class Found(TypedDict):
+    """Every item of each signal, strongest first, before `kept` numbers and cuts them."""
+
+    severity_drift: list[SeverityDrift]
+    verdict_flips: list[VerdictFlip]
+    reviewer_disagreements: list[ReviewerDisagreement]
+    guidance_overlaps: list[GuidanceOverlap]
+    unsupplied_references: list[UnsuppliedReference]
+
+
+class Signals(TypedDict):
+    """A report's signals: each one's SIGNALS_KEPT strongest items, numbered, and by its name how many it found."""
+
+    severity_drift: list[DriftSignal]
+    verdict_flips: list[FlipSignal]
+    reviewer_disagreements: list[DisagreementSignal]
+    guidance_overlaps: list[OverlapSignal]
+    unsupplied_references: list[UnsuppliedSignal]
+    counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class _Held:
+    """A finding a review held open: its ledger entry, if it has one, its reference, its severity, and its file and
+    line, which an entry whose raising review is not in the archive lacks."""
+
+    entry: LedgerKey | None
+    ref: str
+    severity: Severity
+    place: tuple[str, int] | None
+
+
+def _text(value: object, path: str) -> str:
     """Text a record or a guidance file gave, which may be blank."""
     return READ.string(value, path, empty=True)
 
 
-def _name(value: Any, path: str) -> str:
+def _name(value: object, path: str) -> str:
     return READ.string(value, path)
 
 
-def _number(value: Any, path: str) -> int:
+def _number(value: object, path: str) -> int:
     return READ.integer(value, path, minimum=1)
 
 
-def _line(value: Any, path: str) -> int:
+def _line(value: object, path: str) -> int:
     return READ.integer(value, path)
 
 
-def _texts(value: Any, path: str) -> list[str]:
+def _texts(value: object, path: str) -> list[str]:
     return READ.array(value, path, _text)
 
 
 def _pair(item: Read) -> Read:
-    def read(value: Any, path: str) -> list[Any]:
+    def read(value: object, path: str) -> list[object]:
         found = READ.array(value, path, item, maximum=2)
         if len(found) != 2:
             raise READ.fail(path, "an array of 2 items", f"an array of {len(found)} items")
@@ -87,7 +170,7 @@ def _one_of(*allowed: str) -> Read:
     return lambda value, path: READ.one_of(value, path, allowed)
 
 
-def _severity_counts(value: Any, path: str) -> dict[str, int]:
+def _severity_counts(value: object, path: str) -> dict[str, int]:
     counts = READ.json_object(value, path, optional=SEVERITIES)
     return {severity: _number(count, f"{path}.{severity}") for severity, count in counts.items()}
 
@@ -133,7 +216,7 @@ FIELDS: dict[str, dict[str, Read]] = {
 }
 
 
-def read(value: Any, path: str = "signals") -> dict[str, Any]:
+def read(value: object, path: str = "signals") -> Signals:
     """A report's signals, every field read as FIELDS gives it, each kind's count at least the items it kept; a
     `FieldError` names the first field that is not."""
     signals = READ.json_object(value, path, required=[*SIGNALS, "counts"])
@@ -146,67 +229,106 @@ def read(value: Any, path: str = "signals") -> dict[str, Any]:
             for field, reader in fields.items():
                 reader(item[field], f"{where}.{field}")
         READ.integer(counts[name], f"{path}.counts.{name}", minimum=len(items))
-    return signals
+    # Every field each item's type names has been read above, as FIELDS gives it.
+    return cast(Signals, signals)
 
 
-def empty() -> dict[str, Any]:
-    return {**{name: [] for name in SIGNALS}, "counts": dict.fromkeys(SIGNALS, 0)}
+def empty() -> Signals:
+    return {
+        "severity_drift": [],
+        "verdict_flips": [],
+        "reviewer_disagreements": [],
+        "guidance_overlaps": [],
+        "unsupplied_references": [],
+        "counts": dict.fromkeys(SIGNALS, 0),
+    }
 
 
-def kept(found: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+def _lists(signals: Found | Signals) -> dict[str, Sequence[Mapping[str, object]]]:
+    """Each signal's items by its name in SIGNALS."""
+    return {
+        "severity_drift": signals["severity_drift"],
+        "verdict_flips": signals["verdict_flips"],
+        "reviewer_disagreements": signals["reviewer_disagreements"],
+        "guidance_overlaps": signals["guidance_overlaps"],
+        "unsupplied_references": signals["unsupplied_references"],
+    }
+
+
+def _numbered[Item](name: str, items: list[Item]) -> Iterator[tuple[str, Item]]:
+    """The signal's first SIGNALS_KEPT items, each with its ID."""
+    prefix = SIGNALS[name][0]
+    return ((f"{prefix}{number}", item) for number, item in enumerate(items[:SIGNALS_KEPT], start=1))
+
+
+def kept(found: Found) -> Signals:
     """Each signal's strongest SIGNALS_KEPT items, numbered, and how many there were."""
-    signals: dict[str, Any] = {"counts": {name: len(found[name]) for name in SIGNALS}}
-    for name, (prefix, _) in SIGNALS.items():
-        signals[name] = [
-            {"id": f"{prefix}{number}", **item} for number, item in enumerate(found[name][:SIGNALS_KEPT], start=1)
-        ]
-    return signals
+    lists = _lists(found)
+    return {
+        "counts": {name: len(lists[name]) for name in SIGNALS},
+        "severity_drift": [
+            {"id": identifier, **item} for identifier, item in _numbered("severity_drift", found["severity_drift"])
+        ],
+        "verdict_flips": [
+            {"id": identifier, **item} for identifier, item in _numbered("verdict_flips", found["verdict_flips"])
+        ],
+        "reviewer_disagreements": [
+            {"id": identifier, **item}
+            for identifier, item in _numbered("reviewer_disagreements", found["reviewer_disagreements"])
+        ],
+        "guidance_overlaps": [
+            {"id": identifier, **item}
+            for identifier, item in _numbered("guidance_overlaps", found["guidance_overlaps"])
+        ],
+        "unsupplied_references": [
+            {"id": identifier, **item}
+            for identifier, item in _numbered("unsupplied_references", found["unsupplied_references"])
+        ],
+    }
 
 
-def input_lines(signals: dict[str, Any]) -> list[dict[str, Any]]:
+def input_lines(signals: Signals) -> list[Mapping[str, object]]:
     """The synthesis input's line for each signal the report keeps."""
-    return [{"kind": kind, **item} for name, (_, kind) in SIGNALS.items() for item in signals[name]]
+    lists = _lists(signals)
+    return [{"kind": kind, **item} for name, (_, kind) in SIGNALS.items() for item in lists[name]]
 
 
-def _review_key(record: Mapping[str, Any]) -> tuple[str, int, int]:
-    return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
+def _order(member: Member) -> FindingKey:
+    return *review_key(member[0]), member[1]["id"]
 
 
-def _order(member: tuple[Mapping[str, Any], Mapping[str, Any]]) -> tuple[Any, ...]:
-    return *_review_key(member[0]), member[1]["id"]
-
-
-def _drift(basis: str, members: list[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> dict[str, Any]:
+def _drift(basis: str, members: list[Member]) -> SeverityDrift:
     members = sorted(members, key=_order)
     record, first = members[0]
     # One example of each severity first, the most severe first, then the rest in review order.
-    chosen: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    chosen: list[Member] = []
     for member in sorted(members, key=lambda item: -SEVERITY_RANK[item[1]["severity"]]):
         if member[1]["severity"] not in {finding["severity"] for _, finding in chosen}:
             chosen.append(member)
     chosen += [member for member in members if not any(member is item for item in chosen)]
+    severities: Counter[str] = Counter(finding["severity"] for _, finding in members)
     return {
         "basis": basis,
         "repository": record["repository"].lower(),
         "category": first["category"],
         "headline": headline(first),
-        "severity": dict(sorted(Counter(finding["severity"] for _, finding in members).items())),
+        "severity": dict(sorted(severities.items())),
         "examples": [f"{finding['severity']} {finding_ref(item, finding)}" for item, finding in chosen[:EXAMPLES_KEPT]],
     }
 
 
 def severity_drift(
-    pairs: Iterable[Pair], records: Iterable[Mapping[str, Any]], entries: dict[FindingKey, FindingKey]
-) -> list[dict[str, Any]]:
+    pairs: Iterable[Pair], records: Iterable[ReviewRecord], entries: Mapping[FindingKey, FindingKey]
+) -> list[SeverityDrift]:
     """Every group of counted findings, and every ledger entry raised more than once in the range, that carries more
     than one severity: those with the most severities first, then the most findings."""
-    groups: dict[tuple[str, str, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    groups: dict[tuple[str, str, str], list[Member]] = {}
     for record, finding, _ in pairs:
         groups.setdefault(group_key(record, finding), []).append((record, finding))
-    occurrences: dict[FindingKey, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    occurrences: dict[FindingKey, list[Member]] = {}
     for record in records:
         for finding in record["findings"]:
-            key = (*_review_key(record), finding["id"])
+            key: FindingKey = (*review_key(record), finding["id"])
             occurrences.setdefault(entries.get(key, key), []).append((record, finding))
     found = [
         _drift(basis, members)
@@ -225,59 +347,53 @@ def severity_drift(
     )
 
 
-def _held(record: Mapping[str, Any], by_version: Mapping[int, Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _held(record: ReviewRecord, by_version: Mapping[int, ReviewRecord]) -> list[_Held]:
     """The findings a review held open: its ledger's open entries, each where it was last raised by then, or for a
     record written before ledgers, its own findings."""
     if "ledger" not in record:
-        return [_holding(record, finding, None) for finding in record["findings"]]
+        return [
+            _Held(None, finding_ref(record, finding), finding["severity"], (finding["path"], finding["line"]))
+            for finding in record["findings"]
+        ]
     version = record["review"]["version"]
     held = []
     for entry in record["ledger"]:
         if entry["state"] != "open":
             continue
-        raised = [{"version": entry["version"], "id": entry["id"]}, *entry["repeats"]]
+        raised: list[FindingReference] = [{"version": entry["version"], "id": entry["id"]}, *entry["repeats"]]
         latest = max((item for item in raised if item["version"] <= version), key=lambda item: item["version"])
-        source = by_version.get(latest["version"], {"findings": []})
-        finding = next((item for item in source["findings"] if item["id"] == latest["id"]), None)
-        holding = _holding(record, finding or {"severity": entry["severity"], "path": None, "line": None}, None)
-        repository, number, _ = _review_key(record)
-        holding.update(
-            entry=(entry["version"], entry["id"]),
-            ref=finding_reference(repository, number, latest["version"], latest["id"]),
+        source = by_version.get(latest["version"])
+        findings = source["findings"] if source is not None else []
+        finding = next((item for item in findings if item["id"] == latest["id"]), None)
+        repository, number, _ = review_key(record)
+        held.append(
+            _Held(
+                (entry["version"], entry["id"]),
+                finding_reference(repository, number, latest["version"], latest["id"]),
+                entry["severity"] if finding is None else finding["severity"],
+                None if finding is None else (finding["path"], finding["line"]),
+            )
         )
-        held.append(holding)
     return held
 
 
-def _holding(record: Mapping[str, Any], finding: Mapping[str, Any], entry: Any) -> dict[str, Any]:
-    ref = finding_ref(record, finding) if "id" in finding else ""
-    return {
-        "entry": entry,
-        "ref": ref,
-        "severity": finding["severity"],
-        "path": finding["path"],
-        "line": finding["line"],
-    }
-
-
-def _near(first: dict[str, Any], second: dict[str, Any]) -> bool:
+def _near(first: _Held, second: _Held) -> bool:
     return (
-        first["path"] is not None
-        and first["path"] == second["path"]
-        and abs(first["line"] - second["line"]) <= ANCHOR_WINDOW
+        first.place is not None
+        and second.place is not None
+        and first.place[0] == second.place[0]
+        and abs(first.place[1] - second.place[1]) <= ANCHOR_WINDOW
     )
 
 
-def _same(first: dict[str, Any], second: dict[str, Any], *, by_entry: bool) -> bool:
+def _same(first: _Held, second: _Held, *, by_entry: bool) -> bool:
     """Whether two held findings are one: by ledger entry, or else by file and a nearby line."""
     if by_entry:
-        return first["entry"] is not None and first["entry"] == second["entry"]
+        return first.entry is not None and first.entry == second.entry
     return _near(first, second)
 
 
-def _matched(
-    before: list[dict[str, Any]], after: list[dict[str, Any]]
-) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
+def _matched(before: list[_Held], after: list[_Held]) -> tuple[list[tuple[_Held, _Held]], list[_Held], list[_Held]]:
     """The findings two reviews share, by ledger entry and then by place, and those only one of them held."""
     left, right, pairs = list(before), list(after), []
     for by_entry in (True, False):
@@ -290,24 +406,22 @@ def _matched(
     return pairs, left, right
 
 
-def _difference(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
-    place = next((item for item in (before, after) if item is not None and item["path"] is not None), None)
-    where = f"{place['path']}:{place['line']}" if place else "(no location)"
-    severities = [item["severity"] if item else "absent" for item in (before, after)]
-    refs = ", ".join(item["ref"] for item in (before, after) if item is not None)
+def _difference(before: _Held | None, after: _Held | None) -> str:
+    place = next((item.place for item in (before, after) if item is not None and item.place is not None), None)
+    where = f"{place[0]}:{place[1]}" if place else "(no location)"
+    severities = [item.severity if item else "absent" for item in (before, after)]
+    refs = ", ".join(item.ref for item in (before, after) if item is not None)
     return flat_text(f"{where} {severities[0]} -> {severities[1]} {refs}")
 
 
-def _flip(
-    records: list[Mapping[str, Any]], before: Mapping[str, Any], after: Mapping[str, Any]
-) -> tuple[dict[str, Any], int]:
+def _flip(records: list[ReviewRecord], before: ReviewRecord, after: ReviewRecord) -> tuple[VerdictFlip, int]:
     """The flip two reviews make, and how many findings differ between them before DIFFERENCES_KEPT cuts them."""
     by_version = {record["review"]["version"]: record for record in records}
     pairs, gone, added = _matched(_held(before, by_version), _held(after, by_version))
-    differences = [_difference(a, b) for a, b in pairs if a["severity"] != b["severity"]]
+    differences = [_difference(a, b) for a, b in pairs if a.severity != b.severity]
     differences += [_difference(item, None) for item in gone] + [_difference(None, item) for item in added]
-    repository, number, _ = _review_key(before)
-    flip = {
+    repository, number, _ = review_key(before)
+    flip: VerdictFlip = {
         "repository": repository,
         "pull_number": number,
         "head_sha": before["pull_request"]["head_sha"],
@@ -318,23 +432,23 @@ def _flip(
     return flip, len(differences)
 
 
-def flip_rank(flip: dict[str, Any], differences: int) -> tuple[Any, ...]:
+def flip_rank(flip: VerdictFlip, differences: int) -> tuple[bool, int, str, int, list[int]]:
     """Strongest first: a flip between approval and requested changes, then the most findings that differ, then by
     repository, pull request, and versions."""
     decisive = set(flip["verdicts"]) == DECISIVE_VERDICTS
     return not decisive, -differences, flip["repository"], flip["pull_number"], flip["versions"]
 
 
-def verdict_flips(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def verdict_flips(records: Iterable[ReviewRecord]) -> list[VerdictFlip]:
     """Each pair of consecutive reviews of a pull request at the same head commit whose verdicts differ, strongest
     first (see flip_rank)."""
-    pulls: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    pulls: dict[tuple[str, int], list[ReviewRecord]] = {}
     for record in records:
-        pulls.setdefault(_review_key(record)[:2], []).append(record)
-    found: list[tuple[dict[str, Any], int]] = []
+        pulls.setdefault(review_key(record)[:2], []).append(record)
+    found: list[tuple[VerdictFlip, int]] = []
     for _, history in sorted(pulls.items()):
         history.sort(key=lambda record: record["review"]["version"])
-        by_head: dict[str, list[Mapping[str, Any]]] = {}
+        by_head: dict[str, list[ReviewRecord]] = {}
         for record in history:
             by_head.setdefault(record["pull_request"]["head_sha"], []).append(record)
         for runs in by_head.values():
@@ -346,15 +460,15 @@ def verdict_flips(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [flip for flip, _ in sorted(found, key=lambda item: flip_rank(*item))]
 
 
-def _reviewers(finding: Mapping[str, Any]) -> frozenset[str]:
+def _reviewers(finding: Finding) -> frozenset[str]:
     return frozenset(source_parts(finding["source"]))
 
 
-def _disagree(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
+def _disagree(first: Finding, second: Finding) -> bool:
     return first["severity"] != second["severity"] and not _reviewers(first) & _reviewers(second)
 
 
-def _clusters(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> list[list[int]]:
+def _clusters(members: list[Member]) -> list[list[int]]:
     """The indexes of `members`, sorted by place, joined wherever two findings disagree: every pair is compared, so a
     finding near one end of a disagreement never hides it, and each cluster is reported once."""
     root = list(range(len(members)))
@@ -378,7 +492,7 @@ def _clusters(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> lis
     return [cluster for cluster in clusters.values() if len(cluster) > 1]
 
 
-def _reported(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]], cluster: list[int]) -> list[int]:
+def _reported(members: list[Member], cluster: list[int]) -> list[int]:
     """The REPORTS_KEPT findings of a cluster it reports, in place order: the first pair that disagrees, so the cut
     never hides what makes it a disagreement, then one of each other severity, then the rest from the first."""
     chosen = next(
@@ -394,25 +508,26 @@ def _reported(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]], cluste
     return sorted(chosen[:REPORTS_KEPT])
 
 
-def _spread(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]], cluster: list[int]) -> int:
+def _spread(members: list[Member], cluster: list[int]) -> int:
     ranks = [SEVERITY_RANK[members[index][1]["severity"]] for index in cluster]
     return max(ranks) - min(ranks)
 
 
-def reviewer_disagreements(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def reviewer_disagreements(records: Iterable[ReviewRecord]) -> list[ReviewerDisagreement]:
     """Each place at one head commit of a pull request where reviewers that share no source gave findings within
     ANCHOR_WINDOW lines of each other different severities: the findings joined by such pairs, from the first. The
     widest spread of severities comes first, then the place with the most findings, then by place."""
-    heads: dict[tuple[str, int, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    heads: dict[tuple[str, int, str], list[Member]] = {}
     for record in records:
-        key = (*_review_key(record)[:2], record["pull_request"]["head_sha"])
+        repository, number, _ = review_key(record)
+        key = (repository, number, record["pull_request"]["head_sha"])
         heads.setdefault(key, []).extend((record, finding) for finding in record["findings"])
-    found: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    found: list[tuple[tuple[int, int, str, int, str, str, int], ReviewerDisagreement]] = []
     for (repository, number, head), members in sorted(heads.items()):
         members.sort(key=lambda member: (member[1]["path"], member[1]["line"], *_order(member)))
         for cluster in _clusters(members):
             anchor = members[cluster[0]][1]
-            item = {
+            item: ReviewerDisagreement = {
                 "repository": repository,
                 "pull_number": number,
                 "head_sha": head,
@@ -432,7 +547,7 @@ def _severities(counts: dict[str, int]) -> str:
     return ",".join(f"{severity}:{count}" for severity, count in counts.items())
 
 
-def facts(signals: dict[str, Any]) -> list[str]:
+def facts(signals: Signals) -> list[str]:
     """The signals as the report prints them, one fact per line."""
     lines = []
     for item in signals["severity_drift"]:
@@ -441,29 +556,32 @@ def facts(signals: dict[str, Any]) -> list[str]:
             f"severities={_severities(item['severity'])} {flat_text(item['category'])}: {item['headline']}"
         )
         lines += [f"DRIFT_EXAMPLE {item['id']} {example}" for example in item["examples"]]
-    for item in signals["verdict_flips"]:
+    for flip in signals["verdict_flips"]:
         versions = " ".join(
-            f"v{version}={verdict}" for version, verdict in zip(item["versions"], item["verdicts"], strict=True)
+            f"v{version}={verdict}" for version, verdict in zip(flip["versions"], flip["verdicts"], strict=True)
         )
-        pull = f"{item['repository']}#{item['pull_number']}"
-        lines.append(f"VERDICT_FLIP {item['id']} {pull} head={item['head_sha'][:12]} {versions}")
-        lines += [f"FLIP_DIFFERENCE {item['id']} {difference}" for difference in item["differences"]]
-    for item in signals["reviewer_disagreements"]:
+        pull = f"{flip['repository']}#{flip['pull_number']}"
+        lines.append(f"VERDICT_FLIP {flip['id']} {pull} head={flip['head_sha'][:12]} {versions}")
+        lines += [f"FLIP_DIFFERENCE {flip['id']} {difference}" for difference in flip["differences"]]
+    for disagreement in signals["reviewer_disagreements"]:
         lines.append(
-            f"REVIEWER_DISAGREEMENT {item['id']} {item['repository']}#{item['pull_number']} "
-            f"head={item['head_sha'][:12]} {flat_text(item['path'])}:{item['line']}"
+            f"REVIEWER_DISAGREEMENT {disagreement['id']} {disagreement['repository']}#{disagreement['pull_number']} "
+            f"head={disagreement['head_sha'][:12]} {flat_text(disagreement['path'])}:{disagreement['line']}"
         )
-        lines += [f"DISAGREEING {item['id']} {report}" for report in item["reports"]]
-    for item in signals["guidance_overlaps"]:
-        places = " ".join(f"{flat_text(path)}:{line}" for path, line in zip(item["paths"], item["lines"], strict=True))
-        lines.append(
-            f"GUIDANCE_OVERLAP {item['id']} relation={item['relation']} similarity={item['similarity']} "
-            f"repository={item['repository']} {places}"
+        lines += [f"DISAGREEING {disagreement['id']} {report}" for report in disagreement["reports"]]
+    for overlap in signals["guidance_overlaps"]:
+        places = " ".join(
+            f"{flat_text(path)}:{line}" for path, line in zip(overlap["paths"], overlap["lines"], strict=True)
         )
-    for item in signals["unsupplied_references"]:
         lines.append(
-            f"GUIDANCE_UNSUPPLIED {item['id']} repository={item['repository']} reviewer={flat_text(item['reviewer'])} "
-            f"{flat_text(item['path'])}:{item['line']} {flat_text(item['reference'])}"
+            f"GUIDANCE_OVERLAP {overlap['id']} relation={overlap['relation']} similarity={overlap['similarity']} "
+            f"repository={overlap['repository']} {places}"
+        )
+    for reference in signals["unsupplied_references"]:
+        lines.append(
+            f"GUIDANCE_UNSUPPLIED {reference['id']} repository={reference['repository']} "
+            f"reviewer={flat_text(reference['reviewer'])} "
+            f"{flat_text(reference['path'])}:{reference['line']} {flat_text(reference['reference'])}"
         )
     lines += [
         f"SIGNALS_OMITTED {name} {count - SIGNALS_KEPT}"
@@ -473,7 +591,7 @@ def facts(signals: dict[str, Any]) -> list[str]:
     return lines
 
 
-def render(signals: dict[str, Any]) -> list[str]:
+def render(signals: Signals) -> list[str]:
     """The report's Markdown section of signals, or nothing when there are none."""
     sections = [
         (

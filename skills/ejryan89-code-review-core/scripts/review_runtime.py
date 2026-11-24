@@ -18,7 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import IO, Any
+from typing import IO, Any, NotRequired, TypedDict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -2727,6 +2727,44 @@ def given_closing_issues(
     )
 
 
+class RequestPullRequest(TypedDict):
+    """The pull request as an adapter request names it: the description's file and length only when one is given, and
+    the closing issues' file with the account `given_closing_issues` gives of it only for a reviewer given them."""
+
+    title: str
+    url: str
+    base_ref: str
+    base_sha: str
+    head_sha: str
+    head_ref: NotRequired[str]
+    body_file: NotRequired[str]
+    body_characters: NotRequired[int]
+    body_given: NotRequired[int]
+    closing_issues: NotRequired[dict[str, Any]]
+
+
+class RequestSnapshot(TypedDict):
+    root: str
+    manifest_path: str
+    source_commit: str
+
+
+class AdapterRequest(TypedDict):
+    """What `build_adapter_request` returns and `write_adapter_request` writes. The prior findings, review comments,
+    and coverage keep the shapes their builders give them."""
+
+    protocol_version: int
+    mode: str
+    repository: str
+    pull_number: int
+    pull_request: RequestPullRequest
+    diff_path: str
+    source_snapshot: RequestSnapshot
+    prior_findings: list[dict[str, Any]]
+    github_comments: list[dict[str, Any]]
+    coverage: dict[str, Any]
+
+
 def build_adapter_request(
     *,
     mode: str,
@@ -2746,7 +2784,7 @@ def build_adapter_request(
     body: tuple[Path, int] | None = None,
     closing_issues: tuple[Path, dict[str, Any]] | None = None,
     unreviewed_suffixes: Iterable[str] = (),
-) -> dict[str, Any]:
+) -> AdapterRequest:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified, which is only checked to name this request's repository and head. Without it the
     snapshot is verified here, contents included. `body` names the file holding the description reviewers are given
@@ -2775,33 +2813,27 @@ def build_adapter_request(
         )
     else:
         require_snapshot_source(snapshot, repository, head_sha)
+    pull_request: RequestPullRequest = {
+        "title": title,
+        "url": url,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+    }
+    if head_ref:
+        pull_request["head_ref"] = head_ref
+    if body is not None:
+        pull_request["body_file"] = str(body[0])
+        pull_request["body_characters"] = body[1]
+        pull_request["body_given"] = min(body[1], PULL_REQUEST_BODY_CHARACTERS)
+    if closing_issues is not None:
+        pull_request["closing_issues"] = {"file": str(closing_issues[0]), **closing_issues[1]}
     return {
         "protocol_version": ADAPTER_PROTOCOL_VERSION,
         "mode": mode,
         "repository": repository,
         "pull_number": pull_number,
-        "pull_request": {
-            "title": title,
-            "url": url,
-            "base_ref": base_ref,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
-            **({"head_ref": head_ref} if head_ref else {}),
-            **(
-                {
-                    "body_file": str(body[0]),
-                    "body_characters": body[1],
-                    "body_given": min(body[1], PULL_REQUEST_BODY_CHARACTERS),
-                }
-                if body is not None
-                else {}
-            ),
-            **(
-                {"closing_issues": {"file": str(closing_issues[0]), **closing_issues[1]}}
-                if closing_issues is not None
-                else {}
-            ),
-        },
+        "pull_request": pull_request,
         "diff_path": str(diff_path),
         "source_snapshot": {
             "root": str(source_snapshot_root),
@@ -2896,7 +2928,7 @@ def _undecodable_form(path: str) -> str:
     return REPLACEMENT_RUN.sub(chr(0xFFFD), path)
 
 
-def write_adapter_request(path: Path, request: dict[str, Any]) -> None:
+def write_adapter_request(path: Path, request: AdapterRequest) -> None:
     try:
         atomic_write_json(path, request)
     except PersistenceError as exc:
