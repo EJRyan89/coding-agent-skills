@@ -102,7 +102,9 @@ repository, fixing each hit or filing it, which is the sibling search the fix na
 defect, the pull request adds one, with its rule, any mechanism that applies it, the guard that refuses it or the reason
 no guard can yet, and the forms to search for. A fix that adds a mechanism or a guard adds it to its pattern.
 Validation fails a pattern with no search, one with neither a guard nor the reason no guard can yet, whatever
-mechanism it names, and each mechanism or guard that does not resolve.
+mechanism it names, a prompt pattern that names no prompt, and each prompt, mechanism, or guard that does not
+resolve. A course-correction a prompt caused, such as a check named without its command or a rule the followed prompt
+never reached, is an instance of a pattern under the catalogue's Prompt patterns, recorded the same way.
 
 Before a change is planned, or implemented when the size gate skips the plan, the `implement-change` repository
 skill's `lessons_patterns.py` lists the catalogue's patterns the files the change will touch meet: each pattern whose
@@ -432,7 +434,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
 | `docs/skill-evaluations.md` | The latest `evaluate-skill` result per skill and model, written by `python tools/skill_evals.py --write`. |
-| `docs/lessons.md` | The design patterns learned from defects and drift found after merge: each rule, the mechanism that applies it, the guard that refuses a violation or why none can yet, and the forms to search for. |
+| `docs/lessons.md` | The design patterns learned from defects and drift found after merge, and the prompt patterns learned from agents set right because a prompt left something out: each rule, the prompt it concerns, the mechanism that applies it, the guard that refuses a violation or why none can yet, and the forms to search for. |
 
 ## Model guidance
 

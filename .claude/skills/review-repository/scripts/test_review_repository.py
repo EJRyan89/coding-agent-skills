@@ -198,6 +198,9 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/atomic_file.py": "replaces a file with bytes review_io has already serialized and checked",
     f"{SKILL_CORE}/calendar_date.py": "parses a YYYY-MM-DD date in text it is given, opening and starting nothing",
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
+    f"{SKILL_CORE}/evaluation_results.py": (
+        "reads the tables of docs/skill-evaluations.md from text it is given, opening and starting nothing"
+    ),
     f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
     f"{SKILL_CORE}/link_destinations.py": (
