@@ -108,9 +108,12 @@ LAUNCHER_PROGRAM = (
     "import subprocess, sys\n"
     "waiter = 'import os, sys, time\\nfor _ in range(1200):\\n    if os.path.exists(sys.argv[1]): break\\n"
     "    time.sleep(0.1)\\n'\n"
-    "subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
+    "child = subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
     "print('ready'); sys.stdout.flush()\n"
 )
+# Appended to LAUNCHER_PROGRAM, ends the launcher at once and with no finalizer, so nothing waits on the program it
+# leaves running or warns that it still runs, as a launcher written in another language would leave it.
+LAUNCHER_EXIT = "import os\nos._exit(0)\n"
 SLEEPING = [sys.executable, "-c", "import time; time.sleep(120)"]
 # Appended to LAUNCHER_PROGRAM, keeps the launcher running after it says ready, as a command that stalls does.
 STALL_PROGRAM = "import time\ntime.sleep(60)\n"
@@ -300,7 +303,11 @@ class BoundedProcessTests(unittest.TestCase):
     def test_a_process_left_holding_the_output_does_not_hold_the_timeout(self) -> None:
         # The command starts a child that inherits its output and outlives it, as git-remote-https can.
         child = "import time; time.sleep(20)"
-        program = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(60)"
+        program = (
+            "import subprocess, sys, time\n"
+            f"held = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+            "time.sleep(60)\n"
+        )
         started = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):
             run_bounded([sys.executable, "-c", program], 1)
@@ -727,7 +734,7 @@ class StreamingTests(unittest.TestCase):
             "sys.stdout.write(str(child.pid) + chr(10))\n"
             "sys.stdout.flush()\n"
         )
-        command = [sys.executable, "-c", program]
+        command = [sys.executable, "-c", program + LAUNCHER_EXIT]
         with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, tree=job_tree.process_tree()) as running:
             child = int(running.readline())
             running.stdin.close()
@@ -822,7 +829,7 @@ class StreamingTests(unittest.TestCase):
         # the kill allowance.
         with tempfile.TemporaryDirectory() as temporary:
             release = Path(temporary) / "release"
-            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(release)]
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM + LAUNCHER_EXIT, str(release)]
             started = time.monotonic()
             try:
                 with (

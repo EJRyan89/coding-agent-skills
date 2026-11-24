@@ -44,16 +44,19 @@ PHANTOM_PID = 4294967292
 FAILED_RESULTS = {"ResumeThread": 0xFFFFFFFF}
 # Starts a program that holds the file named by its first argument open and then creates "<file>.ready", and waits
 # for it to be ready; with a second argument, it then runs on, as a command that hangs does, and otherwise it exits.
+# Each launcher here that leaves a program running ends with os._exit, which runs no finalizer, so nothing waits on that
+# program or warns that it still runs, as a launcher written in another language would leave it.
 LAUNCHER_PROGRAM = (
     "import os, subprocess, sys, time\n"
     "held = sys.argv[1]\n"
     'holder = \'import sys, time\\nhandle = open(sys.argv[1], "w")\\nopen(sys.argv[1] + ".ready", "w").close()\\n'
     "time.sleep(120)\\n'\n"
-    "subprocess.Popen([sys.executable, '-c', holder, held])\n"
+    "child = subprocess.Popen([sys.executable, '-c', holder, held])\n"
     "for _ in range(1200):\n"
     "    if os.path.exists(held + '.ready'): break\n"
     "    time.sleep(0.05)\n"
     "if len(sys.argv) > 2: time.sleep(120)\n"
+    "os._exit(0)\n"
 )
 
 
@@ -62,21 +65,24 @@ LAUNCHER_PROGRAM = (
 GROUP_LAUNCHER = (
     "import os, subprocess, sys, time\n"
     "ready = sys.argv[1]\n"
-    'holder = \'import os, sys, time\\npartial = sys.argv[1] + ".partial"\\n'
-    'open(partial, "w").write(str(os.getpid()))\\nos.replace(partial, sys.argv[1])\\ntime.sleep(120)\\n\'\n'
-    "subprocess.Popen([sys.executable, '-c', holder, ready])\n"
+    'holder = \'import os, sys, time\\npartial = sys.argv[1] + ".partial"\\nwritten = open(partial, "w")\\n'
+    "written.write(str(os.getpid()))\\nwritten.close()\\nos.replace(partial, sys.argv[1])\\ntime.sleep(120)\\n'\n"
+    "child = subprocess.Popen([sys.executable, '-c', holder, ready])\n"
     "for _ in range(1200):\n"
     "    if os.path.exists(ready): break\n"
     "    time.sleep(0.05)\n"
     "if len(sys.argv) > 2: time.sleep(120)\n"
+    "os._exit(0)\n"
 )
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(120)"]
 # Starts a program that runs on, writes its PID to the file named by its first argument, and exits at once, leaving
 # that program running.
 QUICK_LAUNCHER = (
-    "import subprocess, sys\n"
+    "import os, subprocess, sys\n"
     "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-    "open(sys.argv[1], 'w').write(str(child.pid))\n"
+    "with open(sys.argv[1], 'w') as written:\n"
+    "    written.write(str(child.pid))\n"
+    "os._exit(0)\n"
 )
 # Allocates the bytes its first argument gives and says whether Windows let it.
 ALLOCATOR = (
