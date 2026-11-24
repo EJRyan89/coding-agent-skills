@@ -19,14 +19,14 @@ reader bound to it, so no link leading out of either is followed, not even to le
 a link on its way leads out is passed over unread, as a linked folder always was, a cited path through one is reported
 unreadable with the reader's reason, and a store whose MEMORY.md is such a link is no memory store. A cited path,
 relative, absolute, or ~, that names a place in the repository or the store, its `..` taken as text, wherever it was
-written from and however its `..` climbs out and back in, or that has a link on its way leading out of either, is looked
-up through that tree's reader, so one through such a link, or whose `..` climbs out after one, is reported unreadable
-too. A cited path that names neither and has no such link, an --instructions file, the settings, and the deployer's
-manifest are read where they are named, as TREE_READ_ALLOWED states. The instruction files in the user's configuration
-directory (--user-dir) are read with their links followed, as Claude Code loads a CLAUDE.md linked from a dotfiles
-checkout: refusing a link guards against a repository the user did not write, and that directory is the user's own. A
-cited path is read only as PATH_LIKE matches one, so a path holding `~` past its start, as a Windows short name such as
-RUNNER~1 does, is not read as a cited path: a stated limit.
+written from, or that meets a link inside either on its way, its `..` taken as text until then, however its `..` climbs
+out and back in, is looked up through that tree's reader, so one through a link leading out of it, or whose `..` climbs
+out after a link, is reported unreadable too. A cited path that names neither and meets no such link, an --instructions
+file, the settings, and the deployer's manifest are read where they are named, as TREE_READ_ALLOWED states. The
+instruction files in the user's configuration directory (--user-dir) are read with their links followed, as Claude Code
+loads a CLAUDE.md linked from a dotfiles checkout: refusing a link guards against a repository the user did not write,
+and that directory is the user's own. A cited path is read only as PATH_LIKE matches one, so a path holding `~` past its
+start, as a Windows short name such as RUNNER~1 does, is not read as a cited path: a stated limit.
 
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
@@ -290,8 +290,8 @@ PRESENCE_ALLOWED = {
 TREE_READ_ALLOWED = {
     "outside_present": (
         "whether anything is at a path a memory cites that names no place in the repository or the store, its `..` "
-        "taken as text, and has no link on its way leading out of either: the place it names, outside every tree the "
-        "audit examines"
+        "taken as text, and meets no link inside either on its way: the place it names, outside every tree the audit "
+        "examines"
     ),
     "named_text": (
         "reads an instruction file the user names with --instructions, where it names, and one a pattern found in the "
@@ -619,18 +619,46 @@ def cited_place(place: Path, bases: list[Path]) -> tuple[TreeReader | None, Path
     """`place` with the reader of the base it names, the deepest when several do, so a link on its way that leads out
     of that base, or a `..` that climbs out after one, is refused rather than followed; None for one that names no base,
     which is looked up where it names. A place names a base when its form with every `..` taken as text lies in it,
-    whatever base it was written from and however its own `..` climbs out and back in, or when a link on its way, its
-    own `..` taken after it, leads out of the base (`folder_walk.followed_inside`), each name judged from its own
-    metadata and each link from its text, so nothing outside a base is looked at to decide."""
+    whatever base it was written from, when a link on its way, its own `..` taken after it, leads out of the base
+    (`folder_walk.followed_inside`), or when the first link it meets, its `..` taken as text until then, lies inside
+    the base (`link_on_way`), however its own `..` climbs out and back in; each name is judged from its own metadata
+    and each link from its text, so nothing outside a base is looked at to decide."""
     owners = [
         base
         for base in bases
         if within(lexical_absolute(place), lexical_absolute(base))
         or followed_inside(place.absolute(), lexical_absolute(base))[1] is not None
+        or link_on_way(place, base)
     ]
     if not owners:
         return None, place
     return TreeReader(max(owners, key=lambda base: len(lexical_absolute(base).parts))), place
+
+
+def link_on_way(place: Path, base: Path) -> bool:
+    """Whether a link inside `base` lies on the way to `place`: its names are taken in order, each `..` as text, as the
+    system takes them until it meets a link, and the first name that is a link inside the base, judged from its own
+    metadata through the base's reader and never followed, answers True. So a place whose own `..` climbs out of the
+    base, before or after the link, is still the base's to judge, as the system opens it from where the link leads; one
+    that meets no link inside the base, or a name that is not there, is not; one with a name whose metadata cannot be
+    read is, so the base's reader refuses it, naming why."""
+    reader = TreeReader(base)
+    current = Path(place.absolute().anchor)
+    for name in place.absolute().parts[1:]:
+        if name == "..":
+            current = current.parent
+            continue
+        current = current / name
+        if name == "." or not within(current, reader.tree, strict=True):
+            continue
+        try:
+            if reader.is_link(current):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            return True
+    return False
 
 
 def cited_presence(places: list[tuple[TreeReader | None, Path]]) -> tuple[bool | None, str | None]:
@@ -1622,6 +1650,12 @@ def store_folder_reason(memory_dir: Path) -> str | None:
 
 
 def run(args: argparse.Namespace) -> tuple[int, list[str]]:
+    # A memory directory or repository holding `..` is made absolute with each `..` taken as text before a reader is
+    # bound to it, since the reader refuses a `..` that climbs above its tree; any other spelling is kept as given.
+    for name in ("memory_dir", "repo"):
+        given = getattr(args, name, None)
+        if isinstance(given, Path) and ".." in given.parts:
+            setattr(args, name, lexical_absolute(given))
     if args.command == "resolve":
         return resolve_command(args)
     if args.command == "skill-source":

@@ -64,7 +64,7 @@ from agent_skills import (
 )
 from check_provenance import Source
 from console import run_main
-from dotnet_solution import FileRefused
+from dotnet_solution import FileRefused, lexical_absolute
 from file_presence import NotAFile
 from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
@@ -4253,13 +4253,16 @@ def main() -> int:
         help="repository root (defaults to current directory)",
     )
     args = parser.parse_args()
+    # A root holding `..` is made absolute with each `..` taken as text before a reader is bound to it, since the reader
+    # refuses a `..` that climbs above its tree; any other spelling is kept as given.
+    root = lexical_absolute(args.root) if ".." in args.root.parts else args.root
 
-    refusal = not_a_checkout(args.root)
+    refusal = not_a_checkout(root)
     if refusal is not None:
         print(single_line(f"FAILED {refusal}"))
         return 1
 
-    result = audit(args.root)
+    result = audit(root)
     sources = None
     if args.provenance:
         try:

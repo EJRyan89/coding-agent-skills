@@ -600,6 +600,36 @@ class MemoryAuditTests(unittest.TestCase):
         [named] = self.by_file(self.run_audit())["paths.md"]["cited_paths"]
         self.assertEqual((found, True), (named["path"], named["exists"]), "a path naming neither tree is looked up")
 
+    def test_a_cited_path_climbing_out_after_a_link_inside_is_judged_by_the_repositorys_reader(self) -> None:
+        # A junction on Windows, a symbolic link on Linux and macOS: `deep` leads deeper into the repository, so a path
+        # whose own `..` then climbs past the repository's top names, as the system opens it, the repository's
+        # `shared`, a link out; its text names no place in the repository, but the link it meets first lies inside, so
+        # the repository's reader refuses it, with nothing past `shared` looked at.
+        outside = self.elsewhere()
+        write(outside / "rule.md", "Rule.\n")
+        (self.repo / "a" / "b").mkdir(parents=True)
+        directory_link(self.repo / "deep", self.repo / "a" / "b")
+        shared = directory_link(self.repo / "shared", outside)
+        refused = [
+            "deep/../../../repo/shared/rule.md",
+            f"{self.repo.as_posix()}/deep/../../../repo/shared/rule.md",
+            "../repo/deep/../../../repo/shared/rule.md",
+        ]
+        if sys.platform != "win32":
+            # A relative link to a folder needs a symbolic link, which needs a privilege on Windows.
+            (self.repo / "rdeep").symlink_to("a/b", target_is_directory=True)
+            refused.append("rdeep/../../../repo/shared/rule.md")
+        write(self.memory_dir / "paths.md", memory("paths", " ".join(f"Read `{path}`." for path in refused)))
+        with looks_past([shared], outside) as looked:
+            report = self.run_audit()
+        self.assertEqual([], looked)
+        cited = {entry["path"]: entry for entry in self.by_file(report)["paths.md"]["cited_paths"]}
+        self.assertEqual(sorted(refused), sorted(cited))
+        for path in refused:
+            with self.subTest(path=path):
+                self.assertIsNone(cited[path]["exists"])
+                self.assertTrue(cited[path]["unreadable"])
+
     def test_a_cited_path_whose_dot_dot_follows_a_link_inside_is_judged_by_the_repositorys_reader(self) -> None:
         # A junction on Windows, a symbolic link on Linux and macOS: `top` leads to the repository itself, so
         # `top/../outside/rule.md` names the repository's parent through it, which its reader refuses rather than the
@@ -764,6 +794,22 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertTrue(stdout.startswith("FAILED "), stdout)
         self.assertIn("links lie on the way to it", stdout)
+
+    def test_a_memory_directory_or_repository_holding_dot_dot_is_read_as_the_folder_it_names(self) -> None:
+        # The reader refuses a `..` that climbs above its tree, so each is made absolute, each `..` taken as text,
+        # before a reader is bound to it: audit and reindex read the store, and audit the repository, as named.
+        write(self.memory_dir / "kept.md", memory("kept", "Kept body."))
+        write(self.memory_dir / "MEMORY.md", "- [Kept](kept.md) — hook\n")
+        (self.root / "links").mkdir()
+        store = f"{(self.root / 'links').as_posix()}/../memory"
+        repo = f"{(self.root / 'links').as_posix()}/../repo"
+        output = self.root / "report.json"
+        code, stdout, _ = run_main("audit", "--memory-dir", store, "--repo", repo, "--output", str(output))
+        self.assertEqual((0, f"REPORT {output}\n"), (code, stdout))
+        self.assertEqual(["kept.md"], [entry["file"] for entry in json.loads(output.read_text("utf-8"))["memories"]])
+        code, stdout, _ = run_main("reindex", "--memory-dir", store)
+        self.assertEqual(0, code, stdout)
+        self.assertIn("INDEX_LINE kept.md", stdout)
 
     def test_an_instruction_file_that_cannot_be_read_fails_the_audit_rather_than_losing_its_overlaps(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."

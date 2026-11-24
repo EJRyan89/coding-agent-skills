@@ -380,6 +380,17 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(0, code, lines)
         self.assertIn("RESULT COMPLIANT", lines)
 
+    def test_a_root_holding_dot_dot_is_audited_as_the_folder_it_names(self) -> None:
+        # The reader refuses a `..` that climbs above its tree, so the root is made absolute, each `..` taken as text,
+        # before a reader is bound to it.
+        (self.root / ".git").mkdir()
+        _setup_conforming_repo(self.root)
+        (self.root.parent / "links").mkdir()
+        spelled = f"{(self.root.parent / 'links').as_posix()}/../{self.root.name}"
+        code, lines, _ = self._main("--root", spelled)
+        self.assertEqual(0, code, lines)
+        self.assertIn("RESULT COMPLIANT", lines)
+
     def test_an_audit_with_errors_prints_its_result_line_and_exits_1(self) -> None:
         (self.root / ".git").mkdir()
         _setup_conforming_repo(self.root)

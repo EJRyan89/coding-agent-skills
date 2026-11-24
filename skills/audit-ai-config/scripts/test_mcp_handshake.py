@@ -794,6 +794,18 @@ class HandshakeTests(unittest.TestCase):
                     lines,
                 )
 
+    def test_a_root_holding_dot_dot_is_handshaken_as_the_folder_it_names(self) -> None:
+        # The reader refuses a `..` that climbs above its tree, so the root is made absolute, each `..` taken as text,
+        # before a reader is bound to it.
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok", cwd="tools")})
+        (self.root.parent / "links").mkdir()
+        spelled = f"{(self.root.parent / 'links').as_posix()}/../{self.root.name}"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = mcp_handshake.main(["--root", spelled, "--timeout", "5"])
+        lines = output.getvalue().splitlines()
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), (code, lines))
+
     def test_a_cwd_through_a_link_out_is_refused_with_nothing_outside_looked_at(self) -> None:
         # A junction on Windows, a symbolic link elsewhere: the reader judges the link by its text, where resolving the
         # cwd once followed it outside the repository to learn where it leads. The outside folder is no sibling of the

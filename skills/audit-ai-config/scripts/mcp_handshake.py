@@ -85,6 +85,7 @@ from audit_ai_config import (
 )
 from bounded_process import Streaming, streaming
 from console import run_main
+from dotnet_solution import lexical_absolute
 from executable_locator import find_executable
 from flat_text import flat_text, single_line
 from path_containment import resolved_path
@@ -437,11 +438,13 @@ def main(arguments: list[str] | None = None) -> int:
         help="seconds per server, from its start to its stop (default 30)",
     )
     args = parser.parse_args(arguments)
-    refusal = not_a_checkout(args.root)
+    # A root holding `..` is made absolute, each `..` taken as text, before a reader is bound to it, as the audit's is.
+    given = lexical_absolute(args.root) if ".." in args.root.parts else args.root
+    refusal = not_a_checkout(given)
     if refusal is not None:
         print(single_line(f"FAILED {refusal}"))
         return 1
-    root = handshake_root(args.root)
+    root = handshake_root(given)
     groups, problems = group_servers(root, args.server)
     refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:
