@@ -295,49 +295,79 @@ TREE_READ_ALLOWED = {
     "outside_present": (
         "whether anything is at a path a memory cites that names no place in the repository or the store, its `..` "
         "taken as text, and meets no link inside either on its way: the place it names, outside every tree the audit "
-        "examines by its text"
+        "examines by its text",
+        ("place_present",),
     ),
     "named_text": (
         "reads an instruction file the user names with --instructions, where it names, and one a pattern found in the "
         "user's configuration directory, its links followed, as Claude Code loads it: refusing a link guards against "
-        "a repository the user did not write, and the configuration directory is the user's own"
+        "a repository the user did not write, and the configuration directory is the user's own",
+        ("destination_blocks",),
     ),
     "named_present": (
         "whether an instruction file the user names with --instructions, or one a pattern found in the user's "
-        "configuration directory, is a file, its links followed, for the reason named_text gives"
+        "configuration directory, is a file, its links followed, for the reason named_text gives",
+        ("destination_sources",),
     ),
     "user_pattern_files": (
         "walks the user's configuration directory for the instruction files Claude Code loads from it, following a "
         "file link as Claude Code does: refusing a link guards against a repository the user did not write, and the "
-        "configuration directory is the user's own"
+        "configuration directory is the user's own",
+        ("destination_sources",),
     ),
     "destination_key": (
         "keys a destination file by its path with links followed, so a file named with --instructions and found by a "
-        "pattern is measured once: a tree file only once its reader judged that no link on its way leads out"
+        "pattern is measured once: a tree file only once its reader judged that no link on its way leads out",
+        ("destination_sources",),
     ),
     "main_worktree": (
         "compares and resolves the Git directories git names for the repository, to find the main worktree the memory "
-        "directory's name derives from"
+        "directory's name derives from",
+        ("locate",),
     ),
     "candidate_directories": (
         "lists the configuration directory's projects folder for the memory directories Claude Code keeps there: "
-        "Claude Code's own state, outside every tree the audit examines"
+        "Claude Code's own state, outside every tree the audit examines",
+        ("resolve",),
     ),
-    "directory_state": "whether anything is at the memory directory resolve chose, before it is taken as a store",
+    "directory_state": (
+        "whether anything is at the memory directory resolve chose, before it is taken as a store",
+        ("chosen_directory", "locate"),
+    ),
     "named_settings_bytes": (
         "reads the managed or the user's Claude Code settings file, which chooses the memory directory, where it is, "
         "its links followed: refusing a link guards against a repository the user did not write, and these are the "
-        "system's and the user's own; a repository's settings are read through its reader"
+        "system's and the user's own; a repository's settings are read through its reader",
+        ("read_settings",),
     ),
-    "project_folder": "resolves a folder in no Git repository, as Claude Code names its project",
-    "output_refusal": "judges the --output path the user names for the skill's own report before it is written",
-    "manifest_skill_files": "reads the deployer's manifest under the home, which names a skill's source checkout",
-    "source_refusal": "judges a skill's source file the manifest or the user names, before the user edits it",
-    "project_skill": "whether the repository's project skill file of the name given is there, for the user to edit",
-    "create_output": "examines the --output folder and creates the skill's own report there",
-    "create_temporary_report": "creates the skill's own report under the private temporary directory",
+    "project_folder": (
+        "resolves a folder in no Git repository, as Claude Code names its project",
+        ("locate", "resolve_command"),
+    ),
+    "output_refusal": (
+        "judges the --output path the user names for the skill's own report before it is written",
+        ("run",),
+    ),
+    "manifest_skill_files": (
+        "reads the deployer's manifest under the home, which names a skill's source checkout",
+        ("skill_source_lines",),
+    ),
+    "source_refusal": (
+        "judges a skill's source file the manifest or the user names, before the user edits it",
+        ("skill_source_lines",),
+    ),
+    "project_skill": (
+        "whether the repository's project skill file of the name given is there, for the user to edit",
+        ("skill_source_lines",),
+    ),
+    "create_output": ("examines the --output folder and creates the skill's own report there", ("audit_lines",)),
+    "create_temporary_report": (
+        "creates the skill's own report under the private temporary directory",
+        ("audit_lines",),
+    ),
     "store_folder_reason": (
-        "judges the memory directory a command is given, before a reader is bound to it, since it is the tree"
+        "judges the memory directory a command is given, before a reader is bound to it, since it is the tree",
+        ("run",),
     ),
 }
 

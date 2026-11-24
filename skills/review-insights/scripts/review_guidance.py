@@ -63,7 +63,8 @@ READ_BYTES = 1024 * 1024
 TREE_READ_ALLOWED = {
     "checkout_tree": (
         "resolves, its links followed, the checkout the configuration names for a repository, before a reader is bound "
-        "to it, since it chooses the tree the reader is bound to"
+        "to it, since it chooses the tree the reader is bound to",
+        ("read_working_copy",),
     ),
 }
 RULE_TEXT = 300
