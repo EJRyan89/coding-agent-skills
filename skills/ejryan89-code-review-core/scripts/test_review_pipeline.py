@@ -4678,6 +4678,7 @@ class ReviewerSourceTests(PipelineFixture):
         # specialist covers.
         cases: tuple[tuple[dict[str, Any], str], ...] = (
             ({}, "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"),
+            ({"uncovered": "review"}, "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"),
             (
                 {"uncovered": "ignore"},
                 "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)",
