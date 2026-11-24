@@ -141,7 +141,7 @@ from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from link_probe import is_plain_file
 from path_containment import resolved_path, within
-from path_keys import name_key, opens_as
+from path_keys import name_key
 from review_batches import load_run_list
 from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
@@ -237,11 +237,6 @@ TREE_READ_ALLOWED = {
     "folded": (
         "name_key given no folder folds a name as text, composed and case-folded fully, and asks no folder; the policy "
         "counts every call of it, since given a folder it asks that folder how it compares names"
-    ),
-    "opens_under": (
-        "asks the folder holding a file the reader's walk found, which the reader judged inside the working directory "
-        "first, whether it gives that file's entry for the name searched for (path_keys.opens_as), from the entries' "
-        "own metadata, following no link"
     ),
 }
 
@@ -1099,13 +1094,6 @@ def folded(name: str) -> str:
     return name_key(name)
 
 
-def opens_under(reader: TreeReader, path: Path, name: str) -> bool:
-    """Whether the folder holding `path`, judged inside `reader`'s tree first, gives `path`'s entry when a program opens
-    `name` there (`path_keys.opens_as`); a folder the reader refuses raises `TreeRefused`."""
-    reader.judged(path.parent)
-    return opens_as(path, name)
-
-
 def is_plain(reader: TreeReader, path: Path) -> bool:
     """Whether `path` is a regular file that is no link or reparse point, judged by `reader`: from its own metadata
     first, so a link is never followed, then its status. An `OSError` when either cannot be read, a reader refusal
@@ -1140,7 +1128,7 @@ def resolve(name: str, top: Path) -> list[str]:
     for path in walk.files:
         relative = path.relative_to(top)
         try:
-            if not opens_under(reader, path, name) or not is_plain(reader, path):
+            if not reader.opens_as(path, name) or not is_plain(reader, path):
                 continue
         except OSError as error:
             reason = flat_text(examined_reason(error))

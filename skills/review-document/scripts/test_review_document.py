@@ -45,6 +45,7 @@ import review_io
 import review_pipeline as rp
 import review_run
 import review_runtime
+import tree_reader
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult
@@ -3305,7 +3306,7 @@ class ResolveTests(unittest.TestCase):
         ]
         with (
             mock.patch.object(TreeReader, "judged", judged),
-            mock.patch.object(review_document, "opens_as", opens_as),
+            mock.patch.object(tree_reader, "opens_as", opens_as),
             mock.patch.object(Path, "cwd", return_value=self.top),
         ):
             self.assertEqual((1, expected), run_main("resolve", "design.md"))
