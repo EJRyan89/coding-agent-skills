@@ -4,6 +4,7 @@ its own repository under a temporary folder with real git and answers gh from a 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import fix_brief
+import github_client
 import lessons_patterns
 import private_folder
 from git_client import GitClient, GitResult
@@ -47,7 +49,7 @@ PROFILE = """# Implementing changes
 `deploy/run.sh`
 ```
 
-## Pull requests
+## Pull requests, not `deploy/`
 
 - `deploy/run.sh` here is no contract entry.
 """
@@ -98,7 +100,8 @@ class Run:
         self.lines = lines
         self.calls = calls
         found = [line.split("\t", 1)[1] for line in lines if line.startswith("BRIEF\t")]
-        self.brief = Path(found[0].strip('"')).read_text(encoding="utf-8") if found else ""
+        self.path = Path(found[0].strip('"')) if found else None
+        self.brief = self.path.read_text(encoding="utf-8") if self.path else ""
 
     def section(self, heading: str) -> str:
         """The brief's lines under `## <heading>` up to the next `## ` heading."""
@@ -130,7 +133,11 @@ def run(
 
     github = GitHubClient(runner=fake_gh, sleeper=lambda _seconds: None)
     code = fix_brief.main([*arguments], root=root, github=github, git=git_client)
-    return Run(code, capsys.readouterr().out.split("\n")[:-1], calls)
+    result = Run(code, capsys.readouterr().out.split("\n")[:-1], calls)
+    if result.path is not None:
+        assert result.path.parent.parent == out
+        assert b"\r" not in result.path.read_bytes()
+    return result
 
 
 def test_an_issue_that_names_a_symbol_lists_the_files_holding_it_with_their_lines(
@@ -158,11 +165,19 @@ def test_a_symbol_in_a_comment_and_in_each_form_written_as_code_is_searched_by_i
     root = repository(tmp_path)
     forms = (
         "`reader:read_config`, `tools.reader.read_config`, `GitClient`, `MAX_TWINS`, `a.b`, `Plain`, `run`, "
-        "`FAILED`, `DEPLOYED`"
+        "`FAILED`, `DEPLOYED`, `walker()`, `reader.walker`, `config:loader`, `xWalker`"
     )
     result = run(root, tmp_path, monkeypatch, capsys, issue("No span here.", f"Also {forms}."), "7")
     searched = re.findall(r"^### `([^`]+)`", result.section("Callers"), re.MULTILINE)
-    assert searched == ["reader.read_config", "GitClient", "MAX_TWINS"]
+    assert searched == [
+        "reader.read_config",
+        "GitClient",
+        "MAX_TWINS",
+        "walker",
+        "reader.walker",
+        "config.loader",
+        "xWalker",
+    ]
 
 
 def test_a_qualified_symbol_is_searched_in_the_files_holding_its_qualifier_and_in_its_qualifier_s_module(
@@ -434,10 +449,14 @@ def test_a_form_the_lister_cannot_search_and_a_file_it_cannot_read_are_listed_to
 @pytest.mark.parametrize(
     ("answer", "status", "reason"),
     [
-        (None, 1, "FAILED\tcannot read issue #7: "),
+        (None, 1, "FAILED\tcannot read issue #7: GraphQL: Could not resolve to an issue with the number of 7."),
         (issue("x", number=8), 0, "FAILED\tgh answered issue #7 with something not that issue"),
         ({**issue("x"), "body": None}, 0, "FAILED\tthe issue's body is not text"),
         ({**issue("x"), "comments": "none"}, 0, "FAILED\tthe issue's comments are not a list of comments"),
+        ({**issue("x"), "comments": [1]}, 0, "FAILED\tthe issue's comments are not a list of comments"),
+        ({**issue("x"), "comments": [{"body": None}]}, 0, "FAILED\tthe issue's comment is not text"),
+        ({**issue("x"), "title": None}, 0, "FAILED\tthe issue's title is not text"),
+        ({**issue("x"), "url": None}, 0, "FAILED\tthe issue's url is not text"),
     ],
 )
 def test_an_issue_gh_cannot_read_or_answers_in_another_shape_fails_naming_why(
@@ -636,3 +655,157 @@ def test_a_called_capitals_name_is_a_symbol_and_a_lone_status_word_is_not(
     root = repository(tmp_path)
     result = run(root, tmp_path, monkeypatch, capsys, issue("`DEPLOY()` `FAILED`"), "7")
     assert re.findall(r"^### `([^`]+)`", result.section("Callers"), re.MULTILINE) == ["DEPLOY"]
+
+
+def test_the_script_runs_as_a_program_from_any_folder(tmp_path: Path) -> None:
+    """Run as SKILL.md runs it, `python -B <script>`, from another folder, with no PYTHONPATH to find its modules."""
+    script = Path(fix_brief.__file__).resolve()
+    environment = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONSAFEPATH"}}
+    finished = subprocess.run(
+        [sys.executable, "-B", str(script)], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
+    )
+    assert finished.returncode == 2
+    assert "the following arguments are required: issue" in finished.stderr
+    assert "Traceback" not in finished.stderr
+
+
+def test_the_checkout_the_script_names_and_the_reviewer_it_points_at_are_this_repository_s() -> None:
+    assert (fix_brief.REPOSITORY / "docs" / "lessons.md").is_file()
+    assert (fix_brief.REPOSITORY / fix_brief.SPELLINGS_REVIEWER).is_file()
+
+
+def test_gh_runs_in_the_repository_the_brief_is_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(private_folder, "temporary_directory", lambda: out)
+    folders: list[object] = []
+
+    def gh(arguments: Sequence[str], *, cwd: Path | None = None, timeout: float = 0) -> CommandResult:
+        folders.append(cwd)
+        return CommandResult(0, json.dumps(issue("x", number=1)), "")
+
+    monkeypatch.setattr(fix_brief, "subprocess_runner", gh)
+    monkeypatch.setattr(github_client, "subprocess_runner", gh)
+    assert fix_brief.main(["1"], root=root) == 0
+    assert folders == [root]
+    assert capsys.readouterr().out.startswith("ISSUE\t1\t")
+
+
+def test_a_shell_script_s_twin_in_the_other_shell_is_found_either_way_and_only_when_tracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    many = {f"x{index}/run.sh": "echo\n" for index in range(fix_brief.MAX_TWINS + 1)}
+    root = repository(tmp_path, many | {"lone/only.sh": "echo\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`deploy/run.ps1` `deploy/run.sh` `lone/only.sh`"), "7")
+    assert result.section("Twins") == (
+        "- `deploy/run.ps1`: `deploy/run.sh`\n"
+        "- `deploy/run.sh`: `deploy/run.ps1`, and 6 other tracked files of its name, too common to list, which "
+        "`git ls-files -- ':(glob)**/run.sh'` lists them all"
+    )
+
+
+def test_twins_at_their_bound_are_listed_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    near = {f"a{index}/x/tool.py": "VALUE = 1\n" for index in range(fix_brief.MAX_TWINS)}
+    others = {f"b{index}/y/kit.py": "VALUE = 1\n" for index in range(fix_brief.MAX_TWINS)}
+    root = repository(tmp_path, near | others | {"skills/x/tool.py": "\n", "skills/z/kit.py": "\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`skills/x/tool.py` `skills/z/kit.py`"), "7")
+    twins = result.section("Twins").split("\n")
+    assert twins[0].endswith("`a3/x/tool.py`, `a4/x/tool.py`")
+    assert twins[1].endswith("`b3/y/kit.py`, `b4/y/kit.py`")
+
+
+def test_a_name_several_files_hold_at_the_bound_lists_each_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {f"x{index}/same.md": "x\n" for index in range(fix_brief.MAX_TWINS)}
+    root = repository(tmp_path, files)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`same.md`"), "7")
+    assert result.section("Files").endswith("`x4/same.md`; give the one meant with `--path`")
+
+
+def test_a_file_with_no_extension_named_alone_is_that_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path, {"build/Makefile": "all:\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`Makefile`"), "7")
+    assert result.section("Files") == "- `build/Makefile`: named by the issue"
+
+
+def test_callers_at_their_bounds_are_listed_whole_and_a_longer_word_holds_no_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    holders = {f"many/f{index:02}.py": "use_it()\n" * 5 for index in range(fix_brief.MAX_CALLER_FILES)}
+    root = repository(tmp_path, holders | {"other/g.py": "use_it_again()\nreuse_it()\nXuse_it()\nuse_its = 1\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`use_it()`"), "7")
+    callers = result.section("Callers")
+    assert "10 tracked files hold it as a word" in callers
+    assert "- `many/f09.py`: 1, 2, 3, 4, 5" in callers
+    assert "more" not in callers
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_a_cut_at_the_names_bound_names_each_and_one_past_it_sends_the_reader_to_the_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], extra: int
+) -> None:
+    root = repository(tmp_path)
+    count = fix_brief.MAX_SYMBOLS + fix_brief.MAX_CUT_NAMES + extra
+    result = run(root, tmp_path, monkeypatch, capsys, issue(" ".join(f"`n_{i}`" for i in range(count))), "7")
+    callers = result.section("Callers")
+    assert ("`gh issue view 7 --comments` shows" in callers) == bool(extra)
+
+
+def test_files_and_shared_names_cut_past_the_names_bound_send_the_reader_to_the_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    count = fix_brief.MAX_PATHS + fix_brief.MAX_CUT_NAMES + 1
+    unique = {f"one/u{index:02}.txt": "x\n" for index in range(count)}
+    shared = {f"{side}/s{index:02}.txt": "x\n" for index in range(count) for side in ("left", "right")}
+    root = repository(tmp_path, unique | shared)
+    spans = [f"`one/u{index:02}.txt`" for index in range(count)] + [f"`s{index:02}.txt`" for index in range(count)]
+    result = run(root, tmp_path, monkeypatch, capsys, issue(" ".join(spans)), "7")
+    shows = [line for line in result.section("Files").split("\n") if line.startswith("- and ")]
+    assert len(shows) == 2
+    assert all(line.endswith("and 1 more, which `gh issue view 7 --comments` shows") for line in shows)
+
+
+def test_a_heading_with_trailing_space_still_opens_the_contract_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path, {"docs/implementing-changes.md": "## Contract files  \n\n- `tools/`;\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`tools/reader.py`"), "7")
+    assert (
+        result.section("Contract") == "- `docs/implementing-changes.md:3` names `tools/`, which holds `tools/reader.py`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("facts", "met"),
+    [
+        ([("NEW", "tools/x.py")], False),
+        ([("UNREAD", "tools/x.py", "not UTF-8")], True),
+        ([("UNSEARCHED", "docs/lessons.md:5", "A pattern", "f(", "why")], True),
+        ([("PATTERN", "docs/lessons.md:5", "A pattern", "tools/x.py:1 holds f(")], True),
+    ],
+)
+def test_the_lessons_section_reads_each_line_the_lister_prints(facts: list[tuple[str, ...]], met: bool) -> None:
+    lines = fix_brief._lessons_section(facts, ["tools/x.py"])
+    assert ("No pattern of the catalogue meets these files." in lines) != met
+
+
+def test_a_pattern_met_at_its_evidence_bound_lists_it_whole() -> None:
+    evidence = [f"tools/x.py:{line} holds f(" for line in range(1, fix_brief.MAX_EVIDENCE + 1)]
+    lines = fix_brief._lessons_section([("PATTERN", "docs/lessons.md:5", "A pattern", *evidence)], ["tools/x.py"])
+    assert lines[2].endswith("`tools/x.py:8 holds f(`")
+
+
+def test_issue_one_is_an_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("x", number=1), "1")
+    assert result.code == 0
