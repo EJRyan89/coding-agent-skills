@@ -4,6 +4,13 @@ own skills and fixtures in sessions signed in as the user refuses before it star
 A fixture is as trusted as the checkout that holds it ("A fixture is as trusted as the checkout that holds it" in
 docs/design.md), so tools/skill_evals.py, tools/runtime_canary.py, and tools/plugin_canary.py each call `refusal`
 before they make a home, deploy, or build, and print its reason as their FAILED line.
+
+A branch that follows a branch of a remote other than origin is refused even when the remote is the user's own fork:
+`gh pr checkout` writes that same upstream for another author's pull request from a fork, tracking the fork's branch
+under its remote's name when the fork is a configured remote and under its URL when maintainers may edit the pull
+request (cli/cli pkg/cmd/pr/checkout/checkout.go, cmdsForExistingRemote and cmdsForMissingRemote), so the upstream
+cannot tell the two apart. A branch with no upstream is the user's own, so the refusal names the way out: unset the
+upstream, which a later push without -u leaves unset, since a push without -u never clears one.
 """
 
 from __future__ import annotations
@@ -19,6 +26,11 @@ from git_client import GitClient, GitError, output_line, output_lines
 
 # The upstreams of a branch that is the user's own: none, a local branch, or this repository's origin.
 OWN_REMOTES = frozenset({"", ".", "origin"})
+
+# The way out for a branch of the user's own that follows their fork, after the refusal names why it is refused.
+OWN_FORK_STEP = (
+    "if the branch is your own, run git branch --unset-upstream, and push it to your fork without -u from then on"
+)
 
 
 # A branch's name on a remote: the source a fetch refspec maps a branch of origin from.
@@ -74,7 +86,8 @@ def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
 
 def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
-    branch's upstream is a pull request's ref, a remote other than origin, or any other ref that is not a branch, or its
+    branch's upstream is a pull request's ref, a remote other than origin, which gh pr checkout sets for a fork's pull
+    request and which therefore cannot be told from the user's own fork, or any other ref that is not a branch, or its
     HEAD is detached at a commit no branch of origin holds. Raises GitError when git cannot read the checkout."""
     # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
     branch = git.quiet_output(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
@@ -88,7 +101,10 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     if merge.startswith("refs/pull/"):
         return f"its branch {name} follows {merge}, a pull request's ref"
     if remote not in OWN_REMOTES:
-        return f"its branch {name} follows {remote}, not origin"
+        return (
+            f"its branch {name} follows {remote}, a remote other than origin, as gh pr checkout sets for a fork's pull"
+            f" request; {OWN_FORK_STEP}"
+        )
     if merge and not merge.startswith(BRANCH_PREFIX):
         return f"its branch {name} follows {merge}, not a branch"
     return None
@@ -100,10 +116,11 @@ def reader(directory: Path) -> Callable[[], str | None]:
 
 
 def refusal(checkout: Callable[[], str | None]) -> str | None:
-    """Why a run refuses the checkout `checkout` reads, or None: it follows another repository's pull request, or git
-    cannot read its branch, which is never read as a branch of the user's own."""
+    """Why a run refuses the checkout `checkout` reads, or None: it may follow another repository's pull request, since
+    it does or since its branch cannot be told from one that does, or git cannot read its branch, which is never read as
+    a branch of the user's own."""
     try:
         foreign = checkout()
     except GitError as exc:
         return f"cannot read the checkout's branch: {exc}"
-    return None if foreign is None else f"the checkout follows another repository's pull request: {foreign}"
+    return None if foreign is None else f"the checkout may follow another repository's pull request: {foreign}"
