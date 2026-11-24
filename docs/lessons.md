@@ -879,7 +879,7 @@ or removed fails validation until its pattern follows it.
   `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`, which
   compares the home, the work folder, and each output a driver names before and after every refused run of every entry point,
   `tests/malformed_input/test_faults_unchangeable.py::test_each_command_refuses_a_read_only_file_it_changes_before_its_first_change`,
-  which makes the last file each shipped skill command that changes several files, or one in place, changes read-only,
+  which makes each file but the first that each shipped skill command changing several files, or one in place, changes read-only,
   and `tests/malformed_input/test_change_places.py::test_every_place_that_changes_a_file_is_held_or_named_not_held_and_every_row_a_place`,
   which holds every place a skill's script changes a file in to such a command or a reason it changes no file of the user's
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a

@@ -4,8 +4,9 @@ permission refuses a change inside it and a file's does not refuse a delete; and
 file it lists when nothing stops it.
 
 A shipped skill's command that deletes, renames, or rewrites several files, or one in place, lists them in its
-driver's `changes`, and the read-only fault is placed at the last, so a command that changes one before it checks the
-last is caught; a directory in that file's place runs in test_faults_directory.py. change_scan.py and
+driver's `changes`, and the read-only fault is placed at each of them but the first, one at a time, so a command that
+changes one before it checks a later one is caught; a directory in that file's place runs in
+test_faults_directory.py. change_scan.py and
 test_change_places.py hold every place in a skill's scripts that changes a file to a driver here or a reason it changes
 no file of the user's. fault_check.py describes a run and how it is judged; test_faults.py holds the coverage and the
 harness's own tests.

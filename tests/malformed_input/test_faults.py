@@ -247,7 +247,7 @@ def could_run(driver: Driver, fault: str, path: str) -> bool:
     """Whether a driver runs the fault at all, or at the input or changed file `path` names when it names one."""
     places = [
         *(driver.inputs if fault in FILE_FAULTS else ()),
-        *(driver.changes[-1:] if fault in CHANGE_FAULTS else ()),
+        *((driver.changes[1:] or driver.changes) if fault in CHANGE_FAULTS else ()),
     ]
     if path:
         return path in places
@@ -258,15 +258,26 @@ def could_run(driver: Driver, fault: str, path: str) -> bool:
     return bool(places)
 
 
-def test_a_change_fault_is_placed_once_at_the_last_file_a_driver_changes() -> None:
-    changing = Driver("tools/one.py", "", (), inputs=("{work}/a.json",), changes=("{work}/b.json", "{work}/a.json"))
+def test_a_change_fault_is_placed_once_at_each_file_a_driver_changes_but_the_first() -> None:
+    changing = Driver(
+        "tools/one.py", "", (), inputs=("{work}/a.json",), changes=("{work}/b.json", "{work}/a.json", "{work}/c.json")
+    )
     assert changing.runs() == [
         *((fault, "{work}/a.json") for fault in FILE_FAULTS),
         (READ_ONLY, "{work}/a.json"),
         (READ_ONLY_FOLDER, "{work}/a.json"),
+        *((fault, "{work}/c.json") for fault in CHANGE_FAULTS),
     ]
-    excused = Driver("tools/one.py", "", (), changes=("{work}/a.json", "{work}/b.json"), not_run={DIRECTORY: "why"})
-    assert excused.runs() == [(READ_ONLY, "{work}/b.json"), (READ_ONLY_FOLDER, "{work}/b.json")]
+    excused = Driver(
+        "tools/one.py",
+        "",
+        (),
+        changes=("{work}/a.json", "{work}/b.json"),
+        not_run={DIRECTORY: "why", f"{READ_ONLY_FOLDER} {{work}}/b.json": "why"},
+    )
+    assert excused.runs() == [(READ_ONLY, "{work}/b.json")]
+    alone = Driver("tools/one.py", "", (), changes=("{work}/a.json",))
+    assert alone.runs() == [(fault, "{work}/a.json") for fault in CHANGE_FAULTS]
 
 
 def test_the_folder_fault_is_reached_at_its_folder_and_named_by_any_entry_of_it(tmp_path: Path) -> None:

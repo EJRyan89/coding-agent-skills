@@ -15,7 +15,9 @@ another by the outermost function, and the module by its name alone, as a skill'
 Its stated limits, each shown by test_change_places.py's fixture: a step handed on as a value, as `map(os.remove,
 paths)`, is not a call and is not read; `list.remove` and a stream's `write` are no steps, so a path's `remove` method,
 which no path has, and a file object's `write` are not read; and a call through a name bound otherwise, as `remove =
-os.remove`, resolves to the name and is not read.
+os.remove`, resolves to the name and is not read. A change a program the script starts makes, such as dotnet format,
+git, or a shell script, is no call it reads, and neither is a Bash or PowerShell script; test_change_places.py's
+STARTED names each command that changes files that way.
 """
 
 from __future__ import annotations

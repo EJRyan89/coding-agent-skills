@@ -33,8 +33,9 @@ synthesized recommendation links instead the open flags its synthesis named, whe
 are computed when the report is written, so `decide` resolves exactly the flags it listed. A decision is recorded in
 the report before any flag is resolved, so a flag store that fails partway leaves the decision recorded with the flags
 it did resolve, and deciding again resolves the rest. A report, its Markdown, or a flag store the decision resolves
-flags in that is read-only, and a report or Markdown that is not a file, is refused before anything is written, by
-every command that writes a report, and so is any of them whose folder takes no new file.
+flags in that is read-only, and a report or Markdown that is not a file, is refused before anything is written, the
+lock's folder beside the report included, by every command that writes a report, and so is any of them whose folder
+takes no new file; `report` refuses the synthesis input and context beside the report the same way.
 
 Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
 lose each other's decisions.
@@ -171,6 +172,8 @@ REC_ID = re.compile(r"REC-(\d{3,})")
 EXAMPLES_PRINTED = 3
 # What a refused report lock tells the user to keep on a local disk: the report sits under `summary_root`.
 REPORT_LOCK_PLACE = "the review-insights reports"
+# The files a pending synthesis stages beside its report, which a report write replaces before the report.
+SYNTHESIS_FILES = (synthesis_stage.CONTEXT_NAME, synthesis_stage.INPUT_NAME)
 EVIDENCE_RENDERED = 10
 # The options whose values are a subject as a report printed it or a note as the user gave it, each with how many
 # values it takes. Such a value may begin with `-`, which argparse would read as an option, so each is bound to its
@@ -898,11 +901,12 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [*report["recommendations"], *(item for run in superseded for item in run["recommendations"])]
 
 
-def refuse_unchangeable(json_path: Path) -> None:
-    """Refuse a report or its Markdown that is read-only, anything but a file, or in a folder that takes no new file,
-    before the first is written: each replace would refuse its own file only when its turn came, after the report
-    before it was replaced."""
-    for path in (json_path, json_path.with_suffix(".md")):
+def refuse_unchangeable(json_path: Path, *beside: Path) -> None:
+    """Refuse a report, its Markdown, or a file `beside` it that the write replaces first, such as the synthesis
+    input and context, that is read-only, anything but a file, or in a folder that takes no new file, before the first
+    is written: each replace would refuse its own file only when its turn came, after the files before it were
+    replaced."""
+    for path in (json_path, json_path.with_suffix(".md"), *beside):
         reason = file_presence.refusal_reason(path)
         if reason not in (None, file_presence.MISSING):
             raise InsightError(f"{path} {reason}, so the report cannot be written")
@@ -924,8 +928,9 @@ def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_s
     works in, when the report takes that synthesis rather than keeping a recorded one. A report larger than
     `load_report` reads is refused before anything is written beside it and with its run removed, so the script never
     writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed; so is a report or
-    Markdown that is read-only or not a file (refuse_unchangeable)."""
-    refuse_unchangeable(json_path)
+    Markdown, or a synthesis file it stages, that is read-only or not a file (refuse_unchangeable), before the run is
+    staged or any file written."""
+    refuse_unchangeable(json_path, *(synthesis.files if synthesis is not None else ()))
     if synthesis is not None and report["synthesis"] is synthesis.synthesis:
         synthesis.stage_run()
     try:
@@ -982,6 +987,9 @@ def create_report(
     json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     pairs = RecordPairs()
     records = collect_records(archive_root, repositories, start, end, pairs)
+    # Refused before the lock makes its folder beside the report: the synthesis files are those a pending synthesis
+    # stages there, which write_report checks again, as the report stages them, under the lock.
+    refuse_unchangeable(json_path, *(json_path.parent / name for name in SYNTHESIS_FILES))
     with services.report_lock(json_path):
         # A report it cannot stat fails here, never read as no report and its decisions written over.
         earlier = load_report(json_path) if file_presence.is_present(json_path) else None
@@ -1173,9 +1181,11 @@ def synthesize(
 def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[object]:
     """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
     instead of creating directories there. A report a stat cannot examine, or one that is not a file, is named so,
-    never as missing."""
+    never as missing, and a report or Markdown refuse_unchangeable refuses is refused before the lock is made."""
     if reason := file_presence.refusal_reason(report_path):
         raise InsightError(f"Cannot read insights report {report_path}: it {reason}")
+    # A report or Markdown it could not replace is refused before the lock makes its folder beside the report.
+    refuse_unchangeable(report_path)
     return services.report_lock(report_path)
 
 
@@ -1206,6 +1216,10 @@ def decide(
         raise InsightError("Name exactly one subject: a category, an analyzer, or a synthesized title")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
+    if decision == "accepted" and flags:
+        # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
+        # resolves are read under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_unchangeable_store(services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         matching = [item for item in report["recommendations"] if item["id"] == recommendation_id]
@@ -1244,8 +1258,13 @@ def _refuse_unchangeable_decision(report_path: Path, pending: list[str], service
     with the flags it did resolve (see _resolve_recorded)."""
     refuse_unchangeable(report_path)
     if pending:
-        refuse_read_only(services.flags_path())
-        refuse_uncreatable_target(services.flags_path())
+        _refuse_unchangeable_store(services)
+
+
+def _refuse_unchangeable_store(services: Services) -> None:
+    """Refuse a flag store that is read-only or in a folder that takes no new file."""
+    refuse_read_only(services.flags_path())
+    refuse_uncreatable_target(services.flags_path())
 
 
 def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:
@@ -1326,6 +1345,10 @@ def decide_custom(
         raise InsightError(f"Decision must be one of: {', '.join(DECISIONS)}")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
+    if decision == "accepted" and flags:
+        # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
+        # resolves are read under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_unchangeable_store(services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         items = custom_candidates(report)

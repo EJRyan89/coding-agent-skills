@@ -3,17 +3,21 @@ change faults, or names why it changes no file a refusal must leave as it was.
 
 change_scan.py finds each function that calls a change step. A row of HELD names the commands, as their drivers name
 them, whose drivers list the files the place changes in `changes`, so test_faults_unchangeable.py and
-test_faults_directory.py run each with its last changed file read-only or a directory and hold it to refusing before
-its first change. A row of NOT_HELD says why the place changes no file of the user's that way: a file of the run's
-own, a throwaway one, a lock, a new file that replaces nothing, or one the harness cannot reach, with what holds it
-instead. A place the scan finds that neither table holds, or a row whose place the scan no longer finds, fails, so a
-command that starts changing files is listed in the pull request that makes it.
+test_faults_directory.py run each with each changed file but its first read-only, in a read-only folder, or a directory,
+and hold it to refusing before its first change. A row of NOT_HELD says why the place changes no file of the user's
+that way: a file of the run's own, a throwaway one, a lock, a new file that replaces nothing, or one the harness cannot
+reach, with what holds it instead. A place the scan finds that neither table holds, or a row whose place the scan no
+longer finds, fails, so a script that starts changing files through one of the steps the scan reads is listed in the
+pull request that makes it. A change a program the script starts makes, such as dotnet format, git, or a shell script,
+is no call the scan reads: STARTED names each command that changes files that way, with why the harness does not
+drive it, and a row naming no command a driver or NOT_RUN knows fails.
 """
 
 from __future__ import annotations
 
 import change_scan
 import faults
+from reader_scan import REPOSITORY
 
 MEMORY_AUDIT = "skills/curate-agent-memory/scripts/memory_audit.py"
 CSHARP_LAYOUT = "skills/dotnet-format/scripts/csharp_layout.py"
@@ -44,7 +48,7 @@ HELD: dict[str, tuple[str, ...]] = {
         f"{INSIGHTS} synthesize",
     ),
     # The synthesis files staged beside a report, written by write_report before the report itself.
-    "review_synthesis.Staged.write": (f"{INSIGHTS} report", f"{INSIGHTS} synthesize"),
+    "review_synthesis.Staged.write": (f"{INSIGHTS} report",),
     "dashboard_pipeline.rewrite_config": (f"{DASHBOARD} override", f"{DASHBOARD} repository"),
     "update_pr_dashboard.update_dashboard_rows": (f"{DASHBOARD} update",),
 }
@@ -134,6 +138,30 @@ NOT_HELD: dict[str, str] = {
 }
 
 
+CLEANUP = "skills/repo-cleanup/scripts/repo_cleanup.py"
+GIT_REMOVES = (
+    "git deletes the branches and removes the worktrees the user confirmed, each its own step ending in its own line, "
+    "never one refusal for several, as its exit table says; the harness starts no program but git, and its git faults "
+    "fail every git command"
+)
+# Each command that changes files through a program it starts, which the scan does not read, named as its driver is or
+# by its script, with why the harness does not drive it under the change faults.
+STARTED: dict[str, str] = {
+    "skills/dotnet-format/scripts/run_dotnet_format.py": (
+        "fix runs dotnet format, which rewrites the listed files itself; the harness starts no program but git, and a "
+        "fix that fails part way names each file the formatter saved and each it did not on SAVED and UNFINISHED lines"
+    ),
+    f"{CLEANUP} delete-local": GIT_REMOVES,
+    f"{CLEANUP} force-delete": GIT_REMOVES,
+    f"{CLEANUP} remove-directory": GIT_REMOVES,
+    f"{CLEANUP} sweep": GIT_REMOVES + ", and git fast-forwards each main worktree a sweep syncs",
+    "skills/update-coding-agent-skills/scripts/update.sh": (
+        "a Bash script, which the scan does not read: it runs git and the deployer, whose own changes the deployer "
+        "journals and rolls back"
+    ),
+}
+
+
 def problems(
     places: set[str], held: dict[str, tuple[str, ...]], not_held: dict[str, str], changing: set[str]
 ) -> list[str]:
@@ -151,6 +179,13 @@ def problems(
         f"{command}: its driver lists the files it changes, but no row names it" for command in sorted(changing - named)
     ]
     return found
+
+
+def test_each_command_named_as_changing_files_through_a_program_it_starts_is_one_there_is() -> None:
+    drivers = {driver.name for driver in faults.DRIVERS}
+    unknown = [name for name in STARTED if name not in drivers and not (REPOSITORY / name).is_file()]
+    assert unknown == [], "a STARTED row names a driver's command or a shipped skill's script"
+    assert [name for name, reason in STARTED.items() if not reason.strip()] == []
 
 
 def test_every_place_that_changes_a_file_is_held_or_named_not_held_and_every_row_a_place() -> None:

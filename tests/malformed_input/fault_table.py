@@ -3,10 +3,10 @@ point that the harness runs under them.
 
 An entry point is what tests/validation/exit_tables.py finds: a module whose `__main__` block calls run_main. A
 driver names one of its commands, the arguments that run it in a throwaway fixture, the files of that fixture the
-command reads, which the file faults are placed at one at a time, the files it changes, the last of which the change
-faults are placed at, and whether it runs git or gh, which the git and gh faults replace. faults.py gathers the
-drivers, grouped by area in the faults_*.py modules beside it, and names each entry point or command the harness cannot
-drive, with the reason, in FAULTS_NOT_RUN.
+command reads, which the file faults are placed at one at a time, the files it changes, each of which but the first
+the change faults are placed at, and whether it runs git or gh, which the git and gh faults replace. faults.py gathers
+the drivers, grouped by area in the faults_*.py modules beside it, and names each entry point or command the harness
+cannot drive, with the reason, in FAULTS_NOT_RUN.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ GH_FAILURE = "gh_failure"
 READ_ONLY = "read_only"
 READ_ONLY_FOLDER = "read_only_folder"
 FILE_FAULTS = (UNREADABLE, DIRECTORY, MISSING, LINK_TO_NOTHING, STAT_RAISES)
-# The faults placed at the last file a command changes, each one the platform reports before anything is written, so
-# a command that checks every file before its first change refuses with all of them as it found them.
+# The faults placed at each file a command changes but the first, each one the platform reports before anything is
+# written, so a command that checks every file before its first change refuses with all of them as it found them.
 # The read-only folder fault holds on Linux and macOS alone: Windows gives a folder no permission that refuses a change
 # inside it, and its read-only attribute on a folder refuses nothing, so test_faults_unchangeable.py skips it there.
 CHANGE_FAULTS = (READ_ONLY, READ_ONLY_FOLDER, DIRECTORY)
@@ -137,10 +137,10 @@ class Driver:
     none. `arguments` are its command line, each formatted with the fixture's `{root}`, `{home}`, `{work}`, and
     `{checkout}`, the copy of this checkout a `from_checkout` driver runs from. `prepare` builds the fixture before each
     run; `inputs` are the files below the fixture root the command reads, each run under every file fault; `changes`
-    are the files it deletes, renames, or rewrites in place, in the order it changes them, the last run under every
-    change fault, and watched with the rest; `git` and `gh` say it runs that program, so it is run under its faults.
-    `not_run` names each fault of its kinds it is not run under, or `<fault> <input>` for one input or changed file
-    alone, with the reason. A driver `from_checkout` runs the entry point's copy in the fixture's checkout, for a
+    are the files it deletes, renames, or rewrites in place, in the order it changes them, each but the first run under
+    every change fault, and watched with the rest; `git` and `gh` say it runs that program, so it is run under its
+    faults. `not_run` names each fault of its kinds it is not run under, or `<fault> <input>` for one input or changed
+    file alone, with the reason. A driver `from_checkout` runs the entry point's copy in the fixture's checkout, for a
     command that reads the repository it lies in; `outputs` are the files and folders it would write, beside the home
     and the work folder, which a refused run leaves as it found them. `inputs`, `changes`, and `outputs` are formatted
     as the arguments are.
@@ -164,8 +164,8 @@ class Driver:
     # the arguments are.
     handed_to_writer: tuple[str, ...] = ()
     # The files the command changes, in the order it changes them, each formatted as the arguments are. Each change
-    # fault is placed at the last, after the command has every other one ready to change, so one that changes a file
-    # before it checks the last is caught; an unfaulted run must change every one (test_faults_unchangeable.py).
+    # fault is placed at each but the first, one at a time, so a command that changes a file before it checks a later
+    # one is caught, whichever later one it is; an unfaulted run must change every one (test_faults_unchangeable.py).
     changes: tuple[str, ...] = ()
     # Each change fault the command's docstring refuses for the faulted file alone, changing the rest of `changes`,
     # as a fixer that checks each file it may write does: that file must stay as it was, a refusal line name it, and
@@ -196,19 +196,20 @@ class Driver:
 
     def runs(self) -> list[tuple[str, str | None]]:
         """Each fault the driver runs, with the input or the changed file it is placed at, or None for git's and gh's.
-        A change fault already run at the last changed file as an input's is run there once."""
+        A change fault already run at a changed file as an input's is run there once."""
         found: list[tuple[str, str | None]] = [
             (fault, path)
             for path in self.inputs
             for fault in FILE_FAULTS
             if fault not in self.not_run and f"{fault} {path}" not in self.not_run
         ]
-        if self.changes:
-            last = self.changes[-1]
+        # Each changed file but the first, which a command that checks one file at a time as it goes changes before
+        # it meets the fault at any later one; a command that changes one file is faulted at that one.
+        for place in self.changes[1:] or self.changes:
             found += [
-                (fault, last)
+                (fault, place)
                 for fault in CHANGE_FAULTS
-                if (fault, last) not in found and fault not in self.not_run and f"{fault} {last}" not in self.not_run
+                if (fault, place) not in found and fault not in self.not_run and f"{fault} {place}" not in self.not_run
             ]
         found += [(fault, None) for fault in GIT_FAULTS if self.git and fault not in self.not_run]
         found += [(fault, None) for fault in GH_FAULTS if self.gh and fault not in self.not_run]

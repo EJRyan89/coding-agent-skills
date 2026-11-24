@@ -1006,7 +1006,8 @@ class DecideTests(InsightFixture):
         before = period()
         with unstatable(json_path, times=1):
             result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
-        self.assertFailed(result, f"Permission denied: {str(json_path)!r}")
+        # The stat that fails is the one the check before the report lock makes, which refuses it as unexamined.
+        self.assertFailed(result, f"{json_path} cannot be examined: Permission denied")
         self.assertEqual(before, period())
 
     def test_a_decision_for_another_category_is_refused(self) -> None:
@@ -1934,6 +1935,59 @@ class RecordingTests(InsightFixture):
             f"{markdown} is not a file, so the report cannot be written",
         )
         self.assertEqual(before, self.written(json_path))
+
+    def test_a_synthesis_file_it_cannot_replace_is_refused_before_the_context_beside_it_is(self) -> None:
+        # The context is replaced before the input, so an input refused only when its turn came would leave the context
+        # changed and the earlier report's seal no longer matching it.
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.flag("guideline")
+        json_path, _ = self.report()
+        context, staged = (json_path.parent / name for name in ri.SYNTHESIS_FILES)
+        context.write_bytes(b"stale\n")
+        before = self.written(context, json_path)
+        staged.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{staged} is read-only; make it writable for the report to be written",
+            )
+        finally:
+            staged.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(context, json_path))
+
+    def test_a_report_or_store_it_cannot_change_is_refused_before_the_lock_makes_its_folder(self) -> None:
+        # Refused only under the lock, each command would leave the lock's folder beside the report.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        markdown, locks = json_path.with_suffix(".md"), json_path.parent / ".locks"
+        cases: dict[str, tuple[Path, Callable[[], tuple[int, str, str]], str]] = {
+            "report": (
+                markdown,
+                lambda: self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{markdown} is read-only",
+            ),
+            "decide": (
+                markdown,
+                lambda: self.decide(json_path, "REC-001", "Correctness", flag),
+                f"{markdown} is read-only",
+            ),
+            "decide's flag store": (
+                self.flags,
+                lambda: self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only",
+            ),
+        }
+        for name, (path, call, refusal) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(locks)
+                path.chmod(stat.S_IREAD)
+                try:
+                    self.assertFailed(call(), refusal)
+                finally:
+                    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+                self.assertFalse(locks.exists())
+                locks.mkdir()
 
     def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])

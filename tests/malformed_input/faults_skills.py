@@ -699,6 +699,9 @@ TRACKER = f"{CODE_REVIEW}/tracker.json"
 REVIEW_RECORD = "{root}/archive/owner/repo/pulls/7/review.json"
 INSIGHTS_REPORT = "{root}/summary/both/2026-01-01--2026-01-31/insights.json"
 INSIGHTS_MARKDOWN = INSIGHTS_REPORT.replace(".json", ".md")
+# The synthesis files report stages beside the report and replaces before it, the context first.
+SYNTHESIS_CONTEXT = INSIGHTS_REPORT.replace("insights.json", "synthesis-context.json")
+SYNTHESIS_INPUT = INSIGHTS_REPORT.replace("insights.json", "synthesis-input.jsonl")
 SYNTHESIS_RESULT = "{root}/synthesis-result.json"
 DASHBOARD_FILE = "{root}/dashboard.md"
 TRACKER_INPUT = "{root}/tracker-input.json"
@@ -773,6 +776,14 @@ def insights_fixture(fixture: Fixture) -> None:
     document["synthesis"]["result"] = str(result)
     report.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     result.write_text("{}\n", encoding="utf-8")
+
+
+def restaged(fixture: Fixture) -> None:
+    """As `insights_fixture`, with the synthesis files beside the report stale, so report replaces each of them."""
+    insights_fixture(fixture)
+    values = fixture.values()
+    for name in (SYNTHESIS_CONTEXT, SYNTHESIS_INPUT):
+        Path(name.format(**values)).write_bytes(b"stale\n")
 
 
 def synthesized(fixture: Fixture) -> None:
@@ -1384,10 +1395,10 @@ DRIVERS: list[Driver] = [
         INSIGHTS,
         "report",
         REPORT_ARGUMENTS,
-        prepare=insights_fixture,
+        prepare=restaged,
         inputs=(CONFIG,),
         outputs=REPORT_OUTPUTS,
-        changes=(INSIGHTS_REPORT, INSIGHTS_MARKDOWN),
+        changes=(SYNTHESIS_CONTEXT, SYNTHESIS_INPUT, INSIGHTS_REPORT, INSIGHTS_MARKDOWN),
     ),
     Driver(
         INSIGHTS,
