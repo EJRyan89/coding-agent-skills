@@ -77,6 +77,230 @@ expect_status 0 "other branch"
 [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "other branch: main not fast-forwarded"
 expect_deployed "other branch"
 
+# A clone left on a branch whose deploy.py is not main's, as another author's pull request checked out to look at it,
+# never runs that deploy.py: the pin is read with main's, and the deployment runs main's after the switch.
+begin_case "branch's deployer"
+new_clone
+checkout_branch_deployer topic
+publish "change over a branch's deployer"
+run_subject "$CLONE" main
+expect_status 0 "branch's deployer"
+expect_main_deployer "branch's deployer"
+[ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "branch's deployer: not switched to main"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "branch's deployer: main not fast-forwarded"
+expect_deployed "branch's deployer"
+
+# The release channel reads the pin the same way; here it stops after the fetch, as no release is tagged yet.
+begin_case "branch's deployer on the release channel"
+new_clone
+checkout_branch_deployer topic
+run_subject "$CLONE" release
+expect_status 1 "branch's deployer on the release channel"
+expect_first_line "NO_RELEASE" "branch's deployer on the release channel"
+expect_main_deployer "branch's deployer on the release channel"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "branch's deployer on the release channel: switched"
+
+# A clone with no local main yet reads the pin with origin/main's deploy.py as the clone last fetched it.
+begin_case "branch's deployer without local main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" branch -D main
+publish "change over a branch's deployer without local main"
+run_subject "$CLONE" main
+expect_status 0 "branch's deployer without local main"
+expect_main_deployer "branch's deployer without local main"
+[ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "branch's deployer without local main: not on main"
+expect_deployed "branch's deployer without local main"
+
+# Main is looked up by its full name exactly: with no local main, git's lookup rules would resolve refs/heads/main to a
+# branch whose own name is refs/heads/main (refs/heads/refs/heads/main), as a pull request's head branch of that name
+# checks out, or to a tag so named (refs/tags/refs/heads/main), and take its tree, the branch's, for main's. The check
+# for a diverged main looks it up the same way, so the branch, which has a commit origin/main lacks, is no diverged
+# main: the checkout creates main from origin/main, and the update deploys.
+begin_case "branch named refs/heads/main without local main"
+new_clone
+checkout_branch_deployer refs/heads/main
+git_quiet -C "$CLONE" branch -D main
+run_subject "$CLONE" main
+expect_status 0 "branch named refs/heads/main without local main"
+expect_main_deployer "branch named refs/heads/main without local main"
+[ "$(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)" = "refs/heads/main" ] ||
+  fail "branch named refs/heads/main without local main: not on main"
+expect_deployed "branch named refs/heads/main without local main"
+
+begin_case "tag named refs/heads/main without local main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" tag refs/heads/main
+git_quiet -C "$CLONE" branch -D main
+run_subject "$CLONE" main
+expect_main_deployer "tag named refs/heads/main without local main"
+
+# The runs that stop after the pin is read never run the branch's deploy.py either: an origin that cannot be reached
+# (FETCH_FAILED), a main with commits origin/main lacks (NOT_FAST_FORWARD), and a fetch the clone cannot take (FAILED).
+begin_case "branch's deployer, fetch failed"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" remote set-url origin "$FIXTURE/missing.git"
+run_subject "$CLONE" main
+expect_status 1 "branch's deployer, fetch failed"
+expect_first_line "FETCH_FAILED" "branch's deployer, fetch failed"
+expect_main_deployer "branch's deployer, fetch failed"
+expect_not_deployed "branch's deployer, fetch failed"
+
+begin_case "branch's deployer, diverged"
+new_clone
+git_quiet -C "$CLONE" commit --allow-empty -m "local work"
+checkout_branch_deployer topic
+publish "change over a diverged main"
+run_subject "$CLONE" main
+expect_status 1 "branch's deployer, diverged"
+expect_first_line "NOT_FAST_FORWARD" "branch's deployer, diverged"
+expect_main_deployer "branch's deployer, diverged"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "branch's deployer, diverged: branch switched"
+expect_not_deployed "branch's deployer, diverged"
+
+begin_case "branch's deployer, failed"
+new_clone
+checkout_branch_deployer topic
+publish "change behind a stale lock over a branch's deployer"
+mkdir -p "$CLONE/.git/refs/remotes/origin"
+: >"$CLONE/.git/refs/remotes/origin/main.lock"
+run_subject "$CLONE" main
+expect_failed "FAILED remote_refs.py fetch failed: error: cannot lock ref 'refs/remotes/origin/main'" \
+  "branch's deployer, failed"
+expect_main_deployer "branch's deployer, failed"
+
+# A clone with neither main nor origin/main has no main to read the pin with, so nothing runs.
+begin_case "no main to read the pin with"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" branch -D main
+git_quiet -C "$CLONE" update-ref -d refs/remotes/origin/main
+run_subject "$CLONE" main
+expect_failed "FAILED cannot read the pin with main's deploy.py: the clone has neither refs/heads/main nor refs/remotes/origin/main" \
+  "no main to read the pin with"
+expect_nothing_run "no main to read the pin with"
+# origin/main is looked up exactly too: a tag whose own name is refs/remotes/origin/main, at the branch's commit, which
+# git's lookup rules would find for the absent refs/remotes/origin/main, never stands in for it.
+begin_case "no main, a tag named refs/remotes/origin/main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" branch -D main
+git_quiet -C "$CLONE" update-ref -d refs/remotes/origin/main
+git_quiet -C "$CLONE" tag refs/remotes/origin/main
+run_subject "$CLONE" main
+expect_failed "FAILED cannot read the pin with main's deploy.py: the clone has neither refs/heads/main nor refs/remotes/origin/main" \
+  "no main, a tag named refs/remotes/origin/main"
+expect_nothing_run "no main, a tag named refs/remotes/origin/main"
+
+# Main's tree that cannot be written out, here as git refuses the archive or mktemp the folder, stops before anything
+# runs, and leaves no folder behind.
+begin_case "main's tree not written out"
+new_clone
+checkout_branch_deployer topic
+ARCHIVE_WRAPPER="$FIXTURE/archive wrapper"
+mkdir -p "$ARCHIVE_WRAPPER" "$FIXTURE/tmp for the archive"
+cat >"$ARCHIVE_WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" archive "*) echo "error: archive refused by the test" >&2; exit 1 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$ARCHIVE_WRAPPER/git"
+TMPDIR="$FIXTURE/tmp for the archive" PATH="$ARCHIVE_WRAPPER:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot write main's tree out to read the pin with its deploy.py: error: archive refused by the test" \
+  "main's tree not written out"
+expect_nothing_run "main's tree not written out"
+[ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
+  fail "main's tree not written out: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
+FOLDER_WRAPPER="$FIXTURE/folder mktemp wrapper"
+mkdir -p "$FOLDER_WRAPPER"
+cat >"$FOLDER_WRAPPER/mktemp" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = -d ]; then
+  echo "mktemp: folder refused by the test" >&2
+  exit 1
+fi
+exec "$(command -v mktemp)" "\$@"
+EOF
+chmod +x "$FOLDER_WRAPPER/mktemp"
+TMPDIR="$FIXTURE/tmp for the archive" PATH="$FOLDER_WRAPPER:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot create a temporary folder for main's tree: mktemp: folder refused by the test" \
+  "main's folder not made"
+expect_nothing_run "main's folder not made"
+[ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
+  fail "main's folder not made: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
+
+# A step that fails without a word is named with its exit status, never an empty reason: here git archive, and then
+# tar, each exit without printing anything.
+SILENT_STEPS="$FIXTURE/silent steps"
+mkdir -p "$SILENT_STEPS"
+cat >"$SILENT_STEPS/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" archive "*) [ -z "\${SILENT_ARCHIVE:-}" ] || exit 3 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+cat >"$SILENT_STEPS/tar" <<EOF
+#!/usr/bin/env bash
+[ -z "\${SILENT_TAR:-}" ] || exit 2
+exec "$(command -v tar)" "\$@"
+EOF
+chmod +x "$SILENT_STEPS/git" "$SILENT_STEPS/tar"
+SILENT_ARCHIVE=1 TMPDIR="$FIXTURE/tmp for the archive" PATH="$SILENT_STEPS:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot write main's tree out to read the pin with its deploy.py: git archive exited 3 and printed nothing" \
+  "silent archive"
+expect_nothing_run "silent archive"
+SILENT_TAR=1 TMPDIR="$FIXTURE/tmp for the archive" PATH="$SILENT_STEPS:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot write main's tree out to read the pin with its deploy.py: tar exited 2 and printed nothing" \
+  "silent tar"
+expect_nothing_run "silent tar"
+[ -z "$(ls -A "$FIXTURE/tmp for the archive")" ] ||
+  fail "silent steps: left behind: $(ls -A "$FIXTURE/tmp for the archive")"
+
+# A tar that stops reading before git archive has written everything, as macOS's stops at the archive's end marker
+# with git's padding still to come, never fails the update: git archive writes a file, never into a pipe tar may close.
+# The stand-in tar reads nothing from a pipe and exits; reading a file, it is tar itself.
+begin_case "tar that stops reading early"
+EARLY_TAR="$FIXTURE/early tar"
+mkdir -p "$EARLY_TAR"
+cat >"$EARLY_TAR/tar" <<EOF
+#!/usr/bin/env bash
+if [ -p /dev/stdin ]; then
+  exec 0<&-
+  exit 0
+fi
+exec "$(command -v tar)" "\$@"
+EOF
+chmod +x "$EARLY_TAR/tar"
+PATH="$EARLY_TAR:$PATH" run_subject "$CLONE" main
+expect_status 0 "tar that stops reading early"
+expect_main_deployer "tar that stops reading early"
+expect_deployed "tar that stops reading early"
+
+# An update ended by a signal while main's deploy.py runs check removes main's tree and its own files through its EXIT
+# trap. Main's check sends the update TERM. Windows ends a Git Bash process without running its traps, so the case runs
+# where signals reach bash.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    begin_case "main's tree removed on a signal"
+    new_clone
+    checkout_branch_deployer topic
+    mkdir -p "$FIXTURE/tmp for a signal"
+    FAKE_CHECK_TERM=1 TMPDIR="$FIXTURE/tmp for a signal" run_subject "$CLONE" main
+    expect_status 143 "main's tree removed on a signal"
+    expect_main_deployer "main's tree removed on a signal"
+    expect_not_deployed "main's tree removed on a signal"
+    [ -z "$(ls -A "$FIXTURE/tmp for a signal")" ] ||
+      fail "main's tree removed on a signal: left behind: $(ls -A "$FIXTURE/tmp for a signal")"
+    [ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "main's tree removed on a signal: branch switched"
+    ;;
+esac
+
 # Uncommitted tracked changes stop everything before the fetch.
 begin_case 'dirty'
 new_clone
@@ -395,19 +619,23 @@ expect_nothing_run "no file for git errors"
 [ -z "$(ls -A "$FIXTURE/tmp for git errors")" ] ||
   fail "no file for git errors: temporary files left behind: $(ls -A "$FIXTURE/tmp for git errors")"
 
-# Every temporary file, the copy, the deployer's errors, and git's errors, is named from a template under TMPDIR: a
-# mktemp wrapper refuses any call that names none there, as a bare mktemp on macOS would make its file elsewhere, so
-# a full update deploys only while each of the three names its template. Each is removed when the update ends. Where
-# the platform has user ids, the template names TMPDIR resolved through its links, as private_folder.py judged it.
+# Every temporary file, the copy, the deployer's errors, git's errors, and the folder main's tree is written to for a
+# clone on another branch, is named from a template under TMPDIR: a mktemp wrapper refuses any call that names none
+# there, as a bare mktemp on macOS would make its file elsewhere, so a full update from such a branch deploys only while
+# each of the four names its template. Each is removed when the update ends. Where the platform has user ids, the
+# template names TMPDIR resolved through its links, as private_folder.py judged it.
 begin_case 'every file under TMPDIR'
 new_clone
+checkout_branch_deployer topic
 UNDER_TMPDIR="$FIXTURE/tmp for every file"
 TEMPLATE_MKTEMP="$FIXTURE/template mktemp wrapper"
 mkdir -p "$TEMPLATE_MKTEMP" "$UNDER_TMPDIR"
 UNDER_TMPDIR_RESOLVED=$(cd -- "$UNDER_TMPDIR" && pwd -P)
 cat >"$TEMPLATE_MKTEMP/mktemp" <<EOF
 #!/usr/bin/env bash
-case "\${1:-}" in
+NAMED=\${1:-}
+[ "\$NAMED" != -d ] || NAMED=\${2:-}
+case "\$NAMED" in
   "$UNDER_TMPDIR/"* | "$UNDER_TMPDIR_RESOLVED/"*) exec "$(command -v mktemp)" "\$@" ;;
 esac
 echo "mktemp: no template under TMPDIR: \$*" >&2
@@ -417,6 +645,7 @@ chmod +x "$TEMPLATE_MKTEMP/mktemp"
 TMPDIR="$UNDER_TMPDIR" PATH="$TEMPLATE_MKTEMP:$PATH" run_subject "$CLONE" main
 expect_status 0 "every file under TMPDIR"
 expect_deployed "every file under TMPDIR"
+expect_main_deployer "every file under TMPDIR"
 [ -z "$(ls -A "$UNDER_TMPDIR")" ] ||
   fail "every file under TMPDIR: temporary files left behind: $(ls -A "$UNDER_TMPDIR")"
 

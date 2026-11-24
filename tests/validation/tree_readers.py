@@ -182,6 +182,8 @@ TREE_READERS: dict[str, dict[str, str]] = {
     "skills/ejryan89-skill-core/scripts/git_client.py": {"GitClient.file_at": COMMITTED},
     "skills/review-document/scripts/review_document.py": {"committed_blob": ENTRIES, "committed_base": COMMITTED},
     "skills/review-insights/scripts/review_guidance.py": {"read_committed": COMMITTED},
+    # The update's pin check from main's tree, for a clone on another tree: the deploy.py a checkout of main would run.
+    "skills/update-coding-agent-skills/scripts/update.sh": {"<module>": CHECKOUT},
     "tests/validation/silent_reverts.py": {"current_blobs": ENTRIES},
     "tests/validation/upgrade_notes.py": {"revision_snapshot": COMMITTED},
     # The issue forms' configuration on the default branch, read through GitHub's contents endpoint.
