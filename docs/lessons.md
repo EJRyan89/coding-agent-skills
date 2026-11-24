@@ -1421,13 +1421,18 @@ or removed fails validation until its pattern follows it.
   until someone happens to probe it.
 - **Use:** `check_provenance:load`, `guidance_record:canonical_url`, and `tools.runtime_changelogs:watch`, which
   the Runtime Changelogs workflow runs weekly as an advisory watch that refuses nothing: it lists the
-  changelog entries and moved guidance pages for a reader to act on; a policy that each runtime statement in the
-  support pages links a page the guidance record lists is the mechanism in #1912.
+  changelog entries and moved guidance pages for a reader to act on; and
+  `tests.validation.skill_layout:runtime_statement_source_problems`, which holds each sentence of a runtime's support
+  page that states how a runtime behaves to a link, in its paragraph, to a page or changelog the guidance record
+  lists, so the guidance audit and the watch reread it, or to a reason in `tests.validation.skill_layout:UNSOURCED_STATEMENTS`.
 - **Guard:** `.github/workflows/runtime-command-lines.yml`,
+  `tests/validation/skill_layout.py::SkillLayoutPolicies::test_runtime_pages_link_a_source_the_guidance_record_rereads_for_each_runtime_statement`,
+  `tests/validation/test_skill_layout.py::test_a_runtime_statement_with_no_link_in_its_block_fails_and_one_beside_a_recorded_page_passes`,
   `tests/tools/test_runtime_command_lines.py::CapturedTests::test_each_runtimes_real_refusal_of_a_flag_is_read_as_one`,
   `tests/tools/test_captured_samples.py::test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not`
-- **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
-  link; `always`, `never`, `only`, `cannot`, or `does not` in a support page; a `"--` flag literal in a list passed to
+- **Search for:** a sentence about a runtime's behavior in `docs/installation.md`, which the policy does not read,
+  with no link; one in `docs/*-support.md` whose verb the policy does not read after the runtime's name, as in
+  `Codex CLI before 0.88.0 does not say`; `always`, `never`, `only`, `cannot`, or `does not` in a support page; a `"--` flag literal in a list passed to
   `copilot`, `codex`, or `claude` that `tools/runtime_command_lines.py` does not build; a `"decision"` entry in a
   skill's `references/provenance.json` that states what a runtime does, where no `"page"` entry of the same check
   states it; `does not list` or `not list yet` beside a page in a provenance passage, a policy, or a comment.

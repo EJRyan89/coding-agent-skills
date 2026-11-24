@@ -979,6 +979,12 @@
         "v0.13.0",
         "v0.14.0"
       ]
+    },
+    {
+      "url": "https://docs.python.org/3/using/windows.html",
+      "subject": "python",
+      "governs": "Python on Windows: the install manager, its launchers, and the app execution aliases",
+      "read": []
     }
   ],
   "changelogs": [

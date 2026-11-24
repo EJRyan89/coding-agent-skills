@@ -7,20 +7,24 @@ from __future__ import annotations
 
 import re
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import file_presence
 import frontmatter
 import git_subcommands
+import guidance_record
 import json_reader
 import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
 from bash_syntax import BashSyntaxError
-from markdown_sections import CODE, EXECUTABLE_FENCES, blocks, code_spans, markdown_section
+from link_destinations import link_destinations
+from link_targets import Cover, link_spans
+from markdown_sections import CODE, EXECUTABLE_FENCES, Block, blocks, code_spans, markdown_section
 from path_containment import within
+from runtime_support import RUNTIME_TITLES, RUNTIMES
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
@@ -56,6 +60,7 @@ from deployer import platform_support
 from deployer.render import shipped_files
 from tools.plugin_agents import DEPLOYED_SCRIPT
 from tools.plugin_build import README as PLUGIN_README
+from tools.runtime_canary import RUNTIMES as RUNTIME_PROGRAMS
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -332,6 +337,21 @@ def runtime_support_problems(root: Path) -> list[str]:
     return problems
 
 
+# Each runtime's support page: how the runtime behaves, and each skill's support on it.
+RUNTIME_PAGES = {"codex": "docs/codex-support.md", "copilot-cli": "docs/copilot-support.md"}
+# Where a support page's sentence ends: after a full stop, a question mark, or an exclamation mark, at the space after.
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def page_sentences(text: str) -> Iterator[tuple[Block, str]]:
+    """Each sentence of a page's blocks outside code, as markdown_sections' `blocks` walks them, with its block: the
+    block's text with each run of whitespace one space, split after each `.`, `?`, or `!` that a space follows."""
+    for block in blocks(text_lines(text)):
+        if block.kind != CODE:
+            for sentence in SENTENCE_END.split(" ".join(block.text().split())):
+                yield block, sentence
+
+
 def runtime_page_problems(root: Path) -> list[str]:
     """Report a runtime's support page that states a skill's support on that runtime otherwise than its metadata.
 
@@ -342,37 +362,196 @@ def runtime_page_problems(root: Path) -> list[str]:
     """
     import runtime_support
 
-    pages = {"codex": "docs/codex-support.md", "copilot-cli": "docs/copilot-support.md"}
     levels = {runtime_support.FULL, runtime_support.PARTIAL, runtime_support.NONE}
     declared = {
         metadata.stem: json_reader.loads(metadata.read_text(encoding="utf-8")).get("runtime_support")
         for metadata in file_presence.matching(root / "deploy-meta", "*.json")
     }
     problems: list[str] = []
-    for runtime, page in pages.items():
+    for runtime, page in RUNTIME_PAGES.items():
         path = root / page
         if not file_presence.is_present(path):
             continue
-        prose = (block for block in blocks(text_lines(path.read_text(encoding="utf-8"))) if block.kind != CODE)
-        for block in prose:
-            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(block.text().split())):
-                spans = {span.text for span in code_spans(sentence)}
-                skills, stated = spans & declared.keys(), spans & levels
-                if len(skills) != 1 or len(stated) != 1:
-                    continue
-                skill, level = next(iter(skills)), next(iter(stated))
-                try:
-                    support = runtime_support.parse(declared[skill])[runtime]
-                except runtime_support.RuntimeSupportError:
-                    continue  # runtime_support_problems reports it
-                named = sorted(spans & runtime_support.CAPABILITIES.keys())
-                if level != support.level or (level != runtime_support.FULL and named != sorted(support.needs)):
-                    problems.append(
-                        f"{page} says {skill} is {level}{' lacking ' + ', '.join(named) if named else ''} on "
-                        f"{runtime}, but its deploy-meta declares {support.level}"
-                        f"{' lacking ' + ', '.join(sorted(support.needs)) if support.needs else ''}; "
-                        f"see {METADATA_DOC}"
-                    )
+        for _block, sentence in page_sentences(path.read_text(encoding="utf-8")):
+            spans = {span.text for span in code_spans(sentence)}
+            skills, stated = spans & declared.keys(), spans & levels
+            if len(skills) != 1 or len(stated) != 1:
+                continue
+            skill, level = next(iter(skills)), next(iter(stated))
+            try:
+                support = runtime_support.parse(declared[skill])[runtime]
+            except runtime_support.RuntimeSupportError:
+                continue  # runtime_support_problems reports it
+            named = sorted(spans & runtime_support.CAPABILITIES.keys())
+            if level != support.level or (level != runtime_support.FULL and named != sorted(support.needs)):
+                problems.append(
+                    f"{page} says {skill} is {level}{' lacking ' + ', '.join(named) if named else ''} on "
+                    f"{runtime}, but its deploy-meta declares {support.level}"
+                    f"{' lacking ' + ', '.join(sorted(support.needs)) if support.needs else ''}; "
+                    f"see {METADATA_DOC}"
+                )
+    return problems
+
+
+SOURCE_LESSON = '"A statement about another program cites its current source" in docs/lessons.md'
+# What a sentence's code spans and links are read as: a code span that starts a runtime's program as a runtime's
+# name, and any other code span or link as text no name or verb matches.
+RUNTIME_COMMAND = "\x00"
+NOT_PROSE = "\x01"
+# A runtime as a support page names it: its title as runtime_support.RUNTIME_TITLES gives it, with or without the
+# `CLI` that ends it, and with or without a `GitHub` before it, or a code span that starts its program.
+RUNTIME_NAME = "|".join(
+    sorted(
+        {re.escape(spelling) for title in RUNTIME_TITLES.values() for spelling in (title, title.removesuffix(" CLI"))},
+        key=len,
+        reverse=True,
+    )
+)
+# A finite verb after a runtime's name: an auxiliary, or a word ending in `s` that is none of the words ending in `s`
+# that follow a runtime's name in a page without being its verb, such as `as` in `on Copilot CLI as before`, or the
+# plural in `the Copilot CLI versions`. One adverb may come between, as in `Codex never looks`, and a possessive and
+# one word before it, as in `Codex's sandbox cannot`.
+AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|cannot|can|could|may|might|will|would|must|should"
+ADVERBS = "also|still|then|now|never|only|always|first|already|instead|again|itself"
+NOT_VERBS = "as|its|this|thus|plus|unless|across|always|less|versions|releases|skills|settings|users"
+RUNTIME_STATEMENT = re.compile(
+    rf"(?<![\w-])(?:(?:GitHub )?(?:{RUNTIME_NAME})|{RUNTIME_COMMAND})(?:'s [a-z-]+)? (?:(?:{ADVERBS}) )?"
+    rf"(?:(?:{AUXILIARIES})\b|(?!(?:{NOT_VERBS})\b)[a-z]+s\b)"
+)
+# Each sentence of a support page that states how a runtime behaves with no source the guidance record rereads, by
+# its page and its text as page_sentences gives it, with why it needs none.
+UNSOURCED_STATEMENTS: dict[tuple[str, str], str] = {
+    (
+        "docs/codex-support.md",
+        "After deploying, check that Codex finds every adapter without starting a model:",
+    ): "an instruction to run the verifier, which states no behavior of Codex's",
+    (
+        "docs/codex-support.md",
+        "On Windows, Codex looks for personal skills in your Windows profile folder, whatever `HOME` or `USERPROFILE` "
+        "says.",
+    ): "Codex's skills page names only $HOME/.agents/skills; the deployable workflow's Windows job deploys into the "
+    "profile folder and fails its deploy.py verify when Codex looks elsewhere",
+    (
+        "docs/codex-support.md",
+        "If `USERPROFILE` itself has been changed, the adapters land where Codex never looks, and the verifier reports "
+        "them as `NOT FOUND`.",
+    ): "follows from the sentence before it, which the deployable workflow's Windows job holds",
+    (
+        "docs/codex-support.md",
+        "`codex debug prompt-input -c sandbox_mode=workspace-write` says `Network access is enabled` once the setting "
+        "is read, and `Network access is restricted` before.",
+    ): "quotes what the command beside it prints, which a reader runs to see it, and no page documents",
+    (
+        "docs/codex-support.md",
+        "On Windows, Codex CLI runs every shell command through `pwsh` when it finds one on `PATH`, and through "
+        "Windows PowerShell (`powershell.exe`) otherwise.",
+    ): "observed in the runtime canary's Windows runs (#1423), which no Codex page documents; deploy.py check's pwsh "
+    "command line reports the alias that breaks it",
+    (
+        "docs/codex-support.md",
+        "With no `pwsh` on `PATH`, `check` prints no such line, since Codex then uses Windows PowerShell, which its "
+        "sandbox starts; the validation suite still needs PowerShell 7.",
+    ): "the other half of the pwsh observation above, from the same canary runs",
+    (
+        "docs/copilot-support.md",
+        "A `COPILOT_HOME` that is not an absolute path is refused by every command of `deploy.py` once its command "
+        "line is read, before anything else (`--help` and a usage error still exit 0 and 2): Copilot completes such a "
+        "value from the directory each session starts in, so no one folder holds the skills it reads.",
+    ): "observed with copilot skill list --json in throwaway homes (#2330), which Copilot's configuration directory "
+    "reference does not state; the deployer refuses the value whatever Copilot does with it",
+}
+
+
+def statement_prose(sentence: str) -> str:
+    """A sentence as RUNTIME_STATEMENT reads it: each link, its text and destination with it, and each code span outside
+    one, as NOT_PROSE, but a code span whose first word is a runtime's program, which is RUNTIME_COMMAND."""
+    destinations = link_destinations([sentence])
+    links = Cover.of(link_spans(sentence, destinations))
+    pieces: list[tuple[int, int, str]] = [
+        (start, end, NOT_PROSE) for start, end in zip(links.starts, links.ends, strict=True)
+    ]
+    for span in code_spans(sentence):
+        if not links.overlaps(span.start, span.end):
+            words = span.text.split()
+            pieces.append(
+                (span.start, span.end, RUNTIME_COMMAND if words[:1] and words[0] in RUNTIME_PROGRAMS else NOT_PROSE)
+            )
+    prose: list[str] = []
+    position = 0
+    for start, end, placeholder in sorted(pieces):
+        prose.append(sentence[position:start] + placeholder)
+        position = end
+    prose.append(sentence[position:])
+    return "".join(prose)
+
+
+def runtime_statement_source_problems(root: Path) -> list[str]:
+    """Report a sentence of a runtime's support page that states how a runtime behaves without a link, in its block,
+    to a page or changelog the guidance record lists, so that the guidance audit and the changelog watch reread it.
+
+    A sentence is read as page_sentences gives it. It states how a runtime behaves when RUNTIME_STATEMENT matches it
+    as statement_prose reads it: a runtime's name or a code span that starts its program, then a finite verb, as in
+    `Codex looks for personal skills` or `` `copilot -p` does not expand``. Its block, the paragraph or list item that
+    holds it, must link at least one page or changelog `.claude/skills/audit-repository/references/guidance.json`
+    lists, compared without its fragment as guidance_record's canonical_url gives it, and no web address the record does
+    not list. A sentence UNSOURCED_STATEMENTS names needs none, for the reason it gives, and an entry that names no
+    sentence of its page fails.
+
+    Limits: a name read as a verb's subject is a guess: a verb that follows the name after more than a possessive and
+    one word, or more than one adverb, is not read, as in `Codex CLI before 0.88.0 does not say`, and a name followed
+    by a verb it is not the subject of, as in `when Codex is installed`, is read as a statement. A link that sits in
+    another block, such as a list of sources below the paragraph, does not count for it.
+    """
+    try:
+        record = guidance_record.read(root / guidance_record.GUIDANCE_PATH, [*RUNTIMES, guidance_record.PYTHON_SUBJECT])
+    except guidance_record.GuidanceRecordError as exc:
+        return [f"cannot read the sources the runtime support pages may link: {exc}"]
+    sources = {
+        guidance_record.canonical_url(url)
+        for url in [*(page.url for page in record.pages), *(changelog.url for changelog in record.changelogs)]
+    }
+    problems: list[str] = []
+    statements = 0
+    held: set[tuple[str, str]] = set()
+    for page in RUNTIME_PAGES.values():
+        path = root / page
+        if not file_presence.is_present(path):
+            continue
+        for block, sentence in page_sentences(path.read_text(encoding="utf-8")):
+            if RUNTIME_STATEMENT.search(statement_prose(sentence)) is None:
+                continue
+            statements += 1
+            if (page, sentence) in UNSOURCED_STATEMENTS:
+                held.add((page, sentence))
+                continue
+            urls = [
+                destination.url.partition("#")[0]
+                for destination in link_destinations(list(block.lines))
+                if destination.is_url
+            ]
+            unread = [url for url in urls if guidance_record.canonical_url(url) not in sources]
+            where = f"{page}:{block.start + 1} states how a runtime behaves"
+            if unread:
+                problems.append(
+                    f"{where} and its block links {', '.join(unread)}, which {guidance_record.GUIDANCE_PATH} does not "
+                    f"list: {sentence!r}; add the page to the record or link the page it lists; see {SOURCE_LESSON}"
+                )
+            elif not urls:
+                problems.append(
+                    f"{where} with no link in its block to a page {guidance_record.GUIDANCE_PATH} lists: {sentence!r}; "
+                    f"link the runtime's page that says so, or name the sentence in UNSOURCED_STATEMENTS with why it "
+                    f"needs none; see {SOURCE_LESSON}"
+                )
+    problems += [
+        f"UNSOURCED_STATEMENTS names {sentence!r}, which {page} does not hold as a sentence stating how a runtime "
+        f"behaves; remove the entry"
+        for page, sentence in sorted(UNSOURCED_STATEMENTS.keys() - held)
+    ]
+    if not statements:
+        problems.append(
+            f"could not measure: no sentence of {', '.join(RUNTIME_PAGES.values())} states how a runtime behaves, so "
+            f"none was held to its source"
+        )
     return problems
 
 
@@ -1294,6 +1473,9 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_runtime_pages_state_each_skills_support_as_its_metadata_declares(self) -> None:
         self.assertEqual([], runtime_page_problems(REPOSITORY_ROOT))
+
+    def test_runtime_pages_link_a_source_the_guidance_record_rereads_for_each_runtime_statement(self) -> None:
+        self.assertEqual([], runtime_statement_source_problems(REPOSITORY_ROOT))
 
     def test_each_reason_for_a_capability_a_guide_gives_points_to_that_guide(self) -> None:
         self.assertEqual([], capability_guide_problems(REPOSITORY_ROOT))

@@ -9,7 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import file_presence
 import runtime_support
+import skill_layout
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     METADATA_DOC,
@@ -38,6 +39,7 @@ from skill_layout import (
     plugin_tree_problems,
     repository_skill_name_problems,
     runtime_page_problems,
+    runtime_statement_source_problems,
     runtime_support_problems,
     script_dependency_problems,
     script_language_problems,
@@ -1850,4 +1852,136 @@ def test_the_skill_path_policy_reads_null_skill_deps_as_none_and_one_of_another_
     assert skill_path_problems(tmp_path) == [
         "skills/alpha/SKILL.md:2 reaches ../core without declaring it in skill_deps",
         "skills/beta/SKILL.md:2 reaches ../core without declaring it in skill_deps",
+    ]
+
+
+# A guidance record of one Codex page and Codex's changelog, written out here rather than built from guidance_record.
+SOURCES_RECORD = json.dumps(
+    {
+        "pages": [
+            {"url": "https://example.com/codex/hooks", "subject": "codex", "governs": "hooks", "read": ["v0.1.0"]}
+        ],
+        "changelogs": [
+            {
+                "subject": "codex",
+                "url": "https://raw.githubusercontent.com/example/codex/main/CHANGELOG.md",
+                "format": "markdown",
+                "read_through": "1.0.0",
+            }
+        ],
+    }
+)
+GUIDANCE = ".claude/skills/audit-repository/references/guidance.json"
+LESSON = '"A statement about another program cites its current source" in docs/lessons.md'
+
+
+def unlinked(line: int, sentence: str) -> str:
+    return (
+        f"docs/codex-support.md:{line} states how a runtime behaves with no link in its block to a page {GUIDANCE} "
+        f"lists: {sentence!r}; link the runtime's page that says so, or name the sentence in UNSOURCED_STATEMENTS "
+        f"with why it needs none; see {LESSON}"
+    )
+
+
+def write_sources_fixture(root: Path, page: str) -> None:
+    write_fixture_tree(root, {GUIDANCE: SOURCES_RECORD, "docs/codex-support.md": page})
+
+
+@pytest.fixture
+def no_exemptions() -> Iterator[None]:
+    """The repository's UNSOURCED_STATEMENTS left out: a fixture page holds none of the sentences they name."""
+    with mock.patch.dict(skill_layout.UNSOURCED_STATEMENTS, clear=True):
+        yield
+
+
+@pytest.mark.usefixtures("no_exemptions")
+def test_a_runtime_statement_with_no_link_in_its_block_fails_and_one_beside_a_recorded_page_passes(
+    tmp_path: Path,
+) -> None:
+    write_sources_fixture(
+        tmp_path,
+        "# Codex support\n\n"
+        "Codex runs hooks. A hook that fails lets the call through.\n\n"
+        "Codex runs hooks ([Hooks](https://example.com/codex/hooks#events)).\n\n"
+        "- Codex lists every release\n  in its [changelog](https://raw.githubusercontent.com/example/codex/refs/heads/main/CHANGELOG.md).\n"
+        "- `codex exec` uses a read-only sandbox.\n",
+    )
+    assert runtime_statement_source_problems(tmp_path) == [
+        "docs/codex-support.md:3 states how a runtime behaves with no link in its block to a page .claude/skills/"
+        "audit-repository/references/guidance.json lists: 'Codex runs hooks.'; link the runtime's page that says so, "
+        'or name the sentence in UNSOURCED_STATEMENTS with why it needs none; see "A statement about another program '
+        'cites its current source" in docs/lessons.md',
+        unlinked(9, "- `codex exec` uses a read-only sandbox."),
+    ]
+
+
+@pytest.mark.usefixtures("no_exemptions")
+def test_a_runtime_statement_whose_block_links_a_page_the_record_does_not_list_fails(tmp_path: Path) -> None:
+    write_sources_fixture(
+        tmp_path,
+        "Codex runs hooks ([Hooks](https://example.com/codex/hooks), [blog](https://example.com/blog#hooks)).\n\n"
+        "Codex runs rules ([Design](design.md)).\n",
+    )
+    assert runtime_statement_source_problems(tmp_path) == [
+        "docs/codex-support.md:1 states how a runtime behaves and its block links https://example.com/blog, which "
+        f"{GUIDANCE} does not list: 'Codex runs hooks ([Hooks](https://example.com/codex/hooks), "
+        "[blog](https://example.com/blog#hooks)).'; add the page to the record or link the page it lists; see "
+        f"{LESSON}",
+        unlinked(3, "Codex runs rules ([Design](design.md))."),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sentence", "statement"),
+    [
+        pytest.param("Codex looks for skills under HOME.", True, id="name-and-verb"),
+        pytest.param("Codex CLI has no command that lists skills.", True, id="title-and-auxiliary"),
+        pytest.param("GitHub Copilot CLI reads skills in one order.", True, id="github-title"),
+        pytest.param("Claude Code blocks the call.", True, id="claude-code"),
+        pytest.param("The adapters land where Codex never looks.", True, id="one-adverb"),
+        pytest.param("Codex's sandbox cannot start either kind.", True, id="possessive-and-one-word"),
+        pytest.param("`copilot -p` does not expand the prompt.", True, id="runtime-command"),
+        pytest.param("It fails on Copilot CLI as before.", False, id="not-a-verb"),
+        pytest.param("The tested Copilot CLI versions are in the README.", False, id="plural-noun"),
+        pytest.param("The skills' scripts run in Codex's sandbox.", False, id="no-verb-after"),
+        pytest.param("`python deploy.py verify` checks Codex.", False, id="other-code-span"),
+        pytest.param("See [Codex runs hooks](https://example.com/x) for more.", False, id="link-text"),
+        pytest.param("`codex` is the name.", True, id="the-program-alone"),
+        pytest.param("The canary reaches Copilot only through `copilot -p`.", False, id="adverb-without-verb"),
+        pytest.param("Prefer the codex runs here.", False, id="lower-case-name"),
+    ],
+)
+@pytest.mark.usefixtures("no_exemptions")
+def test_a_runtime_statement_is_a_runtimes_name_then_a_finite_verb(
+    sentence: str, statement: bool, tmp_path: Path
+) -> None:
+    write_sources_fixture(tmp_path, f"Codex runs hooks ([Hooks](https://example.com/codex/hooks)).\n\n{sentence}\n")
+    assert runtime_statement_source_problems(tmp_path) == ([unlinked(3, sentence)] if statement else [])
+
+
+def test_an_unsourced_statement_named_with_its_reason_passes_and_a_stale_entry_fails(tmp_path: Path) -> None:
+    write_sources_fixture(tmp_path, "Codex runs hooks.\n\nCodex runs rules.\n")
+    exempt = {
+        ("docs/codex-support.md", "Codex runs hooks."): "observed by deploy.py verify",
+        ("docs/codex-support.md", "Codex runs agents."): "no longer on the page",
+    }
+    with mock.patch.dict(skill_layout.UNSOURCED_STATEMENTS, exempt, clear=True):
+        assert runtime_statement_source_problems(tmp_path) == [
+            unlinked(3, "Codex runs rules."),
+            "UNSOURCED_STATEMENTS names 'Codex runs agents.', which docs/codex-support.md does not hold as a sentence "
+            "stating how a runtime behaves; remove the entry",
+        ]
+
+
+@pytest.mark.usefixtures("no_exemptions")
+def test_the_runtime_statement_policy_reports_an_unreadable_record_and_pages_with_no_statement(tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, {"docs/codex-support.md": "Codex runs hooks.\n"})
+    assert runtime_statement_source_problems(tmp_path) == [
+        "cannot read the sources the runtime support pages may link: no guidance record at "
+        f"{(tmp_path / GUIDANCE).as_posix()}"
+    ]
+    write_sources_fixture(tmp_path, "Codex support.\n\n```text\nCodex runs hooks.\n```\n")
+    assert runtime_statement_source_problems(tmp_path) == [
+        "could not measure: no sentence of docs/codex-support.md, docs/copilot-support.md states how a runtime "
+        "behaves, so none was held to its source"
     ]
