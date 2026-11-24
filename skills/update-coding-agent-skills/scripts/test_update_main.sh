@@ -112,6 +112,30 @@ expect_main_deployer "branch's deployer without local main"
 [ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "branch's deployer without local main: not on main"
 expect_deployed "branch's deployer without local main"
 
+# Main is looked up by its full name exactly: with no local main, git's lookup rules would resolve refs/heads/main to a
+# branch whose own name is refs/heads/main (refs/heads/refs/heads/main), as a pull request's head branch of that name
+# checks out, or to a tag so named (refs/tags/refs/heads/main), and take its tree, the branch's, for main's. The check
+# for a diverged main looks it up the same way, so the branch, which has a commit origin/main lacks, is no diverged
+# main: the checkout creates main from origin/main, and the update deploys.
+begin_case "branch named refs/heads/main without local main"
+new_clone
+checkout_branch_deployer refs/heads/main
+git_quiet -C "$CLONE" branch -D main
+run_subject "$CLONE" main
+expect_status 0 "branch named refs/heads/main without local main"
+expect_main_deployer "branch named refs/heads/main without local main"
+[ "$(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)" = "refs/heads/main" ] ||
+  fail "branch named refs/heads/main without local main: not on main"
+expect_deployed "branch named refs/heads/main without local main"
+
+begin_case "tag named refs/heads/main without local main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" tag refs/heads/main
+git_quiet -C "$CLONE" branch -D main
+run_subject "$CLONE" main
+expect_main_deployer "tag named refs/heads/main without local main"
+
 # The runs that stop after the pin is read never run the branch's deploy.py either: an origin that cannot be reached
 # (FETCH_FAILED), a main with commits origin/main lacks (NOT_FAST_FORWARD), and a fetch the clone cannot take (FAILED).
 begin_case "branch's deployer, fetch failed"

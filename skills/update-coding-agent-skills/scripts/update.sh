@@ -232,6 +232,22 @@ git_quiet() {
   return 2
 }
 
+# The object a ref names, looked up by its full name exactly, read as git_quiet reads git: status 0 with GIT_OUT the
+# object, 1 when the ref does not exist, and 2 with GIT_REASON when git cannot answer. rev-parse, and every command
+# given a revision, resolves even a full name through git's lookup rules, so with no refs/heads/main a branch whose own
+# name is refs/heads/main (refs/heads/refs/heads/main), or a tag so named, would stand in for it. show-ref --verify
+# takes the full name only; with --quiet it says whether the ref exists, by its quiet exit 1, and prints nothing, so
+# the object is read with a second call, which a ref removed in between fails rather than resolves elsewhere.
+ref_object() {
+  local found=0
+  git_quiet show-ref --verify --quiet "$1" || found=$?
+  [ "$found" -eq 0 ] || return "$found"
+  if ! git_quiet show-ref --verify --hash "$1"; then
+    [ -n "$GIT_REASON" ] || GIT_REASON="git show-ref exited 1 and printed nothing"
+    return 2
+  fi
+}
+
 if ! git_quiet rev-parse --git-dir; then
   echo "FAILED cannot read $CLONE as a git repository: $GIT_REASON"
   exit 1
@@ -312,30 +328,36 @@ raises_breaking() {
 }
 
 # Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
-# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. The checkout and the switch
-# back name a branch by its short name, which checkout resolves as a branch first.
+# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. A full name is exact only while
+# the ref exists, as git's lookup rules go on to other refs when it does not, so each lookup whose answer is whether a
+# ref exists goes through ref_object, and a ref is named to git in a revision only once it is known to exist. The
+# checkout and the switch back name a branch by its short name, which checkout resolves as a branch first.
 MAIN=refs/heads/main
 ORIGIN_MAIN=refs/remotes/origin/main
 
 # check runs main's deploy.py, never the one on a branch the clone was left on, such as another author's pull request
 # checked out to look at it, which would otherwise run as the user before anything said the clone is not on main. Main
-# is local main, or origin/main as the clone last fetched it when there is no local main yet. When the clone's HEAD
-# holds main's tree, which the DIRTY stop above leaves its tracked files at, check runs in the clone, as the deployment
-# below does; otherwise it runs from main's tree, which git archive writes to a temporary folder. A lookup git cannot
-# answer is a FAILED line with git's reason, never a main the clone lacks.
+# is local main, or origin/main as the clone last fetched it when there is no local main yet, each looked up exactly.
+# When the clone's HEAD holds main's tree, which the DIRTY stop above leaves its tracked files at, check runs in the
+# clone, as the deployment below does; otherwise it runs from main's tree, which git archive writes to a temporary
+# folder. A lookup git cannot answer is a FAILED line with git's reason, never a main the clone lacks.
 FOUND=0
 MAIN_SOURCE=$MAIN
-git_quiet rev-parse --verify --quiet "$MAIN^{tree}" || FOUND=$?
+ref_object "$MAIN" || FOUND=$?
 if [ "$FOUND" -eq 1 ]; then
   FOUND=0
   MAIN_SOURCE=$ORIGIN_MAIN
-  git_quiet rev-parse --verify --quiet "$ORIGIN_MAIN^{tree}" || FOUND=$?
+  ref_object "$ORIGIN_MAIN" || FOUND=$?
 fi
 if [ "$FOUND" -eq 1 ]; then
   echo "FAILED cannot read the pin with main's deploy.py: the clone has neither $MAIN nor $ORIGIN_MAIN"
   exit 1
 elif [ "$FOUND" -eq 2 ]; then
   echo "FAILED cannot look up $MAIN_SOURCE: $GIT_REASON"
+  exit 1
+fi
+if ! git_quiet rev-parse --verify "$GIT_OUT^{tree}"; then
+  echo "FAILED cannot read the tree of $MAIN_SOURCE: ${GIT_REASON:-git answered no}"
   exit 1
 fi
 MAIN_TREE=$GIT_OUT
@@ -564,11 +586,17 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
       [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
       # The commits the update would deploy: from the deployed commit, or from local main when check names none or
-      # the clone does not hold it. A clone with no local main yet, which git's quiet exit 1 alone says, has none to
-      # list from, and any other answer of the lookup is git's reason; either is an UNLISTED line, never an empty list.
+      # the clone does not hold it. A clone with no local main yet, which the exact lookup's quiet exit 1 alone says,
+      # has none to list from, and any other answer of the lookup is git's reason; either is an UNLISTED line, never an
+      # empty list. The deployed commit is an object's full name, which git reads as that object, and main is looked
+      # up exactly.
       LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
       VERIFIED=0
-      git_quiet rev-parse --verify --quiet "$LISTED_FROM^{commit}" || VERIFIED=$?
+      if [ -n "$KNOWN_COMMIT" ]; then
+        git_quiet rev-parse --verify --quiet "$KNOWN_COMMIT^{commit}" || VERIFIED=$?
+      else
+        ref_object "$MAIN" || VERIFIED=$?
+      fi
       if [ "$VERIFIED" -eq 0 ]; then
         log_lines "$LISTED_FROM..$DEPLOY_END"
       elif [ "$VERIFIED" -eq 1 ]; then
@@ -583,11 +611,11 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
 fi
 
 # A diverged main stops before the checkout, so the clone stays on the branch it was found on. A clone with no local
-# main yet, which git's quiet no to the lookup alone says, leaves the decision to the checkout, which creates main from
+# main yet, which the exact lookup's quiet no alone says, leaves the decision to the checkout, which creates main from
 # origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
 # reason, never a diverged main.
 HAS_MAIN=0
-git_quiet rev-parse --verify --quiet "$MAIN^{commit}" || HAS_MAIN=$?
+ref_object "$MAIN" || HAS_MAIN=$?
 if [ "$HAS_MAIN" -eq 2 ]; then
   echo "FAILED cannot look up $MAIN: $GIT_REASON"
   exit 1
