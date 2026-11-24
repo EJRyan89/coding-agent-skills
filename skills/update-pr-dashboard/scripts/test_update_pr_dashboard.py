@@ -5,6 +5,7 @@ import copy
 import itertools
 import json
 import re
+import stat
 import sys
 import tempfile
 import threading
@@ -1199,6 +1200,25 @@ class ReplacementTests(unittest.TestCase):
         with mock.patch.object(Path, "stat", stat), self.assertRaises(TrackerError) as raised:
             replacement(path)
         self.assertEqual(f"Cannot examine {path}: Permission denied", str(raised.exception))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_file_in_a_folder_that_takes_no_new_file_is_refused_and_nothing_is_left(self) -> None:
+        # Linux and macOS: the replace writes its copy beside the file, which the folder's permission refuses, so update
+        # asks it of the tracker record before the dashboard, in another folder, is replaced.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "code-review"
+            folder.mkdir()
+            path = folder / "tracker.json"
+            path.write_bytes(b"{}")
+            folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+            try:
+                with self.assertRaises(TrackerError) as raised:
+                    replacement(path)
+            finally:
+                folder.chmod(stat.S_IRWXU)
+            self.assertTrue(str(raised.exception).startswith(f"Cannot replace {path} for the update: "))
+            self.assertIn("its folder takes no new file", str(raised.exception))
+            self.assertEqual(["tracker.json"], sorted(entry.name for entry in folder.iterdir()))
 
 
 class DashboardWriteTests(unittest.TestCase):
