@@ -104,6 +104,12 @@ no guard can yet, and the forms to search for. A fix that adds a mechanism or a 
 Validation fails a pattern with no search, one with neither a guard nor the reason no guard can yet, whatever
 mechanism it names, and each mechanism or guard that does not resolve.
 
+Before a change is planned, or implemented when the size gate skips the plan, the `implement-change` repository
+skill's `lessons_patterns.py` lists the catalogue's patterns the files the change will touch meet: each pattern whose
+**Use** names a module a file is or imports, and each whose **Search for** forms occur in a file. The author reads
+those patterns before writing code and names the ones that apply in the plan or the pull request, so a known pattern is
+met while planning rather than in review. `change-skill` runs the same step before it plans a skill.
+
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
 restated in the test, so the test cannot pin a change the document does not make. A shared constant's text is pinned

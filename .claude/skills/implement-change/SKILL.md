@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)"]
 ---
 
 # Implementing a change
@@ -25,16 +25,24 @@ Start from an issue the user hands over or a need they describe; an open issue a
 
 For a defect, find its class before planning the fix: the same pattern elsewhere, the other callers of the same reader or writer, and its twin in another shell or runtime. Fix each sibling in the same change, or file a follow-up issue for it and name that issue in the pull request. Fixing only the named instance leaves the rest to be found again.
 
-## 4. Size gate
+## 4. Size gate and lessons
 
 Apply *Size gate*. A change that passes is implemented on the current model without a plan. Otherwise plan.
+
+Either way, before planning, or before implementing when the gate skips the plan, list the patterns of the repository's lessons catalogue that the files the change will touch meet, naming each file it edits or adds from the top of the repository:
+
+```bash
+python -B .claude/skills/implement-change/scripts/lessons_patterns.py '<path>' '<path>'
+```
+
+It prints, for each pattern a file meets, `USE <catalogue>:<line> <pattern> <path> <module>` when the pattern's **Use** names a module the file is or imports, and `SEARCH <catalogue>:<line> <pattern> <path>:<line> <form>` when one of its **Search for** forms occurs at that line of the file; nothing when no pattern meets the files. Read each listed pattern from its line before writing code: follow its rule, call the helper its **Use** names rather than writing another, and judge each `SEARCH` hit by the context its **Search for** gives, since a form alone is not a violation. Name the patterns that apply in the plan's handoff prompt, or, without a plan, in the pull request's `## Forms considered` section or its `Siblings:` line where *Pull requests* asks for them. `NEW <path>` is a file not there yet, met through its own module alone; `UNREAD <path> <reason>` is a file that is not UTF-8 text or Python that does not parse, and `UNSEARCHED <catalogue>:<line> <pattern> <form> <why>` a form the script could not search: search for those by hand. A last line `FAILED <reason>` is a stop to report. Run it again when the plan adds a file.
 
 ## 5. Plan
 
 Plan in the runtime's read-only planning mode, on the strongest model it offers. Read the files the change touches and their tests. Settle real design choices with the user. The deliverable is a handoff prompt that stands alone, in a fenced block:
 
 - the issue and the scope, with where it stops;
-- the files to change;
+- the files to change, and the lessons patterns step 4 listed for them, with how the change keeps each;
 - the tests to write first;
 - the validation to run, from *Validation*;
 - the documentation to update, from *Documentation*;
