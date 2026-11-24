@@ -838,6 +838,12 @@ PASSED_PULL_FILES = {
         "    listing: object = github.list_pull_files('o/r', 1)\n"
         "    return listing.files if not listing.cut and not listing.moved_from(head) else None\n"
     ),
+    "checked through an assignment expression": (
+        "def f(github, head):\n"
+        "    if (listing := github.list_pull_files('o/r', 1)).cut or listing.moved_from(head):\n"
+        "        return None\n"
+        "    return listing.files\n"
+    ),
     "another endpoint": 'def f(github, n):\n    return github.api_json(f"repos/o/r/pulls/{n}/reviews")\n',
     "files of another kind": 'def f(github, n):\n    return github.api_json(f"repos/o/r/pulls/{n}/filesystem")\n',
 }
@@ -986,6 +992,37 @@ class PullFilesTests(unittest.TestCase):
         self.assertEqual("list_pull_files", one_helper.PULL_FILES_READER)
         self.assertEqual(frozenset({"cut", "moved_from"}), one_helper.LISTING_CHECKS)
 
+    def test_each_further_stated_limit_reads_as_its_docstring_says(self) -> None:
+        limits = {
+            # /files after a value that holds the rest, an endpoint built with % or str.join, and gh's and GraphQL's
+            # own readers of a pull request's files are not read.
+            "after a value": 'def f(pull):\n    return f"{pull}/files"\n',
+            "built with %": 'def f(n):\n    return "repos/o/r/pulls/%d/files" % n\n',
+            "built with str.join": 'def f(n):\n    return "/".join(["repos/o/r/pulls", str(n), "files"])\n',
+            "gh's json field": 'ARGUMENTS = ["pr", "view", "1", "--json", "files"]\n',
+            "graphql's connection": 'QUERY = "pullRequest(number: 1) { files(first: 100) { nodes { path } } }"\n',
+        }
+        for name, text in limits.items():
+            with self.subTest(name):
+                self.assertEqual([], self.problems({"tools/reader.py": text}))
+
+    def test_the_shepherd_s_suite_holds_the_test_its_sanction_names(self) -> None:
+        # The sanction's reason rests on the shepherd's own test of a short listing and a moved head.
+        suite, owner, test = one_helper.SHEPHERD_FILES_TEST.split("::")
+        tree = ast.parse((REPOSITORY_ROOT / suite).read_text(encoding="utf-8"))
+        defined = {
+            (node.name, member.name)
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            for member in node.body
+            if isinstance(member, ast.FunctionDef)
+        }
+        self.assertIn((owner, test), defined)
+        reason = one_helper.PULL_FILES_SANCTIONS[
+            ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py"
+        ]["every_file"]
+        self.assertIn(one_helper.SHEPHERD_FILES_TEST, reason)
+
     def test_the_helper_spells_the_endpoint_the_rule_refuses_elsewhere(self) -> None:
         # The rule's endpoint is the one the helper reads: read alone, the helper's module would be refused.
         tree = ast.parse((REPOSITORY_ROOT / PULL_FILES_HELPER).read_text(encoding="utf-8"))
@@ -1039,6 +1076,16 @@ REFUSED_SNAPSHOT_PATHS = {
     "os.path.join": (
         "import os\n\nfrom diff_paths import unsafe_snapshot_name as unsafe\n\n\n"
         "def f(root, relative):\n    return None if unsafe(relative) else os.path.join(root, relative)\n"
+    ),
+    "posixpath.join": (
+        "import posixpath\n\nfrom diff_paths import unsafe_snapshot_name\n\n\n"
+        "def f(root, relative):\n"
+        "    return None if unsafe_snapshot_name(relative) else posixpath.join(root, relative)\n"
+    ),
+    "ntpath.join": (
+        "import ntpath\n\nimport diff_paths\n\n\n"
+        "def f(root, relative):\n"
+        "    return None if diff_paths.unsafe_snapshot_name(relative) else ntpath.join(root, relative)\n"
     ),
 }
 SANCTIONED_SNAPSHOT_PATH = (
@@ -1122,6 +1169,21 @@ class SnapshotPathTests(unittest.TestCase):
         self.assertEqual("diff_paths.snapshot_path", one_helper.SNAPSHOT_READER)
         self.assertEqual("SNAPSHOT_PATH_READ_ALLOWED", one_helper.SNAPSHOT_PATH_ALLOWANCE)
 
+    def test_each_further_stated_limit_reads_as_its_docstring_says(self) -> None:
+        judged = "from pathlib import Path\n\nfrom diff_paths import unsafe_snapshot_name\n\n\ndef f(root, relative):\n"
+        limits = {
+            # A join by Path(), by /=, or in an f-string, and a judge given the name by keyword, are not read.
+            "Path()": "    return None if unsafe_snapshot_name(relative) else Path(root, relative)\n",
+            "/=": (
+                "    if unsafe_snapshot_name(relative):\n        return None\n    root /= relative\n    return root\n"
+            ),
+            "an f-string": '    return None if unsafe_snapshot_name(relative) else f"{root}/{relative}"\n',
+            "a keyword": "    return None if unsafe_snapshot_name(path=relative) else root / relative\n",
+        }
+        for name, body in limits.items():
+            with self.subTest(name):
+                self.assertEqual([], self.problems({"tools/reader.py": judged + body}))
+
     def test_a_module_that_does_not_parse_is_named(self) -> None:
         problems = self.problems({"tools/broken.py": "def f(:\n"})
         self.assertEqual(1, len(problems), problems)
@@ -1149,6 +1211,9 @@ REFUSED_REPOSITORIES = {
     "matched in a function": (
         'import re\n\n\ndef f(text):\n    return re.fullmatch("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", text)\n'
     ),
+    "capturing groups": 'PATTERN = r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"\n',
+    "non-capturing groups": 'PATTERN = r"(?:[A-Za-z0-9_.-]+)/(?:[A-Za-z0-9_.-]+?)"\n',
+    "named groups": 'PATTERN = r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)"\n',
 }
 SANCTIONED_REPOSITORY = (
     'REPOSITORY_PATTERN_ALLOWED = {"PATTERN": "a reason"}\n\nPATTERN = r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"\n'
@@ -1223,6 +1288,34 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual("skills/ejryan89-skill-core/scripts/github_remote.py", REPOSITORY_HELPER)
         self.assertEqual("[A-Za-z0-9_.-]", one_helper.REPOSITORY_CLASS)
         self.assertEqual("REPOSITORY_PATTERN_ALLOWED", one_helper.REPOSITORY_ALLOWANCE)
+
+    def test_a_class_re_cannot_compile_is_never_read_as_the_helper_s(self) -> None:
+        # A class re refuses, as `[z-a]`, measures as nothing, so it neither raises nor matches.
+        self.assertIsNone(one_helper.class_members("[z-a]"))
+        self.assertEqual([], self.problems({"tools/reader.py": 'PAIR = r"[z-a]+/[z-a]+|[A-Za-z0-9_.-]+/[z-a]+"\n'}))
+
+    def test_each_further_stated_limit_reads_as_its_docstring_says(self) -> None:
+        limits = {
+            # A possessive quantifier, a verbose pattern's spaces around the /, and a bytes literal are not read.
+            "possessive": 'PAIR = r"[A-Za-z0-9_.-]++/[A-Za-z0-9_.-]++"\n',
+            "verbose": 'import re\n\nPAIR = re.compile(r"[A-Za-z0-9_.-]+ / [A-Za-z0-9_.-]+", re.VERBOSE)\n',
+            "bytes": 'PAIR = rb"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"\n',
+            # The flags a pattern is compiled with are not read: each class is measured as written, with none.
+            "ASCII": 'import re\n\nPAIR = re.compile(r"[\\w.-]+/[\\w.-]+", re.ASCII)\n',
+            "IGNORECASE": 'import re\n\nPAIR = re.compile(r"[a-z0-9_.-]+/[a-z0-9_.-]+", re.IGNORECASE)\n',
+        }
+        for name, text in limits.items():
+            with self.subTest(name):
+                self.assertEqual([], self.problems({"tools/reader.py": text}))
+
+    def test_a_script_a_workflow_and_a_markdown_fence_are_not_read(self) -> None:
+        pair = "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+        files = {
+            "skills/x/scripts/reader.sh": f"grep -E '{pair}' \"$1\"\n",
+            ".github/workflows/reader.yml": f"on: push\njobs:\n  r:\n    steps:\n      - run: grep -E '{pair}'\n",
+            "docs/reader.md": f'```python\nPAIR = r"{pair}"\n```\n',
+        }
+        self.assertEqual([], self.problems(files))
 
     def test_the_helper_s_own_pattern_is_the_form_the_rule_refuses_elsewhere(self) -> None:
         self.assertTrue(one_helper.spells_owner_and_name(github_remote.OWNER_AND_NAME))

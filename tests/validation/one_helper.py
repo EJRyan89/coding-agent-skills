@@ -96,13 +96,18 @@ from the one the caller reads the change at (`moved_from`). In every non-test mo
 fails:
 - a string literal, or an f-string read with each formatted value as a value, that spells `pulls/<number>/files` with
   the number a literal or a value, ending at a word end, so `pulls/{n}/filesystem` is not the endpoint;
-- a call of a function or a method named list_pull_files whose result is not bound to one name, as by `listing = ...`,
-  or whose scope does not read every one of the checks as an attribute of that name.
-PULL_FILES_SANCTIONS names a scope that reads the endpoint itself, by its module and its scope, with the reason, as
-the shepherd's every_file, which pages it through ejryan89-skill-core's gh client and checks both the count and the
-head; an entry that sanctions nothing, or one with no reason, fails. Its stated limits, each one a fixture in
+- a call of a function or a method named list_pull_files whose result is not bound to one name, as by `listing = ...`
+  or an assignment expression, or whose scope does not read every one of the checks as an attribute of that name or of
+  the assignment expression that binds it, as `(listing := github.list_pull_files(...)).cut`.
+PULL_FILES_SANCTIONS names a scope that reads the endpoint itself, by its module and its scope, with the reason; an
+entry that sanctions nothing, or one with no reason, fails. It names the shepherd's every_file, which pages the
+endpoint through ejryan89-skill-core's gh client: this policy holds only that the scope still reads the endpoint, and
+the shepherd's own suite, in the test SHEPHERD_FILES_TEST names, which the fixture suite holds is there, holds that it
+refuses a listing short of the count and one read while the head moved. Its stated limits, each one a fixture in
 tests/validation/test_one_helper.py shows:
-- An endpoint joined with `+` or built by `format()` is not read.
+- An endpoint joined with `+`, built by `format()`, `%`, or `str.join`, or spelled as `/files` after a value that holds
+  the rest, as `f"{pull}/files"`, is not read.
+- gh's own reader of a pull request's files, `--json files`, and GraphQL's `files` connection are not read.
 - A check anywhere in the scope counts, before the read or in a branch that never runs, and a check made in another
   function the listing is handed to does not.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
@@ -118,6 +123,7 @@ module-level SNAPSHOT_PATH_READ_ALLOWED = {scope: reason}; an entry that sanctio
 fails. Its stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A name judged in one scope and joined in another, joined under another name, or judged as anything but a name, as
   `entry.path`, is not read.
+- A join by `Path(root, name)`, by `/=`, or in an f-string, and a judge given the name by keyword, are not read.
 - A join with no judge at all is not read: the rule finds a second judge of a snapshot path, never a reader that judges
   nothing.
 
@@ -128,12 +134,17 @@ its narrower rule, a login for the owner and a name never made only of dots, on 
 class from the helper. In every non-test module ruff formats but the helper, it fails a string literal that spells an
 owner/name pattern with its own class: a character class that takes exactly the characters the helper's takes, of
 printable ASCII and a letter outside it, then a quantifier, lazy or not, a `/`, escaped or not, and the same class
-again, its characters in any order. A module states why a scope spells one in a module-level
+again, its characters in any order, either class in a group or not: plain, non-capturing, or named, as
+`(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)`. A class `re` cannot compile, as `[z-a]`, measures as nothing,
+so it neither raises nor reads as the helper's. A module states why a scope spells one in a module-level
 REPOSITORY_PATTERN_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its
 stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
-- A class that takes another set of characters is another class, so `[\\w.-]`, which also takes letters outside
-  ASCII, is not read, and neither is a class whose body holds what `re` reads as a set operation, as `--`.
-- A pattern joined with `+`, or split by an f-string's formatted value, is not read.
+- Each class is measured as written, under no flags, and the flags a pattern is compiled with are not read: a class
+  that takes another set of characters is another class, so `[\\w.-]`, which takes letters outside ASCII unless
+  `re.ASCII` is set, and `[a-z0-9_.-]`, which takes no capital unless `re.IGNORECASE` is set, are not read under those
+  flags either. Neither is a class whose body holds what `re` reads as a set operation, as `--`.
+- A pattern joined with `+`, split by an f-string's formatted value, spelled with spaces around the `/` in a verbose
+  pattern, or with a possessive quantifier, as `++`, and a bytes literal are not read.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
 """
 
@@ -747,13 +758,20 @@ LISTING_CHECKS = public_members(REPOSITORY_ROOT / PULL_FILES_HELPER, PULL_FILES_
 FORMATTED = "\0"
 # GitHub's files endpoint of a pull request, its number a literal or a formatted value, ending at a word end.
 FILES_ENDPOINT = re.compile(rf"pulls/(?:{FORMATTED}|[0-9]+)/files(?![A-Za-z0-9_-])")
+# The shepherd suite's test that holds its own reader of the endpoint to a whole listing at an unmoved head, which
+# the fixture suite holds is there.
+SHEPHERD_FILES_TEST = (
+    ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ReaderTest::"
+    "test_files_that_cannot_be_read_whole_are_an_incomplete_answer"
+)
 # Each scope that reads a pull request's files itself, by its module's path and its scope, with the reason.
 PULL_FILES_SANCTIONS: dict[str, dict[str, str]] = {
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py": {
         "every_file": "the shepherd reads pull requests through ejryan89-skill-core's gh client, not the review "
-        "core's, and pages the endpoint only for a pull request gh's listing holds fewer files of than it changes; it "
-        "refuses a listing whose length is not the pull request's count of changed files, and one read while the "
-        "head moved from the one its listing recorded, as list_pull_files' callers do",
+        "core's, and pages the endpoint only for a pull request gh's listing holds fewer files of than it changes; "
+        "this policy holds only that the scope still reads the endpoint, and the shepherd's own suite, in "
+        f"{SHEPHERD_FILES_TEST}, holds that it refuses a listing short of the count of changed files and one read "
+        "while the head moved, as list_pull_files' callers do",
     },
 }
 READ_PULL_FILES = (
@@ -787,6 +805,14 @@ def _bound_name(call: ast.Call, parents: Mapping[int, ast.AST]) -> str | None:
     return targets[0].id if len(targets) == 1 and isinstance(targets[0], ast.Name) else None
 
 
+def _named(node: ast.expr) -> str | None:
+    """The name a check is read of: a name, or the one name an assignment expression binds, as
+    `(listing := github.list_pull_files(...)).cut` binds it."""
+    if isinstance(node, ast.NamedExpr):
+        node = node.target
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _reads_listing(call: ast.Call) -> bool:
     function = call.func
     name = (
@@ -812,8 +838,8 @@ def module_pull_files_problems(name: str, tree: ast.Module) -> list[tuple[int, s
             found.append((getattr(node, "lineno", 0), scope, refusal))
         if isinstance(node, ast.Call) and _reads_listing(node):
             calls.append((node, scope))
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr in LISTING_CHECKS:
-            checked.setdefault(scope, {}).setdefault(node.value.id, set()).add(node.attr)
+        if isinstance(node, ast.Attribute) and node.attr in LISTING_CHECKS and (named := _named(node.value)):
+            checked.setdefault(scope, {}).setdefault(named, set()).add(node.attr)
     for call, scope in calls:
         bound = _bound_name(call, parents)
         if bound is None:
@@ -949,7 +975,11 @@ CLASS_SAMPLE = "".join(chr(code) for code in range(0x20, 0x7F)) + "\u00e9"
 # A character class as a pattern writes one, its body escapes included, and what may stand between an owner's class
 # and a name's: a quantifier, lazy or not, then a `/`, escaped or not.
 CHARACTER_CLASS = re.compile(r"\[(?:\\.|[^\]\\])+\]")
-OWNER_NAME_JOIN = re.compile(r"(?:[+*?]|\{[0-9]*,?[0-9]*\})\??\\?/")
+OWNER_NAME_JOIN = re.compile(
+    # A quantifier, lazy or not, a group's close, a `/`, escaped or not, then a group's open: plain, non-capturing, or
+    # named.
+    r"(?:[+*?]|\{[0-9]*,?[0-9]*\})\??\)?\\?/(?:\((?:\?:|\?P<[A-Za-z_][A-Za-z0-9_]*>)?)?"
+)
 REPOSITORY_ALLOWANCE = "REPOSITORY_PATTERN_ALLOWED"
 READ_REPOSITORY = (
     f"build an owner/name pattern on {REPOSITORY_HELPER}'s REPOSITORY_CHARACTERS or OWNER_AND_NAME, or state why in "
