@@ -1772,6 +1772,8 @@ class GuidanceTests(Fixture):
             # Each capture, type parameter, and declaration that binds a name outside a Name node, and the type
             # statement, whose name is a Name node of its own.
             ("def load[RUNTIMES]():\n    pass", "3"),
+            ("def load[*RUNTIMES]():\n    pass", "3"),
+            ("def load[**RUNTIMES]():\n    pass", "3"),
             ("class Holder[RUNTIMES]:\n    pass", "3"),
             ("type Alias[RUNTIMES] = list[RUNTIMES]", "3"),
             ("type RUNTIMES = tuple[str, ...]", "3"),

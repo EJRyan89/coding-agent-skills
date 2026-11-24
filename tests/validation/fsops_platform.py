@@ -24,6 +24,7 @@ from python_checks import (
     SKILL_CORE_SCRIPTS,
     sanctioned_problems,
 )
+from python_names import TYPE_PARAMETERS
 from validation_support import (
     COMPUTED_NAME,
     MODULE_LOADERS,
@@ -613,7 +614,8 @@ def _writes_scanned_files(root: Path) -> list[Path]:
 
 def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
     """The string constants each name is assigned anywhere in the module, or None for a name that is ever bound to
-    anything else: another value, a parameter, a loop or with target, or an augmented assignment."""
+    anything else: another value, a parameter, a type parameter, a type statement, a loop or with target, or an
+    augmented assignment."""
     bindings: dict[str, set[str] | None] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
@@ -627,6 +629,10 @@ def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
                         bindings[name.id] = None
         elif isinstance(node, ast.arg):
             bindings[node.arg] = None
+        elif isinstance(node, TYPE_PARAMETERS):
+            bindings[node.name] = None
+        elif isinstance(node, ast.TypeAlias):
+            bindings[node.name.id] = None
         elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr, ast.withitem)):
             bound = node.optional_vars if isinstance(node, ast.withitem) else node.target
             for part in ast.walk(bound) if bound is not None else ():
@@ -1035,8 +1041,10 @@ def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool
 
 
 def _bound_names(node: ast.AST) -> list[str]:
-    """The names node binds: a name stored to by any assignment, loop, with, or assignment expression, a parameter, a
-    caught exception, an import, a function or class, or a pattern's capture."""
+    """The names node binds: a name stored to by any assignment, loop, with, assignment expression, or type statement,
+    a parameter, a type parameter, a caught exception, an import, a function or class, or a pattern's capture."""
+    if isinstance(node, TYPE_PARAMETERS):
+        return [node.name]
     if isinstance(node, ast.Name):
         return [node.id] if isinstance(node.ctx, ast.Store) else []
     if isinstance(node, ast.arg):
@@ -1054,9 +1062,10 @@ def _bound_names(node: ast.AST) -> list[str]:
 
 def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
     """The names a module binds only to a directory tempfile.mkdtemp created under the system temporary directory,
-    directly or through calls that keep the path, such as Path(...), and never by any other binding _bound_names
-    reads, such as a parameter, a loop or with target, a caught exception, an import, a definition, or a pattern's
-    capture. Any other call around it, such as a function of the module's own, may return another path."""
+    directly or through calls that keep the path, such as Path(...), and never by any other binding _bound_names reads,
+    such as a parameter, a type parameter, a loop or with target, a caught exception, an import, a definition, a type
+    statement, or a pattern's capture. Any other call around it, such as a function of the module's own, may return
+    another path."""
     assigned = {
         id(target): node.value
         for node in ast.walk(tree)

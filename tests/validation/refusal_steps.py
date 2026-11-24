@@ -23,6 +23,8 @@ Stated limits, none of which deployer code writes:
   `__init__`, or a decorator's wrapper, is not followed.
 - A call through a local name, a parameter, or a module assignment that shadows a builtin or a module-level function
   is read as that builtin or function.
+- A name a type parameter binds is read as the module's, as `STEPS` in `def read[*STEPS](): raise
+  DeployError(*STEPS)` is.
 
 An ERROR line the deployer prints itself, with the builtin print or a write to sys.stderr or sys.stdout, ends with its
 step too (`_Printed`). The printed text is read as print gives it, its values joined by a literal `sep` or a space,

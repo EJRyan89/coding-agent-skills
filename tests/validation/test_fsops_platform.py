@@ -236,6 +236,57 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_a_type_parameter_or_a_type_statement_binds_a_temporary_directory_name_to_something_else(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+                "}\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "work = tempfile.mkdtemp()\n"
+            )
+            files = {
+                "deployer/kept.py": allowance + "shutil.rmtree(work)\n",
+                # Inside each generic definition `work` is its type parameter, never the directory mkdtemp made.
+                "deployer/function.py": allowance + "def run[work]():\n    shutil.rmtree(work)\n",  # 9
+                "deployer/variadic.py": allowance + "class Run[*work]:\n    shutil.rmtree(work)\n",  # 9
+                "deployer/specification.py": allowance + "def run[**work]():\n    shutil.rmtree(work)\n",  # 9
+                "deployer/alias.py": allowance + "type work = str\nshutil.rmtree(work)\n",  # 9
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows shutil.rmtree only under the system temporary directory, and this call may "
+                "write elsewhere"
+            )
+            self.assertEqual(
+                [f"deployer/{module}.py:9 {message}" for module in ("alias", "function", "specification", "variadic")],
+                filesystem_write_problems(root),
+            )
+        # A mode a type parameter or a type statement also binds is no string constant the policy reads.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": 'MODE = "r"\n\n\ndef read(p):\n    open(p, MODE)\n',
+                    "deployer/parameter.py": 'MODE = "r"\n\n\ndef read[MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/variadic.py": 'MODE = "r"\n\n\ndef read[*MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/specification.py": 'MODE = "r"\n\n\ndef read[**MODE](p):\n    open(p, MODE)\n',  # 5
+                    "deployer/alias.py": 'MODE = "r"\ntype MODE = str\n\n\ndef read(p):\n    open(p, MODE)\n',  # 6
+                },
+            )
+            route = "writes with open; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/alias.py:6 {route}",
+                    *(f"deployer/{module}.py:5 {route}" for module in ("parameter", "specification", "variadic")),
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_every_destination_of_an_allowed_write_must_be_under_the_system_temporary_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

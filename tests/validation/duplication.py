@@ -111,8 +111,9 @@ def duplication_omissions() -> dict[str, str]:
     return {"tests": reason, "deploy.py": reason, "conftest.py": reason}
 
 
-def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
-    """The definition's syntax tree without docstrings or line numbers, equal for two copies of one body."""
+def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias) -> str:
+    """The definition's syntax tree without docstrings or line numbers, equal for two copies of one body: a type
+    statement's with its name, its type parameters, and its value."""
     for child in ast.walk(node):
         if (
             isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
@@ -184,10 +185,11 @@ def _module_copies(name: str, tree: ast.Module, path: Path) -> Iterator[tuple[st
     source = functools.cache(lambda: python_source(path))
     for node in module_statements(tree.body):
         if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.TypeAlias))
             and (node.end_lineno or node.lineno) - node.lineno + 1 >= MINIMUM_DUPLICATED_LINES
         ):
-            yield _definition_key(node), (name, node.lineno, node.name)
+            defined = node.name.id if isinstance(node, ast.TypeAlias) else node.name
+            yield _definition_key(node), (name, node.lineno, defined)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             targets = [
                 target.id
@@ -719,6 +721,9 @@ def _bound_to_git(body: list[ast.stmt]) -> Iterator[str]:
         elif isinstance(statement, ast.AugAssign):
             # An augmented assignment binds the name again, to a value no literal shows.
             pairs = [(statement.target, None)]
+        elif isinstance(statement, ast.TypeAlias):
+            # So does a type statement, to a type alias.
+            pairs = [(statement.name, None)]
         else:
             continue
         for target, value in pairs:
@@ -1046,14 +1051,15 @@ def _exclusive(first: Branches, second: Branches) -> bool:
 
 
 def _rebound_names(name: str, tree: ast.Module) -> list[str]:
-    """Each module-level name an assignment or an annotated assignment binds after another already bound it, in a
-    statement at the top or in a module-level if, try, or with block, as module_statements reads them.
+    """Each module-level name an assignment, an annotated assignment, or a type statement binds after another already
+    bound it, in a statement at the top or in a module-level if, try, or with block, as module_statements reads them.
 
     The later binding silently replaces the first for every caller, as a second SENTENCE_END once replaced the
     documented one in audit-skill's inventory. Ruff's F811 reports a function or an import defined again, never an
-    assignment, so this reads assignments only; an annotation without a value binds nothing. Bindings in different
-    branches of one if, or in a try's body and one of its except handlers, are alternatives a run picks between, as a
-    platform's value or a fallback when an import fails, so neither replaces the other and they are not reported."""
+    assignment or a type statement, so this reads those only; an annotation without a value binds nothing. Bindings in
+    different branches of one if, or in a try's body and one of its except handlers, are alternatives a run picks
+    between, as a platform's value or a fallback when an import fails, so neither replaces the other and they are not
+    reported."""
     earlier: dict[str, list[tuple[int, Branches]]] = {}
     found: list[str] = []
     for statement, branches in _module_bindings(tree.body):
@@ -1061,6 +1067,8 @@ def _rebound_names(name: str, tree: ast.Module) -> list[str]:
             targets = statement.targets
         elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
             targets = [statement.target]
+        elif isinstance(statement, ast.TypeAlias):
+            targets = [statement.name]
         else:
             continue
         for target in targets:
@@ -1079,9 +1087,9 @@ def _rebound_names(name: str, tree: ast.Module) -> list[str]:
 
 
 def duplicated_definition_problems(root: Path) -> list[str]:
-    """Report a module-level function or class defined identically in two files, a module-level literal or compiled
-    pattern assigned identically in two files, a shared fact restated outside its owner, a module-level name one file
-    binds twice, and allowances no longer needed.
+    """Report a module-level function, class, or type statement defined identically in two files, a module-level
+    literal or compiled pattern assigned identically in two files, a shared fact restated outside its owner, a
+    module-level name one file binds twice, and allowances no longer needed.
 
     Copied helpers began identical and then drifted, and so did copied patterns; a copy caught while it is still
     identical is caught before it diverges. Two scripts of one skill count, because one can import the other. A name

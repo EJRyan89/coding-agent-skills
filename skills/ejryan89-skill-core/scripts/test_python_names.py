@@ -9,10 +9,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from python_names import ModuleImport, import_aliases, module_imports, qualified_name
+from python_names import ModuleImport, import_aliases, module_imports, qualified_name, type_parameter_names
 
 
 class PythonNameTests(unittest.TestCase):
+    def test_each_type_parameter_of_a_function_a_class_or_a_type_statement_is_named_and_nothing_else_has_one(
+        self,
+    ) -> None:
+        for source, names in (
+            ("def f[T, *Ts, **P](): pass", ["T", "Ts", "P"]),
+            ("async def f[T: int](): pass", ["T"]),
+            ("class C[K, V]: pass", ["K", "V"]),
+            ("type Pair[A] = tuple[A, A]", ["A"]),
+            ("type Plain = int", []),
+            ("def f(): pass", []),
+            ("x = 1", []),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(names, type_parameter_names(ast.parse(source).body[0]))
+
     def test_each_absolute_import_binds_its_names_and_a_relative_one_is_left_out(self) -> None:
         tree = ast.parse("import a.b as c\nimport os.path\nfrom sys import exit as leave, argv\nfrom . import local\n")
         self.assertEqual(

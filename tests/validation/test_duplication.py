@@ -233,6 +233,41 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
             ),
         )
 
+    def test_a_type_statement_binds_its_name_again_and_a_type_parameter_binds_no_module_name(self) -> None:
+        again = "again at module level after line {first}, which replaces the first value for every caller; "
+        again += "keep one binding"
+        self.assertEqual(
+            [
+                f"tools/after.py:2 binds LIMIT {again.format(first=1)}",
+                f"tools/before.py:2 binds Alias {again.format(first=1)}",
+                f"tools/twice.py:2 binds Alias {again.format(first=1)}",
+            ],
+            self.problems(
+                {
+                    "tools/after.py": "LIMIT = 1\ntype LIMIT = int\n",
+                    "tools/before.py": "type Alias = int\nAlias = 2\n",
+                    "tools/twice.py": "type Alias = int\ntype Alias = str\n",
+                    # A type parameter binds in its own annotation scope, never the module's name.
+                    "tools/parameters.py": (
+                        "T = 1\nP = 2\nTs = 3\n\n\ndef read[T, **P, *Ts](): pass\n\n\nclass Holder[T]: pass\n\n\n"
+                        "type Pair[T] = tuple[T, T]\n"
+                    ),
+                }
+            ),
+        )
+
+    def test_a_type_statement_copied_into_another_file_fails_like_a_definition(self) -> None:
+        alias = "type Shared[T] = (\n    dict[str, T]\n    | list[T]\n)\n"
+        self.assertEqual(
+            [f"Shared is defined identically in deployer/one.py:1 and tools/two.py:3{self.FIX}"],
+            self.problems({"deployer/one.py": alias, "tools/two.py": '"""Module."""\n\n' + alias}),
+        )
+        # A short alias is held to the same length as a definition, and one of another name is no copy.
+        short = "type Shared = dict[str, int]\n"
+        renamed = alias.replace("Shared", "Other")
+        self.assertEqual([], self.problems({"deployer/one.py": short, "tools/two.py": short}))
+        self.assertEqual([], self.problems({"deployer/one.py": alias, "tools/two.py": renamed}))
+
     def test_a_name_bound_once_at_module_level_passes_whatever_else_shares_it(self) -> None:
         self.assertEqual(
             [],
@@ -1029,6 +1064,14 @@ class SharedFactPolicy(unittest.TestCase):
         )
         # A name an augmented assignment binds again holds a value no literal shows, so it is not read as `.git`.
         self.assertEqual([], self.problems({canary: 'GIT = ".git"\nGIT += "x"\nfound = name == GIT\n'}))
+        # Nor is one a type statement binds again, to a type alias; the second binding is refused by itself.
+        self.assertEqual(
+            [
+                f"{canary}:2 binds GIT again at module level after line 1, which replaces the first value for every "
+                "caller; keep one binding"
+            ],
+            self.problems({canary: 'GIT = ".git"\ntype GIT = int\nfound = name == GIT\n'}),
+        )
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
