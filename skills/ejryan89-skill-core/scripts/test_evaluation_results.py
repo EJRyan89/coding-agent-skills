@@ -78,3 +78,12 @@ def test_a_table_not_as_written_is_refused_never_read_as_nothing_measured(text: 
 def test_a_cell_holding_an_escaped_pipe_is_one_cell_and_a_line_without_borders_is_no_row() -> None:
     assert evaluation_results.cells("| a \\| b | c |") == ["a \\| b", "c"]
     assert evaluation_results.cells("a | b") is None
+
+
+def test_a_refused_row_holding_a_quote_and_a_backslash_is_named_as_written_on_one_line() -> None:
+    row = '| a | "x" \\ y |'
+    with pytest.raises(TableError) as raised:
+        measured_scenarios(table(row), "a")
+    assert str(raised.value) == (
+        'line 5 of the results file is not a row of the table\'s 11 columns naming a skill: "| a | "x" \\ y |"'
+    )
