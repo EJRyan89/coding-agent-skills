@@ -5341,6 +5341,29 @@ def test_sample_read_of_a_results_file_that_is_not_utf8_fails_by_name_and_writes
     assert results.read_bytes() == held
 
 
+@pytest.mark.parametrize(
+    ("held", "reason"),
+    [
+        ("# Skill evaluations\n", "the results file needs one <!-- skill-evals-samples:begin --> line"),
+        (samples_text("| alpha | one |"), "line 6 of the results file is not a row of the table's 6 columns"),
+    ],
+    ids=["no markers", "a short row"],
+)
+def test_sample_read_of_a_samples_table_it_cannot_read_fails_by_name_and_writes_nothing(
+    held: str, reason: str, tmp_path: Path
+) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    results.write_bytes(held.encode("utf-8"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=skill_evals.Seams(results=results))
+    assert status == 1
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f'FAILED "{reason}'), lines
+    assert results.read_bytes() == held.encode("utf-8")
+
+
 # Each other option, and each given at its default value, which is still an option the reading would ignore.
 @pytest.mark.parametrize(
     "extra",

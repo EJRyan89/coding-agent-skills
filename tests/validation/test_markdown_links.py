@@ -666,6 +666,38 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 lessons_ledger_problems(root),
             )
 
+    @unittest.skipIf(sys.platform == "win32", "Windows reads a file whatever its POSIX mode bits say")
+    def test_a_results_file_that_cannot_be_read_is_named_with_the_reason(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Scenarios\n\n{self.ENTRY}"
+            "- **Guard:** `tests/fixtures/skill-evals/a/description`\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(
+                root,
+                {
+                    "docs/lessons.md": ledger,
+                    "docs/skill-evaluations.md": self.EVALUATIONS,
+                    "tests/fixtures/skill-evals/a/description/scenario.json": "{}\n",
+                },
+            )
+            results = root / "docs" / "skill-evaluations.md"
+            results.chmod(0)
+            try:
+                problems = lessons_ledger_problems(root)
+            finally:
+                results.chmod(0o644)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(
+            problems[0].startswith(
+                "docs/lessons.md:10 the pattern 'Scenarios' cites tests/fixtures/skill-evals/a/description, but "
+                "docs/skill-evaluations.md cannot be read: [Errno 13]"
+            ),
+            problems,
+        )
+
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
         self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
         # A folder in the catalogue's place is named so, never as a catalogue that does not exist.
