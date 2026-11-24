@@ -37,10 +37,11 @@ The brief, a Markdown file written to a new private folder under the temporary d
   one of the files or a folder holding it;
 - the rules every fix session meets, the text of `references/brief.md` beside this script's folder.
 
-Each list is bounded, and a list cut short says how many it left out and either names them, up to MAX_CUT_NAMES, or
-gives the command that lists them all: at most MAX_PATHS files the issue names and MAX_PATHS names several files have,
-MAX_SYMBOLS symbols, MAX_CALLER_FILES files for each symbol with MAX_CALLER_LINES line numbers each, MAX_TWINS twins
-for each file and files for each name, and MAX_EVIDENCE of what meets each pattern.
+Each list is bounded, and a list cut short says how many it left out and either names them, up to MAX_CUT_NAMES, past
+which it gives the command that shows the rest, the issue itself, or gives the command that lists them all; a cut
+symbol is named by the command that lists its holders: at most MAX_PATHS files the issue names and MAX_PATHS names
+several files have, MAX_SYMBOLS symbols, MAX_CALLER_FILES files for each symbol with MAX_CALLER_LINES line numbers
+each, MAX_TWINS twins for each file and files for each name, and MAX_EVIDENCE of what meets each pattern.
 
 The issue is text anyone can write, so the brief holds what it takes from it as data: the title and the address in a
 section that says so, each file by its tracked name and never the span that named it, and each symbol as the
@@ -49,7 +50,8 @@ identifiers it is made of. Every name is written as a code span its own backtick
 Limits: a file or a symbol the issue names in its prose, outside a code span, is not read; a folder the issue names is
 no file; a symbol's callers are the files that hold its name as a word, which counts a definition, a comment, and a
 different name spelled the same, and misses a call through another name; a tracked file that is refused inside the
-repository, not there, or not UTF-8 holds no caller.
+repository, not there, or not UTF-8 holds no caller; a symbol is the issue's identifiers as written, so one spelled as
+words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing.
 
 Every line is one fact, its fields tab-separated:
 
@@ -427,8 +429,8 @@ def _callers_section(found: dict[Symbol, dict[str, list[int]]], cut: Sequence[Sy
     if cut:
         lines += [
             "",
-            f"The issue names {len(cut)} more symbols past the first {MAX_SYMBOLS}: {names_line(cut, issue)}; search "
-            f"for each with {code(search_command(Symbol('<name>')))}.",
+            f"The issue names {len(cut)} more symbols past the first {MAX_SYMBOLS}, each by the command that lists "
+            f"its holders: {names_line([search_command(symbol) for symbol in cut], issue)}.",
         ]
     return lines
 
@@ -519,9 +521,11 @@ def write_brief(
     root: Path, github: GitHubClient, git: GitClient, number: int, given: Sequence[str]
 ) -> tuple[Issue, Path]:
     """The issue read and the brief written for it; BriefError, GitError, CatalogueError, lessons_patterns' Refused,
-    or an OSError when one of them cannot be."""
-    issue = read_issue(github, number)
+    or an OSError when one of them cannot be. The repository's files and the rules are read before GitHub is asked,
+    so a checkout git cannot read, or rules that cannot be read, fail without a call to GitHub."""
     tracked = git.names(["ls-files"], directory=root)
+    rules = RULES.read_text(encoding="utf-8")
+    issue = read_issue(github, number)
     tracked_set = frozenset(tracked)
     names = by_name(tracked)
     found = named(issue, tracked)
@@ -537,7 +541,6 @@ def write_brief(
         _lessons_section(facts, files),
         _contract_section(contract_entries(root, files)),
     ]
-    rules = RULES.read_text(encoding="utf-8")
     folder = Path(tempfile.mkdtemp(prefix="implement-change-brief-", dir=private_folder.temporary_directory()))
     brief = folder / f"brief-{issue.number}.md"
     brief.write_text(brief_text(issue, sections, rules), encoding="utf-8", newline="\n")

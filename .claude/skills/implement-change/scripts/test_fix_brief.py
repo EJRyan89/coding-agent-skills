@@ -263,8 +263,8 @@ def test_each_list_cut_short_says_how_much_it_left_out_and_names_it_or_its_comma
     assert "- `many/f00.py`: 1, 2, 3, 4, 5, and 2 more\n" in callers
     assert "- and 2 more files\n" in callers
     assert callers.endswith(
-        "The issue names 1 more symbols past the first 12: `name_11`; search for each with "
-        "`git grep -n -w -F -e '<name>'`."
+        "The issue names 1 more symbols past the first 12, each by the command that lists its holders: "
+        "`git grep -n -w -F -e 'name_11'`."
     )
     assert result.section("Twins") == (
         f"- `skills/a/SKILL.md`: and 6 other tracked files of its name, too common to list, which {LISTED}"
@@ -305,8 +305,7 @@ def test_a_cut_list_past_its_names_bound_sends_the_reader_to_the_issue(
     count = fix_brief.MAX_SYMBOLS + fix_brief.MAX_CUT_NAMES + 1
     result = run(root, tmp_path, monkeypatch, capsys, issue(" ".join(f"`n_{i}`" for i in range(count))), "7")
     assert result.section("Callers").endswith(
-        f", `n_{count - 2}`, and 1 more, which `gh issue view 7 --comments` shows; search for each with "
-        "`git grep -n -w -F -e '<name>'`."
+        f", `git grep -n -w -F -e 'n_{count - 2}'`, and 1 more, which `gh issue view 7 --comments` shows."
     )
 
 
@@ -501,6 +500,7 @@ def test_a_repository_git_cannot_list_fails_naming_git(
     assert result.code == 1
     assert result.lines[0].startswith("FAILED\tgit cannot list the repository's files: ")
     assert "fatal: not a git repository" in result.lines[0]
+    assert result.calls == []
 
 
 def test_a_path_outside_the_repository_is_refused_before_anything_is_written(
@@ -555,3 +555,59 @@ def test_each_script_and_document_the_rules_name_is_in_this_repository() -> None
     named |= {"CLAUDE.md"}
     assert named >= {"tests/run_validation.py", "docs/implementing-changes.md", "docs/lessons.md"}
     assert [name for name in sorted(named) if not (REPOSITORY / name).is_file()] == []
+
+
+def test_a_cut_qualified_symbol_is_named_by_the_command_that_keeps_its_qualifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    symbols = " ".join(f"`name_{index}`" for index in range(fix_brief.MAX_SYMBOLS))
+    result = run(root, tmp_path, monkeypatch, capsys, issue(f"{symbols} `reader.read_config`"), "7")
+    assert result.section("Callers").endswith(
+        "The issue names 1 more symbols past the first 12, each by the command that lists its holders: "
+        "`git grep -n -w -F -e 'read_config' -- $(git grep -l -w -F -e 'reader') ':(glob)**/reader.py'`."
+    )
+
+
+def test_a_contract_entry_naming_a_file_exactly_lists_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path, {"docs/implementing-changes.md": "## Contract files\n\n- `tools/reader.py`;\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`tools/reader.py`"), "7")
+    assert result.section("Contract") == (
+        "- `docs/implementing-changes.md:3` names `tools/reader.py`, which holds `tools/reader.py`"
+    )
+
+
+def test_a_name_no_command_can_quote_sends_the_reader_to_git_ls_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {f"x{index}/it's.md": "x\n" for index in range(fix_brief.MAX_TWINS + 1)}
+    root = repository(tmp_path, files)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`it's.md`"), "7")
+    assert result.section("Files").endswith(
+        "`x4/it's.md`, and 1 more, which `git ls-files` lists them all; give the one meant with `--path`"
+    )
+
+
+def test_twins_past_their_bound_name_the_command_that_lists_them_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {f"{side}{index}/x/tool.py": "VALUE = 1\n" for index in range(fix_brief.MAX_TWINS + 1) for side in "a"}
+    root = repository(tmp_path, files | {"skills/x/tool.py": "VALUE = 1\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`skills/x/tool.py`"), "7")
+    assert result.section("Twins") == (
+        "- `skills/x/tool.py`: `a0/x/tool.py`, `a1/x/tool.py`, `a2/x/tool.py`, `a3/x/tool.py`, `a4/x/tool.py`, "
+        "and 1 more, which `git ls-files -- ':(glob)**/tool.py'` lists them all"
+    )
+
+
+def test_a_given_path_that_is_tracked_is_not_new_and_one_the_issue_names_is_listed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    arguments = ("7", "--path", "tools/reader.py", "--path", "deploy/run.sh")
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`tools/reader.py`"), *arguments)
+    assert result.section("Files") == (
+        "- `tools/reader.py`: named by the issue\n- `deploy/run.sh`: given with `--path`"
+    )

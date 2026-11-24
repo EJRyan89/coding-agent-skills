@@ -15,6 +15,7 @@ AUDIT = ".claude/skills/audit-repository/scripts/audit_repository.py"
 CHANGE_SKILL = ".claude/skills/change-skill/scripts/change_skill.py"
 PULL_REQUEST = ".claude/skills/implement-change/scripts/pull_request.py"
 LESSONS_PATTERNS = ".claude/skills/implement-change/scripts/lessons_patterns.py"
+FIX_BRIEF = ".claude/skills/implement-change/scripts/fix_brief.py"
 DOC_PASSAGES = ".claude/skills/review-repository/scripts/doc_passages.py"
 UNTESTED = ".claude/skills/review-repository/scripts/untested_functions.py"
 SHEPHERD = ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py"
@@ -286,6 +287,18 @@ DRIVERS: list[Driver] = [
             f"{MISSING} {{checkout}}/tools/skill_shims.py": "a file the change will add is not there yet, which the "
             "lister lists as NEW and meets through its module alone",
         },
+        from_checkout=True,
+    ),
+    # The brief reads the checkout's files and its rules before it asks GitHub for the issue, so git's faults and the
+    # rules' stop it before gh starts, and gh's stops it at the issue; a file the issue names is read only after that.
+    Driver(
+        FIX_BRIEF,
+        "",
+        ("1",),
+        inputs=("{checkout}/.claude/skills/implement-change/references/brief.md",),
+        git=True,
+        gh=True,
+        not_run={STAT_RAISES: OPENED_ONLY},
         from_checkout=True,
     ),
     condition(DOC_PASSAGES, (DIFF,), stat_raises=OPENED_ONLY),
