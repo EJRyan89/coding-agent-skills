@@ -55,6 +55,11 @@ from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tre
 
 from deployer import platform_support
 
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
+
 
 class SkillTreeFixtures(unittest.TestCase):
     def test_an_executable_outside_a_skills_scripts_fails_in_every_kind_of_skill(self) -> None:
@@ -1788,6 +1793,21 @@ def test_the_script_language_statement_is_one_line_as_commonmark_breaks_it(separ
         },
     )
     assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == []
+
+
+def test_own_needs_reads_no_sidecar_macos_writes_beside_a_script_as_a_script(tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": json.dumps({"tools": []}),
+            "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Alpha.\n---\n\n# alpha\n",
+            "skills/alpha/scripts/run.py": "print('alpha')\n",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    # The header, then the binary entries a real sidecar holds, which are not UTF-8.
+    (tmp_path / "skills" / "alpha" / "scripts" / "._run.py").write_bytes(SIDECAR_BYTES + b"\x00\x00\xb0\xff\xfe")
+    assert own_needs(tmp_path, "alpha") == set()
 
 
 def test_own_needs_reads_a_null_tools_list_as_none_and_leaves_one_of_another_kind_to_the_command_policy(

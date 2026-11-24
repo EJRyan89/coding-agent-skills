@@ -115,6 +115,10 @@ REVIEW_REPOSITORY_SCENARIOS = tuple(REVIEW_REPOSITORY_ROLES)
 # The Python files the write-before-refusal scenario holds in both trees, each by its path once restored.
 WRITE_BEFORE_REFUSAL_HELD = ("deployer/fsops.py", "deployer/install.py", "tests/deployer/test_install.py")
 REVIEWER_FOLDER = ".claude/skills/review-repository"
+# The AppleDouble header macOS opens each `._<name>` sidecar with on a FAT, exFAT, or SMB volume, written out
+# independently of apple_double.HEADER, and a sidecar's first bytes, planted so a test holds on every platform.
+APPLE_DOUBLE_HEADER = b"\x00\x05\x16\x07\x00\x02\x00\x00"
+SIDECAR_BYTES = APPLE_DOUBLE_HEADER + b"Mac OS X        \x00\x02"
 MANIFEST_PATH = ".claude/skills/review-repository/references/specialists.json"
 # Files a run of a review-repository scenario places from the checkout: the reviewer's own, its condition scripts,
 # and the resources and guidelines its manifest declares.
@@ -2494,6 +2498,44 @@ class ReviewerScenarioTests(unittest.TestCase):
         self.assertEqual(
             [f"{folder}/references/notes.md", f"{folder}/scripts/conditions.py"],
             skill_evals_scenarios._reviewer_folder(checkout, folder),
+        )
+
+    def test_the_sidecars_macos_writes_are_neither_placed_nor_held_and_any_other_dot_underscore_file_is(self) -> None:
+        checkout = self.root / "checkout"
+        folder = PurePosixPath(".claude/skills/demo-reviewer")
+        planted = {
+            "references/notes.md": b"",
+            "references/._notes.md": SIDECAR_BYTES,
+            # No `alone.md` beside it.
+            "references/._alone.md": SIDECAR_BYTES,
+            "scripts/conditions.py": b"",
+            # Without the header.
+            "scripts/._conditions.py": b"plain text, long enough to hold a header\n",
+        }
+        for relative, content in planted.items():
+            path = checkout / folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.assertEqual(
+            [
+                f"{folder}/references/._alone.md",
+                f"{folder}/references/notes.md",
+                f"{folder}/scripts/._conditions.py",
+                f"{folder}/scripts/conditions.py",
+            ],
+            skill_evals_scenarios._reviewer_folder(checkout, folder),
+        )
+        directory = self.root / "fixture"
+        for relative, content in {
+            "base/tools/a.py.fixture": b"",
+            "base/tools/._a.py.fixture": SIDECAR_BYTES,
+            "head/tools/._b.py.fixture": SIDECAR_BYTES,
+        }.items():
+            (directory / relative).parent.mkdir(parents=True, exist_ok=True)
+            (directory / relative).write_bytes(content)
+        self.assertEqual(
+            [("base", "tools/a.py.fixture"), ("head", "tools/._b.py.fixture")],
+            skill_evals_scenarios.held_files(directory),
         )
 
     def test_a_reviewer_folder_or_file_it_cannot_list_or_examine_is_refused_never_left_unplaced(self) -> None:

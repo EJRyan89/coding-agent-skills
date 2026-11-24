@@ -193,7 +193,9 @@ def own_needs(root: Path, name: str) -> set[str]:
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
     under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash,
-    PowerShell, or Python scripts runs a git subcommand that may reach a remote, needs network access.
+    PowerShell, or Python scripts runs a git subcommand that may reach a remote, needs network access. The scripts are
+    listed with `file_presence.listed`, so an AppleDouble sidecar macOS writes beside one on a FAT, exFAT, or SMB volume
+    is never read as a script.
     """
     import runtime_support
 
@@ -213,7 +215,7 @@ def own_needs(root: Path, name: str) -> set[str]:
     scripts = skills[name] / "scripts"
     git_subcommands = frozenset(
         subcommand
-        for script in (sorted(scripts.iterdir()) if file_presence.is_directory(scripts) else [])
+        for script in (file_presence.listed(scripts) if file_presence.is_directory(scripts) else [])
         if not is_test_script(script)
         for subcommand in script_git_subcommands(script)
     )
