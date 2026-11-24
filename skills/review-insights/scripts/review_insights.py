@@ -1136,7 +1136,8 @@ def synthesize(
     every check. A `guarded` result, one a Claude Code subagent wrote, is recorded only once the reviewer guard claimed
     its role; the self-check, `check`, is the agent's own and leaves that to recording."""
     services = services or Services()
-    with _existing_report_lock(report_path, services):
+    # The self-check writes nothing, so a report it could not replace is left for recording to refuse.
+    with _existing_report_lock(report_path, services, writes=not check):
         report = load_report(report_path)
         synthesis = report["synthesis"]
         if synthesis is None or synthesis["status"] == "skipped":
@@ -1178,14 +1179,18 @@ def synthesize(
         return added
 
 
-def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[object]:
+def _existing_report_lock(
+    report_path: Path, services: Services, *, writes: bool = True
+) -> AbstractContextManager[object]:
     """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
     instead of creating directories there. A report a stat cannot examine, or one that is not a file, is named so,
-    never as missing, and a report or Markdown refuse_unchangeable refuses is refused before the lock is made."""
+    never as missing, and, for a command that `writes` the report, a report or Markdown refuse_unchangeable refuses is
+    refused before the lock is made."""
     if reason := file_presence.refusal_reason(report_path):
         raise InsightError(f"Cannot read insights report {report_path}: it {reason}")
     # A report or Markdown it could not replace is refused before the lock makes its folder beside the report.
-    refuse_unchangeable(report_path)
+    if writes:
+        refuse_unchangeable(report_path)
     return services.report_lock(report_path)
 
 

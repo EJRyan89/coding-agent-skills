@@ -2025,6 +2025,53 @@ class RecordingTests(InsightFixture):
         self.assertFalse(locks.exists())
         self.assertEqual(before, self.written(json_path, json_path.with_suffix(".md"), self.flags))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_report_whose_folder_takes_no_new_file_is_refused_and_nothing_changes(self) -> None:
+        # Linux and macOS: the folder's permission refuses the copy each replace writes beside the report.
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.flag("guideline")
+        json_path, _ = self.report()
+        folder = json_path.parent
+
+        def period() -> dict[str, bytes]:
+            return {str(path): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+
+        before = period()
+        folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        finally:
+            folder.chmod(stat.S_IRWXU)
+        self.assertFailed(result, f"Cannot write {json_path}: [Errno 13] its folder takes no new file")
+        self.assertEqual(before, period())
+
+    def test_a_store_made_read_only_after_the_check_before_the_lock_is_refused_under_it(self) -> None:
+        # The check before the lock passed; the store turned read-only once the lock was taken is caught by the check
+        # under it, before the decision is recorded.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        markdown = json_path.with_suffix(".md")
+        before = self.written(json_path, markdown)
+        taken = self.services.report_lock
+
+        @contextlib.contextmanager
+        def locked_then_read_only(path: Path) -> Iterator[None]:
+            with taken(path):
+                self.flags.chmod(stat.S_IREAD)
+                yield
+
+        self.services.report_lock = locked_then_read_only
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+            self.services.report_lock = taken
+        self.assertEqual(before, self.written(json_path, markdown))
+
     def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         flag = self.flag("guideline")

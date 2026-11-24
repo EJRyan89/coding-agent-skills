@@ -5,6 +5,7 @@ import json
 import re
 import shlex
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -520,6 +521,25 @@ class InputTests(SynthesisFixture):
 
 
 class RecordTests(SynthesisFixture):
+    def test_the_self_check_reports_on_a_result_whose_report_is_read_only_and_recording_refuses_it(self) -> None:
+        # The check writes nothing, so a report it could not replace is recording's to refuse, before the lock.
+        json_path, _ = self.run_report()
+        result_path = self.write_result(json_path, self.valid_result(json_path))
+        markdown = json_path.with_suffix(".md")
+        before = (json_path.read_bytes(), markdown.read_bytes())
+        for path in (json_path, markdown):
+            path.chmod(stat.S_IREAD)
+        try:
+            checked = self.synthesize(json_path, result_path, "--check")
+            recorded = self.synthesize(json_path, result_path)
+        finally:
+            for path in (json_path, markdown):
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual((0, f"VALID {result_path}\n", ""), checked)
+        self.assertEqual(1, recorded[0], recorded)
+        self.assertIn(f"{json_path} is read-only; make it writable for the report to be written", recorded[1])
+        self.assertEqual(before, (json_path.read_bytes(), markdown.read_bytes()))
+
     def test_a_valid_result_checks_then_records_and_its_decision_resolves_an_unlinked_flag(self) -> None:
         json_path, _ = self.run_report()
         result_path = self.write_result(json_path, self.valid_result(json_path))
