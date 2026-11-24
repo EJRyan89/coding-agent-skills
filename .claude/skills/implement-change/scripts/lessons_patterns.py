@@ -11,18 +11,25 @@ three ways:
 - the file is a module its **Use** names, `<module>:<name>`, as it is imported from the repository root or from a
   skill's `scripts` (lessons_catalogue's `mechanism_bases`);
 - the file's Python uses such a mechanism: it imports the module, by an `import`, an absolute `from`, or a relative
-  `from` resolved against the file's own package, and uses the name the mechanism binds, read through
+  `from` resolved against the file's own package, and uses the name the mechanism binds, or, for
+  `<module>:<class>.<member>`, reads the attribute `member`, as a call on an instance does, read through
   ejryan89-skill-core's python_reader;
 - one of its **Search for** forms occurs in the file. A form that is an `rg` command, read by Bash's grammar through
   ejryan89-skill-core's bash_syntax, is searched as rg searches: its pattern line by line, or across lines with `-U`,
   inside the paths and `-g` globs it names, then through each `rg` after a `|`, which keeps the lines it matches, or,
-  with `-v`, those it does not. Any other form is searched as its text, each `<placeholder>` and `...` in it standing
-  for any text on the same line.
+  with `-v`, those it does not. Each `-e` is a pattern, a line matching any of them matching; a glob without a `/`
+  matches a file's name, one with a `/` its path, a leading `**/` any folder, and one negated with `!` leaves files
+  out. Any other form is searched as its text, each `<placeholder>` and `...` in it standing for any text on the same
+  line. A span that names a place in the repository, a tracked file by its path or its name or a folder holding tracked
+  files, such as `deployer/` or `update.sh`, is no form: it says where the pattern's forms matter.
 
-A mechanism's use or a form that more than three in a hundred of the repository's tracked files of the file's kind
-hold, by its extension, is too common to tell the change anything, such as `console:run_main` or the form `.get(`, and
-does not meet the pattern; a file that is the module itself always does. The tracked files are git's `ls-files`, run
-through ejryan89-skill-core's git_client only when a file meets a pattern by a use or a form; one that is not there,
+A use or a form is common, and too common to tell the change anything, when more than ten of the repository's other
+tracked files hold it and more than four in a hundred of them do: among the files of the target's kind, by its
+extension, for a use or a form, or among the files of every kind, for a form, so a word is common in a kind with too
+few files to say, such as the shell scripts. The files the change touches never count toward their own. A common use
+or form meets no pattern, except a form in a file inside a place its pattern's Search for names; a file that is the
+module itself always meets it. The tracked files are git's `ls-files`, run through ejryan89-skill-core's git_client
+when a file meets a pattern by a use or a form, or a pattern's Search for may name a place; one that is not there,
 not UTF-8, or Python that does not parse holds nothing. A file not there yet is met through its own module alone. The
 lister writes nothing, and reads the catalogue, the tracked files, and the paths given, each judged inside the
 repository by path_containment's `refusal` before it is opened.
@@ -89,9 +96,12 @@ from text_lines import text_lines
 REPOSITORY = Path(__file__).resolve().parents[4]
 # A placeholder in a form, `<name>` or `...`, which stands for any text on the line.
 PLACEHOLDER = re.compile(r"<[^<>\s]+>|\.\.\.")
-# The share of the repository's tracked files of a kind past which a mechanism's use or a form is too common to tell a
-# change anything: more than three files in a hundred.
-COMMON_SHARE = 0.03
+# The share of the repository's other tracked files of a kind past which a mechanism's use or a form is too common to
+# tell a change anything: more than four files in a hundred.
+COMMON_SHARE = 0.04
+# The number of other tracked files of a kind a use or a form must pass to be common too, so a kind with few files, such
+# as the shell scripts, never cuts a form only a handful hold.
+COMMON_FLOOR = 10
 # The rg options whose value is the next word when the option ends its word.
 RG_VALUED = frozenset("gAeBC")
 # The rg short options read: line numbers and quiet, which change no match; across lines; inverted.
@@ -151,19 +161,19 @@ def _rg_search(words: list[str]) -> RgSearch | None:
             _short_options(word, rest, options)
         else:
             positional.append(word)
-    if options.get("e"):
-        positional.insert(0, options["e"][0])
-    if not positional:
+    # Each -e names a pattern, and a line matching any of them matches; without one, the first word is the pattern.
+    patterns, scopes = (options["e"], positional) if options.get("e") else (positional[:1], positional[1:])
+    if not patterns:
         return None
     try:
-        pattern = re.compile(positional[0], re.MULTILINE)
+        pattern = re.compile("|".join(f"(?:{each})" for each in patterns), re.MULTILINE)
     except re.error as error:
         raise Unsearchable(f"Python's re cannot compile the pattern: {error}") from None
     return RgSearch(
         pattern,
         "U" in options,
         "v" in options,
-        tuple(scope.rstrip("/") for scope in positional[1:]),
+        tuple(scope.rstrip("/") for scope in scopes),
         tuple(options.get("g", [])),
     )
 
@@ -189,14 +199,24 @@ def rg_searches(form: str) -> list[RgSearch] | None:
     return searches
 
 
+def _glob_matches(glob: str, name: str) -> bool:
+    """Whether an rg glob matches the file `name`: one with no `/` matches its base name, one with a `/` the whole
+    path, and a leading `**/` any folder, the top included."""
+    if "/" not in glob:
+        return fnmatch.fnmatchcase(PurePosixPath(name).name, glob)
+    return fnmatch.fnmatchcase(name, glob) or (glob.startswith("**/") and _glob_matches(glob[3:], name))
+
+
 def _held(search: RgSearch, name: str) -> bool:
-    """Whether the paths and globs of an `rg` hold the file `name`."""
+    """Whether the paths and globs of an `rg` hold the file `name`: inside one of its paths, matching one of its
+    globs when it has any that are not negated, and none of those negated with `!`."""
     if search.scopes and not any(scope in {"", "."} or posix_within(name, scope) for scope in search.scopes):
         return False
-    base = PurePosixPath(name).name
-    return not search.globs or any(
-        fnmatch.fnmatchcase(base if "/" not in glob else name, glob) for glob in search.globs
-    )
+    kept = [glob for glob in search.globs if not glob.startswith("!")]
+    left_out = [glob[1:] for glob in search.globs if glob.startswith("!")]
+    if kept and not any(_glob_matches(glob, name) for glob in kept):
+        return False
+    return not any(_glob_matches(glob, name) for glob in left_out)
 
 
 def _line_index(text: str) -> Callable[[int], int]:
@@ -242,12 +262,13 @@ class Form:
         lines = text_lines(text)
         if first.multiline:
             index = _line_index(text)
-            found: Sequence[int] = sorted({index(match.start()) for match in first.pattern.finditer(text)})
+            # A match that starts past the last line break, as an empty match at the text's end does, is on no line.
+            starts = {index(match.start()) for match in first.pattern.finditer(text)}
+            found: Sequence[int] = sorted(number for number in starts if number < len(lines))
         else:
             found = [number for number, line in enumerate(lines) if bool(first.pattern.search(line)) != first.invert]
         for number in found:
-            line = lines[number] if number < len(lines) else ""
-            if all(bool(search.pattern.search(line)) != search.invert for search in filters):
+            if all(bool(search.pattern.search(lines[number])) != search.invert for search in filters):
                 return number + 1
         return None
 
@@ -297,17 +318,18 @@ def _import_from(node: ast.ImportFrom, packages: set[str]) -> set[str]:
     return modules
 
 
-def python_uses(tree: ast.Module, packages: set[str]) -> tuple[set[str], set[str]]:
+def python_uses(tree: ast.Module, packages: set[str]) -> tuple[set[str], set[str], set[str]]:
     """Every module a Python module imports, each `import`'s module with the packages above it and each `from`'s as
-    `_import_from` reads it, and every name its code uses: each name it reads or binds, each attribute it reads, and
-    each name a `from` imports, so a mechanism `<module>:<name>` is used where `<name>` is. One walk reads both."""
+    `_import_from` reads it; every name its code reads or binds and each name a `from` imports; and every attribute it
+    reads. One walk reads all three."""
     modules: set[str] = set()
     names: set[str] = set()
+    attributes: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             names.add(node.id)
         elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
+            attributes.add(node.attr)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 parts = alias.name.split(".")
@@ -315,7 +337,7 @@ def python_uses(tree: ast.Module, packages: set[str]) -> tuple[set[str], set[str
         elif isinstance(node, ast.ImportFrom):
             modules |= _import_from(node, packages)
             names |= {alias.name for alias in node.names}
-    return modules, names
+    return modules, names, attributes
 
 
 def packages_of(name: str, modules: set[str]) -> set[str]:
@@ -328,20 +350,26 @@ def packages_of(name: str, modules: set[str]) -> set[str]:
 
 @dataclass(frozen=True)
 class Python:
-    """What a Python file's code says about the mechanisms it uses: the modules it imports and the names it uses."""
+    """What a Python file's code says about the mechanisms it uses: the modules it imports, the names it uses, and the
+    attributes it reads."""
 
     imports: frozenset[str] = frozenset()
     names: frozenset[str] = frozenset()
+    attributes: frozenset[str] = frozenset()
 
     @classmethod
     def read(cls, name: str, text: str, own: set[str]) -> Python:
-        """The file's imports and names; PythonRefused when its text does not parse."""
-        modules, names = python_uses(python_reader.parse(text), packages_of(name, own))
-        return cls(frozenset(modules), frozenset(names))
+        """The file's imports, names, and attributes; PythonRefused when its text does not parse."""
+        modules, names, attributes = python_uses(python_reader.parse(text), packages_of(name, own))
+        return cls(frozenset(modules), frozenset(names), frozenset(attributes))
 
-    def uses(self, module: str, member: str) -> bool:
-        """Whether the code imports `module` and uses `member`, the name a mechanism `<module>:<member>` binds."""
-        return module in self.imports and member in self.names
+    def uses(self, module: str, name: str, member: str | None) -> bool:
+        """Whether the code imports `module` and uses a mechanism of it: for `<module>:<class>.<member>`, reads the
+        attribute `member`, as a call on an instance does; for `<module>:<name>`, uses `name` as a name or as the
+        module's attribute."""
+        if module not in self.imports:
+            return False
+        return member in self.attributes if member else name in self.names or name in self.attributes
 
 
 @dataclass(frozen=True)
@@ -362,15 +390,38 @@ class Corpus:
     root: Path
     bases: Sequence[Path]
     tracked: Callable[[], Sequence[str]]
+    # The files the change touches, which never count toward how common their own uses and forms are.
+    targets: frozenset[str] = frozenset()
     _names: Sequence[str] | None = None
+    _places: frozenset[str] | None = None
     _texts: dict[str, str | None] = field(default_factory=dict)
     _python: dict[str, Python] = field(default_factory=dict)
     _shares: dict[tuple[str, ...], float] = field(default_factory=dict)
 
-    def names(self, suffix: str) -> list[str]:
+    def every_name(self) -> Sequence[str]:
         if self._names is None:
             self._names = list(self.tracked())
-        return [name for name in self._names if PurePosixPath(name).suffix == suffix]
+        return self._names
+
+    def names(self, suffix: str | None) -> list[str]:
+        """The tracked files ending in `suffix`, or every tracked file for None, the change's own left out."""
+        return [
+            name
+            for name in self.every_name()
+            if (suffix is None or PurePosixPath(name).suffix == suffix) and name not in self.targets
+        ]
+
+    def is_place(self, span: str) -> bool:
+        """Whether a Search for span names a place in the repository rather than a form: a tracked file by its path or
+        its name, or a folder that holds tracked files."""
+        if self._places is None:
+            names = self.every_name()
+            # Each folder a tracked path lies in, by the `/`-separated parts git gives it.
+            folders = {
+                "/".join(parts[:end]) for parts in (name.split("/") for name in names) for end in range(1, len(parts))
+            }
+            self._places = frozenset(names) | {PurePosixPath(name).name for name in names} | folders
+        return span.rstrip("/") in self._places
 
     def text(self, name: str) -> str | None:
         """A tracked file's text; None when it is not there or not UTF-8, which holds nothing; its OSError when it
@@ -394,29 +445,40 @@ class Corpus:
             self._python[name] = read or Python()
         return self._python[name]
 
-    def common(self, key: tuple[str, ...], suffix: str, holds: Callable[[str], bool]) -> bool:
-        """Whether more than COMMON_SHARE of the tracked files ending in `suffix` hold what `holds` asks about."""
+    def common(self, key: tuple[str, ...], suffix: str | None, holds: Callable[[str], bool]) -> bool:
+        """Whether what `holds` asks about is common among the other tracked files ending in `suffix`, or among all of
+        them for None: more than COMMON_FLOOR of them hold it, and more than COMMON_SHARE of them."""
         if key not in self._shares:
             names = self.names(suffix)
-            self._shares[key] = sum(map(holds, names)) / len(names) if names else 0.0
+            count = sum(map(holds, names))
+            self._shares[key] = count / len(names) if count > COMMON_FLOOR else 0.0
         return self._shares[key] > COMMON_SHARE
 
-    def common_use(self, module: str, member: str) -> bool:
+    def common_use(self, module: str, bound: str, member: str | None) -> bool:
         def holds(name: str) -> bool:
-            # A file whose text never spells the name, or the module's own name, which every import of it spells,
-            # relative or not, cannot use it, so only the others are parsed.
+            # A file whose text never spells the name it would use, or the module's own name, which every import of
+            # it spells, relative or not, cannot use it, so only the others are parsed.
             text = self.text(name)
-            spelled = text is not None and member in text and module.rpartition(".")[2] in text
-            return spelled and self.python(name).uses(module, member)
+            spelled = text is not None and (member or bound) in text and module.rpartition(".")[2] in text
+            return spelled and self.python(name).uses(module, bound, member)
 
-        return self.common(("use", module, member), ".py", holds)
+        return self.common(("use", module, bound, member or ""), ".py", holds)
 
     def common_form(self, form: Form, suffix: str) -> bool:
         def holds(name: str) -> bool:
             text = self.text(name)
             return text is not None and form.holds(name, text)
 
-        return self.common(("form", suffix, form.text), suffix, holds)
+        # A form common among the files of its kind, or among the files of every kind, as a word is in a kind with
+        # too few files to say, tells the change nothing.
+        within_kind = self.common(("form", suffix, form.text), suffix, holds)
+        return within_kind or self.common(("form", "", form.text), None, holds)
+
+
+def _in_place(name: str, place: str) -> bool:
+    """Whether the file `name` is the place a Search for span names: the file by its path or its name, or a file in
+    the folder."""
+    return name == place or PurePosixPath(name).name == place or posix_within(name, place, strict=True)
 
 
 def read_target(root: Path, bases: Sequence[Path], name: str, facts: list[Fact]) -> Target:
@@ -452,31 +514,34 @@ def read_target(root: Path, bases: Sequence[Path], name: str, facts: list[Fact])
 
 def _use_evidence(pattern: Pattern, targets: list[Target], corpus: Corpus) -> list[str]:
     """What meets a pattern through its Use: each target that is a module it names, and each that imports such a
-    module and uses the name the mechanism binds, where no more than COMMON_SHARE of the tracked Python files do."""
+    module and uses the name the mechanism binds, its member's for `<module>:<class>.<member>`, where using it is not
+    common among the other tracked Python files."""
     evidence: list[str] = []
     for _, spans in pattern.spans("Use"):
         for span in spans:
             mechanism = lessons_catalogue.MECHANISM.fullmatch(span)
             if mechanism is None:
                 continue
-            module, member = mechanism.group(1), mechanism.group(2)
+            module, bound, member = mechanism.groups()
             for target in targets:
                 if module in target.own:
                     evidence.append(f"{target.name} is {module}")
-                elif target.python.uses(module, member) and not corpus.common_use(module, member):
+                elif target.python.uses(module, bound, member) and not corpus.common_use(module, bound, member):
                     evidence.append(f"{target.name} uses {span}")
     return evidence
 
 
 def _search_evidence(pattern: Pattern, targets: list[Target], corpus: Corpus, facts: list[Fact]) -> list[str]:
-    """What meets a pattern through its Search for: each form a target holds that no more than COMMON_SHARE of the
-    tracked files of its kind hold; a form the lister cannot search is appended to `facts`, for a pattern any target
-    was read for."""
+    """What meets a pattern through its Search for: each form a target holds, where the target lies in a place the
+    Search for names or the form is not common among the other tracked files of its kind; a span that names a place
+    is no form. A form the lister cannot search is appended to `facts`, for a pattern any target was read for."""
     evidence: list[str] = []
-    readable = [target for target in targets if target.text is not None]
-    seen: set[str] = set()
-    for number, spans in pattern.spans("Search for"):
-        for text in spans:
+    readable = [(target, target.text) for target in targets if target.text is not None]
+    spans = [span for _, line_spans in pattern.spans("Search for") for span in line_spans]
+    places = [span.rstrip("/") for span in spans if readable and corpus.is_place(span)]
+    seen = set(places) | {f"{place}/" for place in places}
+    for number, line_spans in pattern.spans("Search for"):
+        for text in line_spans:
             if text in seen:
                 continue
             seen.add(text)
@@ -486,9 +551,12 @@ def _search_evidence(pattern: Pattern, targets: list[Target], corpus: Corpus, fa
                 if readable:
                     facts.append(("UNSEARCHED", f"{CATALOGUE}:{number}", pattern.name, text, str(error)))
                 continue
-            for target in readable:
-                found = form.first_line(target.name, target.text or "")
-                if found is not None and not corpus.common_form(form, PurePosixPath(target.name).suffix):
+            for target, text_read in readable:
+                found = form.first_line(target.name, text_read)
+                if found is None:
+                    continue
+                placed = any(_in_place(target.name, place) for place in places)
+                if placed or not corpus.common_form(form, PurePosixPath(target.name).suffix):
                     evidence.append(f"{target.name}:{found} holds {text}")
     return evidence
 
@@ -502,7 +570,8 @@ def listing(root: Path, names: Sequence[str], tracked: Callable[[], Sequence[str
     bases = lessons_catalogue.mechanism_bases(root)
     facts: list[Fact] = []
     targets = [read_target(root, bases, name, facts) for name in names]
-    corpus = Corpus(root, bases, tracked or (lambda: GitClient().names(["ls-files"], directory=root)))
+    lister = tracked or (lambda: GitClient().names(["ls-files"], directory=root))
+    corpus = Corpus(root, bases, lister, frozenset(target.name for target in targets))
     for pattern in patterns:
         unsearched: list[Fact] = []
         evidence = _use_evidence(pattern, targets, corpus) + _search_evidence(pattern, targets, corpus, unsearched)

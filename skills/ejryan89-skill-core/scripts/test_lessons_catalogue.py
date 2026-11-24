@@ -65,6 +65,20 @@ def test_each_pattern_is_read_with_its_fields_continuations_and_problems() -> No
     ]
 
 
+def test_a_field_ends_at_a_line_it_does_not_indent_and_a_heading_keeps_its_first_field() -> None:
+    # The section's heading may trail spaces; a field's first line follows its heading directly; one space indents a
+    # continuation; a plain line or a blank ends the field, so an indented line after either belongs to none, as an
+    # indented line before any field does.
+    text = (
+        "## Patterns  \n\n### Tight\n- **Rule:** a\n plain one-space continuation\nplain text\n- **Why:** w\n\n"
+        "  indented after a blank\n\n### Lead\n  indented before any field\n- **Rule:** r\n"
+    )
+    assert patterns(text) == [
+        Pattern(3, "Tight", {"Rule": [(4, "a"), (5, "plain one-space continuation")], "Why": [(7, "w")]}, []),
+        Pattern(11, "Lead", {"Rule": [(13, "r")]}, []),
+    ]
+
+
 def test_a_fields_spans_are_its_code_spans_by_line() -> None:
     first = patterns(CATALOGUE)[0]
     assert first.spans("Use") == [(13, ["json_reader:read_json", "deployer.config:Config.load"])]
