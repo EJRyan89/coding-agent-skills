@@ -877,7 +877,7 @@ class ReportTests(InsightFixture):
         self.assertEqual(["O1", "O2", "O3"], [item["id"] for item in overlaps])
         markdown = (directory / "insights.md").read_text(encoding="utf-8")
         self.assertIn(
-            "### Guidance overlap candidates\n\n- O1 conflict (1.0) owner/repo: docs/checklist.md:7", markdown
+            "### Guidance overlap candidates\n\n- O1 conflict (1.0) owner/repo: docs&#47;checklist&#46;md:7", markdown
         )
 
     def test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input(self) -> None:

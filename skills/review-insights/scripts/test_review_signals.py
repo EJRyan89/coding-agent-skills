@@ -17,9 +17,10 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import review_insights as ri
 import review_signals
 import review_synthesis as rs
+from markdown_literal import markdown_line
 from review_archive import commit_record, current_ledger
 from review_records import build_record, validate_adapter_result
-from test_review_insights import LINE_BREAKS, InsightFixture, reviewer
+from test_review_insights import LINE_BREAKS, LITERAL, MARKUP, UNTRUSTED, InsightFixture, reviewer
 
 HEAD = "c" * 40
 OTHER_HEAD = "d" * 40
@@ -380,7 +381,8 @@ class DisagreementTests(SignalFixture):
             with self.subTest(character=repr(character)):
                 shown = f"owner/repo#{number} head={HEAD[:12]} src/a{number} FORGED.cs:10"
                 self.assertEqual(1, sum(line.endswith(shown) for line in lines), lines)
-                bullet = f" owner/repo#{number} src/a{number} FORGED.cs:10 — MUST_FIX owner/repo#{number} v1 F001"
+                report = markdown_line(f"MUST_FIX owner/repo#{number} v1 F001")
+                bullet = f" owner/repo#{number} {markdown_line(f'src/a{number} FORGED.cs')}:10 — {report}"
                 self.assertEqual(1, sum(line.startswith("- R") and bullet in line for line in markdown), markdown)
 
     def test_reviewers_that_share_a_source_or_agree_are_no_disagreement(self) -> None:
@@ -525,3 +527,81 @@ class ShapeTests(unittest.TestCase):
 def _input(json_path: Path) -> list[dict[str, Any]]:
     text = (json_path.parent / rs.INPUT_NAME).read_text(encoding="utf-8")
     return [json.loads(line) for line in text.splitlines()]
+
+
+class RenderTests(unittest.TestCase):
+    def test_record_and_guidance_text_reaches_the_markdown_as_literal_text(self) -> None:
+        # A category, headline, path, reviewer ID, and finding source are record text, and a guidance file's path, its
+        # text, and the reference it names are the repository's, so none of them may open markup in the report.
+        signals: review_signals.Signals = {
+            "severity_drift": [
+                {
+                    "id": "D1",
+                    "basis": "group",
+                    "repository": "owner/repo",
+                    "category": f"Category {UNTRUSTED}",
+                    "headline": f"Headline {UNTRUSTED}",
+                    "severity": {"MUST_FIX": 1, "SUGGESTION": 1},
+                    "examples": ["MUST_FIX owner/repo#7 v1 F001"],
+                }
+            ],
+            "verdict_flips": [
+                {
+                    "id": "V1",
+                    "repository": "owner/repo",
+                    "pull_number": 7,
+                    "head_sha": HEAD,
+                    "versions": [1, 2],
+                    "verdicts": ["APPROVE", "REQUEST_CHANGES"],
+                    "differences": [f"Difference {UNTRUSTED}"],
+                }
+            ],
+            "reviewer_disagreements": [
+                {
+                    "id": "R1",
+                    "repository": "owner/repo",
+                    "pull_number": 7,
+                    "head_sha": HEAD,
+                    "path": f"Path {UNTRUSTED}",
+                    "line": 3,
+                    "reports": [f"Report {UNTRUSTED}"],
+                }
+            ],
+            "guidance_overlaps": [
+                {
+                    "id": "O1",
+                    "repository": "owner/repo",
+                    "relation": "conflict",
+                    "similarity": 1.0,
+                    "differs": [],
+                    "paths": [f"First {UNTRUSTED}", f"Second {UNTRUSTED}"],
+                    "lines": [1, 2],
+                    "texts": [f"One {UNTRUSTED}", f"Two {UNTRUSTED}"],
+                    "reviewers": [],
+                }
+            ],
+            "unsupplied_references": [
+                {
+                    "id": "U1",
+                    "repository": "owner/repo",
+                    "reviewer": f"Reviewer {UNTRUSTED}",
+                    "path": f"Guide {UNTRUSTED}",
+                    "line": 4,
+                    "reference": f"Reference {UNTRUSTED}",
+                }
+            ],
+            "counts": {},
+        }
+        markdown = "\n".join(review_signals.render(signals))
+        for markup in MARKUP:
+            with self.subTest(markup=markup):
+                self.assertNotIn(markup, markdown)
+        for expected in (
+            f"- D1 (group) owner/repo Category {LITERAL}: Headline {LITERAL} — ",
+            f" — Difference {LITERAL}\n",
+            f"- R1 owner/repo#7 Path {LITERAL}:3 — Report {LITERAL}\n",
+            f": First {LITERAL}:1 “One {LITERAL}” / Second {LITERAL}:2 “Two {LITERAL}”\n",
+            f"- U1 owner/repo Reviewer {LITERAL}: Guide {LITERAL}:4 names Reference {LITERAL}\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, markdown)
