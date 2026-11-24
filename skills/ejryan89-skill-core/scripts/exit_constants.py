@@ -24,7 +24,9 @@ assignments give it, since no binding statement this reader reads shows the chan
 python_names leaves out of a module's aliases, beside an assignment of the same name is read as the assignment's
 literal, unless the caller adds the relative import's aliases, as validation's exit tables do and audit-skill's
 inventory does not. An import inside a function is read as the module's own, as python_names reads it, so a constant
-whose name it shares is unread: the reader fails closed there.
+whose name it shares is unread: the reader fails closed there. A constant rebound after the module-level statement that
+exits, or that calls the function reading it, is read as its later literal alone, though the program exits with the
+earlier one: `C = 3`, `def main(): return C`, `if __name__ == '__main__': sys.exit(main())`, then `C = 4`, is read as 4.
 """
 
 from __future__ import annotations
