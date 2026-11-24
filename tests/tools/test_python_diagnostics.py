@@ -182,10 +182,11 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(2, completed.returncode)
         self.assertIn("start it without -I or -E", completed.stderr)
 
-    def test_a_suite_that_is_not_a_file_is_refused(self) -> None:
-        completed = run_tool("tests/no_such_suite.py")
+    def test_a_suite_that_is_missing_or_not_a_file_is_refused_with_its_reason(self) -> None:
+        completed = run_tool("tests/no_such_suite.py", "tests")
         self.assertEqual(2, completed.returncode)
-        self.assertIn("not a suite file: tests/no_such_suite.py", completed.stderr)
+        self.assertIn("suite tests/no_such_suite.py is missing; suite tests is not a file", completed.stderr)
+        self.assertEqual("", completed.stdout)
 
 
 class ProbeTests(unittest.TestCase):

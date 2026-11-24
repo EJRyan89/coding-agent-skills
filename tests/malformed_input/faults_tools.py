@@ -339,6 +339,13 @@ NOT_RUN: dict[str, str] = {
         "--version through platform_support.run_tool, which the harness stops for any program but git and the "
         "process probe /bin/ps"
     ),
+    "tools/python_diagnostics.py": (
+        "reads no input a user gives it: it refuses with a usage error before reading anything unless PYTHONDEVMODE=1 "
+        "and PYTHONWARNINGS=error are in its environment, and with them it copies tools/unraisable_record.py beside it, "
+        "runs pytest on whole suites, and reads only the records its own child processes write in a folder it made, "
+        "none of which is a file the harness's faults reach; tests/tools/test_python_diagnostics.py drives it on "
+        "fixture suites, its refusals included"
+    ),
     "tools/deployable_report.py bash": (
         "reads no file and runs no git or gh through the clients: it starts the Bash platform_support.find_bash finds "
         "for its --version through platform_support.run_tool, which the harness stops for any program but git and the "

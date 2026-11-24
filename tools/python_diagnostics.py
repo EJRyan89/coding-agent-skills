@@ -41,7 +41,7 @@ does with its step summary.
 Exit status:
   0  the probe and every suite passed, and no process recorded an unraisable exception
   1  CHILD_UNSET, FAILED, or UNRAISABLE above, or a last line FAILED <reason>
-  2  a usage error: a setting missing from its environment, or a suite that is not a file
+  2  a usage error: a setting missing from its environment, or a suite that is missing or not a file
 """
 
 from __future__ import annotations
@@ -78,35 +78,34 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECORDER = Path(__file__).resolve().with_name("unraisable_record.py")
 # The settings the run needs in its own environment, which every process it starts inherits.
 SETTINGS = {"PYTHONDEVMODE": "1", "PYTHONWARNINGS": "error"}
-SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 # The suites the scheduled run exercises, chosen for the code that opens and writes files, starts and ends processes,
 # and parses text it did not write, where a resource left open or a call a later Python removes would hide, and because
 # most of them start Python programs of their own, so the settings reach a child. Each runs in seconds.
 DIAGNOSTIC_SUITES = (
     # Files: the atomic writer, the JSON writer, the file lock, the tree-bound reader, the folder walk, and the
     # deployer's one write point and state files.
-    f"{SKILL_CORE}/test_atomic_file.py",
-    f"{SKILL_CORE}/test_json_writer.py",
-    f"{SKILL_CORE}/test_file_lock.py",
-    f"{SKILL_CORE}/test_tree_reader.py",
-    f"{SKILL_CORE}/test_folder_walk.py",
+    "skills/ejryan89-skill-core/scripts/test_atomic_file.py",
+    "skills/ejryan89-skill-core/scripts/test_json_writer.py",
+    "skills/ejryan89-skill-core/scripts/test_file_lock.py",
+    "skills/ejryan89-skill-core/scripts/test_tree_reader.py",
+    "skills/ejryan89-skill-core/scripts/test_folder_walk.py",
     "tests/deployer/test_fsops.py",
     "tests/deployer/test_state_files.py",
     # Processes: the bounded runner, the process tree and probe, the git and GitHub clients, the entry-point runner, and
     # the deployer's tool deadlines, its command line, and its recovery from an abrupt end.
-    f"{SKILL_CORE}/test_bounded_process.py",
-    f"{SKILL_CORE}/test_job_tree.py",
-    f"{SKILL_CORE}/test_process_identity.py",
-    f"{SKILL_CORE}/test_git_client.py",
-    f"{SKILL_CORE}/test_github_client.py",
-    f"{SKILL_CORE}/test_console.py",
+    "skills/ejryan89-skill-core/scripts/test_bounded_process.py",
+    "skills/ejryan89-skill-core/scripts/test_job_tree.py",
+    "skills/ejryan89-skill-core/scripts/test_process_identity.py",
+    "skills/ejryan89-skill-core/scripts/test_git_client.py",
+    "skills/ejryan89-skill-core/scripts/test_github_client.py",
+    "skills/ejryan89-skill-core/scripts/test_console.py",
     "tests/deployer/test_tool_deadlines.py",
     "tests/deployer/test_cli.py",
     "tests/deployer/test_abrupt_termination.py",
     # Parsing: the JSON, XML, and Python readers, and the frontmatter reader.
-    f"{SKILL_CORE}/test_json_reader.py",
-    f"{SKILL_CORE}/test_xml_reader.py",
-    f"{SKILL_CORE}/test_python_reader.py",
+    "skills/ejryan89-skill-core/scripts/test_json_reader.py",
+    "skills/ejryan89-skill-core/scripts/test_xml_reader.py",
+    "skills/ejryan89-skill-core/scripts/test_python_reader.py",
     "tests/deployer/test_frontmatter.py",
 )
 # How long one suite may run before it is ended with every process it started and failed.
@@ -245,9 +244,13 @@ def summary(header: Sequence[str], outcomes: Sequence[Outcome], problem: str | N
 def chosen_suites(given: Sequence[str]) -> list[str]:
     """The suites to run, each a file under the top of the repository."""
     suites = list(given) or list(DIAGNOSTIC_SUITES)
-    missing = [suite for suite in suites if not (REPOSITORY_ROOT / suite).is_file()]
-    if missing:
-        raise UsageError(f"not a suite file: {', '.join(missing)}")
+    refused = [
+        f"suite {suite} {reason}"
+        for suite in suites
+        if (reason := file_presence.refusal_reason(REPOSITORY_ROOT / suite)) is not None
+    ]
+    if refused:
+        raise UsageError("; ".join(refused))
     return suites
 
 
