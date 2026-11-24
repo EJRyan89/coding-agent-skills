@@ -865,6 +865,113 @@ class GraphTests(Fixture):
         self.assertEqual([], [row for row in self.lines(rows, "TRUNCATED") if row[0] == core])
 
 
+LADDER_DEPTH = 14  # every rung doubles the paths: 2 ** 14 chains through the ladder, far past PATH_LIMIT
+
+
+def ladder_assets(depth: int) -> dict[str, Any]:
+    """A restore whose direct package Ladder.Top depends on both packages of the first rung, each package of a rung on
+    both of the next, and each of the last on Ladder.Floor: a diamond per rung, as the netstandard1.x System.*
+    packages are, and 2 ** depth chains from Ladder.Top to Ladder.Floor. Beside.Pkg is a second direct package
+    outside the ladder."""
+    rungs = [[f"Rung{rung}.A", f"Rung{rung}.B"] for rung in range(depth)]
+    packages: dict[str, Any] = {
+        "Ladder.Top/1.0.0": {"type": "package", "dependencies": dict.fromkeys(rungs[0], "1.0.0")},
+        "Ladder.Floor/1.0.0": {"type": "package"},
+        "Beside.Pkg/1.0.0": {"type": "package"},
+    }
+    for rung, names in enumerate(rungs):
+        below = rungs[rung + 1] if rung + 1 < depth else ["Ladder.Floor"]
+        for name in names:
+            packages[f"{name}/1.0.0"] = {"type": "package", "dependencies": dict.fromkeys(below, "1.0.0")}
+    direct = {name: {"target": "Package", "version": "[1.0.0, )"} for name in ("Ladder.Top", "Beside.Pkg")}
+    return {
+        "version": 3,
+        "targets": {"net8.0": packages},
+        "project": {"frameworks": {"net8.0": {"dependencies": direct}}},
+    }
+
+
+def ladder_project(references: Iterable[str], package: str | None = None) -> str:
+    """A project referencing each named project beside it, and the package when one is given."""
+    items = "".join(f'<ProjectReference Include="../{name}/{name}.csproj" />' for name in references)
+    if package:
+        items += f'<PackageReference Include="{package}" Version="1.0.0" />'
+    return (
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>'
+        f"<ItemGroup>{items}</ItemGroup></Project>\n"
+    )
+
+
+class PathWalkBoundTests(Fixture):
+    """The why walk keeps the nodes each path has passed, since the chains are the answer, so a graph of diamonds has
+    exponentially many paths through it. The walk stops once the answer is truncated and enters no package or
+    project from which no chain ends at the name, so its work is bounded by the chains it prints, never by the paths
+    it does not print. Each test counts the walk's steps, never the time it takes."""
+
+    def walk_steps(self, *arguments: str) -> tuple[int, list[list[str]]]:
+        """Run the script and count every package and project the why walk enters."""
+        finder = dependency_graph.PathFinder
+        with (
+            mock.patch.object(finder, "from_package", autospec=True, side_effect=finder.from_package) as packages,
+            mock.patch.object(finder, "from_project", autospec=True, side_effect=finder.from_project) as projects,
+        ):
+            _, rows = self.run_main(*arguments)
+        return packages.call_count + projects.call_count, rows
+
+    def test_a_package_ladder_of_diamonds_is_walked_only_as_far_as_the_chains_it_prints(self) -> None:
+        self.write("App/App.csproj", ladder_project([], "Ladder.Top"))
+        self.write("App/obj/project.assets.json", json.dumps(ladder_assets(LADDER_DEPTH)))
+        self.write("App.sln", solution("App\\App.csproj"))
+        steps, rows = self.walk_steps("why", "Ladder.Floor", "--root", str(self.root))
+        chains = self.lines(rows, "PATH")
+        self.assertEqual(200, len(chains))
+        self.assertEqual(
+            [
+                "Ladder.Top (v1.0.0)",
+                *(f"Rung{rung}.A (v1.0.0)" for rung in range(LADDER_DEPTH)),
+                "Ladder.Floor (v1.0.0)",
+            ],
+            chains[0][4].split(" > "),
+        )
+        self.assertEqual([["App/App.csproj", "net8.0", "Ladder.Floor", "200"]], self.lines(rows, "TRUNCATED"))
+        # The walk stopping once a chain past the limit truncates the answer takes 626 steps; one going on through
+        # every chain takes 3 * 2 ** LADDER_DEPTH + 1, which is 49,153.
+        self.assertLess(steps, 800)
+        # A package beside the ladder is answered without entering the ladder's rungs.
+        steps, rows = self.walk_steps("why", "Beside.Pkg", "--root", str(self.root))
+        self.assertEqual(
+            [["App/App.csproj", "net8.0", "Beside.Pkg", "graph", "Beside.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+        self.assertEqual([], self.lines(rows, "TRUNCATED"))
+        self.assertLess(steps, 10)
+
+    def test_a_project_ladder_of_diamonds_is_walked_only_as_far_as_the_chains_it_prints(self) -> None:
+        rungs = [[f"Rung{rung}A", f"Rung{rung}B"] for rung in range(LADDER_DEPTH)]
+        self.write("App/App.csproj", ladder_project(rungs[0], "Beside.Pkg"))
+        for rung, names in enumerate(rungs):
+            below = rungs[rung + 1] if rung + 1 < LADDER_DEPTH else ["Floor"]
+            for name in names:
+                self.write(f"{name}/{name}.csproj", ladder_project(below))
+        self.write("Floor/Floor.csproj", ladder_project([]))
+        projects = ["App", "Floor", *(name for names in rungs for name in names)]
+        self.write("App.sln", solution(*(f"{name}\\{name}.csproj" for name in projects)))
+        app = ["--project", str(self.root / "App" / "App.csproj"), "--root", str(self.root)]
+        steps, rows = self.walk_steps("why", "Floor", *app)
+        chains = self.lines(rows, "PATH")
+        self.assertEqual(200, len(chains))
+        self.assertEqual(
+            [*(f"Rung{rung}A (project)" for rung in range(LADDER_DEPTH)), "Floor (project)"], chains[0][4].split(" > ")
+        )
+        self.assertEqual([["App/App.csproj", "-", "Floor", "200"]], self.lines(rows, "TRUNCATED"))
+        self.assertLess(steps, 800)
+        # A package only App holds is answered without entering the ladder's rungs.
+        steps, rows = self.walk_steps("why", "Beside.Pkg", *app)
+        self.assertEqual(
+            [["App/App.csproj", "-", "Beside.Pkg", "graph", "Beside.Pkg (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+        self.assertLess(steps, 10)
+
+
 API_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
   <ItemGroup>

@@ -1153,7 +1153,13 @@ def labelled(rows: Iterable[tuple[str, Row]]) -> list[tuple[str, Row]]:
 class PathFinder:
     """Every chain from a project to a name under one framework, through the framework's project references, direct
     packages, and assembly references, package edges, and the assemblies a package ships. A referenced project is
-    walked under the same framework when it has it, else under each of its own."""
+    walked under the same framework when it has it, else under each of its own.
+
+    The chains are the answer, so each path keeps the nodes it has passed (`seen`), and a node is walked again on
+    every path to it. So the walk enters only the projects and packages from which a chain can end at the name
+    (`reaching_projects`, `reaching_packages`), each set read once per question, and stops once a chain past the
+    limit has truncated the answer: a graph dense in diamonds has exponentially many paths, and none of those past
+    the limit, or ending elsewhere, is printed."""
 
     def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
         self.graph = graph
@@ -1162,6 +1168,13 @@ class PathFinder:
         self.limit = PATH_LIMIT if limit is None else limit
         self.found: list[tuple[Hop, ...]] = []
         self.truncated = False
+        self.projects: frozenset[str] = frozenset()
+        self.packages: dict[int, frozenset[str]] = {}  # the target's identity -> `reaching_packages`
+
+    def chains_from(self, project: Project) -> None:
+        """Every chain from `project`."""
+        self.projects = self.reaching_projects(project)
+        self.from_project(project, (), frozenset())
 
     def record(self, path: tuple[Hop, ...]) -> None:
         if path in self.found:
@@ -1171,9 +1184,59 @@ class PathFinder:
         else:
             self.truncated = True
 
+    def names_target(self, project: Project) -> bool:
+        return self.target in (ordinal_fold(project.file.assembly_name), ordinal_fold(project.file.path.stem))
+
+    def reaching_packages(self, owner: Target) -> frozenset[str]:
+        """The case-folded ids of the packages from which a chain in `owner` ends at the name: the name, each package
+        shipping an assembly of that name, and each package depending on one of those, read once per target."""
+        known = self.packages.get(id(owner))
+        if known is not None:
+            return known
+        dependents: dict[str, list[str]] = {}
+        pending = [self.target]
+        for fold, node in owner.nodes.items():
+            if any(ordinal_fold(name) == self.target for name in node.assemblies):
+                pending.append(fold)
+            for dependency in node.dependencies:
+                dependents.setdefault(ordinal_fold(dependency), []).append(fold)
+        reaching = self.packages[id(owner)] = reaching_keys(pending, dependents)
+        return reaching
+
+    def reaching_projects(self, start: Project) -> frozenset[str]:
+        """The keys of the projects `start` reaches from which a chain ends at the name: each referencing a project
+        of that name, holding a direct package from which a chain ends at it, or referencing an assembly of that
+        name, and each referencing one of those."""
+        dependents: dict[str, list[str]] = {}
+        pending: list[str] = []
+        walked = {self.graph.key(start.file.path)}
+        queue = deque([start])
+        while queue:
+            project = queue.popleft()
+            key = self.graph.key(project.file.path)
+            projects, assemblies = project.references_for(self.framework, self.graph.key)
+            ends = any(ordinal_fold(assembly.name) == self.target for assembly in assemblies) or any(
+                ordinal_fold(direct.id) in self.reaching_packages(target)
+                for target in project.targets_for(self.framework)
+                for direct in target.direct
+            )
+            for reference in projects:
+                child = self.graph.project_at(reference)
+                if child is None:
+                    continue
+                child_key = self.graph.key(child.file.path)
+                ends = ends or self.names_target(child)
+                dependents.setdefault(child_key, []).append(key)
+                if child_key not in walked:
+                    walked.add(child_key)
+                    queue.append(child)
+            if ends:
+                pending.append(key)
+        return reaching_keys(pending, dependents)
+
     def from_project(self, project: Project, path: tuple[Hop, ...], seen: frozenset[str]) -> None:
         key = self.graph.key(project.file.path)
-        if key in seen:
+        if self.truncated or key in seen or key not in self.projects:
             return
         seen = seen | {key}
         projects, assemblies = project.references_for(self.framework, self.graph.key)
@@ -1181,10 +1244,7 @@ class PathFinder:
             child = self.graph.project_at(reference)
             if child is not None:
                 hop: Hop = ("project", child.file.assembly_name, "")
-                if (
-                    ordinal_fold(child.file.assembly_name) == self.target
-                    or ordinal_fold(child.file.path.stem) == self.target
-                ):
+                if self.names_target(child):
                     self.record((*path, hop))
                 self.from_project(child, (*path, hop), seen)
         for target in project.targets_for(self.framework):
@@ -1198,7 +1258,7 @@ class PathFinder:
         self, owner: Target, package: str, requested: str | None, path: tuple[Hop, ...], seen: frozenset[str]
     ) -> None:
         fold = ordinal_fold(package)
-        if fold in seen:
+        if self.truncated or fold in seen or fold not in self.reaching_packages(owner):
             return
         path = (*path, package_hop(owner, package, requested))
         if fold == self.target:
@@ -1212,6 +1272,18 @@ class PathFinder:
             self.record((*path, ("assembly", shipped, "")))
         for dependency, version in node.dependencies.items():
             self.from_package(owner, dependency, version, path, seen | {fold})
+
+
+def reaching_keys(start: Iterable[str], dependents: dict[str, list[str]]) -> frozenset[str]:
+    """`start` and every key that reaches one of them through `dependents`, each read once."""
+    reached: set[str] = set()
+    pending = list(start)
+    while pending:
+        key = pending.pop()
+        if key not in reached:
+            reached.add(key)
+            pending += dependents.get(key, [])
+    return frozenset(reached)
 
 
 @dataclass(frozen=True)
@@ -1367,7 +1439,7 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     truncated: list[str] = []
     for target in project.targets:
         finder = PathFinder(graph, name, target.framework)
-        finder.from_project(project, (), frozenset())
+        finder.chains_from(project)
         walked += [(target.framework, chain) for chain in finder.found]
         if finder.truncated:
             truncated.append(target.framework)
