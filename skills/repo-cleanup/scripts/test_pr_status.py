@@ -1820,3 +1820,18 @@ def test_a_failure_to_run_git_is_said_as_one() -> None:
 
     with pytest.raises(pr_status.QueryError, match=r"^could not run git: did not finish$"):
         pr_status._commit_of(GitClient(run), "r", "HEAD", "the tip")
+
+
+# The repositories classify accepts, as it accepted them before its owner/name class moved to ejryan89-skill-core's
+# github_remote: any run of the repository characters on each side of one `/`, and nothing else.
+@pytest.mark.parametrize(
+    "repository", ["o/r", "O-1/r.2", "o_/_r", ".github/.github", "o/.", "o/..", "-o/r-", "o/r.git"]
+)
+def test_each_owner_and_name_spelling_classify_accepted_is_accepted(repository: str) -> None:
+    assert classify(repository, "topic", TIP, runner=responder(listing())) == "NONE"
+
+
+@pytest.mark.parametrize("repository", ["a/b/c", "o r/x", "\u00f6/r", "o/r!", "/r", "o/", "o", "o/r\u0661", "o/r\n"])
+def test_each_spelling_classify_refused_is_refused(repository: str) -> None:
+    with pytest.raises(QueryError, match=r"^repository must be owner/name, got "):
+        classify(repository, "topic", TIP, runner=responder(listing()))
