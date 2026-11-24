@@ -202,6 +202,14 @@ def list_item(line: str, *, interrupting: bool = False) -> str | None:
     return match.group("text")
 
 
+def outside_fences(lines: list[str]) -> list[str]:
+    """`lines` with each line of a fenced code block, as `find_fences` places it, made empty, so a reader of the
+    document's own headings and fields never reads a fence's text as one. The list keeps its length, so each line keeps
+    its number."""
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    return ["" if index in fenced else line for index, line in enumerate(lines)]
+
+
 def find_fences(lines: list[str]) -> list[Fence]:
     """Every fenced code block, in document order, by CommonMark's rules for the forms Markdown allows: the fences of
     `_walk`, the one walk `blocks`, `code_block_lines`, and `document_headings` read too, so every reader of a

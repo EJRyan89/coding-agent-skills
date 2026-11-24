@@ -15,12 +15,11 @@ from pathlib import Path
 import file_presence
 import lessons_catalogue
 from link_destinations import link_destinations
-from markdown_sections import ATX_HEADING, code_spans
+from markdown_sections import ATX_HEADING, code_spans, outside_fences
 from text_lines import text_lines
 from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
-    fence_holders,
     listed,
     markdown_section,
     python_trees,
@@ -38,17 +37,11 @@ PRESENCE_ALLOWED = {
 }
 
 
-def _outside_fences(text: str) -> list[str]:
-    """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
-    lines = text_lines(text)
-    return ["" if holder is not None else line for line, holder in zip(lines, fence_holders(lines), strict=True)]
-
-
 def heading_slugs(text: str) -> set[str]:
     """The fragment GitHub gives each heading, numbering a repeated one -1, -2, and so on."""
     slugs: set[str] = set()
     seen: dict[str, int] = {}
-    for line in _outside_fences(text):
+    for line in outside_fences(text_lines(text)):
         heading = ATX_HEADING.match(line)
         if heading:
             slug = SLUG_REMOVED.sub("", heading.group("text").strip().lower()).replace(" ", "-")
@@ -273,7 +266,7 @@ def cited_test_problems(root: Path) -> list[str]:
             or document in CITATIONS_UNREAD_FILES
         ):
             continue
-        for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
+        for number, line in enumerate(outside_fences(text_lines(path.read_text(encoding="utf-8"))), start=1):
             for spans in _sentences(line):
                 files = [span for span in spans if CITED_FILE.fullmatch(span)]
                 for span in spans:

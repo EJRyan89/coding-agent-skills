@@ -274,6 +274,7 @@ DRIVERS: list[Driver] = [
         "",
         ("tools/skill_shims.py",),
         inputs=("{checkout}/docs/lessons.md", "{checkout}/tools/skill_shims.py"),
+        git=True,
         not_run={
             f"{MISSING} {{checkout}}/tools/skill_shims.py": "a file the change will add is not there yet, which the "
             "lister lists as NEW and meets through its module alone",

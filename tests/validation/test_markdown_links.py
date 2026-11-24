@@ -338,6 +338,28 @@ class LessonsLedgerPolicy(unittest.TestCase):
             write_fixture_tree(root, tree)
             return lessons_ledger_problems(root)
 
+    def test_a_catalogue_that_cannot_be_read_or_holds_no_pattern_is_named_so(self) -> None:
+        self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
+        self.assertEqual(["docs/lessons.md has no '## Patterns' section"], self.problems("# Lessons\n"))
+        self.assertEqual(
+            ["docs/lessons.md has no pattern under '## Patterns'"], self.problems("## Patterns\n\nNone yet.\n")
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs" / "lessons.md").mkdir(parents=True)
+            self.assertEqual(["docs/lessons.md is not a file"], lessons_ledger_problems(root))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs").mkdir()
+            (root / "docs" / "lessons.md").write_bytes(b"## Patterns\n\xff\n")
+            self.assertEqual(
+                [
+                    "docs/lessons.md cannot be read: 'utf-8' codec can't decode byte 0xff in position 12: "
+                    "invalid start byte"
+                ],
+                lessons_ledger_problems(root),
+            )
+
     def test_patterns_whose_use_or_guard_resolves_or_that_give_a_reason_pass(self) -> None:
         ledger = (
             "# Lessons\n\nPreamble with `tests/test_a.py::helper`, which no pattern cites.\n\n## Patterns\n\n"

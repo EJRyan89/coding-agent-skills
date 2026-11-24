@@ -35,6 +35,7 @@ from markdown_sections import (
     is_blank,
     list_item,
     markdown_section,
+    outside_fences,
     prose_code_spans,
     starts_block,
     without_code_spans,
@@ -1356,6 +1357,11 @@ def test_every_reader_reads_the_fences_find_fences_reads_on_any_document() -> No
                 assert fence.closer == fence.stop, lines
                 assert closing in ({"`"}, {"~"}), lines
             previous = fence.lines().stop
+
+
+def test_outside_fences_blanks_every_line_find_fences_places_and_keeps_the_rest_at_its_number() -> None:
+    lines = ["# Title", "```markdown", "## Shown", "```", "> ~~~", "> ### Quoted", "> ~~~", "## Kept", "```", "open"]
+    assert outside_fences(lines) == ["# Title", "", "", "", "", "", "", "## Kept", "", ""]
 
 
 def test_a_list_item_with_nothing_after_its_marker_takes_the_line_it_holds_as_its_text() -> None:

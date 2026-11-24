@@ -106,7 +106,8 @@ mechanism it names, and each mechanism or guard that does not resolve.
 
 Before a change is planned, or implemented when the size gate skips the plan, the `implement-change` repository
 skill's `lessons_patterns.py` lists the catalogue's patterns the files the change will touch meet: each pattern whose
-**Use** names a module a file is or imports, and each whose **Search for** forms occur in a file. The author reads
+**Use** names a module a file is or a mechanism it uses, and each whose **Search for** forms occur in a file, leaving
+out a use or a form most of the repository's files share. The author reads
 those patterns before writing code and names the ones that apply in the plan or the pull request, so a known pattern is
 met while planning rather than in review. `change-skill` runs the same step before it plans a skill.
 

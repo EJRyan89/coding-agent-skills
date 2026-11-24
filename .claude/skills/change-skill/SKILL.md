@@ -23,13 +23,13 @@ A repository skill, under `.claude/skills/<name>/`, meets the shipped standard b
 
 ## 1. Plan the skill
 
-A skill change never passes the size gate's "no design choice remains" lightly, so plan it. Read the skill's `SKILL.md`, its `deploy-meta/<name>.json`, its scripts and their tests, and its section in `docs/skills.md`. Before planning, list the `docs/lessons.md` patterns those files and the ones the change adds meet, as step 4 of `implement-change` says, naming each from the top of the repository:
+A skill change never passes the size gate's "no design choice remains" lightly, so plan it. Read the skill's `SKILL.md`, its `deploy-meta/<name>.json`, its scripts and their tests, and its section in `docs/skills.md`. Before planning, list the `docs/lessons.md` patterns those files and the ones the change adds meet, naming each from the top of the repository:
 
 ```bash
 python -B .claude/skills/implement-change/scripts/lessons_patterns.py '<path>' '<path>'
 ```
 
-Read each pattern a `USE` or `SEARCH` line names from its catalogue line, follow its rule and call the helper its **Use** names, and name the patterns that apply in the plan; search by hand for each `UNREAD` file and `UNSEARCHED` form, and report a last line `FAILED <reason>`. In the plan settle, with the user where it is a real choice:
+Read each pattern a `PATTERN` line names from its catalogue line, with the files and forms its fields give, follow its rule and call the helper its **Use** names, and name the patterns that apply in the plan; search by hand for each `UNREAD` file and `UNSEARCHED` form, and report a last line `FAILED <reason>`. In the plan settle, with the user where it is a real choice:
 
 - **Arguments**: the `argument-hint`, in the notation "Reading the argument syntax" in `docs/skills.md` explains, and what the skill does without them.
 - **Who starts it**: `disable-model-invocation: true` for a skill that deletes, deploys, or otherwise acts on the user's behalf; `user-invocable: false` too for a hidden dependency. Never set either on a skill another skill invokes by name ("Files" in `docs/adding-a-skill.md`).

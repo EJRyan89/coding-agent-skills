@@ -2,10 +2,10 @@
 `implement-change` repository skill's pattern lister share.
 
 A pattern is a `###` heading under the catalogue's `## Patterns` section, with the lines after it up to the next
-heading of either level two or three. A line inside a fenced code block, read through markdown_sections'
-`find_fences`, is read as blank, so a heading or a field a fence shows is none. A field is a list item that opens with
-its bold name and a colon, `- **Rule:** ...`; a line indented under it continues it, and any other line ends it. A
-field's code spans are read through markdown_sections' `code_spans`, as CommonMark pairs backtick runs.
+heading of either level two or three. A line inside a fenced code block, which markdown_sections' `outside_fences`
+blanks, is read as blank, so a heading or a field a fence shows is none. A field is a list item that opens with its
+bold name and a colon, `- **Rule:** ...`; a line indented under it continues it, and any other line ends it. A field's
+code spans are read through markdown_sections' `code_spans`, as CommonMark pairs backtick runs.
 
 A mechanism a pattern names under **Use** is `<module>:<name>` or `<module>:<class>.<name>`, the form
 `pkgutil.resolve_name` reads, `MECHANISM`, whose module is importable from one of `mechanism_bases`: the repository
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import file_presence
-from markdown_sections import code_spans, find_fences
+from markdown_sections import code_spans, outside_fences
 from text_lines import text_lines
 
 # The catalogue's path from the repository root.
@@ -53,15 +53,6 @@ class Pattern:
         ]
 
 
-def _outside_fences(text: str) -> list[str]:
-    """The text's lines, each line of a fenced code block blanked."""
-    lines = text_lines(text)
-    for fence in find_fences(lines):
-        for index in fence.lines():
-            lines[index] = ""
-    return lines
-
-
 def _fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[int, str]]], list[tuple[int, str]]]:
     """A pattern's fields, each the lines of its list item, and the problems, by line, of a field the catalogue does
     not define or one given twice."""
@@ -88,7 +79,7 @@ def _fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[int, str
 def patterns(text: str) -> list[Pattern]:
     """The patterns of the catalogue's text, in the order it holds them; CatalogueError when the text has no
     `## Patterns` section or no pattern under it."""
-    lines = _outside_fences(text)
+    lines = outside_fences(text_lines(text))
     start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)
     if start is None:
         raise CatalogueError(f"{CATALOGUE} has no '## Patterns' section")
