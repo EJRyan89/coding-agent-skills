@@ -556,7 +556,9 @@ removed fails validation until its pattern follows it.
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads, and
-  `runtime_support:starts_git`, which reads a Python call as git's only when the function it calls starts git
+  `runtime_support:starts_git`, which reads a Python call as git's only when the function it calls starts git, and
+  `audit_repository:grep_pattern`, the part of a line git grep built with PCRE takes as fixed text: no backslash-E and
+  no more than PCRE compiles
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
@@ -644,7 +646,8 @@ removed fails validation until its pattern follows it.
   than an allow-list of the subcommands, actions, and settings that start none; a reader of a gh flag word that takes
   its first two characters for the flag, rather than `gh_shorthands.shorthands`, which reads a cluster such as
   `-ifbody=x` letter by letter as gh does; a fixed pattern handed to `git grep -F` that may hold a backslash-E, which
-  git built with PCRE quotes between `\Q` and `\E`, rather than through `audit_repository.grep_pattern`; a reader of the
+  git built with PCRE quotes between `\Q` and `\E`, or may run past the compiled size PCRE accepts, about 32 KB of one
+  pattern, rather than through `audit_repository.grep_pattern`; a reader of the
   commands a Bash script runs that starts one only at a line's start, an operator, or a substitution, and not after a
   case pattern's `)`, a `;&` or `;;&`, or a function's `()`, or that compares a command's first word, such as
   `head == "git"` or `head in SCRIPT_SHELLS`, with a program's name rather than the file name

@@ -37,8 +37,9 @@ part above that size, and a directory split only when it alone holds more than a
 FIXES_PER_READER fixes, in the order they merged, and more each when that would need more than MAX_TWIN_READERS
 readers, so the readers stay bounded and every fix is still read. A removed line is searched for when it is at least
 MIN_CONSTRUCT_CHARS long once stripped, holds a letter or digit, is no Python import, and is not added back elsewhere
-in the fix; a brief lists at most MAX_CONSTRUCT_LINES of them and MAX_HITS places. A release, rotation, guidance, or
-twins run reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout
+in the fix, a line longer than GREP_PATTERN_BYTES bytes of UTF-8 searched by its first part that long and matched
+whole; a brief lists at most MAX_CONSTRUCT_LINES of them and MAX_HITS places. A release, rotation, guidance, or twins
+run reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout
 audited.
 
 Every line is one fact:
@@ -85,8 +86,9 @@ Every line is one fact:
     REMOVED "<directory>"              remove-briefs: the briefs directory deleted
 
 A title is printed as a JSON string, flattened to one line. A git or gh command that fails is reported with its own
-reason; a ref is reported as naming no commit only when git finds none, and a repository with no release reachable
-from HEAD only when git lists no release tag reaching it.
+reason, a git command's cut to its first REASON_CHARACTERS characters (flat_text.py), since git may quote what it was
+given, such as a whole construct line; a ref is reported as naming no commit only when git finds none, and a
+repository with no release reachable from HEAD only when git lists no release tag reaching it.
 
 Exit status:
   0  the briefs were written, the entry or the reads recorded, the search run, or the directory deleted
@@ -121,7 +123,7 @@ import versions
 import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
-from flat_text import flat_text, single_line
+from flat_text import flat_text, reason_line, single_line
 from git_client import GitClient, GitError, command_name, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
@@ -307,6 +309,10 @@ MAX_CONSTRUCT_LINES = 12
 MAX_HITS = 30
 # The most characters of pathspecs one git diff is given, well inside the Windows command line's limit.
 PATHSPEC_CHARS = 8000
+# The most UTF-8 bytes of one construct line git grep is given. git built with PCRE refuses a fixed pattern past the
+# size PCRE compiles, 32,764 bytes on git 2.56.1 on macOS and possibly less on another build, so a longer line is
+# searched by a part well inside that and matched whole afterwards.
+GREP_PATTERN_BYTES = 8000
 # The fixes one reader is given, and the most readers a sweep starts: past FIXES_PER_READER * MAX_TWIN_READERS fixes,
 # each reader is given more, so no fix goes unread.
 FIXES_PER_READER = 10
@@ -462,7 +468,8 @@ def area_of(path: str) -> Area:
 def git_failure(repository: Path, command: str, exc: GitError) -> AuditError:
     if exc.kind == "not_repository":
         return AuditError(f"{repository.as_posix()} is not a Git repository")
-    return AuditError(f"{command}: {exc}")
+    # git may quote what it was given, such as a whole construct line, so its reason is cut to a bounded line.
+    return AuditError(f"{command}: {reason_line(str(exc))}")
 
 
 def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> str:
@@ -480,9 +487,7 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
     try:
         commit = git.commit_of(ref, directory=repository)
     except GitError as exc:
-        if exc.kind == "not_repository":
-            raise AuditError(f"{repository.as_posix()} is not a Git repository") from exc
-        raise AuditError(f"git rev-parse: {exc}") from exc
+        raise git_failure(repository, "git rev-parse", exc) from exc
     if commit is None:
         raise AuditError(f"{ref} names no commit in {repository.as_posix()}")
     return commit
@@ -1232,14 +1237,17 @@ def pathspec_batches(paths: Sequence[str]) -> list[list[str]]:
 
 def grep_pattern(line: str) -> str:
     """The fixed text git grep is given for a construct line: the line itself, or, when it holds a backslash-E, its
-    longest part between them. git built with PCRE searches a fixed pattern as a PCRE pattern quoted between \\Q and
-    \\E, so a backslash-E inside the line would end that quote early, and git would fail on the rest or read it as a
-    regular expression; search_construct keeps only the hits that hold the whole line."""
-    if "\\E" not in line:
-        return line
-    # A line of nothing but backslash-Es has no part between them: every such line holds a backslash, which git reads
-    # as one inside its quote, and the whole line is matched afterwards.
-    return max(line.split("\\E"), key=len) or "\\"
+    longest part between them, either cut to its first GREP_PATTERN_BYTES bytes of UTF-8 at a character's end. git
+    built with PCRE searches a fixed pattern as a PCRE pattern quoted between \\Q and \\E, so a backslash-E inside the
+    line would end that quote early, and git would fail on the rest or read it as a regular expression, and PCRE
+    refuses a pattern longer than it compiles; search_construct keeps only the hits that hold the whole line."""
+    part = line
+    if "\\E" in line:
+        # A line of nothing but backslash-Es has no part between them: every such line holds a backslash, which git
+        # reads as one inside its quote, and the whole line is matched afterwards.
+        part = max(line.split("\\E"), key=len) or "\\"
+    # The bytes past the limit may end inside a character, which decoding leaves out.
+    return part.encode("utf-8")[:GREP_PATTERN_BYTES].decode("utf-8", "ignore")
 
 
 def search_construct(git: GitClient, repository: Path, head: str, construct: Sequence[str]) -> tuple[list[Hit], bool]:
