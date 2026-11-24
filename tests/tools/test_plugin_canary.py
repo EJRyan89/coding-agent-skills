@@ -158,6 +158,19 @@ def test_a_stream_error_whose_reason_names_the_passing_words_fails_both_guard_li
     assert all(item.fails for item in judged)
 
 
+def test_a_reviewer_denial_whose_reason_names_the_main_session_passes() -> None:
+    # The other direction: a word in the reason read as the main session's line made this passing line fail.
+    stream = "\n".join(
+        [
+            event("user", [result(f"1\t{MARKER}\n")]),
+            event("user", [result(f"{canary.BOUNDARY}: only the main-session may read it", error=True)], "t"),
+        ]
+    )
+    reviewer = canary.guard_lines(stream, AGENT, MARKER)[1]
+    assert reviewer.text == f'GUARD claude {AGENT} DENIED "{canary.BOUNDARY}: only the main-session may read it"'
+    assert not reviewer.fails
+
+
 def test_a_plugin_expects_the_hooks_its_hooks_file_names_and_none_without_one() -> None:
     hooks: dict[str, list[object]] = {"PreToolUse": [], "PostToolUse": []}
     cases: list[tuple[dict[str, bytes], set[str]]] = [
