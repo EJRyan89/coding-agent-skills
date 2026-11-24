@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import json_reader
 import python_reader
 from git_client import GitError, output_line
+from implementation_profile import CONTRACT_FILES_HEADING, PROFILE
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from skill_menu import name_list
 from text_lines import LINE_BREAK
@@ -53,8 +54,6 @@ from tools.release_notes import (
 # pull request itself changes is covered only by the pull request's own entries, never by an earlier one since the
 # tag. Every git call runs through tools/release_notes.py's git and release_reaching, both over its one GitClient, so
 # the tag lookup and the commit range read the same repository whatever GIT_DIR the shell exported.
-PROFILE_DOC = "docs/implementing-changes.md"
-CONTRACT_FILES_HEADING = "## Contract files"
 MANIFEST_MODULE = "deployer/manifest.py"
 MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
 TOOLS_MODULE = "deployer/tools.py"
@@ -510,7 +509,7 @@ CONTRACT_READERS: tuple[tuple[str, str, Callable[[Snapshot], dict[str, object]]]
     ("a tool floor", TOOLS_MODULE, _tool_floors),
     ("a PDF provider floor", PDF_POLICY_MODULE, _pdf_provider_floors),
 )
-CONTRACT_LISTS = ((PROFILE_DOC, CONTRACT_FILES_HEADING), (RELEASING_DOC, VERSIONING_HEADING))
+CONTRACT_LISTS = ((PROFILE, CONTRACT_FILES_HEADING), (RELEASING_DOC, VERSIONING_HEADING))
 
 
 def changed_contract_items(released: Snapshot, current: Snapshot) -> list[tuple[str, str]]:

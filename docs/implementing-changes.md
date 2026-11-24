@@ -114,7 +114,11 @@ hundred of them do, among the files of its kind or, for a form only, among the f
 still counts in a file inside a place its own `;`-separated clause of the **Search for** names, and a file that is the
 module always counts. The author reads those patterns before writing code and names the ones that apply in the plan or
 the pull request, so a known pattern is met while planning rather than in review. `change-skill` runs the same step
-before it plans a skill.
+before it plans a skill. For a change that resolves an issue, the skill's `fix_brief.py` writes the brief the plan
+starts from: the files and symbols the issue names, each symbol's callers, each file's twins, those patterns, the
+*Contract files* entries that name the files, and the rules every fix session meets, which
+`.claude/skills/implement-change/references/brief.md` holds, so a brief written for parallel sessions points at it
+rather than restating them.
 
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
