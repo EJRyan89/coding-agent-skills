@@ -1228,19 +1228,25 @@ def filesystem_write_problems(root: Path) -> list[str]:
 # another value; the ones that take no positional argument count only when given none, so a method of another object
 # sharing the name and taking one, such as an evaluation's exists(text), does not, none counts on Path(__file__), the
 # script's own file, and none on self or cls naming a method the enclosing class defines, as an evaluation's own walk.
-# A skill TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, so a renamed or emptied
-# folder is never read as conforming. Stated limits: Path.group, which a regular expression's match shares by name, so
-# it is not read; a read reached by a name computed at run time, as getattr(path, name); a path method a module's own
-# function wraps under another name; a path method called unbound on its class with the path as its argument, as
-# Path.exists(path); a call in a module that imports both os and os.path, which the shared resolver leaves unnamed; a
-# module read DIRECT_TREE_READS does not list, such as zipfile.is_zipfile, zipfile.Path, shutil.disk_usage,
-# shutil.unpack_archive, or os.pathconf; a read in a method of an ejryan89-skill-core or sibling class, reached through
-# an instance, which names no class; a core reader reached through another core module that imports it, as
-# tree_reader.read_bounded, dotnet_solution.path_key, or tree_reader.file_presence.is_present, which core_reads names
-# only by the module that defines it; a TREE_JUDGES function called with a tree other than the one the skill examines;
-# a sanctioned method called through an instance, which names no class, so its caller is not read; a named caller that
-# hands a sanctioned function a path its own caller gave it, since only the direct caller is named; and a core or
-# sibling function defined inside a module-level if or try, which core_reads never derives.
+# A skill TREE_READ_SKILLS names whose scripts folder holds no script to read is a problem, and so is a sibling's
+# scripts folder a policed module loads, so a renamed or emptied folder is never read as conforming. Stated limits:
+# Path.group, which a regular expression's match shares by name, so it is not read; a read reached by a name computed at
+# run time, as getattr(path, name); a path method a module's own function wraps under another name; a path method called
+# unbound on its class with the path as its argument, as Path.exists(path); a call in a module that imports both os and
+# os.path, which the shared resolver leaves unnamed; a module read DIRECT_TREE_READS does not list, such as
+# zipfile.is_zipfile, zipfile.Path, shutil.disk_usage, shutil.unpack_archive, or os.pathconf; a module reached through
+# importlib.import_module or __import__, even with a literal name; a read in a method of an ejryan89-skill-core or
+# sibling class, reached through an instance or its class, as Store.static(path), which names no function core_reads
+# derives; a core or sibling reader reached through another module that imports it, as tree_reader.read_bounded,
+# dotnet_solution.path_key, or tree_reader.file_presence.is_present, which core_reads names only by the module that
+# defines it; a sibling's scripts put on sys.path by a sibling_scripts call given anything but a literal skill name,
+# which no sibling folder is derived from; a TREE_JUDGES function called with a tree other than the one the skill
+# examines; a sanctioned method reached through an instance, as pairs.read(path), passed as a value through one, self
+# included, as map(self.peek, paths) or f = self.peek, or inherited and called from a subclass, which names no class, so
+# that caller is not read; a sanctioned named assignment holding a callable, a sanctioned nested function its parent
+# returns, and a sanctioned __init__, __post_init__, or property, whose callers are not read; a named caller that hands
+# a sanctioned function a path its own caller gave it, since only the direct caller is named; and a core or sibling
+# function defined inside a module-level if or try, which core_reads never derives.
 TREE_READ_SKILLS = (
     "skills/dotnet-format/scripts",
     "skills/dotnet-dependencies/scripts",
@@ -1545,6 +1551,12 @@ def _tree_read_scanned_files(root: Path) -> list[Path]:
 
 # Why a skill TREE_READ_SKILLS names is a problem when its scripts folder holds nothing to read.
 TREE_READ_SKILLS_PROBLEM = "TREE_READ_SKILLS names it, but it holds no script to read; name the skill's scripts folder"
+# Why a sibling skill's scripts folder a policed module loads is a problem when it holds nothing to read: the policy
+# derives no reader from it, so a call into it would pass unread.
+SIBLING_SCRIPTS_PROBLEM = (
+    "a policed module loads it through sibling_scripts, but it holds no script to read, so no reader of it is "
+    "derived; name a sibling skill whose scripts are there"
+)
 # How a caller in another module of the scripts folder is named in a TREE_READ_ALLOWED entry: its module, then its
 # scope.
 CALLER_MODULE_SEPARATOR = ":"
@@ -1752,7 +1764,13 @@ def tree_read_problems(root: Path) -> list[str]:
         for path, name, tree in python_trees(ordered, root, problems)
     ]
     core = REPOSITORY_ROOT / SKILL_CORE_SCRIPTS
-    helpers = core_reads(core, sibling_folders(root, [module.tree for module in modules]))
+    siblings = sibling_folders(root, [module.tree for module in modules])
+    problems += [
+        f"{folder.relative_to(root).as_posix()}: {SIBLING_SCRIPTS_PROBLEM}"
+        for folder in siblings
+        if not any(not path.name.startswith("test_") for path in file_presence.matching(folder, "*.py"))
+    ]
+    helpers = core_reads(core, siblings)
     problems += core_table_problems(core, repository_siblings())
     callers = _caller_problems(modules)
     for module in modules:

@@ -127,13 +127,14 @@ READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 UNKNOWN_MODEL = "unknown"
 # The reads outside the checkout whose guidance review_guidance reads through a tree reader, each with why: none reads a
 # file of a repository the skill examines. The code-review pipeline's own store, never a checkout under review, is read
-# through ejryan89-code-review-core's readers where the configuration places it: the configuration itself
-# (CODE_REVIEW_CONFIG, else its file under the home), the record archive under its archive_root, and the flag store
-# (CODE_REVIEW_FLAGS, else beside the configuration). The tree reader is bound to a checkout's guidance, which none of
-# them lies in.
+# through ejryan89-code-review-core's readers: the configuration itself (the --config the user names, else
+# CODE_REVIEW_CONFIG, else its file under the home), the record archive under the configuration's archive_root, and the
+# flag store (CODE_REVIEW_FLAGS, else its file in the home's code-review folder, whatever the configuration says). The
+# tree reader is bound to a checkout's guidance, which none of them lies in.
 TREE_READ_ALLOWED = {
     "working_scope": (
-        "reads the code-review configuration where CODE_REVIEW_CONFIG or the home places it: the pipeline's own store",
+        "reads the code-review configuration the user names with --config, else where CODE_REVIEW_CONFIG or the home "
+        "places it: the pipeline's own store",
         ("main",),
     ),
     "RecordPairs.read": (
@@ -154,18 +155,18 @@ TREE_READ_ALLOWED = {
         ("_run_synthesize", "create_report", "decide", "decide_custom", "synthesize"),
     ),
     "report_from_config": (
-        "reads the code-review configuration and the flag store where CODE_REVIEW_CONFIG, CODE_REVIEW_FLAGS, or the "
-        "home places them: the pipeline's own store",
+        "reads the code-review configuration the user names with --config, else where CODE_REVIEW_CONFIG or the home "
+        "places it, and the flag store where CODE_REVIEW_FLAGS or the home places it: the pipeline's own store",
         ("main",),
     ),
     "_open_flags": (
-        "reads the flag store where CODE_REVIEW_FLAGS or the configuration's folder places it, for the flags a "
-        "recommendation links: the pipeline's own store",
+        "reads the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, for the flags "
+        "a recommendation links: the pipeline's own store",
         ("decide", "decide_custom"),
     ),
     "_resolve_recorded": (
-        "resolves a flag in the flag store where CODE_REVIEW_FLAGS or the configuration's folder places it, reading it "
-        "first: the pipeline's own store",
+        "resolves a flag in the flag store where CODE_REVIEW_FLAGS places it, else in the home's code-review folder, "
+        "reading it first: the pipeline's own store",
         ("decide", "decide_custom"),
     ),
     "current_repository": (

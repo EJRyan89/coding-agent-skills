@@ -26,6 +26,7 @@ from fsops_platform import (
     core_table_problems,
     filesystem_write_problems,
     platform_code_problems,
+    sibling_folders,
     tree_read_problems,
 )
 from validation_support import write_fixture_tree
@@ -2407,6 +2408,61 @@ def test_tree_read_policy_refuses_a_call_into_a_reader_of_a_sibling_skills_scrip
         f"{SCRIPTS}/loads.py:9 reads a path with far_io.scan; {TREE_READ_ADVICE}",
     ]
     assert tree_read_findings({**SIBLING_FILES, f"{SCRIPTS}/loads.py": sanctioned}) == []
+
+
+SIBLING_PROBLEM = (
+    "a policed module loads it through sibling_scripts, but it holds no script to read, so no reader of it is "
+    "derived; name a sibling skill whose scripts are there"
+)
+
+
+def loader(*names: str) -> str:
+    """A policed module that puts each named sibling's scripts on sys.path and calls into fixture-sibling's reader."""
+    lines = "".join(f"sys.path.insert(0, str(sibling_scripts('{name}')))\n" for name in names)
+    return (
+        f"import sys\nfrom skill_roots import sibling_scripts\n{lines}"
+        "import sib_batch\ndef report(path):\n    return sib_batch.run_list(path)\n"
+    )
+
+
+def test_tree_read_policy_refuses_a_loaded_sibling_whose_scripts_folder_holds_no_script() -> None:
+    # A sibling whose scripts folder is missing, or holds only its suites, gives no reader to derive, so a call into it
+    # would pass unread: the folder is a problem, as a policed skill's own empty folder is.
+    files = {
+        f"{SCRIPTS}/loads.py": loader("fixture-missing", "fixture-suites"),
+        "skills/fixture-suites/scripts/test_only.py": "def test_x():\n    pass\n",
+    }
+    assert tree_read_findings(files) == [
+        f"skills/fixture-missing/scripts: {SIBLING_PROBLEM}",
+        f"skills/fixture-suites/scripts: {SIBLING_PROBLEM}",
+    ]
+    present = {**SIBLING_FILES, f"{SCRIPTS}/loads.py": loader("fixture-sibling")}
+    assert tree_read_findings(present) == [
+        f"{SCRIPTS}/loads.py:6 reads a path with sib_batch.run_list; {TREE_READ_ADVICE}"
+    ]
+
+
+def test_tree_read_policy_derives_siblings_that_load_each_other_and_leaves_the_core_to_itself() -> None:
+    # Two siblings that put each other on sys.path end the derivation with each read once, and a module naming
+    # ejryan89-skill-core through sibling_scripts adds no sibling folder: the findings are the plain load's.
+    looped = {
+        **SIBLING_FILES,
+        "skills/fixture-farther/scripts/far_back.py": "import sys\n"
+        "from skill_roots import sibling_scripts\n"
+        "sys.path.insert(0, str(sibling_scripts('fixture-sibling')))\n"
+        "VALUE = 1\n",
+    }
+    expected = [f"{SCRIPTS}/loads.py:7 reads a path with sib_batch.run_list; {TREE_READ_ADVICE}"]
+    files = {**looped, f"{SCRIPTS}/loads.py": loader("fixture-sibling", "ejryan89-skill-core")}
+    assert tree_read_findings(files) == expected
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        trees = [ast.parse((root / f"{SCRIPTS}/loads.py").read_text(encoding="utf-8"))]
+        assert sibling_folders(root, trees) == (
+            root / "skills" / "fixture-farther" / "scripts",
+            root / "skills" / "fixture-sibling" / "scripts",
+        )
 
 
 def test_tree_read_policy_reads_no_sibling_a_module_does_not_load() -> None:
