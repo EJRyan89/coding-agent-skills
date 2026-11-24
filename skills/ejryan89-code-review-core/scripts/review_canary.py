@@ -31,7 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -44,7 +44,7 @@ from link_probe import is_link_or_junction
 from path_containment import resolved_path
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
-from review_records import RecordError, ReviewRecord, validate_record
+from review_records import Comment, RecordError, ReviewRecord, validate_record
 from review_runtime import DOCUMENT_STAGES, GIT_DIFF_OPTIONS, RuntimeContractError, _safe_relative_path
 from typed_fields import FieldError, FieldReader
 
@@ -91,7 +91,7 @@ class FixtureChange:
     pull: dict[str, Any]  # the fields review_operation.PULL_FIELDS names, and the description, `body`
     diff: str
     undecodable: int  # bytes of the diff that were not UTF-8 and became U+FFFD
-    comments: list[dict[str, Any]]  # as the request's github_comments
+    comments: list[Comment]  # as the request's github_comments
     manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
     document_stage: str | None = None  # the stage pull.json names, or None
     closing_issues: list[dict[str, Any]] = field(default_factory=list)  # as the GitHub client lists them
@@ -265,10 +265,11 @@ class _Repository:
         return output_line(self.git(*IDENTITY, "commit-tree", "--no-gpg-sign", tree_id, *parents, "-m", message))
 
 
-def _comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _comments(threads: list[dict[str, Any]]) -> list[Comment]:
     """The threads as the request's review comments, numbered C1, C2, ... in order, as the GitHub client numbers
-    the open threads a person started."""
-    return [{"id": f"C{index}", **thread} for index, thread in enumerate(threads, start=1)]
+    the open threads a person started. Each thread is one `_thread` read from pull.json, with exactly THREAD_FIELDS,
+    so the id makes it a Comment; the cast is where that JSON enters, keeping the fixture's key order."""
+    return [cast(Comment, {"id": f"C{index}", **thread}) for index, thread in enumerate(threads, start=1)]
 
 
 def read_fixture_pull(directory: Path) -> dict[str, Any]:
