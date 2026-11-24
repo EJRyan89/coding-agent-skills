@@ -10,7 +10,7 @@ reach, with what holds it instead. A place the scan finds that neither table hol
 longer finds, fails, so a script that starts changing files through one of the steps the scan reads is listed in the
 pull request that makes it. A change a program the script starts makes, such as dotnet format, git, or a shell script,
 is no call the scan reads: STARTED names each command that changes files that way, with why the harness does not
-drive it, and a row naming no command a driver or NOT_RUN knows fails.
+drive it, and a row naming no driver or script fails.
 """
 
 from __future__ import annotations

@@ -1989,6 +1989,42 @@ class RecordingTests(InsightFixture):
                 self.assertFalse(locks.exists())
                 locks.mkdir()
 
+    def test_a_read_only_store_is_left_alone_when_every_flag_it_names_is_resolved_already(self) -> None:
+        # A decision that resolves no flag changes no store, so a read-only one is no refusal.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        resolve_flag(self.flags, flag, "Resolved elsewhere")
+        store = self.flags.read_bytes()
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            code, out, err = self.decide(json_path, "REC-001", "Correctness", flag)
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(
+            (0, [f"FLAG_ALREADY_RESOLVED {flag}", "DECIDED REC-001 accepted"], ""), (code, out.splitlines(), err)
+        )
+        self.assertEqual(store, self.flags.read_bytes())
+
+    def test_decide_custom_refuses_a_read_only_store_before_the_lock_makes_its_folder(self) -> None:
+        self.commit("owner/repo", 7, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
+        self.flag("rule", finding="F001")
+        json_path, lines = self.report(decide=True)
+        printed = shlex.split(lines[-1].removeprefix("DECIDE_CUSTOM "))
+        locks = json_path.parent / ".locks"
+        shutil.rmtree(locks)
+        before = self.written(json_path, json_path.with_suffix(".md"), self.flags)
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("decide-custom", "--report", str(json_path), *printed, "accepted"),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertFalse(locks.exists())
+        self.assertEqual(before, self.written(json_path, json_path.with_suffix(".md"), self.flags))
+
     def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         flag = self.flag("guideline")

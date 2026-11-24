@@ -1216,10 +1216,10 @@ def decide(
         raise InsightError("Name exactly one subject: a category, an analyzer, or a synthesized title")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
-    if decision == "accepted" and flags:
+    if decision == "accepted":
         # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
-        # resolves are read under the lock, and the store judged again there (_refuse_unchangeable_decision).
-        _refuse_unchangeable_store(services)
+        # resolves are read again under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_store_with_open(flags, services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         matching = [item for item in report["recommendations"] if item["id"] == recommendation_id]
@@ -1258,6 +1258,16 @@ def _refuse_unchangeable_decision(report_path: Path, pending: list[str], service
     with the flags it did resolve (see _resolve_recorded)."""
     refuse_unchangeable(report_path)
     if pending:
+        _refuse_unchangeable_store(services)
+
+
+def _refuse_store_with_open(flags: list[str], services: Services) -> None:
+    """Refuse a flag store it could not change when any of `flags` is still open in it, so a decision that would resolve
+    one is refused before anything is written; flags all resolved already change no store, which stays unjudged."""
+    if not flags:
+        return
+    status = {flag["id"]: flag["status"] for flag in load_store(services.flags_path())["flags"]}
+    if any(status.get(flag) == "open" for flag in flags):
         _refuse_unchangeable_store(services)
 
 
@@ -1345,10 +1355,10 @@ def decide_custom(
         raise InsightError(f"Decision must be one of: {', '.join(DECISIONS)}")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
-    if decision == "accepted" and flags:
+    if decision == "accepted":
         # The store an accepted decision resolves flags in is refused before the lock makes its folder; the flags it
-        # resolves are read under the lock, and the store judged again there (_refuse_unchangeable_decision).
-        _refuse_unchangeable_store(services)
+        # resolves are read again under the lock, and the store judged again there (_refuse_unchangeable_decision).
+        _refuse_store_with_open(flags, services)
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
         items = custom_candidates(report)
