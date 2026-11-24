@@ -1949,6 +1949,11 @@ def test_a_runtime_statement_whose_block_links_a_page_the_record_does_not_list_f
         pytest.param("`codex` is the name.", True, id="the-program-alone"),
         pytest.param("The canary reaches Copilot only through `copilot -p`.", False, id="adverb-without-verb"),
         pytest.param("Prefer the codex runs here.", False, id="lower-case-name"),
+        pytest.param("No Codex sandbox can start a packaged app.", True, id="one-word-of-the-subject"),
+        pytest.param("A headless `copilot -p` session cannot ask.", True, id="a-runtime-command-and-one-word"),
+        pytest.param("`verify` starts Copilot with arguments the repository writes.", False, id="a-word-that-ends-it"),
+        pytest.param("The tested Copilot CLI versions are in the README.", False, id="a-plural-then-a-verb"),
+        pytest.param("Codex CLI before 0.88.0 does not say.", False, id="more-than-one-word"),
     ],
 )
 @pytest.mark.usefixtures("no_exemptions")

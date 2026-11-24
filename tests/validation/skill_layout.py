@@ -409,14 +409,17 @@ RUNTIME_NAME = "|".join(
 )
 # A finite verb after a runtime's name: an auxiliary, or a word ending in `s` that is none of the words ending in `s`
 # that follow a runtime's name in a page without being its verb, such as `as` in `on Copilot CLI as before`, or the
-# plural in `the Copilot CLI versions`. One adverb may come between, as in `Codex never looks`, and a possessive and
-# one word before it, as in `Codex's sandbox cannot`.
+# plural in `the Copilot CLI versions`. One word of the subject may come between, after a possessive or not, as in
+# `Codex's sandbox cannot` and `No Codex sandbox can`, when it is none of NOT_VERBS and none of NOT_SUBJECT, the
+# words that end a subject rather than continue it, as `with` does in `starts Copilot with arguments`; and one adverb,
+# as in `Codex never looks`.
 AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|cannot|can|could|may|might|will|would|must|should"
 ADVERBS = "also|still|then|now|never|only|always|first|already|instead|again|itself"
 NOT_VERBS = "as|its|this|thus|plus|unless|across|always|less|versions|releases|skills|settings|users"
+NOT_SUBJECT = "with|without|from|in|on|under|through|for|to|at|by|of|and|or|but|before|after|than|that|which|when"
 RUNTIME_STATEMENT = re.compile(
-    rf"(?<![\w-])(?:(?:GitHub )?(?:{RUNTIME_NAME})|{RUNTIME_COMMAND})(?:'s [a-z-]+)? (?:(?:{ADVERBS}) )?"
-    rf"(?:(?:{AUXILIARIES})\b|(?!(?:{NOT_VERBS})\b)[a-z]+s\b)"
+    rf"(?<![\w-])(?:(?:GitHub )?(?:{RUNTIME_NAME})|{RUNTIME_COMMAND})(?:'s)?(?: (?!(?:{NOT_VERBS}|{NOT_SUBJECT})\b)"
+    rf"[a-z-]+)? (?:(?:{ADVERBS}) )?(?:(?:{AUXILIARIES})\b|(?!(?:{NOT_VERBS})\b)[a-z]+s\b)"
 )
 # Each sentence of a support page that states how a runtime behaves with no source the guidance record rereads, by
 # its page and its text as page_sentences gives it, with why it needs none.
@@ -452,6 +455,32 @@ UNSOURCED_STATEMENTS: dict[tuple[str, str], str] = {
         "With no `pwsh` on `PATH`, `check` prints no such line, since Codex then uses Windows PowerShell, which its "
         "sandbox starts; the validation suite still needs PowerShell 7.",
     ): "the other half of the pwsh observation above, from the same canary runs",
+    (
+        "docs/codex-support.md",
+        "`codex debug prompt-input` says `Network access is enabled` once the profile is read.",
+    ): "quotes what the command prints, which a reader runs to see it, and no page documents",
+    (
+        "docs/codex-support.md",
+        "Codex's sandbox cannot start either kind, and every skill script that runs `python` fails with:",
+    ): "a Windows behavior carried from the repository's first commit, which no Codex page states; deploy.py check's "
+    "python command line reports the alias that breaks it",
+    (
+        "docs/codex-support.md",
+        "No Codex sandbox can start a packaged app, so every command fails before it starts, even the one that reads a "
+        "skill:",
+    ): "observed in the runtime canary's Windows runs (#1423), which no Codex page documents; deploy.py check's pwsh "
+    "command line reports the alias that breaks it",
+    (
+        "docs/copilot-support.md",
+        "A `COPILOT_HOME` that names `~/.copilot` itself changes nothing, but Copilot compares the two by their "
+        "spelling, letter case included, so the same folder named in another case on Windows still hides the adapters.",
+    ): "reproduced with copilot skill list --json in throwaway homes (#1551), which Copilot's configuration directory "
+    "reference does not state",
+    (
+        "docs/copilot-support.md",
+        "A headless `copilot -p` session cannot ask, so every read of the skill is denied and the skill cannot run.",
+    ): "carried from the repository's first commit with no recorded observation; Copilot's programmatic reference "
+    "documents --add-dir for reads outside the working directory but not the denial, and the guidance audit rereads it",
     (
         "docs/copilot-support.md",
         "A `COPILOT_HOME` that is not an absolute path is refused by every command of `deploy.py` once its command "
@@ -497,12 +526,14 @@ def runtime_statement_source_problems(root: Path) -> list[str]:
     not list. A sentence UNSOURCED_STATEMENTS names needs none, for the reason it gives, and an entry that names no
     sentence of its page fails.
 
-    Limits: a name read as a verb's subject is a guess: a verb that follows the name after more than a possessive and
-    one word, or more than one adverb, is not read, as in `Codex CLI before 0.88.0 does not say`, and a name followed
-    by a verb it is not the subject of, as in `when Codex is installed`, is read as a statement. A link that sits in
-    another block, such as a list of sources below the paragraph, does not count for it. Only the runtime support
-    pages RUNTIME_PAGES names are read, so a runtime statement in another document, such as docs/installation.md,
-    is not.
+    Limits: a name read as a verb's subject is a guess: a verb that follows the name after more than one word, or more
+    than one adverb, is not read, as in `Codex CLI before 0.88.0 does not say`, and a name followed by a verb it is not
+    the subject of, as in `when Codex is installed`, is read as a statement. A link that sits in another block, such as
+    a list of sources below the paragraph, does not count for it. Any recorded link in a sentence's block holds every
+    statement in it, whatever the page covers; whether the page states the claim is the guidance audit's reading. An
+    UNSOURCED_STATEMENTS entry whose block later links a recorded page still exempts it, and an exempt sentence's block
+    is not checked for unrecorded links. Only the runtime support pages RUNTIME_PAGES names are read, so a runtime
+    statement in another document, such as docs/installation.md, is not.
     """
     try:
         record = guidance_record.read(root / guidance_record.GUIDANCE_PATH, [*RUNTIMES, guidance_record.PYTHON_SUBJECT])
