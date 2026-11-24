@@ -62,6 +62,27 @@ class ReadTests(unittest.TestCase):
             found.values,
         )
 
+    def test_a_later_binding_in_one_block_replaces_an_earlier_one_as_python_binds_it(self) -> None:
+        # Every literal binding was unioned, so STALE = 3 then STALE = 4 read as 3 or 4 where Python leaves 4.
+        cases = {
+            "at the top": ("STALE = 3\nSTALE = 4\n", {4}),
+            "in one if arm": ("if X:\n    STALE = 3\n    STALE = 4\nelse:\n    STALE = 5\n", {4, 5}),
+            "after an if": ("if X:\n    STALE = 3\nelse:\n    STALE = 5\nSTALE = 4\n", {4}),
+            "an if with no else": ("STALE = 3\nif X:\n    STALE = 4\n", {3, 4}),
+            "a loop's body": ("STALE = 3\nwhile X:\n    STALE = 4\n", {3, 4}),
+            "a loop's else": ("STALE = 3\nfor x in y:\n    pass\nelse:\n    STALE = 4\n", {4}),
+            "a try's paths": (
+                "STALE = 1\ntry:\n    STALE = 2\n    STALE = 3\nexcept E:\n    pass\nelse:\n    STALE = 4\n",
+                {1, 2, 3, 4},
+            ),
+            "a try's finally": ("try:\n    STALE = 2\nexcept E:\n    STALE = 3\nfinally:\n    STALE = 4\n", {4}),
+            "a match with no case taken": ("STALE = 3\nmatch X:\n    case 1:\n        STALE = 4\n", {3, 4}),
+            "a with block": ("STALE = 3\nwith X:\n    STALE = 4\n", {4}),
+        }
+        for case, (source, values) in cases.items():
+            with self.subTest(case):
+                self.assertEqual({"STALE": frozenset(values)}, constants(source).values)
+
     def test_an_annotation_alone_binds_nothing_and_a_bool_or_other_value_is_no_constant(self) -> None:
         found = constants("DECLARED: int\nFLAG = True\nTEXT = 'x'\nSUM = 2 + 1\n")
         self.assertEqual({}, found.values)

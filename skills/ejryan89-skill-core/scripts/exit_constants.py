@@ -7,14 +7,20 @@ reaches both. `read` takes a module's constants: each name its own scope binds, 
 `try`, `with`, loop, or `match` block, by a plain, chained, or annotated assignment of an int literal, `Final` or not.
 A name a binding of any other form reaches, an unpacking, an augmented assignment, a loop or `with` target, a walrus,
 a `del`, an `except ... as`, a match capture, a function or class definition, an import beside an assignment, or a
-`global` statement in any function, is unread, never the literal another binding gives it. Bindings in different
-branches give the name each value, since one run picks between them. `resolve` gives what an expression stands for:
+`global` statement in any function, is unread, never the literal another binding gives it. What a name stands for is
+what it can be once the module has run, as Python binds it: a later binding in one block replaces an earlier one, and
+a name bound in several arms of an `if` or `match`, in a loop's body, or on several paths through a `try` stands for
+each value a path can leave it, since one run picks between them. `resolve` gives what an expression stands for:
 an int literal, a name of the module's own constants, or one an import names, followed through each module a caller's
 `locate` finds, re-exports included; None for anything it cannot read, which the caller reports as unread, never as a
 code the program does not exit with.
 
-A stated limit: a name rebound through `globals()`, `setattr` on the module, or `exec` is read as the literals its
-bindings give it, since no binding statement shows the change.
+Stated limits, each a form no repository code writes: a name rebound through `globals()`, `setattr` on the module, or
+`exec`, a star import after the name's assignment, a `type` statement that binds the name, or an attribute write from
+another module, such as `codes.STALE = 9` in the module that imports `codes`, is read as the literals its own
+assignments give it, since no binding statement this reader reads shows the change. An import inside a function is
+read as the module's own, as python_names reads it, so a constant whose name it shares is unread: the reader fails
+closed there.
 """
 
 from __future__ import annotations
@@ -71,22 +77,70 @@ def _module_scope(node: ast.AST) -> Iterator[ast.AST]:
             pending.append(child)
 
 
+# What each name the module binds to int literals can stand for at one point of its run.
+State = dict[str, frozenset[int]]
+
+
+def _merge(*states: State) -> State:
+    """What each name can stand for after any of several paths, each ending in one of the states."""
+    merged: dict[str, set[int]] = {}
+    for state in states:
+        for name, numbers in state.items():
+            merged.setdefault(name, set()).update(numbers)
+    return {name: frozenset(numbers) for name, numbers in merged.items()}
+
+
+def _flow(body: list[ast.stmt], state: State) -> State:
+    """What each name can stand for after a block runs from `state`: a statement replaces what an earlier one of the
+    block bound, as Python does."""
+    for statement in body:
+        state = _step(statement, state)
+    return state
+
+
+def _step(statement: ast.stmt, state: State) -> State:
+    """What each name can stand for after one statement: an int literal's assignment binds its names to it; a
+    compound statement gives what any of its paths does, an `if`'s and a `match`'s arms, a loop's body run no, one, or
+    more times, and a `try`'s body, each handler after any statement of the body, its `else`, and its `finally` after
+    all of them."""
+    if isinstance(statement, ast.Assign | ast.AnnAssign):
+        number = _int_literal(statement.value)
+        if number is None:
+            return state
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        return {**state, **{target.id: frozenset({number}) for target in targets if isinstance(target, ast.Name)}}
+    if isinstance(statement, ast.If):
+        return _merge(_flow(statement.body, state), _flow(statement.orelse, state))
+    if isinstance(statement, ast.With | ast.AsyncWith):
+        return _flow(statement.body, state)
+    if isinstance(statement, ast.For | ast.AsyncFor | ast.While):
+        once = _flow(statement.body, state)
+        again = _flow(statement.body, _merge(state, once))
+        return _flow(statement.orelse, _merge(state, once, again))
+    if isinstance(statement, ast.Try | ast.TryStar):
+        # A handler runs after any statement of the body, so from every state the body passes through.
+        passed = [state]
+        for inner in statement.body:
+            passed.append(_step(inner, passed[-1]))
+        tried, partway = passed[-1], _merge(*passed)
+        ends = [_flow(statement.orelse, tried), *(_flow(handler.body, partway) for handler in statement.handlers)]
+        return _flow(statement.finalbody, _merge(*ends))
+    if isinstance(statement, ast.Match):
+        return _merge(state, *(_flow(case.body, state) for case in statement.cases))
+    return state
+
+
 def read(tree: ast.Module, aliases: dict[str, str]) -> ModuleConstants:
     """The constants of a module, given what its imports bind (python_names.import_aliases, with any relative import
-    the caller resolves): each name bound only to int literals in the module's own scope, and each name some other
-    binding reaches, as the module's docstring lists them."""
-    values: dict[str, set[int]] = {}
+    the caller resolves): what each name bound only to int literals in the module's own scope can stand for once the
+    module has run, and each name some other binding reaches, as the module's docstring lists them."""
     unread: set[str] = set()
     for node in _module_scope(tree):
         if isinstance(node, ast.Assign | ast.AnnAssign):
-            if node.value is None:  # an annotation alone binds nothing
+            if node.value is None or _int_literal(node.value) is not None:
                 continue
-            number = _int_literal(node.value)
             for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                if isinstance(target, ast.Name) and number is not None:
-                    values.setdefault(target.id, set()).add(number)
-                else:
-                    unread.update(_stored(target))
+                unread.update(_stored(target))
         elif isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor | ast.NamedExpr):
             unread.update(_stored(node.target))
         elif isinstance(node, ast.withitem) and node.optional_vars is not None:
@@ -101,10 +155,11 @@ def read(tree: ast.Module, aliases: dict[str, str]) -> ModuleConstants:
             unread.add(node.name)
     # A function that declares a name global may bind it, so no literal is what the name stands for.
     unread.update(name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names)
+    values = _flow(tree.body, {})
     # A name an import binds and an assignment binds too stands for either.
     unread.update(name for name in values if name in aliases)
     return ModuleConstants(
-        {name: frozenset(numbers) for name, numbers in values.items() if name not in unread}, frozenset(unread), aliases
+        {name: numbers for name, numbers in values.items() if name not in unread}, frozenset(unread), aliases
     )
 
 

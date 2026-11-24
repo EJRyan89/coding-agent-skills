@@ -3213,10 +3213,11 @@ def status_lines(folder: Path) -> list[str]:
 
     The scripts read are the skill's own, every script its commands run and the scripts beside it, and
     ejryan89-skill-core's. UNPRINTED is a status word a code span names on a prose line about output that none of them
-    prints; EXIT_MISMATCH an exit code the prose states that none of them uses; UNEXPLAINED a line that a script the
-    skill runs, its own or a repository tool, starts with a status word the Markdown never names; SCRIPT_MISSING a
-    command naming a script that does not exist. A skill with no script of its own that runs none has nothing else to
-    compare.
+    prints; EXIT_MISMATCH an exit code the prose states that none of them uses, and EXIT_UNREAD one that none of the
+    exits they read gives when some exit's constant is unread, so the code may be that one; UNEXPLAINED a line that a
+    script the skill runs, its own or a repository tool, starts with a status word the Markdown never names;
+    SCRIPT_MISSING a command naming a script that does not exist. A skill with no script of its own that runs none has
+    nothing else to compare.
     """
     markdown = skill_markdown(folder)
     root = repository_root(folder)

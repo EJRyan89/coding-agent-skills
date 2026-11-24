@@ -2031,6 +2031,54 @@ class StatusLineTests(TemporaryTestCase):
         )
         self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
 
+    def test_a_constant_a_later_assignment_replaces_gives_only_its_last_value(self) -> None:
+        # Every literal binding was unioned, so the 3 the script never exits with was read as a code it does.
+        for case, constant in (
+            ("at the top", "STALE = 3\nSTALE = 4\n"),
+            ("in one if arm", "if sys.platform == 'win32':\n    STALE = 3\n    STALE = 4\nelse:\n    STALE = 4\n"),
+        ):
+            with self.subTest(case):
+                folder = self.skill(
+                    "It exits 3 when the plan is stale.\n",
+                    f"import sys\n\n{constant}\ndef stop() -> None:\n    sys.exit(STALE)\n",
+                )
+                self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_a_name_a_function_declares_global_or_binds_only_in_a_nested_scope_is_the_module_s(self) -> None:
+        # A global the function assigns is the module's, bound otherwise than to a literal, so its code is unread; a
+        # name only a nested function binds is the module's constant, read as 3.
+        folder = self.skill(
+            "It exits 3 when the plan is stale.\n",
+            "import sys\n\nSTALE = 3\n\ndef stop() -> None:\n    global STALE\n    STALE = 3\n    sys.exit(STALE)\n",
+        )
+        self.assertEqual([f"EXIT_UNREAD {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+        folder = self.skill(
+            "It exits 3 when the plan is stale.\n",
+            "import sys\n\nSTALE = 3\n\n"
+            "def stop() -> None:\n    def helper() -> None:\n        STALE = 9\n    sys.exit(STALE)\n",
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_a_name_a_function_or_lambda_binds_itself_is_not_the_module_s_constant(self) -> None:
+        for case, function in (
+            ("a lambda parameter", "handler = lambda STALE: sys.exit(STALE)\n"),
+            (
+                "an except name",
+                "def stop() -> None:\n    try:\n        pass\n    except OSError as STALE:\n        sys.exit(STALE)\n",
+            ),
+            (
+                "a match capture",
+                "def stop(x) -> None:\n    match x:\n        case STALE:\n            sys.exit(STALE)\n",
+            ),
+            (
+                "a nested definition",
+                "def stop() -> None:\n    def STALE() -> None:\n        pass\n    sys.exit(STALE)\n",
+            ),
+        ):
+            with self.subTest(case):
+                folder = self.skill("It exits 3 when the plan is stale.\n", f"import sys\n\nSTALE = 3\n\n{function}")
+                self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
     def test_quit_a_code_keyword_a_bare_system_exit_and_a_message_exit_as_validation_reads_them(self) -> None:
         # The exit calls were exit, _exit, and SystemExit given a positional code, so each of these was a false
         # EXIT_MISMATCH: quit, a code given by its keyword, a SystemExit raised as the class, which exits 0, and a
@@ -5627,3 +5675,51 @@ def test_the_one_folder_listings_leave_out_a_sidecar_beside_its_file_and_keep_an
     write(skill / "scripts" / "._check.py", "x\n")
     scripts = skill_inventory.skill_scripts(skill, skill / "scripts")
     assert [path.name for path in scripts] == ["._check.py", "check.py", "run.py"]
+
+
+def test_local_names_are_a_function_s_parameters_and_own_bindings_but_its_declared_and_nested_scopes_names() -> None:
+    tree = ast.parse(
+        "def outer(a, /, b, *rest, c, **more):\n"
+        "    global DECLARED\n"
+        "    DECLARED = 1\n"
+        "    stored = 2\n"
+        "    def nested(inner):\n"
+        "        nonlocal stored\n"
+        "        stored = 3\n"
+        "        hidden = 4\n"
+        "    class Kind:\n"
+        "        attribute = 5\n"
+        "    try:\n"
+        "        pass\n"
+        "    except OSError as caught:\n"
+        "        pass\n"
+        "    match a:\n"
+        "        case [first, *others]:\n"
+        "            pass\n"
+        "    del removed\n"
+        "    handler = lambda given: given\n"
+    )
+    outer = tree.body[0]
+    assert isinstance(outer, ast.FunctionDef)
+    nested = outer.body[3]
+    assert isinstance(nested, ast.FunctionDef)
+    handler = outer.body[-1]
+    assert isinstance(handler, ast.Assign)
+    assert isinstance(handler.value, ast.Lambda)
+    assert skill_inventory.local_names(outer) == {
+        "a",
+        "b",
+        "rest",
+        "c",
+        "more",
+        "stored",
+        "nested",
+        "Kind",
+        "caught",
+        "first",
+        "others",
+        "removed",
+        "handler",
+    }
+    assert skill_inventory.local_names(nested) == {"inner", "hidden"}
+    assert skill_inventory.local_names(handler.value) == {"given"}

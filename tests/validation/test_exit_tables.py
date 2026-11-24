@@ -1202,6 +1202,12 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
             id="a final constant another module re-exports",
         ),
         pytest.param(
+            "STOP = 3\nSTOP = 4\ndef main() -> int:\n    return STOP\n",
+            {},
+            {1, 4},
+            id="a constant a later assignment replaces",
+        ),
+        pytest.param(
             "STOP = 3\nSTOP += 1\ndef main() -> int:\n    return STOP\n",
             {},
             None,
@@ -1233,6 +1239,55 @@ def test_the_reader_reads_a_constant_as_ejryan89_skill_core_s_exit_constants_rea
     else:
         assert reader.reading.codes == codes
         assert reader.reading.unread == []
+
+
+REFUSED = (
+    "class Refused(Exception):\n    def __init__(self, exit_code={default}):\n        self.exit_code = exit_code\n"
+    "def main() -> int:\n    try:\n        check()\n    except Refused as error:\n        return error.exit_code\n"
+    "    return 0\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("default", "check", "codes", "unread"),
+    [
+        pytest.param(
+            "13", "def check():\n    raise Refused(exit_code=lookup())\n", {0, 1, 13}, ["lookup()"], id="a keyword"
+        ),
+        pytest.param(
+            "lookup()", "def check():\n    raise Refused(exit_code=14)\n", {0, 1, 14}, ["lookup()"], id="a default"
+        ),
+        pytest.param(
+            "13",
+            "def check(exit_code=14):\n    raise Refused(exit_code=exit_code)\n",
+            {0, 1, 13, 14},
+            [],
+            id="a parameter passed on",
+        ),
+        pytest.param(
+            "13",
+            "def check():\n    try:\n        inner()\n    except Refused as refusal:\n"
+            "        raise Refused(exit_code=refusal.exit_code)\ndef inner():\n    raise Refused(exit_code=14)\n",
+            {0, 1, 13, 14},
+            [],
+            id="another error's code passed on",
+        ),
+    ],
+)
+def test_an_exit_code_keyword_or_default_the_reader_cannot_read_is_unread(
+    default: str, check: str, codes: set[int], unread: list[str]
+) -> None:
+    # A keyword or default whose code_of was None was dropped with no unread mark, so a table that left out the code it
+    # gives passed.
+    source = f"from console import run_main\n{REFUSED.format(default=default)}{check}"
+    source += "if __name__ == '__main__':\n    run_main(main)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    assert reader.reading.codes == codes
+    assert [expression for _, _, expression in reader.reading.unread] == unread
 
 
 PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main)\n"

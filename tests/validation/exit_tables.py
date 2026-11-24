@@ -467,6 +467,9 @@ class CodeReader:
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
         self.error_codes: set[int] = set()
+        # Each exit_code keyword or default whose code the reader cannot read, with its module, recorded as unread
+        # where a return reads an error's exit_code: see read_codes.
+        self.error_unread: list[tuple[Module, ast.expr]] = []
         # The modules whose reached code parses the command line, where its subcommands are declared.
         self.parsing: set[Path] = set()
 
@@ -490,7 +493,8 @@ class CodeReader:
         return exit_constants.resolve(node, module.constants, self.constants_named)
 
     def error_defaults(self) -> set[int]:
-        """Each default a parameter named exit_code takes in a module the reader followed."""
+        """Each default a parameter named exit_code takes in a module the reader followed, recording one it cannot
+        read in error_unread."""
         found: set[int] = set()
         for module in self.modules.values():
             for node in ast.walk(module.tree):
@@ -505,13 +509,24 @@ class CodeReader:
                         for each, default in zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True)
                     ),
                 ]
-                found |= {
-                    number
-                    for parameter, default in pairs
-                    if parameter.arg == ERROR_CODE and default is not None
-                    for number in self.code_of(module, default) or ()
-                }
+                for parameter, default in pairs:
+                    if parameter.arg == ERROR_CODE and default is not None:
+                        found |= self.error_code(module, default) or set()
         return found
+
+    def error_code(self, module: Module, node: ast.expr) -> frozenset[int] | None:
+        """The codes an exit_code keyword or default gives, or None, recording it in error_unread, when the reader
+        cannot read it. A parameter named exit_code passed on as itself, or another error's exit_code passed on, as
+        `exit_code=refusal.exit_code`, gives nothing of its own: each default and keyword that sets one is read where
+        it is written."""
+        if (isinstance(node, ast.Name) and node.id == ERROR_CODE) or (
+            isinstance(node, ast.Attribute) and node.attr == ERROR_CODE
+        ):
+            return None
+        numbers = self.code_of(module, node)
+        if numbers is None:
+            self.error_unread.append((module, node))
+        return numbers
 
     def constants_named(self, dotted: str) -> exit_constants.ModuleConstants | None:
         """The constants of the module a dotted name names, as module_named finds it."""
@@ -912,7 +927,7 @@ class CodeReader:
                 if not isinstance(node, ast.Call):
                     continue
                 for keyword in node.keywords:
-                    if keyword.arg == ERROR_CODE and (numbers := self.code_of(module, keyword.value)) is not None:
+                    if keyword.arg == ERROR_CODE and (numbers := self.error_code(module, keyword.value)) is not None:
                         self.error_codes |= numbers
                 name = qualified_name(node.func, module.aliases)
                 if name in EXIT_CALLS:
@@ -1049,6 +1064,8 @@ def read_codes(root: Path, entry: EntryPoint) -> CodeReader:
     reader.read(module)
     if reader.reads_error_code:
         reader.reading.codes |= reader.error_codes | reader.error_defaults()
+        for owner, node in reader.error_unread:
+            reader._unread(node, reader.module_scope(owner))
     reader.reading.unread.sort(key=lambda found: (found[0].as_posix(), found[1], reader.unread_seen[found], found[2]))
     return reader
 
