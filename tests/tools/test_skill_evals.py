@@ -307,6 +307,10 @@ FIXTURE_PULL = {
 }
 
 
+# The file a fixture adds one line of when its expectations name no path.
+CHANGED = "change.go"
+
+
 def judged_lengths(expectations: object) -> dict[str, int]:
     """The last line each `finding` or `no_finding_above` expectation names on each plain relative path it names, 1
     where it names no lines. Read here, apart from the loader, so a fixture is written whatever the loader reads."""
@@ -324,16 +328,45 @@ def judged_lengths(expectations: object) -> dict[str, int]:
     return lengths
 
 
+def docs_manifest(uncovered: str | None = None) -> dict[str, Any]:
+    """A specialists manifest whose one specialist, docs-review, reviews the files under docs/, with `uncovered` set
+    when given."""
+    value: dict[str, Any] = {
+        "schema_version": 2,
+        "id": "fixture-specialists",
+        "protocol_version": 1,
+        "kind": "specialists",
+        "supports": ["initial", "re-review"],
+        "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
+        "resources": [],
+        "specialists": [
+            {
+                "id": "docs-review",
+                "category": "Documentation",
+                "profile": "agents/docs.md",
+                "include": ["^docs/"],
+                "exclude": [],
+                "resources": [],
+                "when": None,
+            }
+        ],
+        "conditions": {},
+    }
+    return value if uncovered is None else {**value, "uncovered": uncovered}
+
+
 def write_scenario(root: Path, name: str, spec: dict[str, Any], skill: str = "demo", *, added: bool = True) -> Path:
     """A scenario folder holding `spec`, its fixture's base and head trees, and its pull request. With `added`, the
     head adds every line up to the last each expectation judges on each of its paths, which the base lacks, so a
-    finding may sit on any of them."""
+    finding may sit on any of them, and, when they name no path, one line of CHANGED, since a change that adds no line
+    is refused."""
     directory = root / skill / name
     for tree in ("base", "head"):
         (directory / tree).mkdir(parents=True, exist_ok=True)
     (directory / "pull.json").write_text(json.dumps(FIXTURE_PULL), encoding="utf-8")
     (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
-    for path, length in judged_lengths(spec.get("expectations") if added else []).items():
+    lengths = judged_lengths(spec.get("expectations") if added else [])
+    for path, length in (lengths or ({CHANGED: 1} if added else {})).items():
         target = directory / "head" / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("".join(f"line {number}\n" for number in range(1, length + 1)), encoding="utf-8")
@@ -623,13 +656,13 @@ class LoaderTests(unittest.TestCase):
         self.assertIn("expectations must be a non-empty list", self.load_error({**scenario_spec(), "expectations": []}))
 
     def test_a_tree_is_required(self) -> None:
-        directory = write_scenario(self.root, "case", scenario_spec())
+        directory = write_scenario(self.root, "case", scenario_spec(), added=False)
         (directory / "head").rmdir()
         with self.assertRaisesRegex(ScenarioError, "case: has no head/ tree"):
             skill_evals_scenarios.load_scenarios("demo", root=self.root)
 
     def test_a_tree_or_pull_json_of_the_wrong_kind_is_named_so_never_as_missing(self) -> None:
-        directory = write_scenario(self.root, "case", scenario_spec())
+        directory = write_scenario(self.root, "case", scenario_spec(), added=False)
         (directory / "head").rmdir()
         (directory / "head").write_text("", encoding="utf-8")
         with self.assertRaisesRegex(ScenarioError, "case: its head/ tree is not a folder$"):
@@ -757,6 +790,150 @@ class LoaderTests(unittest.TestCase):
         (directory / "head" / "tools" / "a.sh").write_text("echo a\n", encoding="utf-8")
         return directory
 
+    def test_a_manifest_that_ignores_uncovered_files_gives_the_generic_reviewer_none_once_a_specialist_matches(
+        self,
+    ) -> None:
+        # The pipeline's generic role then reviews nothing, so a generic-review expectation on tools/a.sh is unjudged.
+        never = (
+            "case: generic-review never reviews tools/a.sh: of the scenario's changed files, its route reaches none "
+            "of them"
+        )
+        for uncovered, matched, refused in (
+            ("ignore", True, never),
+            ("ignore", False, None),
+            ("review", True, None),
+            (None, True, None),
+        ):
+            with self.subTest(uncovered=uncovered, matched=matched):
+                shutil.rmtree(self.root / "demo", ignore_errors=True)
+                directory = self.scoped_fixture(docs_manifest(uncovered))
+                if matched:
+                    (directory / "head" / "docs").mkdir()
+                    (directory / "head" / "docs" / "a.md").write_text("# A\n", encoding="utf-8")
+                if refused is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refused, str(raised.exception))
+
+    def test_a_change_that_adds_no_line_is_refused(self) -> None:
+        # A reviewer anchors a finding only on an added line, so a review of such a change could raise nothing, and
+        # its verdict and any no_finding_above would be decided by a review that judged nothing.
+        refusal = (
+            "case: the scenario's change adds no line to any file it changes ({}), and a reviewer anchors a finding "
+            "only on an added line"
+        )
+        for name, (base, head), refused in (
+            ("deleted", ({"gone.go": "a\n"}, {}), refusal.format("gone.go")),
+            ("trimmed", ({"trimmed.go": "a\nb\n"}, {"trimmed.go": "a\n"}), refusal.format("trimmed.go")),
+            ("moved", ({"old.go": "a\n"}, {"new.go": "a\n"}), refusal.format("new.go")),
+            ("empty", ({}, {}), refusal.format("no file")),
+            ("added", ({"gone.go": "a\n"}, {"kept.go": "b\n"}), None),
+            # A run diffs a Word document's or a PDF's extracted text, which the loader does not extract.
+            ("docx", ({"gone.go": "a\n"}, {"report.docx": b"PK\x03\x04\x00\x00 a zipped document"}), None),
+            ("pdf", ({"report.pdf": "a\nb\n"}, {"report.pdf": "a\n"}), None),
+            # A document the change deletes adds nothing, extracted or not.
+            (
+                "deleted docx",
+                ({"report.docx": b"PK\x03\x04\x00\x00 a zipped document"}, {}),
+                refusal.format("report.docx"),
+            ),
+            ("deleted pdf", ({"report.pdf": "a\nb\n"}, {}), refusal.format("report.pdf")),
+        ):
+            with self.subTest(name=name):
+                shutil.rmtree(self.root / "demo", ignore_errors=True)
+                directory = write_scenario(self.root, "case", scenario_spec(), added=False)
+                for tree, files in (("base", base), ("head", head)):
+                    for path, content in files.items():
+                        data = content if isinstance(content, bytes) else content.encode("utf-8")
+                        (directory / tree / path).write_bytes(data)
+                if refused is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refused, str(raised.exception))
+
+    def test_a_re_review_that_judges_dispositions_loads_though_its_change_adds_no_line(self) -> None:
+        # An author withdrawing the lines a prior finding was on adds nothing, yet the re-review still judges the prior
+        # findings' dispositions and the ledger; one that judges neither could raise nothing to judge.
+        refused = (
+            "case: the scenario's change adds no line to any file it changes (store.go), and a reviewer anchors a "
+            "finding only on an added line"
+        )
+        verdict = {"kind": "verdict", "verdict": "APPROVED"}
+        for name, expectations, refusal in (
+            ("disposition", [{"kind": "disposition", "entry": "v1:F001", "disposition": "addressed"}, verdict], None),
+            ("ledger", [{"kind": "ledger", "addressed": 3, "still_present": 0}, verdict], None),
+            ("verdict", [verdict], refused),
+        ):
+            with self.subTest(name=name):
+                shutil.rmtree(self.root / "demo", ignore_errors=True)
+                spec = scenario_spec(*expectations, mode="re-review", prior="prior.json")
+                directory = write_scenario(self.root, "case", spec, added=False)
+                (directory / "prior.json").write_text("{}", encoding="utf-8")
+                (directory / "base" / "store.go").write_text("a\n", encoding="utf-8")
+                if refusal is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refusal, str(raised.exception))
+
+    def test_a_scoped_no_finding_above_without_paths_needs_its_reviewer_to_reach_an_added_line(self) -> None:
+        # Nothing the reviewer raises could sit on a file the change adds no line to, so the expectation would pass
+        # unjudged. The head adds tools/a.sh, which docs-review never reaches.
+        clean = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
+        anchors = "and a reviewer anchors a finding only on an added line"
+        only = "case: no_finding_above of {} judges no added line: of the scenario's changed files, its route reaches "
+        for name, (uncovered, base, head), expectation, refused in (
+            (
+                "deleted",
+                (None, {"docs/gone.md": "a\n"}, {}),
+                {**clean, "source": "docs-review"},
+                only.format("docs-review") + f"only docs/gone.md, which the change adds no line to, {anchors}",
+            ),
+            (
+                "trimmed",
+                (None, {"docs/gone.md": "a\n", "docs/b.md": "a\nb\n"}, {"docs/b.md": "a\n"}),
+                {**clean, "source": "docs-review"},
+                only.format("docs-review")
+                + f"only docs/b.md, docs/gone.md, which the change adds no line to, {anchors}",
+            ),
+            (
+                "ignored",
+                ("ignore", {"docs/gone.md": "a\n"}, {}),
+                {**clean, "source": "generic-review"},
+                only.format("generic-review") + f"none of them, {anchors}",
+            ),
+            ("added", (None, {"docs/gone.md": "a\n"}, {"docs/a.md": "b\n"}), {**clean, "source": "docs-review"}, None),
+            ("pdf", (None, {"docs/a.pdf": "a\nb\n"}, {"docs/a.pdf": "a\n"}), {**clean, "source": "docs-review"}, None),
+            # One that names its paths is held to their added lines instead, and one with no source to the change's.
+            (
+                "paths",
+                (None, {"docs/gone.md": "a\n"}, {}),
+                {**clean, "source": "generic-review", "paths": ["tools/a.sh"]},
+                None,
+            ),
+            ("unscoped", (None, {"docs/gone.md": "a\n"}, {}), clean, None),
+        ):
+            with self.subTest(name=name):
+                shutil.rmtree(self.root / "demo", ignore_errors=True)
+                directory = self.scoped_fixture(docs_manifest(uncovered))
+                spec = scenario_spec(expectation, {"kind": "verdict", "verdict": "APPROVED"})
+                (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
+                for tree, files in (("base", base), ("head", head)):
+                    for path, text in files.items():
+                        (directory / tree / path).parent.mkdir(exist_ok=True)
+                        (directory / tree / path).write_text(text, encoding="utf-8")
+                if refused is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refused, str(raised.exception))
+
     def test_a_scoped_expectation_of_a_fixture_with_no_manifest_reaches_every_changed_file(self) -> None:
         self.scoped_fixture()
         self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
@@ -860,6 +1037,8 @@ class LoaderTests(unittest.TestCase):
             # A run diffs a Word document's or a PDF's extracted text, which the loader does not extract.
             ({**found, "path": "report.docx", "lines": [12]}, None),
             ({**found, "path": "report.pdf", "lines": [12]}, None),
+            # A document the change deletes adds nothing.
+            ({**found, "path": "gone.pdf", "lines": [1]}, none_to.format("finding gone.pdf", "gone.pdf")),
         ):
             with self.subTest(expectation=expectation):
                 again = {"mode": "re-review", "prior": "prior.json"} if expectation["kind"] == "repeats" else {}
@@ -876,6 +1055,7 @@ class LoaderTests(unittest.TestCase):
                     ("base", "runs.go", "a\nd\ne\n"),
                     ("head", "runs.go", "a\nb\nc\nd\ne\nf\n"),
                     ("head", "report.pdf", "a\nb\nc\n"),
+                    ("base", "gone.pdf", "a\nb\n"),
                 ):
                     (directory / tree / path).write_text(text, encoding="utf-8")
                 (directory / "prior.json").write_text("{}", encoding="utf-8")
@@ -2299,7 +2479,12 @@ class ReviewerScenarioTests(unittest.TestCase):
         clean = {"kind": "no_finding_above", "severity": "SHOULD_FIX"}
         spec = reviewer_spec()
         spec["expectations"] = [{**clean, "source": "sibling-spellings"}]
-        write_reviewer_scenario(self.root, spec)
+        directory = write_reviewer_scenario(self.root, spec)
+        # sibling-spellings routes a fix's change to tools/hub_guard.py, so its expectation judges an added line.
+        pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+        (directory / "pull.json").write_text(json.dumps({**pull, "title": "fix: guard"}), encoding="utf-8")
+        (directory / "head" / "tools").mkdir()
+        (directory / "head" / "tools" / "hub_guard.py").write_text("GUARD = 1\n", encoding="utf-8")
         self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
         spec["expectations"] = [{**clean, "source": "sibling-spelling"}]
         write_reviewer_scenario(self.root, spec)
@@ -3794,9 +3979,13 @@ class EvaluateTests(unittest.TestCase):
         own.mkdir(parents=True)
         shared.chmod(0o777)
         self.addCleanup(shared.chmod, 0o755)
-        seams = self.seams(claude, make_home=skill_evals.new_home)
-        with mock.patch.object(tempfile, "tempdir", str(own)):
-            status, lines = self.evaluate(["--jobs", "1"], seams, only=["clean-change"])
+
+        def make_home() -> Path:
+            # Only the home is made there: loading the scenario reads its fixture's change in a folder of its own.
+            with mock.patch.object(tempfile, "tempdir", str(own)):
+                return skill_evals.new_home()
+
+        status, lines = self.evaluate(["--jobs", "1"], self.seams(claude, make_home=make_home), only=["clean-change"])
         self.assertEqual(1, status)
         self.assertEqual([], claude.calls)
         self.assertEqual(

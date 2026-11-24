@@ -490,6 +490,13 @@ def uncovered(
     return [path for path in changed if path not in matched]
 
 
+def ignores_uncovered(manifest: dict[str, Any], changed: list[str], outside: list[str]) -> bool:
+    """Whether the generic reviewer reviews none of the `uncovered` files `outside` of the `changed` ones: the manifest
+    sets `uncovered` to `ignore` and a specialist matches a changed file, so `outside` is not all of them. With no
+    specialist matching one, the generic reviewer reviews every changed file whatever the manifest sets."""
+    return len(outside) < len(changed) and manifest.get("uncovered", "review") == "ignore"
+
+
 def unreviewed(manifest: dict[str, Any], outside: list[str], routes: dict[str, list[str]]) -> list[str]:
     """Of the `uncovered` files, those a manifest that sets `uncovered` to `ignore` leaves unreviewed, in their order:
     each that no specialist sharing its files reviews on an open route. Every one of them stays out of the generic
@@ -1521,7 +1528,7 @@ def _generic_role(
     # Matching, not routing, determines generic scope: a closed condition deliberately skips its matched files.
     outside = uncovered(manifest, changed, renamed)
     matched = len(outside) < len(changed)
-    ignore = matched and manifest.get("uncovered", "review") == "ignore"
+    ignore = ignores_uncovered(manifest, changed, outside)
     ignored = unreviewed(manifest, outside, routes) if ignore else []
     if ignored:
         notes.append(

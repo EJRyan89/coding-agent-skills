@@ -460,6 +460,18 @@ class DiffAndRoutingTests(unittest.TestCase):
         # A specialist that does not share its files reviews nothing uncovered, so it leaves the list as it is.
         self.assertEqual(outside, rs.unreviewed(sharing, outside, {"csharp-review": outside}))
 
+    def test_a_manifest_ignores_uncovered_files_only_once_a_specialist_matches(self) -> None:
+        changed = ["db/Procs.sql", "README.md"]
+        ignoring = validate_adapter_manifest(manifest(uncovered="ignore"))
+        reviewing = validate_adapter_manifest(manifest(uncovered="review"))
+        unset = validate_adapter_manifest(manifest())
+        self.assertTrue(rs.ignores_uncovered(ignoring, changed, rs.uncovered(ignoring, changed)))
+        self.assertFalse(rs.ignores_uncovered(reviewing, changed, rs.uncovered(reviewing, changed)))
+        self.assertFalse(rs.ignores_uncovered(unset, changed, rs.uncovered(unset, changed)), "review is the default")
+        # With no specialist matching a file, the generic reviewer reviews every one, whatever the manifest sets.
+        self.assertFalse(rs.ignores_uncovered(ignoring, ["README.md"], rs.uncovered(ignoring, ["README.md"])))
+        self.assertFalse(rs.ignores_uncovered(ignoring, [], []))
+
     def test_the_reads_of_the_conditions_routing_would_run(self) -> None:
         def declared(**conditions: dict[str, Any]) -> dict[str, Any]:
             value = manifest()
