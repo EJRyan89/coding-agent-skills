@@ -661,8 +661,14 @@ def test_the_script_runs_as_a_program_from_any_folder(tmp_path: Path) -> None:
     """Run as SKILL.md runs it, `python -B <script>`, from another folder, with no PYTHONPATH to find its modules."""
     script = Path(fix_brief.__file__).resolve()
     environment = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONSAFEPATH"}}
+    # The program writes its usage error through sys.stderr, in the locale's encoding.
     finished = subprocess.run(
-        [sys.executable, "-B", str(script)], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
+        [sys.executable, "-B", str(script)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        encoding="locale",
+        check=False,
     )
     assert finished.returncode == 2
     assert "the following arguments are required: issue" in finished.stderr
