@@ -14,7 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
-from checkout_fixture import BRANCHES_REFSPEC, FOREIGN, PULL_REQUESTS_REFSPEC, follow, make_foreign, own_checkout
+from checkout_fixture import (
+    BRANCHES_REFSPEC,
+    FOREIGN,
+    PULL_REQUESTS_REFSPEC,
+    another_remote,
+    follow,
+    make_foreign,
+    own_checkout,
+    push_to_own_fork,
+)
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from validation_support import CallableResolver
 
@@ -63,18 +72,41 @@ class CheckoutTests(unittest.TestCase):
                 follow(self.root, self.git, remote, merge)
                 self.assertIsNone(self.foreign())
 
-    def test_a_branch_following_a_pull_request_s_ref_or_another_remote_is_refused(self) -> None:
+    def test_a_branch_following_a_pull_request_s_ref_on_any_remote_is_refused(self) -> None:
+        for remote in ("origin", "someone", "https://github.com/someone/fork.git", "."):
+            with self.subTest(remote=remote):
+                follow(self.root, self.git, remote, "refs/pull/7/head")
+                self.assertEqual("its branch main follows refs/pull/7/head, a pull request's ref", self.foreign())
+
+    def test_a_branch_following_a_branch_of_another_remote_is_refused_naming_the_cause_and_the_way_out(self) -> None:
+        # gh pr checkout tracks a fork's pull request as a branch of the fork: under its remote's name when the fork is
+        # a configured remote, and under its URL when maintainers may edit the pull request.
         cases = {
-            ("origin", "refs/pull/7/head"): "its branch main follows refs/pull/7/head, a pull request's ref",
-            ("someone", "refs/heads/topic"): "its branch main follows someone, not origin",
-            ("https://github.com/someone/fork.git", "refs/heads/topic"): (
-                "its branch main follows https://github.com/someone/fork.git, not origin"
+            "someone": (
+                "its branch main follows someone, a remote other than origin, as gh pr checkout sets for a fork's pull"
+                " request; if the branch is your own, run git branch --unset-upstream, or push it to your fork"
+                " without -u"
+            ),
+            "https://github.com/someone/fork.git": (
+                "its branch main follows https://github.com/someone/fork.git, a remote other than origin, as gh pr"
+                " checkout sets for a fork's pull request; if the branch is your own, run git branch"
+                " --unset-upstream, or push it to your fork without -u"
             ),
         }
-        for (remote, merge), reason in cases.items():
-            with self.subTest(remote=remote, merge=merge):
-                follow(self.root, self.git, remote, merge)
+        for remote, reason in cases.items():
+            with self.subTest(remote=remote):
+                follow(self.root, self.git, remote, "refs/heads/topic")
                 self.assertEqual(reason, self.foreign())
+
+    def test_a_branch_pushed_to_the_user_s_own_fork_with_u_is_refused_until_its_upstream_is_unset(self) -> None:
+        push_to_own_fork(self.root, self.git, "-u")
+        self.assertEqual(another_remote("main", "fork"), self.foreign())
+        self.git.output(["branch", "--unset-upstream"], directory=self.root)
+        self.assertIsNone(self.foreign())
+
+    def test_a_branch_pushed_to_the_user_s_own_fork_without_u_is_accepted(self) -> None:
+        push_to_own_fork(self.root, self.git)
+        self.assertIsNone(self.foreign())
 
     def test_each_fixture_case_is_refused_with_its_reason(self) -> None:
         for case, reason in FOREIGN.items():
@@ -88,7 +120,7 @@ class CheckoutTests(unittest.TestCase):
         self.git.output(["checkout", "-q", "-b", name], directory=self.root)
         self.git.output(["config", f"branch.{name}.remote", "someone"], directory=self.root)
         self.git.output(["config", f"branch.{name}.merge", "refs/heads/topic"], directory=self.root)
-        self.assertEqual(f"its branch {name} follows someone, not origin", self.foreign())
+        self.assertEqual(another_remote(name, "someone"), self.foreign())
 
     def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
         self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)
@@ -209,8 +241,9 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_foreign_checkout_is_refused_naming_why(self) -> None:
         self.assertEqual(
-            "the checkout follows another repository's pull request: its branch main follows someone, not origin",
-            checkout_trust.refusal(lambda: "its branch main follows someone, not origin"),
+            "the checkout may follow another repository's pull request: its branch main follows refs/pull/7/head, a"
+            " pull request's ref",
+            checkout_trust.refusal(lambda: "its branch main follows refs/pull/7/head, a pull request's ref"),
         )
 
     def test_a_checkout_git_cannot_read_is_refused_never_read_as_the_user_s_own(self) -> None:

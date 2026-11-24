@@ -219,7 +219,7 @@ To open a pull request from the task's worktree:
 
 1. Commit the change, and run the local checks [Validation](#validation) names until they pass.
 2. Bring the branch current with `main`: run `git fetch origin main --tags` and `git rebase origin/main`. The branch is unpublished, so the rebase rewrites nothing anyone has. CI validates the result, so it needs no local rerun.
-3. Push the branch, to `origin` or, without push access, to `fork`, as in `git push -u fork '<kind>/<name>'`. With two remotes, run `gh repo set-default EJRyan89/coding-agent-skills` once, so `gh` opens pull requests here.
+3. Push the branch, to `origin` or, without push access, to `fork` without `-u`, as in `git push fork '<kind>/<name>'`, and name the remote and branch when you pull or push it again: a branch that follows a remote other than `origin` is one `runtime-canary` and `evaluate-skill` refuse ([Gates the maintainer runs](#gates-the-maintainer-runs)). With two remotes, run `gh repo set-default EJRyan89/coding-agent-skills` once, so `gh` opens pull requests here.
 4. Write the body from `.github/pull_request_template.md` to a file, keeping its headings, name each issue the change resolves in its own `Closes #<number>` line, and open it with `gh pr create --title '<title>' --body-file '<file>'`, the title typed as above.
 5. While it is open, merge `origin/main` into the branch to bring it current, never rebase or force-push it. `gh pr update-branch` is one way to make that merge; it moves the remote branch, so pull it into the worktree before the next push. The merge needs no local rerun: CI runs on it. If a push is rejected, fetch and inspect the remote branch first: the maintainer may have updated it.
 
@@ -248,7 +248,7 @@ An absent issue template configuration on `main` leaves blank issues enabled, so
 
 ## Gates the maintainer runs
 
-Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging:
+Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging. `runtime-canary` and `evaluate-skill` refuse, before anything runs, a checkout whose branch follows a remote other than `origin`, since `gh pr checkout` gives another author's pull request from a fork that same upstream; for a branch of your own pushed with `git push -u fork`, run `git branch --unset-upstream` first:
 
 - `runtime-canary`, for a change to skill paths, `allowed-tools`, runtime adapters, or agents. It needs Claude Code, Codex, and Copilot CLI installed and signed in, and each run calls a model.
 - `evaluate-skill`, for a change to a skill's prompt, description, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.

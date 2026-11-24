@@ -46,10 +46,12 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the
   checkout, its scenarios included. A pull request from another author is read in full, as its code is, before its
   scenarios run. Before anything runs, `tools/skill_evals.py` refuses with `FAILED` a checkout whose branch follows a
-  pull request's ref (`refs/pull/...`), a remote other than `origin`, or another ref that is not a branch, as
-  `gh pr checkout` sets for another repository's pull request, and a detached `HEAD` at a commit no branch of `origin`
-  holds. A branch of `origin` is a ref that `origin`'s fetch refspecs write from its branches alone, so a pull
-  request's head mirrored under `refs/remotes/origin` is not one. A branch with no upstream, or one that follows a
+  pull request's ref (`refs/pull/...`) on any remote, a branch of a remote other than `origin`, or another ref that is
+  not a branch, and a detached `HEAD` at a commit no branch of `origin` holds. A branch of `origin` is a ref that
+  `origin`'s fetch refspecs write from its branches alone, so a pull request's head mirrored under
+  `refs/remotes/origin` is not one. A branch pushed to the author's own fork with `git push -u` is refused too, since
+  `gh pr checkout` gives another author's pull request from a fork that same upstream; the refusal names the way out,
+  `git branch --unset-upstream` or a push to the fork without `-u`. A branch with no upstream, or one that follows a
   branch of `origin` or a local branch, is the user's own, so an author runs their own branch's scenarios before its
   pull request merges.
 - **A repository reviewer's scenarios**, such as `review-repository`'s, sit under the reviewer's name, and each
