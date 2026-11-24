@@ -670,7 +670,9 @@ _HOLDING = r"(?:holding|having|receiving|getting|using|seeing|reading|accessing)
 # They do not read, among others: a noun before the token other than _ACCESS's, as "a copy of the token" is; a verb that
 # withholds, as "lacks", "is kept from", "is withheld from", "stays out of", or "never leaves" does; two verbs joined,
 # as "can see or use" are; "nothing" or "the only one" for the holder; the claim split across sentences, as "Steps:
-# none is given the token." splits it; or the token named only as a credential or a secret.
+# none is given the token." splits it; the token named only as a credential or a secret; "only" or another adverb
+# before the verb, as "is only given to", "is only held by", and "the only job ever given" write it; or a contraction,
+# as "the only job that's given" writes it.
 RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
     "no step is given the token": re.compile(
         rf"\b{_NONE} {_HOLDER} (?:(?:that|which) )?{_GIVEN} {_CREDENTIAL_PHRASE}"

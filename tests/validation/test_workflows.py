@@ -2893,7 +2893,7 @@ NO_STEP, NO_TOKEN, ONLY_JOB = (
 RETIRED_CLAIM_SPELLINGS = [
     ("no step here is given the token", NO_STEP),
     ("no step is given the token", NO_STEP),
-    ("hold no token", NO_TOKEN),
+    ("the steps hold no token", NO_TOKEN),
     ("the only job given the run's token", ONLY_JOB),
     ("the one job given the run's read-only token", ONLY_JOB),
     # The respellings a review found passing the exact-substring check.
@@ -3017,6 +3017,10 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the only job to be given the token", ONLY_JOB),
     ("the only job to hold the token", ONLY_JOB),
     ("the token is available only to the query job", ONLY_JOB),
+    ("the token is given solely to the query job", ONLY_JOB),
+    ("the token goes exclusively to the query job", ONLY_JOB),
+    ("the token is not accessible to any step", NO_STEP),
+    ("the token is never visible to a job", NO_STEP),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -3165,13 +3169,20 @@ def test_each_file_a_retired_token_claim_was_made_in_reaches_the_token_reviewer_
     }
 
 
-@pytest.mark.parametrize(("claim", "retired"), RETIRED_CLAIM_SPELLINGS)
+@pytest.mark.parametrize(
+    ("text", "retired"),
+    [
+        pytest.param(text, retired, id=f"{claim}-{spelling}")
+        for claim, retired in RETIRED_CLAIM_SPELLINGS
+        for spelling, text in _token_sentence_spellings(claim).items()
+    ],
+)
 def test_each_retired_token_claim_a_pull_request_adds_opens_the_workflow_token_route(
-    claim: str, retired: str, tmp_path: Path
+    text: str, retired: str, tmp_path: Path
 ) -> None:
-    # A claim the condition missed would reach no reviewer, so every spelling the patterns refuse opens the route too,
-    # with the condition's script run as a review runs it.
-    added = "".join(f"+{line}\n" for line in _token_sentence_spellings(claim)["as-written"].splitlines())
+    # A claim the condition missed would reach no reviewer, so every spelling the patterns refuse, in each of the
+    # suite's four spellings, opens the route too, with the condition's script run as a review runs it.
+    added = "".join(f"+{line}\n" for line in text.splitlines())
     diff = tmp_path / "pull.diff"
     diff.write_bytes(
         (
@@ -3192,7 +3203,7 @@ def test_each_retired_token_claim_a_pull_request_adds_opens_the_workflow_token_r
         timeout=120,
     )
     assert (finished.returncode, retired) == (0, retired), finished.stdout
-    assert output.read_bytes().startswith(b'MENTION ".github/workflows/validate.yml":'), claim
+    assert output.read_bytes().startswith(b'MENTION ".github/workflows/validate.yml":'), text
 
 
 def test_the_parts_the_token_claim_policy_leaves_out_are_pinned_with_their_reasons() -> None:

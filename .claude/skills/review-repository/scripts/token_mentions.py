@@ -10,16 +10,18 @@ nothing of the snapshot, which `--source-root` names only because every conditio
 Each run of a file's consecutive added lines is read as one text, so a sentence wrapped across comment lines is read
 whole, each line in Unicode's compatibility form, NFKC, with its format characters, such as a soft hyphen or a
 zero-width space, dropped, so an invisible character inside a word does not hide it. A line mentions the token when
-it names a credential by one of NAMED_CREDENTIALS, in any case, or the word "token" stands within MENTION_REACH
-characters of a word in WORKFLOW_WORDS, such as "job", "step", or "workflow", in that text. A line a removal or the
-context holds never counts: the reviewer anchors a finding on an added line.
+it names a credential by one of NAMED_CREDENTIALS, in any ASCII case, or the word "token" stands within MENTION_REACH
+characters of a word in WORKFLOW_WORDS, such as "job", "step", "workflow", or this repository's "gate" and "check", in
+that text. A line a removal or the context holds never counts: the reviewer anchors a finding on an added line. Limits:
+a confusable letter, such as a Cyrillic o (U+043E) in "token", or a hyphen inside the word hides a mention.
 
 The diff is the pull request author's, so everything it writes from the diff is quoted data. It writes each mentioning
 line as `MENTION <file>:<line> <what> (added lines <first>-<last>)`, the file a JSON string and `<what>` either
 `names <credential>`, a spelling of one of NAMED_CREDENTIALS, or `token near <word>`, one of WORKFLOW_WORDS, then
-`TEXT <line>`, the added line cut at MAX_LINE_CHARACTERS and written as one JSON string with every character outside
-ASCII escaped, so no line of the author's starts a line of its own, forges a `MENTION` line, or hides a control
-character. It writes at most MAX_MENTIONS of them, in diff order, with an `OMITTED <n>` line for the rest.
+`TEXT <line>`, the added line as the condition read it, cut to MAX_LINE_CHARACTERS around where it mentions the
+token, and written as one JSON string with every character outside ASCII escaped, so no line of the author's starts a
+line of its own, forges a `MENTION` line, or hides a control character. It writes at most MAX_MENTIONS of them, in diff
+order, while the file stays within MAX_FILE_BYTES, with an `OMITTED <n>` line for the rest.
 
 A hunk header whose line number is not a whole number whole_number reads ends it with `FAILED ValueError: ...`.
 
@@ -75,18 +77,23 @@ EXIT_CONTRACT_EXEMPT = (
 )
 # The names a credential is written by that mention the run's token wherever they stand: the variable gh reads, the
 # secret's name, and the expression that reads the run's own token.
-NAMED_CREDENTIALS = re.compile(r"(?<!\w)(?:gh_token|github_token|github\.token)(?!\w)", re.IGNORECASE)
+NAMED_CREDENTIALS = re.compile(r"(?<!\w)(?:gh_token|github_token|github\.token)(?!\w)", re.IGNORECASE | re.ASCII)
 # The word "token", singular or plural, alone: not the end of a longer name such as `EXPRESSION_TOKEN`.
-TOKEN_WORD = re.compile(r"(?<![\w-])tokens?(?![\w-])", re.IGNORECASE)
-# The words that place a token in a workflow run: what holds it, what runs it, and what grants it.
+TOKEN_WORD = re.compile(r"(?<![\w-])tokens?(?![\w-])", re.IGNORECASE | re.ASCII)
+# The words that place a token in a workflow run: what holds it, what runs it, and what grants it, this repository's
+# own names for its CI jobs among them, such as "the mutation gate", "the deployable check", and "validation". ASCII
+# alone, so a dotless or dotted i matches no word and every word the condition file names is ASCII.
 WORKFLOW_WORDS = re.compile(
-    r"(?<![\w-])(?:workflows?|jobs?|steps?|legs?|runs?|runners?|actions?|ci|permissions?|checkouts?)(?![\w-])",
-    re.IGNORECASE,
+    r"(?<![\w-])(?:workflows?|jobs?|steps?|legs?|runs?|runners?|actions?|ci|permissions?|checkouts?|checks?|gates?"
+    r"|validation|matrix)(?![\w-])",
+    re.IGNORECASE | re.ASCII,
 )
 # How far from "token" a workflow word may stand, in characters of the joined text: about a sentence's length.
 MENTION_REACH = 120
 MAX_MENTIONS = 60
 MAX_LINE_CHARACTERS = 300
+# The condition file's bound, under the CONDITION_FILE_BYTES a review gives a reviewer, so the OMITTED line survives.
+MAX_FILE_BYTES = 30 * 1024
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,8 @@ class Mention:
     first: int
     last: int
     what: str
-    text: str
+    text: str  # the line as the condition read it
+    at: int  # where in `text` it mentions the token
 
 
 def added_runs(file: FileDiff) -> list[list[tuple[int, str]]]:
@@ -132,14 +140,15 @@ def folded(text: str) -> str:
     )
 
 
-def _what(text: str, start: int, end: int) -> str | None:
-    """What the joined text names at or near [start, end): a credential's name, or "token near <word>", or None."""
+def _what(text: str, start: int, end: int) -> tuple[str, int] | None:
+    """What the joined text names at or near [start, end), "names <credential>" or "token near <word>", and where it
+    mentions the token, or None."""
     if named := NAMED_CREDENTIALS.search(text, start, end):
-        return f"names {named.group(0)}"
+        return f"names {named.group(0)}", named.start()
     for token in TOKEN_WORD.finditer(text, start, end):
         window = text[max(0, token.start() - MENTION_REACH) : token.end() + MENTION_REACH]
         if word := WORKFLOW_WORDS.search(window):
-            return f"token near {word.group(0).casefold()}"
+            return f"token near {word.group(0).casefold()}", token.start()
     return None
 
 
@@ -151,29 +160,44 @@ def mentions(files: list[FileDiff]) -> list[Mention]:
             joined = ""
             spans: list[tuple[int, int]] = []
             for _, text in run:
-                read = folded(text)
-                spans.append((len(joined), len(joined) + len(read)))
-                joined += read + " "
-            for (number, text), (start, end) in zip(run, spans, strict=True):
-                if (what := _what(joined, start, end)) is not None:
-                    found.append(Mention(file.path, number, run[0][0], run[-1][0], what, text))
+                seen = folded(text)
+                spans.append((len(joined), len(joined) + len(seen)))
+                joined += seen + " "
+            for (number, _), (start, end) in zip(run, spans, strict=True):
+                if (named := _what(joined, start, end)) is not None:
+                    what, at = named
+                    line = joined[start:end]
+                    lead = len(line) - len(line.lstrip())
+                    mention = Mention(file.path, number, run[0][0], run[-1][0], what, line.strip(), at - start - lead)
+                    found.append(mention)
     return found
 
 
-def render(found: list[Mention]) -> str:
-    """The condition file: each given mention's line and its quoted text, then an OMITTED line for the rest."""
-    lines: list[str] = []
+def excerpt(mention: Mention) -> str:
+    """The mention's line, or, past MAX_LINE_CHARACTERS, that many characters around where it mentions the token."""
+    text = mention.text
+    if len(text) <= MAX_LINE_CHARACTERS:
+        return text
+    start = max(0, min(mention.at - MAX_LINE_CHARACTERS // 2, len(text) - MAX_LINE_CHARACTERS))
+    end = start + MAX_LINE_CHARACTERS
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def render(found: list[Mention]) -> tuple[str, int]:
+    """The condition file and how many mentions it gives: each mention's line and its quoted text, in turn, while
+    MAX_MENTIONS and MAX_FILE_BYTES allow, then an OMITTED line for the rest."""
+    blocks: list[str] = []
+    size = 0
     for mention in found[:MAX_MENTIONS]:
-        text = mention.text.strip()
-        if len(text) > MAX_LINE_CHARACTERS:
-            text = text[:MAX_LINE_CHARACTERS] + "…"
-        lines.append(
-            f"MENTION {dumps(mention.path)}:{mention.line} {mention.what} (added lines {mention.first}-{mention.last})"
-        )
-        lines.append(f"TEXT {dumps(text)}")
-    if len(found) > MAX_MENTIONS:
-        lines.append(f"OMITTED {len(found) - MAX_MENTIONS}")
-    return "\n".join(lines) + "\n"
+        run = f"(added lines {mention.first}-{mention.last})"
+        block = f"MENTION {dumps(mention.path)}:{mention.line} {mention.what} {run}\nTEXT {dumps(excerpt(mention))}\n"
+        if size + len(block.encode("utf-8")) > MAX_FILE_BYTES:
+            break
+        blocks.append(block)
+        size += len(block.encode("utf-8"))
+    if len(found) > len(blocks):
+        blocks.append(f"OMITTED {len(found) - len(blocks)}\n")
+    return "".join(blocks), sum(block.startswith("MENTION ") for block in blocks)
 
 
 def _run() -> int:
@@ -189,10 +213,12 @@ def _run() -> int:
     for path in refused:
         print(refusal_line(path))
     found = mentions(files)
-    print(f"MENTIONS {len(found)} given={min(len(found), MAX_MENTIONS)}")
     if not found:
+        print("MENTIONS 0 given=0")
         return 1
-    Path(os.environ[OUTPUT_VARIABLE]).write_bytes(render(found).encode("utf-8"))
+    written, given = render(found)
+    print(f"MENTIONS {len(found)} given={given}")
+    Path(os.environ[OUTPUT_VARIABLE]).write_bytes(written.encode("utf-8"))
     return 0
 
 
