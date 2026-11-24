@@ -1767,6 +1767,8 @@ DIAGNOSTICS_JOB = (
     "jobs:\n"
     "  diagnostics:\n    runs-on: ubuntu-latest\n"
     "    strategy:\n      matrix:\n        python-version: ['3.12', '3.x']\n    steps:\n"
+    "      - name: Set up Python\n        uses: actions/setup-python@x\n"
+    "        with:\n          python-version: ${{ matrix.python-version }}\n"
     "      - name: Install\n        run: python -m pip install -r requirements-dev.txt\n"
     "      - name: Run\n        env:\n          PYTHONDEVMODE: '1'\n          PYTHONWARNINGS: error\n"
     '        run: python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"\n'
@@ -1780,6 +1782,11 @@ class DiagnosticsJobFixtures(unittest.TestCase):
         alone = f"the diagnostics job must run {command!r} once, alone in its step"
         settings = f"the step that runs {command!r} must set exactly"
         shared = "an env other than the run's own step sets ['PYTHONDEVMODE', 'PYTHONWARNINGS']"
+        setup = (
+            "      - name: Set up Python\n        uses: actions/setup-python@x\n"
+            "        with:\n          python-version: ${{ matrix.python-version }}\n"
+        )
+        self.assertIn(setup, DIAGNOSTICS_JOB)
         for drifted, problem in (
             (DIAGNOSTICS_JOB.replace("ubuntu-latest", "windows-latest"), "the diagnostics job runs on windows-latest"),
             (DIAGNOSTICS_JOB.replace("['3.12', '3.x']", "['3.x']"), "the diagnostics job runs Python ['3.x']"),
@@ -1809,6 +1816,17 @@ class DiagnosticsJobFixtures(unittest.TestCase):
                 DIAGNOSTICS_JOB.replace("      - name: Run\n", "      - name: Run\n        continue-on-error: true\n"),
                 "goes on after an error",
             ),
+            (DIAGNOSTICS_JOB.replace("${{ matrix.python-version }}", "'3.12'"), "must set up Python once"),
+            (DIAGNOSTICS_JOB.replace("        uses: actions/setup-python@x\n", "        run: true\n"), "must set up"),
+            (
+                DIAGNOSTICS_JOB.replace(
+                    "      - name: Install\n",
+                    "      - uses: actions/setup-python@x\n        with:\n          python-version: '3.x'\n"
+                    "      - name: Install\n",
+                ),
+                "must set up Python once",
+            ),
+            (DIAGNOSTICS_JOB.replace(setup, "") + setup, "sets up Python after it runs"),
             (DIAGNOSTICS_JOB.replace("  diagnostics:", "  run:"), "the jobs are ['run'], not ['diagnostics']"),
         ):
             with self.subTest(problem=problem, drifted=drifted):

@@ -1895,12 +1895,14 @@ DIAGNOSTICS_JOB = (
 )
 DIAGNOSTIC_SETTINGS = {"PYTHONDEVMODE": "1", "PYTHONWARNINGS": "error"}
 DIAGNOSTIC_PYTHONS = ["3.12", "3.x"]
+# What the job's one actions/setup-python step is given: the leg's own interpreter, so a leg never runs another.
+DIAGNOSTIC_SETUP = {"python-version": "${{ matrix.python-version }}"}
 
 
 def diagnostics_job_problems(workflow: str) -> list[str]:
-    """Report how python-diagnostics.yml departs from its run: one job on its runner and interpreters, running the
-    diagnostic run once, alone in a step whose env sets exactly its settings and that no other env shares, and never
-    told to go on after an error."""
+    """Report how python-diagnostics.yml departs from its run: one job on its runner and interpreters, each leg
+    setting up its own interpreter before it runs the diagnostic run once, alone in a step whose env sets exactly its
+    settings and that no other env shares, and never told to go on after an error."""
     name, runner, command = DIAGNOSTICS_JOB
     tree = read_workflow(workflow)
     jobs = _mapping(tree, "jobs")
@@ -1912,7 +1914,14 @@ def diagnostics_job_problems(workflow: str) -> list[str]:
     if pythons != DIAGNOSTIC_PYTHONS:
         problems.append(f"the {name} job runs Python {pythons}, not {DIAGNOSTIC_PYTHONS}")
     steps = _steps(job)
+    setups = [
+        index for index, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/setup-python@")
+    ]
     runs = [step for step in steps if command in _script_lines(step)]
+    if [_mapping(steps[index], "with") for index in setups] != [DIAGNOSTIC_SETUP]:
+        problems.append(f"the {name} job must set up Python once, as {DIAGNOSTIC_SETUP}, so each leg runs its own")
+    elif runs and setups[0] > steps.index(runs[0]):
+        problems.append(f"the {name} job sets up Python after it runs {command!r}")
     if len(runs) != 1 or _script_lines(runs[0]) != [command]:
         problems.append(f"the {name} job must run {command!r} once, alone in its step")
     elif _mapping(runs[0], "env") != DIAGNOSTIC_SETTINGS:

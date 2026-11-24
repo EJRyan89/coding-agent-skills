@@ -29,23 +29,25 @@ INDIRECTION_ALLOWED = {
 }
 
 
-def record_line(unraisable: sys.UnraisableHookArgs) -> str:
-    """One line naming the process, the exception, and what Python says it was finalizing, its whitespace flattened."""
+def record_line(unraisable: sys.UnraisableHookArgs, arguments: object) -> str:
+    """One line naming the process by its arguments, the exception, and what Python says it was finalizing, its
+    whitespace flattened."""
     exception = unraisable.exc_type.__name__
     message = unraisable.err_msg or "Exception ignored in"
     seen = f"{message}: {unraisable.object!r}: {exception}: {unraisable.exc_value}"
-    return " ".join(f"{sys.argv!r} {seen}".split()) + "\n"
+    return " ".join(f"{arguments!r} {seen}".split()) + "\n"
 
 
 def recording_hook(
-    folder: Path, previous: Callable[[sys.UnraisableHookArgs], object]
+    folder: Path, previous: Callable[[sys.UnraisableHookArgs], object], arguments: object
 ) -> Callable[[sys.UnraisableHookArgs], None]:
-    """A hook that appends each unraisable exception's line to this process's file in folder, then calls previous."""
+    """A hook that appends each unraisable exception's line to this process's file in folder, naming the process by
+    arguments, then calls previous, whether or not the line could be written."""
 
     def hook(unraisable: sys.UnraisableHookArgs) -> None:
         try:
             with (folder / f"{os.getpid()}.txt").open("a", encoding="utf-8") as record:
-                record.write(record_line(unraisable))
+                record.write(record_line(unraisable, arguments))
         finally:
             previous(unraisable)
 
@@ -57,7 +59,9 @@ def install(environment: Mapping[str, str]) -> bool:
     folder = environment.get(RECORD_VARIABLE)
     if not folder:
         return False
-    sys.unraisablehook = recording_hook(Path(folder), sys.unraisablehook)
+    # The arguments list itself, not a copy: runpy sets its first item in place for `-m`, and the interpreter sets
+    # sys.argv to None as it shuts down, when a destructor's unraisable exception is most often met.
+    sys.unraisablehook = recording_hook(Path(folder), sys.unraisablehook, sys.argv)
     return True
 
 

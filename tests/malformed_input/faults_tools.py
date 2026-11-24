@@ -340,11 +340,12 @@ NOT_RUN: dict[str, str] = {
         "process probe /bin/ps"
     ),
     "tools/python_diagnostics.py": (
-        "reads no input a user gives it: it refuses with a usage error before reading anything unless PYTHONDEVMODE=1 "
-        "and PYTHONWARNINGS=error are in its environment, and with them it copies tools/unraisable_record.py beside it, "
-        "runs pytest on whole suites, and reads only the records its own child processes write in a folder it made, "
-        "none of which is a file the harness's faults reach; tests/tools/test_python_diagnostics.py drives it on "
-        "fixture suites, its refusals included"
+        "reads no input a user gives it: unless PYTHONDEVMODE=1 and PYTHONWARNINGS=error are in its environment it "
+        "refuses with a usage error before reading anything; with them it copies "
+        "tools/unraisable_record.py into a folder it makes under the system temporary directory, parses as JSON the "
+        "one line its own probe process prints, runs pytest on whole suites, and reads the records its own child "
+        "processes write in that folder, none of which is a file the harness's faults reach; "
+        "tests/tools/test_python_diagnostics.py drives it on fixture suites, its refusals and a failed probe included"
     ),
     "tools/deployable_report.py bash": (
         "reads no file and runs no git or gh through the clients: it starts the Bash platform_support.find_bash finds "

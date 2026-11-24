@@ -8,6 +8,8 @@ either, the last the one a child's exit status never shows.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -18,6 +20,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
@@ -157,6 +160,47 @@ class CleanRunTests(unittest.TestCase):
         self.assertEqual([[str(suite)]], [fields[:1] for fields in facts(completed.stdout, "PASSED")])
 
 
+class ProbeFailureRunTests(unittest.TestCase):
+    def test_a_run_whose_probe_fails_runs_no_suite_and_exits_1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            silent = Path(temporary) / "silent_recorder.py"
+            silent.write_bytes(b"# Records nothing.\n")
+            summary = Path(temporary) / "summary.md"
+            output = io.StringIO()
+            with (
+                mock.patch.object(python_diagnostics, "RECORDER", silent),
+                contextlib.redirect_stdout(output),
+            ):
+                status = python_diagnostics.run(
+                    [str(REPOSITORY_ROOT / python_diagnostics.DIAGNOSTIC_SUITES[0])],
+                    {**os.environ, **DIAGNOSTIC_ENVIRONMENT},
+                    summary,
+                )
+            written = summary.read_text(encoding="utf-8")
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [["the probe recorded no unraisable exception, so the recorder did not reach it"]],
+            facts(output.getvalue(), "CHILD_UNSET"),
+        )
+        self.assertEqual([], facts(output.getvalue(), "PASSED") + facts(output.getvalue(), "FAILED"))
+        self.assertIn("No suite ran: the probe recorded no unraisable exception", written)
+
+
+class SuiteTimeTests(unittest.TestCase):
+    def test_a_suite_that_runs_past_its_time_is_ended_and_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = Path(temporary) / "test_sleeping.py"
+            suite.write_bytes(b"import time\n\n\ndef test_sleeps() -> None:\n    time.sleep(60)\n")
+            record = Path(temporary) / "record"
+            record.mkdir()
+            environment = python_diagnostics.child_environment(dict(os.environ), Path(temporary), record)
+            with mock.patch.object(python_diagnostics, "SUITE_SECONDS", 1.0):
+                outcome = python_diagnostics.run_suite(str(suite), environment, record)
+        self.assertEqual("it ran past 1 seconds", outcome.failure)
+        self.assertFalse(outcome.passed)
+        self.assertLess(outcome.seconds, 30)
+
+
 class UsageTests(unittest.TestCase):
     def test_a_run_whose_environment_lacks_either_setting_is_refused(self) -> None:
         for missing in DIAGNOSTIC_ENVIRONMENT:
@@ -211,6 +255,19 @@ class ProbeTests(unittest.TestCase):
     def test_a_child_outside_development_mode_is_named(self) -> None:
         _, problem = python_diagnostics.probe_problem(self.environment(PYTHONWARNINGS="error"), self.record)
         self.assertEqual("the probe did not run in development mode with warnings as errors", problem)
+
+    def test_a_probe_that_exits_non_zero_is_named_with_its_status(self) -> None:
+        # The probe runs to its end, then exits 3 as it shuts down.
+        (self.site / "sitecustomize.py").write_bytes(b"import atexit, os\natexit.register(os._exit, 3)\n")
+        _, problem = python_diagnostics.probe_problem(self.environment(**DIAGNOSTIC_ENVIRONMENT), self.record)
+        self.assertIsNotNone(problem)
+        self.assertTrue(str(problem).startswith("the probe exited 3: "), problem)
+
+    def test_a_probe_that_prints_no_json_is_named(self) -> None:
+        (self.site / "sitecustomize.py").write_bytes(b"print('not the settings')\n")
+        _, problem = python_diagnostics.probe_problem(self.environment(**DIAGNOSTIC_ENVIRONMENT), self.record)
+        self.assertIsNotNone(problem)
+        self.assertTrue(str(problem).startswith("the probe printed no settings: "), problem)
 
     def test_a_child_the_recorder_does_not_reach_is_named(self) -> None:
         environment = self.environment(**DIAGNOSTIC_ENVIRONMENT)
@@ -283,6 +340,28 @@ class RecorderTests(unittest.TestCase):
             lines[0].endswith("Exception ignored while: 1: ResourceWarning: unclosed file second line"), lines[0]
         )
         self.assertEqual(2, len(handed), "the hook it replaced still prints each one")
+
+    def test_a_record_folder_that_cannot_be_written_raises_and_still_hands_the_exception_on(self) -> None:
+        handed: list[Any] = []
+        sys.unraisablehook = handed.append
+        self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(self.folder / "missing")}))
+        unraisable = self.unraisable()
+        with self.assertRaises(FileNotFoundError):
+            sys.unraisablehook(unraisable)
+        self.assertEqual([unraisable], handed, "the hook it replaced still prints the exception")
+
+    def test_the_process_is_named_by_its_arguments_when_shutdown_has_cleared_them(self) -> None:
+        handed: list[Any] = []
+        sys.unraisablehook = handed.append
+        arguments = ["program.py", "an argument"]
+        with mock.patch.object(sys, "argv", arguments):
+            self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(self.folder)}))
+            arguments[0] = "/path/to/module.py"
+            with mock.patch.object(sys, "argv", None):
+                sys.unraisablehook(self.unraisable())
+        [record] = list(self.folder.iterdir())
+        line = record.read_text(encoding="utf-8")
+        self.assertTrue(line.startswith("['/path/to/module.py', 'an argument'] Exception ignored while"), line)
 
     def test_the_sitecustomize_it_hides_still_runs_and_its_own_folder_is_passed_over(self) -> None:
         own, other = self.folder / "own", self.folder / "other"
