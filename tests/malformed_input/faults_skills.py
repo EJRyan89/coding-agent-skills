@@ -14,6 +14,7 @@ from fault_table import (
     LINK_TO_NOTHING,
     MISSING,
     OPENED_ONLY,
+    READ_ONLY,
     REPOSITORY,
     STAT_RAISES,
     UNREADABLE,
@@ -107,6 +108,9 @@ RUN_FORMAT = "skills/dotnet-format/scripts/run_dotnet_format.py"
 MEMORY_STORE = "{home}/.claude/projects/fixture-project/memory"
 INDEX = f"{MEMORY_STORE}/MEMORY.md"
 MEMORY = f"{MEMORY_STORE}/rule.md"
+# A second memory, which no index entry names yet, so reindex adds it and delete takes it before rule.md.
+NOTE = f"{MEMORY_STORE}/note.md"
+NOTE_TEXT = b"---\nname: Note\ndescription: keep notes short\ntype: feedback\n---\n\nKeep notes short.\n"
 USER_SETTINGS = "{home}/.claude/settings.json"
 INSTRUCTIONS = "{work}/CLAUDE.md"
 MANIFEST = "{home}/.claude/skills/.deploy-manifest.json"
@@ -140,6 +144,11 @@ SOLUTION = "{work}/App.sln"
 PROJECT = "{work}/src/App/App.csproj"
 APP_CONFIG = "{work}/src/App/App.config"
 SOURCE_FILE = "{work}/src/App/Program.cs"
+OTHER_SOURCE = "{work}/src/App/Other.cs"
+# A C# file whose #endregion takes a trailing description, which check --fix removes.
+FIXABLE_TEXT = "namespace App\n{\n    #region Main\n    class Program { }\n    #endregion Main\n}\n"
+# In a folder of its own, which the folder fault makes read-only, away from the harness's own files.
+GRAPH_OUTPUT = "{root}/graph/graph.dot"
 EDITORCONFIG = "{work}/.editorconfig"
 FILE_LIST = "{root}/file-list.txt"
 TOOLS = "{root}/bin"
@@ -157,6 +166,12 @@ def memory_store(fixture: Fixture) -> None:
     (store / "rule.md").write_bytes(MEMORY_TEXT)
     settings = fixture.home / ".claude" / "settings.json"
     settings.write_text(json.dumps({"autoMemoryDirectory": "~/.claude/projects/fixture-project/memory"}), "utf-8")
+
+
+def two_memories(fixture: Fixture) -> None:
+    """As `memory_store`, with a second memory, note.md, which the index does not name."""
+    memory_store(fixture)
+    Path(NOTE.format(**fixture.values())).write_bytes(NOTE_TEXT)
 
 
 def deployed_skill(fixture: Fixture) -> None:
@@ -191,6 +206,24 @@ def solution(fixture: Fixture, folder: Path | None = None) -> None:
         folder,
     )
     (fixture.root / "file-list.txt").write_bytes(b"src/App/Program.cs\0")
+
+
+def two_fixes(fixture: Fixture) -> None:
+    """As `solution`, with Other.cs beside Program.cs, each holding a fix check --fix makes, and the FILE_LIST naming
+    Other.cs first."""
+    solution(fixture)
+    values = fixture.values()
+    for name in (OTHER_SOURCE, SOURCE_FILE):
+        Path(name.format(**values)).write_bytes(FIXABLE_TEXT.encode("utf-8"))
+    (fixture.root / "file-list.txt").write_bytes(b"src/App/Other.cs\0src/App/Program.cs\0")
+
+
+def graph_output(fixture: Fixture) -> None:
+    """As `solution`, with an earlier graph at GRAPH_OUTPUT, which graph --output replaces."""
+    solution(fixture)
+    output = Path(GRAPH_OUTPUT.format(**fixture.values()))
+    output.parent.mkdir()
+    output.write_bytes(b"digraph earlier {}\n")
 
 
 def empty_solution(fixture: Fixture) -> None:
@@ -246,6 +279,7 @@ REQUEST = f"{RUN}/request.json"
 RUN_PLAN = f"{RUN}/work/plan.json"
 CANARY_PULL = "{root}/pull"
 BATCH = "{root}/batch.json"
+REVIEW_STATE = "{home}/.coding-agent-skills/code-review/state.json"
 ROLE = "generic-review"
 REPOSITORY_NAME = "example/inventory"
 CHECKOUT = "{work}"
@@ -388,6 +422,15 @@ def batch(fixture: Fixture) -> None:
         },
     }
     Path(BATCH.format(**fixture.values())).write_text(json.dumps(value), encoding="utf-8")
+
+
+def batch_over_state(fixture: Fixture) -> None:
+    """As `batch`, with the review state holding the repository's watermark at the batch's previous one, which advance
+    moves to the batch's day."""
+    batch(fixture)
+    state = Path(REVIEW_STATE.format(**fixture.values()))
+    entry = {"merged_since": "2026-01-01", "updated_at": "2026-01-01"}
+    state.write_text(json.dumps({"schema_version": 1, "repositories": {REPOSITORY_NAME: entry}}), encoding="utf-8")
 
 
 def repository_reviewer(fixture: Fixture) -> None:
@@ -655,6 +698,10 @@ DASHBOARD = "skills/update-pr-dashboard/scripts/dashboard_pipeline.py"
 TRACKER = f"{CODE_REVIEW}/tracker.json"
 REVIEW_RECORD = "{root}/archive/owner/repo/pulls/7/review.json"
 INSIGHTS_REPORT = "{root}/summary/both/2026-01-01--2026-01-31/insights.json"
+INSIGHTS_MARKDOWN = INSIGHTS_REPORT.replace(".json", ".md")
+# The synthesis files report stages beside the report and replaces before it, the context first.
+SYNTHESIS_CONTEXT = INSIGHTS_REPORT.replace("insights.json", "synthesis-context.json")
+SYNTHESIS_INPUT = INSIGHTS_REPORT.replace("insights.json", "synthesis-input.jsonl")
 SYNTHESIS_RESULT = "{root}/synthesis-result.json"
 DASHBOARD_FILE = "{root}/dashboard.md"
 TRACKER_INPUT = "{root}/tracker-input.json"
@@ -729,6 +776,53 @@ def insights_fixture(fixture: Fixture) -> None:
     document["synthesis"]["result"] = str(result)
     report.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     result.write_text("{}\n", encoding="utf-8")
+
+
+def restaged(fixture: Fixture) -> None:
+    """As `insights_fixture`, with the synthesis files beside the report stale, so report replaces each of them."""
+    insights_fixture(fixture)
+    values = fixture.values()
+    for name in (SYNTHESIS_CONTEXT, SYNTHESIS_INPUT):
+        Path(name.format(**values)).write_bytes(b"stale\n")
+
+
+def synthesized(fixture: Fixture) -> None:
+    """As `insights_fixture`, with SYNTHESIS_RESULT a result synthesize records: no recommendation, and each category
+    and custom-candidate rule the synthesis context names given an assessment."""
+    insights_fixture(fixture)
+    values = fixture.values()
+    report = Path(INSIGHTS_REPORT.format(**values))
+    context = json.loads((report.parent / "synthesis-context.json").read_text(encoding="utf-8"))
+    categories = [
+        {
+            "category": category,
+            "topics": [{"topic": f"{category} topic", "count": 1, "examples": [(refs or context["refs"])[0]]}],
+            "assessment": f"What the {category} findings show.",
+            "addressed_by": [],
+            "findings": [{"ref": ref, "assessment": "Valid."} for ref in refs],
+        }
+        for category, refs in sorted(context["categories"].items())
+    ]
+    rules = context["custom_rules"]
+    result = {
+        "schema_version": 1,
+        "input_sha256": json.loads(report.read_text(encoding="utf-8"))["synthesis"]["input_sha256"],
+        "themes": [],
+        "mistakes": [],
+        "persistent_patterns": [],
+        "reviewer_effectiveness": {
+            "most_useful": "generic",
+            "least_useful": "generic",
+            "false_positive_candidates": [],
+        },
+        "comparison": None,
+        "recommendations": [],
+        "categories": categories,
+        "custom_rule_patterns": [{"pattern": "Rules", "rules": rules, "assessment": "None.", "addressed_by": []}]
+        if rules
+        else [],
+    }
+    Path(SYNTHESIS_RESULT.format(**values)).write_text(json.dumps(result), encoding="utf-8")
 
 
 def dashboard_fixture(fixture: Fixture) -> None:
@@ -902,6 +996,20 @@ DRIVERS: list[Driver] = [
     ),
     Driver(
         MEMORY_AUDIT,
+        "delete",
+        ("delete", "--memory-dir", MEMORY_STORE, "note.md", "rule.md"),
+        prepare=two_memories,
+        changes=(NOTE, MEMORY),
+    ),
+    Driver(
+        MEMORY_AUDIT,
+        "reindex",
+        ("reindex", "--memory-dir", MEMORY_STORE, "--write"),
+        prepare=two_memories,
+        changes=(INDEX,),
+    ),
+    Driver(
+        MEMORY_AUDIT,
         "resolve",
         ("resolve", "--repo", "{work}"),
         prepare=memory_store,
@@ -951,6 +1059,13 @@ DRIVERS: list[Driver] = [
     ),
     Driver(
         DEPENDENCY_GRAPH,
+        "graph",
+        ("graph", "--output", GRAPH_OUTPUT, "--root", SOLUTION),
+        prepare=graph_output,
+        changes=(GRAPH_OUTPUT,),
+    ),
+    Driver(
+        DEPENDENCY_GRAPH,
         "conflicts",
         ("conflicts", "--root", SOLUTION),
         prepare=solution,
@@ -975,6 +1090,16 @@ DRIVERS: list[Driver] = [
         prepare=solution,
         inputs=(SOURCE_FILE,),
     ),
+    # A file with a fix pending that it may not write is REFUSED and checked unfixed, and the rest are fixed, as the
+    # docstring says; a directory in its place is a listed entry naming no regular file, a FAILED line before any fix.
+    Driver(
+        CSHARP_LAYOUT,
+        "check",
+        ("check", "--repo-root", "{work}", "--file-list", FILE_LIST, "--fix"),
+        prepare=two_fixes,
+        changes=(OTHER_SOURCE, SOURCE_FILE),
+        refused_alone=(READ_ONLY,),
+    ),
     Driver(
         CSHARP_LAYOUT,
         "config",
@@ -990,6 +1115,8 @@ DRIVERS: list[Driver] = [
         prepare=empty_solution,
         inputs=(SOLUTION, EDITORCONFIG),
         not_run={MISSING: "with no .editorconfig, --apply adds one at the repository root, as the docstring says"},
+        changes=(EDITORCONFIG,),
+        refused_alone=(READ_ONLY,),
     ),
     Driver(
         FORMAT_TARGETS,
@@ -1023,6 +1150,13 @@ DRIVERS: list[Driver] = [
         inputs=(CONFIG_INPUT,),
         not_run={STAT_RAISES: OPENED_ONLY},
         outputs=("{root}/written",),
+    ),
+    Driver(
+        CONFIG_SCRIPT,
+        "write",
+        ("write", CONFIG_INPUT, "--output", CONFIG),
+        prepare=configured,
+        changes=(CONFIG,),
     ),
     Driver(
         PIPELINE,
@@ -1063,6 +1197,7 @@ DRIVERS: list[Driver] = [
     run_driver("finalize", ("--run", RUN), SUBAGENT_RUN, (RUN_STATE,)),
     run_driver("unfinalized", ("--run", RUN), SUBAGENT_RUN, (RUN_STATE,)),
     Driver(PIPELINE, "advance", ("advance", "--batch", BATCH), prepare=batch, inputs=(BATCH, CONFIG)),
+    Driver(PIPELINE, "advance", ("advance", "--batch", BATCH), prepare=batch_over_state, changes=(REVIEW_STATE,)),
     Driver(
         PIPELINE,
         "inspect-reviewer",
@@ -1176,6 +1311,7 @@ DRIVERS: list[Driver] = [
             f"{STAT_RAISES} {ARCHIVED_PULL}/review.md": OPENED_ONLY,
         },
         outputs=(FLAG_STORE,),
+        changes=(FLAG_STORE,),
     ),
     Driver(
         FLAG_SCRIPT,
@@ -1184,6 +1320,7 @@ DRIVERS: list[Driver] = [
         prepare=flag_store,
         inputs=(FLAG_STORE,),
         not_run={"missing": EMPTY_STORE + ", which holds no flag to edit"},
+        changes=(FLAG_STORE,),
     ),
     Driver(
         FLAG_SCRIPT,
@@ -1192,6 +1329,7 @@ DRIVERS: list[Driver] = [
         prepare=flag_store,
         inputs=(FLAG_STORE,),
         not_run={"missing": EMPTY_STORE + ", which holds no flag to resolve"},
+        changes=(FLAG_STORE,),
     ),
     Driver(
         FLAG_SCRIPT,
@@ -1253,7 +1391,15 @@ DRIVERS: list[Driver] = [
     ),
     # review-insights and update-pr-dashboard
     Driver(INSIGHTS, "scope", ("scope",), prepare=insights_fixture, inputs=(CONFIG,), git=True),
-    Driver(INSIGHTS, "report", REPORT_ARGUMENTS, prepare=insights_fixture, inputs=(CONFIG,), outputs=REPORT_OUTPUTS),
+    Driver(
+        INSIGHTS,
+        "report",
+        REPORT_ARGUMENTS,
+        prepare=restaged,
+        inputs=(CONFIG,),
+        outputs=REPORT_OUTPUTS,
+        changes=(SYNTHESIS_CONTEXT, SYNTHESIS_INPUT, INSIGHTS_REPORT, INSIGHTS_MARKDOWN),
+    ),
     Driver(
         INSIGHTS,
         "report",
@@ -1293,6 +1439,7 @@ DRIVERS: list[Driver] = [
         prepare=insights_fixture,
         inputs=(INSIGHTS_REPORT, FLAG_STORE),
         outputs=("{root}/summary",),
+        changes=(INSIGHTS_REPORT, INSIGHTS_MARKDOWN, FLAG_STORE),
     ),
     Driver(
         INSIGHTS,
@@ -1301,6 +1448,7 @@ DRIVERS: list[Driver] = [
         prepare=insights_fixture,
         inputs=(INSIGHTS_REPORT, FLAG_STORE),
         outputs=("{root}/summary",),
+        changes=(INSIGHTS_REPORT, INSIGHTS_MARKDOWN, FLAG_STORE),
     ),
     Driver(
         INSIGHTS,
@@ -1309,6 +1457,14 @@ DRIVERS: list[Driver] = [
         prepare=insights_fixture,
         inputs=(INSIGHTS_REPORT, SYNTHESIS_RESULT, INSIGHTS_REPORT.replace("insights.json", "synthesis-context.json")),
         outputs=("{root}/summary",),
+    ),
+    Driver(
+        INSIGHTS,
+        "synthesize",
+        ("synthesize", "--report", INSIGHTS_REPORT, "--result", SYNTHESIS_RESULT, "--host", "codex"),
+        prepare=synthesized,
+        outputs=("{root}/summary",),
+        changes=(INSIGHTS_REPORT, INSIGHTS_MARKDOWN),
     ),
     Driver(
         INSIGHTS,
@@ -1360,6 +1516,7 @@ DRIVERS: list[Driver] = [
             "None and update writes"
         },
         outputs=(DASHBOARD_FILE,),
+        changes=(DASHBOARD_FILE, TRACKER),
     ),
     Driver(
         DASHBOARD,
@@ -1367,6 +1524,7 @@ DRIVERS: list[Driver] = [
         ("override", "--set", "owner/repo#1=waiting on author"),
         prepare=dashboard_fixture,
         inputs=(CONFIG, TRACKER),
+        changes=(CONFIG,),
     ),
     Driver(
         DASHBOARD,
@@ -1374,6 +1532,7 @@ DRIVERS: list[Driver] = [
         ("repository", "--add", "owner/added"),
         prepare=dashboard_fixture,
         inputs=(CONFIG,),
+        changes=(CONFIG,),
     ),
     Driver(
         DASHBOARD,

@@ -28,6 +28,7 @@ from atomic_file import (
     UnfinishedReservationError,
     create_bytes,
     is_read_only,
+    refuse_uncreatable,
     replace_bytes,
     replace_text,
 )
@@ -79,6 +80,68 @@ def watched_descriptors() -> Iterator[tuple[list[int], list[int], list[int]]]:
         mock.patch.object(os, "close", close),
     ):
         yield opened, closes, reused
+
+
+class ProbeTests(unittest.TestCase):
+    """refuse_uncreatable: whether the folder a replace would write its copy in takes a new file, leaving nothing."""
+
+    def test_a_writable_folder_passes_and_keeps_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b"{}")
+            refuse_uncreatable(path)
+            self.assertEqual(["state.json"], names_in(temporary))
+            self.assertEqual(b"{}", path.read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows gives a folder no permission that refuses a new file in it")
+    def test_a_read_only_folder_is_refused_naming_the_file_and_keeps_nothing(self) -> None:
+        # Linux and macOS: the folder's permission, not the file's, refuses the copy a replace writes beside the file.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "store"
+            folder.mkdir()
+            path = folder / "state.json"
+            path.write_bytes(b"{}")
+            folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+            try:
+                with self.assertRaises(PermissionError) as caught:
+                    refuse_uncreatable(path)
+            finally:
+                folder.chmod(stat.S_IRWXU)
+            self.assertEqual(str(path), caught.exception.filename)
+            self.assertIn("its folder takes no new file, so it cannot be replaced", str(caught.exception))
+            self.assertEqual(["state.json"], names_in(str(folder)))
+
+    def test_a_file_in_the_folder_s_place_is_refused_and_nothing_is_made(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            blocker = Path(temporary) / "store"
+            blocker.write_bytes(b"not a folder")
+            path = blocker / "state.json"
+            with self.assertRaises(OSError) as caught:
+                refuse_uncreatable(path)
+            self.assertEqual(str(path), caught.exception.filename)
+            self.assertEqual(["store"], names_in(temporary))
+            self.assertEqual(b"not a folder", blocker.read_bytes())
+
+    def test_a_missing_folder_is_left_to_the_replace_that_makes_it_and_none_is_made(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "inner" / "deeper" / "state.json"
+            refuse_uncreatable(path)
+            self.assertEqual([], names_in(temporary))
+
+    def test_a_probe_file_that_cannot_be_removed_is_named(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            unlink = Path.unlink
+            with (
+                mock.patch.object(Path, "unlink", side_effect=OSError(errno.EBUSY, "busy")),
+                self.assertRaises(UnfinishedCopyError) as caught,
+            ):
+                refuse_uncreatable(path)
+            left = caught.exception.copy
+            self.assertEqual(path, caught.exception.target)
+            self.assertRegex(left.name, r"^\.state\.json\..+\.tmp$")
+            self.assertEqual([left.name], names_in(temporary))
+            unlink(left)
 
 
 class ReplaceTests(unittest.TestCase):
