@@ -115,12 +115,14 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   of its `paths`, holds no added line of the scenario's change, such as a file the change deletes, only removes lines
   from, or moves unchanged, or when its `lines` are none of that path's added lines. A scoped `no_finding_above` that
   names no `paths` fails to load when its reviewer's route reaches no file with an added line, and so does a fixture
-  scenario whose change adds no line to any file, which no review could raise a finding in. Such a `finding` could
+  scenario whose change adds no line to any file, which no review could raise a finding in, unless it holds a
+  `disposition` or `ledger` expectation, which a re-review judges from the prior findings without an added line, as
+  when an author withdraws the lines a finding was on. Such a `finding` could
   never be met and such a `repeats` or `no_finding_above` could never fail. The added lines come from the same diff that
   decides a reviewer's reach, as the pipeline parses it. Two kinds of expectation are not held to them, since a run
   diffs a Word document's or a PDF's extracted text rather than its bytes, and loading a scenario would then need the
   PDF extractor: a document scenario's, and one on a Word document or a PDF in a fixture scenario, which counts as a
-  file the change may add a line to.
+  file the change may add a line to unless the change deletes it.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double

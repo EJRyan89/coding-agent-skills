@@ -832,6 +832,13 @@ class LoaderTests(unittest.TestCase):
             # A run diffs a Word document's or a PDF's extracted text, which the loader does not extract.
             ("docx", ({"gone.go": "a\n"}, {"report.docx": b"PK\x03\x04\x00\x00 a zipped document"}), None),
             ("pdf", ({"report.pdf": "a\nb\n"}, {"report.pdf": "a\n"}), None),
+            # A document the change deletes adds nothing, extracted or not.
+            (
+                "deleted docx",
+                ({"report.docx": b"PK\x03\x04\x00\x00 a zipped document"}, {}),
+                refusal.format("report.docx"),
+            ),
+            ("deleted pdf", ({"report.pdf": "a\nb\n"}, {}), refusal.format("report.pdf")),
         ):
             with self.subTest(name=name):
                 shutil.rmtree(self.root / "demo", ignore_errors=True)
@@ -846,6 +853,32 @@ class LoaderTests(unittest.TestCase):
                     with self.assertRaises(ScenarioError) as raised:
                         skill_evals_scenarios.load_scenarios("demo", root=self.root)
                     self.assertEqual(refused, str(raised.exception))
+
+    def test_a_re_review_that_judges_dispositions_loads_though_its_change_adds_no_line(self) -> None:
+        # An author withdrawing the lines a prior finding was on adds nothing, yet the re-review still judges the prior
+        # findings' dispositions and the ledger; one that judges neither could raise nothing to judge.
+        refused = (
+            "case: the scenario's change adds no line to any file it changes (store.go), and a reviewer anchors a "
+            "finding only on an added line"
+        )
+        verdict = {"kind": "verdict", "verdict": "APPROVED"}
+        for name, expectations, refusal in (
+            ("disposition", [{"kind": "disposition", "entry": "v1:F001", "disposition": "addressed"}, verdict], None),
+            ("ledger", [{"kind": "ledger", "addressed": 3, "still_present": 0}, verdict], None),
+            ("verdict", [verdict], refused),
+        ):
+            with self.subTest(name=name):
+                shutil.rmtree(self.root / "demo", ignore_errors=True)
+                spec = scenario_spec(*expectations, mode="re-review", prior="prior.json")
+                directory = write_scenario(self.root, "case", spec, added=False)
+                (directory / "prior.json").write_text("{}", encoding="utf-8")
+                (directory / "base" / "store.go").write_text("a\n", encoding="utf-8")
+                if refusal is None:
+                    self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("demo", root=self.root)))
+                else:
+                    with self.assertRaises(ScenarioError) as raised:
+                        skill_evals_scenarios.load_scenarios("demo", root=self.root)
+                    self.assertEqual(refusal, str(raised.exception))
 
     def test_a_scoped_no_finding_above_without_paths_needs_its_reviewer_to_reach_an_added_line(self) -> None:
         # Nothing the reviewer raises could sit on a file the change adds no line to, so the expectation would pass
@@ -1003,6 +1036,8 @@ class LoaderTests(unittest.TestCase):
             # A run diffs a Word document's or a PDF's extracted text, which the loader does not extract.
             ({**found, "path": "report.docx", "lines": [12]}, None),
             ({**found, "path": "report.pdf", "lines": [12]}, None),
+            # A document the change deletes adds nothing.
+            ({**found, "path": "gone.pdf", "lines": [1]}, none_to.format("finding gone.pdf", "gone.pdf")),
         ):
             with self.subTest(expectation=expectation):
                 again = {"mode": "re-review", "prior": "prior.json"} if expectation["kind"] == "repeats" else {}
@@ -1019,6 +1054,7 @@ class LoaderTests(unittest.TestCase):
                     ("base", "runs.go", "a\nd\ne\n"),
                     ("head", "runs.go", "a\nb\nc\nd\ne\nf\n"),
                     ("head", "report.pdf", "a\nb\nc\n"),
+                    ("base", "gone.pdf", "a\nb\n"),
                 ):
                     (directory / tree / path).write_text(text, encoding="utf-8")
                 (directory / "prior.json").write_text("{}", encoding="utf-8")
