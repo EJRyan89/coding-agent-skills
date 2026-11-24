@@ -16,6 +16,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, failure_message, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
+from github_remote import OWNER_AND_NAME
 from pull_carried import InBase, carried
 
 LIMIT = 1000
@@ -23,7 +24,7 @@ FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit
 # GitHub's pull request commits endpoint lists at most this many commits, so a list this long may be truncated.
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+REPOSITORY_PATTERN = re.compile(OWNER_AND_NAME)
 # GitHubError kinds meaning gh itself did not run to completion: missing, unable to start, or out of time.
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
 # A branch name git accepts in a reference, apart from the sequences `..` and `@{`, which _usable_base_name refuses.
