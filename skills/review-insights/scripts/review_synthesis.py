@@ -51,6 +51,7 @@ import json_writer
 import private_folder
 from executable_locator import PYTHON
 from flat_text import flat_text
+from markdown_literal import markdown_line
 from path_containment import resolved_path
 from review_config import safe_repository_path
 from review_guard import RUN_FILE, RUN_PREFIX, UNGUARDED, claimed
@@ -1342,15 +1343,19 @@ def custom_pattern_facts(report: dict[str, Any]) -> list[str]:
 
 def category_markdown(report: dict[str, Any], entry: dict[str, Any]) -> list[str]:
     """A category recommendation's body once the synthesis has commented on it: its topics, assessment, the
-    synthesized recommendations that act on it, and for a small category, each finding."""
+    synthesized recommendations that act on it, and for a small category, each finding. The model's text is literal,
+    each on one line."""
     lines = ["Topics:", ""]
-    lines += [f"- {item['topic']} ({item['count']}) — e.g. {', '.join(item['examples'])}" for item in entry["topics"]]
-    lines += ["", entry["assessment"], ""]
+    lines += [
+        f"- {markdown_line(item['topic'])} ({item['count']}) — e.g. {', '.join(item['examples'])}"
+        for item in entry["topics"]
+    ]
+    lines += ["", markdown_line(entry["assessment"]), ""]
     addressed = _addressed_ids(report, entry)
     lines += [f"Addressed by: {', '.join(addressed) or 'none'}", ""]
     if entry["findings"]:
         lines += ["Findings:", ""]
-        lines += [f"- {item['ref']}: {item['assessment']}" for item in entry["findings"]]
+        lines += [f"- {item['ref']}: {markdown_line(item['assessment'])}" for item in entry["findings"]]
         lines.append("")
     return lines
 
@@ -1368,7 +1373,8 @@ def category_facts(report: dict[str, Any], identifier: str, entry: dict[str, Any
 
 def render(report: dict[str, Any], decision_history: Callable[[dict[str, Any]], list[str]]) -> list[str]:
     """The synthesis section of the Markdown report: its recommendations by priority, cheapest fix first within one,
-    then its analysis."""
+    then its analysis. Every text the model or a reviewer wrote is literal and on one line, through `markdown_line`;
+    finding references are the report's own."""
     synthesis = report.get("synthesis")
     if synthesis is None or synthesis["status"] == "skipped":
         return []
@@ -1390,8 +1396,8 @@ def render(report: dict[str, Any], decision_history: Callable[[dict[str, Any]], 
         _bullets(
             "Custom-rule patterns",
             [
-                f"**{item['pattern']}** ({len(item['rules'])} rules: {', '.join(item['rules'])}) — "
-                f"{item['assessment']} Addressed by: {', '.join(_addressed_ids(report, item)) or 'none'}"
+                f"**{markdown_line(item['pattern'])}** ({len(item['rules'])} rules: {_literals(item['rules'])}) — "
+                f"{markdown_line(item['assessment'])} Addressed by: {', '.join(_addressed_ids(report, item)) or 'none'}"
                 for item in synthesis["custom_rule_patterns"]
             ],
         )
@@ -1401,21 +1407,25 @@ def render(report: dict[str, Any], decision_history: Callable[[dict[str, Any]], 
 
 def _render_item(item: dict[str, Any], decision_history: Callable[[dict[str, Any]], list[str]]) -> list[str]:
     lines = [
-        f"#### {item['id']} — {item['title']}",
+        f"#### {item['id']} — {markdown_line(item['title'])}",
         "",
         f"Type: {item['type']}",
-        f"Target: {describe_target(item['target'])}",
+        f"Target: {markdown_line(describe_target(item['target']))}",
         f"Decision: {item['decision']}",
         f"Linked flags: {', '.join(item['linked_flags']) or 'none'}",
         "",
-        item["change"],
+        markdown_line(item["change"]),
         "",
-        f"Rationale: {item['rationale']}",
+        f"Rationale: {markdown_line(item['rationale'])}",
         "",
     ]
     if item["evidence"]:
         lines.extend([f"Evidence: {', '.join(flat_text(ref) for ref in item['evidence'])}", ""])
     return lines + decision_history(item)
+
+
+def _literals(texts: list[str], separator: str = ", ") -> str:
+    return separator.join(markdown_line(text) for text in texts)
 
 
 def _bullets(title: str, rows: list[str]) -> list[str]:
@@ -1426,7 +1436,7 @@ def _render_analysis(synthesis: dict[str, Any]) -> list[str]:
     lines = _bullets(
         "Themes",
         [
-            f"**{item['theme']}** ({item['count']}) — {', '.join(item['areas']) or 'no area'}; "
+            f"**{markdown_line(item['theme'])}** ({item['count']}) — {_literals(item['areas']) or 'no area'}; "
             f"e.g. {', '.join(item['examples'])}"
             for item in synthesis["themes"]
         ],
@@ -1434,7 +1444,7 @@ def _render_analysis(synthesis: dict[str, Any]) -> list[str]:
     lines += _bullets(
         "Recurring mistakes",
         [
-            f"**{item['mistake']}** ({item['count']}: "
+            f"**{markdown_line(item['mistake'])}** ({item['count']}: "
             f"{', '.join(f'{count} {severity}' for severity, count in sorted(item['severity'].items()))}); "
             f"e.g. {', '.join(item['examples'])}"
             for item in synthesis["mistakes"]
@@ -1443,18 +1453,19 @@ def _render_analysis(synthesis: dict[str, Any]) -> list[str]:
     lines += _bullets(
         "Findings left in place",
         [
-            f"**{item['pattern']}** ({item['count']}) — {item['likely_reason']}; e.g. {', '.join(item['examples'])}"
+            f"**{markdown_line(item['pattern'])}** ({item['count']}) — {markdown_line(item['likely_reason'])}; "
+            f"e.g. {', '.join(item['examples'])}"
             for item in synthesis["persistent_patterns"]
         ],
     )
     effectiveness = synthesis["reviewer_effectiveness"]
     if effectiveness:
-        candidates = "; ".join(effectiveness["false_positive_candidates"]) or "none"
+        candidates = _literals(effectiveness["false_positive_candidates"], "; ") or "none"
         lines += _bullets(
             "Reviewer effectiveness",
             [
-                f"Most useful: {effectiveness['most_useful']}",
-                f"Least useful: {effectiveness['least_useful']}",
+                f"Most useful: {markdown_line(effectiveness['most_useful'])}",
+                f"Least useful: {markdown_line(effectiveness['least_useful'])}",
                 f"False-positive candidates: {candidates}",
             ],
         )
@@ -1463,10 +1474,13 @@ def _render_analysis(synthesis: dict[str, Any]) -> list[str]:
         lines += _bullets(
             f"Compared with {synthesis['previous_report']}",
             [
-                f"Persistent: {'; '.join(comparison['persistent']) or 'none'}",
-                f"New: {'; '.join(comparison['new']) or 'none'}",
-                f"Resolved: {'; '.join(comparison['resolved']) or 'none'}",
-                *(f"{item['id']}: {item['assessment']}" for item in comparison["previous_recommendations"]),
+                f"Persistent: {_literals(comparison['persistent'], '; ') or 'none'}",
+                f"New: {_literals(comparison['new'], '; ') or 'none'}",
+                f"Resolved: {_literals(comparison['resolved'], '; ') or 'none'}",
+                *(
+                    f"{item['id']}: {markdown_line(item['assessment'])}"
+                    for item in comparison["previous_recommendations"]
+                ),
             ],
         )
     return lines

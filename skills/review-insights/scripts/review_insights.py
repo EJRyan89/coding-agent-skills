@@ -78,6 +78,7 @@ import whole_number
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
+from markdown_literal import markdown_line
 from path_containment import resolved_path, within
 from path_keys import name_key
 from review_archive import ArchiveError, every_version, pull_directory, record_files, record_paths
@@ -400,6 +401,10 @@ def _repositories_text(repositories: list[str]) -> str:
     return repositories[0] if len(repositories) == 1 else ", ".join(repositories[:-1]) + " and " + repositories[-1]
 
 
+def _category_recommendation(category: str) -> str:
+    return f"Review recurring {category} findings and decide whether guidance or reviewer rules should change."
+
+
 def _analyzer_recommendation(coverage: str, tool: str, rule: str, repositories: list[str]) -> str:
     where = _repositories_text(repositories)
     if coverage == "available":
@@ -515,8 +520,7 @@ def analyze(
                     "id": identifier,
                     "kind": "category",
                     "category": category,
-                    "recommendation": f"Review recurring {category} findings and decide "
-                    "whether guidance or reviewer rules should change.",
+                    "recommendation": _category_recommendation(category),
                     **common,
                 }
             )
@@ -548,15 +552,25 @@ def analyze(
     }
 
 
+def _rendered_recommendation(item: dict[str, Any]) -> str:
+    """A category or analyzer recommendation's sentence for the Markdown report, built again from its parts with the
+    category, tool, and rule a reviewer wrote as literal text."""
+    if item["kind"] == "category":
+        return _category_recommendation(markdown_line(item["category"]))
+    return _analyzer_recommendation(
+        item["coverage"], markdown_line(item["tool"]), markdown_line(item["rule"]), item["repositories"]
+    )
+
+
 def _render_recommendation(item: dict[str, Any], heading: str, report: dict[str, Any]) -> list[str]:
-    lines = [f"### {item['id']} — {flat_text(heading)}", "", f"Finding count: {item['finding_count']}"]
+    """A recommendation's section; `heading` is already literal Markdown."""
+    lines = [f"### {item['id']} — {heading}", "", f"Finding count: {item['finding_count']}"]
     if item["kind"] == "analyzer":
         lines.append(f"Repositories: {', '.join(item['repositories'])}")
     lines.extend([f"Decision: {item['decision']}", f"Linked flags: {', '.join(item['linked_flags']) or 'none'}", ""])
     # A recorded synthesis's topics replace the generic sentence of a category recommendation.
     entry = synthesis_stage.category_entry(report, item["category"]) if item["kind"] == "category" else None
-    # The generic sentence names the record's category, which may hold a line break.
-    lines.extend(synthesis_stage.category_markdown(report, entry) if entry else [flat_text(item["recommendation"]), ""])
+    lines.extend(synthesis_stage.category_markdown(report, entry) if entry else [_rendered_recommendation(item), ""])
     if item["reviewers"]:
         lines.extend(
             [
@@ -565,7 +579,7 @@ def _render_recommendation(item: dict[str, Any], heading: str, report: dict[str,
             ]
         )
         lines.extend(
-            f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
+            f"| {markdown_line(row['reviewer'])} | {markdown_line(row['model'])} | {row['findings']} | "
             f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
             f"{_outcome(row['still_present'])} |"
             for row in item["reviewers"]
@@ -573,7 +587,7 @@ def _render_recommendation(item: dict[str, Any], heading: str, report: dict[str,
         lines.append("")
     if item["kind"] == "analyzer":
         lines.extend(["Findings:", ""])
-        lines.extend(f"- {_example(entry)}" for entry in item["evidence"][:EVIDENCE_RENDERED])
+        lines.extend(f"- {_example_markdown(entry)}" for entry in item["evidence"][:EVIDENCE_RENDERED])
         if len(item["evidence"]) > EVIDENCE_RENDERED:
             lines.append(f"- and {len(item['evidence']) - EVIDENCE_RENDERED} more")
         lines.append("")
@@ -585,19 +599,30 @@ def _decision_history(item: dict[str, Any]) -> list[str]:
         return []
     lines = ["Decision history:", ""]
     for entry in item["decision_history"]:
-        note = f" — {entry['note']}" if entry["note"] else ""
+        note = f" — {markdown_line(entry['note'])}" if entry["note"] else ""
         resolved = f" (resolved {', '.join(entry['resolved_flags'])})" if entry["resolved_flags"] else ""
         lines.append(f"- {entry['decided_at']}: {entry['decision']}{note}{resolved}")
     return [*lines, ""]
 
 
-def _example(entry: dict[str, Any]) -> str:
-    """One finding an analyzer recommendation covers, on one line: where it is, then its headline when the record has
-    one, or else its path, which a pull request may give a line break."""
+def _example_parts(entry: dict[str, Any]) -> tuple[str, str]:
+    """One finding an analyzer recommendation covers: where it is, then its headline when the record has one, or else
+    its path, which a pull request may give a line break or Markdown."""
     location = finding_reference(
         entry["repository"], entry["pull_number"], entry["review_version"], entry["finding_id"]
     )
-    return flat_text(f"{location} {entry['title'] or entry['path'] + ':' + str(entry['line'])}")
+    return location, entry["title"] or entry["path"] + ":" + str(entry["line"])
+
+
+def _example(entry: dict[str, Any]) -> str:
+    """The finding as an `EXAMPLE` line shows it, on one line."""
+    return flat_text(" ".join(_example_parts(entry)))
+
+
+def _example_markdown(entry: dict[str, Any]) -> str:
+    """The finding as the Markdown report shows it, with its headline or path literal text on one line."""
+    location, shown = _example_parts(entry)
+    return f"{location} {markdown_line(shown)}"
 
 
 def render(report: dict[str, Any]) -> str:
@@ -619,7 +644,7 @@ def render(report: dict[str, Any]) -> str:
     if not categories:
         lines.extend(["No findings in the selected range.", ""])
     for item in categories:
-        lines.extend(_render_recommendation(item, item["category"], report))
+        lines.extend(_render_recommendation(item, markdown_line(item["category"]), report))
     if analyzers:
         lines.extend(
             [
@@ -632,17 +657,12 @@ def render(report: dict[str, Any]) -> str:
             ]
         )
     for item in analyzers:
-        lines.extend(_render_recommendation(item, f"{item['coverage']}: {item['rule']} ({item['tool']})", report))
+        heading = f"{item['coverage']}: {markdown_line(item['rule'])} ({markdown_line(item['tool'])})"
+        lines.extend(_render_recommendation(item, heading, report))
     lines.extend(["## Evidence", ""])
     lines.extend(f"- `{record['path']}` — payload `{record['payload_sha256']}`" for record in report["records"])
     lines.append("")
     return "\n".join(lines)
-
-
-def _cell(value: str) -> str:
-    """A table cell on one line: a reviewer ID from an older record's source is free text and may hold a pipe or a
-    line break."""
-    return flat_text(value).replace("\\", "\\\\").replace("|", "\\|")
 
 
 def _outcome(count: int | None) -> str:

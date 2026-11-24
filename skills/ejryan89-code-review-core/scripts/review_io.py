@@ -25,7 +25,7 @@ import file_presence
 import json_reader
 import json_writer
 import private_folder
-from atomic_file import UnfinishedCopyError, replace_bytes
+from atomic_file import UnfinishedCopyError, replace_bytes, while_refused
 from process_identity import ProcessStatus, process_status, read_pid
 from review_process import same_process
 from skill_roots import skills_directory_holding
@@ -152,11 +152,16 @@ def record_present(path: Path) -> bool:
 
 
 def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
+    """The value the JSON file at `path` holds, as parse_json reads it, or a PersistenceError naming why it is too large
+    or not valid JSON, and a FileUnreadable when it cannot be read. A read refused with PermissionError is tried again
+    after `atomic_file.while_refused`'s short waits, as `json_reader.read_file` tries one, since on Windows a read that
+    meets another process's replace of the file through `atomic_file`, such as a concurrent run's write of the batch
+    state or the dashboard's tracker record, may be refused while the replace runs; every try reads the whole file."""
     try:
         size = path.stat().st_size
         if size > maximum_bytes:
             raise PersistenceError(f"JSON file exceeds {maximum_bytes} bytes: {path}")
-        return parse_json(path.read_text(encoding="utf-8-sig"))
+        return parse_json(while_refused(lambda: path.read_text(encoding="utf-8-sig")))
     except PersistenceError:
         raise
     except OSError as exc:
