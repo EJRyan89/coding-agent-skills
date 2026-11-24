@@ -1108,6 +1108,21 @@ class DeployableReportTests(unittest.TestCase):
         self.assertTrue(written.startswith("# Earlier step\n"))
         self.assertIn("Codex sandbox set to elevated", written)
 
+    def test_a_results_detail_is_one_literal_table_cell(self) -> None:
+        # A detail quotes a runtime's own output, which may hold a pipe after a backslash, Markdown, or a line break
+        # other than LF; the cell holds it as text, so the row keeps its four cells.
+        detail = "<!-- [x](https://example.com) @user \\| a\rb\u2028c"
+        passes = [{"label": "first deploy", "results": [{"runtime": "codex", "status": "FAILED", "detail": detail}]}]
+        text = report.render_summary(passes, [], [])
+        literal = (
+            "&lt;&#33;&#45;&#45; &#91;x&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41; &#64;user &#92;&#124; a b c"
+        )
+        self.assertIn(f"\n| first deploy | codex | FAILED | {literal} |\n", text)
+
+    def test_a_result_with_no_detail_has_an_empty_detail_cell(self) -> None:
+        passes = [{"label": "first deploy", "results": [{"runtime": "codex", "status": "PASSED"}]}]
+        self.assertIn("\n| first deploy | codex | PASSED |  |\n", report.render_summary(passes, [], []))
+
     def test_the_summary_is_a_no_op_without_a_summary_file(self) -> None:
         self.results_file.write_text("[]", encoding="utf-8")
         code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")
