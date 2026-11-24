@@ -5,8 +5,9 @@ tests/validation/exit_tables.py finds the entry points by reading the code: a mo
 run_main, so a new one is held here from the pull request that adds it. faults.py drives each of its commands, its
 argparse subcommands read from the code, or names it in FAULTS_NOT_RUN with the reason the harness cannot drive it.
 fault_table.py names the faults: a file the command reads made unreadable, put in a directory's place, removed, or
-given a stat that raises, and git exiting 128, git timing out, and gh failing; a member of a record of another type is
-the content corpus's, test_malformed_input.py's field cases. The runs themselves are the suites test_faults_<group>.py,
+given a stat that raises, a file the command changes made read-only or put in a directory's place, and git exiting
+128, git timing out, and gh failing; a member of a record of another type is the content corpus's,
+test_malformed_input.py's field cases. The runs themselves are the suites test_faults_<group>.py,
 one per group of faults, each judged by fault_check.py; the tests below show the harness stopping and judging a run.
 """
 
@@ -43,9 +44,11 @@ from fault_check import (
     read_as_absent,
     run_entry,
     run_ids,
+    stopped_part_way,
     written_through,
 )
 from fault_table import (
+    CHANGE_FAULTS,
     DIRECTORY,
     FAULTS,
     FILE_FAULTS,
@@ -56,6 +59,7 @@ from fault_table import (
     GIT_TIMEOUT,
     LINK_TO_NOTHING,
     MISSING,
+    READ_ONLY,
     STAT_RAISES,
     UNREADABLE,
     Driver,
@@ -224,15 +228,41 @@ def test_each_driver_runs_a_fault_and_names_only_faults_it_could_run() -> None:
             named
             for named in driver.not_run
             for fault, _, path in [named.partition(" ")]
-            if fault not in FAULTS
-            or (path and (fault not in FILE_FAULTS or path not in driver.inputs))
-            or (fault in FILE_FAULTS and not driver.inputs)
-            or (fault in GIT_FAULTS and not driver.git)
-            or (fault in GH_FAULTS and not driver.gh)
+            if fault not in FAULTS or not could_run(driver, fault, path)
         ]
         for driver in faults.DRIVERS
     }
     assert {name: found for name, found in kinds.items() if found} == {}, "not_run names a fault the driver never runs"
+    alone = {driver.name: driver.refused_alone for driver in faults.DRIVERS if driver.refused_alone}
+    stray = {name: faults_ for name, faults_ in alone.items() if not set(faults_) <= set(CHANGE_FAULTS)}
+    assert stray == {}, "refused_alone names only change faults"
+    unchanged = [driver.name for driver in faults.DRIVERS if driver.refused_alone and not driver.changes]
+    assert unchanged == [], "a driver that refuses a changed file alone lists the files it changes"
+
+
+def could_run(driver: Driver, fault: str, path: str) -> bool:
+    """Whether a driver runs the fault at all, or at the input or changed file `path` names when it names one."""
+    places = [
+        *(driver.inputs if fault in FILE_FAULTS else ()),
+        *(driver.changes[-1:] if fault in CHANGE_FAULTS else ()),
+    ]
+    if path:
+        return path in places
+    if fault in GIT_FAULTS:
+        return driver.git
+    if fault in GH_FAULTS:
+        return driver.gh
+    return bool(places)
+
+
+def test_a_change_fault_is_placed_once_at_the_last_file_a_driver_changes() -> None:
+    changing = Driver("tools/one.py", "", (), inputs=("{work}/a.json",), changes=("{work}/b.json", "{work}/a.json"))
+    assert changing.runs() == [
+        *((fault, "{work}/a.json") for fault in FILE_FAULTS),
+        (READ_ONLY, "{work}/a.json"),
+    ]
+    excused = Driver("tools/one.py", "", (), changes=("{work}/a.json", "{work}/b.json"), not_run={DIRECTORY: "why"})
+    assert excused.runs() == [(READ_ONLY, "{work}/b.json")]
 
 
 # The harness itself: a fixture entry point, run through fault_runner.py, shows each stop and each injected fault.
@@ -500,14 +530,51 @@ def test_changes_names_a_write_and_leaves_the_faults_own_path_aside() -> None:
     assert changes(before, before, None, root) == []
 
 
-@pytest.mark.parametrize("fault", [UNREADABLE, DIRECTORY, MISSING, STAT_RAISES])
+@pytest.mark.parametrize("fault", [UNREADABLE, DIRECTORY, MISSING, STAT_RAISES, READ_ONLY])
 def test_placed_puts_the_file_back_as_it_was(fault: str) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "input.json"
         path.write_bytes(b'{"value": 1}')
+        mode = stat.S_IMODE(path.stat().st_mode)
         with placed(fault, path):
             pass
         assert path.read_bytes() == b'{"value": 1}'
+        # The read-only fault changes the mode alone, so it puts back the mode it found.
+        assert fault != READ_ONLY or stat.S_IMODE(path.stat().st_mode) == mode
+
+
+def test_a_read_only_file_is_placed_without_its_owner_s_write_permission(tmp_path: Path) -> None:
+    # Windows keeps the owner's read bit alone of a file whose read-only attribute is set, as here.
+    path = tmp_path / "changed.json"
+    path.write_bytes(b"{}")
+    with placed(READ_ONLY, path):
+        assert not path.stat().st_mode & stat.S_IWUSR
+        assert path.read_bytes() == b"{}"
+    assert path.stat().st_mode & stat.S_IWUSR
+
+
+def test_changes_names_a_change_to_the_read_only_file_itself_where_no_path_is_left_aside() -> None:
+    root = Path("root")
+    before = {"w": {"root/w": None, "root/w/changed": b"1"}}
+    after = {"w": {"root/w": None, "root/w/changed": b"2"}}
+    assert changes(before, after, None, root) == ["it changed ['w/changed'] before it refused"]
+
+
+def test_a_path_two_watched_folders_hold_is_named_once() -> None:
+    root = Path("root")
+    before: dict[str, dict[str, bytes | None]] = {"root/w": {"root/w/a": b"1"}, "root/w/a": {"root/w/a": b"1"}}
+    after: dict[str, dict[str, bytes | None]] = {"root/w": {"root/w/a": b"2"}, "root/w/a": {"root/w/a": b"2"}}
+    assert changes(before, after, None, root) == ["it changed ['w/a'] before it refused"]
+
+
+def test_a_run_that_refuses_a_file_alone_may_not_stop_part_way() -> None:
+    def finished(stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 1, stdout, "")
+
+    assert stopped_part_way(finished("FIXED a.cs 5 rule\nREFUSED b.cs read-only\n")) == []
+    assert stopped_part_way(finished("FIXED a.cs 5 rule\nFAILED cannot write b.cs\n")) == [
+        "it stopped part way, though it refuses that file alone: 'FAILED cannot write b.cs'"
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")

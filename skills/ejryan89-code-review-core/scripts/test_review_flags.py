@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import errno
 import json
+import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -171,6 +173,32 @@ class FlagTests(unittest.TestCase):
                     call()
                 self.assertIn(str(path), str(caught.exception))
                 self.assertEqual(["flags.json"], sorted(entry.name for entry in folder.iterdir()))
+
+    def test_a_read_only_store_is_refused_before_the_lock_makes_its_folder(self) -> None:
+        # The replace refuses a read-only store too, but only once the lock was taken, which leaves its .locks folder.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "code-review"
+            path = folder / "flags.json"
+            add_flag(path, category="Guideline", body="A rule.")
+            shutil.rmtree(folder / ".locks")
+            before = path.read_bytes()
+            path.chmod(stat.S_IREAD)
+            calls: dict[str, Callable[[], object]] = {
+                "add": lambda: add_flag(path, category="Guideline", body="Another rule."),
+                "edit": lambda: edit_flag(path, "RF-000001", body="Edited."),
+                "resolve": lambda: resolve_flag(path, "RF-000001", "Accepted"),
+            }
+            try:
+                for name, call in calls.items():
+                    with self.subTest(name), self.assertRaises(FlagError) as caught:
+                        call()
+                    self.assertEqual(
+                        f"The flag store {path} is read-only; make it writable to change it", str(caught.exception)
+                    )
+                    self.assertEqual(["flags.json"], sorted(entry.name for entry in folder.iterdir()))
+                    self.assertEqual(before, path.read_bytes())
+            finally:
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
 
     def test_edit_of_a_value_of_the_wrong_kind_fails_before_the_store_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

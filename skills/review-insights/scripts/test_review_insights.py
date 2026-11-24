@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1870,6 +1871,50 @@ class RecordingTests(InsightFixture):
         )
         item = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][0]
         self.assertEqual([[first], [second]], [entry["resolved_flags"] for entry in item["decision_history"]])
+
+    def written(self, *paths: Path) -> list[bytes | None]:
+        return [path.read_bytes() if path.is_file() else None for path in paths]
+
+    def test_a_read_only_flag_store_is_refused_before_the_decision_is_recorded(self) -> None:
+        # Refused only when its turn came, the store would leave the decision recorded and its flag open, though the
+        # platform reports a read-only store before anything is written.
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        paths = (json_path, json_path.with_suffix(".md"), self.flags)
+        before = self.written(*paths)
+        self.flags.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", flag),
+                f"The flag store {self.flags} is read-only; make it writable to change it",
+            )
+        finally:
+            self.flags.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(*paths))
+
+    def test_a_markdown_it_cannot_replace_is_refused_before_the_report_is(self) -> None:
+        # The report is written first, so a Markdown refused only when its turn came would leave the report replaced.
+        self.commit("owner/repo", 7, ["Correctness"])
+        json_path, _ = self.report()
+        markdown = json_path.with_suffix(".md")
+        before = self.written(json_path)
+        markdown.chmod(stat.S_IREAD)
+        try:
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"{markdown} is read-only; make it writable for the report to be written",
+            )
+        finally:
+            markdown.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual(before, self.written(json_path))
+        markdown.unlink()
+        markdown.mkdir()
+        self.assertFailed(
+            self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+            f"{markdown} is not a file, so the report cannot be written",
+        )
+        self.assertEqual(before, self.written(json_path))
 
     def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])

@@ -13,6 +13,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import calendar_date
+from atomic_file import is_read_only
 from executable_locator import absolute_home
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
@@ -109,6 +110,12 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
 
 
 def update_state(path: Path, update: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """Replace the state with `update`'s change of it, under the state lock. A state it cannot read, anything else in
+    its place, or a read-only one is refused before the lock makes the lock's folder, so a refusal leaves the folder as
+    it was; the read under the lock is the one the change is made to."""
+    load_state(path)
+    if is_read_only(path):
+        raise StateError(f"The review state {path} is read-only; make it writable to record the batch")
     lock_path = path.parent / ".locks" / "state.lock"
     with ResourceLock(lock_path, place=STATE_LOCK_PLACE):
         current = load_state(path)

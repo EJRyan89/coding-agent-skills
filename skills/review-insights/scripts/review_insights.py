@@ -32,7 +32,9 @@ findings. Finding IDs restart in every review, so a flag is never matched agains
 synthesized recommendation links instead the open flags its synthesis named, whether or not they name a finding. Links
 are computed when the report is written, so `decide` resolves exactly the flags it listed. A decision is recorded in
 the report before any flag is resolved, so a flag store that fails partway leaves the decision recorded with the flags
-it did resolve, and deciding again resolves the rest.
+it did resolve, and deciding again resolves the rest. A report, its Markdown, or a flag store the decision resolves
+flags in that is read-only, and a report or Markdown that is not a file, is refused before anything is written, by
+every command that writes a report.
 
 Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
 lose each other's decisions.
@@ -75,6 +77,7 @@ import review_guidance
 import review_signals
 import review_synthesis as synthesis_stage
 import whole_number
+from atomic_file import is_read_only
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
@@ -90,7 +93,14 @@ from review_config import (
     selected_repository_set,
     validate_repository_identity,
 )
-from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, load_store, resolve_flag
+from review_flags import (
+    FlagAlreadyResolved,
+    FlagError,
+    default_flags_path,
+    load_store,
+    refuse_read_only,
+    resolve_flag,
+)
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
@@ -137,6 +147,9 @@ TREE_READ_ALLOWED = {
         "choose the repository; it reads no file of a checkout"
     ),
     "create_report": "whether the insights report the skill wrote earlier is there: the skill's own output",
+    "refuse_unchangeable": (
+        "whether the insights report and Markdown the skill wrote earlier can be replaced: the skill's own output"
+    ),
     "synthesize": (
         "compares the synthesis result path the agent gives with the one the report named: the skill's own run"
     ),
@@ -881,11 +894,24 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [*report["recommendations"], *(item for run in superseded for item in run["recommendations"])]
 
 
+def refuse_unchangeable(json_path: Path) -> None:
+    """Refuse a report or its Markdown that is read-only or anything but a file, before the first is written: each
+    replace would refuse its own file only when its turn came, after the report before it was replaced."""
+    for path in (json_path, json_path.with_suffix(".md")):
+        reason = file_presence.refusal_reason(path)
+        if reason not in (None, file_presence.MISSING):
+            raise InsightError(f"{path} {reason}, so the report cannot be written")
+        if is_read_only(path):
+            raise InsightError(f"{path} is read-only; make it writable for the report to be written")
+
+
 def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_stage.Staged | None = None) -> Path:
     """Write the report and its Markdown, after the synthesis files `synthesis` stages beside it and the run its agent
     works in, when the report takes that synthesis rather than keeping a recorded one. A report larger than
     `load_report` reads is refused before anything is written beside it and with its run removed, so the script never
-    writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed."""
+    writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed; so is a report or
+    Markdown that is read-only or not a file (refuse_unchangeable)."""
+    refuse_unchangeable(json_path)
     if synthesis is not None and report["synthesis"] is synthesis.synthesis:
         synthesis.stage_run()
     try:
@@ -1187,12 +1213,23 @@ def decide(
             )
         resolution = f"Accepted review-insights recommendation {item['id']} ({describe(item)}) in {report_path}"
         pending, skipped = _open_flags(item["linked_flags"], services) if decision == "accepted" else ([], [])
+        _refuse_unchangeable_decision(report_path, pending, services)
         entry = _record_decision(item, decision, note, pending, services)
         write_report(report_path, report)
         resolved, already = _resolve_recorded(
             report_path, report, [entry], _resolution_text(resolution, note), services
         )
         return resolved, [*skipped, *already]
+
+
+def _refuse_unchangeable_decision(report_path: Path, pending: list[str], services: Services) -> None:
+    """Refuse, before the decision is recorded, a report or Markdown it could not replace, and, when the decision
+    resolves flags, a flag store it could not: a refusal the platform reports up front leaves every file as it was,
+    where a failure no check can know ahead, such as a store another process holds open, leaves the decision recorded
+    with the flags it did resolve (see _resolve_recorded)."""
+    refuse_unchangeable(report_path)
+    if pending:
+        refuse_read_only(services.flags_path())
 
 
 def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:
@@ -1292,6 +1329,7 @@ def decide_custom(
             )
         resolution = f"Accepted the custom-candidate analyzer recommendations in {report_path}"
         pending, skipped = _open_flags(linked, services) if decision == "accepted" else ([], [])
+        _refuse_unchangeable_decision(report_path, pending, services)
         entries = [
             _record_decision(item, decision, note, [flag for flag in item["linked_flags"] if flag in pending], services)
             for item in items
