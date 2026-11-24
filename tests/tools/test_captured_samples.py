@@ -27,12 +27,24 @@ RUNTIMES = ("claude-code", "codex", "copilot-cli")
 # A path into a real profile or home, as a capture names it before its folders are written <temp> and <home>.
 MACHINE_PATHS = re.compile(r"[A-Za-z]:[\\/]+(?:Users|Documents and Settings)\b|(?<![\w.<>])/(?:home|Users)/\w")
 # A credential or an address a capture can carry: a GitHub token by its documented prefixes, an Anthropic or OpenAI
-# key, and an email address, as gh's answers name an author's or the one who armed auto-merge.
+# key, and an email address, as gh's answers name an author's or the one who armed auto-merge. Stated limits:
+# - a token right after a word character, such as `access_token_ghp_...` or `1ghp_...`, is not found, since the prefix
+#   must start a word;
+# - a legacy 40-hex token, a JWT or other bearer token, an email address written `%40` or `\u0040` in place of its
+#   `@`, and one whose domain is a single label, such as `root@localhost`, are not found;
+# - `name@1.2.3` reads as an email address, so a capture that holds a version pinned that way, such as
+#   `actions/checkout@v4.2.1` or `package@2.1.310`, cuts it and says so in its `how`.
 SECRETS = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{20,})|[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
 )
 # The programs other than the runtimes whose output is captured, each under the folder of its name.
 PROGRAM_FOLDERS = {"gh": "gh"}
+# The keys an account object in a gh sample keeps: its public login and whether it is a bot, never its node id,
+# display name, or anything else about the account.
+ACCOUNT_KEYS = frozenset({"login", "is_bot"})
+SHEPHERD = REPOSITORY / ".claude" / "skills" / "shepherd-pull-requests" / "scripts" / "shepherd_pull_requests.py"
+# Each gh sample the shepherd reads, with the constant naming the fields its command requested.
+REQUESTED_FIELDS = {"gh/pr-view.json": "PULL_FIELDS", "gh/run-view.json": "RUN_FIELDS"}
 
 
 def recorded() -> dict[str, dict[str, object]]:
@@ -91,6 +103,57 @@ def test_a_token_or_an_email_address_is_found(text: str) -> None:
 )
 def test_a_null_field_a_login_or_a_short_prefix_is_no_secret(text: str) -> None:
     assert SECRETS.findall(text) == []
+
+
+def account_problems(value: object, where: str = "") -> list[str]:
+    """Each object in `value` that names an account by its login and keeps any key but ACCOUNT_KEYS, by its path."""
+    if isinstance(value, list):
+        return [problem for index, item in enumerate(value) for problem in account_problems(item, f"{where}.{index}")]
+    if not isinstance(value, dict):
+        return []
+    extra = sorted(set(value) - ACCOUNT_KEYS) if "login" in value else []
+    found = [f"{where or '.'} keeps {extra}"] if extra else []
+    return found + [problem for key, item in value.items() for problem in account_problems(item, f"{where}.{key}")]
+
+
+def gh_samples() -> list[str]:
+    return sorted(sample for sample in recorded() if sample.startswith(f"{PROGRAM_FOLDERS['gh']}/"))
+
+
+@pytest.mark.parametrize("sample", gh_samples())
+def test_an_account_in_a_gh_sample_keeps_only_its_login_and_whether_it_is_a_bot(sample: str) -> None:
+    assert account_problems(json.loads((CAPTURED / sample).read_text(encoding="utf-8"))) == []
+
+
+def test_an_account_that_keeps_its_node_id_or_display_name_is_found() -> None:
+    pull = json.loads((CAPTURED / "gh" / "pr-view.json").read_text(encoding="utf-8"))
+    assert account_problems(pull) == []
+    pull["autoMergeRequest"]["enabledBy"].update({"id": "MDQ6VXNlcjE=", "name": "Some One"})
+    assert account_problems(pull) == [".autoMergeRequest.enabledBy keeps ['id', 'name']"]
+    assert account_problems([{"author": {"login": "someone", "email": None}}]) == [".0.author keeps ['email']"]
+    assert account_problems({"login": "someone"}) == []
+
+
+def requested_fields(source: str, name: str) -> set[str]:
+    """The fields the module-level string constant `name` in `source` requests, comma-separated."""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and [getattr(target, "id", None) for target in node.targets] == [name]:
+            return set(ast.literal_eval(node.value).split(","))
+    raise AssertionError(f"the shepherd assigns no {name}")
+
+
+@pytest.mark.parametrize(("sample", "constant"), sorted(REQUESTED_FIELDS.items()))
+def test_a_shepherd_sample_holds_exactly_the_fields_the_shepherd_requests(sample: str, constant: str) -> None:
+    # A field added to or dropped from the shepherd's request leaves the capture stale until it is captured again.
+    captured = json.loads((CAPTURED / sample).read_text(encoding="utf-8"))
+    assert set(captured) == requested_fields(SHEPHERD.read_text(encoding="utf-8"), constant)
+
+
+def test_a_fields_constant_is_read_whole_and_one_missing_is_refused() -> None:
+    source = 'X = 1\nFIELDS = (\n    "a,b,"\n    "c"\n)\n'
+    assert requested_fields(source, "FIELDS") == {"a", "b", "c"}
+    with pytest.raises(AssertionError, match="assigns no OTHER"):
+        requested_fields(source, "OTHER")
 
 
 @pytest.mark.parametrize(("program", "folder"), sorted(PROGRAM_FOLDERS.items()))
