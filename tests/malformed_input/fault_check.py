@@ -7,7 +7,10 @@ outside the temporary folder and the runtime folder private_folder keeps a scrip
 `private_folder.base()`, or inside this checkout, even where the temporary folder holds it. A run
 must reach its fault and end with a nonzero exit its docstring's exit table names, a line that names what failed and
 is its refusal, FAILED, led by a word its docstring names, or argparse's usage error at exit 2, which a remedy line may
-follow, no traceback, and the home, the work folder, and the outputs the driver names as it found them. The suites
+follow, no traceback, and the home, the work folder, and the outputs and changed files the driver names as it found
+them, a read-only file it could not change among them. A change fault the driver's refused_alone names is held to the
+faulted file alone as it found it, a refusal naming it, and no FAILED line. changed runs a command with no fault and
+names each file the driver lists as changed that the run left as it found it. The suites
 test_faults_<group>.py run every driver's runs of their group of faults, so the runner deals each group to a leg of
 its own; test_faults.py holds the coverage and the harness's own tests.
 """
@@ -21,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,6 +48,8 @@ from fault_table import (
     GIT_TIMEOUT,
     LINK_TO_NOTHING,
     MISSING,
+    READ_ONLY,
+    READ_ONLY_FOLDER,
     STAT_RAISES,
     UNREADABLE,
     Driver,
@@ -163,6 +169,14 @@ def placed(fault: str, path: Path | None) -> Iterator[None]:
         return
     assert path.is_file(), f"the input {path} is no file once the fixture is built"
     original = path.read_bytes()
+    if fault == READ_ONLY:
+        with read_only(path):
+            yield
+        return
+    if fault == READ_ONLY_FOLDER:
+        with read_only(path.parent):
+            yield
+        return
     try:
         if fault == UNREADABLE:
             with corpus.denied(path):
@@ -183,6 +197,18 @@ def placed(fault: str, path: Path | None) -> Iterator[None]:
             if fault == LINK_TO_NOTHING and os.path.lexists(nowhere(path)):
                 nowhere(path).unlink()
             path.write_bytes(original)
+
+
+@contextmanager
+def read_only(path: Path) -> Iterator[None]:
+    """The file or folder at path read-only while the context lasts, every write permission cleared, which Windows reads
+    as a file's read-only attribute, and its mode as it was afterwards."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    try:
+        yield
+    finally:
+        path.chmod(mode)
 
 
 @contextmanager
@@ -225,6 +251,9 @@ def evidence(fault: str, target: Path | None) -> tuple[str, ...]:
     if fault == GH_FAILURE:
         return ("Validation Failed", "422")
     assert target is not None
+    if fault == READ_ONLY_FOLDER:
+        # The folder refuses a change to anything in it, so the run may meet it at any of its entries first.
+        return (target.parent.name, *sorted(entry.name for entry in target.parent.iterdir()))
     return (target.name,)
 
 
@@ -397,15 +426,76 @@ def changes(
 ) -> list[str]:
     """A problem naming each entry a run added, removed, or changed in the folders watched, the fault's own aside."""
     changed = sorted(
-        name
-        for folder in before
-        for name in before[folder].keys() | after[folder].keys()
-        if target is None or not Path(name).is_relative_to(target)
-        if before[folder].get(name, b"\0absent") != after[folder].get(name, b"\0absent")
+        {
+            name
+            for folder in before
+            for name in before[folder].keys() | after[folder].keys()
+            if target is None or not Path(name).is_relative_to(target)
+            if before[folder].get(name, b"\0absent") != after[folder].get(name, b"\0absent")
+        }
     )
     more = " and more" if len(changed) > CHANGES_SHOWN else ""
     shown_names = [shown(name, root) for name in changed[:CHANGES_SHOWN]]
     return [f"it changed {shown_names}{more} before it refused"] if changed else []
+
+
+def reached_at(fault: str, target: Path | None) -> Path | None:
+    """Where the runner notes a run reaching the fault: the folder for the read-only folder fault, which a run meets at
+    whichever of the folder's entries it reaches first, and otherwise the fault's own path."""
+    return target.parent if fault == READ_ONLY_FOLDER and target is not None else target
+
+
+def stopped_part_way(finished: subprocess.CompletedProcess[str]) -> list[str]:
+    """A problem when a run that refuses a file alone, changing the rest, printed a FAILED line, its stop part way."""
+    failed = [line for line in (finished.stdout + finished.stderr).splitlines() if line.startswith("FAILED")]
+    return [f"it stopped part way, though it refuses that file alone: {failed[0]!r}"] if failed else []
+
+
+def fixture_for(root: Path, checkout: Path) -> Fixture:
+    """A fixture below root, with its home and work folder made."""
+    fixture = Fixture(root, root / "home", root / "work", checkout)
+    fixture.home.mkdir()
+    fixture.work.mkdir()
+    return fixture
+
+
+def changed(driver: Driver) -> None:
+    """Run a command that lists the files it changes with no fault, and fail naming each listed file the run left as it
+    found it, or a stop or a traceback: a file it never reaches would let its change faults pass unmet."""
+    checkout = shared_checkout()
+    with tempfile.TemporaryDirectory(prefix="fault run ") as temporary:
+        root = Path(temporary).resolve()
+        fixture = fixture_for(root, checkout)
+        with restored(fixture, driver.from_checkout):
+            if driver.prepare is not None:
+                driver.prepare(fixture)
+            values = fixture.values()
+            listed = [Path(each.format(**values)) for each in driver.changes]
+            before = [tree(each) for each in listed]
+            repository = checkout if driver.from_checkout else REPOSITORY
+            finished, record = run_entry(
+                repository / driver.entry,
+                [argument.format(**values) for argument in driver.arguments],
+                "none",
+                None,
+                fixture,
+                environment(fixture, driver),
+                repository,
+            )
+            after = [tree(each) for each in listed]
+    problems = [
+        f"it left {shown(each.as_posix(), root)} as it found it"
+        for each, old, new in zip(listed, before, after, strict=True)
+        if old == new
+    ]
+    if record["stopped"]:
+        problems.append(f"the harness stopped it: {record['stopped']}")
+    if TRACEBACK in finished.stdout + finished.stderr:
+        problems.append("it printed a traceback")
+    assert problems == [], (
+        f"{driver.name} with no fault: {'; '.join(problems)}\n"
+        f"exit {record['exit']}\nstdout:\n{finished.stdout[-2000:]}\nstderr:\n{finished.stderr[-2000:]}"
+    )
 
 
 def check(driver: Driver, fault: str, path: str | None) -> None:
@@ -413,9 +503,7 @@ def check(driver: Driver, fault: str, path: str | None) -> None:
     checkout = shared_checkout()
     with tempfile.TemporaryDirectory(prefix="fault run ") as temporary:
         root = Path(temporary).resolve()
-        fixture = Fixture(root, root / "home", root / "work", checkout)
-        fixture.home.mkdir()
-        fixture.work.mkdir()
+        fixture = fixture_for(root, checkout)
         with restored(fixture, driver.from_checkout):
             if driver.prepare is not None:
                 driver.prepare(fixture)
@@ -425,26 +513,35 @@ def check(driver: Driver, fault: str, path: str | None) -> None:
             assert target is None or target.is_relative_to(root) or target.is_relative_to(checkout), (
                 f"{path} lies outside the fixture and its checkout copy, where no fault may be placed"
             )
-            watched = [fixture.home, fixture.work, *(Path(each.format(**values)) for each in driver.outputs)]
+            alone = fault in driver.refused_alone
+            named = (*driver.outputs, *driver.changes)
+            watched = [fixture.home, fixture.work, *(Path(each.format(**values)) for each in named)]
+            if alone:
+                assert target is not None, f"{driver.name} refuses {fault} alone, which is no file's fault"
+                watched = [target]
+            # A read-only file, or one in a read-only folder, stays where it was, so it is compared with the rest; any
+            # other fault's own path is left aside, since the fault itself changed it.
+            aside = None if fault in {READ_ONLY, READ_ONLY_FOLDER} else target
             with placed(fault, target):
-                before = {str(each): tree(each) for each in watched if each != target}
+                before = {str(each): tree(each) for each in watched if each != aside}
                 finished, record = run_entry(
                     repository / driver.entry,
                     [argument.format(**values) for argument in driver.arguments],
                     fault,
-                    target,
+                    reached_at(fault, target),
                     fixture,
                     environment(fixture, driver),
                     repository,
                 )
-                after = {str(each): tree(each) for each in watched if each != target}
+                after = {str(each): tree(each) for each in watched if each != aside}
                 written = written_through(fault, target)
             docstring = ast.get_docstring(parse_python(REPOSITORY / driver.entry)) or ""
             if fault == LINK_TO_NOTHING and path is not None and driver.absent_is_an_answer(path):
                 problems = read_as_absent(docstring, finished, record)
             else:
                 problems = judged(docstring, fault, target, finished, record, driver.refusal_gap(fault, path))
-                problems += changes(before, after, target, root)
+                problems += changes(before, after, aside, root)
+                problems += stopped_part_way(finished) if alone else []
             problems += written + named_another_kind(fault, finished)
     assert problems == [], (
         f"{driver.name} under {fault} ({FAULTS[fault]}){f' at {path}' if path else ''}: {'; '.join(problems)}\n"

@@ -12,6 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+from atomic_file import is_read_only
 from executable_locator import absolute_home
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
@@ -184,6 +185,13 @@ def load_store(path: Path) -> dict[str, Any]:
     return validate_store(upgrade_store(read_json(path, maximum_bytes=STORE_MAXIMUM_BYTES)))
 
 
+def refuse_read_only(path: Path) -> None:
+    """Refuse a read-only store, before the lock makes the lock's folder: the replace would refuse it only once the
+    lock was taken, and a refused change leaves the store's folder as it was."""
+    if is_read_only(path):
+        raise FlagError(f"The flag store {path} is read-only; make it writable to change it")
+
+
 def _write_store(path: Path, store: dict[str, Any]) -> None:
     """Write the store as atomic_write_json serializes it, or refuse, writing nothing, a store too large to read."""
     size = len((json_writer.dumps(store, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
@@ -245,9 +253,10 @@ def add_flag(
     _check_text(category, "category")
     _check_text(body, "body")
     repository = validate_target(repository, pull_number, review_version, finding_id)
-    # A store it cannot read is refused before the lock makes the lock's folder; the read under the lock is the one
-    # the flag is added to.
+    # A store it cannot read or replace is refused before the lock makes the lock's folder; the read under the lock is
+    # the one the flag is added to.
     load_store(path)
+    refuse_read_only(path)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock, place=FLAGS_LOCK_PLACE):
         store = load_store(path)
@@ -280,12 +289,14 @@ def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
 
 
 def _refuse_without_store(path: Path, flag_id: str) -> None:
-    """Refuse a flag ID when there is no store, and a store it cannot read, before the lock creates the lock's folder;
-    a store it cannot stat is the FileUnreadable `record_present` raises, and one it cannot open or parse the error
-    `load_store` raises. The read under the lock is the one a change is made to."""
+    """Refuse a flag ID when there is no store, and a store it cannot read or replace, before the lock creates the
+    lock's folder; a store it cannot stat is the FileUnreadable `record_present` raises, one it cannot open or parse
+    the error `load_store` raises, and a read-only one refuse_read_only's FlagError. The read under the lock is the one
+    a change is made to."""
     if not record_present(path):
         raise FlagError(f"Unknown flag ID: {flag_id}")
     load_store(path)
+    refuse_read_only(path)
 
 
 def _new_text(value: Any, field: str) -> str | None:

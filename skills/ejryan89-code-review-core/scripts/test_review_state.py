@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -121,6 +122,32 @@ class StateAndLockTests(unittest.TestCase):
                 reason = f"[Errno 13] Permission denied: {str(path)!r}"
                 self.assertEqual(f"Cannot read valid JSON from {path}: {reason}", str(caught.exception))
                 self.assertEqual(before, path.read_bytes())
+
+    def test_a_state_it_cannot_change_is_refused_before_the_lock_makes_its_folder(self) -> None:
+        # The replace refuses either too, but only once the lock was taken, which leaves its .locks folder behind.
+        def touch(state: dict[str, Any]) -> dict[str, Any]:
+            return state
+
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "code-review"
+            folder.mkdir()
+            path = folder / "state.json"
+            path.write_text(json.dumps(empty_state()), encoding="utf-8")
+            path.chmod(stat.S_IREAD)
+            try:
+                with self.assertRaises(StateError) as caught:
+                    update_state(path, touch)
+            finally:
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
+            self.assertEqual(
+                f"The review state {path} is read-only; make it writable to record the batch", str(caught.exception)
+            )
+            self.assertEqual(["state.json"], sorted(entry.name for entry in folder.iterdir()))
+            path.unlink()
+            path.mkdir()
+            with self.assertRaises(FileUnreadable):
+                update_state(path, touch)
+            self.assertEqual(["state.json"], sorted(entry.name for entry in folder.iterdir()))
 
     def test_a_watermark_must_begin_with_a_calendar_date(self) -> None:
         def state(value: str) -> dict[str, Any]:
