@@ -130,6 +130,7 @@ def _load_source_document(paths: Paths) -> dict[str, object]:
     shown = platform_support.normalize(paths.source_file)
     document: object
     try:
+        _refuse_link(paths.source_file)
         document = read_source_file(paths.source_file)
     except OSError as exc:
         raise os_error(exc, "read source.json") from exc
@@ -152,6 +153,8 @@ def load_source_id(paths: Paths) -> str:
     step, when it is spelled otherwise, cannot be read, or is not a valid ID."""
     try:
         refuse_other_spellings(paths.tree, SOURCE_JSON, "The source file")
+        # Judged before its presence, which follows a link and reads one to nothing as no source.json.
+        _refuse_link(paths.source_file)
     except OSError as exc:
         raise os_error(exc, "read the source's folder") from exc
     if not state_files.is_present(paths.source_file, "source.json", SOURCE_JSON_REMEDY, of_source=True):
@@ -267,13 +270,22 @@ def xml_tag(text: str) -> str | None:
     return match.group() if match else None
 
 
-def _reject_links(skills_src: Path) -> None:
-    pending = [skills_src]
-    if platform_support.is_junction(skills_src):
+def _refuse_link(path: Path) -> None:
+    """Refuse `path` when it is a link of any kind, a symbolic link, a junction, or another reparse point, naming it
+    by its kind, since a link the deployer followed would read content from wherever it leads rather than from the
+    checkout. A missing path passes, and one whose metadata cannot be read raises its OSError."""
+    if platform_support.is_link_or_junction(path):
+        found = "Reparse point" if platform_support.is_junction(path) else "Symlink"
         raise SourceRefusal(
-            f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(skills_src)}",
-            REAL_FOLDER,
+            f"ERROR: {found} found in deployable source tree: {platform_support.normalize(path)}", REAL_FOLDER
         )
+
+
+def _reject_links(root: Path) -> None:
+    """Refuse a link at a root the deployer reads a source from, skills/, agents/, or deploy-meta/, or anywhere below
+    it, before anything is read through one. A listing that fails is refused as an incomplete checkout."""
+    _refuse_link(root)
+    pending = [root]
     while pending:
         directory = pending.pop()
         try:
@@ -284,12 +296,7 @@ def _reject_links(skills_src: Path) -> None:
             ) from exc
         for entry in entries:
             path = Path(entry.path)
-            if platform_support.is_link_or_junction(path):
-                found = "Reparse point" if platform_support.is_junction(path) else "Symlink"
-                raise SourceRefusal(
-                    f"ERROR: {found} found in deployable source tree: {platform_support.normalize(path)}",
-                    REAL_FOLDER,
-                )
+            _refuse_link(path)
             if entry.is_dir(follow_symlinks=False):
                 pending.append(path)
 
@@ -589,6 +596,8 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
     """Claude Code subagent definitions: one `agents/<name>.md` file each, whose frontmatter names it."""
     root = paths.agents_src
     try:
+        # Judged before its presence, which follows a link and reads one to nothing as no agents/.
+        _refuse_link(root)
         if not file_presence.is_directory(root):
             return {}
     except file_presence.NotADirectory:
@@ -667,11 +676,15 @@ def _metadata_files(meta_dir: Path) -> list[Path]:
     AppleDouble sidecar `._<skill>.json` macOS writes beside a metadata file on a FAT, exFAT, or SMB volume. The suffix
     is matched in any case, and a file whose suffix is spelled otherwise is refused, which one platform would read and
     the other pass over. An entry that is not a regular file is passed over, and one whose stat fails raises its
-    OSError."""
+    OSError. A link at deploy-meta, judged before its presence, which follows one, or anywhere in it, judged once its
+    own listing has refused a folder it cannot list, is refused before any entry is read, so is_metadata_file never
+    follows one here."""
+    _refuse_link(meta_dir)
     if not file_presence.is_directory(meta_dir):
         return []
     suffix = f"*{any_case(METADATA_SUFFIX)}"
     found = [entry for entry in file_presence.listed(meta_dir) if fnmatch.fnmatchcase(entry.name, suffix)]
+    _reject_links(meta_dir)
     for entry in found:
         if not entry.name.endswith(METADATA_SUFFIX):
             spelled = f"{entry.name[: -len(METADATA_SUFFIX)]}{METADATA_SUFFIX}"

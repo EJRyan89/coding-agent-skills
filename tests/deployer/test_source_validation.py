@@ -25,6 +25,7 @@ from harness import (
     forward,
     git,
     make_directory_link,
+    remove_directory_link,
     tree_state,
 )
 
@@ -674,6 +675,114 @@ class MetadataValidationTests(DeployerTestCase):
                     ),
                     raised.exception.lines,
                 )
+
+
+# The kind a link make_directory_link makes is named by: Windows makes a junction, a reparse point that is no symbolic
+# link, and every other platform a symbolic link.
+DIRECTORY_LINK_KIND = "Reparse point" if platform_support.WINDOWS else "Symlink"
+# The step every refusal of a link in the source names, written out here rather than read from the deployer.
+REAL_FOLDER_STEP = "Replace it with the file or folder it points at, or remove it, then retry."
+
+
+class SourceRootLinkTests(DeployerTestCase):
+    """A link at a root the deployer reads, skills/, agents/, deploy-meta/, or source.json, is refused naming it
+    before anything renders, as a link below a real root is, so a checkout's content stays inside the checkout."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha content")
+        self.make_agent("helper", "Inside the checkout.")
+        self.make_config()
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+
+    def link_root_outside(self, root: str) -> Path:
+        """Move the source's `root` folder out of the checkout and put a link to it in its place."""
+        link = self.source / root
+        moved = self.outside / root
+        shutil.move(link, moved)
+        if root == "agents":
+            (moved / "helper.md").write_bytes((moved / "helper.md").read_bytes() + b"OUTSIDE MARKER\n")
+        make_directory_link(link, moved)
+        return link
+
+    def assert_link_refused(self, link: Path, kind: str, *arguments: str) -> None:
+        result = self.deploy_fails(*arguments, pattern=f"{kind} found in deployable source tree")
+        self.assert_refusal(
+            result.output,
+            f"ERROR: {kind} found in deployable source tree: {platform_support.normalize(link)}",
+            REAL_FOLDER_STEP,
+        )
+
+    def test_a_link_at_each_source_root_is_refused_by_the_preview_and_the_run(self) -> None:
+        for root in ("skills", "agents", "deploy-meta"):
+            with self.subTest(root=root):
+                link = self.link_root_outside(root)
+                for arguments in (("--all", "--dry-run"), ("--all",)):
+                    self.assert_link_refused(link, DIRECTORY_LINK_KIND, *arguments)
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assertFalse((self.claude_agents_dir / "helper.md").exists())
+                remove_directory_link(link)
+                shutil.move(self.outside / root, link)
+
+    def test_a_link_named_like_metadata_in_deploy_meta_is_refused(self) -> None:
+        # A folder named like metadata is passed over, but a link is refused whatever it leads to, as below skills/.
+        link = self.source / "deploy-meta" / "gamma.json"
+        make_directory_link(link, self.outside)
+        self.assert_link_refused(link, DIRECTORY_LINK_KIND, "--all")
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_symbolic_link_to_a_metadata_file_is_refused_not_followed(self) -> None:
+        metadata = self.source / "deploy-meta" / "alpha.json"
+        shutil.move(metadata, self.outside / "alpha.json")
+        metadata.symlink_to(self.outside / "alpha.json")
+        self.assert_link_refused(metadata, "Symlink", "--all")
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_symbolic_link_for_source_json_is_refused_not_followed(self) -> None:
+        document = self.source / "source.json"
+        shutil.move(document, self.outside / "source.json")
+        document.symlink_to(self.outside / "source.json")
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            self.assert_link_refused(document, "Symlink", *arguments)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to nothing needs a privilege on Windows")
+    def test_a_symbolic_link_to_nothing_at_a_root_is_refused_not_read_as_absent(self) -> None:
+        # agents/ and deploy-meta/ may be absent, and a link to nothing reads as missing, so the link is judged first.
+        for root in ("agents", "deploy-meta"):
+            with self.subTest(root=root):
+                link = self.source / root
+                shutil.move(link, self.outside / root)
+                link.symlink_to(self.root / "nowhere", target_is_directory=True)
+                self.assert_link_refused(link, "Symlink", "--all")
+                link.unlink()
+                shutil.move(self.outside / root, link)
+
+    def test_source_json_judged_a_link_is_refused_on_every_platform(self) -> None:
+        # Windows makes a link to a file only with a privilege, so the probe is told source.json is one there too.
+        document = self.source / "source.json"
+        real = platform_support.is_link_or_junction
+
+        def judging(path: Path) -> bool:
+            return Path(path) == document or real(path)
+
+        reads: dict[str, Callable[[], object]] = {
+            "load_source_id": lambda: source.load_source_id(self.paths),
+            "discover": lambda: source.discover(self.paths, "test/skills"),
+        }
+        with mock.patch.object(platform_support, "is_link_or_junction", side_effect=judging):
+            for name, read in reads.items():
+                with self.subTest(read=name):
+                    with self.assertRaises(DeployError) as raised:
+                        read()
+                    self.assertEqual(
+                        (
+                            f"ERROR: Symlink found in deployable source tree: {platform_support.normalize(document)}",
+                            REAL_FOLDER_STEP,
+                        ),
+                        raised.exception.lines,
+                    )
 
 
 class RenamedValidationTests(DeployerTestCase):

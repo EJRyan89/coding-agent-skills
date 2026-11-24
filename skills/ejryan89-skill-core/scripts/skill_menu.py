@@ -274,7 +274,9 @@ def read_source_file(path: Path) -> object:
 def is_metadata_file(entry: Path) -> bool:
     """Whether an entry of deploy-meta/ that a listing found is a metadata file, as the deployer's loader and read_menu
     both choose them: a regular file, followed through a link. Anything else, such as a folder named like a skill's
-    metadata, is passed over, and a stat that fails raises its OSError, so a metadata file is never dropped unread."""
+    metadata, is passed over, and a stat that fails raises its OSError, so a metadata file is never dropped unread.
+    The deployer refuses a link at deploy-meta/ or anywhere in it, and a link for source.json, before it asks, so only
+    read_menu, which reads a source for audit-skill and deploys nothing, follows one."""
     return file_presence.is_present(entry, other_is_absent=True)
 
 
