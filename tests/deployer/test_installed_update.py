@@ -20,19 +20,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from harness import REPOSITORY_ROOT, forward
+from harness import REPOSITORY_ROOT, Deployment, forward, tree_state
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from git_client import GitClient
 from release_tags import last_release, release_order
 
-from deployer import platform_support
+from deployer import platform_support, source_commit
 
 UPDATE = "update-coding-agent-skills"
-# Where the deployer installs a skill's scripts, and the script the update skill runs, under the home.
+# Where the deployer installs skills, their runtime adapters, and agents, and the script the update skill runs, under
+# the home.
 SKILLS = Path(".claude") / "skills"
+ADAPTERS = Path(".agents") / "skills"
+AGENTS = Path(".claude") / "agents"
 INSTALLED_SCRIPT = SKILLS / UPDATE / "scripts" / "update.sh"
+SOURCE = json.loads((REPOSITORY_ROOT / "source.json").read_text("utf-8"))
+# How a user pins the installed release by hand: with the tag's short name, or with its commit.
+PIN_FORMS = ("tag", "commit")
 # A path the script reaches in the clone, as it names one: "$CLONE/<path>". The update decision of 2026-10-22 in
 # docs/design.md states the one such path, deploy.py, and test_update_installed.sh holds the current script to it.
 CLONE_PATH = re.compile(r"\$\{?CLONE\}?/([^\"'`)\s]+)")
@@ -138,6 +144,57 @@ class Installation:
         loaded: dict[str, object] = json.loads((self.home / SKILLS / ".deploy-manifest.json").read_text("utf-8"))
         return loaded
 
+    def installed_state(self) -> dict[Path, dict[str, str]]:
+        """Each folder the deployer writes under the home, by its tree_state, without the __pycache__ folders the
+        update's Python writes beside the installed scripts, which the deployer's hash of an item leaves out too. The
+        rest of the home is left out, since the tools `deploy.py check` starts write their own caches there."""
+        return {
+            root: {
+                path: state
+                for path, state in tree_state(self.home / root).items()
+                if "__pycache__" not in Path(path).parts
+            }
+            for root in (SKILLS, ADAPTERS, AGENTS)
+        }
+
+    def source_entry(self) -> dict[str, object]:
+        """The manifest's entry for this repository's source."""
+        sources = self.manifest()["sources"]
+        assert isinstance(sources, dict), sources
+        entry: dict[str, object] = sources[SOURCE["id"]]
+        return entry
+
+    def deploy(self, *options: str) -> subprocess.CompletedProcess[str]:
+        """The clone's deployer, run as a user runs it by hand."""
+        return run([sys.executable, "-B", str(self.clone / "deploy.py"), *options], self.environment)
+
+    def pin_by_hand(self, form: str) -> tuple[str, str]:
+        """Pin the installation at its release by hand, with the clone's deployer, as a user steps back from a
+        regression: `deploy.py --all --at <ref>` with the tag's short name or its commit, which makes the pin the
+        user's rather than the release channel's own. Returns the ref and the commit the update names the pin by."""
+        commit = git(self.clone, "rev-parse", f"refs/tags/{self.release}^{{commit}}")
+        ref = {"tag": self.release, "commit": commit}[form]
+        pinned = self.deploy("--all", "--at", ref)
+        assert pinned.returncode == 0, f"pinning with --at {ref} failed:\n{pinned.stdout}{pinned.stderr}"
+        assert self.source_entry()["source_ref"] == ref, "the deployer did not record the user's pin as written"
+        return ref, commit
+
+    def hold_under_old_names(self, renamed: dict[str, str]) -> None:
+        """Make the installation hold each renamed skill under its old name, as a release before the rename left it:
+        its folder and its adapter's, its manifest ownership, and every record of the name in the manifest."""
+        path = self.home / SKILLS / ".deploy-manifest.json"
+        manifest = json.loads(path.read_text("utf-8"))
+        entry = manifest["sources"][SOURCE["id"]]
+        for old, new in renamed.items():
+            for key, root in (("skills", SKILLS), ("wrappers", ADAPTERS)):
+                if new in entry[key]:
+                    entry[key][old] = entry[key].pop(new)
+                    (self.home / root / new).rename(self.home / root / old)
+        for record in entry["skills"].values():
+            record["skill_deps"] = [renamed_back(name, renamed) for name in record["skill_deps"]]
+        entry["requested_skills"] = [renamed_back(name, renamed) for name in entry["requested_skills"]]
+        path.write_bytes(json.dumps(manifest, indent=2).encode("utf-8"))
+
     def deployed_commit(self) -> str:
         """The commit `deploy.py check` names as deployed, through the clone's deployer as the update reads it."""
         checked = run([sys.executable, "-B", str(self.clone / "deploy.py"), "check"], self.environment)
@@ -190,6 +247,11 @@ def assert_deployed(result: subprocess.CompletedProcess[str], first_line: str) -
     assert not any(line.startswith("FAILED") for line in lines), shown
     assert lines[-1] == "DEPLOYED", shown
     assert result.returncode == 0, shown
+
+
+def renamed_back(name: str, renamed: dict[str, str]) -> str:
+    """The old name of a skill `renamed` maps an old name to, or the name itself."""
+    return {new: old for old, new in renamed.items()}.get(name, name)
 
 
 def missing_clone_paths(script: str, tree: Path) -> list[str]:
@@ -254,6 +316,19 @@ def test_a_later_release_on_the_releases_commit_leaves_the_pin_the_updates_own_t
 def test_a_breaking_release_stops_until_crossed_then_deploys_moving_renamed_skills(
     installation: Installation,
 ) -> None:
+    # The release already ships each renamed skill under its new name, so the installation is made to hold the old
+    # names first, as one deployed before the rename holds them; otherwise no move happens and nothing below can fail.
+    # A skill the installed update.sh names, such as the ejryan89-skill-core it runs from, keeps its new name, since
+    # the release's update cannot run without it.
+    renamed: dict[str, str] = SOURCE.get("renamed", {})
+    script = (installation.home / INSTALLED_SCRIPT).read_text("utf-8")
+    moved = {old: new for old, new in renamed.items() if new not in script}
+    assert moved, "source.json renames no skill the release's update runs without, so this case has no move to check"
+    installation.hold_under_old_names(moved)
+    skills = installation.home / SKILLS
+    for old, new in moved.items():
+        assert (skills / old).is_dir(), f"the installation does not hold {old}, renamed {new}"
+        assert not (skills / new).exists(), f"the installation holds {new} beside {old}, its old name"
     breaking = next_release(installation.release, breaking=True)
     commit = installation.fixture_commit(breaking)
     manifest = installation.manifest()
@@ -268,12 +343,86 @@ def test_a_breaking_release_stops_until_crossed_then_deploys_moving_renamed_skil
     assert_deployed(crossed, f"UPDATED {before}..{breaking}")
     assert f"CROSSED {installation.release}..{breaking}" in crossed.stdout.splitlines(), crossed.stdout
     assert installation.deployed_commit() == commit
-    # Each skill the current tree renamed is installed under its new name alone.
-    renamed: dict[str, str] = json.loads((REPOSITORY_ROOT / "source.json").read_text("utf-8")).get("renamed", {})
-    skills = installation.home / SKILLS
+    # Each skill the current tree renamed was moved: the deployment reports the move, the manifest owns the new name
+    # alone, and the skill is installed under its new name alone. Removing the old copy and installing the new one
+    # leaves the same folders, so the report and the ownership are what tell a move from the two.
+    report = Deployment().report_groups(crossed.stdout, "DEPLOYED")
+    moves = sorted(f"{new} (from {old})" for old, new in moved.items())
+    assert sorted(report.get("RENAMED", [])) == moves, crossed.stdout
+    owned = installation.source_entry()["skills"]
+    assert isinstance(owned, dict), owned
     for old, new in renamed.items():
+        assert old not in owned, f"the manifest still owns {old}, renamed {new}"
+        assert new in owned, f"the manifest does not own {new}, renamed from {old}"
         assert not (skills / old).exists(), f"{old}, renamed {new}, is still installed"
         assert (skills / new).is_dir(), f"{new}, renamed from {old}, is not installed"
+
+
+def stopped_at_the_pin(installation: Installation, form: str) -> tuple[str, str, str]:
+    """Pin the installed release by hand, publish a patch release after it, and run the installed update over the pin:
+    it stops with PINNED alone and changes neither the home nor the clone's branch. Returns the pin's ref and commit
+    and the patch release's commit."""
+    ref, pinned = installation.pin_by_hand(form)
+    patch = next_release(installation.release, breaking=False)
+    commit = installation.fixture_commit(patch)
+    installed = installation.installed_state()
+    head = git(installation.clone, "rev-parse", "HEAD")
+    stopped = installation.update()
+    shown = f"stdout:\n{stopped.stdout}\nstderr:\n{stopped.stderr}"
+    assert stopped.stdout.splitlines() == [f"PINNED {ref} {pinned}"], shown
+    assert stopped.returncode == 1, shown
+    assert installation.installed_state() == installed, "the update stopped at the pin changed the installation"
+    assert git(installation.clone, "rev-parse", "HEAD") == head, "the update stopped at the pin moved the clone"
+    return ref, pinned, commit
+
+
+def replaced_pin_line(installation: Installation, ref: str, pinned: str) -> str:
+    """The line the deployer prints when it replaces the user's pin, naming the pinned commit as check does."""
+    return f"Replaced the deployment pinned with --at {ref} to {source_commit.describe(installation.clone, pinned)}."
+
+
+# Each case below starts from the stop at the user's pin, which stopped_at_the_pin holds, rather than a case of its
+# own that would deploy and update the release once more for the same assertions.
+@pytest.mark.parametrize("form", PIN_FORMS)
+def test_an_update_over_a_users_pin_stops_with_pinned_then_with_unpin_deploys_under_the_pin_of_its_own(
+    installation: Installation, form: str
+) -> None:
+    """The update stops at the user's pin with PINNED and changes nothing; --unpin then deploys the release it stopped
+    before and replaces the user's pin with the release channel's own, which the next release moves without
+    --unpin."""
+    ref, pinned, commit = stopped_at_the_pin(installation, form)
+    patch = next_release(installation.release, breaking=False)
+    before = git(installation.clone, "rev-parse", "--short", "HEAD")
+    unpinned = installation.update("--unpin")
+    assert_deployed(unpinned, f"UPDATED {before}..{patch}")
+    assert replaced_pin_line(installation, ref, pinned) in unpinned.stdout.splitlines(), unpinned.stdout
+    assert installation.deployed_commit() == commit
+    assert installation.source_entry()["source_ref"] == f"refs/tags/{patch}"
+    following = next_release(patch, breaking=False)
+    later = installation.fixture_commit(following)
+    again = installation.update()
+    assert_deployed(again, f"UPDATED {git(installation.clone, 'rev-parse', '--short', commit)}..{following}")
+    assert installation.deployed_commit() == later
+
+
+@pytest.mark.parametrize("form", PIN_FORMS)
+def test_an_update_over_a_users_pin_stops_with_pinned_then_deploying_the_updated_clone_with_unpin_clears_it(
+    installation: Installation, form: str
+) -> None:
+    """The other route from the update's PINNED: update the clone, then `deploy.py --all --unpin`, which deploys the
+    clone's HEAD unpinned, so the next update deploys without --unpin."""
+    ref, pinned, commit = stopped_at_the_pin(installation, form)
+    git(installation.clone, "pull", "--quiet", "--ff-only", "origin", "main")
+    deployed = installation.deploy("--all", "--unpin")
+    shown = f"stdout:\n{deployed.stdout}\nstderr:\n{deployed.stderr}"
+    assert deployed.returncode == 0, shown
+    assert replaced_pin_line(installation, ref, pinned) in deployed.stdout.splitlines(), shown
+    assert installation.deployed_commit() == commit
+    assert "source_ref" not in installation.source_entry(), "the deployment kept a pin"
+    patch = next_release(installation.release, breaking=False)
+    again = installation.update()
+    assert_deployed(again, f"UP_TO_DATE {patch}")
+    assert installation.deployed_commit() == commit
 
 
 def test_the_update_fails_when_a_commit_moves_a_path_the_release_reads(installation: Installation) -> None:
