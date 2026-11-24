@@ -841,6 +841,19 @@ class CheckCommandTests(Repository):
         self.assertEqual((0, "READY"), (code, lines[-1]))
         self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns))
 
+    def test_an_untracked_file_is_counted_whatever_status_show_untracked_files_says(self) -> None:
+        # Untracked files are counted one by one, as the UNCOMMITTED line documents, whether the user's configuration
+        # hides them from a status or lists each file in an untracked folder.
+        (self.root / "tool.py").write_text("print('changed')\n", encoding="utf-8")
+        (self.root / "scratch").mkdir()
+        (self.root / "scratch" / "one.txt").write_text("one\n", encoding="utf-8")
+        (self.root / "scratch" / "two.txt").write_text("two\n", encoding="utf-8")
+        for setting in ("no", "normal", "all"):
+            with self.subTest(setting):
+                git(self.root, "config", "status.showUntrackedFiles", setting)
+                code, lines = self.run_script("check", *self.files_arguments())
+                self.assertEqual((1, "UNCOMMITTED 2"), (code, lines[-1]))
+
     def test_a_staged_rename_counts_the_path_it_left_and_the_one_it_made(self) -> None:
         git(self.root, "mv", "tool.py", "renamed.py")
         code, lines = self.run_script("check", *self.files_arguments())

@@ -233,8 +233,9 @@ if ! git_quiet rev-parse --git-dir; then
   exit 1
 fi
 
-# Untracked files are allowed: Git refuses a fast-forward that would overwrite one.
-if ! DIRTY=$(git -C "$CLONE" status --porcelain --untracked-files=no 2>&1); then
+# Untracked files are allowed: Git refuses a fast-forward that would overwrite one. Read without the index refresh a
+# status otherwise writes back, so the check never takes the clone's index lock.
+if ! DIRTY=$(git -C "$CLONE" --no-optional-locks status --porcelain --untracked-files=no 2>&1); then
   echo "FAILED git status failed: $(one_line "$DIRTY")"
   exit 1
 fi

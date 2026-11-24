@@ -681,6 +681,9 @@ REFUSED_STATUS = {
     "after git's own options": 'def f(git, d):\n    return git.output(["-c", "x=y", "-C", d, "status"])\n',
     "a name bound to the subcommand": 'S = "status"\n\n\ndef f(git):\n    return git.output([S, "-z"])\n',
     "at module level": 'LISTED = git.output(["--no-optional-locks", "status"])\n',
+    "one at a time to a wrapper": 'def f(services, root):\n    return git(services, root, "status", "--porcelain")\n',
+    "one at a time to a method": 'class F:\n    def f(self):\n        return self.git("status", "--porcelain")\n',
+    "one at a time after git's options": 'def f(fixture):\n    return fixture.git("-c", "x=y", "status", "-z")\n',
 }
 # Modules that read status through the helper, or give a call arguments whose subcommand is not status.
 PASSED_STATUS = {
@@ -689,16 +692,19 @@ PASSED_STATUS = {
     "status as an option's value": 'def f(git):\n    return git.output(["-c", "status", "log"])\n',
     "status after the subcommand": 'def f(git):\n    return git.output(["submodule", "status"])\n',
     "a value in the subcommand's place": 'def f(git, word):\n    return git.output([word, "status"])\n',
+    "a field read by its name": 'def f(entry):\n    return entry.get("status")\n',
+    "a word given alone before a value": 'def f(s, d, read):\n    return run(s, d, "status", read, "--ignored")\n',
+    "another subcommand one at a time": 'def f(fixture):\n    return fixture.git("submodule", "status", "-q")\n',
 }
+SANCTIONED_READER = 'STATUS_READ_ALLOWED = {"f": "a reason"}\n\n\ndef f(git):\n    return git.output(["status"])\n'
 
 
 class StatusTests(unittest.TestCase):
-    def problems(self, files: Mapping[str, str], sanctions: Mapping[str, Mapping[str, str]] | None = None) -> list[str]:
+    def problems(self, files: Mapping[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write_fixture_tree(root, dict(files))
-            listed = [root / name for name in files]
-            return status_problems(root, listed) if sanctions is None else status_problems(root, listed, sanctions)
+            return status_problems(root, [root / name for name in files])
 
     def test_each_refused_form_fails(self) -> None:
         for name, text in REFUSED_STATUS.items():
@@ -731,23 +737,18 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(1, len(problems), problems)
         self.assertTrue(problems[0].startswith("skills/x/scripts/reader.py:2 f runs git status"), problems)
 
-    def test_a_sanction_holds_its_scope_and_one_that_holds_nothing_or_no_reason_fails(self) -> None:
-        reader = 'def f(git):\n    return git.output(["status"])\n'
-        files = {"tools/reader.py": reader, "tools/other.py": reader}
-        self.assertCountEqual(
+    def test_an_allowance_beside_the_code_sanctions_its_scope_and_one_that_holds_nothing_or_no_reason_fails(
+        self,
+    ) -> None:
+        self.assertEqual([], self.problems({"tools/reader.py": SANCTIONED_READER}))
+        stale = SANCTIONED_READER.replace('{"f": "a reason"}', '{"f": "a reason", "g": "a reason"}')
+        empty = SANCTIONED_READER.replace('"a reason"', '" "')
+        self.assertEqual(
             [
-                "tools/other.py: STATUS_SANCTIONS gives f no reason",
-                "tools/reader.py: STATUS_SANCTIONS sanctions g, which runs no git status; remove the entry",
-                "tools/missing.py: STATUS_SANCTIONS names a module the rule does not read",
+                "tools/stale.py: STATUS_READ_ALLOWED allows g, which holds nothing it sanctions; remove the entry",
+                "tools/empty.py: STATUS_READ_ALLOWED must map each function, class, or assignment to its reason",
             ],
-            self.problems(
-                files,
-                {
-                    "tools/reader.py": {"f": "a reason", "g": "a reason"},
-                    "tools/other.py": {"f": " "},
-                    "tools/missing.py": {"f": "a reason"},
-                },
-            ),
+            [*self.problems({"tools/stale.py": stale}), *self.problems({"tools/empty.py": empty})[:1]],
         )
 
     def test_each_stated_limit_reads_as_its_docstring_says(self) -> None:
@@ -757,6 +758,10 @@ class StatusTests(unittest.TestCase):
             "joined with +": 'def f(git):\n    return git.output(["status"] + ["-z"])\n',
             "given by keyword": 'def f(git):\n    return git.output(arguments=["status"])\n',
             "led by a starred element": 'def f(git, o):\n    return git.output([*o, "status"])\n',
+            # A run of strings given one at a time ends at the first argument that is not one.
+            "a value inside the run": 'def f(fixture, path):\n    return fixture.git("-C", path, "status", "-z")\n',
+            # A run with no option after status is not read.
+            "status given alone": 'def f(fixture):\n    return fixture.git("status")\n',
             # An argument list that names the program first reads it as its subcommand.
             "the program named first": 'def f(run):\n    return run(["git", "status"])\n',
         }
@@ -764,10 +769,11 @@ class StatusTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual([], self.problems({"tools/reader.py": text}))
 
-    def test_the_subcommand_is_the_one_the_helper_runs(self) -> None:
-        # Pinned against an independent literal: the subcommand the rule refuses outside the helper.
+    def test_the_subcommand_and_allowance_are_the_ones_the_rule_names(self) -> None:
+        # Pinned against independent literals: the helper, the subcommand refused outside it, and the allowance.
         self.assertEqual("skills/ejryan89-skill-core/scripts/git_worktrees.py", STATUS_HELPER)
         self.assertEqual("status", one_helper.STATUS)
+        self.assertEqual("STATUS_READ_ALLOWED", one_helper.STATUS_ALLOWANCE)
 
     def test_a_module_that_does_not_parse_is_named(self) -> None:
         problems = self.problems({"tools/broken.py": "def f(:\n"})

@@ -23,6 +23,13 @@ CONFIG = f"{{home}}/.claude/deployer/config/{hashlib.sha256(SOURCE_ID.encode()).
 # The rotation and guidance records audit_repository.py reads from the checkout it audits.
 ROTATION = "{checkout}/.claude/skills/audit-repository/references/rotation.json"
 GUIDANCE = "{checkout}/.claude/skills/audit-repository/references/guidance.json"
+
+STATUS_READ_ALLOWED = {
+    "pushed_branch": (
+        "refreshes the throwaway fixture's index on purpose, with the status's optional lock, so a run that compares "
+        "the work folder before and after finds an index no later status rewrites"
+    ),
+}
 CATALOGUE = "{checkout}/skills/ejryan89-skill-core/scripts/runtime_support.py"
 BRIEFS = "{root}/audit-repository-fixture"
 KNOWN_FAILURES = "{checkout}/tests/malformed_input/known_failures.json"
