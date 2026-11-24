@@ -56,11 +56,10 @@ from validation_support import (
     skills_by_name,
 )
 
-from deployer import platform_support
+from deployer import platform_support, tools
 from deployer.render import shipped_files
 from tools.plugin_agents import DEPLOYED_SCRIPT
 from tools.plugin_build import README as PLUGIN_README
-from tools.runtime_canary import RUNTIMES as RUNTIME_PROGRAMS
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -394,6 +393,11 @@ def runtime_page_problems(root: Path) -> list[str]:
 
 
 SOURCE_LESSON = '"A statement about another program cites its current source" in docs/lessons.md'
+# The program each runtime starts as, from the deployer's catalogue of the runtimes it verifies and the tools it reports
+# beside Git, so a code span such as `codex exec` or `copilot -p` names the runtime it starts.
+RUNTIME_PROGRAMS = frozenset(
+    {*tools.VERIFY_TOOLS, *(tool.name for tool in tools.REPORTED_TOOLS if tool is not tools.GIT)}
+)
 # What a sentence's code spans and links are read as: a code span that starts a runtime's program as a runtime's
 # name, and any other code span or link as text no name or verb matches.
 RUNTIME_COMMAND = "\x00"
