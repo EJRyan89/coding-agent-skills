@@ -128,11 +128,13 @@ SDK_SOLUTION = "is a .slnx solution, or a .sln of SDK-style projects, which the 
 TREE_READ_ALLOWED = {
     "read_file_list": (
         "the FILE_LIST is the skill's own file, which resolve wrote under the private temporary directory and the "
-        "caller names; it is no file of the repository"
+        "caller names; it is no file of the repository",
+        ("csharp_layout:main", "run_dotnet_format:run"),
     ),
     "given_folder": (
         "a folder the user names, the repository's top git gives, the folder the skill was invoked from, or a "
-        "--repo-root, is resolved before any tree is bound, since it chooses the tree"
+        "--repo-root, is resolved before any tree is bound, since it chooses the tree",
+        ("csharp_layout:main", "repository_root", "resolve", "run_dotnet_format:display_path"),
     ),
 }
 

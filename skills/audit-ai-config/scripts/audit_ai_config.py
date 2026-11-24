@@ -99,10 +99,12 @@ from typed_fields import FieldError, FieldReader
 TREE_READ_ALLOWED = {
     "examined_root": (
         "resolves, its links followed, the repository the user names, before a reader is bound to it, since it chooses "
-        "the tree the reader is bound to"
+        "the tree the reader is bound to",
+        ("audit",),
     ),
     "reported_sources": (
-        "reads references/provenance.json, the skill's own file, or the file a caller names: no file of the repository"
+        "reads references/provenance.json, the skill's own file, or the file a caller names: no file of the repository",
+        ("main",),
     ),
 }
 
