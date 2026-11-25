@@ -11,10 +11,11 @@ updates:
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
-  # requirements-dev.in, the pinned development dependencies, and requirements-mutation.in, the mutation gate's tools,
-  # with the hash-locked requirements-dev.txt and requirements-mutation.txt that pip-compile builds from them.
+  # requirements/requirements-dev.in, the pinned development dependencies, and requirements/requirements-mutation.in,
+  # the mutation gate's tools, with the hash-locked requirements/requirements-dev.txt and
+  # requirements/requirements-mutation.txt that pip-compile builds from them, each compiled from that folder.
   - package-ecosystem: pip
-    directory: /
+    directory: /requirements
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

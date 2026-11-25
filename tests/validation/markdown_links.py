@@ -1,6 +1,7 @@
 """Documents that point elsewhere keep pointing at something: relative Markdown links and their fragments, the
-tests a document cites, the mechanism and guard each pattern of docs/lessons.md names, and the security-sensitive
-area SECURITY.md gives each boundary of docs/design.md's trust model.
+tests a document cites, the mechanism and guard each pattern of docs/lessons.md names, the security-sensitive area
+.github/SECURITY.md gives each boundary of docs/design.md's trust model, and the new path of each file moved off the
+repository root.
 """
 
 from __future__ import annotations
@@ -526,7 +527,7 @@ def threat_model_test_problems(root: Path) -> list[str]:
 
 TRUST_MODEL_DOC = "docs/design.md"
 TRUST_MODEL_HEADING = "## Trust model"
-SECURITY_DOC = "SECURITY.md"
+SECURITY_DOC = ".github/SECURITY.md"
 SECURITY_AREAS_HEADING = "## Security-sensitive areas"
 # A list item of the security-sensitive areas that opens with a bold name is a boundary's area, the name being the
 # boundary's as the trust model's first column gives it; an item with no bold opening names no boundary.
@@ -534,9 +535,9 @@ SECURITY_AREA = re.compile(r"^- \*\*(.+?)\*\*")
 
 
 def trust_model_area_problems(root: Path) -> list[str]:
-    """Report each boundary of the trust model that no security-sensitive area of SECURITY.md names, and each area
-    whose bold name is no boundary of the trust model, so a reporter reading SECURITY.md alone is told of every
-    boundary the design places."""
+    """Report each boundary of the trust model that no security-sensitive area of .github/SECURITY.md names, and each
+    area whose bold name is no boundary of the trust model, so a reporter reading .github/SECURITY.md alone is told of
+    every boundary the design places."""
     section = markdown_section((root / TRUST_MODEL_DOC).read_text(encoding="utf-8"), TRUST_MODEL_HEADING)
     rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
     if not rows:
@@ -559,6 +560,74 @@ def trust_model_area_problems(root: Path) -> list[str]:
     return problems
 
 
+# The files moved off the repository root, each by the name it had there and the folder that holds it now: GitHub reads
+# the community files from .github/ as it reads them from the root, and the dependency pins sit in one folder, from
+# which pip reads an include and pip-tools and Dependabot compile a lock.
+MOVED_OFF_ROOT = {
+    "CONTRIBUTING.md": ".github",
+    "CODE_OF_CONDUCT.md": ".github",
+    "SECURITY.md": ".github",
+    "requirements-dev.in": "requirements",
+    "requirements-dev.txt": "requirements",
+    "requirements-mutation.in": "requirements",
+    "requirements-mutation.txt": "requirements",
+}
+# A moved file named from the root, bare or climbing to it with `../`: no folder, other name, or extension runs into it.
+ROOT_NAMED = re.compile(r"(?<![\w./-])(?:\.\./)*(" + "|".join(map(re.escape, MOVED_OFF_ROOT)) + r")(?![\w-]|\.\w)")
+# What moved_path_problems does not read: a shipped skill's or agent's Markdown, which names the files of the
+# repository it examines, such as that repository's own CONTRIBUTING.md; fixtures, which ship nothing; the session
+# worktrees; and the release notes, which record the paths each release had.
+MOVED_PATHS_UNREAD = ("skills/", "agents/", "tests/fixtures/", ".claude/worktrees/")
+MOVED_PATHS_UNREAD_FILES = frozenset({"docs/upgrade-notes.md"})
+# A line that compiles a lock runs in the pins' folder, as each lock's header records the command, so it names the
+# pins from there.
+LOCK_COMPILE = "piptools compile"
+
+
+def moved_path_problems(root: Path) -> list[str]:
+    """Report each place a document, which is Markdown or any file under .github/, names a file of MOVED_OFF_ROOT
+    from the repository root, where it no longer is, rather than by its path in its new folder.
+
+    A Markdown link's destination is left to markdown_link_problems, which reports one that names the old path
+    missing, and a line that compiles a lock names the pins from their folder.
+
+    Limits: a path written from the root with `./`, as `./SECURITY.md`, is not read as the root path, and a URL to
+    the repository's file, as `https://github.com/<owner>/<repo>/blob/main/SECURITY.md`, is not read, and
+    markdown_link_problems checks no URL. No document writes the first or links a moved file by URL.
+    """
+    problems: list[str] = []
+    for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if name in MOVED_PATHS_UNREAD_FILES or name.startswith(MOVED_PATHS_UNREAD):
+            continue
+        if path.suffix.casefold() != ".md" and not name.startswith(".github/"):
+            continue
+        for number, line in enumerate(text_lines(path.read_text(encoding="utf-8")), start=1):
+            if LOCK_COMPILE in line:
+                continue
+            for found in ROOT_NAMED.finditer(line):
+                if line[: found.start()].endswith("]("):
+                    continue
+                moved = found.group(1)
+                problems.append(
+                    f"{name}:{number} names {found.group(0)}, which moved to {MOVED_OFF_ROOT[moved]}/{moved}"
+                )
+    return problems
+
+
+def moved_file_problems(root: Path) -> list[str]:
+    """Report each file of MOVED_OFF_ROOT that is not a file in its new folder, or that is at the repository root
+    again, so the table moved_path_problems reads stays the tree's."""
+    problems: list[str] = []
+    for moved, folder in MOVED_OFF_ROOT.items():
+        reason = file_presence.refusal_reason(root / folder / moved)
+        if reason is not None:
+            problems.append(f"{folder}/{moved} {reason}, though MOVED_OFF_ROOT names it")
+        if file_presence.is_there(root / moved):
+            problems.append(f"{moved} is at the repository root, though MOVED_OFF_ROOT moved it to {folder}/")
+    return problems
+
+
 class MarkdownLinksPolicies(unittest.TestCase):
     def test_repository_links_resolve(self) -> None:
         self.assertEqual([], markdown_link_problems(REPOSITORY_ROOT))
@@ -574,3 +643,9 @@ class MarkdownLinksPolicies(unittest.TestCase):
 
     def test_every_trust_model_boundary_has_a_security_sensitive_area(self) -> None:
         self.assertEqual([], trust_model_area_problems(REPOSITORY_ROOT))
+
+    def test_no_document_names_a_moved_file_by_its_root_path(self) -> None:
+        self.assertEqual([], moved_path_problems(REPOSITORY_ROOT))
+
+    def test_each_moved_file_is_in_its_folder_and_not_at_the_root(self) -> None:
+        self.assertEqual([], moved_file_problems(REPOSITORY_ROOT))

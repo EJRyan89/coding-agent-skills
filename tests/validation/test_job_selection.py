@@ -571,7 +571,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             for name in CHANGED_TREE
             if "/test_" in name and name.endswith(".py") and not name.startswith("tests/fixtures/")
         )
-        for path in ("requirements-dev.in", "requirements-dev.txt"):
+        for path in ("requirements/requirements-dev.in", "requirements/requirements-dev.txt"):
             with self.subTest(path=path):
                 self.assertEqual(python_suites, self.selected([path]))
 
@@ -597,7 +597,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
         self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["skills/a/scripts/tool.py"]))
         self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["pyproject.toml"]))
         # The development dependencies pin the ruff and mypy the format, lint, and type checks run.
-        for path in ("requirements-dev.in", "requirements-dev.txt"):
+        for path in ("requirements/requirements-dev.in", "requirements/requirements-dev.txt"):
             with self.subTest(path=path):
                 self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels([path]))
         self.assertEqual([], labels(["docs/requirements-dev.txt"]))
@@ -611,8 +611,8 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "skills/ejryan89-skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
             "conftest.py",
-            "requirements-dev.in",
-            "requirements-dev.txt",
+            "requirements/requirements-dev.in",
+            "requirements/requirements-dev.txt",
         ]
         suites = [
             "tests/deployer/test_rendering_locking.py",
@@ -625,10 +625,10 @@ class ChangedSelectionFixtures(unittest.TestCase):
         self.assertEqual([], change_reach_problems(files, suites))
         self.assertEqual(
             [
-                "CHANGE_REACHES names requirements-dev.txt, which matches no repository file",
+                "CHANGE_REACHES names requirements/requirements-dev.txt, which matches no repository file",
                 "CHANGE_REACHES adds tests/validation/test_toolchain.py, which matches no regression suite",
                 # The lock reaches the Python suites too, in the row beside the root conftest.py.
-                "CHANGE_REACHES names requirements-dev.txt, which matches no repository file",
+                "CHANGE_REACHES names requirements/requirements-dev.txt, which matches no repository file",
             ],
             change_reach_problems(files[:-1], [suite for suite in suites if "toolchain" not in suite]),
         )

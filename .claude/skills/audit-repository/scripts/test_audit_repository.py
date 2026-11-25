@@ -125,7 +125,9 @@ def assert_questions(test: unittest.TestCase, brief: str) -> None:
     """That a release or rotation brief asks each question in its own section, between the kinds of drift and the
     advice on confirming a finding, each block ended by a blank line, and asks a finding to name the question that
     found it."""
-    last_kind = "- **trust-boundary**: anything an author controls that the threat model in SECURITY.md does not cover."
+    last_kind = (
+        "- **trust-boundary**: anything an author controls that the threat model in .github/SECURITY.md does not cover."
+    )
     block = "\n".join(
         [
             last_kind,
@@ -347,7 +349,7 @@ class ClassificationTests(AuditTestCase):
             ".claude/skills/audit-repository/SKILL.md": "infrastructure",
             ".agents/skills/audit-repository/SKILL.md": "infrastructure",
             "pyproject.toml": "infrastructure",
-            "requirements-dev.txt": "infrastructure",
+            "requirements/requirements-dev.txt": "infrastructure",
             "README.md": "infrastructure",
             "docs/releasing.md": "infrastructure",
             "deployer.md": "infrastructure",

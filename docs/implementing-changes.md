@@ -47,7 +47,7 @@ which runs it anyway:
 
 1. Each suite the change adds or changes, and each suite of a module or script it changes, one at a time, as the
    runner starts it: a Python suite with `python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its
-   own for its temporary folders, under the pytest variables "Validation" in `CONTRIBUTING.md` names, a Bash or
+   own for its temporary folders, under the pytest variables "Validation" in `.github/CONTRIBUTING.md` names, a Bash or
    PowerShell suite as a program, or any of them through the runner with `-k <suite path>`.
 2. Each new regression test with the fix reverted, to see it fail without the fix, then again with the fix restored.
 3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
@@ -84,7 +84,7 @@ rerunning one suite, and a pattern that matches nothing, even beside one that ma
 
 The runner decides what a documentation-only change needs. When every file changed since `origin/main` (the pull
 request's base in continuous integration), uncommitted or untracked, is under `docs/` or `.github/ISSUE_TEMPLATE/`, or
-is the top-level `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CLAUDE.md`, `AGENTS.md`, or
+is the top-level `README.md`, `CLAUDE.md`, or `AGENTS.md`, or `.github/CONTRIBUTING.md`, `.github/SECURITY.md`, or
 `.github/pull_request_template.md`, it runs the policy checks and only the suites that name a changed file, and, when
 any changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences, since those read
 the fences a documentation change can break. The Python format, lint, and type checks and the shell checks of skill
@@ -432,8 +432,8 @@ Each fact has one owner; update the owner in the same change.
 | `docs/installation.md`, `docs/recovery.md` | Install, update, and recovery. |
 | `docs/setting-up-a-machine.md` | The order a new machine's setup follows and the Windows conditions it meets on the way; the install commands stay with their owners. |
 | `docs/codex-support.md`, `docs/copilot-support.md` | Per-runtime support. |
-| `CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
-| `SECURITY.md` | The supported line, how to report a vulnerability, the disclosure policy for advisories, and the security-sensitive areas. |
+| `.github/CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
+| `.github/SECURITY.md` | The supported line, how to report a vulnerability, the disclosure policy for advisories, and the security-sensitive areas. |
 | `docs/dependency-updates.md` | Every pin and floor: where it is declared, how it is updated and reviewed, and the check that holds it. |
 | `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |

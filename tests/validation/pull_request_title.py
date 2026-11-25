@@ -26,7 +26,7 @@ from tools.worktrees import TITLE_TYPES
 # The documents that state the convention, by the section that states it; each must name every type.
 TITLE_GUIDES = (
     ("docs/implementing-changes.md", "## Pull requests"),
-    ("CONTRIBUTING.md", "## Issues and pull requests"),
+    (".github/CONTRIBUTING.md", "## Issues and pull requests"),
 )
 
 

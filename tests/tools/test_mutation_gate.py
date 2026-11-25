@@ -5547,7 +5547,7 @@ class CarryFixtures(unittest.TestCase):
         self.assert_runs("the mutants of `tools/calc.py` are not the ones it judged")
 
     def test_a_change_to_the_gates_own_files_or_a_module_the_gate_imports_runs_the_mutants(self) -> None:
-        for name in ("pyproject.toml", "requirements-mutation.txt", ".github/workflows/mutation.yml"):
+        for name in ("pyproject.toml", "requirements/requirements-mutation.txt", ".github/workflows/mutation.yml"):
             with self.subTest(name=name):
                 self.judge()
                 self.commit({name: f"changed {name}\n"})

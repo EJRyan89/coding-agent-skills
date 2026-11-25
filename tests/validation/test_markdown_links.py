@@ -28,6 +28,8 @@ from markdown_links import (
     heading_slugs,
     lessons_ledger_problems,
     markdown_link_problems,
+    moved_file_problems,
+    moved_path_problems,
     threat_model_test_problems,
     trust_model_area_problems,
 )
@@ -852,6 +854,111 @@ class TrustModelAreaPolicy(unittest.TestCase):
         self.assertEqual(
             [f"{SECURITY_DOC} has no '## Security-sensitive areas' section"],
             self.problems({TRUST_MODEL_DOC: self.DESIGN, SECURITY_DOC: "# Security policy\n"}),
+        )
+
+
+class MovedPathPolicy(unittest.TestCase):
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, files)
+            return moved_path_problems(root)
+
+    def test_each_moved_file_named_by_its_new_path_passes(self) -> None:
+        files = {
+            "README.md": "See [Contributing](.github/CONTRIBUTING.md) and `.github/SECURITY.md`.\n",
+            "docs/guide.md": "Read [Disclosure](../.github/SECURITY.md#disclosure); "
+            "`requirements/requirements-dev.in`.\n",
+            ".github/workflows/validate.yml": "run: python -m pip install -r requirements/requirements-mutation.txt\n",
+            ".github/CONTRIBUTING.md": "Follow the [code of conduct](CODE_OF_CONDUCT.md).\n",
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_a_root_path_in_a_document_or_a_github_file_fails(self) -> None:
+        files = {
+            "README.md": "As `CONTRIBUTING.md` says, and [SECURITY.md](.github/SECURITY.md).\n",
+            "docs/guide.md": "Climb to ../CODE_OF_CONDUCT.md for it.\n",
+            ".github/workflows/validate.yml": "run: python -m pip install -r requirements-dev.txt\n",
+            ".claude/skills/demo/SKILL.md": "Pinned in 'requirements-mutation.in'.\n",
+        }
+        self.assertEqual(
+            [
+                ".claude/skills/demo/SKILL.md:1 names requirements-mutation.in, which moved to "
+                "requirements/requirements-mutation.in",
+                ".github/workflows/validate.yml:1 names requirements-dev.txt, which moved to "
+                "requirements/requirements-dev.txt",
+                "README.md:1 names CONTRIBUTING.md, which moved to .github/CONTRIBUTING.md",
+                "README.md:1 names SECURITY.md, which moved to .github/SECURITY.md",
+                "docs/guide.md:1 names ../CODE_OF_CONDUCT.md, which moved to .github/CODE_OF_CONDUCT.md",
+            ],
+            self.problems(files),
+        )
+
+    def test_what_the_policy_leaves_to_others_or_does_not_read_passes(self) -> None:
+        files = {
+            # A link's destination is markdown_link_problems', which reports the old path missing.
+            "docs/guide.md": "See [the guide](../CONTRIBUTING.md).\n",
+            # A compile runs in the pins' folder, as each lock's header records it.
+            "docs/dependency-updates.md": "python -m piptools compile --generate-hashes requirements-dev.in\n",
+            # Release notes keep a release's paths; a shipped skill or agent names the examined repository's files.
+            "docs/upgrade-notes.md": "Install with `-r requirements-dev.txt`.\n",
+            "skills/demo/SKILL.md": "Read the repository's CONTRIBUTING.md.\n",
+            "agents/helper.md": "Read the repository's SECURITY.md.\n",
+            "tests/fixtures/demo/README.md": "See CONTRIBUTING.md.\n",
+            # Another file of a moved name, or a longer name, is not the moved file.
+            "docs/other.md": "Neither `docs/SECURITY.md` nor `requirements-dev.txt.bak` nor `OLD_SECURITY.md`.\n",
+            # Only Markdown and the files under .github/ are documents.
+            "tools/demo.py": "# Reads SECURITY.md.\n",
+            # The stated limits: a root path written with ./, and a URL to the repository's file, are not read.
+            "docs/limits.md": (
+                "See ./SECURITY.md and https://github.com/owner/repo/blob/main/SECURITY.md or "
+                "[the policy](https://github.com/owner/repo/blob/main/SECURITY.md).\n"
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_a_tree_with_no_document_passes_only_because_the_documents_are_read(self) -> None:
+        # The files the policy does not read name every moved file from the root, so the empty report says no
+        # document names one; the same tree with one document naming one is reported, so the read is not skipped.
+        unread = {"tools/demo.py": "".join(f"# {moved}\n" for moved in markdown_links.MOVED_OFF_ROOT)}
+        unread["requirements/requirements-mutation.in"] = "-r requirements-dev.in\n"
+        self.assertEqual([], self.problems(unread))
+        for moved, folder in markdown_links.MOVED_OFF_ROOT.items():
+            with self.subTest(moved=moved):
+                self.assertEqual(
+                    [f"README.md:1 names {moved}, which moved to {folder}/{moved}"],
+                    self.problems({**unread, "README.md": f"See {moved}.\n"}),
+                )
+
+
+class MovedFilePolicy(unittest.TestCase):
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            return moved_file_problems(root)
+
+    def tree(self) -> dict[str, str]:
+        return {f"{folder}/{moved}": "x\n" for moved, folder in markdown_links.MOVED_OFF_ROOT.items()}
+
+    def test_each_moved_file_in_its_folder_passes(self) -> None:
+        self.assertEqual([], self.problems(self.tree()))
+
+    def test_a_moved_file_missing_from_its_folder_or_back_at_the_root_fails(self) -> None:
+        files = self.tree()
+        del files[".github/SECURITY.md"]
+        # A folder in a moved file's place is named as what it is, never as missing.
+        del files[".github/CONTRIBUTING.md"]
+        files[".github/CONTRIBUTING.md/notes.md"] = "x\n"
+        files["requirements-dev.txt"] = "x\n"
+        self.assertEqual(
+            [
+                ".github/CONTRIBUTING.md is not a file, though MOVED_OFF_ROOT names it",
+                ".github/SECURITY.md is missing, though MOVED_OFF_ROOT names it",
+                "requirements-dev.txt is at the repository root, though MOVED_OFF_ROOT moved it to requirements/",
+            ],
+            self.problems(files),
         )
 
 

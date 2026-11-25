@@ -4,27 +4,27 @@ Usage:
   python -B tools/mutation_gate.py [--base REF] [--minutes N]
       [select FOLDER | leg FOLDER [--shard N] | join FOLDER | unrun FOLDER]
 
-The `Mutation` workflow runs it on every pull request, where requirements-mutation.txt installs mutmut and coverage.py;
-it is not a required check, and it calls no model and reads no secret. Without a step it runs a whole run in one
-process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in FOLDER:
-`select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step outputs
-listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each SHARD_MUTANTS of
-them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across the
-shards that hold it, as dealt_shards deals them; `leg`, on Linux and on Windows, runs that platform's leg of them, or
-with --shard that shard's share, never running mutmut, and writes its outcomes to outcomes-<platform>.json, or
-outcomes-<platform>-<shard>.json, replacing the file whole before its reach pass, after it, and after each mutant, each
-mutant not yet reached written as not run and the record marked as not ended until its last write, so a step that
-failed, was cancelled, or ran past its job's time limit partway leaves the outcomes it reached for its upload, which
-runs whatever the step did; a runner's shutdown runs no later step, the upload included, so its shard leaves no record;
-and `join` reports them, reading each leg's whole record, or each shard the selection deals and no other, joined into
-the leg's, a record not ended, or a shard that left none, read as a step stopped before its end, whose mutants it had
-not reached did not run. The Linux leg runs every module's mutants, and the Windows leg those of each module whose
-behavior differs on Windows by design, as runs_on_windows selects it: one of PLATFORM_MODULES, one holding a
-PLATFORM_ALLOWED table, one importing one of PLATFORM_MODULES, or one whose code reads the platform in any expression: a
-token of any kind the platform policy's PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or creationflags, or
-one of PLATFORM_VALUES, such as os.altsep. A mutant either leg killed counts as killed, and the summary names the legs
-that ran each module and each mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged
-where it shows. It mutates the lines the pull request's commits add or change since the base
+The `Mutation` workflow runs it on every pull request, where requirements/requirements-mutation.txt installs mutmut and
+coverage.py; it is not a required check, and it calls no model and reads no secret. Without a step it runs a whole run
+in one process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in
+FOLDER: `select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step
+outputs listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each
+SHARD_MUTANTS of them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants
+spread across the shards that hold it, as dealt_shards deals them; `leg`, on Linux and on Windows, runs that platform's
+leg of them, or with --shard that shard's share, never running mutmut, and writes its outcomes to
+outcomes-<platform>.json, or outcomes-<platform>-<shard>.json, replacing the file whole before its reach pass, after it,
+and after each mutant, each mutant not yet reached written as not run and the record marked as not ended until its last
+write, so a step that failed, was cancelled, or ran past its job's time limit partway leaves the outcomes it reached for
+its upload, which runs whatever the step did; a runner's shutdown runs no later step, the upload included, so its shard
+leaves no record; and `join` reports them, reading each leg's whole record, or each shard the selection deals and no
+other, joined into the leg's, a record not ended, or a shard that left none, read as a step stopped before its end,
+whose mutants it had not reached did not run. The Linux leg runs every module's mutants, and the Windows leg those of
+each module whose behavior differs on Windows by design, as runs_on_windows selects it: one of PLATFORM_MODULES, one
+holding a PLATFORM_ALLOWED table, one importing one of PLATFORM_MODULES, or one whose code reads the platform in any
+expression: a token of any kind the platform policy's PLATFORM_TOKENS catalogues, such as sys.platform, msvcrt, or
+creationflags, or one of PLATFORM_VALUES, such as os.altsep. A mutant either leg killed counts as killed, and the
+summary names the legs that ran each module and each mutant one leg alone killed, so a mutant whose effect shows only on
+Windows is judged where it shows. It mutates the lines the pull request's commits add or change since the base
 (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names another), as `git diff -U0` names them, in each module
 under deployer/, tools/, a skill's scripts/, or a repository skill's scripts/, in each validation policy directly under
 tests/validation/, whose fixture suite, tests/validation/test_<module>.py, reaches it as any suite reaches a module, and
@@ -435,7 +435,7 @@ VERDICT_FILE = "verdict.json"
 # The gate's own module, and the files whose change runs the gate again whatever suite they reach: its lock, its
 # workflow, and pytest's configuration, which every suite reads and no import or name shows.
 GATE_MODULE = "tools/mutation_gate.py"
-GATE_FILES = ("requirements-mutation.txt", ".github/workflows/mutation.yml", "pyproject.toml")
+GATE_FILES = ("requirements/requirements-mutation.txt", ".github/workflows/mutation.yml", "pyproject.toml")
 
 
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.

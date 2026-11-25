@@ -196,8 +196,8 @@ class EveryJobTests(unittest.TestCase):
         imported = ["deployer", "tools", "skills/core/scripts"]
         changed = [
             "pyproject.toml",
-            "requirements-dev.in",
-            "requirements-dev.txt",
+            "requirements/requirements-dev.in",
+            "requirements/requirements-dev.txt",
             "skills/core/scripts/shared.py",
             "tools/gate.py",
             "deployer/sub/plan.py",
@@ -205,8 +205,8 @@ class EveryJobTests(unittest.TestCase):
         self.assertEqual(
             [
                 ("pyproject.toml", "configures or pins every type check"),
-                ("requirements-dev.in", "configures or pins every type check"),
-                ("requirements-dev.txt", "configures or pins every type check"),
+                ("requirements/requirements-dev.in", "configures or pins every type check"),
+                ("requirements/requirements-dev.txt", "configures or pins every type check"),
                 ("skills/core/scripts/shared.py", "is in skills/core/scripts, which other type-check roots import"),
                 ("tools/gate.py", "is in tools, which other type-check roots import"),
                 ("deployer/sub/plan.py", "is in deployer, which other type-check roots import"),

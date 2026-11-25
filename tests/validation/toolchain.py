@@ -174,7 +174,8 @@ def mypy_job(mypy: str, configuration: Path, arguments: Sequence[str], cwd: Path
 
 
 def find_ruff() -> str | None:
-    """ruff from this interpreter, where requirements-dev.txt installs it even when its scripts are not on PATH."""
+    """ruff from this interpreter, where requirements/requirements-dev.txt installs it even when its scripts are not on
+    PATH."""
     try:
         from ruff.__main__ import find_ruff_bin  # type: ignore[import-untyped]  # ruff ships no type information
 
@@ -185,14 +186,16 @@ def find_ruff() -> str | None:
 
 
 def find_mypy() -> str | None:
-    """mypy from this interpreter's scripts directory, where requirements-dev.txt installs it, or else from PATH."""
+    """mypy from this interpreter's scripts directory, where requirements/requirements-dev.txt installs it, or else from
+    PATH."""
     scripts = sysconfig.get_path("scripts")
     return platform_support.find_on_path("mypy", scripts) or platform_support.find_executable("mypy")
 
 
 def find_pytest() -> str | None:
-    """pytest from this interpreter's scripts directory, where requirements-dev.txt installs it, or else from PATH.
-    The runner starts it as `python -m pytest`, so this interpreter's copy is the one whose version counts."""
+    """pytest from this interpreter's scripts directory, where requirements/requirements-dev.txt installs it, or else
+    from PATH. The runner starts it as `python -m pytest`, so this interpreter's copy is the one whose version counts.
+    """
     scripts = sysconfig.get_path("scripts")
     return platform_support.find_on_path("pytest", scripts) or platform_support.find_executable("pytest")
 
@@ -233,8 +236,8 @@ def missing_prerequisites(
 # unpinned with each runner image, and the macOS legs install Homebrew's Bash. The shell scripts need no Bash 4, but the
 # suites hold ejryan89-skill-core's bash_syntax.py and the hub guard to the Bash validation finds, and the reader reads
 # Bash as 5.2 and later do, where macOS's own /bin/bash is 3.2. ruff's, mypy's, and pytest's floors are their pins in
-# requirements-dev.txt, because a newer release can change the formatting style, report new errors, or collect and
-# report tests differently in an unchanged tree.
+# requirements/requirements-dev.txt, because a newer release can change the formatting style, report new errors, or
+# collect and report tests differently in an unchanged tree.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
@@ -252,20 +255,23 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
 # lists, and no others. hypothesis is a library the generated-test suites import, not a tool validation starts, so it
 # has no floor in VALIDATION_FLOORS and no install hint: a suite run without it fails on the import, which names it.
 DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest", "hypothesis")
-# The packages only the mutation gate's workflow installs, from requirements-mutation.txt, beside those: mutmut, which
-# makes the mutants, and coverage.py, which measures which suites reach each line.
+# The packages only the mutation gate's workflow installs, from requirements/requirements-mutation.txt, beside those:
+# mutmut, which makes the mutants, and coverage.py, which measures which suites reach each line.
 MUTATION_PACKAGES = ("mutmut", "coverage")
 REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[0-9][0-9A-Za-z.+!-]*)")
 # Each set's hand-edited input, and the lock pip-tools compiles from it, which pins every package the set installs,
-# transitive ones included, each with the sha256 hash of every file PyPI holds for its version. CI installs a lock
-# with --require-hashes, so nothing it does not pin, and no file whose hash it does not hold, is installed. The
-# mutation input takes the development input whole and the development lock as a constraint, so its lock is the
-# mutation job's one install, and a package both locks hold is pinned alike in each.
-DEVELOPMENT_INPUT = "requirements-dev.in"
-DEVELOPMENT_LOCK = "requirements-dev.txt"
-MUTATION_INPUT = "requirements-mutation.in"
-MUTATION_LOCK = "requirements-mutation.txt"
-MUTATION_INCLUDES = (f"-r {DEVELOPMENT_INPUT}", f"-c {DEVELOPMENT_LOCK}")
+# transitive ones included, each with the sha256 hash of every file PyPI holds for its version. CI installs a lock with
+# --require-hashes, so nothing it does not pin, and no file whose hash it does not hold, is installed. The mutation
+# input takes the development input whole and the development lock as a constraint, so its lock is the mutation job's
+# one install, and a package both locks hold is pinned alike in each. The inputs and locks sit in one folder, from which
+# pip reads an include and pip-tools and Dependabot compile a lock, so the includes and each lock's header and comments
+# name the files from there.
+REQUIREMENTS_FOLDER = "requirements"
+DEVELOPMENT_INPUT = f"{REQUIREMENTS_FOLDER}/requirements-dev.in"
+DEVELOPMENT_LOCK = f"{REQUIREMENTS_FOLDER}/requirements-dev.txt"
+MUTATION_INPUT = f"{REQUIREMENTS_FOLDER}/requirements-mutation.in"
+MUTATION_LOCK = f"{REQUIREMENTS_FOLDER}/requirements-mutation.txt"
+MUTATION_INCLUDES = (f"-r {Path(DEVELOPMENT_INPUT).name}", f"-c {Path(DEVELOPMENT_LOCK).name}")
 LOCK_HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}")
 # How CI runs pip: every download checked against the lock's hashes, and no source distribution, whose build would
 # run its own code where a Python has no wheel.
@@ -610,12 +616,17 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertEqual(("-r requirements-dev.in", "-c requirements-dev.txt"), MUTATION_INCLUDES)
         self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES, MUTATION_INCLUDES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
-        self.assertIn("| mutmut | 3.8.1 | `requirements-mutation.in` |", document)
-        self.assertIn("| coverage.py | 7.17.3 | `requirements-mutation.in` |", document)
+        self.assertIn("| mutmut | 3.8.1 | `requirements/requirements-mutation.in` |", document)
+        self.assertIn("| coverage.py | 7.17.3 | `requirements/requirements-mutation.in` |", document)
 
     def test_every_package_installed_is_locked_with_hashes_and_installed_with_hash_checking(self) -> None:
         self.assertEqual(
-            ("requirements-dev.in", "requirements-dev.txt", "requirements-mutation.in", "requirements-mutation.txt"),
+            (
+                "requirements/requirements-dev.in",
+                "requirements/requirements-dev.txt",
+                "requirements/requirements-mutation.in",
+                "requirements/requirements-mutation.txt",
+            ),
             (DEVELOPMENT_INPUT, DEVELOPMENT_LOCK, MUTATION_INPUT, MUTATION_LOCK),
         )
         development = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
@@ -627,9 +638,9 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
         # Every workflow is read, and one that installs no lock may run no pip install.
         expected = {
-            "validate.yml": (("requirements-dev.txt",), 3),
-            "mutation.yml": (("requirements-mutation.txt",), 3),
-            "python-diagnostics.yml": (("requirements-dev.txt",), 1),
+            "validate.yml": (("requirements/requirements-dev.txt",), 3),
+            "mutation.yml": (("requirements/requirements-mutation.txt",), 3),
+            "python-diagnostics.yml": (("requirements/requirements-dev.txt",), 1),
         }
         workflows = file_presence.matching(REPOSITORY_ROOT / ".github" / "workflows", "*.y*ml")
         self.assertLessEqual(set(expected), {workflow.name for workflow in workflows})
@@ -653,7 +664,7 @@ class ToolchainPolicies(unittest.TestCase):
             # With no lock allowed, each install from a requirements file in a fence is reported, so this counts them.
             if fence_install_problems(text, ()):
                 documented.add(name)
-        self.assertLessEqual({"CONTRIBUTING.md", DEPENDENCY_DOC}, documented)
+        self.assertLessEqual({".github/CONTRIBUTING.md", DEPENDENCY_DOC}, documented)
         # The command validation prints for a missing or outdated development dependency, each one with a floor,
         # installs the lock the same way, on each platform.
         for hints in (platform_support.WINDOWS_INSTALL_HINTS, platform_support.LINUX_INSTALL_HINTS):
@@ -694,7 +705,7 @@ class ToolchainPolicies(unittest.TestCase):
         # the version, and the floor it must be.
         copies = (
             ("| Python |", "CLAUDE.md", found_python, python),
-            ("| Python |", "CONTRIBUTING.md", found_python, python),
+            ("| Python |", ".github/CONTRIBUTING.md", found_python, python),
             ("| Python |", "README.md", found_python, python),
             ("| Python |", "docs/installation.md", found_python, python),
             ("| Python |", "docs/code-review-operations.md", found_python, python),
@@ -744,7 +755,9 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff, mypy, and pytest run at their
         # floors.
-        self.assertIn("python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt", workflow)
+        self.assertIn(
+            "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt", workflow
+        )
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
@@ -756,13 +769,15 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertEqual([], requirements_problems(requirements, DEVELOPMENT_PACKAGES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         self.assertIn(
-            "pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, `mypy`, the type "
+            "pinned in `requirements/requirements-dev.txt`, and no others: `ruff`, the formatter "
+            "and linter, `mypy`, the type "
             "checker, `pytest`, the test runner, which starts every Python suite, and `hypothesis`, which generates",
             document,
         )
         dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
         self.assertRegex(
-            dependabot, r"(?m)^  - package-ecosystem: pip\n    directory: /\n    schedule:\n      interval: weekly$"
+            dependabot,
+            r"(?m)^  - package-ecosystem: pip\n    directory: /requirements\n    schedule:\n      interval: weekly$",
         )
         # The aggregate job keeps the single required status check context that branch protection names, over the
         # Windows legs, the Linux job, the macOS job, and the known-failure issues' job alike.

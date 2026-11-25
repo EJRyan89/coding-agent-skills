@@ -1,5 +1,5 @@
 # Tool configuration for contributors and CI. Nothing here is installed, so there is no [project] table;
-# requirements-dev.txt pins the tools and docs/dependency-updates.md owns the decision.
+# requirements/requirements-dev.txt pins the tools and docs/dependency-updates.md owns the decision.
 
 # Validation starts each Python regression suite, or each shard of a large one, as `python -B -m pytest <suite>` from
 # this root, which conftest.py beside this file sets up. The cache plugin is off, so a run writes nothing into the

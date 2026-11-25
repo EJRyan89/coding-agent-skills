@@ -6525,7 +6525,8 @@ def ruff_format_check(root: Path, targets: list[str]) -> None:
         ruff_job(ruff, ["format", "--check"], targets, root)
     except AssertionError as exc:
         raise AssertionError(
-            f"{exc}\nRun `python -m ruff format` on the files named above, using requirements-dev.txt's ruff."
+            f"{exc}\nRun `python -m ruff format` on the files named above, using "
+            "requirements/requirements-dev.txt's ruff."
         ) from exc
 
 
@@ -7143,7 +7144,7 @@ class PythonChecksPolicies(unittest.TestCase):
             lint["select"],
         )
         # Every bandit rule but S603 and S607, and every stable pytest-style rule but PT009 and PT027, is selected;
-        # "Python checks" in CONTRIBUTING.md says why.
+        # "Python checks" in .github/CONTRIBUTING.md says why.
         for unselected in ("S603", "S607", "PT009", "PT027"):
             self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
         for selected in (

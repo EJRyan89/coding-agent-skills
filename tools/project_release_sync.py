@@ -9,14 +9,14 @@ item's milestone into the field: it sets the option named like the milestone, an
 milestone. It reads the board the current checkout's repository owner holds as project 1, through `gh api graphql`,
 which needs the `project` scope (`gh auth refresh -s project`).
 
-It prints SYNCED once every item's Release matches its milestone, then one line saying how many items it
-updated and cleared. It prints DRIFTED, then that line, then one line per problem left, when a milestone has
-no option of its name, which is added in the field's settings, when the options that name versions are not in version
-order, or when the token in use cannot read an item, as one in a repository it has no access to: that line names each
-such item by its node id, since nothing here can say whether its Release matches. With `--check` it changes nothing
-and prints IN_SYNC, or DRIFTED with one line per item whose Release does not match its milestone as well. Setting a
-value twice changes nothing, so a run cut short is rerun. CONTRIBUTING.md runs it after an issue is filed or moved
-between milestones, and the release procedure in docs/releasing.md runs it with `--check`.
+It prints SYNCED once every item's Release matches its milestone, then one line saying how many items it updated and
+cleared. It prints DRIFTED, then that line, then one line per problem left, when a milestone has no option of its name,
+which is added in the field's settings, when the options that name versions are not in version order, or when the token
+in use cannot read an item, as one in a repository it has no access to: that line names each such item by its node id,
+since nothing here can say whether its Release matches. With `--check` it changes nothing and prints IN_SYNC, or DRIFTED
+with one line per item whose Release does not match its milestone as well. Setting a value twice changes nothing, so a
+run cut short is rerun. .github/CONTRIBUTING.md runs it after an issue is filed or moved between milestones, and the
+release procedure in docs/releasing.md runs it with `--check`.
 
 Exit status:
   0  SYNCED, or IN_SYNC with --check

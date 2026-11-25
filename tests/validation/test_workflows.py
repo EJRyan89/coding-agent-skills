@@ -316,7 +316,7 @@ LEGS = (
     "    runs-on: windows-latest\n    strategy:\n      matrix:\n"
     "        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          cache: pip\n"
-    "          cache-dependency-path: requirements-dev.txt\n"
+    "          cache-dependency-path: requirements/requirements-dev.txt\n"
     "      - uses: actions/cache@SHA # v1\n        with:\n          key: tool-${{ env.TOOL_VERSION }}\n"
     "      - run: install tool --version $env:TOOL_VERSION --quiet\n"
     "      - name: Validate\n        env:\n          SHARD: ${{ matrix.shard }}\n"
@@ -384,7 +384,7 @@ def test_a_leg_misnamed_or_off_its_own_shard_fails(drifted: str, problem: str) -
         ),
         pytest.param(LEGS.replace("          cache: pip\n", ""), "setup-python does not cache pip", id="no pip cache"),
         pytest.param(
-            LEGS.replace("requirements-dev.txt", "requirements.txt"),
+            LEGS.replace("requirements/requirements-dev.txt", "requirements.txt"),
             "setup-python does not cache pip",
             id="another requirements file",
         ),
@@ -400,7 +400,7 @@ MYPY_RESTORE = (
     "      - uses: actions/cache@SHA # v1\n        with:\n"
     "          path: ${{ runner.temp }}/mypy-cache\n"
     "          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-"
-    "${{ hashFiles('requirements-dev.txt') }}\n"
+    "${{ hashFiles('requirements/requirements-dev.txt') }}\n"
 )
 MYPY_VALIDATE = (
     "      - name: Validate\n        env:\n          SHARD: ${{ matrix.shard }}\n"
@@ -421,7 +421,9 @@ def test_mypy_cache_restored_before_validation_and_named_to_it_passes() -> None:
     [
         pytest.param(MYPY_CACHE.replace("-${{ strategy.job-index }}", ""), "restores mypy's cache as", id="no leg"),
         pytest.param(
-            MYPY_CACHE.replace("${{ hashFiles('requirements-dev.txt') }}", "1"), "restores mypy's cache as", id="no pin"
+            MYPY_CACHE.replace("${{ hashFiles('requirements/requirements-dev.txt') }}", "1"),
+            "restores mypy's cache as",
+            id="no pin",
         ),
         pytest.param(
             MYPY_CACHE.replace("path: ${{ runner.temp }}/mypy-cache", "path: .mypy_cache"),
@@ -457,13 +459,14 @@ LINUX = (
     "          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n"
     "          python-version: ${{ matrix.python-version }}\n"
-    "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
+    "          cache: pip\n          cache-dependency-path: requirements/requirements-dev.txt\n"
     "      - uses: actions/cache@SHA # v1\n        with:\n          key: tool-${{ env.TOOL_VERSION }}\n"
     "      - run: |\n"
     '          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict\n'
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
-    "      - run: |\n          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n"
+    "      - run: |\n          python -m pip install --require-hashes --only-binary :all: -r "
+    "requirements/requirements-dev.txt\n"
     "      - name: Run\n        shell: pwsh\n        env:\n          SHARD: ${{ matrix.shard }}\n        run: |\n"
     "          $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)\n"
     "          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }\n"
@@ -625,7 +628,8 @@ class LinuxJobFixtures(unittest.TestCase):
         pytest.param(
             LINUX.replace(
                 "      - run: |\n"
-                "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n",
+                "          python -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt\n",
                 "",
             ),
             "requirements-dev",
@@ -1778,7 +1782,7 @@ DIAGNOSTICS_JOB = (
     "    strategy:\n      matrix:\n        python-version: ['3.12', '3.x']\n    steps:\n"
     "      - name: Set up Python\n        uses: actions/setup-python@x\n"
     "        with:\n          python-version: ${{ matrix.python-version }}\n"
-    "      - name: Install\n        run: python -m pip install -r requirements-dev.txt\n"
+    "      - name: Install\n        run: python -m pip install -r requirements/requirements-dev.txt\n"
     "      - name: Run\n        env:\n          PYTHONDEVMODE: '1'\n          PYTHONWARNINGS: error\n"
     '        run: python -B tools/python_diagnostics.py --summary "$GITHUB_STEP_SUMMARY"\n'
 )
@@ -2109,10 +2113,10 @@ def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
 
 MUTATION_SETUP = (
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.12'\n          cache: pip\n"
-    "          cache-dependency-path: requirements-mutation.txt\n"
+    "          cache-dependency-path: requirements/requirements-mutation.txt\n"
 )
 MUTATION_INSTALL_STEP = (
-    "          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt\n"
+    "          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-mutation.txt\n"
 )
 
 
@@ -2247,12 +2251,14 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
         pytest.param(MUTATION.replace("timeout-minutes: 60", "timeout-minutes: 600", 1), "timeout", id="a long limit"),
         pytest.param(MUTATION.replace("fetch-depth: 0", "fetch-depth: 1"), "select job's checkout", id="shallow"),
         pytest.param(
-            MUTATION.replace("path: requirements-mutation.txt", "path: requirements-dev.txt", 1),
+            MUTATION.replace(
+                "path: requirements/requirements-mutation.txt", "path: requirements/requirements-dev.txt", 1
+            ),
             "select job's python",
             id="the cache keyed on another file",
         ),
         pytest.param(
-            MUTATION.replace("-r requirements-mutation.txt", "-r requirements-dev.txt"),
+            MUTATION.replace("-r requirements/requirements-mutation.txt", "-r requirements/requirements-dev.txt"),
             "scripts",
             id="no mutation tools",
         ),
@@ -3197,13 +3203,13 @@ def test_a_retired_token_claim_far_into_a_long_text_fails_and_each_is_found_once
 
 def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_place_passes() -> None:
     required = [
+        ".github/CONTRIBUTING.md",
         ".github/workflows/deployable.yml",
         ".github/workflows/mutation.yml",
         ".github/workflows/python-diagnostics.yml",
         ".github/workflows/runtime-changelogs.yml",
         ".github/workflows/runtime-command-lines.yml",
         ".github/workflows/validate.yml",
-        "CONTRIBUTING.md",
         "docs/implementing-changes.md",
         "tests/known_failure_issues.py",
         "tests/run_validation.py",

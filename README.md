@@ -104,7 +104,7 @@ Working on this repository:
 
 | Page | What it covers |
 |---|---|
-| [Contributing](CONTRIBUTING.md) | From a clone or fork to a merged pull request: tools, worktrees, validation, and the gates the maintainer runs |
+| [Contributing](.github/CONTRIBUTING.md) | From a clone or fork to a merged pull request: tools, worktrees, validation, and the gates the maintainer runs |
 | [Setting up a machine](docs/setting-up-a-machine.md) | A new Windows machine's tools in the order that avoids rework, and the conditions a fresh install meets |
 | [Design](docs/design.md) | Why the repository is built as it is: the trust model, the invariants, and the decisions with their reasons |
 | [Implementing changes](docs/implementing-changes.md) | The implementation profile: size gate, contract files, validation, and which document owns what |
@@ -116,7 +116,7 @@ Working on this repository:
 | [Skill evaluations](docs/skill-evaluations.md) | The latest `evaluate-skill` result for each skill and reviewer model |
 | [Upgrade notes](docs/upgrade-notes.md) | What each release asks of a user who updates, and the entry a pull request body gives for a change |
 
-Report suspected vulnerabilities according to the [Security policy](SECURITY.md), not through a public issue.
+Report suspected vulnerabilities according to the [Security policy](.github/SECURITY.md), not through a public issue.
 
 ## Supporting the project
 

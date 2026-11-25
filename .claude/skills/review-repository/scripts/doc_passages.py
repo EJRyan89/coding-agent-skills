@@ -8,12 +8,13 @@ CODE_REVIEW_DIFF_FILE and the file to write in CODE_REVIEW_CONDITION_OUTPUT. Fro
 for: each changed script's file name (`skill_evals.py`) and, for Python, its module name (`skill_evals`), a renamed
 script's old ones as well as its new, and each top-level function or class a hunk adds, removes, or changes inside
 (`def`/`class` lines and the hunk header's function context). It searches the documents under the snapshot (the
-top-level Markdown, `docs/`, the agent definitions, and every skill's SKILL.md and references, a repository skill's
-included, but no release's notes or evaluation results) for those names, but only where a document writes code:
-inside a code span or a code block, fenced or indented. A file name counts as a path's last segment there; a module,
-function, or class name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose never
-counts, nor `main`, which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is also a
-common word does not match every sentence that uses the word. A suite's names, by validation's rule, are left out.
+top-level Markdown and `.github/`'s, `docs/`, the agent definitions, and every skill's SKILL.md and references, a
+repository skill's included, but no release's notes or evaluation results) for those names, but only where a document
+writes code: inside a code span or a code block, fenced or indented. A file name counts as a path's last segment there;
+a module, function, or class name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose
+never counts, nor `main`, which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is
+also a common word does not match every sentence that uses the word. A suite's names, by validation's rule, are left
+out.
 
 A document the snapshot records leaving out, such as `CLAUDE.md`, `AGENTS.md`, and every repository skill's SKILL.md
 and references, which it leaves out as `agent-instruction` so no reviewer reads them, cannot be searched. When the diff
@@ -91,6 +92,7 @@ EXIT_CONTRACT_EXEMPT = (
 # The documents searched, as globs under the snapshot; the route's `reads` in specialists.json declares the same.
 DOCUMENTS = (
     "*.md",
+    ".github/*.md",
     "docs/**/*.md",
     "agents/*.md",
     "skills/*/SKILL.md",

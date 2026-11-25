@@ -64,9 +64,9 @@ WINDOWS_INSTALL_HINTS = {
     # The MSI build: winget's default is the packaged one, whose pwsh is an app execution alias (see below).
     "PowerShell": "winget install --id Microsoft.PowerShell --installer-type wix",
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
-    "ruff": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "mypy": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "pytest": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "ruff": "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "mypy": "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "pytest": "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
     # Validation-only too. -Force upgrades an older install and answers the untrusted-PSGallery prompt.
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
@@ -75,9 +75,9 @@ LINUX_INSTALL_HINTS = {
     "Bash": "sudo apt install bash",
     "ShellCheck": "sudo apt install shellcheck",
     "PowerShell": "sudo snap install powershell --classic",
-    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
 # Homebrew's commands. macOS's own /bin/bash is a Bash 3.2 that Apple no longer updates, so the hint installs a current
@@ -88,9 +88,9 @@ MACOS_INSTALL_HINTS = {
     "ShellCheck": "brew install shellcheck",
     "PowerShell": "the .pkg for your Mac, osx-arm64 for Apple silicon or osx-x64 for Intel, from "
     "https://github.com/PowerShell/PowerShell/releases",
-    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
+    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
 INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else MACOS_INSTALL_HINTS if MACOS else LINUX_INSTALL_HINTS

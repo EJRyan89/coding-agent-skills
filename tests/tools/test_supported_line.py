@@ -1,4 +1,5 @@
-"""Regression suite for the supported line: SECURITY.md, the Updating section, and the update skill must agree."""
+"""Regression suite for the supported line: .github/SECURITY.md, the Updating section, and the update skill must
+agree."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import unittest
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SECURITY = REPOSITORY_ROOT / "SECURITY.md"
+SECURITY = REPOSITORY_ROOT / ".github/SECURITY.md"
 INSTALLATION = REPOSITORY_ROOT / "docs" / "installation.md"
 UPDATE_SKILL = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "SKILL.md"
 # The one phrase each document states the line with, pinned here as a literal rather than read from any of them: an

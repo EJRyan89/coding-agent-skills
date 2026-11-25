@@ -171,7 +171,7 @@ DEPLOYER = Area(
     ("deploy.py", "deployer/", "deploy-meta/", "agents/", "source.json"),
     (
         "CLAUDE.md",
-        "SECURITY.md",
+        ".github/SECURITY.md",
         "docs/installation.md",
         "docs/recovery.md",
         "docs/releasing.md",
@@ -192,7 +192,7 @@ CODE_REVIEW = Area(
     ),
     (
         "CLAUDE.md",
-        "SECURITY.md",
+        ".github/SECURITY.md",
         "docs/adding-a-skill.md",
         "docs/upgrade-notes.md",
         "agents/code-review-reviewer.md",
@@ -205,7 +205,7 @@ OTHER_SKILLS = Area(
     ("skills/", "docs/skills.md"),
     (
         "CLAUDE.md",
-        "SECURITY.md",
+        ".github/SECURITY.md",
         "docs/adding-a-skill.md",
         "docs/upgrade-notes.md",
         "deploy-meta/",
@@ -216,7 +216,7 @@ INFRASTRUCTURE = Area(
     "infrastructure",
     "the repository's infrastructure and documents",
     (),
-    ("CLAUDE.md", "SECURITY.md", "CONTRIBUTING.md", "docs/implementing-changes.md"),
+    ("CLAUDE.md", ".github/SECURITY.md", ".github/CONTRIBUTING.md", "docs/implementing-changes.md"),
 )
 # The rotation order, which also breaks a tie between areas read equally long ago.
 AREAS = (DEPLOYER, CODE_REVIEW, OTHER_SKILLS, INFRASTRUCTURE)
@@ -233,7 +233,7 @@ DRIFT_KINDS = (
     ("dead-code", "dead or duplicated code"),
     ("untested-change", "a changed behavior with no regression test"),
     ("error-path", "an error path that swallows a failure or misreports it"),
-    ("trust-boundary", "anything an author controls that the threat model in SECURITY.md does not cover"),
+    ("trust-boundary", "anything an author controls that the threat model in .github/SECURITY.md does not cover"),
 )
 # The severities a finding may have; milestone_lines names the milestone each is filed into.
 SEVERITIES = ("defect", "drift", "polish")
@@ -410,9 +410,9 @@ RUNTIME_FACTS = {
 }
 PYTHON_FACTS = (
     ("pyproject.toml", "the Python version and the ruff, mypy, and pytest settings"),
-    ("requirements-dev.txt", "the development dependencies and how they are pinned"),
+    ("requirements/requirements-dev.txt", "the development dependencies and how they are pinned"),
     ("deployer/tools.py", "the Python floor and its reason"),
-    ("CONTRIBUTING.md", "Python checks"),
+    (".github/CONTRIBUTING.md", "Python checks"),
     ("docs/dependency-updates.md", "how the pins are kept current"),
     ("conftest.py", "how the suites isolate git and their homes"),
 )

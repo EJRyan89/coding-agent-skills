@@ -254,7 +254,10 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             self.assertIsNone(find_mypy())
         self.assertEqual(
-            ["  - mypy: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"],
+            [
+                "  - mypy: python -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt"
+            ],
             missing_prerequisites((("mypy", "mypy", lambda: None),)),
         )
         with (
@@ -263,7 +266,8 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
         self.assertIn(
-            "mypy was not found: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+            "mypy was not found: python -m pip install --require-hashes --only-binary :all: -r "
+            "requirements/requirements-dev.txt",
             str(raised.exception),
         )
 
@@ -834,7 +838,8 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             ruff_lint_check(REPOSITORY_ROOT, ["deploy.py"])
         self.assertIn(
-            "ruff was not found: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+            "ruff was not found: python -m pip install --require-hashes --only-binary :all: -r "
+            "requirements/requirements-dev.txt",
             str(raised.exception),
         )
 
@@ -982,8 +987,9 @@ MYPY_ERROR_CODES = [
 MYPY_CODE_REMEDY = (
     "Try each new code over every root as the static type check runs it, then enable it in pyproject.toml (in "
     "enable_error_code, or by its flag), or record it as declined in the test's recorded table and under \"Considered "
-    'and declined" in docs/design.md, naming it in CONTRIBUTING.md\'s "Python checks" too; a code on by default '
-    "with no flag needs only its name in MYPY_ERROR_CODES. Drop a code mypy no longer has from every one of them."
+    'and declined" in docs/design.md, naming it in .github/CONTRIBUTING.md\'s "Python checks" too; a code on by '
+    "default with no flag needs only its name in MYPY_ERROR_CODES. Drop a code mypy no longer has from every one of "
+    "them."
 )
 
 
@@ -1191,10 +1197,10 @@ FACT_SPLIT_PASSES = (
 )
 
 
-# Each form a policy's documentation names, as a minimal file that must be refused, and each form it deliberately
-# leaves out, as one that must pass, with the reason beside it. The documentation is the policy's paragraph in
-# "Validation" in docs/adding-a-skill.md or "Python checks" in CONTRIBUTING.md; a new policy, or a change to what a
-# paragraph names, adds or changes its rows in the same pull request.
+# Each form a policy's documentation names, as a minimal file that must be refused, and each form it deliberately leaves
+# out, as one that must pass, with the reason beside it. The documentation is the policy's paragraph in "Validation" in
+# docs/adding-a-skill.md or "Python checks" in .github/CONTRIBUTING.md; a new policy, or a change to what a paragraph
+# names, adds or changes its rows in the same pull request.
 FormsPolicy = Callable[[Path, list[Path]], list[str]]
 SCRIPT = "skills/alpha/scripts/alpha.py"
 
@@ -1507,7 +1513,8 @@ def _regex_forms(name: str, bodies: dict[str, str]) -> dict[str, tuple[Any, ...]
 
 
 DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
-    # CONTRIBUTING.md: a finding that must stay is suppressed on its line by a noqa naming its codes and its reason.
+    # .github/CONTRIBUTING.md: a finding that must stay is suppressed on its line by a noqa naming its codes and its
+    # reason.
     "noqa alone": _form(noqa_without_reason, "x = 1  # noqa\n"),
     "noqa with codes and no reason": _form(noqa_without_reason, "x = 1  # noqa: E501\n"),
     "noqa with codes and a reason": _form(noqa_without_reason, "x = 1  # noqa: E501 - a reason\n", refused=False),
