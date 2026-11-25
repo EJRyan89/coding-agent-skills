@@ -5724,15 +5724,20 @@ class FixtureCanaryTests(PipelineFixture):
         """Run a Bash command a guarded reviewer of `role` makes, once the guard allows it, as review_source.py."""
         event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.root), "agent_id": "a1"}
         self.assertIsNone(guard.decide(event), command)
-        arguments = re.fullmatch(
-            re.escape(PYTHON) + r' -B "[^"]+" (\S+) --run "([^"]+)" --role "([^"]+)" (--[a-z]+)="([^"]*)"', command
-        )
+        # The arguments as the guard reads them, the value as Bash reads it.
+        arguments = guard.SOURCE_COMMAND.fullmatch(command)
         if arguments is None:
             raise AssertionError(f"not a source command: {command}")
-        command_name, run, identity, option, value = arguments.groups()
+        option = arguments.group("option")
+        value = guard.source_value(command, option)
+        if value is None:
+            raise AssertionError(f"not a value the guard reads: {command}")
+        run, identity = arguments.group("run"), arguments.group("role")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = review_source.main([command_name, "--run", run, "--role", identity, f"{option}={value}"])
+            code = review_source.main(
+                [arguments.group("command"), "--run", run, "--role", identity, f"--{option}={value}"]
+            )
         return code, out.getvalue().splitlines()
 
     def test_a_fixture_canary_records_its_snapshot_and_reads_and_prints_them_on_stats_lines(self) -> None:
