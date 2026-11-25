@@ -562,9 +562,15 @@ The configuration's limits:
   `alias`, `unalias`, `enable`, `hash`, `mapfile` and `readarray` given `-C`, whose callback Bash 4 and later run in
   the shell itself, `compgen` given `-F`, whose function runs there too, and `jobs` given `-x`, whose command does,
   each also where a word the text does not settle may be that option), a function definition, a function the
-  environment hands the shell as `BASH_FUNC_<name>%%`, and a command whose name the text does not settle. Every other
-  builtin Bash's `compgen -b` lists is one `MOVES_NOTHING` names, each with why. A git call whose place is unknown is
-  judged as the bullet on where a git call acts says.
+  environment hands the shell as `BASH_FUNC_<name>%%`, and a command whose name the text does not settle, each also
+  through `command` or `builtin`. These run code the guard does not read in the shell itself, which may define a
+  function, an alias, or a trap a later command runs there, as a `DEBUG` trap runs before every command, so after one
+  no command settles where the shell is again, a `cd` to a literal directory included, but in a subshell's or a
+  pipeline's copy of the shell or a background job, whose code dies with it. A compound command is judged by the one
+  decision each of its commands is followed by (`Effect`), so a command that moves the shell at the top level moves
+  it inside an `if`, a `{ }`, a loop, or a `case` too. Every other builtin Bash's `compgen -b` lists is one
+  `MOVES_NOTHING` names, each with why. A git call whose place is unknown is judged as the bullet on where a git call
+  acts says.
 - **Assignments before git.** An assignment before git is understood to a name git does not read to choose a file or
   a program, that is, no `GIT_` name and none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
   `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`, `SSH_ASKPASS`, and
@@ -610,9 +616,13 @@ The configuration's limits:
   `ForEach-Object` given a member's name, and a name PowerShell keeps for its own commands, an alias or a function of
   its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory, whatever its verb,
   since a module PowerShell loads on demand may define a function by it, as Windows' own modules define
-  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), may move the
-  location, which is unknown after it, and so is one a pipeline of several commands sets, since each of them runs in
-  the session, and a path on another provider, as `env:` or `alias:`. `tools/hub_guard-powershell.ps1` only reports
+  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), and a script
+  file, whose name ends in `.ps1`, which PowerShell runs in the session, run code the guard does not read, which may
+  move the location now or define a function by a location cmdlet's name that a later command runs before the
+  cmdlet, so no command after one settles where the location is. Each command is judged by the one decision it is
+  followed by (`Effect`), so a location one sets inside an `if`'s or a `foreach`'s body, or in a pipeline of several
+  commands, each of which runs in the session, is unknown for every command of the statement and after it, and so is
+  a path on another provider, as `env:` or `alias:`. `tools/hub_guard-powershell.ps1` only reports
   what the parser found, and `tools/hub_guard.py` makes every decision. A command that does not parse is allowed:
   PowerShell parses a whole script before it runs any of it, so none of it runs. A command pwsh cannot read, as when it
   cannot be found or started, is allowed with a note on stderr.
@@ -682,7 +692,13 @@ Claude Code so the hook runs with the new `PATH`.
 
 The hook sees the command text, and the guard reads git's words in it: it does not see any program other than git,
 run by its own words, which it allows whatever those words are, so what a script file, `eval`, a `trap`'s action, a
-function, a program that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
+builtin's use that runs text no reader reads (`command_wrappers.REFUSED_BUILTINS`, as a `source`d file, a `mapfile -C`
+callback, or a command substitution in the quoted array subscript `printf -v` or `read` names, or one outside a
+builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
+`${a['$(x)']}`, which Bash 5.3 runs), the command
+`jobs -x` runs, which the guard reads only as a move it does not follow, a later name `hash -p` points at another
+program, a function, a program
+that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
 variable a command sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check
 names what they changed there.
 
@@ -734,6 +750,14 @@ Within what it reads, it judges only what the text shows, so these too are left 
   fast-forward on an ordinary machine;
 - a write target a repository's own configuration names for a git call whose place the text does not settle, and a
   configuration a command writes into a repository it makes by any means but a redirection or a git call's words;
+- in PowerShell, a script file found on the path by a name written without `.ps1`, which runs in the session and may
+  move its location, where the guard reads the name as a program's, which moves nothing;
+- in PowerShell, a method that moves the location, as `$ExecutionContext.SessionState.Path.SetLocation(...)`, which is
+  no command;
+- a shell one shell starts after code the guard does not read, as a `bash -c` from PowerShell after a dot-sourced
+  script or after `${env:BASH_FUNC_g%%} = ...`, or a `pwsh -Command` from Bash after an `eval`, which that code may
+  hand a function or `BASH_ENV` through the environment, where the guard reads the new shell as one holding no such
+  code, so a `cd` to a literal directory in it settles where its git calls run;
 - a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
   do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
   where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the

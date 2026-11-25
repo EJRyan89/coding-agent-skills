@@ -8,6 +8,7 @@ tests/deployer/test_rendering_locking.py from here; it holds no test.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import sys
 import tempfile
@@ -52,6 +53,20 @@ def find_bash() -> str:
     if bash is None:
         raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the Bash reader's verdicts")
     return bash
+
+
+@functools.cache
+def compgen(kind: str) -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the names its `compgen` prints for `kind`,
+    such as `-k` for its reserved words and `-b` for its builtins: the catalogues the reader's decisions are held to."""
+    script = f'echo "${{BASH_VERSINFO[0]}} ${{BASH_VERSINFO[1]}}"; compgen {kind}'
+    result = platform_support.run_tool([find_bash(), "-c", script], separate_errors=True)
+    if result.returncode != 0:
+        raise AssertionError(f"compgen {kind} failed: {result.errors}")
+    major, minor, *names = result.output.split()
+    if not names:
+        raise AssertionError(f"compgen {kind} printed no names: {result.output!r}")
+    return (int(major), int(minor)), frozenset(names)
 
 
 def bash_n_verdict(text: str) -> tuple[bool, str]:
