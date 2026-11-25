@@ -1826,7 +1826,7 @@ or removed fails validation until its pattern follows it.
   session in a FileNotFoundError after its tests all passed. The race shows only when two suites that use `tmp_path`
   end at once, so it fails a required check at random on a pull request that touches neither suite.
 - **Use:** `tests.validation.suite_discovery:pytest_base`, the folder `tests.validation.suite_discovery:pytest_command`
-  requires as its `basetemp`, which mypy holds every caller to.
+  requires as its base, which mypy holds every caller to give.
 - **Guard:**
   `tests/validation/test_suite_discovery.py::PytestBaseFolderTests`,
   `tests/tools/test_mutation_gate.py::ProcessArgumentFixtures`,

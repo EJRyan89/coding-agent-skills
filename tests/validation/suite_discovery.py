@@ -2484,13 +2484,14 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         # would pass as having none.
         known = {
             "tests/test_conftest.py:120",
-            "tests/validation/test_suite_discovery.py:69",
+            "tests/validation/test_suite_discovery.py:75",
             "tests/validation/test_job_pool.py:551",
             "tests/tools/test_python_diagnostics.py:124",
-            "tests/tools/test_python_diagnostics.py:175",
-            "tests/tools/test_python_diagnostics.py:200",
-            "tests/tools/test_python_diagnostics.py:216",
-            "tests/tools/test_python_diagnostics.py:241",
+            "tests/tools/test_python_diagnostics.py:176",
+            "tests/tools/test_python_diagnostics.py:201",
+            "tests/tools/test_python_diagnostics.py:217",
+            "tests/tools/test_python_diagnostics.py:242",
+            "tests/tools/test_python_diagnostics.py:261",
         }
         # Each start by its line, so a start rewritten into a form the reader does not read fails here; a start that
         # only moves to another line is named here by its new one.
