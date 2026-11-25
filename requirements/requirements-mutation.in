@@ -8,4 +8,4 @@
 -r requirements-dev.in
 -c requirements-dev.txt
 mutmut==3.8.1
-coverage==7.17.3
+coverage==7.17.4

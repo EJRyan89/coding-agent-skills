@@ -610,14 +610,14 @@ class ToolchainPolicies(unittest.TestCase):
     def test_the_mutation_gate_installs_its_pinned_tools_and_nothing_else(self) -> None:
         requirements = (REPOSITORY_ROOT / MUTATION_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
-            ["mutmut==3.8.1", "coverage==7.17.3"], [line for line in requirements.splitlines() if "==" in line]
+            ["mutmut==3.8.1", "coverage==7.17.4"], [line for line in requirements.splitlines() if "==" in line]
         )
         self.assertEqual(("mutmut", "coverage"), MUTATION_PACKAGES)
         self.assertEqual(("-r requirements-dev.in", "-c requirements-dev.txt"), MUTATION_INCLUDES)
         self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES, MUTATION_INCLUDES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         self.assertIn("| mutmut | 3.8.1 | `requirements/requirements-mutation.in` |", document)
-        self.assertIn("| coverage.py | 7.17.3 | `requirements/requirements-mutation.in` |", document)
+        self.assertIn("| coverage.py | 7.17.4 | `requirements/requirements-mutation.in` |", document)
 
     def test_every_package_installed_is_locked_with_hashes_and_installed_with_hash_checking(self) -> None:
         self.assertEqual(
