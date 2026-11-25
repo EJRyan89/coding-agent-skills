@@ -249,8 +249,9 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
 
 
 # The Python packages validation and CI take from PyPI, which "Development dependencies" in the dependency document
-# lists, and no others.
-DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest")
+# lists, and no others. hypothesis is a library the generated-test suites import, not a tool validation starts, so it
+# has no floor in VALIDATION_FLOORS and no install hint: a suite run without it fails on the import, which names it.
+DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest", "hypothesis")
 # The packages only the mutation gate's workflow installs, from requirements-mutation.txt, beside those: mutmut, which
 # makes the mutants, and coverage.py, which measures which suites reach each line.
 MUTATION_PACKAGES = ("mutmut", "coverage")
@@ -653,10 +654,10 @@ class ToolchainPolicies(unittest.TestCase):
             if fence_install_problems(text, ()):
                 documented.add(name)
         self.assertLessEqual({"CONTRIBUTING.md", DEPENDENCY_DOC}, documented)
-        # The command validation prints for a missing or outdated development dependency installs the lock the same
-        # way, on each platform.
+        # The command validation prints for a missing or outdated development dependency, each one with a floor,
+        # installs the lock the same way, on each platform.
         for hints in (platform_support.WINDOWS_INSTALL_HINTS, platform_support.LINUX_INSTALL_HINTS):
-            for package in DEVELOPMENT_PACKAGES:
+            for package in (package for package in DEVELOPMENT_PACKAGES if package in VALIDATION_FLOORS):
                 with self.subTest(hint=hints[package]):
                     self.assertEqual(1, len(pip_installs(hints[package])))
                     self.assertEqual([], hash_install_problems(hints[package], (DEVELOPMENT_LOCK,)))
@@ -747,16 +748,16 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
-            ["ruff==0.17.6", "mypy==2.4.1", "pytest==9.2.0"],
+            ["ruff==0.17.6", "mypy==2.4.1", "pytest==9.2.0", "hypothesis==6.170.17"],
             [line for line in requirements.splitlines() if "==" in line],
         )
         # Every other line is a comment or blank, and the packages are the ones the dependency document lists.
-        self.assertEqual(("ruff", "mypy", "pytest"), DEVELOPMENT_PACKAGES)
+        self.assertEqual(("ruff", "mypy", "pytest", "hypothesis"), DEVELOPMENT_PACKAGES)
         self.assertEqual([], requirements_problems(requirements, DEVELOPMENT_PACKAGES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         self.assertIn(
             "pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, `mypy`, the type "
-            "checker, and `pytest`, the test runner",
+            "checker, `pytest`, the test runner, which starts every Python suite, and `hypothesis`, which generates",
             document,
         )
         dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
