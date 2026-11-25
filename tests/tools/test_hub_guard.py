@@ -3722,6 +3722,15 @@ class UnderstoodSetTests(GuardTestCase):
             # A word the text does not settle, and `--`, leave the stack unknown, so popd goes where it does not.
             f'pushd "{self.hub}"; dirs "$OPTION"; popd; git commit -m x',
             f'pushd "{self.hub}"; dirs -- -c; popd; git commit -m x',
+            # Any other word starting with + or - may be a number Bash reads more loosely, or one past its range, or
+            # an option it refuses, so it leaves the stack unknown too.
+            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c -x; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c +-1; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c -+1; popd; git commit -m x',
+            f"pushd \"{self.hub}\"; dirs -c '+1 '; popd; git commit -m x",
+            f"pushd \"{self.hub}\"; dirs -c '+ 1'; popd; git commit -m x",
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -c +99999999999999999999; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3729,8 +3738,7 @@ class UnderstoodSetTests(GuardTestCase):
         for command in (
             f'pushd "{self.hub}"; popd; git commit -m x',
             f'pushd "{self.hub}"; dirs -v; popd; git commit -m x',
-            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
-            f'pushd "{self.hub}"; dirs -c -x; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -v +0; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
@@ -3747,6 +3755,19 @@ class UnderstoodSetTests(GuardTestCase):
             f'pushd "{self.tree}"; DIRSTACK[1]="{self.hub}"; popd; git commit -m x',
             f'pushd "{self.tree}"; DIRSTACK=("{self.tree}" "{self.hub}"); popd; git commit -m x',
             f'eval \'pushd -n "{self.hub}"\'; cd "{self.tree}"; popd; git commit -m x',
+            # An assignment to DIRSTACK inside a compound command changes the stack after it too.
+            f'pushd "{self.tree}"; if true; then DIRSTACK[1]="{self.hub}"; fi; popd; git commit -m x',
+            f'pushd "{self.tree}"; {{ DIRSTACK[1]="{self.hub}"; }}; popd; git commit -m x',
+            f'pushd "{self.tree}"; while true; do DIRSTACK[1]="{self.hub}"; break; done; popd; git commit -m x',
+            f'pushd "{self.tree}"; for i in 1; do DIRSTACK[1]="{self.hub}"; done; popd; git commit -m x',
+            f'pushd "{self.tree}"; case x in x) DIRSTACK[1]="{self.hub}";; esac; popd; git commit -m x',
+            f'pushd "{self.tree}"; {{ DIRSTACK=("{self.tree}" "{self.hub}"); }}; popd; git commit -m x',
+            # A pushd whose target the text does not settle pushes nothing where its cd fails, as Bash's does.
+            f'cd "{self.hub}"; pushd "{self.tree}"; x=/nonexistent; pushd "$x"; popd; git commit -m x',
+            f'cd "{self.hub}"; pushd "{self.tree}"; OLDPWD=/nonexistent; pushd -; popd; git commit -m x',
+            # Two stacks that differ, one with the pushd and one without, join to one the text does not settle.
+            f'true && pushd "{self.hub}"; popd; git commit -m x',
+            f'if test -e x; then pushd "{self.hub}"; fi; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3754,10 +3775,39 @@ class UnderstoodSetTests(GuardTestCase):
         # A stack the text settles stays settled, so a popd back to the worktree is placed there.
         self.assertIsNone(self.bash(f'pushd "{self.hub}"; pushd "{self.tree}"; popd; popd; git status', self.tree))
         self.assertIsNone(self.bash(f'cd "{self.hub}"; cd "{self.tree}"; popd; git commit -m x', self.tree))
+        # Two branches that leave the same stack join to it, so the popd after them goes back to the worktree.
+        self.assertIsNone(self.bash(f'pushd "{self.hub}" && cd "{self.hub}"; popd; git commit -m x', self.tree))
+
+    def test_a_push_location_given_another_parameter_leaves_the_location_and_the_stack_unknown(self) -> None:
+        # -StackName pushes onto another stack, so Pop-Location then pops the default one, which may be empty.
+        for command in (
+            f"Push-Location '{self.hub}' -StackName s; Pop-Location; git commit -m x",
+            f"Push-Location -Path '{self.hub}' -StackName s; Pop-Location; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
 
     def test_the_builtins_the_guard_does_not_follow_are_the_ones_that_move_the_shell_unseen(self) -> None:
-        self.assertEqual("deny", self.bash(f'jobs -x cd "{self.hub}"; git commit -m x', self.tree))
-        self.assertIn(UNPLACED.format("commit"), self.reason)
+        for command in (
+            f'jobs -x cd "{self.hub}"; git commit -m x',
+            f"mapfile -tC 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            'mapfile "$OPTION" cb <<< x; git commit -m x',
+            f'g() {{ cd "{self.hub}"; }}; compgen -o default -F g x; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Without its callback's option, each runs nothing in the shell, so the commit after it stays placed.
+        for command in (
+            "jobs; git commit -m x",
+            "jobs -l %1; git commit -m x",
+            'mapfile -t f < <(git diff --name-only); git add -- "${f[@]}"',
+            "readarray -t lines <<< x; git commit -m x",
+            "compgen -W 'a b' a; git commit -m x",
+            "if true; then mapfile -t f <<< x; fi; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
         self.assertEqual(
             {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"}
             | {"mapfile", "readarray", "compgen", "jobs"},
