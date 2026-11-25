@@ -113,9 +113,12 @@ DOCUMENTED_REFERENCES = {
 
 def decided(text: str, expected: ClosingReference) -> bool:
     """Whether the reader reads `text` as closing `expected` and nothing else, or refuses it as a keyword before the
-    start of a reference that names no issue it reads."""
+    start of a reference that names no issue it reads, in a title and in the middle of a body's line alike, since
+    GitHub closes by a reference wherever a line holds it."""
     read = closing_references(text)
-    return read == [expected] or (read == [] and title_holds_closing_reference(text))
+    return read == [expected] or (
+        read == [] and title_holds_closing_reference(text) and stray_closing_lines(f"Prose, {text}\n", TEMPLATE) != []
+    )
 
 
 def test_the_reader_reads_no_keyword_github_does_not_document() -> None:

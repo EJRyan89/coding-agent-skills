@@ -12,13 +12,13 @@ rewrite, while one left unread would let an issue close unseen. `KEYWORDS` holds
 holds them to GitHub's documented list and every documented keyword and reference form to being read, refused as a
 keyword before the start of a reference, or named in `NOT_READ`.
 
-What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines, `_` or `~`
-emphasis, a backslash-escaped `\\#<n>`, a keyword in another language, a reference GitHub resolves through a
-repository's custom autolink prefix, a reference written as a Markdown link's text, and a URL through
-`redirect.github.com`, which GitHub's autolink page offers so that a URL makes no backlink. It also does not see a
-reference after the first in a list that names its keyword once (`Closes #<n>, #<m>`; GitHub's pages ask for the
-keyword before each). `stray_closing_lines` also does not see a closing reference inside a comment copied character for
-character from the pull request template, which the squash commit still carries.
+What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines or with a
+no-break space between them, `_` or `~` emphasis, a backslash-escaped `\\#<n>`, a keyword in another language, a
+reference GitHub resolves through a repository's custom autolink prefix, a reference written as a Markdown link's text,
+and a URL through `redirect.github.com`, which GitHub's autolink page offers so that a URL makes no backlink. It also
+does not see a reference after the first in a list that names its keyword once (`Closes #<n>, #<m>`; GitHub's pages
+ask for the keyword before each). `stray_closing_lines` also does not see a closing reference inside a comment copied
+character for character from the pull request template, which the squash commit still carries.
 
 A pull request is squash-merged with its title as the commit's title and its body, as written, HTML comments included,
 as the message, so `pull_request_references` reads the title and the body together and reads inside comments. Every
@@ -66,6 +66,8 @@ CLOSING_KEYWORDS = rf"(?:{'|'.join(KEYWORDS)})"
 NOT_READ = {
     "Closes\n#1": "a keyword and its reference on different lines: GitHub's pages write them on one, and read across a "
     "line break, a keyword ending a line of prose would take the next line's number",
+    "Closes\u00a0#1": "a no-break space between the keyword and the reference, which GitHub's pages never write; the "
+    "reader takes only spaces and tabs there",
     "_Closes_ #1": "`_` emphasis around the keyword, which GitHub's pages never write; the reader reads `*` emphasis",
     "~~Closes~~ #1": "a struck-out keyword, which GitHub's pages never write and its author has struck out",
     "Closes \\#1": "a backslash-escaped number, which GitHub's pages never write",
