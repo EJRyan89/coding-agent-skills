@@ -105,12 +105,13 @@ as a framework of its own, and, for a chain through a project reference, each pa
 project the chain starts from resolves, the referenced project's own restore's after `graph` where it differs, so its
 answer holds every chain, version, and framework `dotnet nuget why` prints from the same file, which is all that command
 reads once it has located the file. Where the files leave the place unsettled, such as after an Import the reader did
-not read, which may set it, the walk reads the assets file in obj/, where a restore writes it unless a file moves it;
-where they leave it outside the tree, it reads none. For each such project, `why` prints an SDK_NOT_ASKED line saying
-so, and asks the SDK nothing: `dotnet nuget why` evaluates the project through MSBuild, and MSBuild and the .NET host
-that starts it read whatever the project and the machine's SDK configuration lead them to, imports, the restore's
-generated .nuget.g.props and .targets, the project's .user file, the nearest global.json, its sdk.paths and msbuild-sdks
-included, and every NuGet.Config from the project's folder up for a versioned MSBuild SDK, beyond the examined tree.
+not read, which may set it, the walk reads the assets file in obj/, where a restore writes it unless a file moves it,
+which may not be the one the build uses; where they leave it outside the tree, it reads none. For each such project,
+`why` prints an SDK_NOT_ASKED line saying so, and asks the SDK nothing: `dotnet nuget why` evaluates the project through
+MSBuild, and MSBuild and the .NET host that starts it read whatever the project and the machine's SDK configuration lead
+them to, imports, the restore's generated .nuget.g.props and .targets, the project's .user file, the nearest
+global.json, its sdk.paths and msbuild-sdks included, and every NuGet.Config from the project's folder up for a
+versioned MSBuild SDK, beyond the examined tree.
 `why --ask-sdk` asks it, with dotnet installed, about exactly those projects, whatever else MSBuild would read for them,
 once per project and name, in the project's folder; a run that fails, even after printing part of an answer, is an
 SDK_FAILED line, and the walk answers that project. For a project the SDK answered, the walk's chains along a route the
@@ -411,7 +412,7 @@ RETRY_ADVICE = "pass --root at its solution or its folder"
 # SDK was still not asked.
 ASSETS_UNSETTLED = (
     "the walk cannot settle {written}, which names the restore's assets file, so it reads the one in obj/, if any,"
-    " where a restore writes it unless a file moves it"
+    " where a restore writes it unless a file moves it, which may not be the one the build uses"
 )
 ASSETS_NOT_READ = "the walk does not read the restore's assets file at {file}: {reason}"
 ASK_SDK_ADVICE = (

@@ -1712,7 +1712,7 @@ RUNTIME_ASSETS = {
 # Why the walk may not have read the assets file of a project whose evaluation leaves its place unsettled.
 UNSETTLED_ASSETS = (
     "the walk cannot settle $(ProjectAssetsFile), which names the restore's assets file, so it reads the one in obj/,"
-    " if any, where a restore writes it unless a file moves it"
+    " if any, where a restore writes it unless a file moves it, which may not be the one the build uses"
 )
 # What `--ask-sdk` adds to a line naming a project whose assets file the walk may not have read.
 ASK_SDK_ADVICE = (
