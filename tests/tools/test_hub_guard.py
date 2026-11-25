@@ -3805,6 +3805,7 @@ class UnderstoodSetTests(GuardTestCase):
             f"mapfile -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
             f"readarray -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
             "compgen -W -- -F g x; git commit -m x",
+            f"mapfile -C 'cd \"{self.hub}\"; :' lines <<< x; git commit -m x",
             f'g() {{ cd "{self.hub}"; }}; compgen -o default -F g x; git commit -m x',
         ):
             with self.subTest(command=command):
@@ -3816,6 +3817,8 @@ class UnderstoodSetTests(GuardTestCase):
             "jobs -l %1; git commit -m x",
             'mapfile -t f < <(git diff --name-only); git add -- "${f[@]}"',
             "readarray -t lines <<< x; git commit -m x",
+            # mapfile's -c is the count between callbacks, no callback of its own, so only -C moves the shell.
+            "mapfile -t -c 1 lines <<< x; git commit -m x",
             "compgen -W 'a b' a; git commit -m x",
             "if true; then mapfile -t f <<< x; fi; git commit -m x",
         ):
@@ -5207,3 +5210,8 @@ def test_a_join_keeps_each_entry_both_stacks_settle_and_no_more() -> None:
     # Places that differ leave the place unsettled, whatever the stacks agree on.
     assert hub_guard.joined(Directory(first, (second,)), Directory(third, (second,))) == Directory(None, (second,))
     assert hub_guard.joined(Directory(first), hub_guard.UNKNOWN) == hub_guard.UNKNOWN
+
+
+def test_every_builtin_the_guard_decides_names_why() -> None:
+    for table in (hub_guard.BUILTINS_NOT_FOLLOWED, hub_guard.MOVES_NOTHING):
+        assert [name for name, reason in table.items() if not reason.strip()] == []
