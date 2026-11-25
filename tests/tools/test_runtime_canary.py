@@ -53,6 +53,12 @@ FIXTURE = "runtime-canary-probe"
 # it declares for Codex and Copilot CLI, pinned here rather than read from its metadata.
 EXPANSION = "runtime-canary-expansion"
 EXPANSION_NONE = "The probe checks a Claude Code permission rule, which this runtime does not apply."
+# The expansion fixture's own instruction, pinned here rather than read from the tool.
+EXPANSION_INSTRUCTION = (
+    "Do nothing else. Run each command in its instructions once, in order, each on its own and exactly as written, "
+    "without changing or filling in any argument. If a command is denied, do not run it again or in another form. "
+    "Then stop and report what each printed. This is a RUNTIME-CANARY-RUN session."
+)
 # Why an expansion run whose stream lists no denials shows nothing, pinned here rather than read from the tool.
 UNLISTED_DENIALS = (
     "the session's stream holds no result event listing the commands Claude Code denied, as a session that ended early "
@@ -1563,7 +1569,7 @@ class RunTests(RuntimeCanaryTestCase):
         self.assertEqual(
             [
                 f"/{FIXTURE} {runtime_canary.INSTRUCTION}",
-                f"/{EXPANSION} {runtime_canary.INSTRUCTIONS[EXPANSION]}",
+                f"/{EXPANSION} {EXPANSION_INSTRUCTION}",
             ],
             prompts["claude"],
         )
@@ -2825,6 +2831,91 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
         code, line = self.expansion_line([self.literal(), self.asked(), typed])
         self.assertEqual(0, code)
         self.assertTrue(line.startswith(f'RUNTIME claude {EXPANSION} RAN "{self.script()}" '), line)
+
+    def test_the_stream_reader_reads_only_shell_tool_uses_of_assistant_messages_and_denials_of_a_result(self) -> None:
+        bash = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "x"}}
+        stream = claude_events(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        "odd",
+                        {"type": "text", "name": "Bash", "input": {"command": "text"}},
+                        {"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": "f"}},
+                        {"type": "tool_use", "id": "n", "name": "Bash", "input": "not an object"},
+                        bash,
+                    ]
+                },
+            },
+            {"type": "user", "message": {"content": [{**bash, "id": "u", "input": {"command": "user"}}]}},
+            {"type": "system", "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "system"}}]},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "Read", "tool_use_id": "r", "tool_input": {"file_path": "f"}},
+                    {"tool_name": "Bash", "tool_use_id": "a", "tool_input": {"command": "x"}},
+                ],
+            },
+        )
+        call = runtime_canary.ShellCall("a", "Bash", "x")
+        self.assertEqual(runtime_canary.ShellCalls([call], [call], finished=True), runtime_canary.shell_calls(stream))
+        # A list of denials on another event is not a result's.
+        only = claude_events({"type": "system", "permission_denials": []})
+        self.assertIs(False, runtime_canary.shell_calls(only).finished)
+        self.assertIs(False, runtime_canary.shell_calls(claude_events({"type": "assistant"})).finished)
+        self.assertIs(False, runtime_canary.shell_calls("").finished)
+
+    def test_a_record_without_its_directory_names_its_script_as_given(self) -> None:
+        self.assertEqual(
+            [("tool.py", "", None, ["argument"])],
+            runtime_canary.recorded_runs([{"argv": ["tool.py", "argument"], "pid": 1}]),
+        )
+
+    def test_the_expansion_lines_carry_every_denial_the_timeout_and_arguments_as_written(self) -> None:
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        found = runtime_canary.Verdict("RAN", "x")
+        result = claude_events({"type": "result", "permission_denials": []})
+        literal_run = {"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1}
+        # No literal run: every denial the run had follows, joined, and none follows when there was none.
+        for denials, after in ((["Bash: a", "Bash: b"], "; denied: Bash: a; Bash: b"), ([], "")):
+            with self.subTest(denials=denials):
+                verdict = runtime_canary.expansion_verdict(self.home, [], result, denials, found, False)
+                self.assertEqual(
+                    runtime_canary.Verdict("FAILED", json.dumps(f"never ran the literal command literal{after}")),
+                    verdict,
+                )
+        # A run of the script with an argument that is not ASCII prints it as given.
+        stray = {"argv": [str(script), "café"], "cwd": str(self.home), "pid": 2}
+        verdict = runtime_canary.expansion_verdict(self.home, [literal_run, stray], result, [], found, False)
+        self.assertIn('[\\"café\\"]', verdict.detail)
+        # A session that ran out of time after the literal run says so on its RAN line.
+        use = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": literal_command(self.home)}}
+        stream = claude_events(
+            {"type": "assistant", "message": {"content": [use]}},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "Bash", "tool_use_id": "b", "tool_input": {"command": expanding(self.home)}}
+                ],
+            },
+        )
+        verdict = runtime_canary.expansion_verdict(self.home, [literal_run], stream, [], found, True)
+        self.assertEqual("RAN", verdict.word)
+        self.assertIn(" timed-out denied ", verdict.detail)
+
+    def test_a_run_that_timed_out_after_the_denial_carries_it_to_the_runtime_line(self) -> None:
+        action = expansion_run(self.home, [self.literal(), self.asked()])
+        runner = FakeRuntimes()
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: lambda *arguments: dataclasses.replace(action(*arguments), timed_out=True),
+            }
+        )
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        self.assertEqual(0, code, lines)
+        found = [line for line in lines if line.startswith(f"RUNTIME claude {EXPANSION} RAN ")]
+        self.assertTrue(found and " timed-out denied " in found[0], lines)
 
     def test_a_stream_without_tool_use_ids_pairs_the_denial_by_its_command(self) -> None:
         typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
