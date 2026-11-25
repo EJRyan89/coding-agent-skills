@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validati
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from flat_text import flat_text
-from suite_discovery import regression_suites
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_command, regression_suites
 
 from tools import python_diagnostics, unraisable_record
 
@@ -87,6 +87,18 @@ def run_tool(*arguments: str, environment: dict[str, str] | None = None) -> subp
     )
 
 
+def suite_folder() -> Path:
+    """A new folder under the temporary directory for fixture suites, which the caller removes, holding a pytest.ini so
+    pytest roots each suite there and collects no folder above it. Without one, pytest roots a suite at the working
+    directory, the repository, whenever the two share no path, as on Windows, where the repository and the temporary
+    directory lie on different drives. It then collects every folder above the suite, the temporary directory that
+    every parallel suite writes in among them, and on Windows matches each entry there against the suite's 8.3 short
+    path by a stat that fails, stopping pytest with exit 2, on an entry another suite removes meanwhile."""
+    folder = Path(tempfile.mkdtemp(prefix="python-diagnostics-test-"))
+    (folder / "pytest.ini").write_bytes(b"[pytest]\n")
+    return folder
+
+
 def facts(output: str, key: str) -> list[list[str]]:
     """The fields of each fact line output prints under key."""
     return [line.split("\t")[1:] for line in output.splitlines() if line.split("\t")[0] == key]
@@ -101,7 +113,7 @@ class FixtureRunTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        folder = Path(tempfile.mkdtemp(prefix="python-diagnostics-test-"))
+        folder = suite_folder()
         cls.addClassCleanup(shutil.rmtree, folder)
         cls.suites = {}
         for name, source in FIXTURES.items():
@@ -152,12 +164,39 @@ class FixtureRunTests(unittest.TestCase):
         self.assertEqual(1, self.completed.returncode, self.completed.stderr)
 
 
+class FixtureFolderTests(unittest.TestCase):
+    def test_a_fixture_suite_is_collected_from_its_own_folder_alone(self) -> None:
+        folder = suite_folder()
+        self.addCleanup(shutil.rmtree, folder)
+        suite = folder / "test_clean.py"
+        suite.write_bytes(textwrap.dedent(FIXTURES["test_clean.py"]).encode("utf-8"))
+        completed = subprocess.run(
+            [*pytest_command(str(suite)), "--collect-only"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, **PYTEST_ENVIRONMENT},
+            cwd=REPOSITORY_ROOT,
+            timeout=RUN_SECONDS,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        lines = [line.strip() for line in completed.stdout.splitlines()]
+        self.assertIn("configfile: pytest.ini", lines, completed.stdout)
+        [root] = [line.removeprefix("rootdir: ") for line in lines if line.startswith("rootdir: ")]
+        self.assertTrue(Path(root).samefile(folder), root)
+        tree = [line for line in lines if line.startswith("<")]
+        self.assertEqual(f"<Dir {folder.name}>", tree[0], "no folder above the suite's own is collected")
+
+
 class CleanRunTests(unittest.TestCase):
     def test_a_run_whose_every_suite_passes_exits_0(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            suite = Path(temporary) / "test_clean.py"
-            suite.write_bytes(textwrap.dedent(FIXTURES["test_clean.py"]).encode("utf-8"))
-            completed = run_tool(str(suite))
+        folder = suite_folder()
+        self.addCleanup(shutil.rmtree, folder)
+        suite = folder / "test_clean.py"
+        suite.write_bytes(textwrap.dedent(FIXTURES["test_clean.py"]).encode("utf-8"))
+        completed = run_tool(str(suite))
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         self.assertEqual([[str(suite)]], [fields[:1] for fields in facts(completed.stdout, "PASSED")])
 
@@ -190,14 +229,15 @@ class ProbeFailureRunTests(unittest.TestCase):
 
 class SuiteTimeTests(unittest.TestCase):
     def test_a_suite_that_runs_past_its_time_is_ended_and_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            suite = Path(temporary) / "test_sleeping.py"
-            suite.write_bytes(b"import time\n\n\ndef test_sleeps() -> None:\n    time.sleep(60)\n")
-            record = Path(temporary) / "record"
-            record.mkdir()
-            environment = python_diagnostics.child_environment(dict(os.environ), Path(temporary), record)
-            with mock.patch.object(python_diagnostics, "SUITE_SECONDS", 1.0):
-                outcome = python_diagnostics.run_suite(str(suite), environment, record)
+        folder = suite_folder()
+        self.addCleanup(shutil.rmtree, folder)
+        suite = folder / "test_sleeping.py"
+        suite.write_bytes(b"import time\n\n\ndef test_sleeps() -> None:\n    time.sleep(60)\n")
+        record = folder / "record"
+        record.mkdir()
+        environment = python_diagnostics.child_environment(dict(os.environ), folder, record)
+        with mock.patch.object(python_diagnostics, "SUITE_SECONDS", 1.0):
+            outcome = python_diagnostics.run_suite(str(suite), environment, record)
         self.assertEqual("it ran past 1 seconds", outcome.failure)
         self.assertFalse(outcome.passed)
         self.assertLess(outcome.seconds, 30)

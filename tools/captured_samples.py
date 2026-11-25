@@ -2,11 +2,14 @@
 repository's readers of that output to, and which of them a newer release of their program has left behind.
 
 tests/fixtures/captured-output/provenance.json names each sample by its path under that folder, with `versions`, the
-version of each runtime whose output it holds, by its name in a skill's runtime support declaration, `captured`, the
-date, and `how`, the command or page it came from and what was cut or replaced, such as a path written `<temp>`.
+version of each runtime whose output it holds, by its name in a skill's runtime support declaration, or of each of
+PROGRAMS, by the name it is started with, `captured`, the date, and `how`, the command or page it came from and what
+was cut or replaced, such as a path written `<temp>`.
 The weekly watches report a sample whose runtime has moved past its recorded version, as a SAMPLE_BEHIND line, so the
 sample is captured again rather than left to age: tools/runtime_changelogs.py against each changelog's latest release,
-and tools/runtime_command_lines.py against the version the installed runtime prints.
+and tools/runtime_command_lines.py against the version the installed runtime prints. No watch reads a program's
+release, so a sample of gh's or git's output is captured again in the pull request that changes its reader, or that
+finds the program's answer has changed its shape.
 """
 
 from __future__ import annotations
@@ -24,6 +27,9 @@ import versions
 
 CAPTURED = Path("tests") / "fixtures" / "captured-output"
 PROVENANCE = CAPTURED / "provenance.json"
+# The programs other than the runtimes whose output a sample may hold, by the name they are started with: a set, since
+# validation reads a tuple or list that begins with "gh" or "git" as a command started outside ejryan89-skill-core.
+PROGRAMS = frozenset({"gh", "git"})
 
 
 class SampleError(Exception):
@@ -39,7 +45,8 @@ class Sample:
 
 
 def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
-    """Every sample the record at `top` names, each with a version of one or more of `runtimes`, or SampleError."""
+    """Every sample the record at `top` names, each with a version of one or more of `runtimes` and PROGRAMS, or
+    SampleError."""
     try:
         record = json_reader.read_file(top / PROVENANCE)
     # ValueError covers json_reader's whole family: its refusals, nesting too deep included, and the decode errors
@@ -56,13 +63,14 @@ def sample(path: str, entry: object, runtimes: tuple[str, ...]) -> Sample:
         raise SampleError(f"{path}: an entry holds exactly versions, captured, and how")
     recorded, captured, how = entry["versions"], entry["captured"], entry["how"]
     if not isinstance(recorded, dict) or not recorded:
-        raise SampleError(f"{path}: versions names no runtime")
+        raise SampleError(f"{path}: versions names no runtime or program")
+    known = (*runtimes, *sorted(PROGRAMS))
     read: dict[str, versions.Version] = {}
-    for runtime, version in recorded.items():
+    for name, version in recorded.items():
         number = versions.read(version, least=3, most=3) if isinstance(version, str) else None
-        if runtime not in runtimes or number is None:
-            raise SampleError(f"{path}: versions maps a runtime of {', '.join(runtimes)} to a version, not {runtime}")
-        read[runtime] = number
+        if name not in known or number is None:
+            raise SampleError(f"{path}: versions maps one of {', '.join(known)} to a version, not {name}")
+        read[name] = number
     if not isinstance(captured, str) or calendar_date.parse(captured) is None:
         raise SampleError(f"{path}: captured is a date, YYYY-MM-DD")
     if not isinstance(how, str) or not how.strip():

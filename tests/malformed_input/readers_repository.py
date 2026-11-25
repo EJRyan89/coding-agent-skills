@@ -233,55 +233,25 @@ def _python_definitions(path: Path) -> object:
     return untested_functions.python_definitions(path.name, text_of(path))
 
 
-# What the shepherd reads from gh, with the fields PULL_FIELDS and RUN_FIELDS request: one open pull request, its
-# Validation run with a failed leg, and the runs on its head. GitHub's JSON for each is an object or a list of them.
-SHEPHERD_HEAD = "a" * 40
-SHEPHERD_PULL = {
-    "number": 12,
-    "headRefName": "fix/example",
-    "headRefOid": SHEPHERD_HEAD,
-    "isCrossRepository": False,
-    "isDraft": False,
-    "mergeStateStatus": "CLEAN",
-    "autoMergeRequest": {"enabledAt": "2026-10-25T12:00:00Z", "mergeMethod": "SQUASH"},
-    "files": [{"path": "tools/example.py", "additions": 1, "deletions": 0}],
-    "changedFiles": 1,
-    "statusCheckRollup": [
-        {
-            "__typename": "CheckRun",
-            "name": "Validation",
-            "workflowName": "Validation",
-            "status": "COMPLETED",
-            "conclusion": "FAILURE",
-            "startedAt": "2026-10-25T12:00:00Z",
-            "detailsUrl": "https://github.com/owner/repo/actions/runs/7/job/8",
-        }
-    ],
-    "body": "Closes #1",
-    "baseRefName": "main",
-}
-SHEPHERD_RUN = {
-    "headSha": SHEPHERD_HEAD,
-    "attempt": 1,
-    "conclusion": "failure",
-    "status": "completed",
-    "jobs": [
-        {
-            "databaseId": 8,
-            "name": "Linux shard 1/2",
-            "conclusion": "failure",
-            "steps": [
-                {"name": "Set up job", "conclusion": "success"},
-                {"name": "Run repository validation", "conclusion": "failure"},
-            ],
-        }
-    ],
-}
+# What the shepherd reads from gh, as gh answered it for this repository, captured with its provenance in
+# tests/fixtures/captured-output/provenance.json: a merged pull request with the fields PULL_FIELDS requests, the
+# failed Validation run on a head of it with the fields RUN_FIELDS requests, and the listing of the runs on that head.
+SHEPHERD_CAPTURED = REPOSITORY / "tests" / "fixtures" / "captured-output" / "gh"
+SHEPHERD_PULL = (SHEPHERD_CAPTURED / "pr-view.json").read_bytes()
+SHEPHERD_RUN = (SHEPHERD_CAPTURED / "run-view.json").read_bytes()
+SHEPHERD_RUNS = (SHEPHERD_CAPTURED / "run-list.json").read_bytes()
+SHEPHERD_HEAD = json.loads(SHEPHERD_RUN)["headSha"]
+SHEPHERD_RUN_ID = json.loads(SHEPHERD_RUNS)[0]["databaseId"]
+SHEPHERD_CHECK_URL = json.loads(SHEPHERD_PULL)["statusCheckRollup"][0]["detailsUrl"]
 
 
 SHEPHERD_UNREAD = (
     "the shepherd reads a file's path, a check's kind, name, workflow, state, start, and run, and whether auto-merge "
     "is requested, never this field"
+)
+SHEPHERD_JOB_UNREAD = (
+    "the judgment reads a run's head, attempt, conclusion, and jobs, a job's name, conclusion, id, and steps, and a "
+    "step's name and conclusion, never this field"
 )
 
 
@@ -298,10 +268,10 @@ class _ShepherdGh:
             raise shepherd.GitHubError(f"gh printed no JSON: {exc}", kind="malformed") from exc
 
     def json(self, arguments: list[str]) -> object:
-        return self.document() if self.answer == "run" else {"headSha": SHEPHERD_HEAD, "attempt": 1, "jobs": []}
+        return self.document() if self.answer == "run" else json.loads(SHEPHERD_RUN)
 
     def capped_list(self, arguments: list[str], limit: int) -> object:
-        items = self.document() if self.answer == "runs" else [{"databaseId": 7}]
+        items = self.document() if self.answer == "runs" else json.loads(SHEPHERD_RUNS)
         if not isinstance(items, list):
             raise shepherd.GitHubError("gh printed a listing that is not a JSON list", kind="malformed")
         return Listing(items, False)
@@ -319,9 +289,8 @@ def _shepherd_pull(path: Path) -> object:
 
 
 def _shepherd_pull_on(head: str) -> object:
-    return shepherd.Pull(
-        12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None, "main", 0
-    )
+    run = shepherd.Check("FAILURE", SHEPHERD_RUN_ID)
+    return shepherd.Pull(12, "fix/example", head, "CLEAN", False, run, (), False, False, None, "main", 0)
 
 
 def _shepherd_judge(path: Path) -> object:
@@ -619,15 +588,30 @@ READERS = [
     Reader(
         "shepherd_pull_requests.judge",
         "json",
-        json.dumps(SHEPHERD_RUN).encode(),
+        SHEPHERD_RUN,
         _shepherd_judge,
         (shepherd.GitHubError,),
-        accepts={"wrong_type:status": "the judgment reads a run's conclusion and jobs, never its status"},
+        accepts={
+            "wrong_type:status": "the judgment reads a run's conclusion and jobs, never its status",
+            **{
+                f"wrong_type:jobs.0.{field}": SHEPHERD_JOB_UNREAD
+                for field in (
+                    "completedAt",
+                    "startedAt",
+                    "status",
+                    "url",
+                    "steps.0.completedAt",
+                    "steps.0.number",
+                    "steps.0.startedAt",
+                    "steps.0.status",
+                )
+            },
+        },
     ),
     Reader(
         "shepherd_pull_requests.newest_run",
         "json",
-        json.dumps([{"databaseId": 7}, {"databaseId": 5}]).encode(),
+        SHEPHERD_RUNS,
         _shepherd_runs,
         (shepherd.GitHubError,),
         accepts={"top_level_list": "an empty listing is a head with no run, whose newest is none"},
@@ -635,7 +619,7 @@ READERS = [
     Reader(
         "shepherd_pull_requests.pull_of",
         "json",
-        json.dumps(SHEPHERD_PULL).encode(),
+        SHEPHERD_PULL,
         _shepherd_pull,
         (shepherd.GitHubError,),
         accepts={
@@ -643,15 +627,23 @@ READERS = [
             for field in (
                 "files.0.additions",
                 "files.0.deletions",
+                "files.0.changeType",
+                "autoMergeRequest.authorEmail",
+                "autoMergeRequest.commitBody",
+                "autoMergeRequest.commitHeadline",
                 "autoMergeRequest.enabledAt",
+                "autoMergeRequest.enabledBy",
+                "autoMergeRequest.enabledBy.is_bot",
+                "autoMergeRequest.enabledBy.login",
                 "autoMergeRequest.mergeMethod",
+                "statusCheckRollup.0.completedAt",
             )
         },
     ),
     Reader(
         "shepherd_pull_requests.run_of",
         "text",
-        b"https://github.com/owner/repo/actions/runs/7/job/8",
+        SHEPHERD_CHECK_URL.encode(),
         _shepherd_run_of,
         (shepherd.GitHubError,),
         accepts=dict.fromkeys(
