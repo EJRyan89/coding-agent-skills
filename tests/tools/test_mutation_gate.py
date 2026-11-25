@@ -779,6 +779,17 @@ MUTATION_REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "
 # sends it, which subprocess reads as its negative number; a Windows status, such as an access violation's or a
 # Ctrl-C's; and a number neither names.
 UNDOCUMENTED_EXITS = (-9, -2, 0xC0000005, 0xC000013A, 9)
+# The termination status each of UNDOCUMENTED_EXITS names on the platform the test runs on, written out rather than read
+# from platform_support: a signal's name off Windows and the status in hexadecimal on Windows. Each other exit is one a
+# program can give itself there, which names none.
+TERMINATED_EXITS = (
+    {0xC0000005: "0xC0000005", 0xC000013A: "0xC000013A"} if sys.platform == "win32" else {-9: "SIGKILL", -2: "SIGINT"}
+)
+
+
+def exit_read(code: int) -> str:
+    """An exit as the gate's log and reasons give it: its number, and the status that ended the process beside it."""
+    return f"{code} (status {TERMINATED_EXITS[code]})" if code in TERMINATED_EXITS else f"{code}"
 
 
 def runner_pytest_exits() -> dict[str, int]:
@@ -966,6 +977,42 @@ def test_an_unjudged_exit_logs_what_it_means_beside_it(capsys: pytest.CaptureFix
     )
 
 
+@pytest.mark.parametrize("code", [*UNDOCUMENTED_EXITS, 3])
+def test_an_errored_run_names_the_status_that_ended_pytest_beside_its_exit(
+    code: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, b"collected 2 items\n")),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
+    assert capsys.readouterr().out == f"errored     tests/x.py: pytest exited {exit_read(code)}: collected 2 items\n"
+
+
+@pytest.mark.parametrize("code", [*UNDOCUMENTED_EXITS, 1])
+def test_a_run_out_of_memory_names_the_status_that_ended_pytest_beside_its_exit(
+    code: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, b"E   MemoryError\n")),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == KILLED
+    assert capsys.readouterr().out == (
+        f"killed      tests/x.py: pytest exited {exit_read(code)}: {mutation_gate.MEMORY_REASON}\n"
+    )
+
+
+def test_the_statuses_named_are_the_ones_this_platform_gives() -> None:
+    # Pinned against literals of each platform, so the expectations above cannot follow a status the gate misnames.
+    expected = (
+        ["-9", "-2", "3221225477 (status 0xC0000005)", "3221225786 (status 0xC000013A)", "9"]
+        if sys.platform == "win32"
+        else ["-9 (status SIGKILL)", "-2 (status SIGINT)", "3221225477", "3221225786", "9"]
+    )
+    assert [exit_read(code) for code in UNDOCUMENTED_EXITS] == expected
+
+
 # Every exit a step can end with but 0: each documented one and each a process's end gives instead.
 FAILING_PYTEST_EXITS = sorted({*documented_exits()["pytest"], *UNDOCUMENTED_EXITS} - {0})
 FAILING_COVERAGE_EXITS = sorted({*documented_exits()["coverage"], *UNDOCUMENTED_EXITS} - {0})
@@ -978,7 +1025,7 @@ def test_a_suite_that_exits_anything_but_0_unmutated_fails_unmutated(code: int) 
         mock.patch("deployer.platform_support.process_tree"),
     ):
         reach = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
-    assert reach == f"failed unmutated with exit code {code}"
+    assert reach == f"failed unmutated with exit code {exit_read(code)}"
 
 
 @pytest.mark.parametrize(
@@ -1015,12 +1062,12 @@ def test_a_coverage_step_that_exits_anything_but_0_fails_but_json_reporting_no_d
             mock.patch("deployer.platform_support.process_tree"),
         ):
             found[step] = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
-    assert found["combine"] == f"failed in `coverage combine` with exit code {code}: `No data to report.`"
+    assert found["combine"] == f"failed in `coverage combine` with exit code {exit_read(code)}: `No data to report.`"
     if code == 1:
         assert isinstance(found["json"], Reach)
         assert dict(found["json"].lines) == {"tools/calc.py": frozenset()}
     else:
-        assert found["json"] == f"failed in `coverage json` with exit code {code}: `No data to report.`"
+        assert found["json"] == f"failed in `coverage json` with exit code {exit_read(code)}: `No data to report.`"
 
 
 def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replaced(
@@ -1266,6 +1313,16 @@ class RunSuiteFixtures(unittest.TestCase):
         for name, (files, tests) in cases.items():
             with self.subTest(name):
                 self.assertEqual(ERRORED, self.run_tree(files, tests))
+
+    @unittest.skipIf(sys.platform == "win32", "only POSIX ends a process by a signal")
+    def test_a_suite_a_signal_ended_errors_and_its_log_names_the_signal(self) -> None:
+        killing = "import os, signal\n\n\ndef test_x():\n    os.kill(os.getpid(), signal.SIGKILL)\n"
+        with mock.patch("sys.stdout", io.StringIO()) as printed:
+            self.assertEqual(ERRORED, self.run_tree({"tests/test_x.py": killing}))
+        self.assertTrue(
+            printed.getvalue().startswith("errored     tests/test_x.py: pytest exited -9 (status SIGKILL): "),
+            printed.getvalue(),
+        )
 
     def test_a_suite_that_ran_out_of_memory_kills_the_mutant_whatever_pytest_exits_and_logs_why(self) -> None:
         cases = {
