@@ -775,14 +775,15 @@ def source_contract(run: str, role: str) -> str:
         "- SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing\n"
         "  there may still be in the head commit. To read any other file, run this command with its\n"
         "  repository-relative path in place of <path>, then Read the file it prints:\n"
-        f'  {PYTHON} -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"\n'
+        f'  {PYTHON} -B "{script}" source-file --run "{run}" --role "{role}" --path=\'<path>\'\n'
         "  It prints SOURCE_FILE <file>, EXCLUDED <path> <reason> for a file left out of the review\n"
         "  (judge it from the diff), or FAILED when the commit has no such file. To search the code,\n"
         "  run this command with an extended regular expression in place of <pattern>, rather than\n"
         "  Grep or Glob over SOURCE_ROOT:\n"
-        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
-        "  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write\n"
-        "  [.] for a literal dot.\n"
+        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern=\'<pattern>\'\n'
+        "  Put the path or pattern between the single quotes as it is, on one line, writing each\n"
+        "  single quote in it as '\"'\"'. Claude Code asks before running a command in which a $\n"
+        "  stands before a letter, even in single quotes, so write a dollar sign in a pattern as [$].\n"
     )
 
 
@@ -792,9 +793,10 @@ def search_contract(run: str, role: str) -> str:
     return (
         "- To search the code, run this command with an extended regular expression in place of\n"
         "  <pattern>, rather than Grep or Glob over SOURCE_ROOT, which a runtime may not give you:\n"
-        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
-        "  The pattern may not hold a double quote, backtick, dollar sign, or backslash; write [.] for\n"
-        "  a literal dot.\n"
+        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern=\'<pattern>\'\n'
+        "  Put the pattern between the single quotes as it is, on one line, writing each single\n"
+        "  quote in it as '\"'\"'. Claude Code asks before running a command in which a $ stands\n"
+        "  before a letter, even in single quotes, so write a dollar sign in a pattern as [$].\n"
     )
 
 

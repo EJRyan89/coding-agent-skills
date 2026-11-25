@@ -691,8 +691,9 @@ SOURCE_RULE = """
   run this command with an extended regular expression in place of <pattern>, rather than
   Grep or Glob over SOURCE_ROOT:
   {search}
-  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write
-  [.] for a literal dot."""
+  Put the path or pattern between the single quotes as it is, on one line, writing each
+  single quote in it as '"'"'. Claude Code asks before running a command in which a $
+  stands before a letter, even in single quotes, so write a dollar sign in a pattern as [$]."""
 
 CHECKOUT_RULE = """
 - Never read anything under {checkout}. It is a local working copy, possibly on another
@@ -1059,8 +1060,9 @@ def _source_rule(source_commands: SourceCommands | None) -> str:
 - To search the code, run this command with an extended regular expression in place of
   <pattern>, rather than Grep or Glob over SOURCE_ROOT, which a runtime may not give you:
   {search}
-  The pattern may not hold a double quote, backtick, dollar sign, or backslash; write [.] for
-  a literal dot."""
+  Put the pattern between the single quotes as it is, on one line, writing each single
+  quote in it as '"'"'. Claude Code asks before running a command in which a $ stands
+  before a letter, even in single quotes, so write a dollar sign in a pattern as [$]."""
 
 
 def self_check_rule(command: str | None, source_commands: SourceCommands | None) -> str:

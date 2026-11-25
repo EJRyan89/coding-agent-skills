@@ -35,7 +35,7 @@ import review_pipeline as rp
 import review_run
 import review_runtime
 from executable_locator import PYTHON
-from review_source import source_commands
+from review_source import filled, source_commands
 from test_path_keys import case_sensitive_folder, hard_link_pair
 from test_review_archive import unstatable
 from test_review_io import UNPARSEABLE_JSON
@@ -798,12 +798,25 @@ class BashTests(GuardFixture):
                 for bad in (
                     command.replace(f'"{script}"', f'"{script.parent / quote / ".." / script.name}"'),
                     command.replace(f'--run "{self.run_directory}"', f'--run "{self.run_directory / quote / ".."}"'),
-                    command.replace("<path>", f"Service{quote}; Write-Output marker; #"),
-                    command.replace("<pattern>", f"Service{quote}; Write-Output marker; #"),
                 ):
                     if bad != command:
                         with self.subTest(quote=quote, command=bad):
                             self.assert_denied(self.decide("Bash", command=bad))
+
+    def test_a_smart_single_quote_is_denied_in_a_path_or_pattern_and_a_smart_double_quote_is_kept(self) -> None:
+        # PowerShell ends a single-quoted string at each smart single quote, which Bash reads as text; inside single
+        # quotes it reads a smart double quote as text, as Bash does.
+        self.claim()
+        for command in source_commands(self.run_directory, "csharp-review"):
+            for quote in ("\u2018", "\u2019", "\u201a", "\u201b"):
+                with self.subTest(command=command, quote=quote):
+                    self.assert_denied(
+                        self.decide("Bash", command=filled(command, f"Service{quote}; Write-Output marker; #")),
+                        "writing each single quote in it as",
+                    )
+            for quote in ("\u201c", "\u201d", "\u201e"):
+                with self.subTest(command=command, quote=quote):
+                    self.assertIsNone(self.decide("Bash", command=filled(command, f"Service{quote}; x; #")))
 
     def test_bash_runs_only_the_self_check_of_its_own_role_and_run_with_every_value_kept_in_quotes(self) -> None:
         command = review_run.self_check_command(self.run_directory, "csharp-review")
@@ -893,12 +906,7 @@ class BashTests(GuardFixture):
         sibling_fetch, _ = source_commands(self.run_directory, "sql-review")
         script = str(Path(rp.__file__).resolve().parent / "review_source.py")
         for bad in (
-            # A value that leaves its quotes, or runs something itself.
-            fetch.replace("<path>", 'a.cs" && whoami && echo "'),
-            fetch.replace("<path>", "$(whoami)"),
-            fetch.replace("<path>", "`whoami`"),
-            search.replace("<pattern>", "a\\"),  # escapes its closing quote
-            search.replace("<pattern>", "a\\.b"),
+            # A value on more than one line, or none.
             fetch.replace("<path>", "a\nb"),
             fetch.replace("<path>", ""),
             f"{file_command}; rm -rf /",
@@ -918,6 +926,68 @@ class BashTests(GuardFixture):
         ):
             with self.subTest(command=bad):
                 self.assert_denied(self.decide("Bash", command=bad))
+
+    # What a reviewer may search for or fetch: each character either shell reads inside double quotes, and both quotes.
+    LITERALS = (
+        'a.cs" && whoami && echo "',
+        "$(whoami)",
+        "`whoami`",
+        "a\\",
+        "a\\.b",
+        "print[ ]*[$]",
+        '$x `id` "q" \\ it\'s',
+        "'",
+        "''",
+        "it's",
+    )
+
+    def test_a_path_or_pattern_holding_any_shell_character_is_allowed_as_the_literal_it_spells(self) -> None:
+        self.claim()
+        for command, option in zip(
+            source_commands(self.run_directory, "csharp-review"), ("path", "pattern"), strict=True
+        ):
+            for value in self.LITERALS:
+                written = filled(command, value)
+                with self.subTest(command=written):
+                    self.assertIsNone(self.decide("Bash", command=written))
+                    self.assertEqual(value, guard.source_value(written, option))
+
+    def test_a_value_spelled_any_other_way_is_denied(self) -> None:
+        self.claim()
+        for command in source_commands(self.run_directory, "csharp-review"):
+            placeholder = "'<path>'" if "<path>" in command else "'<pattern>'"
+            for spelled in (
+                # Another command after the value, or around it.
+                "'a'; rm -rf x",
+                "'a' && x",
+                "'a' | sh",
+                "'a' > x",
+                "'a' &",
+                "'a'$(x)",
+                "'a'`x`",
+                "'a'\"$x\"",
+                "'a'$x",
+                # A literal to Bash that PowerShell reads otherwise, or that is not the one spelling.
+                "$'a'",
+                "'a'\\''b'",
+                "'a''b'",
+                "'a'\"b\"",
+                "'a'b",
+                "'a' 'b'",
+                # A quote never closed, or none.
+                "'a",
+                "'a'\"'",
+                "'a'\"'\"'",
+                "a",
+                # A NUL, a line break, or nothing.
+                "'a\0b'",
+                "'a\nb'",
+                "'a\rb'",
+                "''",
+            ):
+                bad = command.replace(placeholder, spelled)
+                with self.subTest(command=bad):
+                    self.assert_denied(self.decide("Bash", command=bad))
 
 
 class ClaimTests(GuardFixture):
