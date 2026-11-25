@@ -25,7 +25,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import functools
-import itertools
 import math
 import os
 import re
@@ -518,10 +517,16 @@ BUILTINS_NOT_FOLLOWED = {
 CALLBACK_OPTIONS = {"mapfile": "C", "readarray": "C", "compgen": "F", "jobs": "x"}
 
 
+# The variable that holds the shell's directory stack, an assignment to which changes where a later popd goes.
+DIRSTACK = "DIRSTACK"
+
+
 def may_move(name: str | None, arguments: list[Word]) -> bool:
     """Whether a command whose name is `name`, given `arguments`, may move the shell or its stack: a name the text does
     not settle, a builtin FOLLOWED_BUILTINS names, and one BUILTINS_NOT_FOLLOWED names, but one of CALLBACK_OPTIONS
-    only given its letter in an option word, bundled or not, or a word the text does not settle, which may be one."""
+    only given its letter in an option word, bundled or not, a word the text does not settle, which may be one, or a
+    word naming DIRSTACK, which mapfile and readarray fill. Every word is read, since `--` may be an option's value, as
+    in `mapfile -d -- -C cb`, so this errs toward moving."""
     if name is None:
         return True
     if name not in FOLLOWED_BUILTINS and name not in BUILTINS_NOT_FOLLOWED:
@@ -529,8 +534,13 @@ def may_move(name: str | None, arguments: list[Word]) -> bool:
     letters = CALLBACK_OPTIONS.get(name)
     if letters is None:
         return True
-    options = itertools.takewhile(lambda word: word != "--", arguments)
-    return any(word is None or (word.startswith("-") and set(letters) & set(word[1:])) for word in options)
+    return any(
+        word is None
+        or word == DIRSTACK
+        or word.startswith(f"{DIRSTACK}[")
+        or (word.startswith("-") and bool(set(letters) & set(word[1:])))
+        for word in arguments
+    )
 
 
 # The Bash builtins that run no command in the shell itself, so none moves the shell, each with why; a probe in
@@ -3455,7 +3465,8 @@ class BashReader:
         if len(arguments) > 1:
             return certain(directory)  # Bash refuses more than one directory, and stays
         target = arguments[0]
-        if target is None or target == "-":
+        # An empty target is one Bash 5.3 refuses, so its pushd pushes nothing, and Bash 3.2 reads as `.`.
+        if target is None or target in {"-", ""}:
             return unsettled
         path = Path(platform_support.from_shell_path(target))
         if not path.is_absolute():
@@ -3466,8 +3477,6 @@ class BashReader:
         return moved_to(directory, path, stacked)
 
 
-# The variable that holds the shell's directory stack, an assignment to which changes where a later popd goes.
-DIRSTACK = "DIRSTACK"
 # What dirs reads as a word of its own: an option it takes alone, as Bash reads none bundled, or an entry's number
 # well inside the range Bash takes. Bash reads a number word more loosely, as `+-1` or `'+1 '`, and refuses one past
 # its range, so any other word that starts with + or - leaves the stack unknown.

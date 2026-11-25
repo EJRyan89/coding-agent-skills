@@ -550,8 +550,8 @@ The configuration's limits:
   a directory now, or else nowhere the text settles, since an earlier command may make it one. A pipeline's commands
   and a background job run in subshells of their own, so a change there moves nothing after them, but for the stated
   limit on `lastpipe` below. A target the text does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and
-  `pushd`'s rotations leave the directory unknown; a `pushd` to a target the text does not settle pushes only where
-  its `cd` succeeds, as Bash's does. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
+  `pushd`'s rotations leave the directory unknown; a `pushd` to a target the text does not settle, or an empty one,
+  which Bash 5.3 refuses, pushes only where its `cd` succeeds, as Bash's does. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
   as Bash reads them, clears it, so a later `popd` stays where it is, and an operand `dirs` refuses clears nothing. A
   `dirs` word the text does not settle, `--`, or any other word starting with `+` or `-`, a `pushd` or `popd` given an
   option or an entry's number, a plain assignment to `DIRSTACK` or one of its elements, in a compound command too,
@@ -690,7 +690,8 @@ Within what it reads, it judges only what the text shows, so these too are left 
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
   `cd`, and the git call after it, where the guard does not follow, and an element of `DIRSTACK` a builtin sets, as
-  `declare`, `read`, `printf -v`, or a name reference does, which moves a later `popd` the same way;
+  `declare`, `read`, `printf -v`, or a name reference does, or `mapfile` or `readarray` through a name reference, a
+  word naming `DIRSTACK` among theirs being read as moving the shell, which moves a later `popd` the same way;
 - `shopt -s lastpipe`, under which Bash 4.2 and later run a pipeline's last command in the shell itself, so `echo |
   cd "<dir>"` moves it, where the guard reads that command as a subshell's;
 - `shopt -s cdable_vars`, after which a later `cd name` goes to the directory a variable of that name holds, where the

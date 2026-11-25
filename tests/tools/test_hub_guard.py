@@ -3731,6 +3731,8 @@ class UnderstoodSetTests(GuardTestCase):
             f"pushd \"{self.hub}\"; dirs -c '+1 '; popd; git commit -m x",
             f"pushd \"{self.hub}\"; dirs -c '+ 1'; popd; git commit -m x",
             f'cd "{self.hub}"; pushd "{self.tree}"; dirs -c +99999999999999999999; popd; git commit -m x',
+            # An operand dirs refuses ends it unrun, so the stack stays and popd goes back to the hub.
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -c foo; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3739,6 +3741,7 @@ class UnderstoodSetTests(GuardTestCase):
             f'pushd "{self.hub}"; popd; git commit -m x',
             f'pushd "{self.hub}"; dirs -v; popd; git commit -m x',
             f'pushd "{self.hub}"; dirs -v +0; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c foo; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
@@ -3768,6 +3771,12 @@ class UnderstoodSetTests(GuardTestCase):
             # Two stacks that differ, one with the pushd and one without, join to one the text does not settle.
             f'true && pushd "{self.hub}"; popd; git commit -m x',
             f'if test -e x; then pushd "{self.hub}"; fi; popd; git commit -m x',
+            # mapfile and readarray fill the array a word names, DIRSTACK among them.
+            f'pushd "{self.tree}"; mapfile -t -O 1 DIRSTACK <<< "{self.hub}"; popd; git commit -m x',
+            # Bash 5.3 refuses an empty directory, so pushd pushes nothing there, and Bash 3.2 pushes `.`.
+            f'cd "{self.hub}"; pushd "{self.tree}"; pushd \'\'; popd; git commit -m x',
+            # A bare pushd swaps the top two entries, or fails on a stack of one and stays.
+            f'pushd "{self.hub}"; pushd; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3792,6 +3801,10 @@ class UnderstoodSetTests(GuardTestCase):
             f'jobs -x cd "{self.hub}"; git commit -m x',
             f"mapfile -tC 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
             'mapfile "$OPTION" cb <<< x; git commit -m x',
+            # `--` may be an option's value, so a callback's option after it still counts.
+            f"mapfile -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"readarray -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            "compgen -W -- -F g x; git commit -m x",
             f'g() {{ cd "{self.hub}"; }}; compgen -o default -F g x; git commit -m x',
         ):
             with self.subTest(command=command):
@@ -5180,3 +5193,17 @@ def test_a_builtin_that_moves_nothing_runs_no_cd_its_words_name_in_bash_itself(n
         script = f'cd "$1" && {body}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
         result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script, "probe", *folders])
         assert result.output.split()[-1:] != ["moved"], (form, result.output)
+
+
+def test_a_join_keeps_each_entry_both_stacks_settle_and_no_more() -> None:
+    first, second, third = (Path(name).resolve() for name in ("/a", "/b", "/c"))
+    Directory = hub_guard.Directory
+    # Equal lengths: an entry the two differ on is one the text does not settle; the rest stay, and so does the end.
+    joined = hub_guard.joined(Directory(first, (second, third)), Directory(first, (second, first)))
+    assert joined == Directory(first, (second, None), known_below=True)
+    # Unequal lengths, even with a common prefix: no entry is settled, and the stack below them is not known.
+    joined = hub_guard.joined(Directory(first, (second, third)), Directory(first, (second,)))
+    assert joined == Directory(first, (None,), known_below=False)
+    # Places that differ leave the place unsettled, whatever the stacks agree on.
+    assert hub_guard.joined(Directory(first, (second,)), Directory(third, (second,))) == Directory(None, (second,))
+    assert hub_guard.joined(Directory(first), hub_guard.UNKNOWN) == hub_guard.UNKNOWN
