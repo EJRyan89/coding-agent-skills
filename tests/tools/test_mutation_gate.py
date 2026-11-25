@@ -621,6 +621,8 @@ class ProcessArgumentFixtures(unittest.TestCase):
     @override
     def setUp(self) -> None:
         self.calls: list[tuple[list[str], float, dict[str, object], list[str]]] = []
+        # The base folder each command named for pytest's temporary folders, and whether it was fresh when it ran.
+        self.bases: list[tuple[Path, bool]] = []
         # Each tree names what it was asked for, so a test reads what each command's tree holds.
         patcher = mock.patch(
             "deployer.platform_support.process_tree", side_effect=lambda **asked: ("tree", sorted(asked.items()))
@@ -628,11 +630,31 @@ class ProcessArgumentFixtures(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def note_base(self, command: Sequence[str]) -> None:
+        """Record the base folder a pytest command names, and whether it was fresh as the command ran: a folder not yet
+        made, in an empty folder of its own under the temporary directory."""
+        if "--basetemp" not in command:
+            self.bases.append((Path(), False))
+            return
+        base = Path(command[list(command).index("--basetemp") + 1])
+        own = base.parent
+        fresh = own.is_dir() and not any(own.iterdir()) and own.parent.samefile(tempfile.gettempdir())
+        self.bases.append((base, fresh))
+
+    def started(self, call: int, *options: str) -> list[str]:
+        """What the pytest command the gate's call `call` started gives after its suite: the base folder it named,
+        which was fresh when the command ran and is gone once the call returned, then `options`."""
+        base, fresh = self.bases[call]
+        self.assertTrue(fresh, base)
+        self.assertFalse(base.parent.exists(), base)
+        return ["--basetemp", str(base), *options]
+
     def bounded(self, listing: bytes = b"", returncode: int = 0) -> Any:
         def run(command: Sequence[str], timeout: float, **options: object) -> types.SimpleNamespace:
             listed = [part for part in command if part.startswith("@")]
             read = Path(listed[0][1:]).read_text(encoding="utf-8").splitlines() if listed else []
             self.calls.append((list(command), timeout, options, read))
+            self.note_base(command)
             output = options.get("stdout")
             if output is not None:
                 output.write(listing)  # type: ignore[attr-defined]  # the gate passes a binary file
@@ -657,15 +679,19 @@ class ProcessArgumentFixtures(unittest.TestCase):
             self.assertEqual(PASSED, run_suite(Path("tree"), "tests/x.py", 42.0))
             self.assertEqual(PASSED, run_suite(Path("tree"), "tests/x.py", 42.0, tests))
         (whole, timeout, options, read), (selected, _, selected_options, listed) = self.calls
-        self.assertEqual(bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-x", "-q"]), whole)
+        self.assertEqual(
+            bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", *self.started(0, "-x", "-q")]), whole
+        )
         self.assertEqual((42.0, []), (timeout, read))
         self.assert_suite_options(options)
         # Both streams reach one file, whose start and end are read back.
         self.assertIsNotNone(options["stdout"])
         self.assertIs(options["stdout"], options["stderr"])
-        target = selected[-3]
-        self.assertEqual(bounded([sys.executable, "-B", "-m", "pytest", target, "-x", "-q"]), selected)
-        self.assertTrue(target.startswith("@"), selected)
+        [target] = [part for part in selected if part.startswith("@")]
+        self.assertEqual(
+            bounded([sys.executable, "-B", "-m", "pytest", target, *self.started(1, "-x", "-q")]), selected
+        )
+        self.assertNotEqual(self.bases[0][0], self.bases[1][0])
         self.assertEqual(tests, listed)
         self.assert_suite_options(selected_options)
 
@@ -675,7 +701,9 @@ class ProcessArgumentFixtures(unittest.TestCase):
             found = mutation_gate.suite_tests(Path("tree"), "tests/x.py", Path(temporary) / "listing.txt")
         self.assertEqual(["tests/x.py::test_a", "tests/x.py::test_b"], found)
         ((command, timeout, options, _),) = self.calls
-        self.assertEqual([sys.executable, "-B", "-m", "pytest", "tests/x.py", "--collect-only", "-q"], command)
+        self.assertEqual(
+            [sys.executable, "-B", "-m", "pytest", "tests/x.py", *self.started(0, "--collect-only", "-q")], command
+        )
         self.assertEqual(mutation_gate.MINIMUM_SUITE_SECONDS, timeout)
         # Listing a suite's tests runs none of them, so its memory is not bounded.
         self.assert_suite_options(options, bounded=False)
@@ -694,6 +722,8 @@ class ProcessArgumentFixtures(unittest.TestCase):
 
         def run(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
             self.calls.append((list(command), timeout, options, []))
+            if "pytest" in command:
+                self.note_base(command)
             environments.append(options["env"])
             start = options["env"].get("COVERAGE_PROCESS_START")
             if start:
@@ -704,7 +734,10 @@ class ProcessArgumentFixtures(unittest.TestCase):
             result = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
         self.assertEqual("failed in `coverage json`, which wrote no report", result)
         (suite, timeout, options, _), *steps = self.calls
-        self.assertEqual((bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-q"]), 42.0), (suite, timeout))
+        self.assertEqual(
+            (bounded([sys.executable, "-B", "-m", "pytest", "tests/x.py", *self.started(0, "-q")]), 42.0),
+            (suite, timeout),
+        )
         environment = environments[0]
         self.assertNotIn("PYTEST_CURRENT_TEST", environment)
         self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
@@ -916,6 +949,16 @@ class RunSuiteFixtures(unittest.TestCase):
             whole = run_suite(tree, "tests/test_x.py", 60.0)
             failing = run_suite(tree, "tests/test_x.py", 60.0, ["tests/test_x.py::test_fails"])
         self.assertEqual((PASSED, PASSED, KILLED, KILLED), (alone, both, whole, failing))
+
+    def test_a_suite_keeps_its_temporary_folders_in_a_base_folder_of_its_own(self) -> None:
+        # pytest makes the base every pytest process shares, pytest-of-<user>, in the folder PYTEST_DEBUG_TEMPROOT
+        # names, so a run that used it would leave it in `shared`. Named tests reach pytest in an argument file.
+        files = {"tests/test_x.py": "def test_makes_a_folder(tmp_path):\n    (tmp_path / 'made').write_bytes(b'')\n"}
+        with tempfile.TemporaryDirectory() as shared, mock.patch.dict(os.environ, {"PYTEST_DEBUG_TEMPROOT": shared}):
+            whole = self.run_tree(files)
+            named = self.run_tree(files, ["tests/test_x.py::test_makes_a_folder"])
+            self.assertEqual([], list(Path(shared).iterdir()))
+        self.assertEqual((PASSED, PASSED), (whole, named))
 
     def test_a_test_the_users_environment_would_leave_out_still_kills_the_mutant(self) -> None:
         # The failing test stands for one a mutant breaks; each leak would leave only it out, and the mutant surviving.

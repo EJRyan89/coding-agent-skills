@@ -68,7 +68,7 @@ from bounded_process import run_bounded
 from console import run_main
 from flat_text import fact_line, flat_text
 from job_tree import process_tree
-from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_base, pytest_command
 from text_lines import program_lines
 
 from tools.unraisable_record import RECORD_VARIABLE, SITE_MODULE
@@ -196,10 +196,10 @@ def run_suite(suite: str, environment: Mapping[str, str], record: Path) -> Outco
     processes recorded."""
     started = time.monotonic()
     failure: str | None = None
-    with tempfile.TemporaryFile() as written:
+    with pytest_base() as basetemp, tempfile.TemporaryFile() as written:
         try:
             finished = run_bounded(
-                pytest_command(suite),
+                pytest_command(suite, basetemp=basetemp),
                 SUITE_SECONDS,
                 stdout=written,
                 stderr=written,
