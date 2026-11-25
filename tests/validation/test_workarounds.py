@@ -256,6 +256,8 @@ TABLE = "NOT_READ: dict[str, str] = {'coproc': 'a reason'}\n"
         "import reader\nreader.NOT_READ['fi'] = ''\n",
         "import reader\nreader.NOT_READ = {}\n",
         "(NOT_READ := {})\n",
+        "class Reader:\n    NOT_READ = {}\n\n    def add(self) -> None:\n        NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ = {}\n    add = lambda self: NOT_READ.update(fi='')\n",
     ],
 )
 def test_a_write_to_a_not_read_table_after_its_own_assignment_fails(write: str) -> None:
@@ -274,6 +276,7 @@ def test_a_write_to_a_not_read_table_after_its_own_assignment_fails(write: str) 
         "def known(word: str) -> bool:\n    return word in NOT_READ\n",
         "def local() -> dict[str, str]:\n    NOT_READ = {}\n    NOT_READ['x'] = ''\n    return NOT_READ\n",
         "class Reader:\n    NOT_READ = {'x': ''}\n",
+        "class Reader:\n    def add(self) -> None:\n        NOT_READ = {}\n        NOT_READ['x'] = ''\n",
         "COPY = dict(NOT_READ)\n",
     ],
 )

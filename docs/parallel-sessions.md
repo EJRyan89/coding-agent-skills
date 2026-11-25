@@ -680,8 +680,10 @@ Within what it reads, it judges only what the text shows, so these too are left 
   `cd`, and the git call after it, where the guard does not follow;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
   not cover, such as a `for` or `select` loop whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }` whose
-  own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, or an arithmetic expansion holding a quoted parenthesis,
-  as `$(( ")" ))`: the whole command is not read, though Bash runs the lines before a syntax error;
+  own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, an arithmetic expansion holding a quoted parenthesis, as
+  `$(( ")" ))`, a reserved word right after `]]`, as `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and
+  Bash 3.2 refuses, or a `]]` inside an `=~` regex's parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`: the whole
+  command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
   its `-I`, `-i`, or `--replace` replaces, which it reads as the literal it is;

@@ -1196,3 +1196,30 @@ def test_text_bash_runs_in_a_here_documents_body_that_the_reader_does_not_read_i
 
 def simple_commands_of(text: str) -> list[list[str]]:
     return [[word.raw for word in command.words] for command in bash_syntax.simple_commands(text)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'cat <<EOF\n$(echo $(( ")" )); git push)\nEOF\n',
+        'cat <<EOF\n$( (( x = "${y:-"))"}" )); git push)\nEOF\n',
+        'cat <<EOF\n`echo $(( ")" ))`; $(git push)\nEOF\n',
+    ],
+)
+def test_arithmetic_the_reader_may_not_close_in_a_here_documents_body_is_refused(text: str) -> None:
+    # The reader refuses a quoted parenthesis in these arithmetic forms, which Bash reads, and cannot tell that refusal
+    # from one Bash makes, so a body's substitution holding `((` that the reader refuses is never passed over as one
+    # that runs nothing; a substitution with arithmetic the reader reads, and one Bash refuses with none, still are.
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+    read = "cat <<EOF\n$(: $(( 1 )); git push)\n$(if)\nEOF\n"
+    assert simple_commands_of(read) == [["cat"], [":", "$(( 1 ))"], ["git", "push"]]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["if [[ -n x ]] then git commit -m x; fi", "{ [[ -n x ]] }; git commit -m x", "[[ x =~ ( ]] ) ]]; git commit -m x"],
+)
+def test_a_documented_limit_a_reserved_word_after_a_close_or_a_close_in_a_regex_group_is_an_error(text: str) -> None:
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)

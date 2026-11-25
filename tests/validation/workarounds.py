@@ -13,8 +13,10 @@ NOT_READ = {entry: reason} beside the code, which its catalogue test reads, as b
 such table maps every entry to its reason, as SKIP_ALLOWED does, in that one literal: a later write to it, by another
 assignment at module level, an augmented one, a subscript, a `del`, or a call of a method that changes a dictionary,
 fails, since its entries would escape the reading. What it does not see: a write through another name bound to the
-table, or through globals() or setattr; and it takes a write to a class's own NOT_READ through an attribute, as
-`self.NOT_READ[key] = reason`, for one to a module's table.
+table, through globals(), vars(), or setattr, or through a call that takes the table as an argument, as
+`dict.update(NOT_READ, ...)` or `operator.setitem(NOT_READ, ...)`; and a rebinding of the name by an import, a `def`,
+a `class`, an `except ... as`, or a `match` capture. It takes a write to a class's own NOT_READ through an attribute,
+as `self.NOT_READ[key] = reason`, for one to a module's table.
 """
 
 from __future__ import annotations
@@ -282,19 +284,26 @@ def table_writes(tree: ast.Module) -> list[int]:
     def table(node: ast.expr, table_here: bool) -> bool:
         return names_table(node) and (table_here or isinstance(node, ast.Attribute))
 
-    def visit(node: ast.AST, table_here: bool) -> None:
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+    def visit(node: ast.AST, table_here: bool, functions_inherit: bool) -> None:
+        # A class's own names are not seen from the functions it defines, so a method resolves the bare name as the
+        # scope around the class does: functions_inherit carries that past a class body.
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            inner = declares_table_global(node) or (functions_inherit and not binds_table_name(node))
+            for child in ast.iter_child_nodes(node):
+                visit(child, inner, inner)
+            return
+        if isinstance(node, ast.ClassDef):
             inner = declares_table_global(node) or (table_here and not binds_table_name(node))
             for child in ast.iter_child_nodes(node):
-                visit(child, inner)
+                visit(child, inner, functions_inherit)
             return
         written = written_expression(node)
         if id(node) not in held and written is not None and table(written, table_here):
             lines.append(written.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, table_here)
+            visit(child, table_here, functions_inherit)
 
-    visit(tree, True)
+    visit(tree, True, True)
     return sorted(set(lines))
 
 
