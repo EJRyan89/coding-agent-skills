@@ -171,8 +171,8 @@ POLICY_MODULES = (
 DOCUMENTATION_DIRECTORIES = ("docs/", ".github/ISSUE_TEMPLATE/")
 DOCUMENTATION_FILES = {
     "README.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
+    ".github/CONTRIBUTING.md",
+    ".github/SECURITY.md",
     "CLAUDE.md",
     "AGENTS.md",
     ".github/pull_request_template.md",

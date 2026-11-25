@@ -1,7 +1,7 @@
 """Regression suite for tools/branch_protection.py, with `gh api` replaced by a fake runner.
 
 The expected settings are written here as literals, not read back from the module, so a change to what the tool
-expects fails this suite until the documented invariants in CONTRIBUTING.md are revisited too.
+expects fails this suite until the documented invariants in .github/CONTRIBUTING.md are revisited too.
 """
 
 from __future__ import annotations
@@ -309,7 +309,7 @@ class MainTests(unittest.TestCase):
 
 class DocumentationTests(unittest.TestCase):
     def test_contributing_states_the_invariants_and_the_check(self) -> None:
-        text = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        text = (REPOSITORY_ROOT / ".github/CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertIn("## How `main` is protected", text)
         section = text.split("## How `main` is protected", 1)[1].split("\n## ", 1)[0]
         for phrase in (
@@ -332,7 +332,7 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIn(phrase, section.casefold() if phrase.islower() else section)
 
     def test_contributing_states_the_issue_settings_and_the_check(self) -> None:
-        text = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        text = (REPOSITORY_ROOT / ".github/CONTRIBUTING.md").read_text(encoding="utf-8")
         section = text.split("\n## Questions\n", 1)[1].split("\n## ", 1)[0]
         for phrase in ("Discussions stay off", "blank issues stay off", "python tools/branch_protection.py"):
             with self.subTest(phrase=phrase):

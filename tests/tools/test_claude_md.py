@@ -20,7 +20,7 @@ INSTRUCTIONS = REPOSITORY_ROOT / "CLAUDE.md"
 CODEX_INSTRUCTION_LIMIT = 32768
 # Every document CLAUDE.md points into, named here so that the runner selects this suite when one of them changes.
 POINTED_DOCUMENTS = (
-    "CONTRIBUTING.md",
+    ".github/CONTRIBUTING.md",
     "docs/adding-a-skill.md",
     "docs/design.md",
     "docs/implementing-changes.md",
@@ -61,9 +61,10 @@ class ClaudeMdTests(unittest.TestCase):
 
 class PointerReadingTests(unittest.TestCase):
     def test_a_quoted_heading_before_a_document_is_a_pointer(self) -> None:
-        text = 'See "Template values" in `docs/adding-a-skill.md`, and "Python checks" in `CONTRIBUTING.md`.'
+        text = 'See "Template values" in `docs/adding-a-skill.md`, and "Python checks" in `.github/CONTRIBUTING.md`.'
         self.assertEqual(
-            [("Template values", "docs/adding-a-skill.md"), ("Python checks", "CONTRIBUTING.md")], pointers(text)
+            [("Template values", "docs/adding-a-skill.md"), ("Python checks", ".github/CONTRIBUTING.md")],
+            pointers(text),
         )
 
     def test_a_quotation_without_a_document_is_no_pointer(self) -> None:

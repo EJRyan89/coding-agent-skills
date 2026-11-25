@@ -710,7 +710,7 @@ class InstallHintTests(unittest.TestCase):
         for package in ("ruff", "mypy", "pytest"):
             with self.subTest(package=package):
                 self.assertEqual(
-                    "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                    "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
                     platform_support.WINDOWS_INSTALL_HINTS[package],
                 )
         self.assertEqual(
@@ -718,9 +718,12 @@ class InstallHintTests(unittest.TestCase):
                 "Bash": "sudo apt install bash",
                 "ShellCheck": "sudo apt install shellcheck",
                 "PowerShell": "sudo snap install powershell --classic",
-                "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-                "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-                "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
+                "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
+                "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
                 "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
             },
             platform_support.LINUX_INSTALL_HINTS,
@@ -733,9 +736,12 @@ class InstallHintTests(unittest.TestCase):
                 # Homebrew has no PowerShell cask, so the hint is Microsoft's own package.
                 "PowerShell": "the .pkg for your Mac, osx-arm64 for Apple silicon or osx-x64 for Intel, from "
                 "https://github.com/PowerShell/PowerShell/releases",
-                "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-                "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
-                "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
+                "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
+                "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r "
+                "requirements/requirements-dev.txt",
                 "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
             },
             platform_support.MACOS_INSTALL_HINTS,

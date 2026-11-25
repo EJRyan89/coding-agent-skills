@@ -8,7 +8,7 @@ assignees: ''
 
 <!-- An action-oriented title naming the component, such as "deploy.py ..." or "review-prs ...".
      Remove personal paths, organization names, credentials, and private repository contents from everything
-     below. A suspected vulnerability goes through SECURITY.md, not an issue. -->
+     below. A suspected vulnerability goes through .github/SECURITY.md, not an issue. -->
 
 ## Reproduction
 

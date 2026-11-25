@@ -132,7 +132,7 @@
       "include": [
         "(?i)^docs/.+\\.md$",
         "(?i)^[^/]+\\.md$",
-        "(?i)^\\.github/pull_request_template\\.md$",
+        "(?i)^\\.github/[^/]+\\.md$",
         "(?i)^\\.github/ISSUE_TEMPLATE/"
       ],
       "exclude": [],
@@ -243,6 +243,7 @@
       "script": ".claude/skills/review-repository/scripts/doc_passages.py",
       "reads": [
         "*.md",
+        ".github/*.md",
         "docs/**/*.md",
         "agents/*.md",
         "skills/*/SKILL.md",

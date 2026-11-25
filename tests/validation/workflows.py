@@ -725,7 +725,7 @@ TOKEN_CLAIM_REQUIRED = (
     "tests/known_failure_issues.py",
     "tests/validation/credentials.py",
     "docs/implementing-changes.md",
-    "CONTRIBUTING.md",
+    ".github/CONTRIBUTING.md",
 )
 # How far either side of a mention of the token a claim can reach: each pattern's words stand within it, so
 # token_claim_problems matches only the stretches of a text around a mention.
@@ -1029,13 +1029,12 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     dealt across `legs` legs named as its platform's legs, each running its own shard, every leg reporting rather than
     the first failure cancelling the rest: the checkout's whole history, the matrix's Pythons as LINUX_PYTHON gives
     them, the floor and, on the weekly schedule, the latest stable release beside it, each leg's own read by its name
-    and installed by setup-python, with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's
-    archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, the Bash its platform's image
-    lacks installed in one step before validation runs, no folder put ahead on PATH but that Bash's and the pinned
-    ShellCheck's, and the Windows legs' validation step. A PATH written through GITHUB_ENV before the verify step is
-    not read; no POSIX leg writes one.
-    `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
-    `pinned_tool_problems` its verify step."""
+    and installed by setup-python, with pip's cache keyed on requirements/requirements-dev.txt, ShellCheck from the
+    pinned release's archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, the Bash its
+    platform's image lacks installed in one step before validation runs, no folder put ahead on PATH but that Bash's and
+    the pinned ShellCheck's, and the Windows legs' validation step. A PATH written through GITHUB_ENV before the verify
+    step is not read; no POSIX leg writes one. `required_check_problems` holds it inside the required check,
+    `tool_cache_problems` its tool caches, and `pinned_tool_problems` its verify step."""
     runner, leg_name, digest_check, bash_install = POSIX_VALIDATION_JOBS[job]
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", job)
@@ -1066,11 +1065,12 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     setup = {
         "python-version": "${{ matrix.python-version }}",
         "cache": "pip",
-        "cache-dependency-path": "requirements-dev.txt",
+        "cache-dependency-path": "requirements/requirements-dev.txt",
     }
     if python != [setup]:
         problems.append(
-            f"the {job} job sets up Python as {python}, not the matrix's with pip's cache on requirements-dev.txt"
+            f"the {job} job sets up Python as {python}, not the matrix's with pip's cache on "
+            "requirements/requirements-dev.txt"
         )
     scripts = [str(step.get("run", "")) for step in steps]
     problems.extend(
@@ -1078,7 +1078,7 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
         for install in (
             digest_check,
             "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
-            "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+            "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt",
         )
         if not any(install in script for script in scripts)
     )
@@ -1118,7 +1118,7 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
 def tool_cache_problems(workflow: str, caches: dict[str, str], job: str = "suite") -> list[str]:
     """Report how validate.yml's tool caches in `job` depart from `caches`: each `actions/cache` key, mapped to the
     install command that runs when it misses. Every version a key names is a workflow-level `env` pin, so the install
-    and the key read one declaration, and pip's cache is keyed on requirements-dev.txt."""
+    and the key read one declaration, and pip's cache is keyed on requirements/requirements-dev.txt."""
     tree = read_workflow(workflow)
     steps = _steps(_mapping(tree, "jobs", job))
     keys = [
@@ -1142,21 +1142,21 @@ def tool_cache_problems(workflow: str, caches: dict[str, str], job: str = "suite
             problems.append(f"no step runs {command!r} when the cache keyed {key} misses")
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
     if [{"cache": item.get("cache"), "path": item.get("cache-dependency-path")} for item in python] != [
-        {"cache": "pip", "path": "requirements-dev.txt"}
+        {"cache": "pip", "path": "requirements/requirements-dev.txt"}
     ]:
-        problems.append("setup-python does not cache pip keyed on requirements-dev.txt")
+        problems.append("setup-python does not cache pip keyed on requirements/requirements-dev.txt")
     return problems
 
 
-# mypy's cache, which tool_cache_problems leaves to mypy_cache_problems: a folder the type checks write under, each in
-# a folder of its own, restored for the leg, since each leg's deal runs its own type checks, on the runner's platform
-# and the Python setup-python installed, which mypy writes its cache for, and requirements-dev.txt, which pins mypy. A
-# key is saved once, so the standard library's stubs, most of what mypy parses, stay cached until one of them changes,
-# while the repository's own modules are checked again as they change.
+# mypy's cache, which tool_cache_problems leaves to mypy_cache_problems: a folder the type checks write under, each in a
+# folder of its own, restored for the leg, since each leg's deal runs its own type checks, on the runner's platform and
+# the Python setup-python installed, which mypy writes its cache for, and requirements/requirements-dev.txt, which pins
+# mypy. A key is saved once, so the standard library's stubs, most of what mypy parses, stay cached until one of them
+# changes, while the repository's own modules are checked again as they change.
 MYPY_CACHE_PREFIX = "mypy-"
 MYPY_CACHE_KEY = (
     f"{MYPY_CACHE_PREFIX}${{{{ runner.os }}}}-${{{{ steps.python.outputs.python-version }}}}-"
-    "${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}"
+    "${{ strategy.job-index }}-${{ hashFiles('requirements/requirements-dev.txt') }}"
 )
 MYPY_CACHE_PATH = "${{ runner.temp }}/mypy-cache"
 
@@ -2098,7 +2098,9 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 # name. The join, named as the gate and never as the required check, runs whatever the legs did, reads the files, the
 # standard library, and git alone, fails an unfinished run, and caches a finished run's verdict under the key its
 # `verdict` output names.
-MUTATION_INSTALL = "python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt"
+MUTATION_INSTALL = (
+    "python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-mutation.txt"
+)
 MUTATION_GATE = "python -B tools/mutation_gate.py"
 # The pins mutation.yml's env repeats from validate.yml's, since a workflow cannot read another's.
 MUTATION_PINS = ("SHELLCHECK_VERSION", "SHELLCHECK_LINUX_SHA256")
@@ -2137,7 +2139,7 @@ MUTATION_SHELLCHECK_VERIFY = list(PINNED_TOOL_LINES[:2])
 MUTATION_LOCKED_PYTHON = {
     "python-version": "3.12",
     "cache": "pip",
-    "cache-dependency-path": "requirements-mutation.txt",
+    "cache-dependency-path": "requirements/requirements-mutation.txt",
 }
 MUTATION_MUTANTS = {"name": "mutation-mutants", "path": "mutation"}
 MUTATION_OUTPUTS = {leg: f"${{{{ steps.select.outputs.{leg} }}}}" for leg in ("linux", "windows")}

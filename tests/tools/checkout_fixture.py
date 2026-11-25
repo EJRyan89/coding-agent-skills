@@ -59,8 +59,8 @@ def follow(root: Path, git: GitClient, remote: str, merge: str) -> None:
 
 
 def push_to_own_fork(root: Path, git: GitClient, *options: str) -> None:
-    """Add a bare repository beside `root` as the remote fork, as CONTRIBUTING.md has a contributor without push access
-    do, and push main to it with `options`, such as -u."""
+    """Add a bare repository beside `root` as the remote fork, as .github/CONTRIBUTING.md has a contributor without push
+    access do, and push main to it with `options`, such as -u."""
     fork = root.parent / f"{root.name} fork.git"
     git.output(["init", "-q", "--bare", str(fork)])
     git.output(["remote", "add", "fork", str(fork)], directory=root)

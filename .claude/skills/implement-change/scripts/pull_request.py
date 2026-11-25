@@ -12,13 +12,13 @@
            so the strict run continuous integration fails is run before the push; a change that reaches every job
            prints why, and the command that runs them all
 
-The type-check jobs come from ejryan89-skill-core's type_check_roots, the reading validation builds its jobs from:
-the shared run of the roots checked together and, for a root `[tool.validation] mypy-strict` in `pyproject.toml`
-lists, its own strict run, or a skill's own run for a file under its `scripts/`. A suite under `tests/` is checked by
-the strict run of `tests`, whatever root the module it tests sits in. A change to a file that configures or pins every
-check (`pyproject.toml`, `requirements-dev.in`, `requirements-dev.txt`), or to a Python file in a folder other roots
-import (`deployer/`, `tools/`, and each folder `[tool.mypy] mypy_path` lists), reaches every type-check job, since a
-module that imports it may sit in any root.
+The type-check jobs come from ejryan89-skill-core's type_check_roots, the reading validation builds its jobs from: the
+shared run of the roots checked together and, for a root `[tool.validation] mypy-strict` in `pyproject.toml` lists, its
+own strict run, or a skill's own run for a file under its `scripts/`. A suite under `tests/` is checked by the strict
+run of `tests`, whatever root the module it tests sits in. A change to a file that configures or pins every check
+(`pyproject.toml`, `requirements/requirements-dev.in`, `requirements/requirements-dev.txt`), or to a Python file in a
+folder other roots import (`deployer/`, `tools/`, and each folder `[tool.mypy] mypy_path` lists), reaches every
+type-check job, since a module that imports it may sit in any root.
 
 The template is `pull_request_template.md`, in any case, in `.github/`, the top folder, or `docs/`, as GitHub reads
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no

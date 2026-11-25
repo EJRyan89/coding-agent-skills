@@ -1,7 +1,7 @@
 """Regression suite for tools/project_release_sync.py, with `gh api graphql` replaced by a fake board.
 
 The expected status lines and problem lines are written here as literals, not read back from the module, so a change
-to what the tool prints fails this suite until CONTRIBUTING.md and docs/releasing.md are revisited too.
+to what the tool prints fails this suite until .github/CONTRIBUTING.md and docs/releasing.md are revisited too.
 """
 
 from __future__ import annotations
@@ -403,7 +403,7 @@ def test_cli_entry_point_has_the_exact_status_output_and_process_exit_code(
 
 
 def test_contributing_runs_the_sync_after_filing_an_issue() -> None:
-    text = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    text = (REPOSITORY_ROOT / ".github/CONTRIBUTING.md").read_text(encoding="utf-8")
     section = text.split("\n## Issues and pull requests\n", 1)[1].split("\n## ", 1)[0]
     for phrase in ("Release", "python tools/project_release_sync.py", "version order"):
         assert phrase in section

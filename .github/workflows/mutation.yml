@@ -60,11 +60,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-mutation.txt
+          cache-dependency-path: requirements/requirements-mutation.txt
 
       - name: Install the mutation tools
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-mutation.txt
 
       # The newest verdict a finished run of this pull request left, if one is cached: each run saves its own under its
       # number and attempt, so the prefix restores the latest.
@@ -115,7 +115,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-mutation.txt
+          cache-dependency-path: requirements/requirements-mutation.txt
 
       # The pinned release's own Linux build, checked against its pinned digest and kept in its own folder ahead of the
       # image's ShellCheck on PATH.
@@ -140,7 +140,7 @@ jobs:
 
       - name: Install the mutation tools
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-mutation.txt
 
       - name: Download the mutants
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -189,7 +189,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-mutation.txt
+          cache-dependency-path: requirements/requirements-mutation.txt
 
       # The image ships no ShellCheck. The validation legs' cache holds the pinned release under this key, so a shard
       # restores it and reaches Chocolatey only on a miss, where an outage of its source would fail the shard before
@@ -227,7 +227,7 @@ jobs:
       # The lock installs mutmut too, which this leg never runs: it runs the mutants the Linux job made.
       - name: Install the mutation tools
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-mutation.txt
 
       - name: Download the mutants
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

@@ -76,7 +76,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: requirements/requirements-dev.txt
 
       # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
       # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/mypy-cache
-          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements/requirements-dev.txt') }}
 
       # Each leg installs the same tools, so a leg after the first restores them; a raised pin changes the key.
       - name: Restore ShellCheck
@@ -127,7 +127,7 @@ jobs:
       - name: Install development dependencies
         shell: pwsh
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify validation tools
@@ -234,7 +234,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: requirements/requirements-dev.txt
 
       # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
       # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
@@ -243,7 +243,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/mypy-cache
-          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements/requirements-dev.txt') }}
 
       # As on the Windows legs, a leg after the first restores the pinned tools; a raised pin changes the key.
       - name: Restore ShellCheck
@@ -299,7 +299,7 @@ jobs:
       - name: Install development dependencies
         shell: bash
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt
 
       - name: Verify validation tools
         shell: pwsh
@@ -382,7 +382,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: requirements/requirements-dev.txt
 
       # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
       # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
@@ -391,7 +391,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/mypy-cache
-          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements/requirements-dev.txt') }}
 
       # As on the other legs, a leg after the first restores the pinned tools; a raised pin changes the key.
       - name: Restore ShellCheck
@@ -458,7 +458,7 @@ jobs:
       - name: Install development dependencies
         shell: bash
         run: |
-          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/requirements-dev.txt
 
       - name: Verify validation tools
         shell: pwsh

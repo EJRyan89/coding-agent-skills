@@ -36,7 +36,7 @@ REPOSITORY_SKILLS = ".claude/skills"
 PYPROJECT = "pyproject.toml"
 # The development dependencies' pins and their hash lock, which pin the ruff, mypy, and pytest every Python check and
 # suite runs on, so a bump reaches the format, lint, and type checks and every Python suite.
-DEVELOPMENT_DEPENDENCIES = ("requirements-dev.in", "requirements-dev.txt")
+DEVELOPMENT_DEPENDENCIES = ("requirements/requirements-dev.in", "requirements/requirements-dev.txt")
 # The files besides Python's own that set how the format, lint, and type checks read it.
 PYTHON_CHECK_FILES = (PYPROJECT, *DEVELOPMENT_DEPENDENCIES)
 # The packages other type-check roots import from the repository root: the deployer, which tools/ and tests/ import,

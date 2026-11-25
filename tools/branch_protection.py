@@ -1,4 +1,5 @@
-"""Confirm that main's live branch protection, merge, issue, and security settings hold what CONTRIBUTING.md states.
+"""Confirm that main's live branch protection, merge, issue, and security settings hold what .github/CONTRIBUTING.md
+states.
 
 Usage:
   python tools/branch_protection.py

@@ -609,8 +609,8 @@ class TypeChecksCommandTests(Repository):
         "tools/gate.py",
         "deployer/plan.py",
         "tests/unit/test_gate.py",
-        "requirements-dev.in",
-        "requirements-dev.txt",
+        "requirements/requirements-dev.in",
+        "requirements/requirements-dev.txt",
     )
 
     @override
@@ -662,8 +662,8 @@ class TypeChecksCommandTests(Repository):
     def test_a_file_that_configures_every_check_or_that_other_roots_import_reaches_every_job(self) -> None:
         cases = {
             "pyproject.toml": "configures or pins every type check",
-            "requirements-dev.txt": "configures or pins every type check",
-            "requirements-dev.in": "configures or pins every type check",
+            "requirements/requirements-dev.txt": "configures or pins every type check",
+            "requirements/requirements-dev.in": "configures or pins every type check",
             "skills/core/scripts/shared.py": "is in skills/core/scripts, which other type-check roots import",
             "tools/gate.py": "is in tools, which other type-check roots import",
             "deployer/plan.py": "is in deployer, which other type-check roots import",
@@ -775,7 +775,7 @@ def test_this_repository_s_shared_modules_and_checker_files_reach_every_job() ->
         "tools/mutation_gate.py",
         "deployer/plan.py",
         "pyproject.toml",
-        "requirements-dev.txt",
+        "requirements/requirements-dev.txt",
         ".claude/skills/implement-change/scripts/pull_request.py",
     ]
     assert [name for name, _ in every_job_reasons(changed, imported)] == changed[:5]

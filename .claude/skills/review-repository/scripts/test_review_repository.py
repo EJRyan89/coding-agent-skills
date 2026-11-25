@@ -507,6 +507,8 @@ class ManifestTests(unittest.TestCase):
             "README.md": {"documentation"},
             "CLAUDE.md": {"documentation"},
             ".github/pull_request_template.md": {"documentation"},
+            ".github/CONTRIBUTING.md": {"documentation"},
+            ".github/SECURITY.md": {"documentation"},
             ".github/ISSUE_TEMPLATE/bug.md": {"documentation"},
         }
         # The workflow-token route matches every file and opens on what the diff's added lines say, which its condition
@@ -880,6 +882,7 @@ class DocumentationDriftTests(unittest.TestCase):
         )
         documents = [
             "*.md",
+            ".github/*.md",
             "docs/**/*.md",
             "agents/*.md",
             "skills/*/SKILL.md",
@@ -913,7 +916,7 @@ class DocumentationDriftTests(unittest.TestCase):
             text = (REPOSITORY / path).read_text(encoding="utf-8", errors="replace")
             if any(script.search(span) for unit in doc_passages.units(text) for _, span in unit.spans()):
                 naming.append(path)
-        self.assertIn("SECURITY.md", naming)
+        self.assertIn(".github/SECURITY.md", naming)
         self.assertIn(f"{SKILL}/references/trust-boundary.md", naming)
         self.assertIn("skills/audit-ai-config/references/audit-policy.md", naming)
         self.assertEqual([], [path for path in naming if not any(matches(path) for matches in searched)])
@@ -1156,7 +1159,7 @@ class SiblingSearchTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, rule)
         self.assertIn("`sibling-search` reviewer", rule)
-        contributing = (REPOSITORY / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        contributing = (REPOSITORY / ".github/CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertIn("for a `fix`, a `Siblings:` line in the body names the search", contributing)
         brief = " ".join((REPOSITORY / sibling_route()["profile"]).read_text(encoding="utf-8").split())
         for phrase in (

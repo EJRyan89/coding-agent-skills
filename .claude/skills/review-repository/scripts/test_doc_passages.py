@@ -187,10 +187,12 @@ class ConditionTests(unittest.TestCase):
         self.assertIn("PASSAGE skills/demo/SKILL.md:4 names sweep.py (script in skills/demo/scripts/sweep.py)", written)
 
     def test_every_document_an_agent_or_a_user_acts_on_is_searched(self) -> None:
-        # The top-level Markdown beside the README, the agent definitions, and the references a skill or a repository
-        # skill reads, at any depth below them, each name scripts as the guides do.
+        # The top-level Markdown beside the README and the community files GitHub also reads from .github/, the agent
+        # definitions, and the references a skill or a repository skill reads, at any depth below them, each name
+        # scripts as the guides do.
         searched = [
             "SECURITY.md",
+            ".github/CONTRIBUTING.md",
             "AGENTS.md",
             "agents/helper.md",
             "skills/demo/references/policy.md",

@@ -149,7 +149,7 @@ REVIEW_REPOSITORY_UNPLACED = (
     ".claude/skills/review-repository/scripts/test_review_repository.py",
     ".claude/skills/review-repository/scripts/test_doc_passages.py",
     "README.md",
-    "CONTRIBUTING.md",
+    ".github/CONTRIBUTING.md",
     "docs/skills.md",
     "tests/tools/test_skill_evals.py",
 )

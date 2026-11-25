@@ -384,7 +384,7 @@ if ! git_quiet rev-parse --verify "HEAD^{tree}"; then
   echo "FAILED cannot read the tree the clone is on: ${GIT_REASON:-git answered no}"
   exit 1
 fi
-# Run in the clone, check trusts its untracked and ignored files, as the deployment below does and SECURITY.md
+# Run in the clone, check trusts its untracked and ignored files, as the deployment below does and .github/SECURITY.md
 # states: Python imports a module beside deploy.py first, and switching branches removes another branch's tracked
 # files, so only code the user ran can leave one there.
 CHECK_TREE=$CLONE
