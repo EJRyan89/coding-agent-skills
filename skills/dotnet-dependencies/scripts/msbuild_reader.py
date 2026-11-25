@@ -70,6 +70,8 @@ NUSPEC_DEPENDENCY_ID = "id"
 PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
 ASSETS_FILE = "project.assets.json"
+# What separates a restore's runtime-specific target from its framework, as in `net8.0/win-x64`.
+RUNTIME_SEPARATOR = "/"
 CONFIG_FILES = ("web.config", "app.config")
 
 
@@ -476,10 +478,22 @@ def assets_direct(frameworks: dict[str, Any], path: Path) -> dict[str, list[Pack
     return direct
 
 
+def runtime_target(framework: str, runtime: str) -> str:
+    """The name of a restore's target: its framework's, with `/<runtime>` after it for a runtime-specific target."""
+    return f"{framework}{RUNTIME_SEPARATOR}{runtime}" if runtime else framework
+
+
+def target_framework(target: str) -> str:
+    """The framework a restore's target builds, its runtime left off: what the project's build of it and its direct
+    dependencies are keyed by."""
+    return target.partition(RUNTIME_SEPARATOR)[0]
+
+
 def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) -> Assets:
     """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
-    the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, repeats its
-    framework's packages and is passed over.
+    the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, is a target of its own,
+    keyed `<framework>/<runtime>` (`runtime_target`), since a package's runtime.json may add packages there that its
+    framework's target lacks, as `dotnet nuget why` prints it; its direct dependencies are its framework's.
 
     Both are keyed by the name `$(TargetFramework)` holds for the framework, so its conditions read as written: the
     first of the project file's `declared` frameworks, then of the project section's, that is the same framework as
@@ -501,7 +515,8 @@ def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) ->
 
     nodes: dict[str, dict[str, PackageNode]] = {}
     for target, entries in targets.items():
-        framework = named(target.split("/", 1)[0])
+        written, _, runtime = target.partition(RUNTIME_SEPARATOR)
+        framework = runtime_target(named(written), runtime)
         if not isinstance(entries, dict):
             raise Unreadable(path, f"the assets file's target {target} is not an object")
         if framework in nodes:

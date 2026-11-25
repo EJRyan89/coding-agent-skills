@@ -28,7 +28,7 @@ SOLUTION_TEXT = (
     "'Lantern.Json':\r\n"
     "\r\n"
     "  [net8.0]                                                                      \r\n"
-    "  \u2514\u2500\u2500 Harbor.Core (v1.0.0)                                                      \r\n"
+    "  \u2514\u2500\u2500 Harbor.Core                                                               \r\n"
     "      \u2514\u2500\u2500 Quill.Http (v1.2.0)                                                   \r\n"
     f"          \u251c\u2500\u2500 Quill.Abstractions (v1.2.0)                                       \r\n"
     f"          \u2502   \u2514\u2500\u2500 {CYAN}Lantern.Json (v12.0.3){RESET}\r\n"
@@ -42,6 +42,27 @@ SOLUTION_TEXT = (
     "\r\n"
 )
 CORE_TEXT = SOLUTION_TEXT[SOLUTION_TEXT.index("Project 'Harbor.Core'") :]
+# A project's block as SDK 10.0.403 prints it: a referenced project by its name alone, and a runtime-specific target
+# after its framework's.
+PROJECT_NODE_TEXT = (
+    "Project 'App' has the following dependency graph(s) for 'B':\n"
+    "\n"
+    "  [net10.0]                                                                     \n"
+    "  ├── B (v2.0.0)                                                                \n"
+    "  └── Lib                                                                       \n"
+    "      └── A (v1.0.0)                                                            \n"
+    "          └── B (v2.0.0)                                                        \n"
+    "\n"
+    "  [net10.0/osx-arm64]                                                           \n"
+    "  ├── B (v2.0.0)                                                                \n"
+    "  ├── Lib                                                                       \n"
+    "  │   └── A (v1.0.0)                                                            \n"
+    "  │       └── B (v2.0.0)                                                        \n"
+    "  └── P (v1.0.0)                                                                \n"
+    "      └── runtime.osx-arm64.P (v1.0.0)                                          \n"
+    "          └── B (v2.0.0)                                                        \n"
+    "\n"
+)
 ABSENT_TEXT = "Project 'Harbor.Core' does not have a dependency on 'Nothing.Here'.\r\n"
 NO_ASSETS_TEXT = (
     "\x1b[38;5;9mNo assets file was found for \x1b[0m\r\n"
@@ -60,7 +81,7 @@ class ParseTests(unittest.TestCase):
                     "Harbor.Web",
                     "net8.0",
                     (
-                        ("Harbor.Core", "1.0.0"),
+                        ("Harbor.Core", ""),
                         ("Quill.Http", "1.2.0"),
                         ("Quill.Abstractions", "1.2.0"),
                         ("Lantern.Json", "12.0.3"),
@@ -69,13 +90,28 @@ class ParseTests(unittest.TestCase):
                 SdkPath(
                     "Harbor.Web",
                     "net8.0",
-                    (("Harbor.Core", "1.0.0"), ("Quill.Http", "1.2.0"), ("Lantern.Json", "12.0.3")),
+                    (("Harbor.Core", ""), ("Quill.Http", "1.2.0"), ("Lantern.Json", "12.0.3")),
                 ),
             ],
             answer.paths["Harbor.Web"],
         )
         # A framework with no chains is passed over; the chain belongs to the framework printed last before it.
         self.assertEqual([SdkPath("Harbor.Core", "net472", (("Lantern.Json", "12.0.3"),))], answer.paths["Harbor.Core"])
+
+    def test_a_project_node_the_sdk_prints_without_a_version_is_a_hop_of_its_own(self) -> None:
+        # Captured from SDK 10.0.403: a referenced project is printed by its name alone, with no version, under a
+        # package printed before it at the same depth.
+        answer = parse_why(PROJECT_NODE_TEXT, "B")
+        self.assertEqual(
+            [
+                SdkPath("App", "net10.0", (("B", "2.0.0"),)),
+                SdkPath("App", "net10.0", (("Lib", ""), ("A", "1.0.0"), ("B", "2.0.0"))),
+                SdkPath("App", "net10.0/osx-arm64", (("B", "2.0.0"),)),
+                SdkPath("App", "net10.0/osx-arm64", (("Lib", ""), ("A", "1.0.0"), ("B", "2.0.0"))),
+                SdkPath("App", "net10.0/osx-arm64", (("P", "1.0.0"), ("runtime.osx-arm64.P", "1.0.0"), ("B", "2.0.0"))),
+            ],
+            answer.paths["App"],
+        )
 
     def test_a_project_without_the_dependency_is_answered_with_no_chain(self) -> None:
         answer = parse_why(ABSENT_TEXT, "Nothing.Here")

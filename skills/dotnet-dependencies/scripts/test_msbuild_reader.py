@@ -155,7 +155,8 @@ class ReaderTests(unittest.TestCase):
             },
         }
         path = self.write("obj/project.assets.json", json.dumps(document))
-        names = ["net8.0", "net472", "net8.0-windows"]
+        # A runtime-specific target is keyed by its framework's name, with its runtime after it.
+        names = ["net8.0", "net472", "net472/win-x86", "net8.0-windows"]
         assets = read_assets(path, TreeReader(self.root))
         self.assertEqual(names, list(assets.nodes))
         self.assertEqual(["Lantern.Tuple"], list(assets.nodes["net472"]))
@@ -170,12 +171,17 @@ class ReaderTests(unittest.TestCase):
         # Without a project section the project file's own names key the restore, so its conditions read as written.
         path = self.write("obj/project.assets.json", json.dumps({**document, "project": {}}))
         self.assertEqual(
-            ["NET8.0", "net472", "net8.0-windows"],
+            ["NET8.0", "net472", "net472/win-x86", "net8.0-windows"],
             list(read_assets(path, TreeReader(self.root), ["NET8.0", "net472", "net8.0-windows"]).nodes),
         )
         # A target no name matches keeps the name the restore wrote.
         self.assertEqual(
-            [".NETCoreApp,Version=v8.0", ".NETFramework,Version=v4.7.2", "net8.0-windows7.0"],
+            [
+                ".NETCoreApp,Version=v8.0",
+                ".NETFramework,Version=v4.7.2",
+                ".NETFramework,Version=v4.7.2/win-x86",
+                "net8.0-windows7.0",
+            ],
             list(read_assets(path, TreeReader(self.root)).nodes),
         )
 
@@ -417,7 +423,9 @@ class ReaderTests(unittest.TestCase):
 
     def test_assets_give_each_frameworks_packages_and_direct_dependencies(self) -> None:
         assets = read_assets(self.write("obj/project.assets.json", json.dumps(ASSETS)), TreeReader(self.root))
-        self.assertEqual(["net8.0"], list(assets.nodes))
+        # The runtime-specific target is read for the packages it holds, which a runtime.json may add.
+        self.assertEqual(["net8.0", "net8.0/win-x64"], list(assets.nodes))
+        self.assertEqual(["Lantern.Json"], list(assets.nodes["net8.0/win-x64"]))
         self.assertEqual(["Lantern.Json", "Quill.Http"], sorted(assets.nodes["net8.0"]))
         quill = assets.nodes["net8.0"]["Quill.Http"]
         self.assertEqual(

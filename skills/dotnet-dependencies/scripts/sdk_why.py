@@ -2,17 +2,18 @@
 
 The command is run once per project, with the project and one package, in the project's folder, so the .NET host picks
 the SDK by the nearest global.json at or above the project, the one MSBuild's resolvers read, and prints a block: a
-heading naming the project by its file stem, then for each target framework a tree of the dependency chains that reach
-the package, drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the
-console width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether
-it found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
-That text is in the CLI's language, which follows the machine's display language unless `DOTNET_CLI_UI_LANGUAGE` or
-`VSLANG` names another, so the command runs with `DOTNET_CLI_UI_LANGUAGE` set to English (`CLI_LANGUAGE`) and every
-other variable kept, and prints the English the parser reads on every machine. The parser strips the colors, reads a
-chain's depth from the column of its branch, and keeps every chain that ends at the package; a project with no heading
-in the output, or whose run exited nonzero after printing one, was not answered, and the caller walks its own graph, a
-run with no heading naming the first line it printed, which the parser could not read. The answer is keyed by the
-project path the run was for, never by the heading's stem, which two projects may share.
+heading naming the project by its file stem, then for each target framework, and each runtime-specific target as
+`<framework>/<runtime>`, a tree of the dependency chains that reach the package, drawn with box-drawing branches, each
+package with its version and each referenced project by its name alone, and the package highlighted with a terminal
+color. The heading wraps at the console width even when the output is a pipe, the tree lines are padded to it instead,
+and the command exits 0 whether it found the package, found no dependency on it, or found no assets file for a project,
+so the text alone says which. That text is in the CLI's language, which follows the machine's display language unless
+`DOTNET_CLI_UI_LANGUAGE` or `VSLANG` names another, so the command runs with `DOTNET_CLI_UI_LANGUAGE` set to English
+(`CLI_LANGUAGE`) and every other variable kept, and prints the English the parser reads on every machine. The parser
+strips the colors, reads a chain's depth from the column of its branch, and keeps every chain that ends at the package;
+a project with no heading in the output, or whose run exited nonzero after printing one, was not answered, and the
+caller walks its own graph, a run with no heading naming the first line it printed, which the parser could not read. The
+answer is keyed by the project path the run was for, never by the heading's stem, which two projects may share.
 """
 
 from __future__ import annotations
@@ -37,7 +38,8 @@ HEADING = re.compile(
     r"^Project '(?P<name>.+?)' (?P<state>has the following dependency graph|does not have a dependency)"
 )
 FRAMEWORK = re.compile(r"^\s*\[(?P<framework>[^\]]+)\]\s*$")
-NODE = re.compile(r"^(?P<indent>[\s│]*)[├└]──\s+(?P<name>.+?)\s+\(v(?P<version>[^)]+)\)\s*$")
+# A tree line: a package with its version, or a referenced project by its name alone.
+NODE = re.compile(r"^(?P<indent>[\s│]*)[├└]──\s+(?P<name>.+?)(?:\s+\(v(?P<version>[^)]+)\))?\s*$")
 NO_ASSETS = "No assets file was found"
 # The CLI language the command runs in, whatever the machine's display language or the variables naming another, so
 # its text is the English HEADING and NO_ASSETS match. The invariant globalization setting is not added: with it the
@@ -90,7 +92,8 @@ class Services:
 
 @dataclass(frozen=True)
 class SdkPath:
-    """One chain the SDK printed: the project's stem, the framework, and each hop's name and version."""
+    """One chain the SDK printed: the project's stem, the framework, and each hop's name and version, `""` for a
+    referenced project, which the SDK prints by its name alone."""
 
     project: str
     framework: str
@@ -161,7 +164,7 @@ def parse_why(text: str, package: str) -> ParsedWhy:
         end = index + 1
         depth = max(0, (len(node.group("indent")) - TREE_BASE) // TREE_STEP)
         del stack[depth:]
-        stack.append((node.group("name"), node.group("version")))
+        stack.append((node.group("name"), node.group("version") or ""))
         if ordinal_fold(node.group("name")) == target:
             answer.paths[project].append(SdkPath(project, framework, tuple(stack)))
     answer.after = lines[end:] if answer.answered else []

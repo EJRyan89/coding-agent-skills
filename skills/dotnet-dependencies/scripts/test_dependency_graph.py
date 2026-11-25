@@ -236,6 +236,16 @@ class Fixture(unittest.TestCase):
             ),
         )
 
+    def unplace_assets(self, *projects: Path) -> None:
+        """Have each project name its assets file through a property no file sets, and hold none in obj/, so the walk
+        cannot place it and only `--ask-sdk` reaches it, through `dotnet nuget why`; its walk then knows its direct
+        references alone."""
+        for project in projects:
+            text = project.read_text(encoding="utf-8")
+            opening = text.index(">", text.index("<Project")) + 1
+            project.write_text(text[:opening] + UNPLACED_ASSETS + text[opening:], encoding="utf-8", newline="\n")
+            (project.parent / "obj" / "project.assets.json").unlink(missing_ok=True)
+
     def run_main(self, *arguments: str, services: Services | None = None) -> tuple[int, list[list[str]]]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -345,10 +355,11 @@ class GraphTests(Fixture):
         )
         self.assertEqual([["7", "1", "0"]], self.lines(rows, "SUMMARY"))
 
-    def test_why_asks_the_sdk_only_for_a_restored_sdk_project_and_marks_each_line(self) -> None:
+    def test_why_asks_the_sdk_only_under_the_flag_for_a_project_whose_assets_the_walk_cannot_place(self) -> None:
         root = self.mixed_solution()
+        self.unplace_assets(self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj")
         code, rows = self.run_main(
-            "why", "Lantern.Json", "Nothing.Here", "--root", str(root), services=self.with_dotnet
+            "why", "Lantern.Json", "Nothing.Here", "--root", str(root), "--ask-sdk", services=self.with_dotnet
         )
         self.assertEqual(0, code)
         self.assertEqual(
@@ -371,20 +382,22 @@ class GraphTests(Fixture):
         )
         self.assertEqual({"graph"}, {row[3] for row in paths if not row[0].startswith("src/Harbor.Core")})
         self.assertEqual([], self.lines(rows, "SDK_FAILED"))
-        self.assertEqual(7, len(paths))
+        # The walk knows Harbor.Core's direct references alone, so the chains through it end at Quill.Http.
+        self.assertEqual(5, len(paths))
         self.assertEqual([["Nothing.Here"]], self.lines(rows, "MISSING"))
-        self.assertEqual([["7", "1", "1"]], self.lines(rows, "SUMMARY"))
+        self.assertEqual([["5", "1", "1"]], self.lines(rows, "SUMMARY"))
 
-    def test_a_stale_or_absent_restore_and_an_sdk_run_that_answers_nothing_fall_back_to_the_graph(self) -> None:
+    def test_a_stale_or_absent_restore_is_answered_by_the_walk_alone(self) -> None:
+        # A restore older than its project is read as it stands, as `dotnet nuget why` reads it; the SDK is not asked.
         root = self.mixed_solution()
         assets = self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json"
         old = time.time() - 600
         os.utime(assets, (old, old))
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
         self.assertEqual([], self.sdk.commands)
         self.assertEqual({"graph"}, {row[3] for row in self.lines(rows, "PATH")})
         assets.unlink()
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
         self.assertEqual([], self.sdk.commands)
         self.assertEqual(
             [["src/Harbor.Core/Harbor.Core.csproj", "sdk", "direct", "listed"]],
@@ -395,6 +408,7 @@ class GraphTests(Fixture):
 
     def test_a_failed_sdk_run_is_reported_and_leaves_the_project_to_the_graph(self) -> None:
         root = self.mixed_solution()
+        self.unplace_assets(self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj")
         for run, reason in (
             (
                 lambda arguments, timeout, folder: Completed(1, "boom"),
@@ -413,22 +427,15 @@ class GraphTests(Fixture):
         ):
             with self.subTest(reason=reason):
                 services = Services(run=run, which=self.with_dotnet.which)
-                code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
-                # The failure is not a finding in the solution: the graph walk answered the project.
+                code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=services)
+                # The failure is not a finding in the solution: the graph walk answered the project, from its direct
+                # references alone, which reach no Lantern.Json, and every other project as it would without the SDK.
                 self.assertEqual(0, code)
                 self.assertEqual(
                     [["src/Harbor.Core/Harbor.Core.csproj", "Lantern.Json", reason]], self.lines(rows, "SDK_FAILED")
                 )
-                self.assertIn(
-                    [
-                        "src/Harbor.Core/Harbor.Core.csproj",
-                        "net8.0",
-                        "Lantern.Json",
-                        "graph",
-                        "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
-                    ],
-                    self.lines(rows, "PATH"),
-                )
+                _, walked = self.run_main("why", "Lantern.Json", "--root", str(root))
+                self.assertEqual(self.lines(walked, "PATH"), self.lines(rows, "PATH"))
 
     def test_why_all_lists_everything_one_project_reaches_with_its_first_hop(self) -> None:
         root = self.mixed_solution()
@@ -834,32 +841,32 @@ class GraphTests(Fixture):
         self.assertEqual(1, len([row for row in self.lines(rows, "PATH") if "Web" in row[0]]))
 
     def test_with_the_sdk_answering_every_chain_within_the_limit_is_printed(self) -> None:
-        # The walk's package chain is the one the SDK printed, so it is printed as `sdk` and the assembly chain past
-        # the limit is the one cut.
+        # The SDK's chain is printed first, so the walk's assembly chain past the limit is the one cut.
         root = self.mixed_solution()
         reference = '<Reference Include="Lantern.Json"><HintPath>lib\\Lantern.Json.dll</HintPath></Reference>'
-        self.write(
+        core_file = self.write(
             "src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT.replace("</ItemGroup>", f"{reference}</ItemGroup>")
         )
-        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        self.unplace_assets(core_file)
         original = dependency_graph.PATH_LIMIT
         dependency_graph.PATH_LIMIT = 1
         self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
         core = "src/Harbor.Core/Harbor.Core.csproj"
         self.assertEqual(
             [[core, "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"]],
             [row for row in self.lines(rows, "PATH") if row[0] == core],
         )
+        # The cut chain is the walk's, which knows no restore of the project.
         self.assertEqual(
-            [[core, "net8.0", "Lantern.Json", "1"]], [row for row in self.lines(rows, "TRUNCATED") if row[0] == core]
+            [[core, "-", "Lantern.Json", "1"]], [row for row in self.lines(rows, "TRUNCATED") if row[0] == core]
         )
         dependency_graph.PATH_LIMIT = 2
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
         self.assertEqual(
             [
                 [core, "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"],
-                [core, "net8.0", "Lantern.Json", "graph", "Lantern.Json (assembly)"],
+                [core, "-", "Lantern.Json", "graph", "Lantern.Json (assembly)"],
             ],
             [row for row in self.lines(rows, "PATH") if row[0] == core],
         )
@@ -1084,10 +1091,10 @@ SHARED_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup><PackageReference Include="Lantern.Json" Version="12.0.3" /></ItemGroup>
 </Project>
 """
-# The SDK prints a project reference at the project's own version.
+# The SDK prints a project reference by its name alone.
 APP_SDK_TEXT = (
     "Project 'Harbor.App' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net472]\r\n"
-    "  └── Harbor.Shared (v1.0.0)\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
+    "  └── Harbor.Shared\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
 )
 # A host that pins a package above the version the project it references asks for, each restored on its own.
 HOST_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
@@ -1124,11 +1131,7 @@ DATA_ASSETS = {
 }
 HOST_SDK_TEXT = (
     "Project 'Harbor.Host' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
-    "  ├── Harbor.Data (v1.0.0)\r\n  │   └── Lantern.Json (v13.0.1)\r\n  └── Lantern.Json (v13.0.1)\r\n\r\n"
-)
-DATA_SDK_TEXT = (
-    "Project 'Harbor.Data' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
-    "  └── Lantern.Json (v12.0.3)\r\n\r\n"
+    "  ├── Harbor.Data\r\n  │   └── Lantern.Json (v13.0.1)\r\n  └── Lantern.Json (v13.0.1)\r\n\r\n"
 )
 
 
@@ -1176,15 +1179,27 @@ class FrameworkAndAssemblyTests(Fixture):
         for services in (self.without_dotnet, with_sdk):
             with self.subTest(dotnet=services is with_sdk):
                 code, rows = self.run_main(
-                    "why", "Beacon.Shared", "Beacon.Legacy", "--root", str(self.root), services=services
+                    "why", "Beacon.Shared", "Beacon.Legacy", "--root", str(self.root), "--ask-sdk", services=services
                 )
                 self.assertEqual(0, code)
                 self.assertEqual(expected, self.lines(rows, "PATH"))
                 self.assertEqual([["2", "2", "0"]], self.lines(rows, "SUMMARY"))
-        # The SDK was asked for both names and found no package by either, so the graph walk answered them.
+        # The walk read the restore where it looks, so the SDK was not asked.
+        self.assertEqual([], sdk.commands)
+        # Under the flag where the walk cannot place the restore, the SDK was asked for both names and found no package
+        # by either, so the walk answered them from the project file, which names the assembly reference alone.
+        self.unplace_assets(project)
+        _, rows = self.run_main(
+            "why", "Beacon.Shared", "Beacon.Legacy", "--root", str(self.root), "--ask-sdk", services=with_sdk
+        )
         self.assertEqual(
             [[str(project), "Beacon.Shared"], [str(project), "Beacon.Legacy"]], [c[3:] for c in sdk.commands]
         )
+        self.assertEqual(
+            [["src/Harbor.Api/Harbor.Api.csproj", "-", "Beacon.Legacy", "graph", "Beacon.Legacy (assembly)"]],
+            self.lines(rows, "PATH"),
+        )
+        self.api_solution()
         _, rows = self.run_main("where", "beacon.shared", "--root", str(self.root))
         self.assertEqual(
             [
@@ -1201,17 +1216,25 @@ class FrameworkAndAssemblyTests(Fixture):
         )
 
     def test_dotnet_changes_only_the_source_of_a_package_chain(self) -> None:
+        # Restored where the walk looks, the project is answered by the walk alone; where the walk cannot place its
+        # restore, the SDK answers under the flag, printing the route the walk finds from the project file once, as
+        # `sdk`, with the frameworks the SDK names.
         project = self.api_solution()
-        _, with_sdk = self.sdk_services({(same_path(project), "lantern.bundle"): BUNDLE_SDK_TEXT})
+        sdk, with_sdk = self.sdk_services({(same_path(project), "lantern.bundle"): BUNDLE_SDK_TEXT})
         answers: dict[str, list[list[str]]] = {}
-        for source, services in (("sdk", with_sdk), ("graph", self.without_dotnet)):
-            _, rows = self.run_main("why", "Lantern.Bundle", "--root", str(self.root), services=services)
+        for source, services in (("graph", with_sdk), ("plain", self.without_dotnet)):
+            _, rows = self.run_main("why", "Lantern.Bundle", "--root", str(self.root), "--ask-sdk", services=services)
             answers[source] = self.lines(rows, "PATH")
+        self.unplace_assets(project)
+        _, rows = self.run_main("why", "Lantern.Bundle", "--root", str(self.root), "--ask-sdk", services=with_sdk)
+        answers["sdk"] = self.lines(rows, "PATH")
         self.assertEqual(
             [["src/Harbor.Api/Harbor.Api.csproj", "net8.0;net9.0", "Lantern.Bundle", "sdk", "Lantern.Bundle (v1.0.0)"]],
             answers["sdk"],
         )
         self.assertEqual([[*row[:3], "graph", row[4]] for row in answers["sdk"]], answers["graph"])
+        self.assertEqual(answers["graph"], answers["plain"])
+        self.assertEqual(1, len(sdk.commands))
 
     def test_a_framework_whose_restore_holds_no_package_is_labelled_with_none(self) -> None:
         self.write("src/Harbor.Tuple/Harbor.Tuple.csproj", TUPLE_PROJECT)
@@ -1250,7 +1273,7 @@ class FrameworkAndAssemblyTests(Fixture):
         )
         self.assertEqual(1, code)
 
-    def test_a_package_chain_the_sdk_cannot_see_is_kept_and_dotnet_changes_only_the_source(self) -> None:
+    def test_a_package_chain_the_sdk_cannot_see_is_kept_beside_its_answer(self) -> None:
         app = self.write("src/Harbor.App/Harbor.App.csproj", APP_PROJECT)
         self.write("src/Harbor.App/obj/project.assets.json", json.dumps(APP_ASSETS))
         self.write("src/Harbor.Legacy/Harbor.Legacy.csproj", LEGACY_PROJECT)
@@ -1264,37 +1287,39 @@ class FrameworkAndAssemblyTests(Fixture):
         )
         self.write("src/Harbor.Shared/Harbor.Shared.csproj", SHARED_PROJECT)
         self.write("Harbor.sln", solution("src\\Harbor.App\\Harbor.App.csproj"))
-        # packages.config dependencies do not flow into a PackageReference restore, so the SDK finds no Legacy.Pkg;
-        # it finds Lantern.Json through Harbor.Shared, printing the project at its own version.
-        sdk, with_sdk = self.sdk_services({(same_path(app), "lantern.json"): APP_SDK_TEXT})
-        expected = {
-            "Legacy.Pkg": [
-                [
-                    "src/Harbor.App/Harbor.App.csproj",
-                    "net472",
-                    "graph",
-                    "Harbor.Legacy (project) > Legacy.Pkg (v1.0.0)",
-                ],
-                ["src/Harbor.Legacy/Harbor.Legacy.csproj", "-", "graph", "Legacy.Pkg (v1.0.0)"],
-            ],
-            "Lantern.Json": [
-                [
-                    "src/Harbor.App/Harbor.App.csproj",
-                    "net472",
-                    "sdk",
-                    "Harbor.Shared (project) > Lantern.Json (v12.0.3)",
-                ],
-                ["src/Harbor.Shared/Harbor.Shared.csproj", "-", "graph", "Lantern.Json (v12.0.3)"],
-            ],
-        }
-        for name, lines in expected.items():
-            with self.subTest(name=name):
-                _, rows = self.run_main("why", name, "--root", str(self.root), services=with_sdk)
-                self.assertEqual([[*line[:2], name, *line[2:]] for line in lines], self.lines(rows, "PATH"))
-                self.assertEqual([["2", "1", "0"]], self.lines(rows, "SUMMARY"))
+        legacy = ["src/Harbor.Legacy/Harbor.Legacy.csproj", "-", "Legacy.Pkg", "graph", "Legacy.Pkg (v1.0.0)"]
+        shared = ["src/Harbor.Shared/Harbor.Shared.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"]
+        through_shared = "Harbor.Shared (project) > Lantern.Json (v12.0.3)"
+        through_legacy = "Harbor.Legacy (project) > Legacy.Pkg (v1.0.0)"
+        # Restored where the walk looks, the walk answers alone, under the restore's framework.
+        for name, lines in (
+            (
+                "Legacy.Pkg",
+                [["src/Harbor.App/Harbor.App.csproj", "net472", "Legacy.Pkg", "graph", through_legacy], legacy],
+            ),
+            (
+                "Lantern.Json",
+                [["src/Harbor.App/Harbor.App.csproj", "net472", "Lantern.Json", "graph", through_shared], shared],
+            ),
+        ):
+            with self.subTest(name=name, sdk=False):
                 _, rows = self.run_main("why", name, "--root", str(self.root))
-                self.assertEqual([[*line[:2], name, "graph", line[3]] for line in lines], self.lines(rows, "PATH"))
-                self.assertEqual([["2", "1", "0"]], self.lines(rows, "SUMMARY"))
+                self.assertEqual((lines, [["2", "1", "0"]]), (self.lines(rows, "PATH"), self.lines(rows, "SUMMARY")))
+        # Where the walk cannot place the assets, the SDK answers under the flag. packages.config dependencies do not
+        # flow into a PackageReference restore, so it finds no Legacy.Pkg, which the walk finds from the project file;
+        # it finds Lantern.Json through Harbor.Shared, the route the walk finds too, printed once.
+        self.unplace_assets(app)
+        sdk, with_sdk = self.sdk_services({(same_path(app), "lantern.json"): APP_SDK_TEXT})
+        for name, lines in (
+            ("Legacy.Pkg", [["src/Harbor.App/Harbor.App.csproj", "-", "Legacy.Pkg", "graph", through_legacy], legacy]),
+            (
+                "Lantern.Json",
+                [["src/Harbor.App/Harbor.App.csproj", "net472", "Lantern.Json", "sdk", through_shared], shared],
+            ),
+        ):
+            with self.subTest(name=name, sdk=True):
+                _, rows = self.run_main("why", name, "--root", str(self.root), "--ask-sdk", services=with_sdk)
+                self.assertEqual((lines, [["2", "1", "0"]]), (self.lines(rows, "PATH"), self.lines(rows, "SUMMARY")))
         self.assertEqual({str(app)}, {command[3] for command in sdk.commands})
 
     def test_every_framework_of_a_restore_answers_and_labels_its_lines(self) -> None:
@@ -1449,13 +1474,17 @@ class FrameworkAndAssemblyTests(Fixture):
                 self.assertEqual(
                     (0, [], [["0", "0"]]), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "SUMMARY"))
                 )
-                # The SDK names the second framework as the restore writes it, and answers the project's name for it.
+                # The SDK names the second framework as the restore writes it, and answers the project's name for it,
+                # where the walk cannot place the project's assets.
                 sdk_text = (
                     "Project 'Harbor.Desk' has the following dependency graph(s) for 'Lantern.WinRT':\r\n\r\n"
                     f"  [{written[1]}]\r\n  └── Lantern.WinRT (v1.0.0)\r\n\r\n"
                 )
+                self.unplace_assets(project)
                 _, with_sdk = self.sdk_services({(same_path(project), "lantern.winrt"): sdk_text})
-                _, rows = self.run_main("why", "Lantern.WinRT", "--root", str(self.root), services=with_sdk)
+                _, rows = self.run_main(
+                    "why", "Lantern.WinRT", "--root", str(self.root), "--ask-sdk", services=with_sdk
+                )
                 self.assertEqual(
                     [[label, declared[1], "Lantern.WinRT", "sdk", "Lantern.WinRT (v1.0.0)"]], self.lines(rows, "PATH")
                 )
@@ -1469,7 +1498,8 @@ class FrameworkAndAssemblyTests(Fixture):
         projects = []
         for folder, package in (("src/Api", "Lantern.Bundle"), ("tools/Api", "Quill.Http")):
             projects.append(self.write(f"{folder}/Shop.csproj", shop.format(package=package)))
-            # Each restore holds the chain its SDK answer prints, so the walk finds it too and it is printed once.
+            # Each restore lies where the walk cannot place it, so each is answered by the SDK under the flag.
+            self.unplace_assets(projects[-1])
             assets = {
                 "version": 3,
                 "targets": {
@@ -1494,7 +1524,7 @@ class FrameworkAndAssemblyTests(Fixture):
                 (same_path(projects[1]), "lantern.json"): chain.format(first="Quill.Http"),
             }
         )
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), "--ask-sdk", services=services)
         self.assertEqual(
             [
                 [
@@ -1525,40 +1555,42 @@ class FrameworkAndAssemblyTests(Fixture):
         )
         return host, data
 
-    def test_a_route_the_sdk_and_the_walk_both_find_is_printed_once_at_the_sdks_version(self) -> None:
-        # The host pins Lantern.Json above the version its referenced project asks for. The SDK prints the route
-        # through the project at the version the host resolves; the walk takes it from the project's own restore.
-        host, data = self.host_and_data_solution()
-        _, with_sdk = self.sdk_services(
-            {
-                (same_path(host), "lantern.json"): HOST_SDK_TEXT,
-                (same_path(data), "lantern.json"): DATA_SDK_TEXT,
-            }
-        )
+    def test_a_package_reached_through_a_project_reference_names_the_version_the_answering_project_resolves(
+        self,
+    ) -> None:
+        # The host pins Lantern.Json above the version its referenced project asks for. Its restore resolves the
+        # package at 13.0.1 for everything the host builds with, the route through the project included, as
+        # `dotnet nuget why` prints it from the same file; the project's own restore resolves 12.0.3, named after
+        # `graph`.
+        host, _ = self.host_and_data_solution()
         host_label, data_label = "src/Harbor.Host/Harbor.Host.csproj", "src/Harbor.Data/Harbor.Data.csproj"
-        expected = {
-            "sdk": [
-                [data_label, "net8.0", "Lantern.Json", "sdk", "Lantern.Json (v12.0.3)"],
-                [
-                    host_label,
-                    "net8.0",
-                    "Lantern.Json",
-                    "sdk",
-                    "Harbor.Data (project) > Lantern.Json (v13.0.1, graph v12.0.3)",
-                ],
-                [host_label, "net8.0", "Lantern.Json", "sdk", "Lantern.Json (v13.0.1)"],
-            ],
-            "graph": [
+        through_data = "Harbor.Data (project) > Lantern.Json (v13.0.1, graph v12.0.3)"
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
                 [data_label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"],
-                [host_label, "net8.0", "Lantern.Json", "graph", "Harbor.Data (project) > Lantern.Json (v12.0.3)"],
+                [host_label, "net8.0", "Lantern.Json", "graph", through_data],
                 [host_label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
             ],
-        }
-        for source, services in (("sdk", with_sdk), ("graph", self.without_dotnet)):
-            with self.subTest(source=source):
-                _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
-                self.assertEqual(expected[source], self.lines(rows, "PATH"))
-                self.assertEqual([["3", "1", "0"]], self.lines(rows, "SUMMARY"))
+            self.lines(rows, "PATH"),
+        )
+        # Where the walk cannot place the host's assets, the SDK answers it under the flag, and a route the walk finds
+        # too, from the host's project file, is printed once at the SDK's version, the walk's after `graph`.
+        self.unplace_assets(host)
+        sdk, with_sdk = self.sdk_services({(same_path(host), "lantern.json"): HOST_SDK_TEXT})
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), "--ask-sdk", services=with_sdk)
+        self.assertEqual(
+            [
+                [data_label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"],
+                [host_label, "net8.0", "Lantern.Json", "sdk", through_data],
+                [host_label, "net8.0", "Lantern.Json", "sdk", "Lantern.Json (v13.0.1)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual([[str(host), "Lantern.Json"]], [command[3:] for command in sdk.commands])
+        self.write("src/Harbor.Host/Harbor.Host.csproj", HOST_PROJECT)
+        self.write("src/Harbor.Host/obj/project.assets.json", json.dumps(HOST_ASSETS))
         # The versions the two restores resolve apart are a conflict, which `conflicts` reports.
         code, rows = self.run_main("conflicts", "--root", str(self.root))
         self.assertEqual(
@@ -1606,13 +1638,15 @@ class FrameworkAndAssemblyTests(Fixture):
                 self.write("src/Harbor.Tuple/obj/project.assets.json", json.dumps({**assets, "project": {}}))
                 code, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root))
                 self.assertEqual((0, why, []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
-        # An SDK that prints the long name answers the framework the project names.
+        # An SDK that prints the long name answers the framework the project names, where the walk cannot place the
+        # project's assets.
         sdk_text = (
             "Project 'Harbor.Tuple' has the following dependency graph(s) for 'Lantern.Tuple':\r\n\r\n"
             "  [.NETFramework,Version=v4.7.2]\r\n  └── Lantern.Tuple (v4.5.0)\r\n\r\n"
         )
+        self.unplace_assets(project)
         _, with_sdk = self.sdk_services({(same_path(project), "lantern.tuple"): sdk_text})
-        _, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root), services=with_sdk)
+        _, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root), "--ask-sdk", services=with_sdk)
         self.assertEqual([[*why[0][:3], "sdk", why[0][4]]], self.lines(rows, "PATH"))
 
     def test_two_referenced_projects_with_one_assembly_name_are_each_walked(self) -> None:
@@ -1656,6 +1690,245 @@ def plain_nuspec(name: str, version: str, *dependencies: str) -> str:
     listed = "".join(f'<dependency id="{dependency}" version="1.0.0" />' for dependency in dependencies)
     metadata = f"<id>{name}</id><version>{version}</version><dependencies>{listed}</dependencies>"
     return f"<package><metadata>{metadata}</metadata></package>"
+
+
+# A restore of Harbor.Core with a runtime-specific target, as `RuntimeIdentifiers` makes one: a package's runtime.json
+# adds a package there, through which a chain reaches Lantern.Json on that runtime alone.
+CORE_TARGET: dict[str, Any] = json.loads(json.dumps(CORE_ASSETS))["targets"]["net8.0"]
+RUNTIME_ASSETS = {
+    **CORE_ASSETS,
+    "targets": {
+        "net8.0": CORE_TARGET,
+        "net8.0/win-x64": {
+            **CORE_TARGET,
+            "Quill.Http/1.2.0": {
+                "type": "package",
+                "dependencies": {"Lantern.Json": "12.0.3", "runtime.win-x64.Quill.Native": "1.2.0"},
+            },
+            "runtime.win-x64.Quill.Native/1.2.0": {"type": "package", "dependencies": {"Lantern.Json": "12.0.3"}},
+        },
+    },
+}
+# Why the walk may not have read the assets file of a project whose evaluation leaves its place unsettled.
+UNSETTLED_ASSETS = (
+    "the walk cannot settle $(ProjectAssetsFile), which names the restore's assets file, so it reads the one in obj/,"
+    " if any, where a restore writes it unless a file moves it"
+)
+# What `--ask-sdk` adds to a line naming a project whose assets file the walk may not have read.
+ASK_SDK_ADVICE = (
+    "; rerun why with --ask-sdk to have dotnet nuget why locate it, which lets MSBuild and the .NET host read whatever"
+    " the project and the machine's SDK configuration lead them to, beyond the examined tree"
+)
+# A project whose assets file lies where no file says, and the SDK's answer for it.
+UNPLACED_ASSETS = "<PropertyGroup><ProjectAssetsFile>$(Elsewhere)</ProjectAssetsFile></PropertyGroup>"
+UNPLACED_SDK_TEXT = (
+    "Project 'Moved' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
+    "  └── Quill.Http (v1.2.0)\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
+)
+
+
+class AssetsWalkTests(Fixture):
+    """The walk answers from the restore's assets file wherever its evaluation places it inside the tree, with every
+    chain, version, and framework `dotnet nuget why` would print from that file; the SDK is asked only under
+    `--ask-sdk`, and only for a project whose assets file the walk cannot place."""
+
+    def test_a_runtime_specific_target_is_read_as_a_framework_of_its_own(self) -> None:
+        self.write("src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(RUNTIME_ASSETS))
+        root = self.write("Harbor.sln", solution("src\\Harbor.Core\\Harbor.Core.csproj"))
+        label = "src/Harbor.Core/Harbor.Core.csproj"
+        code, rows = self.run_main("why", "Lantern.Json", "runtime.win-x64.Quill.Native", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                [
+                    label,
+                    "net8.0;net8.0/win-x64",
+                    "Lantern.Json",
+                    "graph",
+                    "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
+                ],
+                [
+                    label,
+                    "net8.0/win-x64",
+                    "Lantern.Json",
+                    "graph",
+                    "Quill.Http (v1.2.0) > runtime.win-x64.Quill.Native (v1.2.0) > Lantern.Json (v12.0.3)",
+                ],
+                [
+                    label,
+                    "net8.0/win-x64",
+                    "runtime.win-x64.Quill.Native",
+                    "graph",
+                    "Quill.Http (v1.2.0) > runtime.win-x64.Quill.Native (v1.2.0)",
+                ],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual([], self.lines(rows, "MISSING"))
+
+    def test_a_project_referencing_a_runtime_restored_project_walks_it_under_its_own_framework(self) -> None:
+        # The referencing project has no runtime target, so the walk enters the referenced one's plain framework.
+        self.write("src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(RUNTIME_ASSETS))
+        self.write(
+            "src/Harbor.Tests/Harbor.Tests.csproj", TESTS_PROJECT.replace(' Include="Lantern.Json"', ' Include="X"')
+        )
+        root = self.write(
+            "Harbor.sln", solution("src\\Harbor.Core\\Harbor.Core.csproj", "src\\Harbor.Tests\\Harbor.Tests.csproj")
+        )
+        tests = self.root / "src" / "Harbor.Tests" / "Harbor.Tests.csproj"
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--project", str(tests))
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
+                    "Lantern.Json",
+                    "graph",
+                    "Harbor.Core (project) > Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
+                ]
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_the_walk_reads_the_assets_file_where_the_evaluation_settles_it_inside_the_tree(self) -> None:
+        # A Directory.Build.props moves the restore's folder, and a project names its assets file; the walk reads each
+        # there, and the SDK is not asked, the flag given or not.
+        self.write(
+            "Directory.Build.props",
+            "<Project><PropertyGroup><BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts/obj/"
+            "$(MSBuildProjectName)/</BaseIntermediateOutputPath></PropertyGroup></Project>\n",
+        )
+        self.write("src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("artifacts/obj/Harbor.Core/project.assets.json", json.dumps(CORE_ASSETS))
+        self.write(
+            "src/Named/Named.csproj",
+            restored_with("<PropertyGroup><ProjectAssetsFile>restore/assets.json</ProjectAssetsFile></PropertyGroup>"),
+        )
+        self.write("src/Named/restore/assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("Harbor.sln", solution("src\\Harbor.Core\\Harbor.Core.csproj", "src\\Named\\Named.csproj"))
+        for arguments in ((), ("--ask-sdk",)):
+            with self.subTest(arguments=arguments):
+                code, rows = self.run_main(
+                    "why", "Lantern.Json", "--root", str(root), *arguments, services=self.with_dotnet
+                )
+                self.assertEqual(0, code)
+                self.assertEqual(
+                    [
+                        ["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"],
+                        ["src/Named/Named.csproj", "sdk", "assets", "listed"],
+                    ],
+                    self.lines(rows, "PROJECT"),
+                )
+                self.assertEqual(
+                    {"src/Harbor.Core/Harbor.Core.csproj", "src/Named/Named.csproj"},
+                    {row[0] for row in self.lines(rows, "PATH")},
+                )
+                self.assertEqual(([], []), (self.lines(rows, "SDK_NOT_ASKED"), self.sdk.commands))
+
+    def test_a_restored_project_is_never_passed_to_the_sdk_even_under_the_flag(self) -> None:
+        root = self.mixed_solution()
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
+        self.assertEqual([], self.sdk.commands)
+        self.assertEqual({"graph"}, {row[3] for row in self.lines(rows, "PATH")})
+        self.assertEqual(([], []), (self.lines(rows, "SDK_NOT_ASKED"), self.lines(rows, "SDK_FAILED")))
+
+    def moved_solution(self) -> tuple[Path, Path]:
+        """Harbor.Core restored in obj/, and Moved, whose assets file lies where no file says, and Out, whose assets
+        file lies outside the examined tree; with the solution and Moved's project file."""
+        (self.root / "repo" / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("repo/src/Harbor.Core/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        moved = self.write("repo/src/Moved/Moved.csproj", restored_with(UNPLACED_ASSETS))
+        self.write(
+            "repo/src/Out/Out.csproj",
+            restored_with(
+                "<PropertyGroup><ProjectAssetsFile>../../../outside/project.assets.json</ProjectAssetsFile>"
+                "</PropertyGroup>"
+            ),
+        )
+        self.write("outside/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write(
+            "repo/App.sln",
+            solution("src\\Harbor.Core\\Harbor.Core.csproj", "src\\Moved\\Moved.csproj", "src\\Out\\Out.csproj"),
+        )
+        return root, moved
+
+    def test_without_the_flag_a_project_whose_assets_file_the_walk_cannot_place_names_the_flag(self) -> None:
+        root, _ = self.moved_solution()
+        outside = (self.root / "outside" / "project.assets.json").as_posix()
+        tree = (self.root / "repo").as_posix()
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual(0, code)
+        self.assertEqual([], self.sdk.commands)
+        self.assertEqual(
+            [
+                ["src/Moved/Moved.csproj", UNSETTLED_ASSETS + ASK_SDK_ADVICE],
+                [
+                    "src/Out/Out.csproj",
+                    f"the walk does not read the restore's assets file at {outside}: the path is outside the examined"
+                    f" tree {tree}, which the reader does not leave" + ASK_SDK_ADVICE,
+                ],
+            ],
+            self.lines(rows, "SDK_NOT_ASKED"),
+        )
+        self.assertEqual(
+            [
+                ["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"],
+                ["src/Moved/Moved.csproj", "sdk", "direct", "listed"],
+                ["src/Out/Out.csproj", "sdk", "direct", "listed"],
+            ],
+            self.lines(rows, "PROJECT"),
+        )
+        # The line names the project once, whatever the names asked; another query asks no SDK and names none.
+        _, rows = self.run_main("why", "Lantern.Json", "Quill.Http", "--root", str(root))
+        self.assertEqual(2, len(self.lines(rows, "SDK_NOT_ASKED")))
+        _, rows = self.run_main("conflicts", "--root", str(root))
+        self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
+
+    def test_under_the_flag_the_sdk_locates_an_assets_file_the_walk_cannot_place_and_nothing_withholds_it(
+        self,
+    ) -> None:
+        # Moved also imports a file outside the tree, which MSBuild reads under the flag's stated scope.
+        root, moved = self.moved_solution()
+        self.write("outside/Common.props", "<Project />\n")
+        self.write(
+            "repo/src/Moved/Moved.csproj",
+            restored_with(f'<Import Project="../../../outside/Common.props" />{UNPLACED_ASSETS}'),
+        )
+        sdk = TableSdk({(same_path(moved), "lantern.json"): UNPLACED_SDK_TEXT})
+        services = Services(run=sdk, which=self.with_dotnet.which)
+        out = self.root / "repo" / "src" / "Out" / "Out.csproj"
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=services)
+        self.assertEqual(1, code)  # the import outside the tree is an UNREADABLE line
+        self.assertEqual(
+            [[str(moved), "Lantern.Json"], [str(out), "Lantern.Json"]], sorted(c[3:] for c in sdk.commands)
+        )
+        self.assertIn(
+            ["src/Moved/Moved.csproj", "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
+
+    def test_under_the_flag_without_dotnet_the_line_says_so(self) -> None:
+        root, _ = self.moved_solution()
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk")
+        self.assertEqual([], self.sdk.commands)
+        self.assertEqual(
+            [
+                "src/Moved/Moved.csproj",
+                UNSETTLED_ASSETS + "; --ask-sdk was given, but dotnet is not installed",
+            ],
+            self.lines(rows, "SDK_NOT_ASKED")[0],
+        )
+
+    def test_the_flag_is_refused_outside_why_and_with_all(self) -> None:
+        for arguments in (("where", "X", "--ask-sdk"), ("why", "--all", "--project", "x.csproj", "--ask-sdk")):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    main(list(arguments), self.without_dotnet)
+                self.assertEqual(2, raised.exception.code)
 
 
 class OrdinalNameTests(Fixture):
@@ -1803,14 +2076,17 @@ SDK_ORDINAL_ASSETS = {
         }
     },
 }
-# The SDK names the route through the sharp-s package alone.
+# The SDK names the route through the referenced project and the sharp-s package alone.
 SDK_ORDINAL_TEXT = (
-    "Project 'Restored' has the following dependency graph(s) for 'Lantern.Deep':\r\n\r\n  [net8.0]\r\n"
-    f"  \u2514\u2500\u2500 {STRASSE_SHARP} (v1.0.0)\r\n      \u2514\u2500\u2500 Lantern.Deep (v1.0.0)\r\n\r\n"
+    "Project 'Host' has the following dependency graph(s) for 'Lantern.Deep':\r\n\r\n  [net8.0]\r\n"
+    "  \u2514\u2500\u2500 Restored\r\n"
+    f"      \u2514\u2500\u2500 {STRASSE_SHARP} (v1.0.0)\r\n          \u2514\u2500\u2500 Lantern.Deep (v1.0.0)\r\n\r\n"
 )
 
 
 def sdk_ordinal_why(root: Path, answered: bool) -> list[list[str]]:
+    """The PATH lines of `why Lantern.Deep` over Restored, a restored project naming both spellings, and, `answered`,
+    Host, which references it and whose assets the walk cannot place, which the SDK answers under `--ask-sdk`."""
     project = root / "Restored" / "Restored.csproj"
     project.parent.mkdir(parents=True)
     project.write_text(SDK_ORDINAL_PROJECT, encoding="utf-8")
@@ -1818,9 +2094,18 @@ def sdk_ordinal_why(root: Path, answered: bool) -> list[list[str]]:
     (project.parent / "obj" / "project.assets.json").write_text(json.dumps(SDK_ORDINAL_ASSETS), encoding="utf-8")
     sln = root / "Restored.sln"
     sln.write_text(solution("Restored\\Restored.csproj"), encoding="utf-8")
-    sdk = TableSdk({(same_path(project), "lantern.deep"): SDK_ORDINAL_TEXT})
-    services = Services(run=sdk, which=lambda name: "C:/tools/dotnet.exe" if answered and name == "dotnet" else None)
-    return keyed(cli_lines(sln, "why", "Lantern.Deep", services=services), "PATH")
+    if not answered:
+        return keyed(cli_lines(sln, "why", "Lantern.Deep"), "PATH")
+    host = root / "Host" / "Host.csproj"
+    host.parent.mkdir()
+    reference = '<ItemGroup><ProjectReference Include="../Restored/Restored.csproj" /></ItemGroup>'
+    host.write_text(
+        SDK_ORDINAL_PROJECT.replace("</Project>", f"{UNPLACED_ASSETS}{reference}</Project>"), encoding="utf-8"
+    )
+    sln.write_text(solution("Host\\Host.csproj", "Restored\\Restored.csproj"), encoding="utf-8")
+    sdk = TableSdk({(same_path(host), "lantern.deep"): SDK_ORDINAL_TEXT})
+    services = Services(run=sdk, which=lambda name: "C:/tools/dotnet.exe" if name == "dotnet" else None)
+    return keyed(cli_lines(sln, "why", "Lantern.Deep", "--ask-sdk", services=services), "PATH")
 
 
 def cli_lines(root: Path, *arguments: str, services: Services | None = None) -> list[list[str]]:
@@ -2011,11 +2296,19 @@ ORDINAL_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
         [
             [
                 "PATH",
-                "Restored/Restored.csproj",
+                "Host/Host.csproj",
                 "net8.0",
                 "Lantern.Deep",
                 "sdk",
-                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+                "Restored (project) > Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Host/Host.csproj",
+                "-",
+                "Lantern.Deep",
+                "graph",
+                "Restored (project) > Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
             ],
             [
                 "PATH",
@@ -2024,6 +2317,14 @@ ORDINAL_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
                 "Lantern.Deep",
                 "graph",
                 "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
             ],
         ],
     ),
@@ -2682,14 +2983,6 @@ CONFIG_REMOVE_PROJECT = """<Project ToolsVersion="15.0" xmlns="http://schemas.mi
   </ItemGroup>
 </Project>
 """
-OTHER_ROUTE_SDK_TEXT = (
-    "Project 'Harbor.Core' has the following dependency graph(s) for 'Lantern.Json':\r\n"
-    "\r\n"
-    "  [net8.0]\r\n"
-    "  \u2514\u2500\u2500 Other.Pkg (v1.0.0)\r\n"
-    "      \u2514\u2500\u2500 Lantern.Json (v12.0.3)\r\n"
-    "\r\n"
-)
 
 
 class ConditionalItemTests(Fixture):
@@ -3003,27 +3296,6 @@ class ConditionalItemTests(Fixture):
         )
         self.assertEqual(1, code)
 
-    def test_the_chain_limit_counts_the_sdks_chains(self) -> None:
-        root = self.mixed_solution()
-        core = self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj"
-        sdk = TableSdk({(same_path(core), "lantern.json"): OTHER_ROUTE_SDK_TEXT})
-        services = Services(run=sdk, which=self.with_dotnet.which)
-        original = dependency_graph.PATH_LIMIT
-        dependency_graph.PATH_LIMIT = 1
-        self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
-        _, rows = self.run_main("why", "Lantern.Json", "--project", str(core), "--root", str(root), services=services)
-        label = "src/Harbor.Core/Harbor.Core.csproj"
-        self.assertEqual(
-            [[label, "net8.0", "Lantern.Json", "sdk", "Other.Pkg (v1.0.0) > Lantern.Json (v12.0.3)"]],
-            self.lines(rows, "PATH"),
-        )
-        self.assertEqual([[label, "net8.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
-        # Within the limit, the SDK's chain and the walk's are both printed and nothing is cut.
-        dependency_graph.PATH_LIMIT = 2
-        _, rows = self.run_main("why", "Lantern.Json", "--project", str(core), "--root", str(root), services=services)
-        self.assertEqual(2, len(self.lines(rows, "PATH")))
-        self.assertEqual([], self.lines(rows, "TRUNCATED"))
-
     def test_a_when_without_a_condition_and_a_framework_of_thousands_of_digits_cost_only_their_own_facts(
         self,
     ) -> None:
@@ -3149,11 +3421,12 @@ class FailedSdkHeadingTests(Fixture):
         # The heading parses as a whole answer, that the project does not depend on the package, so a reader that
         # failed only a partial tree would take it and print no SDK_FAILED line.
         root = self.mixed_solution()
+        self.unplace_assets(self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj")
         services = Services(
             run=lambda arguments, timeout, folder: Completed(1, SDK_ABSENT_TEXT.format(name="Lantern.Json")),
             which=self.with_dotnet.which,
         )
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=services)
         self.assertEqual(0, code)
         self.assertEqual(
             [
@@ -3165,16 +3438,9 @@ class FailedSdkHeadingTests(Fixture):
             ],
             self.lines(rows, "SDK_FAILED"),
         )
-        self.assertIn(
-            [
-                "src/Harbor.Core/Harbor.Core.csproj",
-                "net8.0",
-                "Lantern.Json",
-                "graph",
-                "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
-            ],
-            self.lines(rows, "PATH"),
-        )
+        # The walk answers the project as it would without the SDK.
+        _, walked = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual(self.lines(walked, "PATH"), self.lines(rows, "PATH"))
 
 
 # A project outside the examined tree whose package only reading it would find.
@@ -4106,77 +4372,26 @@ class PathBoundTests(Fixture):
                 code, rows = self.run_main("why", "Lib.Pkg", "--root", str(root))
                 self.assertEqual((0, ["SUMMARY", "1", "1", "0"]), (code, rows[-1]))
 
-    def test_a_restored_project_whose_evaluation_refused_a_file_is_never_passed_to_the_sdk(self) -> None:
-        # MSBuild would read or stat what the evaluation refused: an import through a folder link leading out of the
-        # tree, or one outside it, and a GetPathOfFileAbove candidate or an Exists() path below such a link. So dotnet
-        # nuget why is not asked about that project, the walk answers it alone, and one line says why; a project whose
-        # evaluation refused nothing is still asked.
+    def test_nothing_the_evaluation_refuses_keeps_the_walk_from_the_restore_or_withholds_the_sdk_under_the_flag(
+        self,
+    ) -> None:
+        # Imports through a folder link leading out of the tree or outside it, read or not for a condition or a
+        # wildcard, and Exists() and GetPathOfFileAbove probes there: each is judged before anything touches it and
+        # never followed, and the walk reads each project's restore. An Import the reader does not read may set where
+        # the restore lies, so for those the walk reads obj/ and a line names the flag; under the flag the SDK is asked
+        # about exactly those, whatever else MSBuild would read for them.
         repo = self.root / "repo"
         outside = self.root / "outside"
         (repo / TEST_MARKER).mkdir(parents=True)
         self.write("outside/shared/Common.props", "<Project />\n")
         self.write("outside/Common.props", "<Project />\n")
-        shared = repo / "Shared"
-        link_folder(outside / "shared", shared)
-        self.addCleanup(remove_link, shared)
-        core = self.write("repo/src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
-        self.write("repo/src/Linked/Linked.csproj", importing("..\\..\\Shared\\Common.props"))
-        self.write("repo/src/Out/Out.csproj", importing("..\\..\\..\\outside\\Common.props"))
-        self.write(
-            "repo/src/Probe/Probe.csproj",
-            restored_with("<PropertyGroup Condition=\"Exists('..\\..\\Shared\\Flag.props')\"><P>1</P></PropertyGroup>"),
-        )
-        self.write(
-            "repo/src/Above/Above.csproj",
-            restored_with(
-                "<PropertyGroup><Up>$([MSBuild]::GetPathOfFileAbove('Flag.props', "
-                "'$(MSBuildThisFileDirectory)../../Shared'))</Up></PropertyGroup>"
-            ),
-        )
-        projects = ("Harbor.Core", "Linked", "Out", "Probe", "Above")
-        for name in projects:
-            self.write(f"repo/src/{name}/obj/project.assets.json", json.dumps(CORE_ASSETS))
-        root = self.write(
-            "repo/App.sln",
-            solution(*(f"src\\{name}\\{name}.csproj" for name in projects)),
-        )
-        not_asked = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
-        )
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual(1, code)
-        self.assertEqual([[str(core), "Lantern.Json"]], [command[3:] for command in self.sdk.commands])
-        self.assertEqual(
-            [
-                ["src/Above/Above.csproj", "Lantern.Json", not_asked.format("Shared/Flag.props")],
-                ["src/Linked/Linked.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
-                ["src/Out/Out.csproj", "Lantern.Json", not_asked.format((outside / "Common.props").as_posix())],
-                ["src/Probe/Probe.csproj", "Lantern.Json", not_asked.format("Shared/Flag.props")],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-        # The walk answers each project the SDK was not asked about.
-        walked = {row[0] for row in self.lines(rows, "PATH") if row[3] == "graph"}
-        self.assertEqual({f"src/{name}/{name}.csproj" for name in projects[1:]}, walked)
-
-    def test_a_restored_project_whose_unread_import_or_outside_probe_was_refused_is_never_passed_to_the_sdk(
-        self,
-    ) -> None:
-        # An Import the reader does not read, for a condition it cannot settle, on the Import or its ImportGroup, or a
-        # wildcard path, is still judged where it lies, a wildcard by its folder, since MSBuild may read it; and an
-        # Exists() path or a GetPathOfFileAbove start outside the tree, with no link, is kept too, since MSBuild
-        # stats it. So the SDK is asked about none of these projects, and each SDK_FAILED line names the path.
-        repo = self.root / "repo"
-        outside = self.root / "outside"
-        (repo / TEST_MARKER).mkdir(parents=True)
-        self.write("outside/shared/Common.props", "<Project />\n")
         self.write("outside/Flag.props", "<Project />\n")
         shared = repo / "Shared"
         link_folder(outside / "shared", shared)
         self.addCleanup(remove_link, shared)
-        core = self.write("repo/src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
-        bodies = {
+        unread_imports = {
+            "Linked": '<Import Project="..\\..\\Shared\\Common.props" />',
+            "Out": '<Import Project="..\\..\\..\\outside\\Common.props" />',
             "Cond": "<Import Project=\"..\\..\\Shared\\Common.props\" Condition=\"'$(CI)' == 'true'\" />",
             "Group": (
                 "<ImportGroup Condition=\"'$(OS)' == 'Windows_NT'\">"
@@ -4184,117 +4399,59 @@ class PathBoundTests(Fixture):
             ),
             "Wild": '<Import Project="..\\..\\Shared\\*.props" />',
             "WildOut": '<Import Project="..\\..\\Sh*\\..\\..\\outside\\x.props" />',
+        }
+        probes = {
+            "Probe": "<PropertyGroup Condition=\"Exists('..\\..\\Shared\\Flag.props')\"><P>1</P></PropertyGroup>",
+            "Above": (
+                "<PropertyGroup><Up>$([MSBuild]::GetPathOfFileAbove('Flag.props', "
+                "'$(MSBuildThisFileDirectory)../../Shared'))</Up></PropertyGroup>"
+            ),
             "ExOut": "<PropertyGroup Condition=\"Exists('..\\..\\..\\outside\\Flag.props')\"><P>1</P></PropertyGroup>",
             "AboveOut": (
                 "<PropertyGroup><Up>$([MSBuild]::GetPathOfFileAbove('Flag.props', "
                 "'$(MSBuildThisFileDirectory)../../../outside'))</Up></PropertyGroup>"
             ),
         }
-        for name, body in bodies.items():
+        for name, body in {**unread_imports, **probes}.items():
             self.write(f"repo/src/{name}/{name}.csproj", restored_with(body))
-        projects = ("Harbor.Core", *bodies)
-        for name in projects:
             self.write(f"repo/src/{name}/obj/project.assets.json", json.dumps(CORE_ASSETS))
-        root = self.write("repo/App.sln", solution(*(f"src\\{name}\\{name}.csproj" for name in projects)))
-        not_asked = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
-        )
+        names = sorted([*unread_imports, *probes])
+        root = self.write("repo/App.sln", solution(*(f"src\\{name}\\{name}.csproj" for name in names)))
         touched: list[tuple[str, bool]] = []
         with recording_follows(touched):
             code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        # Judging the paths reaches nothing outside, the Exists() path and the GetPathOfFileAbove start included.
         self.assertEqual([], followed_through(touched, [shared], outside))
-        self.assertEqual(1, code)
-        self.assertEqual([[str(core), "Lantern.Json"]], [command[3:] for command in self.sdk.commands])
-        self.assertEqual(
-            [
-                ["src/AboveOut/AboveOut.csproj", "Lantern.Json", not_asked.format(outside.as_posix())],
-                ["src/Cond/Cond.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
-                ["src/ExOut/ExOut.csproj", "Lantern.Json", not_asked.format((outside / "Flag.props").as_posix())],
-                ["src/Group/Group.csproj", "Lantern.Json", not_asked.format("Shared/Common.props")],
-                ["src/Wild/Wild.csproj", "Lantern.Json", not_asked.format("Shared")],
-                ["src/WildOut/WildOut.csproj", "Lantern.Json", not_asked.format((outside / "x.props").as_posix())],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-
-    def test_a_refused_file_says_nothing_of_the_sdk_where_the_sdk_would_not_be_asked_anyway(self) -> None:
-        # Without dotnet, or with a restore older than the project, the SDK is not asked whatever the evaluation
-        # refused, so no SDK_FAILED line says it was not asked, and no project records a refused file for it.
-        repo = self.root / "repo"
-        (repo / TEST_MARKER).mkdir(parents=True)
-        self.write("outside/Common.props", "<Project />\n")
-        self.write("repo/src/Out/Out.csproj", importing("..\\..\\..\\outside\\Common.props"))
-        assets = self.write("repo/src/Out/obj/project.assets.json", json.dumps(CORE_ASSETS))
-        root = self.write("repo/App.sln", solution("src\\Out\\Out.csproj"))
-        old = time.time() - 600
-        for name, services, stale in (("no dotnet", self.without_dotnet, False), ("stale", self.with_dotnet, True)):
-            with self.subTest(name):
-                if stale:
-                    os.utime(assets, (old, old))
-                (project,) = dependency_graph.build_graph(root, services).projects.values()
-                self.assertEqual((False, None), (project.sdk_answers, project.sdk_withheld))
-                _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
-                self.assertEqual(([], []), (self.lines(rows, "SDK_FAILED"), self.sdk.commands))
-
-    def test_the_files_an_evaluation_refused_are_listed_once_in_the_order_met_and_the_first_is_named(self) -> None:
-        # A.props is met by the evaluation of the files alone and by the net8.0 build, B.props by the build alone,
-        # before A there: each is listed once, the files alone first, and the SDK_FAILED line names A.
-        repo = self.root / "repo"
-        outside = self.root / "outside"
-        (repo / TEST_MARKER).mkdir(parents=True)
-        self.write("outside/A.props", "<Project />\n")
-        self.write("outside/B.props", "<Project />\n")
-        self.write(
-            "repo/src/Two/Two.csproj",
-            '<Project Sdk="Microsoft.NET.Sdk">\n'
-            "  <PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks></PropertyGroup>\n"
-            "  <Import Project=\"..\\..\\..\\outside\\B.props\" Condition=\"'$(TargetFramework)' == 'net8.0'\" />\n"
-            '  <Import Project="..\\..\\..\\outside\\A.props" />\n'
-            '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
-            "</Project>\n",
-        )
-        self.write("repo/src/Two/obj/project.assets.json", json.dumps(CORE_ASSETS))
-        root = self.write("repo/App.sln", solution("src\\Two\\Two.csproj"))
-        graph = dependency_graph.build_graph(root, self.with_dotnet)
-        (project,) = graph.projects.values()
-        first, second = outside / "A.props", outside / "B.props"
-        self.assertEqual([first, second], project.file.refused())
-        reason = (
-            f"dotnet nuget why was not asked, since MSBuild would reach {first.as_posix()}, which the reader refused: "
-            "it lies outside the examined tree or a link on its way leads out of it"
-        )
-        self.assertEqual(reason, project.sdk_withheld)
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
         self.assertEqual((1, []), (code, self.sdk.commands))
-        self.assertEqual([["src/Two/Two.csproj", "Lantern.Json", reason]], self.lines(rows, "SDK_FAILED"))
+        self.assertEqual(
+            [[f"src/{name}/{name}.csproj", "sdk", "assets", "listed"] for name in names], self.lines(rows, "PROJECT")
+        )
+        self.assertEqual(
+            [[f"src/{name}/{name}.csproj", UNSETTLED_ASSETS + ASK_SDK_ADVICE] for name in sorted(unread_imports)],
+            self.lines(rows, "SDK_NOT_ASKED"),
+        )
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
+        self.assertEqual(
+            sorted(str(repo / "src" / name / f"{name}.csproj") for name in unread_imports),
+            sorted(command[3] for command in self.sdk.commands),
+        )
+        self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
-    def test_a_restored_project_whose_nearest_props_file_was_refused_is_never_passed_to_the_sdk(self) -> None:
-        # The nearest Directory.Packages.props, a link leading out of the tree, is refused unread; MSBuild would read
-        # it, so the SDK is not asked about the project it lies above.
-        repo = self.root / "repo"
-        (repo / TEST_MARKER).mkdir(parents=True)
-        self.write("outside/Directory.Packages.props", TOP_CENTRAL)
-        self.write("repo/src/Props/Props.csproj", CORE_PROJECT)
-        self.write("repo/src/Props/obj/project.assets.json", json.dumps(CORE_ASSETS))
-        self.linked_out(repo / "src" / "Props" / "Directory.Packages.props", "Directory.Packages.props")
-        root = self.write("repo/App.sln", solution("src\\Props\\Props.csproj"))
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual(1, code)
-        self.assertEqual([], self.sdk.commands)
-        self.assertEqual(
-            [
-                [
-                    "src/Props/Props.csproj",
-                    "Lantern.Json",
-                    "dotnet nuget why was not asked, since MSBuild would reach src/Props/Directory.Packages.props, "
-                    "which the reader refused: it lies outside the examined tree or a link on its way leads out of it",
-                ]
-            ],
-            self.lines(rows, "SDK_FAILED"),
+    def test_under_the_flag_a_global_json_or_generated_file_outside_the_tree_withholds_nothing(self) -> None:
+        # The .NET host reads the nearest global.json, above the tree here, and MSBuild the restore's generated files,
+        # one a link leading out here; the flag's stated scope covers what they lead to, so the SDK is asked about the
+        # project whose assets the walk cannot place.
+        self.write("outside/Moved.csproj.nuget.g.props", "<Project />\n")
+        root, core = self.restored_solution({"Moved": UNPLACED_ASSETS})
+        (self.root / "repo" / "src" / "Moved" / "obj" / "project.assets.json").unlink()
+        self.linked_out(
+            self.root / "repo" / "src" / "Moved" / "obj" / "Moved.csproj.nuget.g.props", "Moved.csproj.nuget.g.props"
         )
+        self.write("global.json", "{}\n")
+        moved = self.root / "repo" / "src" / "Moved" / "Moved.csproj"
+        code, _ = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=self.with_dotnet)
+        self.assertEqual((0, [[str(moved), "Lantern.Json"]]), (code, [c[3:] for c in self.sdk.commands]))
+        self.assertNotIn(str(core), [c[3] for c in self.sdk.commands])
 
     def restored_solution(self, bodies: dict[str, str]) -> tuple[Path, Path]:
         """A checkout holding Harbor.Core and a restored project like it for each of `bodies`, `<name>` with its body's
@@ -4309,255 +4466,74 @@ class PathBoundTests(Fixture):
         root = self.write("repo/App.sln", solution(*(f"src\\{name}\\{name}.csproj" for name in projects)))
         return root, core
 
-    def test_a_restored_project_whose_evaluation_reads_a_file_it_cannot_place_is_never_passed_to_the_sdk(self) -> None:
-        # MSBuild reads an Import whose path the reader cannot settle wherever it leads, conditioned or not, and the
-        # restore's generated .nuget.g.props, .nuget.g.targets, and assets file from a folder a file may set, so the
-        # reader cannot judge where they lie; the SDK is asked about none of these projects, and each SDK_FAILED line
-        # says which file. A restore folder a file leaves empty is obj/, so its project is asked.
+    def test_the_assets_file_is_read_where_the_files_leave_the_restore_folder(self) -> None:
+        # Microsoft.Common.props fixes MSBuildProjectExtensionsPath after Directory.Build.props, and NuGet's targets
+        # read the assets from it after Directory.Build.targets: a BaseIntermediateOutputPath the body sets moves
+        # nothing, an empty one leaves obj/, a MSBuildProjectExtensionsPath Directory.Build.targets sets moves the
+        # assets, and one set outside the tree, by a Directory.Build.props or the body, leaves them where only the SDK
+        # reads them; one set under a condition the reader cannot settle leaves obj/ read and a line naming the flag.
         outside = self.root / "outside"
-        self.write("outside/Common.props", "<Project />\n")
         bodies = {
-            "Unset": '<Import Project="$(SharedProps)\\Common.props" />',
-            "CondUnset": "<Import Project=\"$(SharedProps)\\Common.props\" Condition=\"'$(CI)' == 'true'\" />",
-            "Redirect": "<PropertyGroup><BaseIntermediateOutputPath>x</BaseIntermediateOutputPath></PropertyGroup>",
-            "Unsure": (
-                "<PropertyGroup><MSBuildProjectExtensionsPath Condition=\"'$(CI)' == 'true'\">ci/"
-                "</MSBuildProjectExtensionsPath></PropertyGroup>"
-            ),
-            "AssetsOut": "<PropertyGroup><ProjectAssetsFile>$(Elsewhere)</ProjectAssetsFile></PropertyGroup>",
+            "BodyBase": "<PropertyGroup><BaseIntermediateOutputPath>x/</BaseIntermediateOutputPath></PropertyGroup>",
             "Empty": "<PropertyGroup><BaseIntermediateOutputPath></BaseIntermediateOutputPath></PropertyGroup>",
-        }
-        root, core = self.restored_solution(bodies)
-        # A Directory.Build.props in Redirect's folder sends its restore outside the tree before the props import it.
-        self.write(
-            "repo/src/Redirect/Directory.Build.props",
-            "<Project><PropertyGroup><BaseIntermediateOutputPath>../../../outside/obj/</BaseIntermediateOutputPath>"
-            "</PropertyGroup></Project>\n",
-        )
-        empty = self.root / "repo" / "src" / "Empty" / "Empty.csproj"
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual(1, code)
-        asked = sorted(command[3:] for command in self.sdk.commands)
-        self.assertEqual([[str(empty), "Lantern.Json"], [str(core), "Lantern.Json"]], asked)
-        unplaced = (
-            "dotnet nuget why was not asked, since MSBuild may read the Import of $(SharedProps)\\Common.props in {}, "
-            "whose path the reader cannot settle"
-        )
-        generated = (
-            "dotnet nuget why was not asked, since MSBuild reads the restore's {} for {}, whose path the reader cannot "
-            "settle"
-        )
-        refused = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
-        )
-        self.assertEqual(
-            [
-                [
-                    "src/AssetsOut/AssetsOut.csproj",
-                    "Lantern.Json",
-                    generated.format("$(ProjectAssetsFile)", "src/AssetsOut/AssetsOut.csproj"),
-                ],
-                ["src/CondUnset/CondUnset.csproj", "Lantern.Json", unplaced.format("src/CondUnset/CondUnset.csproj")],
-                # Asked, and the fake SDK answers only Harbor.Core.
-                [
-                    "src/Empty/Empty.csproj",
-                    "Lantern.Json",
-                    "dotnet nuget why answered nothing (no restored assets file)",
-                ],
-                [
-                    "src/Redirect/Redirect.csproj",
-                    "Lantern.Json",
-                    refused.format((outside / "obj" / "Redirect.csproj.nuget.g.props").as_posix()),
-                ],
-                ["src/Unset/Unset.csproj", "Lantern.Json", unplaced.format("src/Unset/Unset.csproj")],
-                [
-                    "src/Unsure/Unsure.csproj",
-                    "Lantern.Json",
-                    generated.format(
-                        "$(MSBuildProjectExtensionsPath)Unsure.csproj.nuget.g.targets", "src/Unsure/Unsure.csproj"
-                    ),
-                ],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-        # The walk answers each project the SDK did not, Empty's failed run included.
-        walked = {row[0] for row in self.lines(rows, "PATH") if row[3] == "graph"}
-        self.assertEqual({f"src/{name}/{name}.csproj" for name in bodies}, walked)
-        # A restore folder the body leaves unsettled places neither the generated targets nor, after them, the assets.
-        unsure = self.root / "repo" / "src" / "Unsure" / "Unsure.csproj"
-        project = dependency_graph.build_graph(root, self.with_dotnet).project_at(unsure)
-        assert project is not None
-        self.assertEqual(
-            [
-                msbuild_evaluation.UnplacedImport(
-                    "$(MSBuildProjectExtensionsPath)Unsure.csproj.nuget.g.targets", unsure, True
-                ),
-                msbuild_evaluation.UnplacedImport("$(MSBuildProjectExtensionsPath)project.assets.json", unsure, True),
-            ],
-            project.file.unplaced(),
-        )
-
-    def test_a_restored_project_whose_restore_folder_lies_outside_the_tree_is_never_passed_to_the_sdk(self) -> None:
-        # The project sets its restore folder, or its assets file, outside the tree in its own body, after the props
-        # imported the .nuget.g.props from obj/; the common targets import the .nuget.g.targets and NuGet's targets
-        # read the assets from where the body leaves them, so the SDK is not asked.
-        outside = self.root / "outside"
-        bodies = {
+            "LateExt": "",
+            "Redirect": "",
             "ExtOut": (
                 "<PropertyGroup><MSBuildProjectExtensionsPath>../../../outside/ext/</MSBuildProjectExtensionsPath>"
                 "</PropertyGroup>"
             ),
-            "AssetsOut": (
-                "<PropertyGroup><ProjectAssetsFile>../../../outside/project.assets.json</ProjectAssetsFile>"
-                "</PropertyGroup>"
+            "Unsure": (
+                "<PropertyGroup><MSBuildProjectExtensionsPath Condition=\"'$(CI)' == 'true'\">ci/"
+                "</MSBuildProjectExtensionsPath></PropertyGroup>"
             ),
         }
-        root, core = self.restored_solution(bodies)
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual((0, [[str(core), "Lantern.Json"]]), (code, [c[3:] for c in self.sdk.commands]))
-        refused = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
-        )
-        self.assertEqual(
-            [
-                [
-                    "src/AssetsOut/AssetsOut.csproj",
-                    "Lantern.Json",
-                    refused.format((outside / "project.assets.json").as_posix()),
-                ],
-                [
-                    "src/ExtOut/ExtOut.csproj",
-                    "Lantern.Json",
-                    refused.format((outside / "ext" / "ExtOut.csproj.nuget.g.targets").as_posix()),
-                ],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-
-    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
-    def test_a_restored_project_whose_generated_import_or_global_json_links_out_is_never_passed_to_the_sdk(
-        self,
-    ) -> None:
-        # The restore's .nuget.g.props in obj/, and the nearest global.json, which the .NET host reads to pick the SDK
-        # and its resolvers, each a link leading out of the tree: the SDK would read it, so it is not asked.
-        self.write("outside/Gen.csproj.nuget.g.props", "<Project />\n")
-        self.write("outside/global.json", "{}\n")
-        root, core = self.restored_solution({"Gen": "", "Global": ""})
-        self.linked_out(
-            self.root / "repo" / "src" / "Gen" / "obj" / "Gen.csproj.nuget.g.props", "Gen.csproj.nuget.g.props"
-        )
-        self.linked_out(self.root / "repo" / "src" / "Global" / "global.json", "global.json")
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual((0, [[str(core), "Lantern.Json"]]), (code, [c[3:] for c in self.sdk.commands]))
-        refused = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
-        )
-        self.assertEqual(
-            [
-                ["src/Gen/Gen.csproj", "Lantern.Json", refused.format("src/Gen/obj/Gen.csproj.nuget.g.props")],
-                ["src/Global/Global.csproj", "Lantern.Json", refused.format("src/Global/global.json")],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-
-    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
-    def test_the_generated_targets_are_judged_where_the_props_fixed_their_folder_and_the_user_file_beside_the_project(
-        self,
-    ) -> None:
-        # Microsoft.Common.props fixes MSBuildProjectExtensionsPath after Directory.Build.props, and the common targets
-        # import the generated .nuget.g.targets from it before Directory.Build.targets. So a BaseIntermediateOutputPath
-        # the body sets, and a MSBuildProjectExtensionsPath Directory.Build.targets sets, leave the targets in obj/,
-        # where a link leading out keeps the SDK away. The common targets also import the project's .user file beside
-        # it, so one linked out does too.
-        for name in ("BodyBase", "LateExt"):
-            self.write(f"outside/{name}.csproj.nuget.g.targets", "<Project />\n")
-        self.write("outside/User.csproj.user", "<Project />\n")
-        bodies = {
-            "BodyBase": "<PropertyGroup><BaseIntermediateOutputPath>alt/</BaseIntermediateOutputPath></PropertyGroup>",
-            "LateExt": "",
-            "User": "",
-        }
-        root, core = self.restored_solution(bodies)
+        root, _ = self.restored_solution(bodies)
         self.write(
             "repo/src/LateExt/Directory.Build.targets",
             "<Project><PropertyGroup><MSBuildProjectExtensionsPath>alt/</MSBuildProjectExtensionsPath></PropertyGroup>"
             "</Project>\n",
         )
-        for name in ("BodyBase", "LateExt"):
-            generated = f"{name}.csproj.nuget.g.targets"
-            self.linked_out(self.root / "repo" / "src" / name / "obj" / generated, generated)
-        self.linked_out(self.root / "repo" / "src" / "User" / "User.csproj.user", "User.csproj.user")
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual((0, [[str(core), "Lantern.Json"]]), (code, [c[3:] for c in self.sdk.commands]))
-        refused = (
-            "dotnet nuget why was not asked, since MSBuild would reach {}, which the reader refused: it lies outside "
-            "the examined tree or a link on its way leads out of it"
+        (self.root / "repo" / "src" / "LateExt" / "obj" / "project.assets.json").unlink()
+        self.write("repo/src/LateExt/alt/project.assets.json", json.dumps(CORE_ASSETS))
+        self.write(
+            "repo/src/Redirect/Directory.Build.props",
+            "<Project><PropertyGroup><BaseIntermediateOutputPath>../../../outside/obj/</BaseIntermediateOutputPath>"
+            "</PropertyGroup></Project>\n",
         )
-        self.assertEqual(
-            [
-                [
-                    "src/BodyBase/BodyBase.csproj",
-                    "Lantern.Json",
-                    refused.format("src/BodyBase/obj/BodyBase.csproj.nuget.g.targets"),
-                ],
-                [
-                    "src/LateExt/LateExt.csproj",
-                    "Lantern.Json",
-                    refused.format("src/LateExt/obj/LateExt.csproj.nuget.g.targets"),
-                ],
-                ["src/User/User.csproj", "Lantern.Json", refused.format("src/User/User.csproj.user")],
-            ],
-            sorted(self.lines(rows, "SDK_FAILED")),
-        )
-
-    def test_a_global_json_above_the_tree_or_one_that_cannot_be_stat_keeps_every_restored_project_from_the_sdk(
-        self,
-    ) -> None:
-        # The .NET host runs in the project's folder and reads the nearest global.json at or above it, wherever it
-        # lies; one above the examined tree is refused like any file outside it, and a candidate whose stat fails
-        # cannot be judged, so the SDK is asked about no project either way.
-        root, core = self.restored_solution({})
-        above = self.write("global.json", "{}\n")
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
         self.assertEqual((0, []), (code, self.sdk.commands))
+        edges = {row[0]: row[2] for row in self.lines(rows, "PROJECT")}
+        self.assertEqual(
+            {
+                "src/BodyBase/BodyBase.csproj": "assets",
+                "src/Empty/Empty.csproj": "assets",
+                "src/ExtOut/ExtOut.csproj": "direct",
+                "src/Harbor.Core/Harbor.Core.csproj": "assets",
+                "src/LateExt/LateExt.csproj": "assets",
+                "src/Redirect/Redirect.csproj": "direct",
+                "src/Unsure/Unsure.csproj": "assets",
+            },
+            edges,
+        )
+        tree = (self.root / "repo").as_posix()
+        not_read = "the walk does not read the restore's assets file at {}: the path is outside the examined tree {}, "
+        not_read += "which the reader does not leave"
+        unsettled = UNSETTLED_ASSETS.replace(
+            "$(ProjectAssetsFile)", "$(MSBuildProjectExtensionsPath)project.assets.json"
+        )
         self.assertEqual(
             [
                 [
-                    "src/Harbor.Core/Harbor.Core.csproj",
-                    "Lantern.Json",
-                    f"dotnet nuget why was not asked, since MSBuild would reach {above.as_posix()}, which the reader "
-                    "refused: it lies outside the examined tree or a link on its way leads out of it",
-                ]
-            ],
-            self.lines(rows, "SDK_FAILED"),
-        )
-        above.unlink()
-        candidate = core.parent / "global.json"
-        with mock.patch.object(
-            dependency_graph,
-            "nearest_file",
-            side_effect=msbuild_reader.Unreadable(candidate, "the stat failed: denied"),
-        ):
-            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual((0, []), (code, self.sdk.commands))
-        self.assertEqual(
-            [
+                    "src/ExtOut/ExtOut.csproj",
+                    not_read.format((outside / "ext" / "project.assets.json").as_posix(), tree) + ASK_SDK_ADVICE,
+                ],
                 [
-                    "src/Harbor.Core/Harbor.Core.csproj",
-                    "Lantern.Json",
-                    "dotnet nuget why was not asked, since the reader cannot tell whether the .NET host reads "
-                    "src/Harbor.Core/global.json: the stat failed: denied",
-                ]
+                    "src/Redirect/Redirect.csproj",
+                    not_read.format((outside / "obj" / "project.assets.json").as_posix(), tree) + ASK_SDK_ADVICE,
+                ],
+                ["src/Unsure/Unsure.csproj", unsettled + ASK_SDK_ADVICE],
             ],
-            self.lines(rows, "SDK_FAILED"),
-        )
-        # With none above or inside, the project is asked, in its own folder.
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual(
-            ([], [[str(core), "Lantern.Json"]]), (self.lines(rows, "SDK_FAILED"), [c[3:] for c in self.sdk.commands])
+            self.lines(rows, "SDK_NOT_ASKED"),
         )
 
     def test_a_path_outside_the_tree_is_compared_by_its_text_so_no_folder_outside_is_listed(self) -> None:
@@ -5452,7 +5428,7 @@ class MSBuildEvaluationTests(Fixture):
                 self.assertEqual((1, [LIB_CHAIN, LIB_OWN]), (code, self.lines(rows, "PATH")))
 
     def test_a_cut_chain_names_every_framework_it_holds_for(self) -> None:
-        # The SDK's chain fills the limit, so the walk's chain, which holds for both frameworks, is the one cut.
+        # Two chains hold for both frameworks; the limit prints the first, and the one cut names both.
         label = "src/Harbor.Core/Harbor.Core.csproj"
         self.write(
             label,
@@ -5460,23 +5436,28 @@ class MSBuildEvaluationTests(Fixture):
                 "<TargetFramework>net8.0</TargetFramework>", "<TargetFrameworks>net8.0;net9.0</TargetFrameworks>"
             ),
         )
-        direct = {"dependencies": {"Lantern.Json": {"target": "Package", "version": "[12.0.3, )"}}}
+        direct = {
+            "dependencies": {
+                "Lantern.Json": {"target": "Package", "version": "[12.0.3, )"},
+                "Quill.Http": {"target": "Package", "version": "[1.2.0, )"},
+            }
+        }
+        packages = {
+            "Lantern.Json/12.0.3": {"type": "package"},
+            "Quill.Http/1.2.0": {"type": "package", "dependencies": {"Lantern.Json": "12.0.3"}},
+        }
         assets = {
             "version": 3,
-            "targets": {framework: {"Lantern.Json/12.0.3": {"type": "package"}} for framework in ("net8.0", "net9.0")},
+            "targets": dict.fromkeys(("net8.0", "net9.0"), packages),
             "project": {"frameworks": {"net8.0": direct, "net9.0": direct}},
         }
         self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(assets))
-        core = self.root / label
-        sdk = TableSdk({(same_path(core), "lantern.json"): OTHER_ROUTE_SDK_TEXT})
-        services = Services(run=sdk, which=self.with_dotnet.which)
         original = dependency_graph.PATH_LIMIT
         dependency_graph.PATH_LIMIT = 1
         self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
-        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root))
         self.assertEqual(
-            [[label, "net8.0", "Lantern.Json", "sdk", "Other.Pkg (v1.0.0) > Lantern.Json (v12.0.3)"]],
-            self.lines(rows, "PATH"),
+            [[label, "net8.0;net9.0", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"]], self.lines(rows, "PATH")
         )
         self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
 
@@ -5774,28 +5755,6 @@ class PresenceReadTests(Fixture):
                 rows = self.answered(root, stat_failing_at(path))
                 self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
 
-    def test_an_assets_file_whose_age_cannot_be_told_is_an_unreadable_row_and_its_targets_stay(self) -> None:
-        # Its presence and its read are answered; only the stat closure_from_assets itself makes, which compares its
-        # age with the project's, fails. The failure is keyed on that caller, never on a count of stats, which differs
-        # between Python versions: 3.11's Path.resolve stats the path it resolves.
-        root = self.mixed_solution()
-        assets = self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json"
-        real = Path.stat
-        failed: list[Path] = []
-
-        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-            if path == assets and sys._getframe(1).f_code is tree_reader.TreeReader.status.__code__:
-                failed.append(path)
-                raise PermissionError(13, "Access is denied", str(path))
-            return real(path, follow_symlinks=follow_symlinks)
-
-        rows = self.answered(root, mock.patch.object(Path, "stat", stat))
-        self.assertEqual([assets], failed)
-        self.assertEqual(
-            [["src/Harbor.Core/obj/project.assets.json", "Access is denied"]], self.lines(rows, "UNREADABLE")
-        )
-        self.assertIn(["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"], self.lines(rows, "PROJECT"))
-
     def test_an_assembly_folder_it_cannot_list_is_an_unreadable_row_against_its_package(self) -> None:
         root = self.mixed_solution()
         lib = self.root / "packages" / "Lantern.Core.2.0.0" / "lib" / "net45"
@@ -6017,7 +5976,7 @@ class PresenceReadTests(Fixture):
             '<bindingRedirect oldVersion="0.0.0.0-1.0.0.0" newVersion="1.0.0.0" />'
             "</dependentAssembly></assemblyBinding></runtime></configuration>",
         )
-        graph = dependency_graph.build_graph(root, self.without_dotnet)
+        graph = dependency_graph.build_graph(root)
         web = graph.projects[same_path(project / "Harbor.Web.csproj")]
         self.assertEqual(
             ["Beacon.App", "Lantern.Json", "Quill.Http", "Ghost.Assembly"],
@@ -6029,7 +5988,7 @@ class PresenceReadTests(Fixture):
         # redirects are still read.
         failing = failing_without_a_file(file_presence, "is_present", project / "Web.config")
         with failing:
-            graph = dependency_graph.build_graph(root, self.without_dotnet)
+            graph = dependency_graph.build_graph(root)
         web = graph.projects[same_path(project / "Harbor.Web.csproj")]
         self.assertEqual(["Beacon.App"], [redirect.name for redirect in web.file.redirects])
         rows = self.answered(root, failing_without_a_file(file_presence, "is_present", project / "Web.config"))
@@ -6063,11 +6022,11 @@ class PresenceReadTests(Fixture):
         project = self.root / "src" / "Harbor.Web"
         redirects = {
             name: graph.projects[name].file.redirects
-            for graph in [dependency_graph.build_graph(root, self.without_dotnet)]
+            for graph in [dependency_graph.build_graph(root)]
             for name in graph.projects
         }
         (project / "app.config").mkdir()
-        again = dependency_graph.build_graph(root, self.without_dotnet)
+        again = dependency_graph.build_graph(root)
         self.assertEqual(redirects, {name: again.projects[name].file.redirects for name in again.projects})
         for failing, shown in (
             (stat_failing_at(project / "Web.config"), "src/Harbor.Web/Web.config"),
