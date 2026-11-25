@@ -21,7 +21,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 import pytest
@@ -389,6 +389,7 @@ def run_main(argv: Sequence[str], root: Path) -> tuple[int, list[str]]:
 
 
 class LoaderTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1430,6 +1431,7 @@ class RepeatsTests(unittest.TestCase):
 
 
 class JudgeTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1740,6 +1742,7 @@ def constant(value: dict[str, Any]) -> skill_evals_runs.RecordSource:
 class ReviewPrsScenarioTests(unittest.TestCase):
     """The shipped scenarios load, point at lines that changed, and an ideal run of each passes."""
 
+    @override
     def setUp(self) -> None:
         self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-prs")}
         self.specs = {
@@ -1923,6 +1926,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
     """The review-document scenarios review the review-prs design documents, which they name rather than copy, one
     edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
+    @override
     def setUp(self) -> None:
         self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-document")}
         self.specs = {
@@ -2072,6 +2076,7 @@ class CheckoutTests(unittest.TestCase):
     # The home conftest.py's git_home fixture gives the running test's git.
     git_home: GitHome
 
+    @override
     def setUp(self) -> None:
         self.git = GitClient()
         self.root = own_checkout(temporary_root(self), self.git)
@@ -2091,6 +2096,7 @@ class DocumentStagingTests(unittest.TestCase):
     # The home conftest.py's git_home fixture gives the running test's git.
     git_home: GitHome
 
+    @override
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-document")}
@@ -2228,6 +2234,7 @@ class ReviewerScenarioTests(unittest.TestCase):
     """A repository reviewer's scenarios: review-prs starts them, and a run places the reviewer's files from the
     checkout in a throwaway copy of the fixture, never in the fixture."""
 
+    @override
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.copies = self.root / "copies"
@@ -2916,6 +2923,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
     stub reviewer, check, and finalize with no gh call, and the record finalize writes is judged by the same code a
     model's run is."""
 
+    @override
     def setUp(self) -> None:
         self.root = temporary_root(self)
         (self.root / "tmp").mkdir()
@@ -3051,6 +3059,7 @@ def scenario_of(mode: str) -> Scenario:
 
 
 class RunPieceTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.initial, self.re_review = scenario_of("initial"), scenario_of("re-review")
@@ -3514,6 +3523,7 @@ RESULTS_TEXT = "\n".join(
 
 
 class CitationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3859,6 +3869,7 @@ def forward(path: Path) -> str:
 class EvaluateTests(unittest.TestCase):
     """The run step with a stub Claude Code: no model is called."""
 
+    @override
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.results = self.root / "skill-evaluations.md"

@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -96,6 +96,7 @@ class LazySnapshotFixture(unittest.TestCase):
     # The repository's configured snapshot_exclude globs.
     EXCLUDE: tuple[str, ...] = ()
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-source-")
         self.addCleanup(temporary.cleanup)
@@ -839,6 +840,7 @@ class SnapshotIsolationTests(LazySnapshotFixture):
         started: list[tuple[bool, Path]] = []
 
         class Recording(git_client.GitClient):
+            @override
             def _command(
                 self, arguments: Sequence[str], directory: str | Path | None, pattern: str | None
             ) -> list[str]:
@@ -883,6 +885,7 @@ class SnapshotIsolationTests(LazySnapshotFixture):
 class CommandTests(LazySnapshotFixture):
     """review_source.py as a reviewer runs it, on a run prepare would have written around the lazy snapshot."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.write_run()

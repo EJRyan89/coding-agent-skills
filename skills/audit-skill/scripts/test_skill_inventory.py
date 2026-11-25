@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from functools import partial
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -61,15 +62,18 @@ def execute(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 class TemporaryTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name).resolve()
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
 
 class LocateTests(TemporaryTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.home = self.root / "home with space"
@@ -3294,6 +3298,7 @@ class PluginTests(TemporaryTestCase):
     """A skill's plugin form, in a plugin tree laid out as tools/plugin_build.py writes one and Claude Code installs
     one: the manifest, the skills with their template values answered, the agents namespaced under the plugin."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.home = self.root / "home with space"

@@ -15,7 +15,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -93,6 +93,7 @@ def make_run(folder: Path, roles: list[str], *, entrypoint: bool = False) -> Pat
 
 
 class GuardFixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -262,6 +263,7 @@ class WithheldInputTests(GuardFixture):
     """A role the run withholds a pull-request text from reads only the paths its `reads` names, so the description,
     the comments, and the request and other roles' prompts that carry them stay out of its reach, however spelled."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         run, work = self.run_directory, self.run_directory / "work"
@@ -476,6 +478,7 @@ class LocalPathTests(GuardFixture):
 class ReadLogTests(GuardFixture):
     """The guard logs each snapshot file a reviewer reads to its role's read log, which only `check` reads."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.source = self.run_directory / "source"

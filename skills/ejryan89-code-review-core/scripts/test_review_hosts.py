@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -585,6 +585,7 @@ class AddedRootTests(unittest.TestCase):
     """Copilot CLI loads the skills and agents at the top of every directory added with --add-dir as trusted
     configuration, and the project skills and agents from its working directory up to the git root."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

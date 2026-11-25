@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable, Iterable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -96,6 +96,7 @@ class FailingDetector(FakeDetector):
         super().__init__()
         self.failing = failing
 
+    @override
     def detect(
         self,
         repository: str,
@@ -920,6 +921,7 @@ class RecordingDetector(FakeDetector):
         self.calls: list[int] = []
         self.during = during
 
+    @override
     def detect(
         self,
         repository: str,
@@ -957,10 +959,12 @@ class ReadAheadDetector(FakeDetector):
         super().__init__(results)
         self.events: list[tuple[str, Query]] = []
 
+    @override
     def prefetch(self, queries: Iterable[Query]) -> None:
         self.events.extend(("prefetch", query) for query in queries)
         self.events.append(("round", Query("", "", "", "")))
 
+    @override
     def detect(
         self,
         repository: str,
@@ -988,6 +992,7 @@ class BaseDetector(ReadAheadDetector):
     def read_ahead(self) -> list[Query]:
         return [query for event, query in self.events if event == "prefetch"]
 
+    @override
     def detect(
         self,
         repository: str,

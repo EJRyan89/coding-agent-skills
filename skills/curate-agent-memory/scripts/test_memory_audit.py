@@ -15,7 +15,7 @@ import unittest
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -220,10 +220,12 @@ def run_main(*arguments: str) -> tuple[int, str, str]:
 
 
 class CommandLineContractTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -242,6 +244,7 @@ class CommandLineContractTests(unittest.TestCase):
 
 
 class MemoryAuditTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         # Resolved, so a path a memory cites by its absolute spelling holds no Windows short name such as RUNNER~1,
@@ -252,6 +255,7 @@ class MemoryAuditTests(unittest.TestCase):
         self.memory_dir.mkdir()
         self.repo.mkdir()
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -1243,6 +1247,7 @@ class ReportWriteTests(unittest.TestCase):
     """The report is made whole or not at all: a write that fails part way leaves no report and no copy beside it,
     so the next audit writes it, and a copy left beside a report that is made is named."""
 
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(os.path.realpath(self._temporary.name))
@@ -1255,6 +1260,7 @@ class ReportWriteTests(unittest.TestCase):
         self.temporary = self.root / "Temporary Files"
         self.temporary.mkdir()
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -1416,6 +1422,7 @@ class HomeFolderTests(unittest.TestCase):
     """A home folder that is not an absolute path, which Path.home() takes as given from the variable, is refused by
     every command that reads it, rather than read relative to the working directory."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1500,6 +1507,7 @@ class ConfigDirectoryTests(unittest.TestCase):
 
 
 class ReindexTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.memory_dir = Path(self._temporary.name) / "memory"
@@ -1507,6 +1515,7 @@ class ReindexTests(unittest.TestCase):
         self.index = self.memory_dir / "MEMORY.md"
         self.index.write_bytes(b"")
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -2189,6 +2198,7 @@ class ReindexTests(unittest.TestCase):
 
 
 class DeleteTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -2201,6 +2211,7 @@ class DeleteTests(unittest.TestCase):
         write(self.memory_dir / "notes.txt", "Notes.\n")
         write(self.root / "outside.md", memory("outside", "Outside."))
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -2355,12 +2366,14 @@ class DeleteTests(unittest.TestCase):
 class MemoryStoreGuardTests(unittest.TestCase):
     """audit, reindex, and delete take only a directory that is a memory store, never one inside a skills directory."""
 
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
         self.home = self.root / "home"
         self.skills_root = self.root / "source skills"
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -2466,6 +2479,7 @@ def git(*arguments: str) -> None:
 
 
 class ResolveTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -2488,6 +2502,7 @@ class ResolveTests(unittest.TestCase):
             "init",
         )
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -3245,6 +3260,7 @@ class SkillSourceTests(unittest.TestCase):
 
     LABELS = ("SKILL_FILE ", "NOTE ", "FAILED ")
 
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -3254,6 +3270,7 @@ class SkillSourceTests(unittest.TestCase):
         self.skills_root = self.root / "running skills"
         self.source_file = write(self.checkout / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -3582,6 +3599,7 @@ def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(
 class JsonFileDecodingTests(unittest.TestCase):
     """Each JSON file reads as UTF-8 on every platform, whatever the locale's codec."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

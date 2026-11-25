@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "untested_functions.py"
@@ -49,6 +49,7 @@ def run(command):
 
 
 class ConditionTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -713,6 +714,7 @@ class PresenceReadTests(unittest.TestCase):
     changed script is at its head, so a folder it cannot list raises, and a head of another kind or that it cannot
     stat is named so, rather than reading as no suite or as a script the snapshot lacks."""
 
+    @override
     def setUp(self) -> None:
         sys.path.insert(0, str(SCRIPT.parent))
         sys.path.insert(0, str(SCRIPT.parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))

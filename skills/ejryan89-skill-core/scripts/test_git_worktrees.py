@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -29,6 +30,7 @@ def answering(output: str, returncode: int = 0, stderr: str = "") -> tuple[GitCl
 
 
 class RepositoryTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="git worktrees "))).resolve()

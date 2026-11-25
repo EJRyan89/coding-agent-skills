@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -87,6 +87,7 @@ class ArchivePullTests(unittest.TestCase):
 
 
 class FlagCliTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         root = Path(self._temporary.name) / "root with spaces"
@@ -119,6 +120,7 @@ class FlagCliTests(unittest.TestCase):
             Path(self.config),
         )
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

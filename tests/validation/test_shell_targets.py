@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -75,6 +75,7 @@ class SkillScriptTargetFixtures(unittest.TestCase):
 
 
 class ShellTargetsFixtures(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.

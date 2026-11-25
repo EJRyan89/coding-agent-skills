@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -285,6 +285,7 @@ class RuleTests(unittest.TestCase):
 
 
 class FileTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -817,6 +818,7 @@ PACKAGE_REFERENCE = {"PackageReference": [{"Identity": "Roslynator.Formatting.An
 
 
 class ConfigTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1971,6 +1973,7 @@ FIELD_BREAKS = [*LINE_BREAKS, "\t"]
 class OneLineFactTests(unittest.TestCase):
     """A name or a path holding a line break or a tab stays one fact on one line, through `fact_line`."""
 
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -2039,6 +2042,7 @@ class OneLineFactTests(unittest.TestCase):
 class CheckFilesPresenceTests(unittest.TestCase):
     """A listed file that is not there, or is a folder, is refused as missing; one whose stat fails raises."""
 
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

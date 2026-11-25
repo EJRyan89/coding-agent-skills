@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -66,6 +67,7 @@ class FailureTests(unittest.TestCase):
 
 
 class ReadFilesTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -123,6 +125,7 @@ class ReadFilesTests(unittest.TestCase):
 
 
 class SnapshotExclusionTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -167,6 +170,7 @@ class SnapshotExclusionTests(unittest.TestCase):
 
 
 class RequireSnapshotTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

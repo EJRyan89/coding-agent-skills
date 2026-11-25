@@ -23,7 +23,7 @@ import unittest
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 from xml.parsers import expat
 
@@ -1041,6 +1041,7 @@ def commit(checkout: Path, files: dict[str, bytes]) -> str:
 class SnapshotRouteTests(unittest.TestCase):
     """Every route holds a changed document as its extracted text and leaves an unchanged one `binary`."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1218,6 +1219,7 @@ class PdfSnapshotTests(unittest.TestCase):
     """Every route holds a changed PDF's text beside it, at a path a reviewer's file reader takes for text, since
     Claude Code's Read parses any file named .pdf as a PDF and refuses text there."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

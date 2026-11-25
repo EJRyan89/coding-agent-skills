@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 import file_presence
@@ -79,6 +79,7 @@ class Killed(BaseException):
 
 
 class SettlementTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.transient = self.skills_dir / transient_name("alpha")

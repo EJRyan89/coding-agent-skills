@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -396,6 +396,7 @@ class ListingClaude(FakeClaude):
         super().__init__(home)
         self.listing = listing
 
+    @override
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         if arguments[1:3] == ["plugin", "list"]:
             return Completed(0, self.listing, "")

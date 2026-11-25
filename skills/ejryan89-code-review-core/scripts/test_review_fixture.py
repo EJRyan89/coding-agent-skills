@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 from review_archive import commit_record, current_ledger, pull_records
 from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result
@@ -214,6 +214,7 @@ def commit_fixture(
 class ReviewFixtureTests(unittest.TestCase):
     """The archive holds what the module docstring says, since every suite that commits it relies on that."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

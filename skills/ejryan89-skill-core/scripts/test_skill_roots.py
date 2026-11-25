@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,6 +44,7 @@ class DeployedSkillRootsTests(unittest.TestCase):
 
 
 class SiblingScriptsTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -183,6 +185,7 @@ class SiblingScriptsTests(unittest.TestCase):
 
 
 class PluginNameTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -261,6 +264,7 @@ class PluginNameTests(unittest.TestCase):
 
 
 class SkillsDirectoryHoldingTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

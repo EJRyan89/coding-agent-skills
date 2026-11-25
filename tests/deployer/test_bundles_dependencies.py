@@ -7,7 +7,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -526,6 +526,7 @@ class SelectionTests(DeployerTestCase):
 
 
 class OptInTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json(bundles={"pack": {"members": ["fmt"], "opt_in": True}})

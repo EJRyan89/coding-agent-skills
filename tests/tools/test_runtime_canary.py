@@ -22,7 +22,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -159,6 +159,7 @@ class TopRecordingRuntimes(FakeRuntimes):
         top = GitClient(timeout=60).rev_parse_path("--show-toplevel", directory=cwd)
         self.tops.append((kind, cwd, None if top is None else top.resolve()))
 
+    @override
     def talk(
         self,
         arguments: list[str],
@@ -171,6 +172,7 @@ class TopRecordingRuntimes(FakeRuntimes):
         self.top("listing", cwd)
         return super().talk(arguments, cwd, environment, requests, answered, timeout)
 
+    @override
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         if arguments[1:] != ["--version"]:
             self.top("run", cwd)
@@ -278,6 +280,7 @@ def running(pid_file: Path) -> bool:
 
 
 class RuntimeCanaryTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
         self.root = Path(self._temporary.name).resolve()
@@ -296,6 +299,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -563,6 +567,7 @@ class EnvironmentTests(unittest.TestCase):
 
 
 class RunProcessTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
         self.addCleanup(self._temporary.cleanup)
@@ -2409,6 +2414,7 @@ class RecordTests(RuntimeCanaryTestCase):
 class InstalledCopyTests(RuntimeCanaryTestCase):
     """A run that starts the real profile's installed copy tests nothing, so it never counts toward the matrix."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.profile = self.root / "profile"

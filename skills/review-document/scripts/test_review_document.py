@@ -21,7 +21,7 @@ import unittest
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, override
 from unittest import mock
 from urllib.parse import unquote
 
@@ -391,6 +391,7 @@ def changed(path: str, status: str, previous: str | None = None) -> dict[str, An
 
 
 class DocumentTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-document-test-", ignore_cleanup_errors=True)
         self.addCleanup(temporary.cleanup)
@@ -947,6 +948,7 @@ class LooseFileTests(DocumentTestCase):
 class PipelineTestCase(DocumentTestCase):
     """Runs the review pipeline on a fixture `build` wrote, as the skill does, with a configuration of its own."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         environment = mock.patch.dict(
@@ -3023,6 +3025,7 @@ def test_failures_use_the_shared_flattener_after_converting_the_exception_to_tex
 
 
 class JsonObjectTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3128,6 +3131,7 @@ def test_a_document_line_holding_a_line_break_prints_on_one_line() -> None:
 class ResolveTests(unittest.TestCase):
     """`resolve`: the document a user named by its file name alone, found under the working directory."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-document-resolve-", ignore_cleanup_errors=True)
         self.addCleanup(temporary.cleanup)

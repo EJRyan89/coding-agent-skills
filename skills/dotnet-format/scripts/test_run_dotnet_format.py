@@ -13,6 +13,7 @@ import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -182,6 +183,7 @@ class BatchTests(unittest.TestCase):
 
 
 class ParseTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -306,6 +308,7 @@ class LocatedFormatterTests(unittest.TestCase):
     path. The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so
     the only programs found are the ones a test puts there."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="formatter locator ")
@@ -369,6 +372,7 @@ class LocatedFormatterTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1119,6 +1123,7 @@ FIELD_BREAKS = [*LINE_BREAKS, "\t"]
 class OneLineFactTests(unittest.TestCase):
     """A name or a path holding a line break or a tab stays one fact on one line, through `fact_line`."""
 
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

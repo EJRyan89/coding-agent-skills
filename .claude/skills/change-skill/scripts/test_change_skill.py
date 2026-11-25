@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -85,6 +85,7 @@ class SectionTests(unittest.TestCase):
         "## Validation\n\nRun the checks.\n"
     )
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -243,6 +244,7 @@ class UserOnlyTests(unittest.TestCase):
 class GateTests(unittest.TestCase):
     git_config = GIT_CONFIG
 
+    @override
     def setUp(self) -> None:
         temporary = Path(tempfile.mkdtemp(prefix="change-skill-gates-"))
         self.addCleanup(remove_tree, temporary)

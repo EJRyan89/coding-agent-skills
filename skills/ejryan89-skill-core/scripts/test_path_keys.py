@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path, PurePath
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,6 +70,7 @@ def hard_link_pair(folder: Path, name: str, other: str) -> None:
 class KeyedTestCase(unittest.TestCase):
     """A temporary folder, resolved so no link stands on its path, and an empty cache of answers for each test."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="path-key-test."))).resolve()

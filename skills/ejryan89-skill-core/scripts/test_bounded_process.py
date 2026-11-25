@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -189,6 +189,7 @@ class OnceWritten(RecordingTree):
         self.held_at = 0.0
 
     @contextmanager
+    @override
     def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
         deadline = time.monotonic() + STARTUP_SECONDS
         while not self.written.exists() and process.poll() is None and time.monotonic() < deadline:
@@ -750,6 +751,7 @@ class StreamingTests(unittest.TestCase):
 
         class Refusing(RecordingTree):
             @contextmanager
+            @override
             def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
                 process.kill()
                 process.wait(timeout=STARTUP_SECONDS)

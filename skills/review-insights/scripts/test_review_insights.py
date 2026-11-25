@@ -17,7 +17,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -150,6 +150,7 @@ def record(
 
 
 class InsightFixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -2114,9 +2115,11 @@ class RecordingTests(InsightFixture):
             def __init__(self, path: Path) -> None:
                 self.path = path
 
+            @override
             def __enter__(self) -> None:
                 ri.decide(self.path, "REC-002", "Style", [], "rejected", note="Meanwhile", services=services)
 
+            @override
             def __exit__(self, *exc: object) -> None:
                 return None
 
@@ -2216,6 +2219,7 @@ class RecordingTests(InsightFixture):
 class SignalsLoadTests(InsightFixture):
     """A report's signals are read field by field, as every other format is."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.commit("owner/repo", 7, ["Correctness"])
@@ -2294,6 +2298,7 @@ class SignalsLoadTests(InsightFixture):
 
 
 class ScopeTests(InsightFixture):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.checkouts = self.root / "checkouts"

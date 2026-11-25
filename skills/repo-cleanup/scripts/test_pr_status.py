@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -446,6 +446,7 @@ _TEMPLATES: dict[Callable[..., None], tuple[Path, dict[str, Any]]] = {}
 
 
 class GitFixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="pr-status.")
         self.addCleanup(self._temporary.cleanup)
@@ -698,6 +699,7 @@ class SquashFixture(GitFixture):
 
     BASE_REF = "refs/remotes/origin/main"
 
+    @override
     def build(self) -> None:
         super().build()
         self.git("-C", str(self.clone), "checkout", "-b", "topic")
@@ -936,6 +938,7 @@ class WhitespaceFixture(SquashFixture):
     """The topic also adds a Python file and is squash-merged; a test then amends the topic's tip, as a later commit
     whose only change is whitespace leaves it."""
 
+    @override
     def build(self) -> None:
         super().build()
         self.git("-C", str(self.clone), "switch", "topic")
@@ -1142,6 +1145,7 @@ class ReleaseBaseFixture(SquashFixture):
     """Beside the topic, a release branch with a release-only commit and another sharing no history with main, each
     with a fix squash-merged into it and the fix's local tip reworded; the clone has fetched every base."""
 
+    @override
     def build(self) -> None:
         super().build()
         self.git("-C", str(self.clone), "switch", "-c", "release/1.0", "main")
@@ -1324,6 +1328,7 @@ class TrackingBaseClassificationTests(SquashFixture):
     """A topic that merged main in after main moved on, was squash-merged into main, and tracks main itself, so its
     fetched upstream is main's tip: several commits ahead of main and behind it, with no work of its own left."""
 
+    @override
     def build(self) -> None:
         super().build()
         self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")

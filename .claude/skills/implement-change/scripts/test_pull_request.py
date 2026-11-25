@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
+from typing import override
 from unittest import mock
 
 import pytest
@@ -337,6 +338,7 @@ def test_a_title_with_no_closing_reference_is_accepted(title: str) -> None:
 
 
 class TemplateLookupTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="implement-change-test-"))
         self.addCleanup(remove_tree, self.root)
@@ -472,6 +474,7 @@ class Repository(unittest.TestCase):
 
     git_config = GIT_CONFIG
 
+    @override
     def setUp(self) -> None:
         self.temporary = Path(tempfile.mkdtemp(prefix="implement-change-test-")).resolve()
         self.addCleanup(remove_tree, self.temporary)
@@ -610,6 +613,7 @@ class TypeChecksCommandTests(Repository):
         "requirements-dev.txt",
     )
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.write("pyproject.toml", TYPE_CHECK_PYPROJECT)

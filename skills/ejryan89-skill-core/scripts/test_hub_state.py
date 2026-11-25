@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +35,7 @@ from hub_state import (
 class HubTestCase(unittest.TestCase):
     """A hub cloned from a bare origin, on main at origin/main with nothing changed."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hub state "))).resolve()
@@ -191,6 +193,7 @@ class ReadingTests(unittest.TestCase):
 class ConfigurationCase(HubTestCase):
     """A hub whose configuration a tick records in its git directory."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.record = self.hub / ".git" / RECORD_NAME
@@ -418,6 +421,7 @@ class ConfigurationTests(ConfigurationCase):
 class FileTests(ConfigurationCase):
     """The record of the hub's hooks and info files that the shepherd's tick keeps, and what it reports against it."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.hooks = self.hub / ".git" / "hooks"

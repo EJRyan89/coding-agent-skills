@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -244,6 +244,7 @@ def test_a_message_json_cannot_carry_fails_the_server_never_the_audit() -> None:
 
 
 class HandshakeTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo with spaces"
@@ -252,6 +253,7 @@ class HandshakeTests(unittest.TestCase):
         self.server.parent.mkdir()
         self.server.write_text(FAKE_SERVER, encoding="utf-8")
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1002,11 +1004,13 @@ CONFIG_SHAPES = [
 class OneReaderTests(unittest.TestCase):
     """The audit and the handshake report the same problems, at the same severity, for every shape of each file."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo"
         (self.root / ".git").mkdir(parents=True)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 

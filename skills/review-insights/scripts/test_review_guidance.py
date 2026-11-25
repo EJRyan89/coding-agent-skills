@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -305,6 +305,7 @@ class OverlapBoundTests(unittest.TestCase):
 
 
 class ReadTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -883,6 +884,7 @@ def failing(name: str, failures: dict[str, OSError | bool]) -> Iterator[None]:
 class ReportTests(InsightFixture):
     """The report reads each repository's configured checkout and gives the synthesis its guidance."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()

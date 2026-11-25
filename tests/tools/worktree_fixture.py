@@ -13,7 +13,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, override
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKTREES_SCRIPT = REPOSITORY_ROOT / "tools" / "worktrees.py"
@@ -93,6 +93,7 @@ class HubTestCase(unittest.TestCase):
 
     script: ClassVar[Path]
 
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="worktrees-test.")
         self.root = Path(self._temporary.name).resolve()
@@ -102,6 +103,7 @@ class HubTestCase(unittest.TestCase):
         self.worktrees = self.hub / ".claude" / "worktrees"
         self.tree = self.hub / TREE
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

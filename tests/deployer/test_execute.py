@@ -14,7 +14,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -56,11 +56,13 @@ class Held(lock.Lock):
         super().__init__(Paths(Path("source"), Path("home")), "token")
         self.calls = calls
 
+    @override
     def release(self) -> None:
         self.calls.append("release")
 
 
 class ExecuteTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="execute.")
         self.addCleanup(temporary.cleanup)

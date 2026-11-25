@@ -8,7 +8,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -107,6 +107,7 @@ def found(name: str, path: str) -> Any:
 
 
 class DeadlineCase(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.stubs = Stubs(self.root)
@@ -228,6 +229,7 @@ class RunToolTests(DeadlineCase):
 
 
 class DeploymentDeadlineTests(DeadlineCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -365,6 +367,7 @@ class DeploymentDeadlineTests(DeadlineCase):
 
 
 class ReadOnlyCommandDeadlineTests(DeadlineCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

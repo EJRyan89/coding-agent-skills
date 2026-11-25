@@ -11,6 +11,7 @@ import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -1055,6 +1056,7 @@ class ConverseTests(DeployerTestCase):
 
 
 class VerifyCommandTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

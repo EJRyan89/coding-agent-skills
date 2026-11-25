@@ -17,7 +17,7 @@ import unittest
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -538,6 +538,7 @@ STAGE_NAMES = [
 
 
 class CopilotHostTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="copilot-host-")
         self.addCleanup(temporary.cleanup)
@@ -1062,6 +1063,7 @@ MATERIALIZATION_KINDS: list[tuple[str, Any, str]] = [
 class MaterializationRecordTests(unittest.TestCase):
     """materialized_reviewer_entrypoint, the Copilot host's reader of the trusted reviewer's materialization record."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="copilot-materialization-")
         self.addCleanup(temporary.cleanup)
@@ -1115,6 +1117,7 @@ def run_directory_files(paths: dict[str, Path]) -> list[str]:
 class CopilotProcessTests(unittest.TestCase):
     """The real runner, with a Python program standing in for Copilot CLI: what it reads, keeps, and leaves behind."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

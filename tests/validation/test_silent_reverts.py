@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -61,6 +62,7 @@ def timed_out(command: list[str], timeout: float) -> GitResult:
 class SilentRevertFixture(unittest.TestCase):
     """A throwaway repository whose main squash-merges pull requests, and a branch off it."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

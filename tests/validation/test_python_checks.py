@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, get_args, override
 from unittest import mock
 
 import pytest
@@ -117,6 +117,7 @@ VOCABULARY_IMPORTS = (
 
 
 class PythonChecksFixtures(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.

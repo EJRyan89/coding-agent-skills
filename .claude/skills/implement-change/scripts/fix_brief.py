@@ -77,7 +77,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -152,6 +152,7 @@ class Symbol:
     name: str
     qualifier: str | None = None
 
+    @override
     def __str__(self) -> str:
         return self.name if self.qualifier is None else f"{self.qualifier}.{self.name}"
 

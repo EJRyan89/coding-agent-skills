@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -1500,6 +1500,7 @@ class RealDiffTests(unittest.TestCase):
     SPACED = "tools/report age.py"
     ACCENTED = "tools/résumé.py"
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -1551,6 +1552,7 @@ class SnapshotTests(unittest.TestCase):
     REPOSITORY = "example/demo"
     SCRIPT = ".claude/skills/demo/scripts/demo.py"
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()

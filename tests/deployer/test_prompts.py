@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import override
+
 from harness import DeployerTestCase, forward
 
 
 class PromptStreamTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

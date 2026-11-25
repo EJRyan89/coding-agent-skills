@@ -8,7 +8,7 @@ import sys
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -688,6 +688,7 @@ class SourceRootLinkTests(DeployerTestCase):
     """A link at a root the deployer reads, skills/, agents/, deploy-meta/, or source.json, is refused naming it
     before anything renders, as a link below a real root is, so a checkout's content stays inside the checkout."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -794,6 +795,7 @@ class SourceRootLinkTests(DeployerTestCase):
 
 
 class RenamedValidationTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_skill("alpha", "Alpha")
@@ -1207,6 +1209,7 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
 class CanaryHomeTests(LinkedWorktreeTestCase):
     """--canary-home deploys into a throwaway home, which is allowed from a linked worktree."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.canary = self.root / "Canary Home (1)"

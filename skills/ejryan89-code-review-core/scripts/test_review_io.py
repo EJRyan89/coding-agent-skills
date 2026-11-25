@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +35,7 @@ LONE_SURROGATE = b'{"x": "\\ud800"}'
 
 
 class ReadJsonTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -112,6 +113,7 @@ class ReadJsonRefusedForAMomentTests(unittest.TestCase):
 
 
 class LockOwnerSizeTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -187,6 +189,7 @@ class ParallelCallTests(unittest.TestCase):
 class WorkingPathTests(unittest.TestCase):
     """working_path refuses a path in the skills directories ejryan89-skill-core names, and keeps any other path."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

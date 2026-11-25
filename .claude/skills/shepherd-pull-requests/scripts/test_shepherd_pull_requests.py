@@ -15,7 +15,7 @@ import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -595,6 +595,7 @@ class FixtureTestCase(unittest.TestCase):
 
     git_config = GIT_CONFIG
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1737,6 +1738,7 @@ class OutOfStepTest(FixtureTestCase):
 class ShapeTest(unittest.TestCase):
     """What GitHub returns in a shape the shepherd does not know is the malformed error naming it, never a verdict."""
 
+    @override
     def setUp(self) -> None:
         self.commands: list[list[str]] = []
 
@@ -2881,6 +2883,7 @@ class PremergeReviewTest(FixtureTestCase):
 class ArchiveReaderTest(unittest.TestCase):
     """The reader over a code-review configuration and archive written under a temporary folder."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -17,7 +17,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -569,6 +569,7 @@ class StateAndLockTests(unittest.TestCase):
 class ResourceFileLockTests(unittest.TestCase):
     """The file lock every holder takes before it reads, reclaims, or makes the lock directory."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

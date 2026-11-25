@@ -12,6 +12,7 @@ script refuses an explicit output path inside its own skills directory or one th
 from __future__ import annotations
 
 from pathlib import Path
+from typing import override
 
 import json_reader
 from console import failed_line, use_utf8_output
@@ -42,6 +43,7 @@ class MissingSibling(SystemExit):
         self.name = name
         self.message = message
 
+    @override
     def __str__(self) -> str:
         return self.message
 

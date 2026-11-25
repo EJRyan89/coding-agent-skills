@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 import audit_ai_config as audit
@@ -131,10 +131,12 @@ def _assert_scope_status(test: unittest.TestCase, result: audit.AuditResult, exp
 
 
 class AuthorityClassificationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -222,10 +224,12 @@ class AuthorityClassificationTests(unittest.TestCase):
 
 
 class ExitCodeTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -282,11 +286,13 @@ class ExitCodeTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo with spaces"
         self.root.mkdir()
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -426,11 +432,13 @@ class CommandLineTests(unittest.TestCase):
 
 
 class ParityTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -511,11 +519,13 @@ class ParityTests(unittest.TestCase):
 
 
 class OrphanTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -537,11 +547,13 @@ class OrphanTests(unittest.TestCase):
 
 
 class McpTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -845,11 +857,13 @@ class McpTests(unittest.TestCase):
 
 
 class InstructionLayeringTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1110,11 +1124,13 @@ class InstructionLayeringTests(unittest.TestCase):
 
 
 class BehavioralConstraintTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1203,11 +1219,13 @@ class BehavioralConstraintTests(unittest.TestCase):
 
 
 class CollisionTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1386,11 +1404,13 @@ class BuiltInAgentCollisionTests(unittest.TestCase):
 
 
 class CopilotConfigurationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1997,11 +2017,13 @@ class CopilotConfigurationTests(unittest.TestCase):
 
 
 class ManifestSafetyTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / ".github").mkdir(parents=True)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2087,11 +2109,13 @@ class ManifestSafetyTests(unittest.TestCase):
 
 
 class VocabularyTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2140,11 +2164,13 @@ class VocabularyTests(unittest.TestCase):
 
 
 class OutputFormatTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2261,11 +2287,13 @@ class OutputFormatTests(unittest.TestCase):
 
 
 class ReadOnlyGuaranteeTest(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2291,11 +2319,13 @@ class ReadOnlyGuaranteeTest(unittest.TestCase):
 
 
 class SchemaVersionTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2356,11 +2386,13 @@ class SchemaVersionTests(unittest.TestCase):
 
 
 class EmptyManifestAuthorityTest(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / ".github").mkdir(parents=True)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2425,11 +2457,13 @@ class EmptyManifestAuthorityTest(unittest.TestCase):
 
 
 class JsonHashAuthorityTest(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2444,11 +2478,13 @@ class JsonHashAuthorityTest(unittest.TestCase):
 
 
 class BoolSchemaVersionTest(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2464,11 +2500,13 @@ class BoolSchemaVersionTest(unittest.TestCase):
 
 
 class UnreadableArtifactTest(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2485,11 +2523,13 @@ class UnreadableArtifactTest(unittest.TestCase):
 
 
 class UnlistedGeneratedFileTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2532,6 +2572,7 @@ class UnlistedGeneratedFileTests(unittest.TestCase):
 
 
 class CodeReviewSourceTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -2541,6 +2582,7 @@ class CodeReviewSourceTests(unittest.TestCase):
         manifest["surfaces"] = ["code_review"]
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -2597,11 +2639,13 @@ class CodeReviewSourceTests(unittest.TestCase):
 
 
 class LimitationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -4611,6 +4655,7 @@ class ReportFormatTests(unittest.TestCase):
 
 
 class RootNameTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "named repo"
@@ -4619,6 +4664,7 @@ class RootNameTests(unittest.TestCase):
         self.cwd = Path.cwd()
         os.chdir(self.root)
 
+    @override
     def tearDown(self) -> None:
         os.chdir(self.cwd)
         self.temp.cleanup()
@@ -4639,11 +4685,13 @@ class RootNameTests(unittest.TestCase):
 class UnreadableConfigurationTests(unittest.TestCase):
     """An undecodable or invalid file is a finding, never a traceback."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -4767,6 +4815,7 @@ class UnreadableConfigurationTests(unittest.TestCase):
 class RepositoryWalkTests(unittest.TestCase):
     """Walks for nested files skip version-control and dependency directories."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -4775,6 +4824,7 @@ class RepositoryWalkTests(unittest.TestCase):
         manifest["surfaces"] = ["copilot_cli", "cloud_agent"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -4861,11 +4911,13 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
 
     GENERATOR = "SOURCE = 'CLAUDE.md'\nTARGET_RUNTIMES = ['claude']\nTARGET_SURFACES = []\nTARGET_FEATURES = []\n"
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _write_fixture(self.root, {"CLAUDE.md": MAINTAINED_CLAUDE, ".github/scripts/ai_config.py": self.GENERATOR})
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -4930,10 +4982,12 @@ FILE_SCOPE_REPOSITORY: dict[str, str | bytes] = {
 class FileDerivedScopeTests(unittest.TestCase):
     """Without a manifest or a generator, the layering checks cover what the repository's files show it serves."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -6265,11 +6319,13 @@ def test_no_line_separator_in_a_value_starts_a_report_line(separator: str) -> No
 class OwnershipFindingTests(unittest.TestCase):
     """The ownership marker and an unreadable artifact are each reported once, by one check."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -6468,12 +6524,14 @@ class UnexaminedPathTests(unittest.TestCase):
     """A configuration file or folder whose stat fails, or with something else in its place, is a finding at its
     path, never read as no such file or folder."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         # The audit resolves its root, so a path the stat refuses is spelled as the resolved root spells it.
         self.root = Path(self.temp.name).resolve()
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -6897,10 +6955,12 @@ class PresenceAnswerTests(unittest.TestCase):
     """What each check that asks whether a configuration file or folder is there answers, found or not, and that one
     path it cannot examine leaves the rest of its loop to run."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -7055,6 +7115,7 @@ class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
 class UnlistableDirectoryTests(unittest.TestCase):
     """A directory the audit cannot list is a finding at that directory, never a traceback."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         # The audit resolves its root, so a path the listing or stat refuses is spelled as the resolved root spells
@@ -7063,6 +7124,7 @@ class UnlistableDirectoryTests(unittest.TestCase):
         _setup_conforming_repo(self.root)
         _write_fixture(self.root, {".github/agents/reviewer.md": "---\ndescription: Reviews.\n---\n"})
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -7159,6 +7221,7 @@ def _link_directory(target: Path, link: Path) -> None:
 class OutsideLinkTests(unittest.TestCase):
     """No walk or listing follows a link out of the repository; each such link is one inventory WARNING."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         # The audit resolves its root and its reader judges a link by its text, so the root is spelled resolved.
@@ -7178,6 +7241,7 @@ class OutsideLinkTests(unittest.TestCase):
             },
         )
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -7476,11 +7540,13 @@ class UnreadInputTests(unittest.TestCase):
 
     UNREAD = "Could not read, so the checks that read it did not run: "
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         _setup_conforming_repo(self.root)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -7568,10 +7634,12 @@ class CodexLayeringTests(unittest.TestCase):
     """Codex takes, in each directory, the first of AGENTS.override.md, AGENTS.md, and its configured fallbacks that
     exists, skips it when it holds only whitespace, and reads CLAUDE.md only as a fallback a configuration names."""
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -7866,11 +7934,13 @@ class ProvenanceTests(unittest.TestCase):
     SCRIPT = Path(audit.__file__).resolve()
     PROVENANCE = SCRIPT.parents[1] / "references" / "provenance.json"
 
+    @override
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo with spaces"
         (self.root / ".git").mkdir(parents=True)
 
+    @override
     def tearDown(self) -> None:
         self.temp.cleanup()
 

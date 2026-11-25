@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -68,10 +68,12 @@ strict = true
 
 
 class InventoryTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
 
+    @override
     def tearDown(self) -> None:
         self.temporary.cleanup()
 

@@ -9,7 +9,7 @@ import ast
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -63,11 +63,13 @@ def bounded_reader(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(exit_tables.CodeReader, name, counted)
 
     class Answers(dict[Any, Any]):
+        @override
         def __contains__(self, key: object) -> bool:
             step()
             return super().__contains__(key)
 
     class Told(dict[Any, bool]):
+        @override
         def __getitem__(self, key: Any) -> bool:
             step()
             return super().__getitem__(key)

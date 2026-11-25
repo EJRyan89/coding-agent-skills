@@ -19,7 +19,7 @@ import textwrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -112,6 +112,7 @@ class FixtureRunTests(unittest.TestCase):
     suites: dict[str, str]
 
     @classmethod
+    @override
     def setUpClass(cls) -> None:
         folder = suite_folder()
         cls.addClassCleanup(shutil.rmtree, folder)
@@ -276,6 +277,7 @@ class UsageTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -349,6 +351,7 @@ class SettingsTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

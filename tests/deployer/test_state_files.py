@@ -13,7 +13,7 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line, probe_returning
@@ -111,6 +111,7 @@ class ReaderTests(DeployerTestCase):
 
 
 class StateFileTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -497,11 +497,13 @@ class InspectionTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.config = self.root / "config.json"
 
+    @override
     def tearDown(self) -> None:
         self.temporary.cleanup()
 

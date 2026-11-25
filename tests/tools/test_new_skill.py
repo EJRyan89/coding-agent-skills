@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -56,6 +56,7 @@ GRANTS_REMAINING = [
 class FixtureRepositoryTestCase(unittest.TestCase):
     """A fixture source with two shipped skills, one in a bundle, and a current skill reference."""
 
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="new-skill-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -78,6 +79,7 @@ class FixtureRepositoryTestCase(unittest.TestCase):
         for name in ("alpha", "beta"):
             self.add_prose(name)
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
@@ -412,6 +414,7 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
 
 
 class SkillDependencyTestCase(FixtureRepositoryTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         # ejryan89-skill-core, holding the real lookup, and a sibling with a module a dependent script imports.

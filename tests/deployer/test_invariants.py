@@ -12,7 +12,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -124,6 +124,7 @@ def rendering_then(action: Callable[[], object]) -> mock._patch[mock.MagicMock |
 class RefusalBeforeMutationGuardTests(DeployerTestCase):
     """deploy_fails holds a refusal to the home it found, whatever the refusal's message."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -157,6 +158,7 @@ class RefusalBeforeMutationGuardTests(DeployerTestCase):
 class SourceImmutabilityGuardTests(DeployerTestCase):
     """Every deployment a test runs through the harness leaves its source byte for byte as it found it."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json(shared_assets={"shared-doc.md": "owner"})
@@ -194,6 +196,7 @@ class SourceImmutabilityGuardTests(DeployerTestCase):
 
 
 class CLIImmutabilityGuardTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -292,6 +295,7 @@ class RaisingRunGuardTests(DeployerTestCase):
     """A run that raises, as a killed deployment does, is held to its source and home before the exception reaches the
     test."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -354,6 +358,7 @@ class CheckoutProgramGuardTests(DeployerTestCase):
 class FreshHomeGuardTests(DeployerTestCase):
     """The fixture home starts empty, as a fresh profile folder does, so a refusal that makes a root is seen."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -446,6 +451,7 @@ class EntryPointGuardTests(DeployerTestCase):
 class PermanentBackupTests(DeployerTestCase):
     """A permanent backup, .backups/<run-id>/<name>, survives every later deployment and the uninstall."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -542,6 +548,7 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
     REPLACE = "Replace it with a real directory after verifying its contents, then retry."
     SEE_BACKUPS = 'See "Backups" in docs/recovery.md.'
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

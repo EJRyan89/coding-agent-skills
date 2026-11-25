@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, get_args, override
 from unittest import mock
 
 import pytest
@@ -751,6 +751,7 @@ class SubprocessRunnerTests(unittest.TestCase):
 class ThreeAnswerTests(unittest.TestCase):
     """Found, absent, and could not tell, from real git in a throwaway repository."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="three answers ")
         self.addCleanup(temporary.cleanup)
@@ -951,6 +952,7 @@ class WorkingDirectoryTests(unittest.TestCase):
     """A git in the working directory is never the git the client starts: Windows process creation looks a bare name
     up there before PATH, and a relative PATH entry such as `.` names it on every platform."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="git client ")
@@ -1028,6 +1030,7 @@ OTHER_LISTING = b"refs/heads/main\n"
 class RepositoryVariableTests(unittest.TestCase):
     """The issue's two repositories: `a` with branches main and only-in-a, and `b` with main alone."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1443,6 +1446,7 @@ class IsolatedClientTests(unittest.TestCase):
     """An isolated client inside a repository whose configuration, the global one, and a command-scope setting each
     set fixture.source, as content a review did not write can sit inside or below a repository."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

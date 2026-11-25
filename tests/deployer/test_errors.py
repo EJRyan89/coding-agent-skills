@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import DeployerTestCase
@@ -28,6 +28,7 @@ def denied(*_arguments: Any, **_keywords: Any) -> Any:
 
 
 class OSErrorTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

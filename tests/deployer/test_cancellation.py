@@ -6,7 +6,7 @@ import io
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import (
@@ -31,6 +31,7 @@ def interrupt(*_arguments: Any, **_keywords: Any) -> Any:
 
 
 class CancellationTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

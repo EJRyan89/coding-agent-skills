@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -180,6 +180,7 @@ class SignalledTree(NativeTree):
         self.released: float | None = None
 
     @contextmanager
+    @override
     def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
         with super().hold(process):
             deadline = time.monotonic() + STARTUP_SECONDS
@@ -209,6 +210,7 @@ class PausedTree(NativeTree):
         self.ran_before_held: bool | None = None
 
     @contextmanager
+    @override
     def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
         deadline = time.monotonic() + PAUSE_SECONDS
         while not self.started.exists() and time.monotonic() < deadline:
@@ -251,6 +253,7 @@ class UnopenableKernel(FailingKernel):
         self.error = error
         self.refused: list[int] = []
 
+    @override
     def __getattr__(self, name: str) -> Callable[..., Any]:
         call = super().__getattr__(name)
         if name != "OpenProcess":
@@ -269,6 +272,7 @@ class UnopenableKernel(FailingKernel):
 if sys.platform == "win32":
 
     class JobTreeTests(unittest.TestCase):
+        @override
         def setUp(self) -> None:
             temporary = tempfile.TemporaryDirectory(prefix="job-tree-test.")
             self.addCleanup(temporary.cleanup)
@@ -778,6 +782,7 @@ class HeldFromTheStartTests(unittest.TestCase):
     """A command is in its tree before it runs, on every platform, so a program it starts and leaves at once is ended
     with the tree however long the command takes to join it."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="held-from-the-start-test.")
         self.addCleanup(temporary.cleanup)
@@ -796,6 +801,7 @@ class HeldFromTheStartTests(unittest.TestCase):
 if sys.platform != "win32":
 
     class GroupTreeTests(unittest.TestCase):
+        @override
         def setUp(self) -> None:
             temporary = tempfile.TemporaryDirectory(prefix="group-tree-test.")
             self.addCleanup(temporary.cleanup)

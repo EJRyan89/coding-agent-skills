@@ -15,7 +15,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Literal, assert_never
+from typing import Literal, assert_never, override
 
 import versions
 from bounded_process import streaming
@@ -182,6 +182,7 @@ class Skipped:
     finding: str
     identity: PdfIdentity | None = None
 
+    @override
     def __str__(self) -> str:
         return f"{self.path} ({self.finding})"
 

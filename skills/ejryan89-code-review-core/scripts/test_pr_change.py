@@ -6,7 +6,7 @@ import threading
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -59,6 +59,7 @@ class FakeClient(GitHubClient):
         self.trees = trees or {sha: tree(value) for sha, value in comparisons.items()}
         self.calls: list[str] = []
 
+    @override
     def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
         self.calls.append(endpoint)
         if "/git/trees/" in endpoint:
@@ -611,6 +612,7 @@ class PrefetchTests(unittest.TestCase):
 
     def test_a_run_level_failure_in_a_concurrent_call_stops_the_prefetch(self) -> None:
         class Client(FakeClient):
+            @override
             def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
                 if endpoint.endswith(sha(3)):
                     raise GitHubError("gave up", kind="rate_limit")
@@ -627,6 +629,7 @@ class AncestryTests(unittest.TestCase):
             self.answer = answer
             self.calls: list[str] = []
 
+        @override
         def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
             self.calls.append(endpoint)
             if isinstance(self.answer, GitHubError):

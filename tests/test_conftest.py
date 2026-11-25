@@ -12,7 +12,7 @@ import textwrap
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -241,6 +241,7 @@ class AutomaticMaintenanceTests(unittest.TestCase):
     class_fixture_reads: ClassVar[dict[str, str]]
 
     @classmethod
+    @override
     def setUpClass(cls) -> None:
         cls.class_fixture_reads = {name: git("config", "--global", "--get", name).stdout for name in MAINTENANCE_OFF}
 
@@ -353,6 +354,7 @@ class FixtureTests(unittest.TestCase):
     """The autouse fixtures isolate each test, its setUp and tearDown, a class fixture, and a module fixture, each in a
     home of its own with its settings, and remove every home afterwards."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="conftest-fixtures.")
         self.addCleanup(temporary.cleanup)
@@ -508,6 +510,7 @@ class AcceptanceTests(unittest.TestCase):
 
     git_home: GitHome
 
+    @override
     def setUp(self) -> None:
         self.root = self.git_home.home / "acceptance"
         hooks = self.root / "failing-hooks"

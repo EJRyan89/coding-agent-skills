@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,6 +65,7 @@ class SearchSkippedFolderTests(unittest.TestCase):
 
 
 class SolutionReaderTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-solution-"))
         self.addCleanup(self.remove_root)
@@ -204,6 +206,7 @@ class SolutionReaderTests(unittest.TestCase):
 class BoundedReadTests(unittest.TestCase):
     """Every read opens only a regular file and refuses one above the one bound, with the file and the reason."""
 
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-solution-bound-"))
         self.addCleanup(self.remove_root)
@@ -267,6 +270,7 @@ class BoundedReadTests(unittest.TestCase):
 class NamedPathTests(unittest.TestCase):
     """The lexical rule for a path a solution or project names, which both .NET skills apply."""
 
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-solution-paths-")).resolve()
         self.addCleanup(self.root.rmdir)

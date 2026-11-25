@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, cast, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -289,6 +289,7 @@ class GitHubTarballVerificationTests(unittest.TestCase):
     """GitHub builds its tarball with `git archive`, which honours the commit's .gitattributes, so the fetcher checks
     the tarball against the commit's tree and refuses any file it left out or rewrote."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -486,12 +487,14 @@ class ConfigOperationSetTests(unittest.TestCase):
 
 
 class ReviewedHeadTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.directory = self.root / "owner" / "repo" / "pulls" / "5"
         self.directory.mkdir(parents=True)
 
+    @override
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
@@ -787,6 +790,7 @@ class EnumerateBatchTests(unittest.TestCase):
     REPOSITORY = "owner/repo"
     TODAY = date(2026, 3, 10)
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

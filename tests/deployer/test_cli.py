@@ -8,7 +8,7 @@ import subprocess
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward, interrupting
@@ -242,6 +242,7 @@ def unwrapped(output: str) -> str:
 class HomeTests(DeployerTestCase):
     """Every run names its home, and warns when HOME names another directory than the profile folder."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.other = self.root / "other home"
@@ -329,6 +330,7 @@ class CopilotHomeTests(DeployerTestCase):
     """COPILOT_HOME moves Copilot CLI's personal skills, and while it names another directory than ~/.copilot, Copilot
     reads no adapter: a deployment says so, and the shadow check reads the skills Copilot reads."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.copilot_home = self.root / "copilot home"

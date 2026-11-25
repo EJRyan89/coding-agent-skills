@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, get_args, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -62,6 +62,7 @@ def every_file(name: str) -> bool:
 
 
 class WalkTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

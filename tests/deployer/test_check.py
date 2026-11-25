@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -221,6 +221,7 @@ class Machine:
 
 
 class CheckCommandTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json(bundles=BUNDLE)
@@ -1415,6 +1416,7 @@ class LocatorFixture(unittest.TestCase):
     Windows, where no package manager links commands into a folder of its own, `links` is the folder PATH names
     after the first, the place the locator looks once the first has no such program."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="shared locator ")
@@ -1456,6 +1458,7 @@ class SharedLocatorTests(LocatorFixture):
     folder; Git Bash puts Git's bundled Xpdf 4.0 on PATH ahead of the Windows PATH, as the fixture's PATH folder
     does."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.banners: dict[Path, str] = {}

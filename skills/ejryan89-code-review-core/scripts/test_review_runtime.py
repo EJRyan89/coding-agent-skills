@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1412,6 +1412,7 @@ class CommittedReadTests(unittest.TestCase):
     `git cat-file --batch` for their bytes by the blob ids those entries gave, with every refusal before any read; and a
     diff's base blob is sized before its content is asked for."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -1807,6 +1808,7 @@ class DestinationStatTests(unittest.TestCase):
     """A destination that must be empty, whose stat fails, is refused with the stat's error, never read as nothing there
     and so as empty."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1966,6 +1968,7 @@ class AdapterRequestPathTests(unittest.TestCase):
             closing_issues=(closing, {"total": 0, "issues": []}) if closing is not None else None,
         )
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

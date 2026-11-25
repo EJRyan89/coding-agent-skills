@@ -67,7 +67,7 @@ import time
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn, TextIO
+from typing import Any, NamedTuple, NoReturn, TextIO, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
@@ -236,6 +236,7 @@ class PolicyLoader(unittest.TestLoader):
         super().__init__()
         self.pull_request = pull_request
 
+    @override
     def loadTestsFromTestCase(self, testCaseClass: type[unittest.TestCase]) -> unittest.TestSuite:
         if not issubclass(testCaseClass, PullRequestChecks):
             return super().loadTestsFromTestCase(testCaseClass)
@@ -260,11 +261,13 @@ class Encodable(io.TextIOBase):
         super().__init__()
         self.stream = stream
 
+    @override
     def write(self, text: str) -> int:
         encoding = getattr(self.stream, "encoding", None) or "utf-8"
         self.stream.write(text.encode(encoding, "backslashreplace").decode(encoding))
         return len(text)
 
+    @override
     def flush(self) -> None:
         # A stream that is gone, as a test's is once the test ends, has nothing left to flush.
         if not self.stream.closed:
@@ -279,6 +282,7 @@ class UsageParser(argparse.ArgumentParser):
         super().__init__(**options)
         self.errors = errors
 
+    @override
     def error(self, message: str) -> NoReturn:
         stream = sys.stderr if self.errors is None else self.errors
         self.print_usage(stream)
