@@ -1,6 +1,7 @@
 """What every policy module shares: the repository's roots, how a regression suite and a skill script are
 recognized, the reader of a module's imports, which ejryan89-skill-core's python_names holds, the Markdown fence and
-section readers, and the fixture-tree writer.
+section readers, the fixture-tree writer, and the catalogue of Python's call and import forms the shared readers are
+held to, with NOT_READ.
 
 The modules of tests/validation import the deployer, so whatever imports them first puts the repository root on
 sys.path: tests/run_validation.py, or a fixture suite beside them.
@@ -251,6 +252,140 @@ COMMON_PATH_FUNCTIONS = frozenset(
 # What stands for a part of a dotted name a module looks up by a name it computes, such as the module in
 # importlib.import_module(name).run, which no policy can settle.
 COMPUTED_NAME = "?"
+# The forms of Python's syntax tree the shared readers are held to, which tests/validation/test_python_forms.py reads
+# from the runner's ast module and a pinned copy of the newest Python's: each is read here, refused by a check
+# validation runs, or named in NOT_READ with why, so a node or a field a new Python adds fails until it is decided.
+# The expressions resolved_calls and resolved_references read as a call's function, by the name of their ast node: a
+# name and an attribute through the module's imports, a call of functools.partial or of a lookup attribute_lookups
+# reads, and a subscript of a namespace. They read only these direct forms and are not widened, as the decision in
+# docs/design.md that Python indirection is restricted rather than modelled holds: a call's function that is any other
+# call, or a subscript of anything but a namespace or a literal, names nothing, since what a function returns or a
+# container holds at run time is not read: a dispatch table, as `KINDS[kind](spec)`, and a generic class, as
+# `frozenset[int]()`, which runs the class, among them. Stated limits, each read as it is written and not refused:
+# - a method called on the value an `and`, an `or`, or an if-expression chooses, as `(text or "").strip()`;
+# - a name bound by an `and`, an `or`, or an if-expression and then called, read as the name, as the default-parameter
+#   idiom `find = find or shutil.which` followed by `find(name)`;
+# - an assignment expression used as a value anywhere but a call's function or an attribute's receiver, as
+#   `map((rm := shutil.rmtree), paths)` or `H = (h := f) or print`;
+# - a subscript of a subscript, or of a comprehension, a `:=`, or an `or`, as `[[f]][0][0](x)`, `[f for _ in x][0](x)`,
+#   or `(t := [f])[0](x)`, read as a dispatch table.
+CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript"})
+# The expressions that choose a call's function by a value, which the indirection policy in python_checks.py refuses
+# at the source as a call's function, in every module the claim policies read: an `and` or an `or`, an if-expression,
+# and an assignment expression, by their ast node, a subscript of a literal (LITERAL_DISPLAYS), and an attribute of an
+# assignment expression's value, which chosen_callee reads.
+REFUSED_CALLEES = {
+    "BoolOp": "an `and` or an `or`",
+    "IfExp": "an if-expression",
+    "NamedExpr": "an assignment expression",
+}
+LITERAL_DISPLAYS: dict[type[ast.expr], str] = {ast.Tuple: "tuple", ast.List: "list", ast.Set: "set", ast.Dict: "dict"}
+# The fields of an import statement CallableResolver and module_imports read, as `<node>.<field>`. A star import
+# binds names no reader sees, and ruff's F403, which validation runs on every module, refuses every one.
+IMPORT_FIELDS = frozenset(
+    {"Import.names", "ImportFrom.module", "ImportFrom.names", "ImportFrom.level", "alias.name", "alias.asname"}
+)
+# The fields of a call call_arguments and resolved_calls read: each positional argument, a `*` unpacking among them,
+# each keyword argument, and a `**` unpacking, the keyword whose name is None.
+ARGUMENT_FIELDS = frozenset({"Call.func", "Call.args", "Call.keywords", "keyword.arg", "keyword.value"})
+# Each form of the catalogue above that the shared readers neither read nor refuse, with why.
+NOT_READ = {
+    "callee Await": (
+        "names no callee statically: its value is what the awaited object returns at run time, which no import or "
+        "binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Yield": (
+        "names no callee statically: its value is what the generator's caller sends in at run time, which no import "
+        "or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee YieldFrom": (
+        "names no callee statically: its value is what the inner generator returns at run time, which no import or "
+        "binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Lambda": (
+        "names no callee statically: calling a lambda runs its body, whose own calls are read where they are written,"
+        " though the arguments the call gives it, which its body may forward to another call, are not followed, and a"
+        " call of its result is a call of a call's return value, which is not read"
+    ),
+    "callee BinOp": (
+        "names no callee statically: its value is what the operand's operator method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee UnaryOp": (
+        "names no callee statically: its value is what the operand's operator method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Compare": (
+        "names no callee statically: its value is what the operand's comparison method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Constant": (
+        "names no callee statically: it builds a string, a number, bytes, None, a bool, or the Ellipsis, which Python"
+        " refuses to call with a TypeError, so the call runs nothing"
+    ),
+    "callee JoinedStr": (
+        "names no callee statically: it builds a string, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee TemplateStr": (
+        "names no callee statically: it builds a string.templatelib.Template, which Python refuses to call with a "
+        "TypeError, so the call runs nothing"
+    ),
+    "callee Tuple": (
+        "names no callee statically: it builds a tuple, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee List": (
+        "names no callee statically: it builds a list, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee Set": (
+        "names no callee statically: it builds a set, which Python refuses to call with a TypeError, so the call runs"
+        " nothing"
+    ),
+    "callee Dict": (
+        "names no callee statically: it builds a dict, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee ListComp": (
+        "names no callee statically: it builds a list, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee SetComp": (
+        "names no callee statically: it builds a set, which Python refuses to call with a TypeError, so the call runs"
+        " nothing"
+    ),
+    "callee DictComp": (
+        "names no callee statically: it builds a dict, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee GeneratorExp": (
+        "names no callee statically: it builds a generator, which Python refuses to call with a TypeError, so the "
+        "call runs nothing"
+    ),
+    "callee Starred": (
+        "names no callee statically: the parser writes it only inside a display, an assignment target, or a call's "
+        "arguments, never as a call's function"
+    ),
+    "callee Slice": (
+        "names no callee statically: the parser writes it only inside a subscript's brackets, never as a call's "
+        "function"
+    ),
+    "callee FormattedValue": (
+        "names no callee statically: the parser writes it only inside an f-string, never as a call's function"
+    ),
+    "callee Interpolation": (
+        "names no callee statically: the parser writes it only inside a t-string, never as a call's function"
+    ),
+    "import field Import.is_lazy": (
+        "a lazy import binds the same name to the same module and only defers loading it until the name is first "
+        "used, so reading the binding alone settles the callee"
+    ),
+    "import field ImportFrom.is_lazy": (
+        "a lazy import binds the same name to the same object and only defers loading it until the name is first "
+        "used, so reading the binding alone settles the callee"
+    ),
+}
 # The scope a node outside every function, class, and named module-level assignment is in.
 MODULE_SCOPE = "<module>"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
@@ -362,6 +497,24 @@ def call_argument(call: ast.Call, position: int | None, *keywords: str) -> ast.e
     if named is not None:
         return named
     return next((found for found in call_arguments(call, position, ()) if isinstance(found, ast.Starred)), None)
+
+
+def chosen_callee(function: ast.expr) -> str:
+    """How a call's function is chosen by a value, as REFUSED_CALLEES and LITERAL_DISPLAYS word it: "calls the
+    function an if-expression chooses" for `(print if quiet else os.system)(x)`, "calls the function a subscript of a
+    literal list chooses" for `[os.system][0](x)`, and "calls an attribute of the value an assignment expression
+    binds" for `(fs := shutil).rmtree(p)`, however deep the attribute; "" for any other function. The shared readers
+    name nothing such a call runs, so the indirection policy refuses it."""
+    if (chosen := REFUSED_CALLEES.get(type(function).__name__)) is not None:
+        return f"calls the function {chosen} chooses"
+    if isinstance(function, ast.Subscript) and (display := LITERAL_DISPLAYS.get(type(function.value))) is not None:
+        return f"calls the function a subscript of a literal {display} chooses"
+    receiver = function
+    while isinstance(receiver, ast.Attribute):
+        receiver = receiver.value
+    if receiver is not function and isinstance(receiver, ast.NamedExpr):
+        return "calls an attribute of the value an assignment expression binds"
+    return ""
 
 
 def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
