@@ -489,7 +489,9 @@ def target_framework(target: str) -> str:
     return target.partition(RUNTIME_SEPARATOR)[0]
 
 
-def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) -> Assets:
+def read_assets(
+    path: Path, reader: TreeReader, declared: Sequence[str] = (), project_dir: Path | None = None
+) -> Assets:
     """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
     the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, is a target of its own,
     keyed `<framework>/<runtime>` (`runtime_target`), since a package's runtime.json may add packages there that its
@@ -498,7 +500,10 @@ def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) ->
     Both are keyed by the name `$(TargetFramework)` holds for the framework, so its conditions read as written: the
     first of the project file's `declared` frameworks, then of the project section's, that is the same framework as
     the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
-    version to the default (`matching_framework`), else the target's name as written."""
+    version to the default (`matching_framework`), else the target's name as written.
+
+    The projects the restore recorded are rebased on `project_dir`, the folder of the project it ran for, which a
+    restore moved out of obj/ does not hold; by default the folder above the file's, as obj/ lies in the project's."""
     try:
         document = json_reader.loads(read_bounded(path, reader).decode("utf-8-sig"))
     except ValueError as error:
@@ -540,10 +545,12 @@ def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) ->
             )
     direct = {named(framework): refs for framework, refs in assets_direct(frameworks, path).items()}
     restore = mapping(project, "restore", path, "project.restore")
-    return Assets(nodes, direct, restored_project_refs(restore, named, path))
+    return Assets(nodes, direct, restored_project_refs(restore, named, path, project_dir or path.parent.parent))
 
 
-def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], path: Path) -> dict[str, list[Path]]:
+def restored_project_refs(
+    restore: dict[str, Any], named: Callable[[str], str], path: Path, project_dir: Path
+) -> dict[str, list[Path]]:
     """The projects each framework references, from the assets file's `project.restore.frameworks.<framework>
     .projectReferences`, keyed as the frameworks are (`read_assets`); none when the restore does not name the project
     it ran for, against which its paths are rebased (`restored_path`)."""
@@ -558,8 +565,7 @@ def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], 
         references = mapping(section, "projectReferences", path, f"{where}.projectReferences")
         # A section without projectReferences says nothing about them; an empty one says there are none.
         if section.get("projectReferences") is not None:
-            # The project's directory holds the obj folder the assets file is in.
-            found[named(framework)] = [restored_path(key, restored, path.parent.parent) for key in references]
+            found[named(framework)] = [restored_path(key, restored, project_dir) for key in references]
     return found
 
 

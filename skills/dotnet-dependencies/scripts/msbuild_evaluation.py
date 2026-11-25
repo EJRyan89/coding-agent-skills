@@ -23,7 +23,9 @@ text (`tree_key`), never by `same_path`, whose case probe would list the folders
 Where NuGet's targets read the restore's assets file is placed as MSBuild places it (`ProjectEvaluation.assets`):
 `$(ProjectAssetsFile)` where a file sets it, else project.assets.json in `$(MSBuildProjectExtensionsPath)`, which the
 common props fix after Directory.Build.props from `$(BaseIntermediateOutputPath)`, else obj/ beside the project, unless
-a file sets it, as the files leave them after Directory.Build.targets; or unplaced when the reader cannot settle it.
+a file sets it, as the files leave them after Directory.Build.targets; or unplaced when the reader cannot settle it, and
+under the SDK's artifacts layout, which `UseArtifactsOutput` or an `ArtifactsPath` turns on and the toolset's own files
+place (`Evaluation.artifacts_layout`).
 
 Within the files, properties are evaluated top to bottom: a `PropertyGroup`'s condition when the group is reached, a
 property's own when the property is, and a `Choose` once, when it is reached, against the values at that point: its
@@ -143,6 +145,9 @@ LINK_TO_NOTHING = "a link to nothing, which MSBuild finds and cannot load"
 # defaults MSBuildProjectExtensionsPath to BaseIntermediateOutputPath and that to obj/ beside the project.
 RESTORE_FOLDER = ("MSBuildProjectExtensionsPath", "BaseIntermediateOutputPath")
 DEFAULT_RESTORE_FOLDER = "obj/"
+# The properties through which the SDK lays a project's outputs, its restore included, out under one artifacts folder.
+ARTIFACTS_SWITCH = "UseArtifactsOutput"
+ARTIFACTS_PATH = "ArtifactsPath"
 # The property naming the restore's assets file, which NuGet's targets default to ASSETS_FILE in that folder.
 ASSETS_PROPERTY = "ProjectAssetsFile"
 
@@ -608,10 +613,19 @@ class Evaluation:
         restore's folder as the files leave it then (`restore_folder`), made absolute against the project's folder, or
         unsettled when the reader cannot settle it. So a `BaseIntermediateOutputPath` a later file sets moves neither
         the generated targets the common targets import nor the assets NuGet's read, as it moves neither in MSBuild;
-        a `MSBuildProjectExtensionsPath` a later file sets does."""
-        folder = self.restore_folder()
+        a `MSBuildProjectExtensionsPath` a later file sets does. The SDK's artifacts layout, which `UseArtifactsOutput`
+        turns on and an `ArtifactsPath` implies, moves the folder under a path the toolset's own files name, so a
+        project whose files leave either set, or unsettled, leaves it unsettled (`artifacts_layout`)."""
+        folder = None if self.artifacts_layout() else self.restore_folder()
         value = None if folder is None else f"{project_path(self.project.path.parent, folder).as_posix()}/"
         self.state.set("MSBuildProjectExtensionsPath", (value,), True)
+
+    def artifacts_layout(self) -> bool:
+        """Whether the SDK may lay the restore out under its artifacts folder: `UseArtifactsOutput` set to anything but
+        `false`, or an `ArtifactsPath` set, by the files read so far, or either unsettled."""
+        use = self.set_value(ARTIFACTS_SWITCH)
+        path = self.set_value(ARTIFACTS_PATH)
+        return use is None or path is None or path != "" or ordinal_fold(use.strip()) not in ("", "false")
 
     def set_value(self, name: str) -> str | None:
         """The one value the files leave `name` at now: `""` when no file set it, and None when it cannot be settled,

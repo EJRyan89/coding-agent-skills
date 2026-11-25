@@ -1716,8 +1716,8 @@ UNSETTLED_ASSETS = (
 )
 # What `--ask-sdk` adds to a line naming a project whose assets file the walk may not have read.
 ASK_SDK_ADVICE = (
-    "; rerun why with --ask-sdk to have dotnet nuget why locate it, which lets MSBuild and the .NET host read whatever"
-    " the project and the machine's SDK configuration lead them to, beyond the examined tree"
+    "; rerun why with --ask-sdk to have dotnet nuget why locate it, which lets MSBuild and the .NET host read and run"
+    " whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
 )
 # A project whose assets file lies where no file says, and the SDK's answer for it.
 UNPLACED_ASSETS = "<PropertyGroup><ProjectAssetsFile>$(Elsewhere)</ProjectAssetsFile></PropertyGroup>"
@@ -6035,3 +6035,227 @@ class PresenceReadTests(Fixture):
             with self.subTest(shown):
                 rows = self.answered(root, failing)
                 self.assertIn([shown, "Access is denied"], self.lines(rows, "UNREADABLE"))
+
+
+# App references B 2.0.0 and Lib, which asks for B 1.0.0: App's restore resolves B at 2.0.0, which depends on C, for
+# everything App builds with, Lib's route included; Lib's own restore resolves B at 1.0.0, which depends on D.
+ROUTE_APP = sdk_project(
+    "<PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+    '<ItemGroup><PackageReference Include="B" Version="2.0.0" /><ProjectReference Include="../Lib/Lib.csproj" />'
+    "</ItemGroup>"
+)
+ROUTE_LIB = sdk_project(
+    "<PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+    '<ItemGroup><PackageReference Include="B" Version="1.0.0" /></ItemGroup>'
+)
+
+
+def route_assets(project: Path, targets: dict[str, Any], direct: str, references: tuple[Path, ...] = ()) -> str:
+    """A restore of `project` whose net8.0 target is `targets`, asking for B at `direct`, recording `references`."""
+    restore = {
+        "projectPath": str(project),
+        "frameworks": {"net8.0": {"projectReferences": {str(r): {} for r in references}}},
+    }
+    dependencies = {"B": {"target": "Package", "version": f"[{direct}, )"}}
+    return json.dumps(
+        {
+            "version": 3,
+            "targets": {"net8.0": targets},
+            "project": {"restore": restore, "frameworks": {"net8.0": {"dependencies": dependencies}}},
+        }
+    )
+
+
+class ProjectRouteTests(Fixture):
+    """Below a project reference, the walk takes the packages the starting project's restore resolves, as
+    `dotnet nuget why` does, for a project whose packages flow into that restore."""
+
+    def route_solution(self) -> Path:
+        app = self.write("src/App/App.csproj", ROUTE_APP)
+        lib = self.write("src/Lib/Lib.csproj", ROUTE_LIB)
+        app_targets = {
+            "B/2.0.0": {"type": "package", "dependencies": {"C": "1.0.0"}},
+            "C/1.0.0": {"type": "package"},
+            "Lib/1.0.0": {"type": "project", "dependencies": {"B": "1.0.0"}},
+        }
+        lib_targets = {"B/1.0.0": {"type": "package", "dependencies": {"D": "1.0.0"}}, "D/1.0.0": {"type": "package"}}
+        self.write("src/App/obj/project.assets.json", route_assets(app, app_targets, "2.0.0", (lib,)))
+        self.write("src/Lib/obj/project.assets.json", route_assets(lib, lib_targets, "1.0.0"))
+        return self.write("X.sln", solution("src\\App\\App.csproj", "src\\Lib\\Lib.csproj"))
+
+    def test_a_package_the_starting_project_resolves_through_a_project_reference_is_walked_on_its_own_edges(
+        self,
+    ) -> None:
+        root = self.route_solution()
+        code, rows = self.run_main("why", "C", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                ["src/App/App.csproj", "net8.0", "C", "graph", "Lib (project) > B (v2.0.0, graph v1.0.0) > C (v1.0.0)"],
+                ["src/App/App.csproj", "net8.0", "C", "graph", "B (v2.0.0) > C (v1.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_a_package_only_the_referenced_projects_own_restore_reaches_is_no_chain_of_the_starting_project(
+        self,
+    ) -> None:
+        root = self.route_solution()
+        _, rows = self.run_main("why", "D", "--root", str(root))
+        self.assertEqual(
+            [["src/Lib/Lib.csproj", "net8.0", "D", "graph", "B (v1.0.0) > D (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_a_packages_config_project_reached_through_a_reference_keeps_its_own_packages(self) -> None:
+        # Its packages do not flow into the starting project's restore, so the walk takes them from its own folder.
+        app = self.write("src/App/App.csproj", ROUTE_APP.replace("../Lib/Lib.csproj", "../Legacy/Legacy.csproj"))
+        legacy = self.write("src/Legacy/Legacy.csproj", LEGACY_PROJECT)
+        self.write(
+            "src/Legacy/packages.config",
+            '<packages><package id="Legacy.Pkg" version="1.0.0" targetFramework="net472" /></packages>',
+        )
+        self.write(
+            "packages/Legacy.Pkg.1.0.0/Legacy.Pkg.nuspec",
+            "<package><metadata><id>Legacy.Pkg</id><version>1.0.0</version></metadata></package>",
+        )
+        targets = {"B/2.0.0": {"type": "package"}, "Legacy/1.0.0": {"type": "project"}}
+        self.write("src/App/obj/project.assets.json", route_assets(app, targets, "2.0.0", (legacy,)))
+        root = self.write("X.sln", solution("src\\App\\App.csproj"))
+        _, rows = self.run_main("why", "Legacy.Pkg", "--root", str(root))
+        self.assertIn(
+            ["src/App/App.csproj", "net8.0", "Legacy.Pkg", "graph", "Legacy (project) > Legacy.Pkg (v1.0.0)"],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_a_moved_restore_keeps_the_project_references_it_recorded(self) -> None:
+        # The restore lies in artifacts/obj/<project>/, so the projects it recorded are taken relative to the project's
+        # own folder, not to the folder above the assets file's.
+        self.write(
+            "Directory.Build.props",
+            "<Project><PropertyGroup><BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts/obj/"
+            "$(MSBuildProjectName)/</BaseIntermediateOutputPath></PropertyGroup></Project>\n",
+        )
+        app = self.write("src/App/App.csproj", ROUTE_APP)
+        lib = self.write("src/Lib/Lib.csproj", ROUTE_LIB)
+        app_targets = {
+            "B/2.0.0": {"type": "package", "dependencies": {"C": "1.0.0"}},
+            "C/1.0.0": {"type": "package"},
+            "Lib/1.0.0": {"type": "project", "dependencies": {"B": "1.0.0"}},
+        }
+        self.write("artifacts/obj/App/project.assets.json", route_assets(app, app_targets, "2.0.0", (lib,)))
+        self.write(
+            "artifacts/obj/Lib/project.assets.json", route_assets(lib, {"B/1.0.0": {"type": "package"}}, "1.0.0")
+        )
+        root = self.write("X.sln", solution("src\\App\\App.csproj", "src\\Lib\\Lib.csproj"))
+        _, rows = self.run_main("why", "C", "--root", str(root))
+        self.assertIn(
+            ["src/App/App.csproj", "net8.0", "C", "graph", "Lib (project) > B (v2.0.0, graph v1.0.0) > C (v1.0.0)"],
+            self.lines(rows, "PATH"),
+        )
+
+
+class ArtifactsAndFlagTests(Fixture):
+    def test_the_sdks_artifacts_layout_leaves_the_restore_unsettled(self) -> None:
+        # UseArtifactsOutput, or an ArtifactsPath, moves the restore under the artifacts folder, which the toolset
+        # names; a leftover obj/ file is read with the line saying it may not be the build's.
+        for setting in (
+            "<UseArtifactsOutput>true</UseArtifactsOutput>",
+            "<ArtifactsPath>$(MSBuildThisFileDirectory)out</ArtifactsPath>",
+        ):
+            with self.subTest(setting=setting):
+                self.write("Directory.Build.props", f"<Project><PropertyGroup>{setting}</PropertyGroup></Project>\n")
+                self.write("src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+                self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(CORE_ASSETS))
+                root = self.write("Harbor.sln", solution("src\\Harbor.Core\\Harbor.Core.csproj"))
+                _, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+                unsettled = UNSETTLED_ASSETS.replace(
+                    "$(ProjectAssetsFile)", "$(MSBuildProjectExtensionsPath)project.assets.json"
+                )
+                self.assertEqual(
+                    [["src/Harbor.Core/Harbor.Core.csproj", unsettled + ASK_SDK_ADVICE]],
+                    self.lines(rows, "SDK_NOT_ASKED"),
+                )
+        # Turned off, the restore stays in obj/.
+        self.write(
+            "Directory.Build.props",
+            "<Project><PropertyGroup><UseArtifactsOutput>false</UseArtifactsOutput></PropertyGroup></Project>\n",
+        )
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root / "Harbor.sln"))
+        self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
+
+    def stale_solution(self) -> Path:
+        """Moved, whose assets place is unsettled, holding a stale obj/ restore that names Old.Pkg."""
+        self.write("src/Moved/Moved.csproj", restored_with(UNPLACED_ASSETS))
+        stale = {
+            "version": 3,
+            "targets": {"net8.0": {"Old.Pkg/1.0.0": {"type": "package"}}},
+            "project": {
+                "frameworks": {"net8.0": {"dependencies": {"Old.Pkg": {"target": "Package", "version": "1.0.0"}}}}
+            },
+        }
+        self.write("src/Moved/obj/project.assets.json", json.dumps(stale))
+        return self.write("X.sln", solution("src\\Moved\\Moved.csproj"))
+
+    def test_under_the_flag_the_sdks_answer_replaces_the_walks_guess_at_the_restore(self) -> None:
+        # The SDK answers from the file MSBuild places, which holds no Old.Pkg, so the walk's obj/ chains are dropped
+        # for that project and its project file's references alone are walked.
+        root = self.stale_solution()
+        _, rows = self.run_main("why", "Old.Pkg", "--root", str(root))
+        self.assertEqual(1, len(self.lines(rows, "PATH")))
+        sdk = TableSdk({})
+        services = Services(run=sdk, which=self.with_dotnet.which)
+        _, rows = self.run_main("why", "Old.Pkg", "--root", str(root), "--ask-sdk", services=services)
+        self.assertEqual(([], [["Old.Pkg"]]), (self.lines(rows, "PATH"), self.lines(rows, "MISSING")))
+        self.assertEqual(1, len(sdk.commands))
+
+    def test_under_the_flag_a_failed_run_keeps_the_walks_guess_and_says_so(self) -> None:
+        root = self.stale_solution()
+        services = Services(run=lambda arguments, timeout, folder: Completed(1, "boom"), which=self.with_dotnet.which)
+        _, rows = self.run_main("why", "Old.Pkg", "--root", str(root), "--ask-sdk", services=services)
+        self.assertEqual(1, len(self.lines(rows, "PATH")))
+        self.assertEqual(
+            [
+                [
+                    "src/Moved/Moved.csproj",
+                    "Old.Pkg",
+                    "dotnet nuget why answered nothing (exit code 1); the first line it printed, which the script"
+                    " cannot read: boom; the walk answered from the restore's assets file in obj/, which may not be the"
+                    " one the build uses",
+                ]
+            ],
+            self.lines(rows, "SDK_FAILED"),
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_settled_assets_file_that_is_a_link_leading_out_is_reported_and_never_read(self) -> None:
+        (self.root / "repo" / TEST_MARKER).mkdir(parents=True)
+        self.write("outside/project.assets.json", json.dumps(CORE_ASSETS))
+        named = restored_with(
+            "<PropertyGroup><ProjectAssetsFile>restore/assets.json</ProjectAssetsFile></PropertyGroup>"
+        )
+        self.write("repo/src/Named/Named.csproj", named)
+        link = self.root / "repo" / "src" / "Named" / "restore" / "assets.json"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(self.root / "outside" / "project.assets.json")
+        root = self.write("repo/App.sln", solution("src\\Named\\Named.csproj"))
+        touched: list[tuple[str, bool]] = []
+        with recording_follows(touched):
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual([], followed_through(touched, [link], self.root / "outside"))
+        self.assertEqual(1, code)
+        self.assertEqual([["src/Named/Named.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        reason = (
+            f"{link.as_posix()} is a link to {(self.root / 'outside' / 'project.assets.json').as_posix()}, outside the"
+            f" examined tree {(self.root / 'repo').as_posix()}, which the reader does not follow"
+        )
+        self.assertEqual([["src/Named/restore/assets.json", reason]], self.lines(rows, "UNREADABLE"))
+        self.assertEqual(
+            [
+                [
+                    "src/Named/Named.csproj",
+                    f"the walk does not read the restore's assets file at src/Named/restore/assets.json: {reason}"
+                    + ASK_SDK_ADVICE,
+                ]
+            ],
+            self.lines(rows, "SDK_NOT_ASKED"),
+        )
