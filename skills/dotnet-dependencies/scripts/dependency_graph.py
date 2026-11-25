@@ -1445,7 +1445,9 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
     root = next((target for target in project.targets if target.framework == framework), None)
     start = Visit(framework, root if project.edges == "assets" else None)
     walked_projects = {(graph.key(project.file.path), start.framework, start.root is not None)}
-    walked_packages: set[tuple[int, str]] = set()  # the target's identity and the package's case-folded id
+    # The target's identity, the package's case-folded id, and whether the route to it flows, so a package met first
+    # on a private route is walked again on one that flows.
+    walked_packages: set[tuple[int, str, bool]] = set()
     queue: deque[tuple[Step, str, bool]] = deque()
 
     def own_steps(owner: Project, visit: Visit) -> list[Step]:
@@ -1477,8 +1479,8 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
             if visit_key not in walked_projects:
                 walked_projects.add(visit_key)
                 enqueue(own_steps(entered_project, visit), first, flows)
-        elif target is not None and (id(target), ordinal_fold(name)) not in walked_packages:
-            walked_packages.add((id(target), ordinal_fold(name)))
+        elif target is not None and (id(target), ordinal_fold(name), flows) not in walked_packages:
+            walked_packages.add((id(target), ordinal_fold(name), flows))
             node = target.node(name)
             if node is not None:
                 enqueue(

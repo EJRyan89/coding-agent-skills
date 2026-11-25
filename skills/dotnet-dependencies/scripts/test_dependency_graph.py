@@ -6596,3 +6596,35 @@ class ReachOrderTests(Fixture):
         # The flowing route is named first, wherever the private one is listed.
         self.assertIn(["net10.0", "T", "1.0.0", "package", "LibD1 (project)"], reached)
         self.assertIn(["net10.0", "T", "package", "1.0.0", "LibD1 (project)"], where)
+
+    def private_package_diamond(self, references: tuple[str, ...]) -> Path:
+        # LibP asks for P, which depends on Q, with PrivateAssets=all; LibPp references LibP privately and LibPf
+        # plainly, so P is walked on LibP's own restore either way, and Q's first hop is a route that flows.
+        net10 = "<PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+        own = {"P/1.0.0": package("Q/1.0.0"), "Q/1.0.0": package()}
+        self.project(
+            "LibP",
+            net10 + '<ItemGroup><PackageReference Include="P" Version="1.0.0" PrivateAssets="all" /></ItemGroup>',
+            restored_project(self.root, "LibP", {"net10.0": own}, {"P": "1.0.0"}),
+        )
+        for name, private in (("LibPf", ""), ("LibPp", ' PrivateAssets="all"')):
+            self.project(
+                name,
+                net10 + f'<ItemGroup><ProjectReference Include="../LibP/LibP.csproj"{private} /></ItemGroup>',
+                restored_project(self.root, name, {"net10.0": {**own, "LibP/1.0.0": entry(NET10)}}, {}, ("LibP",)),
+            )
+        resolved = {"LibPf/1.0.0": entry(NET10, "LibP/1.0.0"), "LibPp/1.0.0": entry(NET10), "LibP/1.0.0": entry(NET10)}
+        items = "".join(f'<ProjectReference Include="../{ref}/{ref}.csproj" />' for ref in references)
+        return self.project(
+            "AppO",
+            net10 + f"<ItemGroup>{items}</ItemGroup>",
+            restored_project(self.root, "AppO", {"net10.0": resolved}, {}, references),
+        )
+
+    def test_a_private_package_reached_by_both_routes_takes_its_first_hop_from_the_one_that_flows(self) -> None:
+        first = self.answers(self.private_package_diamond(("LibPp", "LibPf")))
+        for path in sorted(self.root.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        second = self.answers(self.private_package_diamond(("LibPf", "LibPp")))
+        self.assertEqual(first, second)
+        self.assertIn(["net10.0", "Q", "1.0.0", "package", "LibPf (project)"], first[0])
