@@ -39,9 +39,9 @@ whose changed lines yield no mutant is named in the summary, never left out of i
 mutmut's own runner is not used: it records which tests reach a function only inside its pytest process and finds a
 mutant by a module name it derives from the file's path, while the suites here reach most modules through the
 subprocesses they start (deploy.py, a skill's script) and import a skill's or a tool's module by its bare name. So the
-gate runs the suites as the validation runner does, `python -B -m pytest <suite>` from the root of a throwaway git
-worktree at HEAD, one worktree per worker, with the mutant written into the worktree's copy of the module, where every
-process the suite starts imports it.
+gate runs the suites as the validation runner does, `python -B -m pytest <suite> --basetemp <folder>`, with a base
+folder of its own for its temporary folders, from the root of a throwaway git worktree at HEAD, one worktree per worker,
+with the mutant written into the worktree's copy of the module, where every process the suite starts imports it.
 
 Which suites run against a mutant is measured, not guessed. The suites that reach the changed modules, as
 `job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py, which records

@@ -1,9 +1,9 @@
 """Regression suites: how they are found, sharded, and run, the rules the skill guide states for them, that every
 module is named by a test, and that the root conftest.py isolates git for every Python suite.
 
-Each Python suite runs as `python -B -m pytest <suite>`, or as one shard of it with conftest.py's --suite-shard, in
-a process of its own with a base folder of its own for its temporary folders; a Bash or PowerShell suite runs as a
-program.
+Each Python suite runs as `python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its own for its
+temporary folders, or as one shard of it with conftest.py's --suite-shard, in a process of its own; a Bash or
+PowerShell suite runs as a program.
 """
 
 from __future__ import annotations
