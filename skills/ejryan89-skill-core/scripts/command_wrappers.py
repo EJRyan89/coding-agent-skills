@@ -5,7 +5,10 @@ A reader of a shell script's commands goes past such a command to the one it run
 COMMAND_WRAPPERS, read by option_reader's getopt reading, `find_action` to the command one of find's FIND_COMMANDS
 runs, `shell_script_index` to the script a shell's -c runs, and `trap_action` to the script a trap sets to run.
 Repository validation's command, git subcommand, and pipe readers and audit-skill's Bash and git subcommand readers
-read through these, so they agree on every wrapper and every script a command starts.
+read through these, so they agree on every wrapper and every script a command starts. Every Bash builtin is decided
+here too, and a use of one that runs text no reader reads, as `source` or `mapfile -C` does, is a program `unwrapped`
+gives as UNREAD_PROGRAM: validation's command policy refuses the script that holds it, while git_subcommands gives no
+subcommand for it and audit-skill's program reader stops at it, as each does for any wrapper it cannot read.
 """
 
 from __future__ import annotations
@@ -134,6 +137,67 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "
 
+# Every Bash builtin is decided here, in exactly one table, as tests/tools/test_command_wrapper_catalogues.py holds to
+# each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's:
+# - COMMAND_WRAPPERS holds command, builtin, and exec, each read as the command it runs;
+# - OPTION_WRAPPERS holds the builtins read as the command they run only given their option, as jobs -x;
+# - SCRIPT_BUILTINS holds the builtins that run a script each reader reads, eval and trap;
+# - REFUSED_BUILTINS holds the builtins with a use that runs text no reader reads, each with when and why, a use
+#   `unwrapped` gives as UNREAD_PROGRAM, while every other use of the builtin runs nothing;
+# - RUNS_NOTHING holds the builtins that run no command but themselves, whatever their words;
+# - NOT_READ holds, each with why, the builtins that run text only in a way no script reaches, or change what a later
+#   word runs, which no reader judges.
+# The builtins that run a script each reader reads: eval's arguments, and the action a trap sets (trap_action).
+SCRIPT_BUILTINS = frozenset({"eval", "trap"})
+# The builtins that run the command their operands name, in the shell itself, only given an option, each with its
+# getopt table, read as a wrapper's is, and that option's letter: jobs -x. Given no such option, one runs nothing.
+OPTION_WRAPPERS = {"jobs": (option_table("lnprsx"), "x")}
+# The builtins whose words name a variable or an arithmetic expression whose array subscript Bash expands as it reads
+# the word, so a command substitution the subscript's text holds runs even where the word was quoted, as in
+# `printf -v 'a[$(touch x)]' y`; export, readonly, and getopts do once the variable they set has the integer
+# attribute, as after `declare -i x`, and wait does for the variable its -p names, in Bash 5.1 and later.
+SUBSCRIPT_BUILTINS = frozenset(
+    {"let", "declare", "typeset", "local", "read", "printf", "unset", "test", "[", "export", "readonly", "getopts"}
+    | {"wait"}
+)
+# A command or process substitution anywhere after a subscript's `[` in a word, a nested subscript's included, and
+# Bash 5.3's `${ command; }` and `${| command; }`, which run in the shell itself; it errs toward refusing a word whose
+# substitution stands after its subscript closes.
+SUBSCRIPT_SUBSTITUTION = re.compile(r"\[.*(?:\$\(|`|[<>]\(|\$\{[\s|])", re.DOTALL)
+# The builtins that run text no reader reads given one of these option letters, each with the letters and why.
+OPTION_RUNNERS = {
+    **dict.fromkeys(("mapfile", "readarray"), ("C", "runs its -C callback in the shell itself")),
+    "compgen": ("CFW", "runs its -C command or its -F function, or expands its -W wordlist's substitutions"),
+    # enable -n, which makes a later name run the program of that name in the builtin's place, as hash -p makes a later
+    # name run another file, is not refused: a stated limit, since no reader follows what a later name runs.
+    "enable": ("f", "loads a builtin from a shared object"),
+}
+# The uses of a builtin that run text no reader reads, each with when and why.
+REFUSED_BUILTINS = {
+    **dict.fromkeys((".", "source"), "always: runs a file's commands"),
+    "fc": "unless it only lists, given -l without -e or -s: runs commands again from the history",
+    **{
+        name: f"given {' or '.join(f'-{letter}' for letter in letters)}: {reason}"
+        for name, (letters, reason) in OPTION_RUNNERS.items()
+    },
+    **dict.fromkeys(SUBSCRIPT_BUILTINS, "given a word whose array subscript holds a command or process substitution"),
+}
+# The builtins that run no command but themselves, whatever their words.
+RUNS_NOTHING = frozenset(
+    {":", "true", "false", "echo", "pwd", "cd", "pushd", "popd", "dirs", "type", "help", "caller", "times", "history"}
+    | {"ulimit", "umask", "break", "continue", "return", "exit", "logout", "shift", "bg", "fg"}
+    | {"disown", "kill", "suspend", "set", "shopt", "compopt"}
+)
+# The builtins that run text in a way no script reaches, or change what a later word runs, each with why; no reader
+# judges them.
+NOT_READ = {
+    "complete": "runs its -C command or -F function only at an interactive prompt's completion, no script's",
+    "bind": "runs its -x command only at an interactive prompt's key, which no script reaches",
+    "alias": "changes what a later name runs only where expand_aliases is set, which the set and shopt catalogue reads",
+    "unalias": "changes what a later name runs only where expand_aliases is set, as alias does",
+    "hash": "with -p makes a later name run the file it names, which no reader follows",
+}
+
 
 def bash_program(word: str) -> str:
     """The program a Bash command's word names, by its file name, as Bash finds it: `/usr/bin/git` and `git.exe` are
@@ -160,7 +224,12 @@ def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WR
     that names no program, and `command` given -v or -V among its own options, alone or in a bundle such as `-pv`,
     which only looks one up; a -v after the program is the program's own. A wrapper option the table does not settle,
     such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no word is taken for
-    the program unread."""
+    the program unread, and so does a use of a builtin that runs text no reader reads (builtin_refusal), with why."""
+    refusal = builtin_refusal(words)
+    if refusal is not None:
+        return [f"{UNREAD_PROGRAM}{words[0]} {refusal}"]
+    if words[0] in OPTION_WRAPPERS:
+        return option_wrapped(words)
     head, rest = wrapper_name(words[0], wrappers), words[1:]
     table = wrappers.get(head)
     if table is None:
@@ -176,6 +245,43 @@ def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WR
             ["env", *(word for value in split for word in split_line(value)), *rest[reading.stop :]], wrappers
         )
     return rest[reading.stop :]
+
+
+def option_wrapped(words: list[str]) -> list[str]:
+    """The words of the command a builtin OPTION_WRAPPERS names runs, from its program on, given its option, as jobs
+    -x runs one; empty given no such option, and UNREAD_PROGRAM with the option for one its table does not settle."""
+    table, letter = OPTION_WRAPPERS[words[0]]
+    rest = words[1:]
+    reading = option_refusal(table, list(rest))
+    if reading.refused is not None:
+        return [f"{UNREAD_PROGRAM}{words[0]} {reading.refused}"]
+    options = [word for word in rest[: reading.stop] if word != "--"]
+    return rest[reading.stop :] if any(letter in word[1:] for word in options) else []
+
+
+def builtin_refusal(words: list[str]) -> str | None:
+    """Why a builtin's words run text no reader reads, as REFUSED_BUILTINS names each such use, or None. An option
+    letter is read in any option word, one starting with `-`, alone or bundled, wherever it stands, so an operand
+    that looks like one is taken for one, erring toward refusing, and a subscript's substitution is read in any word of
+    a SUBSCRIPT_BUILTINS builtin.
+    Stated limits, since no script here writes one: a subscript a variable fills, as `read "a[$i]"`, whose value Bash
+    expands again; an ANSI-C `$'...'` word whose escape spells the substitution; text an integer variable receives as
+    data, as `declare -i i; read i <<< 'a[$(x)]'` or a mapfile into an integer array; none of which is refused, since a
+    reader sees no substitution in the word; an option word a variable or a substitution fills, as
+    `o=-W; compgen "$o" '$(x)' x`, `mapfile "$o" cb`, or `enable "$o" lib.so`, which a reader takes as the literal its
+    text is; and `enable -n`, which makes a later name run the program of that name in the builtin's place, as
+    `hash -p` makes one run another file, since no reader follows what a later name runs."""
+    head, rest = words[0], words[1:]
+    letters = {letter for word in rest if word.startswith("-") and word not in {"-", "--"} for letter in word[1:]}
+    if head in {".", "source"}:
+        return "runs a file's commands"
+    if head == "fc" and not ("l" in letters and not letters & {"e", "s"}):
+        return "runs commands again from the history"
+    if head in OPTION_RUNNERS and letters & set(OPTION_RUNNERS[head][0]):
+        return OPTION_RUNNERS[head][1]
+    if head in SUBSCRIPT_BUILTINS and any(SUBSCRIPT_SUBSTITUTION.search(word) for word in rest):
+        return "expands a command substitution in an array subscript"
+    return None
 
 
 def looks_up(word: str) -> bool:

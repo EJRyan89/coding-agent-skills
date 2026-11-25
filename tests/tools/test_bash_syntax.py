@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import re
 import sys
 import unittest
@@ -1026,16 +1025,17 @@ PINNED_RESERVED_WORDS = frozenset(
 PINNED_FROM_BASH = (5, 3)
 
 
-@functools.cache
 def runner_bash() -> tuple[tuple[int, int], frozenset[str]]:
-    """The validated Bash's release, as its major and minor numbers, and the reserved words it prints: Git Bash on
-    Windows and the first bash on PATH elsewhere."""
-    script = 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"; compgen -k'
-    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
-    assert result.returncode == 0, result.errors
-    major, minor, *words = result.output.split()
-    assert "if" in words, f"compgen -k printed no reserved words: {result.output!r}"
-    return (int(major), int(minor)), frozenset(words)
+    """The validated Bash's release, as its major and minor numbers, and the reserved words it prints."""
+    return bash_agreement.compgen("-k")
+
+
+def test_declaration_builtins_are_the_builtins_after_which_bash_reads_an_array_assignment() -> None:
+    # Bash reads NAME=( ) as an array among a builtin's arguments only for the builtins that take assignments, so
+    # `bash -n` reads `<builtin> a=(1)` for exactly those, on every Bash.
+    texts = {name: f"{name} a=(1)" for name in bash_agreement.compgen("-b")[1]}
+    verdicts = bash_agreement.bash_verdicts(list(texts.values()))
+    assert {name for name, text in texts.items() if verdicts[text][0]} == set(bash_syntax.DECLARATION_BUILTINS)
 
 
 def refused_at_a_commands_start(word: str) -> bool:
