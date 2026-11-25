@@ -1,0 +1,212 @@
+"""A FIFO, socket, device, or other special file in a tree the deployer reads is refused by name and kind, before any
+read, so the deployment never blocks opening one (#3235).
+
+The FIFO tests run on Linux and macOS only: Windows has no FIFO a folder can hold, its named pipes living in their own
+namespace, and its counterpart special file, the AF_UNIX socket a folder can hold, is a reparse point, which the
+deployer refuses as a link before this check is reached.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import stat
+import sys
+import tempfile
+import threading
+import unittest
+from collections.abc import Iterator
+from pathlib import Path
+from typing import override
+from unittest import mock
+
+import file_lock
+from harness import DeployerTestCase, forward
+
+from deployer import hashing
+from deployer.errors import DeployError
+
+POSIX_ONLY = "Windows has no FIFO a folder can hold; its AF_UNIX socket file is a reparse point, refused as a link"
+# How often the releaser opens each FIFO's writing end, which ends a read blocked opening it.
+RELEASE_INTERVAL = 0.2
+
+
+@contextlib.contextmanager
+def released(*fifos: Path) -> Iterator[set[Path]]:
+    """While the block runs, open and close each FIFO's writing end every RELEASE_INTERVAL seconds, so a reader that
+    opens one gets its end of file at once rather than blocking: code that opens a FIFO fails the test's assertions,
+    never hangs it. A nonblocking open of a writing end succeeds only while a reader holds the FIFO open, so each FIFO
+    it opens is added to the set it gives, which the block's code never opened while it stays empty."""
+    done = threading.Event()
+    opened: set[Path] = set()
+
+    def release() -> None:
+        while not done.wait(RELEASE_INTERVAL):
+            for fifo in fifos:
+                with contextlib.suppress(OSError):
+                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                    opened.add(fifo)
+
+    releaser = threading.Thread(target=release, daemon=True)
+    releaser.start()
+    try:
+        yield opened
+    finally:
+        done.set()
+        releaser.join()
+
+
+def mode(kind: int) -> os.stat_result:
+    """A stat result whose mode is `kind` with read and write for its owner, and every other field zero."""
+    return os.stat_result((kind | 0o600, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+
+class SpecialKindTests(unittest.TestCase):
+    """hashing.special_kind names each kind a stat mode gives; this holds on every platform, from modes alone."""
+
+    def test_each_special_kind_is_named_and_a_file_folder_or_link_is_none(self) -> None:
+        self.assertEqual("FIFO (named pipe)", hashing.special_kind(mode(stat.S_IFIFO)))
+        self.assertEqual("socket", hashing.special_kind(mode(stat.S_IFSOCK)))
+        self.assertEqual("character device", hashing.special_kind(mode(stat.S_IFCHR)))
+        self.assertEqual("block device", hashing.special_kind(mode(stat.S_IFBLK)))
+        self.assertEqual("special file", hashing.special_kind(mode(0o160000)))
+        for ordinary in (stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK):
+            with self.subTest(mode=oct(ordinary)):
+                self.assertIsNone(hashing.special_kind(mode(ordinary)))
+
+
+@unittest.skipIf(sys.platform == "win32", POSIX_ONLY)
+class TreeReadTests(unittest.TestCase):
+    """read_tree and hash_path refuse a FIFO by its path and kind, and never open it."""
+
+    @override
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="special-files."))).resolve()
+        self.tree = self.root / "tree with spaces"
+        (self.tree / "scripts").mkdir(parents=True)
+        (self.tree / "notes.txt").write_bytes(b"x\n")
+
+    def refused(self, fifo: Path, read: Path) -> DeployError:
+        """The refusal of reading `read`, hash_path's of the FIFO itself or read_tree's of a tree, once `fifo` is
+        made; the FIFO is removed whatever the read does, so a read that opened it leaves no FIFO behind."""
+        os.mkfifo(fifo)
+        try:
+            with released(fifo) as opened, self.assertRaises(DeployError) as caught:
+                hashing.hash_path(read) if read == fifo else hashing.read_tree(read)
+        finally:
+            fifo.unlink()
+        self.assertEqual(set(), opened)
+        return caught.exception
+
+    def test_a_fifo_in_a_tree_is_refused_by_path_and_kind(self) -> None:
+        for relative in ("plainfifo", "scripts/run.py"):
+            with self.subTest(relative=relative):
+                fifo = self.tree / relative
+                refusal = self.refused(fifo, self.tree)
+                self.assertEqual(
+                    (
+                        f"ERROR: Refusing to hash content containing a FIFO (named pipe): {forward(fifo)}",
+                        "Remove it, or move it out of the tree, then rerun with --dry-run.",
+                    ),
+                    refusal.lines,
+                )
+
+    def test_a_fifo_named_as_the_sidecar_of_a_listed_file_is_refused_never_opened_to_read_a_header(self) -> None:
+        fifo = self.tree / "._notes.txt"
+        refusal = self.refused(fifo, self.tree)
+        self.assertEqual(
+            f"ERROR: Refusing to hash content containing a FIFO (named pipe): {forward(fifo)}", refusal.lines[0]
+        )
+
+    def test_hash_path_of_a_fifo_or_a_tree_holding_one_is_refused(self) -> None:
+        fifo = self.root / "alone"
+        refusal = self.refused(fifo, fifo)
+        self.assertEqual(
+            f"ERROR: Refusing to hash content containing a FIFO (named pipe): {forward(fifo)}", refusal.lines[0]
+        )
+        pipe = self.tree / "pipe"
+        os.mkfifo(pipe)
+        try:
+            with released(pipe), self.assertRaises(DeployError):
+                hashing.hash_path(self.tree)
+        finally:
+            pipe.unlink()
+
+    def test_a_regular_file_is_still_read_and_hash_path_of_a_missing_file_raises_its_error(self) -> None:
+        self.assertEqual({"notes.txt": b"x\n"}, hashing.read_tree(self.tree))
+        self.assertEqual(hashing.file_hash(b"x\n"), hashing.hash_path(self.tree / "notes.txt"))
+        with self.assertRaises(FileNotFoundError):
+            hashing.hash_path(self.tree / "missing")
+
+
+@unittest.skipIf(sys.platform == "win32", POSIX_ONLY)
+class DeploymentTests(DeployerTestCase):
+    """A deployment, and its dry run, refuse a FIFO in the source or in an installed copy before any change."""
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json(shared_assets={"shared.md": "owner"})
+        self.make_agent("reviewer")
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"], shared_deps=["shared.md"])
+        self.make_shared_asset("shared.md")
+        self.make_config()
+
+    def test_a_fifo_anywhere_the_source_is_read_is_refused_by_path_and_kind_before_any_change(self) -> None:
+        for relative in (
+            "skills/alpha/plainfifo",
+            "skills/alpha/._SKILL.md",
+            "skills/alpha/scripts/run.py",
+            "deploy-meta/notes.json",
+            "agents/notes.md",
+        ):
+            fifo = self.source / relative
+            fifo.parent.mkdir(exist_ok=True)
+            os.mkfifo(fifo)
+            try:
+                for arguments in (("--dry-run",), ()):
+                    with self.subTest(relative=relative, arguments=arguments), released(fifo) as opened:
+                        result = self.deploy_fails("--all", *arguments, pattern="FIFO")
+                        self.assertEqual(set(), opened)
+                        self.assertIn(
+                            f"ERROR: FIFO (named pipe) found in deployable source tree: {forward(fifo)}\n"
+                            "Remove it, or move it out of the checkout, then retry.\n",
+                            result.output,
+                        )
+                        self.assertFalse(self.manifest_file.exists())
+            finally:
+                fifo.unlink()
+
+    def test_a_shared_asset_that_is_a_fifo_is_refused_before_any_change(self) -> None:
+        asset = self.source / "skills" / "shared.md"
+        asset.unlink()
+        os.mkfifo(asset)
+        with released(asset):
+            result = self.deploy_fails("--all", pattern="FIFO")
+        self.assertIn(f"ERROR: FIFO (named pipe) found in deployable source tree: {forward(asset)}\n", result.output)
+
+    def test_a_fifo_planted_in_an_installed_copy_is_refused_before_any_change(self) -> None:
+        self.deploy_ok("--all")
+        fifo = self.skills_dir / "alpha" / "pipe"
+        os.mkfifo(fifo)
+        for arguments in (("--dry-run",), ()):
+            with self.subTest(arguments=arguments), released(fifo) as opened:
+                result = self.deploy_fails("--all", *arguments, pattern="FIFO")
+                self.assertEqual(set(), opened)
+                self.assertIn(
+                    f"ERROR: Refusing to hash content containing a FIFO (named pipe): {forward(fifo)}\n", result.output
+                )
+
+    def test_a_fifo_where_a_held_locks_record_belongs_names_no_holder_and_is_never_opened(self) -> None:
+        # The record of a lock another process holds is read only to name its holder, so a FIFO there names none.
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        handle = file_lock.take(self.paths.lock_file)
+        assert handle is not None
+        self.addCleanup(file_lock.release, handle, self.paths.lock_file)
+        self.lock_dir.mkdir()
+        fifo = self.lock_dir / "info.json"
+        os.mkfifo(fifo)
+        with mock.patch("deployer.lock.LOCK_WAIT_SECONDS", 0), released(fifo) as opened:
+            result = self.deploy_fails("--all", pattern="Another deployment is running")
+        self.assertEqual(set(), opened)
+        self.assertIn("ERROR: Another deployment is running.\nWait for it to finish, then retry.\n", result.output)

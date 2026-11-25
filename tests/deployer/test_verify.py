@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -856,6 +857,49 @@ class ConverseTests(DeployerTestCase):
         with self.assertRaisesRegex(ListingError, r"^no answer within 1 seconds$"):
             self.talk(arguments, ['{"id": 0}'], answered=discovery.codex_answered, timeout=1)
         self.assertLess(time.monotonic() - started, discovery.CLOSE_GRACE)
+
+    def test_a_program_whose_output_never_pauses_is_stopped_at_the_timeout(self) -> None:
+        # Output that arrives faster than each line is judged keeps the queue full, so a deadline read only when the
+        # queue was empty never came. Judging a line takes a millisecond here, so the program always stays ahead, and
+        # a line judged once ten seconds have passed is taken as the answer, so a listing that outlives its deadline
+        # fails this test rather than hanging it.
+        arguments = self.program("""
+            import sys
+            while True:
+                sys.stdout.write("noise\\n" * 1000)
+                sys.stdout.flush()
+        """)
+        started = time.monotonic()
+
+        def answered(_line: str) -> bool:
+            time.sleep(0.001)
+            return time.monotonic() - started > 10
+
+        with self.assertRaisesRegex(ListingError, r"^no answer within 1 seconds$"):
+            self.talk(arguments, ['{"id": 0}'], answered=answered, timeout=1)
+        self.assertLess(time.monotonic() - started, discovery.CLOSE_GRACE)
+
+    def test_a_line_already_queued_when_the_deadline_passes_is_not_read(self) -> None:
+        # Queue.get with no time left still returns a queued line, so an answer, or noise, read after the deadline was
+        # taken; the deadline is read before each line, and the program is killed with nothing more read, whether the
+        # listing awaits an answer (Codex) or the end of the output (Copilot CLI).
+        cases = (
+            (['{"id": 1, "result": {"data": []}}'], discovery.codex_answered),
+            (["noise", "noise", "noise"], discovery.codex_answered),
+            (["[]", "noise"], None),
+        )
+        for queued, answered in cases:
+            with self.subTest(queued=queued, awaits_an_answer=answered is not None):
+                lines: queue.Queue[str | None] = queue.Queue()
+                for line in queued:
+                    lines.put(line + "\n")
+                process = mock.MagicMock(spec=subprocess.Popen)
+                received: list[str] = []
+                with self.assertRaisesRegex(ListingError, r"^no answer within 1 seconds$"):
+                    discovery._receive(lines, process, received, answered, time.monotonic() - 0.001, 1)
+                process.kill.assert_called_once_with()
+                self.assertEqual([], received)
+                self.assertEqual(len(queued), lines.qsize())
 
     def test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout(self) -> None:
         # Like the Codex app server, the program answers skills/list and then stays running until stdin closes.
