@@ -910,8 +910,26 @@ class MovedPathPolicy(unittest.TestCase):
             "docs/other.md": "Neither `docs/SECURITY.md` nor `requirements-dev.txt.bak` nor `OLD_SECURITY.md`.\n",
             # Only Markdown and the files under .github/ are documents.
             "tools/demo.py": "# Reads SECURITY.md.\n",
+            # The stated limits: a root path written with ./, and a URL to the repository's file, are not read.
+            "docs/limits.md": (
+                "See ./SECURITY.md and https://github.com/owner/repo/blob/main/SECURITY.md or "
+                "[the policy](https://github.com/owner/repo/blob/main/SECURITY.md).\n"
+            ),
         }
         self.assertEqual([], self.problems(files))
+
+    def test_a_tree_with_no_document_passes_only_because_the_documents_are_read(self) -> None:
+        # The files the policy does not read name every moved file from the root, so the empty report says no
+        # document names one; the same tree with one document naming one is reported, so the read is not skipped.
+        unread = {"tools/demo.py": "".join(f"# {moved}\n" for moved in markdown_links.MOVED_OFF_ROOT)}
+        unread["requirements/requirements-mutation.in"] = "-r requirements-dev.in\n"
+        self.assertEqual([], self.problems(unread))
+        for moved, folder in markdown_links.MOVED_OFF_ROOT.items():
+            with self.subTest(moved=moved):
+                self.assertEqual(
+                    [f"README.md:1 names {moved}, which moved to {folder}/{moved}"],
+                    self.problems({**unread, "README.md": f"See {moved}.\n"}),
+                )
 
 
 class MovedFilePolicy(unittest.TestCase):

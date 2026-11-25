@@ -591,8 +591,9 @@ def moved_path_problems(root: Path) -> list[str]:
     A Markdown link's destination is left to markdown_link_problems, which reports one that names the old path
     missing, and a line that compiles a lock names the pins from their folder.
 
-    Limit: a path written from the root with `./`, as `./SECURITY.md`, is not read as the root path. No document
-    writes one.
+    Limits: a path written from the root with `./`, as `./SECURITY.md`, is not read as the root path, and a URL to
+    the repository's file, as `https://github.com/<owner>/<repo>/blob/main/SECURITY.md`, is not read, and
+    markdown_link_problems checks no URL. No document writes the first or links a moved file by URL.
     """
     problems: list[str] = []
     for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):

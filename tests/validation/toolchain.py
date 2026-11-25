@@ -260,12 +260,12 @@ DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest", "hypothesis")
 MUTATION_PACKAGES = ("mutmut", "coverage")
 REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[0-9][0-9A-Za-z.+!-]*)")
 # Each set's hand-edited input, and the lock pip-tools compiles from it, which pins every package the set installs,
-# transitive ones included, each with the sha256 hash of every file PyPI holds for its version. CI installs a lock
-# with --require-hashes, so nothing it does not pin, and no file whose hash it does not hold, is installed. The
-# mutation input takes the development input whole and the development lock as a constraint, so its lock is the
-# mutation job's one install, and a package both locks hold is pinned alike in each. All four sit in one folder, from
-# which pip reads an include and pip-tools and Dependabot compile a lock, so the includes and each lock's header and
-# comments name the files from there.
+# transitive ones included, each with the sha256 hash of every file PyPI holds for its version. CI installs a lock with
+# --require-hashes, so nothing it does not pin, and no file whose hash it does not hold, is installed. The mutation
+# input takes the development input whole and the development lock as a constraint, so its lock is the mutation job's
+# one install, and a package both locks hold is pinned alike in each. The inputs and locks sit in one folder, from which
+# pip reads an include and pip-tools and Dependabot compile a lock, so the includes and each lock's header and comments
+# name the files from there.
 REQUIREMENTS_FOLDER = "requirements"
 DEVELOPMENT_INPUT = f"{REQUIREMENTS_FOLDER}/requirements-dev.in"
 DEVELOPMENT_LOCK = f"{REQUIREMENTS_FOLDER}/requirements-dev.txt"

@@ -44,7 +44,7 @@ python -m venv $HOME/.venvs/pip-tools
 $HOME/.venvs/pip-tools/Scripts/python -m pip install pip-tools==7.6.2
 ```
 
-On Linux, the interpreter is `~/.venvs/pip-tools/bin/python`. Then edit the input and compile each lock from the `requirements` folder, which holds the four files, with the command its header names, the development lock first, since the mutation lock reads it. Dependabot compiles from the same folder, which `.github/dependabot.yml` names as its directory, so each lock's header and comments name the files from there:
+On Linux, the interpreter is `~/.venvs/pip-tools/bin/python`. Then edit the input and compile each lock from the `requirements` folder, which holds the inputs and their locks, with the command its header names, the development lock first, since the mutation lock reads it. Dependabot compiles from the same folder, which `.github/dependabot.yml` names as its directory, so each lock's header and comments name the files from there:
 
 ```powershell
 Set-Location requirements
