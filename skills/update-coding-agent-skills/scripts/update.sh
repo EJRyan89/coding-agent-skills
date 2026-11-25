@@ -184,9 +184,9 @@ fi
 # outranks a target the system or global configuration names: a trace written to stderr would turn git's quiet no, an
 # exit 1 with nothing on stderr, into a failure, and a stream moved away would empty an answer, as the list of
 # repository-selecting variables, or join stderr to it. Each read below takes git's stdout alone.
-for NAME in $(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(TRACE|REDIRECT_STD)/) print NAME }'); do
+while IFS= read -r NAME; do
   unset "$NAME"
-done
+done < <(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(TRACE|REDIRECT_STD)/) print NAME }')
 export GIT_TRACE2=0 GIT_TRACE2_PERF=0 GIT_TRACE2_EVENT=0
 if ! LOCAL_ENV_VARS=$(git rev-parse --local-env-vars 2>"$GIT_ERRORS"); then
   echo "FAILED cannot list git's repository-selecting variables: $(one_line "$(cat -- "$GIT_ERRORS")")"
