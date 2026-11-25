@@ -23,7 +23,7 @@ from unittest import mock
 import file_lock
 from harness import DeployerTestCase, forward
 
-from deployer import hashing
+from deployer import hashing, lock
 from deployer.errors import DeployError
 
 POSIX_ONLY = "Windows has no FIFO a folder can hold; its AF_UNIX socket file is a reparse point, refused as a link"
@@ -210,3 +210,28 @@ class DeploymentTests(DeployerTestCase):
             result = self.deploy_fails("--all", pattern="Another deployment is running")
         self.assertEqual(set(), opened)
         self.assertIn("ERROR: Another deployment is running.\nWait for it to finish, then retry.\n", result.output)
+
+    def test_a_fifo_at_the_lock_file_is_refused_by_a_dry_run_and_never_opened(self) -> None:
+        # The dry run asks whether another process holds the file lock, which opened the file to try it.
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        fifo = self.paths.lock_file
+        os.mkfifo(fifo)
+        with released(fifo) as opened:
+            result = self.deploy_fails("--all", "--dry-run", pattern="not a regular file")
+        self.assertEqual(set(), opened)
+        self.assertIn(
+            f"ERROR: Could not finish the dry run: {forward(fifo)}: "
+            "it is not a regular file, so its lock is not tried\n",
+            result.output,
+        )
+
+    def test_a_fifo_in_the_place_of_a_held_locks_token_is_never_opened_and_its_record_stays(self) -> None:
+        # A token that is not the file this run wrote is not this run's, so the release leaves the record.
+        held = lock.acquire(self.paths)
+        token = self.lock_dir / "token"
+        token.unlink()
+        os.mkfifo(token)
+        with released(token) as opened:
+            held.release()
+        self.assertEqual(set(), opened)
+        self.assertTrue(self.lock_dir.is_dir())

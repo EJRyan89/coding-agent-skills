@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -134,6 +135,40 @@ class FileLockTests(unittest.TestCase):
             ):
                 self.assertIsNone(file_lock.take(self.path))
                 self.assertTrue(file_lock.held_elsewhere(self.path))
+
+    def test_a_folder_in_the_files_place_is_refused_by_held_elsewhere_naming_its_path(self) -> None:
+        # Holds on every platform: a folder is no lock file, so the open that would read its lock is never made.
+        self.path.mkdir()
+        with self.assertRaises(OSError) as raised:
+            file_lock.held_elsewhere(self.path)
+        self.assertEqual(str(self.path), raised.exception.filename)
+        self.assertEqual("it is not a regular file, so its lock is not tried", raised.exception.strerror)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no FIFO a folder can hold")
+    def test_a_fifo_in_the_files_place_is_refused_by_held_elsewhere_and_never_opened(self) -> None:
+        # Opening a FIFO blocks until another process opens its other end. A thread opens the writing end while the
+        # test runs, which succeeds only while a reader holds it open, so an open fails the test rather than hanging.
+        os.mkfifo(self.path)
+        done, opened = threading.Event(), []
+
+        def release() -> None:
+            while not done.wait(0.2):
+                try:
+                    os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+                except OSError:
+                    continue
+                opened.append(self.path)
+
+        releaser = threading.Thread(target=release, daemon=True)
+        releaser.start()
+        try:
+            with self.assertRaises(OSError) as raised:
+                file_lock.held_elsewhere(self.path)
+        finally:
+            done.set()
+            releaser.join()
+        self.assertEqual([], opened)
+        self.assertEqual(str(self.path), raised.exception.filename)
 
     def test_an_open_that_fails_is_raised_as_it_came(self) -> None:
         missing = self.path.parent / "missing" / "resource.held"
