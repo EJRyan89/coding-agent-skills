@@ -342,7 +342,11 @@ NOT_READ = {
 }
 # What pytest's report heads each module it failed to collect with, at the start of its output.
 COLLECTION_ERROR = b"ERROR collecting "
-# The line pytest opens its output with when importing a conftest.py raised, whatever it raised.
+# The line pytest opens its output with when importing a conftest.py raised an Exception, whatever its kind. Two
+# stated limits. A SystemExit raised there ends Python with exit 1 and prints no such line, so it reads as a test
+# failure, and a KeyboardInterrupt ends it by a signal, which errors. An Exception the environment raises at the root
+# conftest.py's import after the unmutated run passed, such as a transient OSError, reads as a kill, as a failed
+# collection does.
 CONFTEST_ERROR = re.compile(rb"^ImportError while loading conftest '", re.MULTILINE)
 # The frame of pytest's own import of a test module, as the traceback of its internal error prints it. pytest collects
 # any other exception that import raises as a failed module, but lets a SystemExit or a KeyboardInterrupt end its run,
