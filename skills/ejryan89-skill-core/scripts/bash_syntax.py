@@ -52,7 +52,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A coprocess, `coproc [NAME] command`, is read as Bash 4 and later read it, its command as a subshell's, where Bash
   3.2 reads `coproc` as a program's name and refuses a compound command after it.
 - Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
-  raises NotRead, a BashSyntaxError that a here-document body's substitution is refused for too, never passed over.
+  raises NotRead.
 - A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
   `git push<CR>` is read as git's push and `a<CR>b` as two words.
 - A here-document's delimiter line is compared without the CRs that end it, as Git Bash on Windows compares it, so
@@ -66,11 +66,12 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
   arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
-  BashSyntaxError, which the reader cannot tell from text Bash refuses; a here-document body's substitution that holds
-  `((` and is refused raises NotRead, so one Bash refuses is refused there too, on the safe side.
+  BashSyntaxError.
 - A reserved word right after `]]`, as `if [[ -n x ]] then git commit -m x; fi` or `{ [[ -n x ]] }; git commit -m x`,
-  which Bash 5.3 runs and Bash 3.2 refuses, raises BashSyntaxError, and a here-document body's substitution holding one
-  is passed over as one Bash refuses.
+  which Bash 5.3 runs and Bash 3.2 refuses, raises BashSyntaxError.
+- A here-document body's substitution the grammar refuses, or an expansion the body never closes, raises NotRead,
+  whether Bash refuses it too or not: in an unquoted body Bash runs whatever a substitution holds, so text the reader
+  cannot read there is unread, never text that runs nothing.
 - A `]]` word inside the parentheses of an `=~` regex, as `[[ x =~ ( ]] ) ]]; git commit -m x`, which Bash reads, ends
   the expression there, so the text raises BashSyntaxError.
 """
@@ -122,8 +123,6 @@ RESERVED = frozenset(
     {"!", "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done", "case"}
     | {"esac", "in", "function", "time", "[[", "]]", "coproc"}
 )
-# What opens an arithmetic command or expansion, whose quoted parentheses the reader may refuse though Bash reads them.
-ARITHMETIC_OPENER = "(("
 # The reserved word of a coprocess, `coproc [NAME] command`, whose command is read as the subshell Bash runs it in, in
 # the background; Bash takes a NAME only before a compound command.
 COPROCESS = "coproc"
@@ -159,14 +158,11 @@ class BashSyntaxError(ValueError):
     bare_case = False
     # Whether any substitution the text holds, at any depth, held such a pattern, read or not before the refusal.
     holds_bare_case = False
-    # Whether the expansion an unquoted here-document's body never closes holds `((`, arithmetic whose quoted
-    # parentheses the reader may refuse though Bash reads them, so Bash may close it and run what follows.
-    arithmetic = False
 
 
 class NotRead(BashSyntaxError):
-    """Text Bash reads and runs that this grammar does not read, such as a loop whose body is a `{ }` group: never text
-    Bash runs nothing of, so a reader that passes over a substitution Bash refuses still refuses this."""
+    """Text Bash may read and run that this grammar does not read, such as a loop whose body is a `{ }` group or a
+    here-document body's substitution the grammar refuses: never text a reader may take to run nothing."""
 
 
 class Source(str):
@@ -272,8 +268,6 @@ class HereDocument:
     # pattern whose `)` no `(` opened, as a substitution's text says by its bare_case.
     unclosed: bool = False
     bare_case: bool = False
-    # Whether the expansion the body never closes holds `((`, which Bash may close where the reader does not.
-    unread_arithmetic: bool = False
     # Whether any substitution the body holds, at any depth, holds a case pattern whose `)` no `(` opened.
     holds_bare_case: bool = False
 
@@ -632,7 +626,6 @@ class Lexer:
             if not document.quoted:
                 substitutions, assigns, parts, unclosed, holds = expansions(document.body, self.bash_3_2)
                 document.unclosed, document.bare_case = unclosed is not None, bool(unclosed and unclosed.bare_case)
-                document.unread_arithmetic = bool(unclosed and unclosed.arithmetic)
                 document.holds_bare_case = holds
                 self.holds_bare_case = self.holds_bare_case or holds
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
@@ -1030,7 +1023,6 @@ def expansions(
     parts: list[Part] = []
     while lexer.index < len(lexer.text):
         character = lexer.peek()
-        start = lexer.index
         try:
             if character == "\\":
                 lexer.index += 2
@@ -1045,7 +1037,6 @@ def expansions(
             # An expansion whose end the body never reaches, as `$(echo "a)` is, runs to the body's end, as Bash
             # reads it, so no expansion stands after it.
             error.holds_bare_case = error.holds_bare_case or lexer.holds_bare_case
-            error.arithmetic = ARITHMETIC_OPENER in lexer.text[start:]
             return found, lexer.assigned, parts, error, error.holds_bare_case
     return found, lexer.assigned, parts, None, lexer.holds_bare_case
 
@@ -1462,8 +1453,8 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
         return
     substitutions = [text for word in expanded_words(node) for text in word.substitutions]
     documents = here_documents(node)
-    if any(document.unread_arithmetic for document in documents):
-        raise NotRead("arithmetic in a here-document's body that the reader may not close is not read")
+    if any(document.unclosed for document in documents):
+        raise NotRead("a here-document's body holds an expansion the reader does not close")
     bodies = [document.substitutions for document in documents]
     for text in substitutions:
         yield from _tree_commands(parse(text))
@@ -1474,21 +1465,16 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
 
 
 def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
-    """The commands an unquoted here-document's substitutions run: one the grammar cannot parse runs nothing, and those
-    after it are read, rather than refusing the text. Bash 3.2, and Bash 5.3 at a backquoted one, go on past it as
-    this does; Bash 5.3 stops expanding the body at a `$( )` one, so for it this reads more than it runs, on purpose,
-    since a reader that read less could miss a git command another Bash runs. One Bash reads and the grammar does not,
-    NotRead, is refused, since Bash runs it, and so is one holding `((` that the grammar refuses, since the quoted
-    parentheses in arithmetic the module's limits name are not told apart from text Bash refuses."""
+    """The commands an unquoted here-document's substitutions run. Bash runs whatever a substitution in the body holds,
+    so one the grammar refuses raises NotRead, whether Bash refuses it too or not: the reader cannot tell a refusal of
+    its own from Bash's, and text it cannot read is unread, never text that runs nothing."""
     for text in substitutions:
         try:
             tree = parse(text)
         except NotRead:
             raise
         except BashSyntaxError as error:
-            if ARITHMETIC_OPENER in text:
-                raise NotRead(f"arithmetic in a here-document body's substitution is not read ({error})") from error
-            continue
+            raise NotRead(f"a here-document body's substitution is not read ({error})") from error
         yield from _tree_commands(tree)
 
 

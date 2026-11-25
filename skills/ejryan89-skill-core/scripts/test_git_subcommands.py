@@ -325,28 +325,22 @@ def test_a_trap_action_the_grammar_refuses_raises_as_eval_s_script_does(action: 
     assert str(trapped.value) == str(evaluated.value)
 
 
-# A substitution in a here-document's body that Bash cannot read fails alone when Bash expands the body, so it runs
-# nothing and the git commands around it, in the body and the script, are read; one whose end the body never reaches
-# runs to the body's end, so nothing in the body stands after it.
+# A substitution in a here-document's body that the grammar refuses, or an expansion the body never closes, raises
+# NotRead, whether Bash refuses it too or not: Bash runs whatever such a substitution holds, so the text is unread,
+# never one that runs nothing.
 @pytest.mark.parametrize(
-    ("script", "expected"),
+    "script",
     [
-        ("git fetch\ncat <<EOF\n$(git push\nEOF\ngit pull", {"fetch", "pull"}),
-        ("cat <<EOF\n`git push\nEOF\ngit pull", {"pull"}),
-        ("cat <<EOF\n`echo \\` ; git push`\nEOF", set()),
-        ('cat <<EOF\n$(git log) $(echo "a) $(git push)\nEOF\ngit pull', {"log", "pull"}),
-        ("cat <<EOF\n$(git log) $(if) $(git push)\nEOF", {"log", "push"}),
-        ('cat <<EOF\n`if` `echo "a` $(git push)\nEOF', {"push"}),
+        "git fetch\ncat <<EOF\n$(git push\nEOF\ngit pull",
+        "cat <<EOF\n`git push\nEOF\ngit pull",
+        "cat <<EOF\n`echo \\` ; git push`\nEOF",
+        'cat <<EOF\n$(git log) $(echo "a) $(git push)\nEOF\ngit pull',
+        "cat <<EOF\n$(git log) $(if) $(git push)\nEOF",
+        'cat <<EOF\n`if` `echo "a` $(git push)\nEOF',
+        "cat <<EOF\n$(for ((i = 0; i < 1; i++)) { git push; }) $(git pull)\nEOF",
     ],
 )
-def test_a_body_s_substitution_bash_cannot_read_runs_nothing(script: str, expected: set[str]) -> None:
-    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
-
-
-# A substitution in a here-document's body that Bash reads and runs, but the grammar does not read, raises NotRead
-# rather than being passed over as one that runs nothing.
-def test_a_body_s_substitution_bash_runs_that_the_grammar_does_not_read_raises() -> None:
-    script = "cat <<EOF\n$(for ((i = 0; i < 1; i++)) { git push; }) $(git pull)\nEOF"
+def test_a_body_s_substitution_the_grammar_refuses_raises_not_read(script: str) -> None:
     with pytest.raises(bash_syntax.NotRead):
         git_subcommands.bash_git_subcommands(script, no_powershell)
 

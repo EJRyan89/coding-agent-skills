@@ -540,7 +540,8 @@ The configuration's limits:
   a brace expansion leaves its word one the text does not settle. Such a word may stand among a git call's words
   after its subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each
   command or process substitution is read as the commands it runs, to a depth of four, and so is one in an unquoted
-  here-document's body; what is nested deeper is not read. A quoted here-document's body, as `<<'EOF'` gives it, and a
+  here-document's body, where one the grammar refuses leaves the command unread, since Bash runs whatever it holds;
+  what is nested deeper is not read. A quoted here-document's body, as `<<'EOF'` gives it, and a
   here-string's quoted word do not expand: each is data handed to the command's input, read as nothing it runs.
   Bash its grammar cannot read is not read either; the lines before a syntax error do run, unlike PowerShell's.
 - **Directories.** `cd`, `pushd`, and `popd` to a literal directory move the shell, and each git call after them is

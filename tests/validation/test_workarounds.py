@@ -277,6 +277,13 @@ def test_a_write_to_a_not_read_table_after_its_own_assignment_fails(write: str) 
         "def local() -> dict[str, str]:\n    NOT_READ = {}\n    NOT_READ['x'] = ''\n    return NOT_READ\n",
         "class Reader:\n    NOT_READ = {'x': ''}\n",
         "class Reader:\n    def add(self) -> None:\n        NOT_READ = {}\n        NOT_READ['x'] = ''\n",
+        "def add(NOT_READ: dict[str, str]) -> None:\n    NOT_READ['x'] = ''\n",
+        "def add(NOT_READ: dict[str, str], /) -> None:\n    NOT_READ.update(x='')\n",
+        "def add(*, NOT_READ: dict[str, str]) -> None:\n    NOT_READ['x'] = ''\n",
+        "def add(*NOT_READ: dict[str, str]) -> None:\n    del NOT_READ[0]\n",
+        "def add(**NOT_READ: str) -> None:\n    NOT_READ['x'] = ''\n",
+        "ADD = lambda NOT_READ: NOT_READ.update(x='')\n",
+        "class Reader:\n    def add(self, NOT_READ: dict[str, str]) -> None:\n        NOT_READ['x'] = ''\n",
         "COPY = dict(NOT_READ)\n",
     ],
 )

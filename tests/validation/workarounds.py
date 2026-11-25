@@ -244,10 +244,13 @@ def table_assignment(tree: ast.Module) -> ast.stmt | None:
 
 
 def binds_table_name(scope: ast.AST) -> bool:
-    """Whether a function's or a class's own body binds the name, making it a local one there rather than the table."""
+    """Whether a function's or a class's own body binds the name, making it a local one there rather than the table: a
+    parameter of any kind, or a name stored or deleted."""
     pending = list(ast.iter_child_nodes(scope))
     while pending:
         node = pending.pop()
+        if isinstance(node, ast.arg) and node.arg == NOT_READ_TABLE:
+            return True
         if isinstance(node, ast.Name) and node.id == NOT_READ_TABLE and isinstance(node.ctx, ast.Store | ast.Del):
             return True
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):

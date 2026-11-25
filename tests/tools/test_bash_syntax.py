@@ -800,16 +800,21 @@ def test_simple_commands_read_every_command_bash_may_run_from_its_program(text: 
     assert found == expected
 
 
-def test_a_body_s_substitution_bash_cannot_read_runs_nothing_alone() -> None:
-    # One whose end the body never reaches runs to the body's end, so nothing in the body stands after it.
-    text = 'cat <<EOF\n$(git log) $(echo "a) $(git am)\nEOF\ngit status'
+@pytest.mark.parametrize(
+    "text",
+    [
+        'cat <<EOF\n$(git log) $(echo "a) $(git am)\nEOF\ngit status',
+        "cat <<EOF\n$(if) `fi` $(git am)\nEOF",
+        "cat <<EOF\n`if` $(git am)\nEOF",
+        "cat <<EOF\n$(if [ -n x ]; then git commit -m x; fi })\nEOF",
+    ],
+)
+def test_a_body_s_substitution_or_expansion_the_reader_refuses_is_not_read(text: str) -> None:
+    # Bash runs whatever a substitution in an unquoted body holds, so one the reader refuses, or an expansion the body
+    # never closes, leaves the text unread, whether Bash refuses it too or not, never one that runs nothing.
     bash_agreement.assert_reader_agrees([text])
-    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
-    assert found == [["cat"], ["git", "log"], ["git", "status"]]
-    # One Bash cannot parse fails alone, and those after it run.
-    text = "cat <<EOF\n$(if) `fi` $(git am)\nEOF"
-    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
-    assert found == [["cat"], ["git", "am"]]
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
 
 
 def test_command_words_mark_only_a_word_whose_part_names_its_form_alone_as_unsettled() -> None:
@@ -1187,11 +1192,9 @@ def test_coproc_quoted_after_an_assignment_or_as_an_argument_is_a_word(text: str
     ],
 )
 def test_text_bash_runs_in_a_here_documents_body_that_the_reader_does_not_read_is_refused(text: str) -> None:
-    # Bash runs each, so the reader refuses it rather than passing over it as it passes over a substitution Bash
-    # itself refuses, which runs nothing; the git call after one Bash refuses is read either way.
+    # Bash runs each, so the reader refuses it.
     with pytest.raises(bash_syntax.NotRead):
         bash_syntax.simple_commands(text)
-    assert simple_commands_of("cat <<EOF\n$(fi)\n$(git status)\nEOF\n") == [["cat"], ["git", "status"]]
 
 
 def simple_commands_of(text: str) -> list[list[str]]:
@@ -1207,12 +1210,11 @@ def simple_commands_of(text: str) -> list[list[str]]:
     ],
 )
 def test_arithmetic_the_reader_may_not_close_in_a_here_documents_body_is_refused(text: str) -> None:
-    # The reader refuses a quoted parenthesis in these arithmetic forms, which Bash reads, and cannot tell that refusal
-    # from one Bash makes, so a body's substitution holding `((` that the reader refuses is never passed over as one
-    # that runs nothing; a substitution with arithmetic the reader reads, and one Bash refuses with none, still are.
+    # The reader refuses a quoted parenthesis in these arithmetic forms, which Bash reads, so the body's substitution is
+    # unread; a substitution with arithmetic the reader reads is still read.
     with pytest.raises(bash_syntax.NotRead):
         bash_syntax.simple_commands(text)
-    read = "cat <<EOF\n$(: $(( 1 )); git push)\n$(if)\nEOF\n"
+    read = "cat <<EOF\n$(: $(( 1 )); git push)\nEOF\n"
     assert simple_commands_of(read) == [["cat"], [":", "$(( 1 ))"], ["git", "push"]]
 
 
