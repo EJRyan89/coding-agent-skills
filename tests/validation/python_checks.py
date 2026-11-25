@@ -80,6 +80,7 @@ from validation_support import (
     attribute_lookups,
     bound_values,
     call_argument,
+    chosen_callee,
     docstring_ids,
     import_aliases,
     is_test_script,
@@ -6775,6 +6776,8 @@ def _indirection(
         return f"defines {node.name}, which answers an attribute read by a name it is given"
     if isinstance(node, ast.Attribute) and node.attr in INDIRECTION_ATTRIBUTES:
         return f"reaches {node.attr}, which reads a namespace or a lookup by a name it is given"
+    if isinstance(node, ast.Call) and (chosen := chosen_callee(node.func)):
+        return f"{chosen}, which chooses a callable by a value"
     name = _reference(node, resolver, aliases) if isinstance(node, ast.Name | ast.Attribute) else ""
     if name in INDIRECTION_CALLABLES:
         return f"refers to {name}, which reaches a name, a namespace, or a module by a value"

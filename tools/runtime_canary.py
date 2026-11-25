@@ -1697,7 +1697,7 @@ def start_home(make: Callable[[], Path] | None = None) -> Path | None:
     """A new home from `make`, by default create_home, or None once a FAILED line names why none could be made, such
     as a temporary directory another account could rename, which nothing is made in."""
     try:
-        return (make or create_home)()
+        return make() if make is not None else create_home()
     except OSError as exc:
         print(f"FAILED {quote(f'cannot make a canary home: {exc}')}")
         return None
