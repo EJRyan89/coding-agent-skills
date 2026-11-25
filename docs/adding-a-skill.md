@@ -260,19 +260,33 @@ reference, or an arithmetic assignment sets one, or `${NAME:=word}` in an array 
 command's name or in `command`'s options, as `{set,-k}` or `command -[p] set -k`; nor a brace expansion whose quoted
 or escaped text or inner braces split it, as `shopt -s {'extglob',x}`, `{x\,y,extglob}`, or `{{a},extglob}`, which
 it reads as the one word its text spells. In PowerShell it
-reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
-`-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
-splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`
-runs, and the program a wrapper or `find`'s `-exec` runs, read through the same table of wrappers as in Bash, since
-`pwsh` on Linux runs them as programs; a wrapped program that is not a literal, an argument list that is not literal
-where a script would stand, and a `Start-Process` parameter the cmdlet does not have or a prefix of more than one, are
-programs it cannot read. In Python it reads every program of a command a runner gives a shell, such as `os.system`
+reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
+joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every
+command of the string `Invoke-Expression` runs, and the program a wrapper or `find`'s `-exec` runs, read through the
+same table of wrappers as in Bash, since `pwsh` on Linux runs them as programs. These cmdlets' arguments are bound as
+pwsh's binder binds them, by position, by name, alias, or any prefix it places, and joined by a colon, as
+ejryan89-skill-core's `powershell_commands.BOUND_COMMANDS` holds; a wrapped program that is not a literal, an argument
+list that is not literal where a script would stand, a parameter the cmdlet does not have or a prefix pwsh cannot
+place, `--`, a splat whose hashtable the source does not settle (a splat of a variable assigned once, before it in
+its script block, from a hashtable literal of constants and mentioned nowhere else is bound by its keys), a cmdlet a
+pipeline feeds a parameter it would read, `Get-Command` given `-Verb`, `-Noun`, `-UseAbbreviationExpansion`,
+`-UseFuzzyMatching`, or a wildcard in its name, and a member or an index taken off its result, as
+`& (Get-Command git).Source`, are programs it cannot read. Stated limits: a cmdlet called by its module-qualified
+name, as `Microsoft.PowerShell.Management\Start-Process`, is read as a program of that name, which the policy refuses
+as undeclared rather than binding its arguments; Windows PowerShell's start-up, which no runner can parse in
+process, is read with pwsh's start-up parser; and a splatted hashtable changed by code the source builds at run time,
+or reached through `$PSCmdlet.GetVariableValue` or a drive path built from text, is read as its literal, as is a
+splat in a named block that runs before the block assigning it, as `end` written before `begin`, or after a
+`process` block that empty pipeline input skips. In Python it
+reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell
 reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows PowerShell's first positional word
-runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them; an `-EncodedCommand`, a script
-read from standard input, and one a word the policy cannot read holds are programs it cannot read. In PowerShell it
-reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. The git subcommand a
+runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them, in every spelling pwsh's
+start-up parser takes, after a dash, a doubled dash, an en or em dash, or a slash, and padded with whitespace; an
+`-EncodedCommand`, a script read from standard input, and one a word the policy cannot read holds are programs it
+cannot read, while `-File -`, which reads a script from standard input, ends no reading, since pwsh reads on past it. In PowerShell it reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a
+literal. The git subcommand a
 Bash or PowerShell script runs, which a skill's runtime support is held to, is read the same way, in the command a
 wrapper or `find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a
 shell's `-c`, a `trap`'s action, or a PowerShell start-up runs as well as at the script's own level, a PowerShell script's commands

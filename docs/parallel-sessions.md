@@ -700,7 +700,8 @@ builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variabl
 program, a function, a program
 that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
 variable a command sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check
-names what they changed there.
+names what they changed there. A Windows PowerShell start-up's parameters are read with pwsh's start-up parser, which
+no runner can hold to Windows PowerShell's own, so a spelling only Windows PowerShell takes passes unread.
 
 Within what it reads, it judges only what the text shows, so these too are left to the check:
 
