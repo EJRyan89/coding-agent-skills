@@ -707,13 +707,20 @@ class EndToEndTests(GuardTestCase):
         self.both(json.dumps(event))
         self.assertIn("nests deeper than the reader follows", self.stderr)
 
-    def test_a_coprocess_running_git_is_a_command_the_guard_does_not_read_allowed_with_a_note(self) -> None:
-        # Bash reads a coprocess, and the reader refuses it (tests/tools/test_bash_syntax.py holds both), so the git
-        # call it runs is never judged as an argument of a program named coproc: the whole command goes unread, a part
-        # the guard does not read, as "The guard's contract" in docs/parallel-sessions.md states.
-        event = {"tool_name": "Bash", "tool_input": {"command": "coproc git commit -m x"}, "cwd": str(self.hub)}
-        self.assertIsNone(self.both(json.dumps(event)))
-        self.assertIn("`coproc` is not read: a coprocess runs its command in the background", self.stderr)
+    def test_a_git_write_in_or_beside_a_coprocess_or_after_a_multi_line_test_is_refused_from_the_hub(self) -> None:
+        # The reader reads a coprocess's command as a subshell's and a `[[ ]]` over its line breaks to its `]]`, as
+        # Bash does (tests/tools/test_bash_syntax.py holds both), so the git call in or beside each is judged.
+        for command in (
+            "coproc git commit -m x",
+            "git commit -m x && coproc true",
+            "coproc true; git commit -m x",
+            "git commit -m x\ncoproc true",
+            "[[ -n x\n]]; git commit -m x",
+            'if [[ -n "$a" &&\n -n "$b"\n]]; then git commit -m x; fi',
+        ):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.hub)}
+                self.assertEqual("deny", self.both(event))
 
 
 class ReaderFailureTests(GuardTestCase):

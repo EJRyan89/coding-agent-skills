@@ -10,7 +10,11 @@ name of the function or class that holds it, `<module>` for module level; an ent
 
 A reader or a policy that leaves an entry of a language's published catalogue unread names it in a module-level
 NOT_READ = {entry: reason} beside the code, which its catalogue test reads, as bash_syntax.py's reserved words; each
-such table maps every entry to its reason, as SKIP_ALLOWED does.
+such table maps every entry to its reason, as SKIP_ALLOWED does, in that one literal: a later write to it, by another
+assignment at module level, an augmented one, a subscript, a `del`, or a call of a method that changes a dictionary,
+fails, since its entries would escape the reading. What it does not see: a write through another name bound to the
+table, or through globals() or setattr; and it takes a write to a class's own NOT_READ through an attribute, as
+`self.NOT_READ[key] = reason`, for one to a module's table.
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ ALLOWANCE = "SKIP_ALLOWED"
 # or the policy it excuses, in the repository's own Python but its suites and fixtures, DUPLICATION_ROOTS; a suite and
 # a fault driver under tests/ name their own rows, which may share the name, as a fault driver's NOT_READ reason does.
 NOT_READ_TABLE = "NOT_READ"
+# The methods of a dictionary that change nothing; a call of any other on the table is a write to it.
+READING_METHODS = frozenset({"get", "keys", "values", "items", "copy", "__contains__", "__getitem__", "__len__"})
 # What skips a test or expects it to fail, by the dotted name the module's imports resolve it to.
 UNITTEST_MARKERS = frozenset({"skip", "skipIf", "skipUnless", "expectedFailure", "SkipTest"})
 UNITTEST_MODULES = ("unittest", "unittest.case")
@@ -210,7 +216,86 @@ def not_read_problems(root: Path, files: list[Path]) -> list[str]:
                 f"{name} {NOT_READ_TABLE} must map each catalogue entry the module leaves unread to its reason, as a "
                 "literal dictionary of non-empty texts"
             )
+        problems += [
+            f"{name}:{line} writes {NOT_READ_TABLE} after the assignment validation reads its reasons from; add each "
+            "entry to that literal instead"
+            for line in table_writes(tree)
+        ]
     return problems
+
+
+def names_table(node: ast.expr) -> bool:
+    """Whether an expression names a NOT_READ table: the name, or an attribute of that name on a module."""
+    return (isinstance(node, ast.Name) and node.id == NOT_READ_TABLE) or (
+        isinstance(node, ast.Attribute) and node.attr == NOT_READ_TABLE
+    )
+
+
+def table_assignment(tree: ast.Module) -> ast.stmt | None:
+    """The module-level assignment module_allowance reads the table from: the first that binds the name."""
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == NOT_READ_TABLE for target in targets):
+                return node
+    return None
+
+
+def binds_table_name(scope: ast.AST) -> bool:
+    """Whether a function's or a class's own body binds the name, making it a local one there rather than the table."""
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Name) and node.id == NOT_READ_TABLE and isinstance(node.ctx, ast.Store | ast.Del):
+            return True
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def declares_table_global(scope: ast.AST) -> bool:
+    return any(isinstance(node, ast.Global) and NOT_READ_TABLE in node.names for node in ast.walk(scope))
+
+
+def written_expression(node: ast.AST) -> ast.expr | None:
+    """What a node writes, where it may be the table: a name or attribute it binds or deletes, the container a
+    subscript it stores or deletes indexes, or the dictionary a call of a method that changes one calls it on."""
+    stored = isinstance(getattr(node, "ctx", None), ast.Store | ast.Del)
+    if stored and isinstance(node, ast.Name | ast.Attribute):
+        return node
+    if stored and isinstance(node, ast.Subscript):
+        return node.value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr not in READING_METHODS:
+        return node.func.value
+    return None
+
+
+def table_writes(tree: ast.Module) -> list[int]:
+    """The line of each write to a module's NOT_READ table after the assignment its entries are read from: a binding of
+    the name at module level, or in a function that declares it global; a subscript stored or deleted; and a call of
+    a method that changes a dictionary. The bare name is the table wherever Python resolves it to the module's: not in
+    a function or a class whose own body binds it without declaring it global."""
+    first = table_assignment(tree)
+    held = set() if first is None else {id(target) for target in ast.walk(first)}
+    lines: list[int] = []
+
+    def table(node: ast.expr, table_here: bool) -> bool:
+        return names_table(node) and (table_here or isinstance(node, ast.Attribute))
+
+    def visit(node: ast.AST, table_here: bool) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            inner = declares_table_global(node) or (table_here and not binds_table_name(node))
+            for child in ast.iter_child_nodes(node):
+                visit(child, inner)
+            return
+        written = written_expression(node)
+        if id(node) not in held and written is not None and table(written, table_here):
+            lines.append(written.lineno)
+        for child in ast.iter_child_nodes(node):
+            visit(child, table_here)
+
+    visit(tree, True)
+    return sorted(set(lines))
 
 
 def later_comment_problems(root: Path, files: list[Path]) -> list[str]:

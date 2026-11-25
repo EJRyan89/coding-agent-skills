@@ -49,11 +49,10 @@ guard's suite does on every Bash command it reads and the deployer's rendering s
 checks for quoting. Where they differ is a limit stated here and pinned there:
 - Inside `[[ ]]` the expression's own grammar is not read, so text Bash refuses there, such as `[[ -n ]]`, is read;
   Bash runs none of a command it refuses.
-- A coprocess, `coproc [NAME] command`, which Bash 4 and later read and Bash 3.2 reads as a program named coproc,
-  raises NotRead, a BashSyntaxError, wherever a command starts, a here-document body's substitution included, so its
-  command is never passed as read.
+- A coprocess, `coproc [NAME] command`, is read as Bash 4 and later read it, its command as a subshell's, where Bash
+  3.2 reads `coproc` as a program's name and refuses a compound command after it.
 - Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
-  raises BashSyntaxError.
+  raises NotRead, a BashSyntaxError that a here-document body's substitution is refused for too, never passed over.
 - A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
   `git push<CR>` is read as git's push and `a<CR>b` as two words.
 - A here-document's delimiter line is compared without the CRs that end it, as Git Bash on Windows compares it, so
@@ -61,12 +60,14 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   the CR and reads them as body text, running none of them. Where those lines do not parse, the whole command goes
   unread, the git call after the real delimiter line included. A delimiter word written before a CR, as in a script with
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
-- An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
+- A `for` or `select` loop whose body is a `{ }` group rather than `do ... done`, arithmetic or not, which Bash reads,
+  raises NotRead.
 - A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
 - A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
   arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
-  BashSyntaxError.
+  BashSyntaxError, which the reader cannot tell from text Bash refuses, so a here-document body's substitution holding
+  one is passed over as one that runs nothing.
 """
 
 from __future__ import annotations
@@ -114,12 +115,12 @@ CASE_ENDS = frozenset({";;", ";&", ";;&"})
 # where a command starts, or named in NOT_READ with why.
 RESERVED = frozenset(
     {"!", "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done", "case"}
-    | {"esac", "in", "function", "time", "[[", "]]"}
+    | {"esac", "in", "function", "time", "[[", "]]", "coproc"}
 )
-# The reserved word of a coprocess, `coproc [NAME] command`, refused where a command starts: the reader does not read
-# the command a coprocess runs in the background, so a reader of what a script runs never passes it unread.
+# The reserved word of a coprocess, `coproc [NAME] command`, whose command is read as the subshell Bash runs it in, in
+# the background; Bash takes a NAME only before a compound command.
 COPROCESS = "coproc"
-# Each word Bash reserves that the reader neither reads nor refuses, with why; none is left undecided.
+# Each word Bash reserves that the reader neither reads nor refuses, with why; every one is read today.
 NOT_READ: dict[str, str] = {}
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 # The start of an expansion that assigns, ${NAME:=word} or ${NAME=word}, to a subscript or not, or through ${!NAME.
@@ -127,7 +128,7 @@ ASSIGNING = re.compile(r"\$\{(!?)([A-Za-z_]\w*(?:\[.*?\])?):?=", re.ASCII)
 # A subscript after a name where Bash reads no assignment, whose `[ ]` holds only plain characters of one word.
 PLAIN_SUBSCRIPT = re.compile(r"\[[^]\s|&;()<>'\"\\$`]*\]")
 # The reserved words after which the next word starts a command, where Bash reads an assignment.
-COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"})
+COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "until", "do", "time", "coproc"})
 # The options Bash reads after the `time` keyword, each once, unquoted, and in this order, before the pipeline it times,
 # with the words each may follow: -p right after `time`, and -- right after `time` or its -p. Any other word there, a
 # second -p or -- among them, is the timed command's own.
@@ -154,8 +155,8 @@ class BashSyntaxError(ValueError):
 
 
 class NotRead(BashSyntaxError):
-    """Text Bash reads and runs that this grammar does not read, such as a coprocess: never text Bash runs nothing of,
-    so a reader that passes over a substitution Bash refuses still refuses this."""
+    """Text Bash reads and runs that this grammar does not read, such as a loop whose body is a `{ }` group: never text
+    Bash runs nothing of, so a reader that passes over a substitution Bash refuses still refuses this."""
 
 
 class Source(str):
@@ -557,7 +558,9 @@ class Lexer:
         self.after_for = reserved and word.literal == "for"
         self.reserved = self.redirections_only = naming or (reserved and opens)
         self.command_start = self.reserved or (started and word.assignment is not None)
-        self.naming_function = reserved and not naming and word.literal == "function"
+        # A function's name follows `function`, and a coprocess's may follow `coproc`: the word after either is read
+        # where Bash reads a reserved word, as a compound command after a coprocess's NAME is.
+        self.naming_function = reserved and not naming and word.literal in ("function", COPROCESS)
 
     def double_paren(self) -> bool:
         """Reads the `(( ))` at the index, where Bash reads a reserved word or right after `for`, as the one word Bash
@@ -1156,10 +1159,38 @@ class Parser:
             self.index += 1
             return compound(self)
         if isinstance(token, Word) and token.literal == COPROCESS:
-            raise NotRead(f"`{COPROCESS}` is not read: a coprocess runs its command in the background")
+            self.index += 1
+            return self.coprocess()
         if isinstance(token, Word) and token.literal in RESERVED - {"[["}:
             raise BashSyntaxError(f"`{token.literal}` where a command should start")
         return self.simple()
+
+    def starts_compound(self, index: int) -> bool:
+        """Whether the token at index starts a compound command a coprocess may run: a subshell, an arithmetic
+        command, `[[`, or a compound command's reserved word."""
+        token = self.tokens[index] if index < len(self.tokens) else None
+        if isinstance(token, Operator):
+            return token.text == "("
+        return isinstance(token, Word) and (
+            token.arithmetic or token.literal == "[[" or token.literal in COMPOUND_READERS.keys() - {"function"}
+        )
+
+    def coprocess(self) -> Command:
+        """`coproc [NAME] command`, read as the subshell Bash runs its command in, in the background: a word before a
+        compound command is the coprocess's NAME, as Bash takes it, and any other command is a simple one."""
+        token = self.peek()
+        if isinstance(token, Word) and token.literal not in RESERVED and self.starts_compound(self.index + 1):
+            self.index += 1
+        token = self.peek()
+        if self.starts_compound(self.index):
+            command = self.command()
+        elif isinstance(token, Word) and token.literal in RESERVED - {"time"}:
+            raise BashSyntaxError(f"`{token.literal}` where a command should start")
+        elif token is None or (isinstance(token, Operator) and token.text not in REDIRECTIONS):
+            raise BashSyntaxError(f"`{COPROCESS}` names no command")
+        else:
+            command = self.simple()
+        return Subshell(CommandList([(AndOr(Pipeline([command])), False)]))
 
     def simple(self) -> Command:
         words: list[Word] = []
@@ -1176,8 +1207,8 @@ class Parser:
             if token is None:
                 break
             if isinstance(token, Operator):
-                if conditional and token.text != "\n":
-                    self.index += 1  # inside [[ ]], operators are the expression's own
+                if conditional:
+                    self.index += 1  # inside [[ ]], operators and line breaks are the expression's own, up to `]]`
                     continue
                 if token.text in REDIRECTIONS:
                     assigning = assigning and not words
@@ -1197,6 +1228,8 @@ class Parser:
             self.index += 1
             if conditional and token.literal == "]]":
                 conditional = False
+        if conditional:
+            raise BashSyntaxError("a `[[` is not closed")
         return Simple(words, redirects, line)
 
     def redirect(self) -> Redirect:
@@ -1295,6 +1328,9 @@ class Parser:
         return Loop(kind, None, name.literal, words, self.do_group(), self.redirects())
 
     def do_group(self) -> CommandList:
+        self.skip_separators()
+        if self.at_reserved("{"):
+            raise NotRead("a loop whose body is a `{ }` group is not read")
         self.expect_reserved("do")
         body = self.command_list(frozenset({"done"}))
         self.expect_reserved("done")
@@ -1367,7 +1403,7 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
         raise
     except RecursionError:
         # The reader follows nesting by recursion, so nesting deeper than Python's limit is text it cannot read.
-        raise BashSyntaxError("it nests deeper than the reader follows") from None
+        raise NotRead("it nests deeper than the reader follows") from None
     return result
 
 
@@ -1395,7 +1431,7 @@ def every_command(text: str) -> list[Command]:
     except RecursionError:
         # The walk follows each substitution by recursion too, so nesting deeper than Python's limit is text it
         # cannot read.
-        raise BashSyntaxError("it nests deeper than the reader follows") from None
+        raise NotRead("it nests deeper than the reader follows") from None
 
 
 def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
@@ -1424,7 +1460,8 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
     after it are read, rather than refusing the text. Bash 3.2, and Bash 5.3 at a backquoted one, go on past it as
     this does; Bash 5.3 stops expanding the body at a `$( )` one, so for it this reads more than it runs, on purpose,
     since a reader that read less could miss a git command another Bash runs. One Bash reads and the grammar does not,
-    NotRead, is refused, since Bash runs it."""
+    NotRead, is refused, since Bash runs it; the quoted parentheses in arithmetic the module's limits name are not told
+    apart from text Bash refuses, so a substitution holding one is passed over."""
     for text in substitutions:
         try:
             tree = parse(text)
