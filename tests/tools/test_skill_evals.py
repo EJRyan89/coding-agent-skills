@@ -2802,10 +2802,11 @@ def stub_result(spec: dict[str, Any], severities: dict[str, str] | None = None) 
     expected disposition, and each expected repeat as a finding linked to its entry, at the entry's severity in
     `severities`, the prior record's, since a repeat may not be more severe than what it repeats. A document
     scenario's design reviewer gives every finding a category, so one its expectation leaves open is `other`, the
-    fallback."""
+    fallback, and a repository reviewer's manifest lists the categories a finding may take, `Other` among them, so one
+    its expectation leaves open is that."""
     severities = severities or {}
     expectations = spec["expectations"]
-    fallback = {"category": "other"} if "document" in spec else {}
+    fallback = {"category": "other"} if "document" in spec else {"category": "Other"} if "reviewer" in spec else {}
     found = [
         {
             "path": item["path"],
@@ -7900,3 +7901,149 @@ def test_a_run_judged_only_on_the_session_s_calls_counts_among_the_runs_only_whe
         "demo", [scenario], ["haiku"], outcomes, unreviewed, "2.1.291", datetime.date(2026, 10, 8)
     )
     assert row.split(" | ")[7] == "named 3/3 (0/0 runs)"
+
+
+def varying_scenarios(root: Path) -> list[Scenario]:
+    """Two fixture scenarios of demo, `steady` and `varying`, the second marked as known to vary."""
+    expectations = ({"kind": "finding", "path": "a.go", "lines": [3], "severity": "MUST_FIX"},)
+    write_scenario(root, "steady", scenario_spec(*expectations))
+    write_scenario(root, "varying", scenario_spec(*expectations, varies=True))
+    return skill_evals_scenarios.load_scenarios("demo", root=root)
+
+
+def test_a_scenario_marked_as_varying_runs_three_times_at_least_and_any_other_as_often_as_asked(
+    tmp_path: Path,
+) -> None:
+    steady, varying = varying_scenarios(tmp_path)
+    assert (steady.varies, varying.varies) == (False, True)
+    assert [skill_evals_scenarios.scenario_runs(varying, runs) for runs in (1, 2, 3, 5)] == [3, 3, 3, 5]
+    assert [skill_evals_scenarios.scenario_runs(steady, runs) for runs in (1, 5)] == [1, 5]
+
+
+@pytest.mark.parametrize(("value", "shown"), [(False, '"False"'), ("true", '"true"'), (1, '"1"'), (None, '"None"')])
+def test_a_varies_field_is_true_or_left_out(value: object, shown: str, tmp_path: Path) -> None:
+    write_scenario(tmp_path, "case", scenario_spec(varies=value))
+    with pytest.raises(ScenarioError) as raised:
+        skill_evals_scenarios.load_scenarios("demo", root=tmp_path)
+    assert str(raised.value) == f"case: varies must be true; leave it out for a stable scenario, not {shown}"
+
+
+def test_run_all_with_no_scenario_runs_nothing(tmp_path: Path) -> None:
+    with mock.patch.object(skill_evals_runs, "run_scenario") as run_scenario:
+        assert skill_evals_runs.run_all([], {"haiku": tmp_path / "haiku"}, mock.Mock(), 1) == {}
+    run_scenario.assert_not_called()
+
+
+def test_run_all_queues_a_varying_scenario_three_times_and_a_steady_one_once(tmp_path: Path) -> None:
+    scenarios = varying_scenarios(tmp_path / "scenarios")
+    started: list[tuple[str, str, int | None]] = []
+    finished = skill_evals_runs.Run(None, "x", frozenset(), frozenset(), "x")
+
+    def run_scenario(scenario: Scenario, model: str, home: Path, session: Any, index: int | None = None) -> Any:
+        started.append((scenario.name, model, index))
+        return finished, []
+
+    with mock.patch.object(skill_evals_runs, "run_scenario", run_scenario), contextlib.redirect_stdout(io.StringIO()):
+        runs = skill_evals_runs.run_all(scenarios, {"haiku": tmp_path / "haiku"}, mock.Mock(), 1)
+    # Each round of every scenario is queued before the next, and a round holds only the scenarios that run that often.
+    assert started == [
+        ("steady", "haiku", None),
+        ("varying", "haiku", 1),
+        ("varying", "haiku", 2),
+        ("varying", "haiku", 3),
+    ]
+    assert sorted(runs, key=str) == sorted(started, key=str)
+
+
+def test_a_varying_scenario_is_judged_over_its_runs_and_its_counts_say_it_varies(tmp_path: Path) -> None:
+    root, records = tmp_path / "scenarios", tmp_path / "records"
+    varying_scenarios(root)
+    passing = contract_record([finding("a.go", 3, "MUST_FIX")], "claude-haiku-5-5")
+    for name, index in (("steady", None), ("varying", 1), ("varying", 2), ("varying", 3)):
+        folder = records / name
+        folder.mkdir(parents=True, exist_ok=True)
+        value = contract_record([], "claude-haiku-5-5") if index == 2 else passing
+        (folder / skill_evals_records.record_name("haiku", index)).write_text(json.dumps(value), encoding="utf-8")
+    status, lines = run_main(["demo", "--records", str(records), "--model", "haiku"], root)
+    assert status == 1
+    assert "PASS demo steady haiku finding a.go:3 MUST_FIX" in lines
+    assert [line for line in lines if line.startswith("RUNS ")] == ["RUNS varying haiku 2/3 some"]
+    assert lines[-2:] == ["| steady | 1/1 |", "| varying | 2/3 (2/3 runs; varies) |"]
+
+
+def test_a_row_gives_a_steady_scenario_s_runs_and_says_which_scenario_varies(tmp_path: Path) -> None:
+    scenarios = varying_scenarios(tmp_path)
+    run = skill_evals_runs.Run
+    reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("steady", "haiku", None): run({}, None, reviewer, session),
+        **{("varying", "haiku", index): run({}, None, reviewer, session) for index in (1, 2, 3)},
+    }
+    outcomes = [
+        Outcome("steady", "haiku", "verdict APPROVED", None),
+        *(
+            Outcome("varying", "haiku", "verdict APPROVED", "x" if index == 3 else None, None, index)
+            for index in (1, 2, 3)
+        ),
+    ]
+    (row,) = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    cells = row.split(" | ")
+    assert (cells[5], cells[6], cells[7]) == ("3/4", "1", "steady 1/1, varying 2/3 (2/3 runs; varies)")
+    # With every scenario run several times, the Runs cell is the steady scenarios' count.
+    runs = {
+        (name, "haiku", index): run({}, None, reviewer, session)
+        for name in ("steady", "varying")
+        for index in range(1, 6)
+    }
+    outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
+    (row,) = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row.split(" | ")[6:8] == ["5", "steady 5/5 (5/5 runs), varying 5/5 (5/5 runs; varies)"]
+
+
+def test_a_row_of_every_scenario_marked_counts_their_runs(tmp_path: Path) -> None:
+    # With no scenario left unmarked, the Runs cell is the marked scenarios' runs, never an empty count.
+    write_scenario(tmp_path, "first", scenario_spec(varies=True))
+    write_scenario(tmp_path, "second", scenario_spec(varies=True))
+    scenarios = skill_evals_scenarios.load_scenarios("demo", root=tmp_path)
+    run = skill_evals_runs.Run
+    reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        (name, "haiku", index): run({}, None, reviewer, session) for name in ("first", "second") for index in (1, 2, 3)
+    }
+    outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
+    (row,) = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row.split(" | ")[6:8] == ["3", "first 3/3 (3/3 runs; varies), second 3/3 (3/3 runs; varies)"]
+
+
+def test_a_trigger_or_synthesis_scenario_may_be_marked_as_varying_too(tmp_path: Path) -> None:
+    # The mark is read before the mode's own fields, so a scenario of every mode takes it.
+    trigger = trigger_scenario(tmp_path, {**TRIGGER_SPEC, "varies": True}, demo_checkout(tmp_path))
+    assert (trigger.mode, trigger.varies) == (skill_evals_scenarios.TRIGGER, True)
+    synthesis_scenario(tmp_path, synthesis_spec(varies=True))
+    (synthesis,) = skill_evals_scenarios.load_scenarios("review-insights", root=tmp_path)
+    assert (synthesis.mode, synthesis.varies) == (skill_evals_scenarios.SYNTHESIS, True)
+
+
+def test_a_marked_scenario_s_cell_is_read_back_as_one_measured_scenario(tmp_path: Path) -> None:
+    # The suffix sits after a separator no By scenario cell splits on, so the row's reader finds each scenario once.
+    scenarios = varying_scenarios(tmp_path)
+    run = skill_evals_runs.Run
+    reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("steady", "haiku", None): run({}, None, reviewer, session),
+        **{("varying", "haiku", index): run({}, None, reviewer, session) for index in (1, 2, 3)},
+    }
+    outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
+    rows = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    written = skill_evals_results.replace_results(RESULTS_TEXT, "demo", rows)
+    assert evaluation_results.measured_scenarios(written, "demo") == {"steady", "varying"}
+    by_scenario = rows[0].split(" | ")[7]
+    assert [item.partition(" ")[0] for item in by_scenario.split(", ")] == ["steady", "varying"]
