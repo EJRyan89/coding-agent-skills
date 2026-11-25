@@ -39,6 +39,14 @@ subshell Bash runs it in, and `command_words` gives one's words from its program
 what a script runs; `every_command` lists every command, compound ones and function definitions too, and
 `command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too.
 
+The reader reads text as a non-interactive Bash started with every `set -o` and `shopt` option at its default reads it,
+and decides each option once: OPTIONS_READ, under which Bash reads the same commands whatever its setting;
+OPTIONS_REFUSED, under which Bash reads the text after the command that turns it on otherwise, such as extglob,
+expand_aliases, or POSIX mode; and NOT_READ, each with why. `parse` reads a command that turns one of OPTIONS_REFUSED
+on as the grammar does any other, and `simple_commands` and `every_command` raise NotRead at it (`option_refusal`), so a
+reader that judges what a text runs fails closed there, while the hub guard, which reads by `parse` and follows no
+option's effect, reads the tree as before.
+
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
 which it allows with a note, as "The guard's contract" in docs/parallel-sessions.md states, and git_subcommands
@@ -74,6 +82,19 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   cannot read there is unread, never text that runs nothing.
 - A `]]` word inside the parentheses of an `=~` regex, as `[[ x =~ ( ]] ) ]]; git commit -m x`, which Bash reads, ends
   the expression there, so the text raises BashSyntaxError.
+- An option the text does not turn on itself is not seen: one the environment's SHELLOPTS, BASHOPTS, POSIXLY_CORRECT,
+  or BASH_COMPAT turns on, one a shell is started with, as `bash -O extglob` or `--posix`, or on a script's first line,
+  one a startup file sets, and an interactive shell's, which expands aliases and history by default.
+- A set or shopt behind a name the text does not settle, as `"$x" -o posix`, or behind a glob or a brace expansion in
+  the command's name or in command's options, as `{set,-k}` or `command -[p] set -k`, or in a text eval or another
+  shell runs, which each reader reads as its own text, is read where that text is; and POSIXLY_CORRECT or BASH_COMPAT
+  assigned other than before a command, as a declaration builtin's NAME=value, or by ${NAME:=word}, as by a
+  declaration that gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name reference, or an
+  arithmetic assignment, or by ${NAME:=word} in an array assignment's element or inside `$(( ))`, as
+  `x=( ${POSIXLY_CORRECT:=1} )`, is not seen.
+- A brace expansion whose quoted or escaped text or inner braces split it, as `shopt -s {'extglob',x}`,
+  `{x\\,y,extglob}`, or `{{a},extglob}`, is read as the one word its text spells, so set or shopt given one is read as
+  given that word.
 """
 
 from __future__ import annotations
@@ -126,8 +147,78 @@ RESERVED = frozenset(
 # The reserved word of a coprocess, `coproc [NAME] command`, whose command is read as the subshell Bash runs it in, in
 # the background; Bash takes a NAME only before a compound command.
 COPROCESS = "coproc"
-# Each word Bash reserves that the reader neither reads nor refuses, with why; every one is read today.
-NOT_READ: dict[str, str] = {}
+# Every `set -o` and `shopt` option is decided here, keyed as `set -o NAME` or `shopt NAME`, in exactly one of
+# OPTIONS_READ, OPTIONS_REFUSED, and NOT_READ, as tests/tools/test_bash_syntax.py holds to each option the validated
+# Bash's `set -o` and `shopt -p` print and to pinned lists of the newest Bash's and Git Bash's. The reader reads text as
+# a non-interactive Bash started with every option at its default reads it.
+# The options under which Bash reads the same words and commands from a text whatever their setting, and runs no
+# command but those: each changes only what an expansion produces, what a command does, prints, or exports, when the
+# shell stops, or an interactive prompt, its history, or its completion. The test holds Bash's own reading of a corpus,
+# as `declare -f` prints it, to be the same with each on and off.
+OPTIONS_READ = frozenset(
+    {"set -o allexport", "set -o braceexpand", "set -o emacs", "set -o errexit", "set -o errtrace", "set -o functrace"}
+    | {"set -o hashall", "set -o history", "set -o ignoreeof", "set -o interactive-comments", "set -o monitor"}
+    | {"set -o noclobber", "set -o noexec", "set -o noglob", "set -o nolog", "set -o notify", "set -o nounset"}
+    | {"set -o onecmd", "set -o physical", "set -o pipefail", "set -o privileged", "set -o verbose", "set -o vi"}
+    | {"shopt array_expand_once", "shopt assoc_expand_once", "shopt autocd", "shopt bash_source_fullpath"}
+    | {"shopt cdable_vars", "shopt cdspell", "shopt checkhash", "shopt checkjobs", "shopt checkwinsize"}
+    | {"shopt cmdhist", "shopt complete_fullquote", "shopt completion_strip_exe", "shopt direxpand", "shopt dirspell"}
+    | {"shopt dotglob", "shopt execfail", "shopt extdebug", "shopt failglob", "shopt force_fignore"}
+    | {"shopt globasciiranges", "shopt globskipdots", "shopt globstar", "shopt gnu_errfmt", "shopt histappend"}
+    | {"shopt histreedit", "shopt histverify", "shopt hostcomplete", "shopt huponexit", "shopt inherit_errexit"}
+    | {"shopt interactive_comments", "shopt lastpipe", "shopt lithist", "shopt localvar_inherit"}
+    | {"shopt localvar_unset", "shopt login_shell", "shopt mailwarn", "shopt no_empty_cmd_completion"}
+    | {"shopt nocaseglob", "shopt nocasematch", "shopt noexpand_translation", "shopt nullglob"}
+    | {"shopt patsub_replacement", "shopt progcomp", "shopt progcomp_alias", "shopt promptvars"}
+    | {"shopt restricted_shell", "shopt shift_verbose", "shopt sourcepath", "shopt varredir_close", "shopt xpg_echo"}
+)
+# The options under which Bash reads the text after the command that turns them on otherwise than the reader does, each
+# with how; simple_commands and every_command raise NotRead at a command that turns one on (option_refusal). Each is
+# off by default, and turning it off is read.
+COMPATIBILITY = "Bash then reads and runs text as the earlier release whose compatibility level it names did"
+OPTIONS_REFUSED: dict[str, str] = {
+    "set -o histexpand": (
+        "with history on too, Bash then replaces each `!` history designator in a line, as `!!`, with an earlier "
+        "line's text before it reads the line"
+    ),
+    "set -o keyword": (
+        "Bash then takes every word shaped as an assignment for one, wherever it stands, so `git x=1 push` runs "
+        "git's push"
+    ),
+    "set -o posix": "Bash then reads in POSIX mode, in which it expands aliases, as expand_aliases does",
+    "set -o igncr": (
+        "Git Bash's: Bash then drops the carriage returns it reads, where the reader reads one outside quotes as a "
+        "blank and one inside them as text"
+    ),
+    "shopt expand_aliases": (
+        "Bash then replaces a command's first word that names an alias with the alias's text, which the reader reads "
+        "as the program the word names"
+    ),
+    "shopt extglob": (
+        "Bash then reads `?(`, `*(`, `+(`, `@(`, and `!(` patterns as parts of words, so `!(cmd)` is a pattern a "
+        "command's name is expanded from, not a negated subshell"
+    ),
+    **dict.fromkeys((f"shopt compat{level}" for level in (31, 32, 40, 41, 42, 43, 44)), COMPATIBILITY),
+}
+# The letters by which set turns on an option OPTIONS_REFUSED names, as -k or within a bundle such as -ek.
+SET_LETTERS = {"H": "histexpand", "k": "keyword"}
+# The variables whose assignment changes how Bash reads as an option OPTIONS_REFUSED does, each with what it does:
+# POSIXLY_CORRECT turns on POSIX mode, and BASH_COMPAT sets the compatibility level the compat options set.
+OPTION_VARIABLES = {
+    "POSIXLY_CORRECT": f"turns on posix: {OPTIONS_REFUSED['set -o posix']}",
+    "BASH_COMPAT": f"sets the compatibility level the compat options set: {COMPATIBILITY}",
+}
+# Each reserved word, `set -o` option, and `shopt` option the reader neither reads nor refuses, with why.
+NOT_READ: dict[str, str] = {
+    "set -o xtrace": (
+        "expands PS4 before each command it traces, running any command substitution PS4's value holds, which the "
+        "reader reads as the text of an assignment"
+    ),
+    "shopt extquote": (
+        "decides whether `$'` and `$\"` inside a double-quoted `${ }` quote as ANSI-C and locale strings, where the "
+        "reader reads each quote inside a double-quoted `${ }` as a plain character under either setting"
+    ),
+}
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 # The start of an expansion that assigns, ${NAME:=word} or ${NAME=word}, to a subscript or not, or through ${!NAME.
 ASSIGNING = re.compile(r"\$\{(!?)([A-Za-z_]\w*(?:\[.*?\])?):?=", re.ASCII)
@@ -139,8 +230,13 @@ COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "u
 # with the words each may follow: -p right after `time`, and -- right after `time` or its -p. Any other word there, a
 # second -p or -- among them, is the timed command's own.
 TIME_OPTIONS = {"-p": ("time",), "--": ("time", "-p")}
+# Unquoted text Bash expands into other words when the command runs: a glob, which names the files it matches, and a
+# brace expansion, `{a,b}` or `{1..3}`.
+EXPANDS_TO_WORDS = re.compile(r"[*?]|\[.*\]|\{[^{}]*(?:,|\.\.)[^{}]*\}")
 # The builtins whose arguments Bash reads as assignments, so NAME=( ) among them is an array.
 DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "local", "readonly", "typeset"})
+# The declaration builtins that assign the variable a NAME=value argument names, as Bash assigns one before a command.
+ASSIGNING_BUILTINS = DECLARATION_BUILTINS - {"alias", "eval", "let"}
 # What may follow a function's name and `()`: a compound command, as Bash requires of a function's body.
 FUNCTION_BODIES = frozenset({"{", "if", "while", "until", "for", "select", "case", "[["})
 SPECIAL_PARAMETERS = frozenset("@*#?$!-0123456789")
@@ -1423,14 +1519,16 @@ def simple_commands(text: str) -> list[Simple]:
     read from wherever it stands: a word, an assignment's value, a redirection's target, an unquoted here-document's
     body, a case word or pattern, or a loop's words. A case word, a pattern, a function's name, and a quoted
     here-document's body run nothing of their own. Raises BashSyntaxError where text, or a substitution in it, cannot
-    be read: Bash runs the lines before a syntax error, so a reader cannot say which of its commands run."""
+    be read: Bash runs the lines before a syntax error, so a reader cannot say which of its commands run; and NotRead
+    where a command turns on an option the reader does not read (option_refusal)."""
     return [command for command in every_command(text) if isinstance(command, Simple)]
 
 
 def every_command(text: str) -> list[Command]:
     """Each command Bash may run for text, compound or simple, in the order the text holds them, read wherever
     simple_commands reads a simple one: a compound command before the commands it runs, and a function's definition
-    before its body. Raises BashSyntaxError where text, or a substitution in it, cannot be read."""
+    before its body. Raises BashSyntaxError where text, or a substitution in it, cannot be read, and NotRead where a
+    command turns on an option the reader does not read (option_refusal)."""
     tree = parse(text)
     try:
         return list(_tree_commands(tree))
@@ -1447,6 +1545,9 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
                 for command in pipeline.commands:
                     yield from _tree_commands(command)
         return
+    refusal = option_refusal(node)
+    if refusal is not None:
+        raise NotRead(refusal)
     yield node
     if isinstance(node, FunctionDefinition):
         yield from _tree_commands(node.body)
@@ -1476,6 +1577,130 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
         except BashSyntaxError as error:
             raise NotRead(f"a here-document body's substitution is not read ({error})") from error
         yield from _tree_commands(tree)
+
+
+def settled_text(word: Word) -> str | None:
+    """A word's text after quote removal when the text settles it, each of its parts literal text and no unquoted one
+    holding a glob or a brace expansion (EXPANDS_TO_WORDS), which Bash makes other words of; else None."""
+    if all(part.kind == "text" and (part.quoted or not EXPANDS_TO_WORDS.search(part.text)) for part in word.parts):
+        return "".join(part.text for part in word.parts)
+    return None
+
+
+def option_refusal(command: Command) -> str | None:
+    """Why the reader does not read the text after a command: a simple one that turns on an option OPTIONS_REFUSED
+    names, by set or shopt, behind builtin or command too, or may, given a word the text does not settle where either
+    reads an option; or any that assigns a variable OPTION_VARIABLES names, before a simple command's name, as a
+    declaration builtin's NAME=value, or by ${NAME:=word} in a word it expands (expanded_words) or an unquoted
+    here-document's body. None for any other command, set and shopt that print or test options and turn one off
+    included, and for a function's definition, whose body is read as its own command. Bash runs a command only through
+    the name it has when the command runs, so a set or shopt behind a name the text does not settle is not read, a
+    limit the module states."""
+    words = list(command.words) if isinstance(command, Simple) else []
+    assigned: list[str] = []
+    while words and words[0].assignment is not None:
+        assigned.append(words.pop(0).raw)
+    words = builtin_words(words)
+    program = settled_text(words[0]) if words else None
+    if program in ASSIGNING_BUILTINS:
+        assigned += [word.raw for word in words[1:] if word.assignment is not None]
+    expansions = [
+        *(word.assigns for word in expanded_words(command)),
+        *(doc.assigns for doc in here_documents(command)),
+    ]
+    names = [NAME.match(text) for text in assigned + [name for assigns in expansions for name in assigns]]
+    for name in (match.group() for match in names if match is not None):
+        if name in OPTION_VARIABLES:
+            return f"it assigns {name}, which {OPTION_VARIABLES[name]}"
+    if program == "set":
+        return set_refusal(words[1:])
+    if program == "shopt":
+        return shopt_refusal(words[1:])
+    return None
+
+
+def builtin_words(words: list[Word]) -> list[Word]:
+    """A command's words from the builtin `builtin` or `command` runs, past either, the `--` builtin takes, and
+    command's options; none for a command given -v or -V, which only looks a name up."""
+    while words and settled_text(words[0]) in ("builtin", "command"):
+        runs_options = settled_text(words[0]) == "command"
+        words = words[1:]
+        if not runs_options and words and settled_text(words[0]) == "--":
+            words = words[1:]
+        while runs_options and words and (option := settled_text(words[0])) is not None and option[:1] == "-":
+            words = words[1:]
+            if option == "--":
+                break
+            if "v" in option or "V" in option:
+                return []
+    return words
+
+
+def option_name(key: str) -> str:
+    """The option a key of OPTIONS_REFUSED or NOT_READ names, without the command that sets it."""
+    return key.rpartition(" ")[2]
+
+
+def refused_option(key: str) -> str | None:
+    """Why turning on the option key names is refused; None for one OPTIONS_REFUSED does not name."""
+    reason = OPTIONS_REFUSED.get(key)
+    return None if reason is None else f"it turns on {option_name(key)}: {reason}"
+
+
+def unsettled_option(builtin: str) -> str:
+    return f"{builtin} is given a word the text does not settle, which may turn on an option the reader does not read"
+
+
+def set_refusal(arguments: list[Word]) -> str | None:
+    """Why set's arguments are refused, read as set reads them: each word that opens with `-` or `+` up to `--`, `-`,
+    or the first that does not, its letters turning an option on after `-` and off after `+`, and an `o` taking the
+    next word as an option's name unless that word opens with `-` or `+`, where set prints its options and reads that
+    word as its own. Refused: an option OPTIONS_REFUSED names turned on, by name or by its letter (SET_LETTERS), and a
+    word the text does not settle where set reads an option or a name."""
+    index = 0
+    while index < len(arguments):
+        text = settled_text(arguments[index])
+        if text is None:
+            return unsettled_option("set")
+        if text in ("-", "--") or text[:1] not in ("-", "+"):
+            return None
+        on = text[0] == "-"
+        for letter in text[1:]:
+            if letter == "o" and index + 1 < len(arguments):
+                name = settled_text(arguments[index + 1])
+                if name is None:
+                    return unsettled_option("set")
+                if name[:1] in ("-", "+"):
+                    continue
+                index += 1
+                refusal = refused_option(f"set -o {name}") if on else None
+            else:
+                refusal = refused_option(f"set -o {SET_LETTERS[letter]}") if on and letter in SET_LETTERS else None
+            if refusal is not None:
+                return refusal
+        index += 1
+    return None
+
+
+def shopt_refusal(arguments: list[Word]) -> str | None:
+    """Why shopt's arguments are refused, read as shopt reads them: its options first, each word that opens with `-` up
+    to `--` or the first that does not, then the names of the options it sets given -s, of set's given -o too. Refused:
+    an option OPTIONS_REFUSED names turned on, and any word the text does not settle. A shopt given both -s and -u, or
+    an option it does not take, sets nothing, as Bash refuses it."""
+    texts = [settled_text(word) for word in arguments]
+    if None in texts:
+        return unsettled_option("shopt")
+    names = [text for text in texts if text is not None]
+    letters = ""
+    while names and names[0][:1] == "-" and names[0] != "-":
+        option = names.pop(0)
+        if option == "--":
+            break
+        letters += option[1:]
+    if "s" not in letters or "u" in letters or set(letters) - set("opqs"):
+        return None
+    keys = (f"set -o {name}" if "o" in letters else f"shopt {name}" for name in names)
+    return next((refusal for refusal in map(refused_option, keys) if refusal is not None), None)
 
 
 def expanded_words(node: Command) -> list[Word]:

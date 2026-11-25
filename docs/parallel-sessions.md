@@ -766,6 +766,16 @@ Within what it reads, it judges only what the text shows, so these too are left 
   function, and not under `/bin/sh`, where it does not; no syntax PowerShell also parses shuts every such name out;
 - what the shell's own startup files set: an alias, a function, or an option they define, or a variable the Bash
   tool's shell holds that the hook's environment does not, or holds with another value;
+- a `set -o` or `shopt` option a command turns on, such as `extglob`, `expand_aliases`, POSIX mode or an assignment
+  to `POSIXLY_CORRECT`, `keyword`, or `histexpand`: the guard reads every command at Bash's default options, so an
+  alias a later word names, a word `set -k` takes for an assignment, or a line history expansion replaces runs where
+  the guard reads another command;
+- `set -P` before a `cd` through a symbolic link and `..`, which Bash then resolves through the link, where the guard
+  places the `cd` by the path's text;
+- `set -x` with a command substitution in `PS4`, which Bash expands before each command it traces, so a git call
+  there runs unread;
+- `set -a` before a plain assignment to a variable git reads, which Bash then exports to every later git call, as
+  `export` would;
 - a work tree set in a repository's own configuration: the guard judges such a call by the checkout it runs in;
 - a ref moved from another checkout to an object the hub's store holds, such as `git update-ref refs/heads/main` run in
   a worktree: refs live in the store every worktree shares, and the guard judges a call by the checkout whose `HEAD`,
