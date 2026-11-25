@@ -1590,6 +1590,21 @@ class PytestRootPolicy(unittest.TestCase):
 
     def test_a_run_that_names_its_configuration_file_is_pinned_by_confcutdir_alone(self) -> None:
         cases = {
+            "a pytest.ini beside the suite of a run given --config-file and its path apart": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        (Path(temporary) / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+                        named = str(REPOSITORY_ROOT / "pyproject.toml")
+                        subprocess.run(pytest_command(str(suite), "--config-file", named), check=True)  # start
+                """,
+            "a pytest.ini beside the suite of a run given --config-file=<path> as one literal": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        (Path(temporary) / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+                        subprocess.run(pytest_command(str(suite), "--config-file=pyproject.toml"), check=True)  # start
+                """,
             "a pytest.ini beside the suite of a run that names another configuration file": """\
                 def test_runs() -> None:
                     with tempfile.TemporaryDirectory() as temporary:
@@ -1610,6 +1625,23 @@ class PytestRootPolicy(unittest.TestCase):
         for name, body in cases.items():
             with self.subTest(name):
                 self.assertEqual([self.configured_unpinned(body)], self.problems(body))
+
+    def test_a_dot_step_neither_climbs_nor_descends(self) -> None:
+        # Near the root, where a "." read as a step down would keep `..` inside it, and one read as a step up would
+        # climb out of it.
+        climbing = """\
+            def test_runs() -> None:
+                subprocess.run(pytest_command(str(REPOSITORY_ROOT / "." / "." / ".." / "x.py")))  # start
+            """
+        why = (
+            "str(REPOSITORY_ROOT / '.' / '.' / '..' / 'x.py') is neither in the repository nor under a temporary folder"
+        )
+        self.assertEqual([self.unplaced(climbing, why)], self.problems(climbing))
+        to_the_root = """\
+            def test_runs() -> None:
+                subprocess.run(pytest_command(str(REPOSITORY_ROOT / "tests" / "." / ".." / "x.py")), check=True)
+            """
+        self.assertEqual([], self.problems(to_the_root))
 
     def test_a_step_up_or_across_in_a_literal_is_read_against_the_root(self) -> None:
         climbing = """\
