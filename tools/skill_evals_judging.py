@@ -39,8 +39,8 @@ from tools.skill_evals_records import (
 from tools.skill_evals_runs import (
     RECORD_VERSION,
     RecordSource,
-    indexes,
     run_token,
+    scenario_indexes,
     session_tool_calls,
     synthesis_scope,
     unrecorded_calls,
@@ -171,12 +171,13 @@ def transcript_calls(path: Path) -> list[dict[str, Any]]:
         raise RecordError(f"{path} counts for nothing: {exc}", RECORD) from exc
 
 
-def counts(outcomes: Sequence[Outcome]) -> str:
+def counts(outcomes: Sequence[Outcome], varies: bool) -> str:
     """The expectations passed of those checked, and over several runs, the runs that passed every expectation of
     theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs. A run whose only
     outcomes are passes judged on the session's calls alone is no run judged, since it measured nothing of the
     reviewers; one whose such judgment failed is a run that failed. Several runs none of which is judged read
-    `(0/0 runs)`, so the cell still says the scenario ran several times."""
+    `(0/0 runs)`, so the cell still says the scenario ran several times. A scenario known to vary says so after its
+    runs, as `2/3 (2/3 runs; varies)`, so a fail is read against its usual spread."""
     passed = f"{sum(1 for outcome in outcomes if outcome.failure is None)}/{len(outcomes)}"
     numbered = {
         outcome.run
@@ -186,17 +187,19 @@ def counts(outcomes: Sequence[Outcome]) -> str:
     if all(outcome.run is None for outcome in outcomes):
         return passed
     failed = {outcome.run for outcome in outcomes if outcome.failure is not None}
-    return f"{passed} ({len(numbered - failed)}/{len(numbered)} runs)"
+    marked = "; varies" if varies else ""
+    return f"{passed} ({len(numbered - failed)}/{len(numbered)} runs{marked})"
 
 
 def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSource, runs: int = 1) -> list[Outcome]:
-    """Every expectation of every run of every scenario on every model. A record the source could not give fails each
+    """Every expectation of every run of every scenario on every model, each scenario run `runs` times, or
+    VARYING_RUNS at least when it is known to vary. A record the source could not give fails each
     of its expectations with the source's reason and kind, but one read from the session's own tool calls alone,
     which is judged on them when the source's error carries them; an expectation the record fails is a judgment."""
     outcomes = []
     for scenario in scenarios:
         for model in models:
-            for index in indexes(runs):
+            for index in scenario_indexes(scenario, runs):
                 try:
                     record: Record | None = source(scenario, model, index)
                     missing, kind, calls = None, None, None
@@ -259,7 +262,10 @@ def table(scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequen
     lines = [f"| Scenario | {' | '.join(models)} |", f"| --- |{' --- |' * len(models)}"]
     for scenario in scenarios:
         cells = [
-            counts([outcome for outcome in outcomes if outcome.scenario == scenario.name and outcome.model == model])
+            counts(
+                [outcome for outcome in outcomes if outcome.scenario == scenario.name and outcome.model == model],
+                scenario.varies,
+            )
             for model in models
         ]
         lines.append(f"| {scenario.name} | {' | '.join(cells)} |")

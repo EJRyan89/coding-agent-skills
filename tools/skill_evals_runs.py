@@ -70,6 +70,7 @@ from tools.skill_evals_scenarios import (
     judged_calls,
     quote,
     reviewed_fixture,
+    scenario_runs,
     skill_arguments,
 )
 
@@ -135,6 +136,11 @@ RecordSource = Callable[[Scenario, str, Index], Record]
 def indexes(runs: int) -> list[Index]:
     """The runs of each scenario on each model: one with no number, or several numbered from 1."""
     return [None] if runs == 1 else list(range(1, runs + 1))
+
+
+def scenario_indexes(scenario: Scenario, runs: int) -> list[Index]:
+    """The runs of this scenario on each model when each scenario runs `runs` times: more for one known to vary."""
+    return indexes(scenario_runs(scenario, runs))
 
 
 def run_token(index: Index) -> str:
@@ -946,16 +952,19 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
 def run_all(
     scenarios: Sequence[Scenario], homes: Mapping[str, Path], session: Session, jobs: int, runs: int = 1
 ) -> dict[RunKey, Run]:
-    """Every scenario on every model with a home, `runs` times, up to `jobs` at once, printing each transcript as its
-    run ends. Each round of every scenario on every model is queued before the next. One job runs in this thread, in
+    """Every scenario on every model with a home, `runs` times, or VARYING_RUNS at least for a scenario known to vary,
+    up to `jobs` at once, printing each transcript as its run ends. Each round of every scenario on every model is
+    queued before the next, a round holding only the scenarios that run that many times. One job runs in this thread, in
     order. The by-name runs on one model, which stage their document in that model's home, run one at a time as one
     job, queued where the first of them is, so no run's `resolve` finds another's copy; each prints its transcript as
     the job ends."""
     results: dict[RunKey, Run] = {}
+    rounds = {scenario.name: scenario_indexes(scenario, runs) for scenario in scenarios}
     queued = [
-        (scenario, model, home, index)
-        for index in indexes(runs)
+        (scenario, model, home, rounds[scenario.name][number])
+        for number in range(max((len(each) for each in rounds.values()), default=0))
         for scenario in scenarios
+        if number < len(rounds[scenario.name])
         for model, home in homes.items()
     ]
     chains: dict[str, list[Queued]] = {}
