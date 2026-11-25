@@ -1150,6 +1150,45 @@ class RepositoryVariableTests(unittest.TestCase):
                 self.assertEqual("A  f.txt\0", git_client.subprocess_runner(status, 60, env=given).stdout)
                 self.assertEqual(NAMED_LISTING.decode(), git_client.subprocess_runner(listing, 60, env=given).stdout)
 
+    def test_a_trace_the_environment_asks_for_never_turns_a_quiet_no_into_a_failure(self) -> None:
+        # git's quiet no is exit 1 with nothing on stderr. A trace on stderr, inherited or named by the global
+        # configuration, would make it a GitError naming a trace line, so the client's git runs without one.
+        self.client.output(["switch", "--quiet", "--detach"], directory=self.named)
+        configured = self.other / "trace2 configuration"
+        configured.write_text("[trace2]\n\tnormalTarget = true\n", encoding="utf-8")
+        traces = {
+            "GIT_TRACE": {"GIT_TRACE": "1"},
+            "GIT_TRACE2": {"GIT_TRACE2": "1"},
+            "GIT_TRACE2_PERF": {"GIT_TRACE2_PERF": "true"},
+            "GIT_TRACE2_EVENT": {"GIT_TRACE2_EVENT": "2"},
+            "a trace2 target the global configuration names": {"GIT_CONFIG_GLOBAL": str(configured)},
+        }
+        quiet = ["symbolic-ref", "--quiet", "HEAD"]
+        for name, values in traces.items():
+            with self.subTest(trace=name), mock.patch.dict(os.environ, values):
+                plain = subprocess.run(
+                    ["git", "-C", str(self.named), *quiet], capture_output=True, check=False, env=dict(os.environ)
+                )
+                self.assertEqual(1, plain.returncode)
+                self.assertNotEqual(b"", plain.stderr, "the trace this case asks for writes to stderr")
+                self.assertIsNone(self.client.quiet_output(quiet, directory=self.named))
+                self.assertIsNone(self.client.commit_of("refs/heads/absent", directory=self.named))
+                self.assertEqual("", self.client.run(quiet, directory=self.named).stderr)
+
+    def test_a_stream_git_for_windows_would_move_stays_the_client_s(self) -> None:
+        # Git for Windows moves stdout or stderr wherever GIT_REDIRECT_STDOUT or GIT_REDIRECT_STDERR says; other
+        # platforms' git reads neither, and the client's git sees neither on any platform.
+        moved = self.other / "moved stdout"
+        redirections = {"GIT_REDIRECT_STDOUT": str(moved), "GIT_REDIRECT_STDERR": "2>&1"}
+        with mock.patch.dict(os.environ, redirections):
+            self.assertEqual(
+                "refs/heads/main\n", self.client.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=self.named)
+            )
+            failed = self.client.run(["rev-parse", "--verify", "no-such-ref"], directory=self.named)
+        self.assertEqual("", failed.stdout)
+        self.assertNotEqual("", failed.stderr)
+        self.assertFalse(moved.exists())
+
     def test_command_scope_settings_still_reach_git(self) -> None:
         settings = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "command"}
         with mock.patch.dict(os.environ, settings):

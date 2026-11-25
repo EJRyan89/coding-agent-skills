@@ -4,6 +4,7 @@ that every tool deploying into a canary home refuses one before it starts anythi
 from __future__ import annotations
 
 import ast
+import functools
 import sys
 import tempfile
 import unittest
@@ -131,6 +132,39 @@ class CheckoutTests(unittest.TestCase):
         self.git.output(["config", f"branch.{name}.remote", "someone"], directory=self.root)
         self.git.output(["config", f"branch.{name}.merge", "refs/heads/topic"], directory=self.root)
         self.assertEqual(another_remote(name, "someone"), self.foreign())
+
+    def test_a_tag_named_like_the_branch_never_renames_the_branch_whose_settings_are_read(self) -> None:
+        # git symbolic-ref --short names the branch heads/main beside a tag main, whose settings are none.
+        self.git.output(["tag", "main"], directory=self.root)
+        # A branch with no upstream is the user's own, as docs/design.md's row on fixture trust states.
+        self.assertIsNone(self.foreign())
+        follow(self.root, self.git, "origin", "refs/heads/main")
+        self.assertIsNone(self.foreign())
+        follow(self.root, self.git, "someone", "refs/heads/topic")
+        self.assertEqual(another_remote("main", "someone"), self.foreign())
+
+    def test_the_branch_s_own_upstream_setting_git_cannot_read_is_refused_beside_a_tag_of_its_name(self) -> None:
+        # The settings read are the branch's own, branch.main.*, never a name --short gives, whose absence would read
+        # as no upstream; one git cannot read refuses the checkout.
+        self.git.output(["tag", "main"], directory=self.root)
+        refused = GitResult(1, "", "error: could not lock config file .git/config\n")
+        for word in ("branch.main.remote", "branch.main.merge"):
+
+            def run(command: Sequence[str], timeout: float, word: str = word) -> GitResult:
+                return refused if word in command else subprocess_runner(command, timeout)
+
+            with self.subTest(word=word):
+                reason = checkout_trust.refusal(
+                    functools.partial(checkout_trust.foreign_checkout, GitClient(run), self.root)
+                )
+                self.assertIsNotNone(reason)
+                self.assertIn("cannot read the checkout's branch", reason or "")
+                self.assertIn("could not lock config file", reason or "")
+
+    def test_a_head_naming_a_ref_that_is_no_branch_is_refused(self) -> None:
+        self.git.output(["tag", "v1"], directory=self.root)
+        self.git.output(["symbolic-ref", "HEAD", "refs/tags/v1"], directory=self.root)
+        self.assertEqual("its HEAD names refs/tags/v1, not a branch", self.foreign())
 
     def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
         self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)

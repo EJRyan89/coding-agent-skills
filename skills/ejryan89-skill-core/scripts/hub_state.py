@@ -149,8 +149,10 @@ def differences(git: GitClient, checkout: Path, branch: str, remote: str = "orig
             Difference("changed", f"it has {plural(len(paths), 'uncommitted or untracked path')}: {named}{rest}")
         )
     # Exit 1 with nothing on stderr is git's answer that HEAD is detached; any other failure raises with git's reason.
-    name = output_line(git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=checkout) or "")
-    if name != branch:
+    # HEAD's ref is read by its full name, which --short would give as heads/<branch> beside a tag of the same name.
+    ref = output_line(git.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=checkout) or "")
+    if ref != f"{git_worktrees.BRANCH_PREFIX}{branch}":
+        name = ref.removeprefix(git_worktrees.BRANCH_PREFIX)
         found.append(Difference("branch", f"it is on {flat_text(name) or 'a detached HEAD'}, not {branch}"))
     tracking = f"refs/remotes/{remote}/{branch}"
     commit = tracking_commit(git, checkout, tracking)

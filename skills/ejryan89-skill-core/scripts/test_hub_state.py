@@ -97,6 +97,19 @@ class DifferenceTests(HubTestCase):
         self.git(self.hub, "switch", "-q", "--detach")
         self.assertEqual([Difference("branch", "it is on a detached HEAD, not main")], self.found())
 
+    def test_a_tag_named_like_the_hub_s_branch_never_renames_the_branch(self) -> None:
+        # git symbolic-ref --short names a branch heads/<name> when a tag shares its name; the full name never does.
+        self.git(self.hub, "tag", "main")
+        self.assertEqual([], self.found())
+        self.git(self.hub, "switch", "-q", "-c", "feat/stray")
+        self.git(self.hub, "tag", "feat/stray")
+        self.assertEqual([Difference("branch", "it is on feat/stray, not main")], self.found())
+
+    def test_a_head_naming_a_ref_that_is_no_branch_is_named_by_its_full_name(self) -> None:
+        self.git(self.hub, "tag", "v1")
+        self.git(self.hub, "symbolic-ref", "HEAD", "refs/tags/v1")
+        self.assertEqual([Difference("branch", "it is on refs/tags/v1, not main")], self.found())
+
     def test_a_commit_made_in_the_hub_is_counted_ahead(self) -> None:
         self.commit(self.hub, "stray.txt", "a commit made in the hub")
         self.assertEqual([Difference("ahead", "it is 1 commit ahead of origin/main")], self.found())

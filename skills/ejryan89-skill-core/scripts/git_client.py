@@ -3,7 +3,9 @@
 One runner, bounded and non-interactive (see `bounded_process`), and one failure classifier, so a failure means the
 same thing in every skill and no git command waits on a credential prompt. The runner and `stream` start git without
 its repository-selecting variables (`bounded_process.REPOSITORY_VARIABLES`), so a call reads the repository its
-`directory` names, or the one it runs in, whatever `GIT_DIR` or `GIT_INDEX_FILE` the shell or a git hook exported. A
+`directory` names, or the one it runs in, whatever `GIT_DIR` or `GIT_INDEX_FILE` the shell or a git hook exported, and
+without a trace or a moved stream (`bounded_process.command_environment`), so git's quiet no stays one whatever trace
+the environment or the configuration asks for. A
 client sets none of them and takes no keyword that would: `run_bounded`'s `index_file` is the one way to set one, and a
 caller that needs another index, as `deploy.py --at` does, builds the client on a runner of its own that passes it.
 Tests inject the runner.

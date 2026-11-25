@@ -288,6 +288,8 @@ for TRACE in GIT_TRACE GIT_TRACE2 Git_Trace global-trace2; do
   if [ "$TRACE" = global-trace2 ]; then
     TRACE_CONFIG="$FIXTURE/trace2.gitconfig"
     { cat -- "$GIT_CONFIG_GLOBAL" && printf '[trace2]\n  normalTarget = true\n'; } >"$TRACE_CONFIG"
+    # The validation runner starts a suite with trace2's targets set to 0, which would outrank the configured one.
+    unset GIT_TRACE2 GIT_TRACE2_PERF GIT_TRACE2_EVENT
     GIT_CONFIG_GLOBAL=$TRACE_CONFIG run_subject "$CLONE" main
   else
     export "$TRACE=1"

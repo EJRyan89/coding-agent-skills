@@ -2610,7 +2610,7 @@ def test_origin_head_and_the_current_branch_keep_a_name_ending_in_a_character_st
             git=answering(
                 {
                     "refs/remotes/origin/HEAD": GitResult(0, f"refs/remotes/origin/{name}\n", ""),
-                    "--short": GitResult(0, f"{name}\n", ""),
+                    "HEAD": GitResult(0, f"refs/heads/{name}\n", ""),
                 }
             )
         )

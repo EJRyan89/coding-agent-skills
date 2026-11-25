@@ -45,6 +45,13 @@ class DefaultBranchTests(CleanupTestCase):
                 git(root, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
                 self.assertEqual(rc.DefaultBranch(branch), rc.default_branch(rc.Services(), root))
 
+    def test_the_branch_a_repository_is_left_on_is_named_as_itself_beside_a_tag_of_its_name(self) -> None:
+        # git symbolic-ref --short names the branch heads/topic beside a tag topic.
+        root = self.repository("topic")
+        git(root, "tag", "topic")
+        with self.assertRaisesRegex(rc.CleanupError, "; left on topic$"):
+            rc.default_branch(rc.Services(), root)
+
     def test_a_repository_git_cannot_read_is_named_not_taken_for_one_without_a_default_branch(self) -> None:
         root = self.repository("topic")
         git(root, "update-ref", "refs/remotes/origin/main", "HEAD")

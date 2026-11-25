@@ -638,7 +638,9 @@ def run_tool(
     The tool and every process it starts are held in one process tree, which ends them all once it has finished: a
     Windows job object allows no breakaway, and a process group holds every process that does not start a session or
     group of its own. Its environment is this process's without git's repository-selecting variables, so a git it runs,
-    such as the source commit's, reads the checkout it names, with `environment` added; with `index_file`, a git it
+    such as the source commit's, reads the checkout it names, with `environment` added, and, as for every command
+    bounded_process's `run_bounded` starts, without git's trace and stream-moving variables and with trace2's targets
+    set to 0 (`command_environment`), so a trace never turns git's quiet no into a failure; with `index_file`, a git it
     runs reads and writes that index, as bounded_process's `run_bounded` sets it, and no `environment` can.
     Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
     DeployError when it cannot be held with the processes it starts.
