@@ -1,0 +1,53 @@
+"""Run gh for a skill's script, retrying a transient failure of a read alone.
+
+A request that may change something on GitHub is never retried: one whose answer was lost may already have been
+applied, and a second try could post a comment twice. A command is a read only when `is_read` recognizes it as one.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+
+# The gh commands that only read, by their first two words.
+READ_COMMANDS = frozenset({("pr", "view"), ("pr", "list"), ("pr", "diff"), ("issue", "view"), ("repo", "view")})
+TRANSIENT = ("HTTP 502", "HTTP 503", "HTTP 504", "connection reset")
+ATTEMPTS = 3
+
+
+def _method(arguments: list[str]) -> str:
+    """The HTTP method gh sends `gh api <arguments>` with: the last one given, or GET."""
+    method = ""
+    for index, argument in enumerate(arguments):
+        following = arguments[index + 1] if index + 1 < len(arguments) else ""
+        if argument == "--":
+            break
+        name, equals, value = argument.partition("=")
+        if name == "--method":
+            method = value if equals else following
+        elif argument.startswith("-X"):
+            method = argument[2:] or following
+    return method.upper() or "GET"
+
+
+def is_read(arguments: list[str]) -> bool:
+    """Whether `gh <arguments>` only reads, so a transient failure of it may be retried."""
+    if tuple(arguments[:2]) in READ_COMMANDS:
+        return True
+    return arguments[:1] == ["api"] and _method(arguments[1:]) == "GET"
+
+
+def _once(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["gh", *arguments], capture_output=True, text=True, check=False)
+
+
+def run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """`gh <arguments>`, run again after a transient failure when it is a read."""
+    attempts = ATTEMPTS if is_read(arguments) else 1
+    done = _once(arguments)
+    for attempt in range(1, attempts):
+        if done.returncode == 0 or not any(marker in done.stderr for marker in TRANSIENT):
+            break
+        time.sleep(2**attempt)
+        done = _once(arguments)
+    return done

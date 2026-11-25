@@ -1,0 +1,17 @@
+from __future__ import annotations
+
+from github_client import is_read
+
+
+def test_a_view_is_a_read() -> None:
+    assert is_read(["pr", "view", "7", "--json", "title"])
+
+
+def test_a_comment_is_a_change() -> None:
+    assert not is_read(["pr", "comment", "7", "--body", "Looks good"])
+
+
+def test_an_api_call_is_a_read_unless_it_names_another_method() -> None:
+    assert is_read(["api", "repos/o/r/pulls/7"])
+    assert not is_read(["api", "-X", "POST", "repos/o/r/issues"])
+    assert not is_read(["api", "--method=PATCH", "repos/o/r/issues/7"])
