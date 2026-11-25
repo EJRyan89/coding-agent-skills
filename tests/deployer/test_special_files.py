@@ -44,7 +44,7 @@ def released(*fifos: Path) -> Iterator[set[Path]]:
         while not done.wait(RELEASE_INTERVAL):
             for fifo in fifos:
                 with contextlib.suppress(OSError):
-                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
                     opened.add(fifo)
 
     releaser = threading.Thread(target=release, daemon=True)
@@ -54,6 +54,11 @@ def released(*fifos: Path) -> Iterator[set[Path]]:
     finally:
         done.set()
         releaser.join()
+
+
+def make_fifo(path: Path) -> None:
+    """Make a FIFO at `path`; only the tests that skip Windows call it."""
+    os.mkfifo(path)  # type: ignore[attr-defined, unused-ignore]  # POSIX only: Windows has no os.mkfifo
 
 
 def mode(kind: int) -> os.stat_result:
@@ -89,7 +94,7 @@ class TreeReadTests(unittest.TestCase):
     def refused(self, fifo: Path, read: Path) -> DeployError:
         """The refusal of reading `read`, hash_path's of the FIFO itself or read_tree's of a tree, once `fifo` is
         made; the FIFO is removed whatever the read does, so a read that opened it leaves no FIFO behind."""
-        os.mkfifo(fifo)
+        make_fifo(fifo)
         try:
             with released(fifo) as opened, self.assertRaises(DeployError) as caught:
                 hashing.hash_path(read) if read == fifo else hashing.read_tree(read)
@@ -125,7 +130,7 @@ class TreeReadTests(unittest.TestCase):
             f"ERROR: Refusing to hash content containing a FIFO (named pipe): {forward(fifo)}", refusal.lines[0]
         )
         pipe = self.tree / "pipe"
-        os.mkfifo(pipe)
+        make_fifo(pipe)
         try:
             with released(pipe), self.assertRaises(DeployError):
                 hashing.hash_path(self.tree)
@@ -162,7 +167,7 @@ class DeploymentTests(DeployerTestCase):
         ):
             fifo = self.source / relative
             fifo.parent.mkdir(exist_ok=True)
-            os.mkfifo(fifo)
+            make_fifo(fifo)
             try:
                 for arguments in (("--dry-run",), ()):
                     with self.subTest(relative=relative, arguments=arguments), released(fifo) as opened:
@@ -180,7 +185,7 @@ class DeploymentTests(DeployerTestCase):
     def test_a_shared_asset_that_is_a_fifo_is_refused_before_any_change(self) -> None:
         asset = self.source / "skills" / "shared.md"
         asset.unlink()
-        os.mkfifo(asset)
+        make_fifo(asset)
         with released(asset):
             result = self.deploy_fails("--all", pattern="FIFO")
         self.assertIn(f"ERROR: FIFO (named pipe) found in deployable source tree: {forward(asset)}\n", result.output)
@@ -188,7 +193,7 @@ class DeploymentTests(DeployerTestCase):
     def test_a_fifo_planted_in_an_installed_copy_is_refused_before_any_change(self) -> None:
         self.deploy_ok("--all")
         fifo = self.skills_dir / "alpha" / "pipe"
-        os.mkfifo(fifo)
+        make_fifo(fifo)
         for arguments in (("--dry-run",), ()):
             with self.subTest(arguments=arguments), released(fifo) as opened:
                 result = self.deploy_fails("--all", *arguments, pattern="FIFO")
@@ -205,7 +210,7 @@ class DeploymentTests(DeployerTestCase):
         self.addCleanup(file_lock.release, handle, self.paths.lock_file)
         self.lock_dir.mkdir()
         fifo = self.lock_dir / "info.json"
-        os.mkfifo(fifo)
+        make_fifo(fifo)
         with mock.patch("deployer.lock.LOCK_WAIT_SECONDS", 0), released(fifo) as opened:
             result = self.deploy_fails("--all", pattern="Another deployment is running")
         self.assertEqual(set(), opened)
@@ -215,7 +220,7 @@ class DeploymentTests(DeployerTestCase):
         # The dry run asks whether another process holds the file lock, which opened the file to try it.
         self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
         fifo = self.paths.lock_file
-        os.mkfifo(fifo)
+        make_fifo(fifo)
         with released(fifo) as opened:
             result = self.deploy_fails("--all", "--dry-run", pattern="not a regular file")
         self.assertEqual(set(), opened)
@@ -230,7 +235,7 @@ class DeploymentTests(DeployerTestCase):
         held = lock.acquire(self.paths)
         token = self.lock_dir / "token"
         token.unlink()
-        os.mkfifo(token)
+        make_fifo(token)
         with released(token) as opened:
             held.release()
         self.assertEqual(set(), opened)

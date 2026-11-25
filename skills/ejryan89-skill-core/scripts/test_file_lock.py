@@ -148,13 +148,13 @@ class FileLockTests(unittest.TestCase):
     def test_a_fifo_in_the_files_place_is_refused_by_held_elsewhere_and_never_opened(self) -> None:
         # Opening a FIFO blocks until another process opens its other end. A thread opens the writing end while the
         # test runs, which succeeds only while a reader holds it open, so an open fails the test rather than hanging.
-        os.mkfifo(self.path)
+        os.mkfifo(self.path)  # type: ignore[attr-defined, unused-ignore]  # POSIX only: the test skips Windows
         done, opened = threading.Event(), []
 
         def release() -> None:
             while not done.wait(0.2):
                 try:
-                    os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+                    os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
                 except OSError:
                     continue
                 opened.append(self.path)
