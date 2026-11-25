@@ -494,9 +494,13 @@ TEMPORARY_VARIABLES = frozenset({"TMP", "TEMP", "TMPDIR"})
 # Files a redirection may write that are no file of a checkout.
 DEVICE_FILES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul", "NUL"})
 
+# Every Bash builtin is followed, not followed, or one that moves nothing, a decision tests/tools/test_hub_guard.py
+# holds to each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's.
+# The builtins the guard follows: cd, pushd, and popd move the shell, and dirs -c clears the stack a later popd reads.
+FOLLOWED_BUILTINS = frozenset({"cd", "pushd", "popd", "dirs"})
 # The Bash builtins that may move the shell in a way the guard does not follow: each leaves where the shell is after
-# it unknown, so a git call placed after it is judged as one whose place the text does not settle. cd, pushd, and popd
-# are followed, `command -v` and `command -V` only print, and every other builtin moves nothing.
+# it unknown, so a git call placed after it is judged as one whose place the text does not settle. `command -v` and
+# `command -V` only print.
 BUILTINS_NOT_FOLLOWED = {
     **dict.fromkeys((".", "source"), "runs a file's commands"),
     "eval": "runs text as commands",
@@ -504,6 +508,28 @@ BUILTINS_NOT_FOLLOWED = {
     "trap": "runs text as commands when a signal or a command fires it",
     "fc": "runs commands again from the history",
     **dict.fromkeys(("alias", "unalias", "enable", "hash"), "changes what a later name runs"),
+    **dict.fromkeys(("mapfile", "readarray"), "runs its -C callback in the shell itself, in Bash 4 and later"),
+    "compgen": "runs its -F function in the shell itself",
+}
+# The Bash builtins that move neither the shell nor the stack popd reads, each with why.
+MOVES_NOTHING = {
+    **dict.fromkeys(
+        (":", "true", "false", "[", "test", "echo", "printf", "pwd", "type", "help"), "only prints or tests"
+    ),
+    **dict.fromkeys(("caller", "times", "history", "jobs", "ulimit", "umask"), "prints or sets process state"),
+    **dict.fromkeys(
+        ("break", "continue", "return", "exit", "logout", "shift"), "ends a loop, a function, or the shell"
+    ),
+    **dict.fromkeys(("bg", "fg", "wait", "disown", "kill", "suspend"), "acts on jobs, each in a process of its own"),
+    **dict.fromkeys(
+        ("declare", "typeset", "local", "export", "readonly", "unset", "let", "read", "getopts"),
+        "sets variables, and any command substitution in its words runs in a subshell",
+    ),
+    **dict.fromkeys(("set", "shopt"), "sets options; one that changes a later cd is the set and shopt catalogue's"),
+    **dict.fromkeys(
+        ("bind", "complete", "compopt"), "runs a command only at an interactive prompt's key or completion"
+    ),
+    "exec": "replaces the shell with the program it names, so nothing after it runs",
 }
 # The names beyond GIT_* that git reads to choose a file it reads or writes, or a program it runs, each with why; an
 # assignment to one before git is a part of the git call the guard does not settle (git_reads). A name git reads only
@@ -3303,16 +3329,20 @@ class BashReader:
         wrapper = command_wrappers.wrapper_name(program)
         if wrapper in command_wrappers.COMMAND_WRAPPERS and (bare or wrapper not in SHELL_WRAPPERS):
             return self.read_wrapped(wrapper, arguments, directory, prefixes or [])
-        if bare and name in {*BUILTINS_NOT_FOLLOWED, "cd", "pushd", "popd"}:
+        if bare and name in {*BUILTINS_NOT_FOLLOWED, *FOLLOWED_BUILTINS}:
             return self.read_builtin(name, arguments, directory)
         self.read_program(program, arguments, directory, prefixes or [])
         return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
-        """A builtin that moves the shell: cd, pushd, and popd, followed, and one BUILTINS_NOT_FOLLOWED names, which
-        leaves where the shell is unknown."""
+        """A builtin that moves the shell: cd, pushd, and popd, followed, dirs, whose -c clears the stack popd reads,
+        and one BUILTINS_NOT_FOLLOWED names, which leaves where the shell is unknown. A dirs word the text does not
+        settle, or an option word holding a c, is taken to clear the stack, so a later popd stays where it is."""
         if name in {"cd", "pushd"}:
             return self.read_cd(arguments, directory, push=name == "pushd")
+        if name == "dirs":
+            clears = any(word is None or (word.startswith("-") and "c" in word[1:]) for word in arguments)
+            return certain(Directory(directory.cwd, ()) if clears else directory)
         if name != "popd":
             return certain(UNKNOWN)
         if arguments:
@@ -3543,13 +3573,14 @@ DESCRIPTOR_TARGET = re.compile(r"[0-9]+-?|-")
 
 
 def changes_directory(node: object) -> bool:
-    """Whether a compound command holds a command that may change the shell's directory: cd, pushd, or popd, a builtin
-    BUILTINS_NOT_FOLLOWED names, a function definition, or a command whose name the text does not settle."""
+    """Whether a compound command holds a command that may change the shell's directory or its stack: a builtin
+    FOLLOWED_BUILTINS or BUILTINS_NOT_FOLLOWED names, a function definition, or a command whose name the text does not
+    settle."""
     if isinstance(node, bash_syntax.FunctionDefinition):
         return True
     if isinstance(node, bash_syntax.Simple):
         names = [word for word in node.words if word.assignment is None][:1]
-        return bool(names) and names[0].literal in {"cd", "pushd", "popd", None, *BUILTINS_NOT_FOLLOWED}
+        return bool(names) and names[0].literal in {None, *FOLLOWED_BUILTINS, *BUILTINS_NOT_FOLLOWED}
     if isinstance(node, bash_syntax.CommandList):
         return any(changes_directory(and_or) for and_or, _ in node.items)
     if isinstance(node, bash_syntax.AndOr):

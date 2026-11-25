@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import itertools
 import json
@@ -3693,6 +3694,11 @@ class UnderstoodSetTests(GuardTestCase):
             f"f() {{ cd {self.hub}; }}; git commit -m x",
             f"if true; then eval 'cd {self.hub}'; fi; git commit -m x",
             f"{{ f() {{ cd {self.hub}; }}; }}; git commit -m x",
+            # Bash 5 runs a mapfile or readarray -C callback, and a compgen -F function, in the shell itself.
+            f"mapfile -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"readarray -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"g() {{ cd {self.hub}; }}; compgen -F g x; git commit -m x",
+            "compgen -F g x >/dev/null; git commit -m x",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3701,8 +3707,26 @@ class UnderstoodSetTests(GuardTestCase):
         for command in ("command -v git; git commit -m x", "command -V git && git commit -m x"):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
+
+    def test_dirs_clearing_the_stack_keeps_a_later_popd_where_the_shell_is(self) -> None:
+        # Bash's popd stays where it is once dirs -c has cleared the stack, so the commit after it runs in the hub.
+        for command in (
+            f'pushd "{self.hub}"; dirs -c; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs "$OPTION"; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+        # dirs that only prints leaves the stack, so popd goes back to the worktree.
+        for command in (
+            f'pushd "{self.hub}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -v; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
         self.assertEqual(
-            {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"},
+            {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"}
+            | {"mapfile", "readarray", "compgen"},
             set(hub_guard.BUILTINS_NOT_FOLLOWED),
         )
 
@@ -4970,3 +4994,90 @@ class GitDirectoryNameTests(unittest.TestCase):
 )
 def test_a_pattern_s_matches_lie_in_the_folder_before_its_last_separator(prefix: str, expected: str) -> None:
     assert expected == hub_guard.pattern_folder(prefix)
+
+
+# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
+# /bin/bash 3.2, which has no mapfile, still holds the guard to every one, and the release they were printed by, from
+# which on every pinned builtin must still be one the runner's Bash prints.
+PINNED_BUILTINS = frozenset(
+    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
+    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
+    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
+    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
+    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
+)
+PINNED_FROM_BASH = (5, 3)
+
+
+@functools.cache
+def runner_builtins() -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the builtins it prints: Git Bash on Windows
+    and the first bash on PATH elsewhere."""
+    script = 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"; compgen -b'
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    major, minor, *names = result.output.split()
+    assert "cd" in names, f"compgen -b printed no builtins: {result.output!r}"
+    return (int(major), int(minor)), frozenset(names)
+
+
+def test_every_builtin_bash_prints_is_followed_not_followed_or_moves_nothing() -> None:
+    release, names = runner_builtins()
+    catalogue = names | PINNED_BUILTINS
+    tables = {
+        "FOLLOWED_BUILTINS": set(hub_guard.FOLLOWED_BUILTINS),
+        "BUILTINS_NOT_FOLLOWED": set(hub_guard.BUILTINS_NOT_FOLLOWED),
+        "MOVES_NOTHING": set(hub_guard.MOVES_NOTHING),
+    }
+    decided = set().union(*tables.values())
+    assert sorted(catalogue - decided) == [], (
+        "decide each in tools/hub_guard.py: FOLLOWED_BUILTINS, BUILTINS_NOT_FOLLOWED, or MOVES_NOTHING with its reason"
+    )
+    assert sorted(names - PINNED_BUILTINS) == [], "pin each in PINNED_BUILTINS"
+    if release >= PINNED_FROM_BASH:
+        assert sorted(PINNED_BUILTINS - names) == [], f"Bash {release} no longer has these: unpin and undecide each"
+    assert sorted(decided - catalogue) == [], "remove each from its table: no Bash has it"
+    for (first, one), (second, other) in itertools.combinations(tables.items(), 2):
+        assert sorted(one & other) == [], f"each is in both {first} and {second}"
+
+
+# Each builtin that runs text in the shell itself, with the text that moves it, where `$2` is the folder to move to.
+MOVING_TEXT = {
+    "mapfile": """mapfile -C 'cd "$2"; :' -c 1 <<< x""",
+    "readarray": """readarray -C 'cd "$2"; :' -c 1 <<< x""",
+    # A function compgen -F runs is given the command, the word, and the word before as its own $1 to $3.
+    "compgen": """target="$2"; g() { cd "$target"; }; compgen -F g x > /dev/null 2>&1""",
+}
+
+
+def probe_folders(root: Path) -> list[str]:
+    """A folder to start in and one to move to, under root, as the validated Bash names them."""
+    start, target = root / "start", root / "target"
+    start.mkdir()
+    target.mkdir()
+    return [platform_support.normalize(start), platform_support.normalize(target)]
+
+
+@pytest.mark.parametrize("name", list(MOVING_TEXT))
+def test_a_builtin_the_guard_does_not_follow_for_its_callback_moves_the_shell_in_bash_itself(
+    name: str, tmp_path: Path
+) -> None:
+    # Bash runs the callback in the shell itself, so the shell ends in the folder the callback moved to; a Bash that
+    # has no such builtin, as Bash 3.2 has no mapfile, is not asked.
+    assert name in hub_guard.BUILTINS_NOT_FOLLOWED
+    if name not in runner_builtins()[1]:
+        return
+    script = f'cd "$1" && {MOVING_TEXT[name]}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
+    command = [bash_agreement.find_bash(), "-c", script, "probe", *probe_folders(tmp_path)]
+    result = platform_support.run_tool(command)
+    assert result.output.split()[-1:] == ["moved"], result.output
+
+
+def test_dirs_c_clears_the_stack_so_a_later_popd_stays_in_bash_itself(tmp_path: Path) -> None:
+    script = (
+        'cd "$1" && pushd "$2" > /dev/null && dirs -c; popd > /dev/null 2>&1; '
+        '[ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo stayed || echo moved'
+    )
+    command = [bash_agreement.find_bash(), "-c", script, "probe", *probe_folders(tmp_path)]
+    result = platform_support.run_tool(command)
+    assert result.output.split()[-1:] == ["stayed"], result.output
