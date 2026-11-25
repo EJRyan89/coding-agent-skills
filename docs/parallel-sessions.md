@@ -692,7 +692,13 @@ Claude Code so the hook runs with the new `PATH`.
 
 The hook sees the command text, and the guard reads git's words in it: it does not see any program other than git,
 run by its own words, which it allows whatever those words are, so what a script file, `eval`, a `trap`'s action, a
-function, a program that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
+builtin's use that runs text no reader reads (`command_wrappers.REFUSED_BUILTINS`, as a `source`d file, a `mapfile -C`
+callback, or a command substitution in the quoted array subscript `printf -v` or `read` names, or one outside a
+builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
+`${a['$(x)']}`, which Bash 5.3 runs), the command
+`jobs -x` runs, which the guard reads only as a move it does not follow, a later name `hash -p` points at another
+program, a function, a program
+that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
 variable a command sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check
 names what they changed there.
 
