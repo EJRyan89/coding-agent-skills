@@ -102,6 +102,7 @@ def conforming_repository(fixture: Fixture) -> None:
 SKILL = "{work}/.claude/skills/demo"
 MEMORY_AUDIT = "skills/curate-agent-memory/scripts/memory_audit.py"
 DEPENDENCY_GRAPH = "skills/dotnet-dependencies/scripts/dependency_graph.py"
+ASK_SDK = "skills/dotnet-dependencies/scripts/ask_sdk.py"
 CSHARP_LAYOUT = "skills/dotnet-format/scripts/csharp_layout.py"
 FORMAT_TARGETS = "skills/dotnet-format/scripts/dotnet_format_targets.py"
 RUN_FORMAT = "skills/dotnet-format/scripts/run_dotnet_format.py"
@@ -1057,6 +1058,15 @@ DRIVERS: list[Driver] = [
             ("graph", ()),
         )
     ),
+    # ask_sdk.py answers why as dependency_graph.py does, reading the same files, and starts dotnet only for a
+    # project whose restore the walk cannot place, which the solution holds none of.
+    Driver(
+        ASK_SDK,
+        "why",
+        ("Newtonsoft.Json", "--root", SOLUTION),
+        prepare=solution,
+        inputs=(SOLUTION, PROJECT),
+    ),
     Driver(
         DEPENDENCY_GRAPH,
         "graph",
@@ -1543,6 +1553,11 @@ DRIVERS: list[Driver] = [
     ),
 ]
 NOT_RUN: dict[str, str] = {
+    **{
+        f"{ASK_SDK} {command}": f"ask_sdk.py runs why alone: it puts why before its arguments, so {command} is a "
+        "package name there, never a command; dependency_graph.py's driver drives the command"
+        for command in ("where", "conflicts", "graph")
+    },
     "skills/ejryan89-skill-core/scripts/private_folder.py": "reads no file: it stats the folder it is named and each "
     "folder above it, and a folder is no input the harness can fault; test_private_folder.py holds its refusals of a "
     "folder that does not exist, one another account could rename, and a stat that fails",
