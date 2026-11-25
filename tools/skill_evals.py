@@ -10,8 +10,8 @@ usage error, and a skill with no scenario there fails the run. Repeated --scenar
 first-occurrence order. Without --scenario, every scenario is selected in name order. --timeout is a positive number
 of seconds. --runs, a positive count and 1 unless given, runs each scenario that many times on each model and judges
 every run, since one run is one sample of what a model does. A scenario marked `"varies": true`, one known to pass
-inconsistently on unchanged code, runs three times at least (VARYING_RUNS in tools/skill_evals_scenarios.py), so its
-result is a pass count of several runs wherever one run could not tell a regression from noise.
+inconsistently on unchanged code, runs at least as many times as VARYING_RUNS in tools/skill_evals_scenarios.py sets,
+so its result is a pass count of several runs wherever one run could not tell a regression from noise.
 
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
