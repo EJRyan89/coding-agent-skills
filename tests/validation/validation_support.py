@@ -1,6 +1,7 @@
 """What every policy module shares: the repository's roots, how a regression suite and a skill script are
 recognized, the reader of a module's imports, which ejryan89-skill-core's python_names holds, the Markdown fence and
-section readers, and the fixture-tree writer.
+section readers, the fixture-tree writer, and the catalogue of Python's call and import forms the shared readers are
+held to, with NOT_READ.
 
 The modules of tests/validation import the deployer, so whatever imports them first puts the repository root on
 sys.path: tests/run_validation.py, or a fixture suite beside them.
@@ -251,6 +252,121 @@ COMMON_PATH_FUNCTIONS = frozenset(
 # What stands for a part of a dotted name a module looks up by a name it computes, such as the module in
 # importlib.import_module(name).run, which no policy can settle.
 COMPUTED_NAME = "?"
+# The forms of Python's syntax tree the shared readers are held to, which tests/validation/test_python_forms.py reads
+# from the runner's ast module and a pinned copy of the newest Python's: each is read here, refused by a check
+# validation runs, or named in NOT_READ with why, so a node or a field a new Python adds fails until it is decided.
+# The expressions resolved_calls and resolved_references read as a call's function, by the name of their ast node: a
+# name and an attribute through the module's imports; a call of functools.partial, or of a lookup attribute_lookups
+# reads; a subscript of a namespace, or of a literal tuple, list, or dict; and an `and` or `or`, an if-expression, or
+# an assignment expression, through evaluated_values. A call's function that is any other call, or a subscript of
+# anything else, names nothing: a stated limit, since what a function returns or a container holds at run time is
+# not read, and the indirection policy refuses the lookups that would reach a name by a value.
+CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript", "BoolOp", "IfExp", "NamedExpr"})
+# The fields of an import statement CallableResolver and module_imports read, as `<node>.<field>`. A star import
+# binds names no reader sees, and ruff's F403, which validation runs on every module, refuses every one.
+IMPORT_FIELDS = frozenset(
+    {"Import.names", "ImportFrom.module", "ImportFrom.names", "ImportFrom.level", "alias.name", "alias.asname"}
+)
+# The fields of a call call_arguments and resolved_calls read: each positional argument, a `*` unpacking among them,
+# each keyword argument, and a `**` unpacking, the keyword whose name is None.
+ARGUMENT_FIELDS = frozenset({"Call.func", "Call.args", "Call.keywords", "keyword.arg", "keyword.value"})
+# Each form of the catalogue above that the shared readers neither read nor refuse, with why.
+NOT_READ = {
+    "callee Await": (
+        "names no callee statically: its value is what the awaited object returns at run time, which no import or "
+        "binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Yield": (
+        "names no callee statically: its value is what the generator's caller sends in at run time, which no import "
+        "or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee YieldFrom": (
+        "names no callee statically: its value is what the inner generator returns at run time, which no import or "
+        "binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Lambda": (
+        "names no callee statically: calling a lambda runs its body, whose own calls are read where they are written,"
+        " and a call of its result is a call of a call's return value, which is not read"
+    ),
+    "callee BinOp": (
+        "names no callee statically: its value is what the operand's operator method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee UnaryOp": (
+        "names no callee statically: its value is what the operand's operator method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Compare": (
+        "names no callee statically: its value is what the operand's comparison method returns at run time, which no "
+        "import or binding in the source settles; the calls inside it are read where they are written"
+    ),
+    "callee Constant": (
+        "names no callee statically: it builds a string, a number, bytes, None, a bool, or the Ellipsis, which Python"
+        " refuses to call with a TypeError, so the call runs nothing"
+    ),
+    "callee JoinedStr": (
+        "names no callee statically: it builds a string, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee TemplateStr": (
+        "names no callee statically: it builds a string.templatelib.Template, which Python refuses to call with a "
+        "TypeError, so the call runs nothing"
+    ),
+    "callee Tuple": (
+        "names no callee statically: it builds a tuple, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee List": (
+        "names no callee statically: it builds a list, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee Set": (
+        "names no callee statically: it builds a set, which Python refuses to call with a TypeError, so the call runs"
+        " nothing"
+    ),
+    "callee Dict": (
+        "names no callee statically: it builds a dict, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee ListComp": (
+        "names no callee statically: it builds a list, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee SetComp": (
+        "names no callee statically: it builds a set, which Python refuses to call with a TypeError, so the call runs"
+        " nothing"
+    ),
+    "callee DictComp": (
+        "names no callee statically: it builds a dict, which Python refuses to call with a TypeError, so the call "
+        "runs nothing"
+    ),
+    "callee GeneratorExp": (
+        "names no callee statically: it builds a generator, which Python refuses to call with a TypeError, so the "
+        "call runs nothing"
+    ),
+    "callee Starred": (
+        "names no callee statically: the parser writes it only inside a display, an assignment target, or a call's "
+        "arguments, never as a call's function"
+    ),
+    "callee Slice": (
+        "names no callee statically: the parser writes it only inside a subscript's brackets, never as a call's "
+        "function"
+    ),
+    "callee FormattedValue": (
+        "names no callee statically: the parser writes it only inside an f-string, never as a call's function"
+    ),
+    "callee Interpolation": (
+        "names no callee statically: the parser writes it only inside a t-string, never as a call's function"
+    ),
+    "import field Import.is_lazy": (
+        "a lazy import binds the same name to the same module and only defers loading it until the name is first "
+        "used, so reading the binding alone settles the callee"
+    ),
+    "import field ImportFrom.is_lazy": (
+        "a lazy import binds the same name to the same object and only defers loading it until the name is first "
+        "used, so reading the binding alone settles the callee"
+    ),
+}
 # The scope a node outside every function, class, and named module-level assignment is in.
 MODULE_SCOPE = "<module>"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
@@ -1193,6 +1309,49 @@ def bound_values(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
     return found
 
 
+def _alternatives(node: ast.expr) -> list[ast.expr] | None:
+    """The expressions one of which an expression evaluates to, or None when it is none of these forms: each operand
+    of an `and` or an `or`, both branches of an if-expression, an assignment expression's value, and each item of a
+    literal tuple or list, or each value of a literal dict, that a subscript reads, as `[os.system][0]`. A literal
+    that unpacks into itself, with `*` or `**`, may hold anything, so a subscript of one is none of these."""
+    if isinstance(node, ast.BoolOp):
+        return [*node.values]
+    if isinstance(node, ast.IfExp):
+        return [node.body, node.orelse]
+    if isinstance(node, ast.NamedExpr):
+        return [node.value]
+    if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Load):
+        return None
+    held = node.value
+    if isinstance(held, ast.Tuple | ast.List) and not any(isinstance(item, ast.Starred) for item in held.elts):
+        return [*held.elts]
+    if isinstance(held, ast.Dict) and all(key is not None for key in held.keys):
+        return [*held.values]
+    return None
+
+
+def evaluated_values(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+    """Every expression an expression may evaluate to at the place it is read: bound_values of it, with each form
+    _alternatives reads replaced by the expressions it chooses between, each followed in turn, so `(os.system or
+    print)` and `(f := os.system)` may each be os.system. The call and reference readers read a callee here, which
+    CALLEE_FORMS names."""
+    found: list[ast.expr] = []
+    pending = [node]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        for value in bound_values(current, resolver):
+            alternatives = _alternatives(value)
+            if alternatives is None:
+                found.append(value)
+            else:
+                pending += alternatives
+    return list({id(value): value for value in found}.values())
+
+
 def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Reference]:
     """Each thing an expression may name, once bound_values follows it: its qualified name through the module's
     imports, with `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach),
@@ -1239,7 +1398,7 @@ class _ReferenceWalk:
 
     def references(self, node: ast.expr) -> list[Reference]:
         found: list[Reference] = []
-        for value in bound_values(node, self.resolver):
+        for value in evaluated_values(node, self.resolver):
             found += self._value(value)
         return list(dict.fromkeys(found))
 
@@ -1433,7 +1592,7 @@ def _calls_of(
     seen: set[int],
 ) -> list[ResolvedCall]:
     found: list[ResolvedCall] = []
-    for value in bound_values(function, resolver):
+    for value in evaluated_values(function, resolver):
         if (
             isinstance(value, ast.Call)
             and id(value) not in seen
