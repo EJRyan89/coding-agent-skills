@@ -52,14 +52,17 @@ def result_rows(
 ) -> list[str]:
     """One row per model: the model IDs the part judged ran on, the effort its reviewers ran at, or none when every
     scenario is a trigger scenario, which starts no reviewer, the route pins its scenarios measured, its expectations
-    passed, the runs of each scenario, each scenario's counts, and the run's versions; a model none of whose judged
+    passed, the runs of each scenario, each scenario's counts, and the run's versions. The runs of each scenario are
+    those of each scenario not known to vary, or of every scenario when each is, and a scenario known to vary, which
+    runs VARYING_RUNS times at least, says so in its counts; a model none of whose judged
     part ran is recorded as not run, with its first run's reason as the results file records it, which names no path
     of the machine. A run none of whose reviewers ran on a model, such as one the session refused before starting
     any, holds no judgment of that model, so its expectations are left out of the model's count, but one judged on the
     session's own tool calls alone, a by-name run's `resolved`, which counts; a scenario none of whose runs holds a
     counted expectation says `not run`, and a model that ran no reviewer but has one names `none` as its model IDs."""
     rows = []
-    numbers = {key[2] for key in runs}
+    steady = {scenario.name for scenario in scenarios if not scenario.varies}
+    numbers = {key[2] for key in runs if key[0] in steady} or {key[2] for key in runs}
     reviewed = any(scenario.mode != TRIGGER for scenario in scenarios)
     pins = pins_cell(scenarios)
     for model in models:
@@ -77,7 +80,7 @@ def result_rows(
             theirs = counted
             identifier = ", ".join(reviewers) or "none"
             detail = ", ".join(
-                f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} {NOT_RUN}"
+                f"{scenario.name} {counts(judged, scenario.varies)}" if judged else f"{scenario.name} {NOT_RUN}"
                 for scenario in scenarios
                 for judged in [[outcome for outcome in theirs if outcome.scenario == scenario.name]]
             )

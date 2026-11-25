@@ -11,7 +11,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from itertools import pairwise
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -97,6 +97,10 @@ SYNTHESIS_FOLDERS = ("archive", "checkout")
 FLAGS = "flags.json"
 FLAG_ID = re.compile(r"RF-[0-9]{6,}")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
+# The field that marks a scenario known to pass inconsistently on unchanged code, and the runs of it each model gets
+# at least, so its row carries a pass count of several runs where one run could not tell a regression from noise.
+VARIES = "varies"
+VARYING_RUNS = 3
 # Where a trigger scenario's shipped skills are.
 SHIPPED_SKILLS = "skills"
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
@@ -172,6 +176,8 @@ class Scenario:
     # A synthesis scenario's inclusive date range, as ISO dates, and the repository it analyzes.
     period: tuple[str, str] | None = None
     repository: str | None = None
+    # Whether the scenario is known to pass inconsistently on unchanged code, so it runs VARYING_RUNS times at least.
+    varies: bool = False
 
 
 def quote(value: str) -> str:
@@ -1349,14 +1355,33 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
     try:
         if not isinstance(spec, dict):
             raise ScenarioError("scenario.json must hold an object")
+        varies = _varies(spec)
+        spec = {key: value for key, value in spec.items() if key != VARIES}
         mode = _choice(spec.get("mode"), MODES, "mode")
         if mode == TRIGGER:
-            return load_trigger(skill, directory, spec, checkout)
-        if mode == SYNTHESIS:
-            return load_synthesis(skill, directory, spec)
-        return review_scenario(skill, directory, spec, mode, checkout)
+            scenario = load_trigger(skill, directory, spec, checkout)
+        elif mode == SYNTHESIS:
+            scenario = load_synthesis(skill, directory, spec)
+        else:
+            scenario = review_scenario(skill, directory, spec, mode, checkout)
+        return replace(scenario, varies=varies)
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
+
+
+def _varies(spec: Mapping[str, object]) -> bool:
+    """Whether the scenario is marked as known to vary: `varies` is true or left out, in a scenario of any mode."""
+    if VARIES not in spec:
+        return False
+    if spec[VARIES] is not True:
+        raise ScenarioError(f"varies must be true; leave it out for a stable scenario, not {quote(str(spec[VARIES]))}")
+    return True
+
+
+def scenario_runs(scenario: Scenario, runs: int) -> int:
+    """The runs of the scenario on each model when each scenario runs `runs` times: VARYING_RUNS at least for one
+    known to vary, so its count says whether a fail is within its usual spread."""
+    return max(runs, VARYING_RUNS) if scenario.varies else runs
 
 
 def _by_name(spec: Mapping[str, object]) -> bool:
