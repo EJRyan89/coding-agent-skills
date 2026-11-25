@@ -53,6 +53,11 @@ FIXTURE = "runtime-canary-probe"
 # it declares for Codex and Copilot CLI, pinned here rather than read from its metadata.
 EXPANSION = "runtime-canary-expansion"
 EXPANSION_NONE = "The probe checks a Claude Code permission rule, which this runtime does not apply."
+# Why an expansion run whose stream lists no denials shows nothing, pinned here rather than read from the tool.
+UNLISTED_DENIALS = (
+    "the session's stream holds no result event listing the commands Claude Code denied, as a session that ended early "
+    "leaves it, so whether it asked before the command that expands $PWD is unknown"
+)
 HIDDEN_REASON = "A hidden dependency no runtime starts."
 # What the canary says of a skill the deployer gave no adapter, pinned here rather than read from the tool.
 NO_ADAPTER = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
@@ -2625,24 +2630,47 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
                     ),
                     line,
                 )
-        # A literal command with text after its last word has no word to replace, so no denial counts.
-        trailing = f'{PYTHON} -B "{script}" literal # c'
-        code, line = self.expansion_line([(trailing, ["literal"], False), (f'{trailing}"$PWD"', None, True)])
-        self.assertEqual(1, code)
-        self.assertEqual(self.failed(never), line)
+        # A literal command with text after its last word has no word to replace, even a comment ending in the word,
+        # and one the grammar does not read as the fence's gives no text, so no denial counts.
+        cd = f'cd "{forward(self.home)}" && '
+        for literal, denied in (
+            (f'{PYTHON} -B "{script}" literal # c', f'{PYTHON} -B "{script}" literal # c"$PWD"'),
+            (f'{PYTHON} -B "{script}" literal # literal', f'{PYTHON} -B "{script}" literal # "$PWD"'),
+            (f'{cd}{PYTHON} -B "{script}" literal', f'{cd}{PYTHON} -B "{script}" "$PWD"'),
+        ):
+            with self.subTest(literal=literal):
+                code, line = self.expansion_line([(literal, ["literal"], False), (denied, None, True)])
+                self.assertEqual(1, code)
+                self.assertEqual(self.failed(never), line)
         # A path in another case is the same file only where its folder ignores case, so either reason may follow;
         # neither is a pass.
         code, line = self.expansion_line([self.literal(), (f'{PYTHON} -B "{script.upper()}" "$PWD"', None, True)])
         self.assertEqual(1, code)
         self.assertTrue(line.startswith(f"RUNTIME claude {EXPANSION} FAILED "), line)
 
+    def test_a_result_whose_denials_are_not_a_list_shows_no_denial_and_never_an_unprompted_run(self) -> None:
+        # A release that drops or renames permission_denials lists none, which is not the same as none denied.
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        started = [
+            {"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1},
+            {"argv": [str(script), str(self.home)], "cwd": str(self.home), "pid": 2},
+        ]
+        use = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": expanding(self.home)}}
+        for result in (
+            {"type": "result"},
+            {"type": "result", "permission_denials": None},
+            {"type": "result", "denials": []},
+        ):
+            with self.subTest(result=result):
+                stream = claude_events({"type": "assistant", "message": {"content": [use]}}, result)
+                found = runtime_canary.Verdict("RAN", "x")
+                verdict = runtime_canary.expansion_verdict(self.home, started, stream, [], found, False)
+                self.assertEqual(runtime_canary.Verdict("FAILED", json.dumps(UNLISTED_DENIALS)), verdict)
+
     def test_a_session_that_ends_before_its_result_shows_no_denial_and_never_an_unprompted_run(self) -> None:
         # Without the result event the denials are unknown, so a denied command that the model then wrote out is not
         # read as the expanding command run unprompted.
-        reason = (
-            "the session ended before its result event, which lists the commands Claude Code denied, so whether it "
-            "asked before the command that expands $PWD is unknown"
-        )
+        reason = UNLISTED_DENIALS
         typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
         for steps in ([self.literal(), self.asked(), typed], [self.literal(), self.asked()]):
             with self.subTest(steps=len(steps)):
@@ -2683,6 +2711,30 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
         verdict = runtime_canary.expansion_verdict(self.home, started, stream, ["Bash: x"], found, False)
         self.assertEqual("FAILED", verdict.word)
         self.assertNotIn("unprompted", verdict.detail)
+
+    def test_a_denial_by_another_tool_does_not_count_for_the_literal_commands_text(self) -> None:
+        # The grant matched the literal command's text in Bash, which says nothing of PowerShell's.
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        literal = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": literal_command(self.home)}}
+        other = {"type": "tool_use", "id": "b", "name": "PowerShell", "input": {"command": expanding(self.home)}}
+        stream = claude_events(
+            {"type": "assistant", "message": {"content": [literal, other]}},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "PowerShell", "tool_use_id": "b", "tool_input": {"command": expanding(self.home)}}
+                ],
+            },
+        )
+        started = [{"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1}]
+        verdict = runtime_canary.expansion_verdict(
+            self.home, started, stream, [], runtime_canary.Verdict("RAN", "x"), False
+        )
+        reason = (
+            f"Claude Code denied PowerShell: {expanding(self.home)}, which expands $PWD but is not the literal "
+            "command's text with its last word replaced, so the denial may answer its text rather than the expansion"
+        )
+        self.assertEqual(runtime_canary.Verdict("FAILED", json.dumps(reason)), verdict)
 
     def test_a_literal_command_that_was_denied_gives_no_text_for_a_denial(self) -> None:
         # The grant matched no text of a denied literal command, so its text with $PWD proves nothing, even when the
@@ -2787,6 +2839,8 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
         self.assertEqual(0, code, lines)
         self.assertIn(f"MATRIX claude {EXPANSION} AGREES full", lines)
         calls = runtime_canary.shell_calls('{"type": "result", "permission_denials": 3}\n')
+        self.assertEqual(runtime_canary.ShellCalls([], [], finished=False), calls)
+        calls = runtime_canary.shell_calls('{"type": "result", "permission_denials": []}\n')
         self.assertEqual(runtime_canary.ShellCalls([], [], finished=True), calls)
         stream = claude_events(
             {

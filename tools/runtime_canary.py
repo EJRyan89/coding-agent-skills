@@ -101,20 +101,21 @@ to write. A records file holding a whole line the canary will not read, such as 
 or JSON nested past the recursion limit, fails that run naming the file and the line. A run ends at --timeout, or on
 Ctrl+C, with every process the runtime started, and a runtime the canary cannot start for a skill, as when its own
 update has moved its program away, is FAILED with why; each line prints as it is made, so none before it is lost.
-The expansion probe reproduces the rule audit-skill's EXPANDS and the skill_grants policy rest on: its one grant
-covers its script with any arguments, and its fence runs the script once with the word literal and once with "$PWD".
-Under Claude Code its RUNTIME line is RAN, naming the literal run, only when the recorder saw the literal run and the
-session's result denied the expanding command, as a non-interactive run denies a command it would ask about; denied
-then names that command. A denial counts only by its text: the literal command's text as it ran unprompted, which the
-grant therefore matched, with its last word, literal, replaced by "$PWD" and nothing after it, character for
-character. So the two differ only in the expansion, and no other spacing, quoting, path spelling, or trailing text
-can make a denial count. It is FAILED when a command the one Bash grammar reads as the expanding one went undenied in
-a session that reached its result and the recorder saw the script run with the directory it expanded to, since Claude
-Code then ran it unprompted; when the literal command never ran; when the session ended before its result event,
-which lists the denials; when a denial came near the expanding command without its text; when the expanding command
-was neither denied nor run; when the script ran only with arguments neither command gives, as a model that writes
-the directory out does; or when the model never tried the expanding command, each of which shows nothing either way.
-It declares none for Codex and Copilot CLI, which apply no such rule.
+The expansion probe reproduces the rule audit-skill's EXPANDS and the skill_grants policy rest on: its one grant covers
+its script with any arguments, and its fence runs the script once with the word literal and once with "$PWD". Under
+Claude Code its RUNTIME line is RAN, naming the literal run, only when the recorder saw the literal run and the
+session's result denied the expanding command, as a non-interactive run denies a command it would ask about; denied then
+names that command. A denial counts only by its tool and text: the literal command's text as it ran unprompted, which
+the grant therefore matched, with its last word, literal, replaced by "$PWD" and nothing after it, character for
+character, which the one Bash grammar reads as the expanding command. So the two differ only in the expansion, and no
+other spacing, quoting, path spelling, or trailing text can make a denial count. It is FAILED when a command the one
+Bash grammar reads as the expanding one went undenied in a session that reached its result and the recorder saw the
+script run with the directory it expanded to, since Claude Code then ran it unprompted; when the literal command never
+ran; when the stream holds no result event listing the denials, as a session that ended early leaves it; when a denial
+came near the expanding command without its text; when the expanding command was neither denied nor run; when the script
+ran only with arguments neither command gives, as a model that writes the directory out does; or when the model never
+tried the expanding command, each of which shows nothing either way. It declares none for Codex and Copilot CLI, which
+apply no such rule.
 Copilot's headless mode cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model
 is called for it.
 --discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
@@ -1087,8 +1088,8 @@ def shell_call(identifier: object, tool: object, given: object) -> ShellCall | N
 @dataclass(frozen=True)
 class ShellCalls:
     """What Claude Code's stream shows of the shell: each command the model asked to run, from its assistant messages'
-    tool_use items, each one the session's result denied, from permission_denials, and whether the stream holds that
-    result event at all, without which the denials are unknown rather than none."""
+    tool_use items, each one the session's result denied, from permission_denials, and whether the stream holds a
+    result event whose permission_denials is a list, without which the denials are unknown rather than none."""
 
     uses: list[ShellCall]
     denied: list[ShellCall]
@@ -1109,8 +1110,9 @@ def shell_calls(output: str) -> ShellCalls:
                 if isinstance(item, dict) and item.get("type") == "tool_use":
                     call = shell_call(item.get("id"), item.get("name"), item.get("input"))
                     uses += [call] if call is not None else []
-            finished = finished or event.get("type") == "result"
             listed = event.get("permission_denials") if event.get("type") == "result" else None
+            # A result whose denials are not a list, as a release that drops or renames the field writes, lists none.
+            finished = finished or isinstance(listed, list)
             for entry in listed if isinstance(listed, list) else []:
                 if isinstance(entry, dict):
                     call = shell_call(entry.get("tool_use_id"), entry.get("tool_name"), entry.get("tool_input"))
@@ -1150,10 +1152,11 @@ def expansion_verdict(
     `output` is Claude Code's stream and `started` the recorder's records, which show what ran: the literal run, and a
     run whose one argument is the directory it ran from, which the expanding command gives. A command counts as denied
     when a denial names its tool_use id or its text. The literal command ran unprompted, so the grant matched its
-    text; a denial counts only when its text is that command's text, character for character, with its last word,
-    EXPANSION_LITERAL, replaced by EXPANSION_WORD and nothing after it, so the two commands differ only in the
-    expansion and the denial answers it, never the text a grant matches. A stream with no result event lists no
-    denials, so it shows nothing either way. A command Bash reads as the expanding one, run undenied with its run
+    text; a denial counts only when it is of the same tool and its text is that command's text, character for
+    character, with its last word, EXPANSION_LITERAL, replaced by EXPANSION_WORD, and Bash reads it as the expanding
+    command, so nothing follows that word, not even a comment; the two commands then differ only in the expansion and
+    the denial answers it, never the text a grant matches. A stream with no result event listing its denials shows
+    nothing either way. A command Bash reads as the expanding one, run undenied with its run
     recorded, is the rule failing: Claude Code ran it without asking. A denial that comes near the expanding command
     without that text, the expanding command neither denied nor run, another run of the script with nothing denied,
     and a run that never tried the expanding command each show nothing either way, so each has its own FAILED reason;
@@ -1175,8 +1178,9 @@ def expansion_verdict(
         return Verdict(
             "FAILED",
             quote(
-                "the session ended before its result event, which lists the commands Claude Code denied, so whether "
-                f"it asked before the command that expands {EXPANSION_VARIABLE} is unknown"
+                "the session's stream holds no result event listing the commands Claude Code denied, as a session "
+                f"that ended early leaves it, so whether it asked before the command that expands {EXPANSION_VARIABLE} "
+                "is unknown"
             ),
         )
     undenied = [
@@ -1196,13 +1200,17 @@ def expansion_verdict(
         return Verdict("FAILED", quote(f"never ran the literal command {EXPANSION_LITERAL}{denied_too}"))
     # The one text a denial may have: the literal command's, which the grant matched, with its last word replaced.
     wanted = {
-        call.command.removesuffix(EXPANSION_LITERAL) + EXPANSION_WORD
+        (call.tool, call.command.removesuffix(EXPANSION_LITERAL) + EXPANSION_WORD)
         for call in calls.uses
         if not was_denied(call)
         and call.command.endswith(EXPANSION_LITERAL)
         and probe_command(call.command, script, EXPANSION_LITERAL)
     }
-    asked = [call for call in calls.denied if call.command in wanted]
+    asked = [
+        call
+        for call in calls.denied
+        if (call.tool, call.command) in wanted and probe_command(call.command, script, EXPANSION_WORD)
+    ]
     if asked:
         ran = ran_line(EXPANSION_SKILL, literal[0][0], literal[0][1], literal[0][2], timed_out)
         return Verdict("RAN", f"{ran.detail} denied {quote(f'{asked[0].tool}: {asked[0].command}')}")
