@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -20,12 +21,22 @@ HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 UNLISTED_REMEDY = "Give your account read access to it, or move it out of the way, then rerun with --dry-run."
 UNENCODABLE_REMEDY = "Rename or remove that file, then rerun with --dry-run."
 LINKED_REMEDY = "Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run."
+# The step a refusal of a FIFO, socket, device, or other special file ends with: no deployment holds one.
+SPECIAL_REMEDY = "Remove it, or move it out of the tree, then rerun with --dry-run."
+# Each special kind a stat mode gives, as a refusal names it; any other that is no file, folder, or link is a special
+# file.
+SPECIAL_KINDS = (
+    (stat.S_ISFIFO, "FIFO (named pipe)"),
+    (stat.S_ISSOCK, "socket"),
+    (stat.S_ISCHR, "character device"),
+    (stat.S_ISBLK, "block device"),
+)
 
 
 PRESENCE_ALLOWED = {
     "hash_path": (
-        "a path it cannot stat is read as a file, whose read raises the error, so a failed stat is never hashed as "
-        "anything"
+        "a path it cannot stat is read as a file, whose own metadata's read raises the error, so a failed stat is "
+        "never hashed as anything"
     ),
 }
 
@@ -42,6 +53,28 @@ def tree_hash(files: dict[str, bytes]) -> str:
         digest.update(b"\0")
         digest.update(hashlib.sha256(files[relative]).digest())
     return "sha256:" + digest.hexdigest()
+
+
+def special_kind(metadata: os.stat_result) -> str | None:
+    """What a path whose own metadata, never followed through a link, is `metadata` is, as a refusal names it, when it
+    is a special file: a FIFO, a socket, a device, or any other kind that is no regular file, folder, or link. None
+    for those three, which their own readers judge."""
+    mode = metadata.st_mode
+    if stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode):
+        return None
+    return next((kind for test, kind in SPECIAL_KINDS if test(mode)), "special file")
+
+
+def refuse_special(path: Path) -> None:
+    """Refuse `path` when it is a special file by its own metadata, naming it and its kind, before anything opens it:
+    opening a FIFO blocks until another process opens its other end, and a device or socket holds no content a
+    deployment could hold. A path whose metadata cannot be read raises its OSError."""
+    kind = special_kind(os.lstat(path))
+    if kind is not None:
+        raise DeployError(
+            f"ERROR: Refusing to hash content containing a {kind}: {platform_support.normalize(path)}",
+            SPECIAL_REMEDY,
+        )
 
 
 def _refuse_unlisted(error: OSError) -> None:
@@ -94,9 +127,10 @@ def find_link(path: Path) -> Path | None:
 
 
 def read_tree(root: Path) -> dict[str, bytes]:
-    """Read every file beneath root; a symlink or junction anywhere, a folder that cannot be listed, or a file whose
-    name is not valid UTF-8 is an error, never skipped. This is the one reader of names from disk that tree_hash
-    hashes; the deployer writes every other tree it hashes, under names it chose.
+    """Read every file beneath root; a symlink or junction anywhere, a folder that cannot be listed, a FIFO, socket,
+    device, or other special file (`refuse_special`), or a file whose name is not valid UTF-8 is an error, never
+    skipped. This is the one reader of names from disk that tree_hash hashes; the deployer writes every other tree it
+    hashes, under names it chose.
 
     Python bytecode caches are ignored: running a deployed script creates them, and they
     must not make an untouched skill look locally modified.
@@ -105,7 +139,10 @@ def read_tree(root: Path) -> dict[str, bytes]:
     `apple_double.is_sidecar` recognizes one, by its sibling in the same folder and its header: one in a source
     checkout there is no file of the skill, and is not deployed, and one macOS writes beside a deployed file there
     must not make the skill look locally modified. The header is read only once `find_link` found no link in the tree,
-    so it is never read through one; any other `._` file is read and hashed as the skill's own.
+    and only from an entry its own metadata shows a regular file, so it is never read through a link, a pipe, or a
+    device; any other `._` file is read and hashed as the skill's own. The look at an entry's kind and its read are
+    two steps, so a file replaced by a FIFO between them is opened: a stated limit, since a non-blocking open is a flag
+    only POSIX defines, and only a local process can plant one, git committing none.
     """
     link = find_link(root)
     if link is not None:
@@ -119,9 +156,10 @@ def read_tree(root: Path) -> dict[str, bytes]:
         subdirectories[:] = [name for name in subdirectories if name != "__pycache__"]
         base = Path(directory)
         for name in names:
+            path = base / name
+            refuse_special(path)
             if name.endswith(".pyc"):
                 continue
-            path = base / name
             if apple_double.is_sidecar(path, listing):
                 continue
             files[_hashable_name(root, path)] = path.read_bytes()
@@ -129,6 +167,8 @@ def read_tree(root: Path) -> dict[str, bytes]:
 
 
 def hash_path(path: Path) -> str:
+    """The hash of the tree or file at `path`, a special file refused unopened as read_tree refuses one beneath it."""
     if path.is_dir() or platform_support.is_link_or_junction(path):
         return tree_hash(read_tree(path))
+    refuse_special(path)
     return file_hash(path.read_bytes())

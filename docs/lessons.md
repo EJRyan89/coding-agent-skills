@@ -1265,6 +1265,7 @@ or removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
   `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
   `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_line_already_queued_when_the_deadline_passes_is_not_read`,
   `skills/ejryan89-skill-core/scripts/test_bounded_process.py::StreamingTests::test_closing_kills_a_command_that_never_reads_while_another_thread_is_blocked_writing`,
   `skills/audit-ai-config/scripts/test_mcp_handshake.py::test_a_request_the_server_never_reads_fails_within_the_timeout_and_the_server_is_stopped`,
   and `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_the_git_directory_lookup_after_an_answered_failure_keeps_the_callers_time_limit`

@@ -115,7 +115,9 @@ class Lock:
     def _remove_record(self) -> None:
         token_file = self.paths.lock_dir / "token"
         try:
-            current = token_file.read_text(encoding="utf-8")
+            # Anything but a regular file there, such as a FIFO, whose open would block, is not the token this run
+            # wrote, so it is never opened.
+            current = token_file.read_text(encoding="utf-8") if _is_regular(token_file) else None
         except (OSError, UnicodeError):
             # A token file that does not read, or is not the UTF-8 this run wrote, is not this run's, so it stays.
             return
@@ -161,11 +163,20 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
         raise
 
 
+def _is_regular(path: Path) -> bool:
+    """Whether a regular file is at `path`; anything else there, such as a FIFO, whose open blocks until another
+    process opens its other end, is never opened, and a stat that fails raises its OSError."""
+    return file_presence.is_present(path, other_is_absent=True)
+
+
 def _read_info(lock_dir: Path) -> dict[str, object]:
-    """A record's metadata, or an empty mapping when it cannot be read: for naming the holder of a lock in a refusal,
-    which names none then."""
+    """A record's metadata, or an empty mapping when it cannot be read or is not a regular file: for naming the holder
+    of a lock in a refusal, which names none then."""
+    info_file = lock_dir / "info.json"
     try:
-        text = (lock_dir / "info.json").read_text(encoding="utf-8")
+        if not _is_regular(info_file):
+            return {}
+        text = info_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return {}
     info = state_files.parse_json(text)
