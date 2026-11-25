@@ -1,0 +1,84 @@
+"""Run gh for a skill's script, retrying a transient failure of a read alone.
+
+A request that may change something on GitHub is never retried: one whose answer was lost may already have been
+applied, and a second try could post a comment twice. A command is a read only when `is_read` recognizes it as one.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+
+# The gh commands that only read, by their first two words.
+READ_COMMANDS = frozenset({("pr", "view"), ("pr", "list"), ("pr", "diff"), ("issue", "view"), ("repo", "view")})
+TRANSIENT = ("HTTP 502", "HTTP 503", "HTTP 504", "connection reset")
+ATTEMPTS = 3
+
+
+# The options that add a parameter to the request, which makes gh send it as a POST when no method is given. gh,
+# through pflag, takes no abbreviation of a long option.
+FIELD_OPTIONS = ("--field", "--raw-field")
+FIELD_SHORTHANDS = "fF"
+# gh api's boolean shorthand, which may open a cluster before another shorthand, as in `-if` or `-iXPOST`.
+BOOLEAN_SHORTHANDS = "i"
+
+
+def _may_take_next(argument: str) -> bool:
+    """Whether gh could read the argument after `argument` as its value: a long option with no `=`, or a shorthand,
+    alone or last in a cluster of boolean shorthands, with nothing joined to it."""
+    if argument == "--" or not argument.startswith("-") or len(argument) == 1:
+        return False
+    if argument.startswith("--"):
+        return "=" not in argument
+    return len(argument[1:].lstrip(BOOLEAN_SHORTHANDS)) == 1
+
+
+def _method(arguments: list[str]) -> str:
+    """The HTTP method gh sends `gh api <arguments>` with: the last one given, or else POST when a parameter is added
+    and GET when none is, as gh decides it. A method spelled where an option before it could take it as its value is
+    unknown, so the call is not a read."""
+    method = ""
+    fields = False
+    for index, argument in enumerate(arguments):
+        following = arguments[index + 1] if index + 1 < len(arguments) else ""
+        unknown = index > 0 and _may_take_next(arguments[index - 1])
+        if argument == "--" and not unknown:
+            break
+        if argument.startswith("--"):
+            name, equals, value = argument.partition("=")
+            if name == "--method":
+                method = "unknown" if unknown else value if equals else following
+            elif name in FIELD_OPTIONS:
+                fields = True
+        elif argument.startswith("-") and len(argument) > 1:
+            cluster = argument[1:].lstrip(BOOLEAN_SHORTHANDS)
+            if cluster[:1] == "X":
+                method = "unknown" if unknown else cluster[1:].removeprefix("=") or following
+            elif cluster[:1] and cluster[0] in FIELD_SHORTHANDS:
+                fields = True
+    if method:
+        return method.upper()
+    return "POST" if fields else "GET"
+
+
+def is_read(arguments: list[str]) -> bool:
+    """Whether `gh <arguments>` only reads, so a transient failure of it may be retried."""
+    if tuple(arguments[:2]) in READ_COMMANDS:
+        return True
+    return arguments[:1] == ["api"] and _method(arguments[1:]) == "GET"
+
+
+def _once(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["gh", *arguments], capture_output=True, text=True, check=False)
+
+
+def run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """`gh <arguments>`, run again after a transient failure when it is a read."""
+    attempts = ATTEMPTS if is_read(arguments) else 1
+    done = _once(arguments)
+    for attempt in range(1, attempts):
+        if done.returncode == 0 or not any(marker in done.stderr for marker in TRANSIENT):
+            break
+        time.sleep(2**attempt)
+        done = _once(arguments)
+    return done

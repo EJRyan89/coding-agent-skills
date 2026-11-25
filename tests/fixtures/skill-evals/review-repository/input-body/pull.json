@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "repository": "example/review-bot",
+  "number": 71,
+  "title": "fix(skill-core): class a gh api call that adds a parameter as a change",
+  "base_ref": "main",
+  "head_ref": "api-parameters",
+  "threads": [],
+  "body": "Closes #68\n\n`is_read` now decides a `gh api` call's method as gh does: the last `-X` or `--method`, or else POST when a parameter is added, in each spelling gh reads (`-f`, `-F`, `--field`, `--raw-field`, joined, after `=`, and in a cluster after `-i`), and GET otherwise.\n\n## Upgrade note\n\nNone.\n\n## Validation\n\nSiblings: searched gh api's options for every one that adds a parameter; `-f`, `-F`, and their long forms are all of them, and each spelling has a test.\n",
+  "closing_issues": [
+    {
+      "number": 68,
+      "state": "OPEN",
+      "title": "github_client retries a gh api call that adds a parameter, which gh sends as a POST",
+      "body": "## What and why\n\n`is_read` in `skills/ejryan89-skill-core/scripts/github_client.py` decides which gh commands `run` may retry after a transient failure, and its module docstring promises that a request that may change something on GitHub is never retried. It classes a `gh api` call by the method it names alone, so a call that names none is a read. gh sends such a call as a POST when it adds a parameter.\n\n## Reproduction\n\n```python\n>>> is_read([\"api\", \"repos/o/r/issues\", \"-f\", \"title=Flaky\"])\nTrue\n```\n\ngh sent it as a POST and created the issue. A 502 after GitHub had applied it was retried, and the issue was created twice.\n\n## Expected\n\n`is_read` is false for every `gh api` call gh sends with a method other than GET, decided as gh decides the method, so no request that changes something on GitHub is retried."
+    }
+  ],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
