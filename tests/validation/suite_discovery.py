@@ -15,6 +15,7 @@ import sys
 import tomllib
 import unittest
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard
 
@@ -32,6 +33,7 @@ from bash_syntax import (
     here_documents,
     parse,
 )
+from call_tables import PROCESS_STARTS
 from command_wrappers import (
     ASSIGNMENT,
     COMMAND_WRAPPERS,
@@ -47,9 +49,9 @@ from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
-from path_containment import posix_within, relative_within, within
+from path_containment import posix_within, relative_within, within, written_refusal
 from shell_targets import run_bash_suite
-from skill_scripts import STANDARD_STREAMS
+from skill_scripts import PATH_METHODS, STANDARD_STREAMS
 from toolchain import find_powershell
 from type_check_roots import MYPY_PATH_PREFIX
 from validation_support import (
@@ -61,6 +63,7 @@ from validation_support import (
     CallableResolver,
     UnreadablePython,
     attribute_lookups,
+    bound_values,
     call_argument,
     import_aliases,
     is_executable_script,
@@ -941,7 +944,7 @@ class RepositoryModules:
         self.path_directories = [root / entry.removeprefix(MYPY_PATH_PREFIX) for entry in entries]
         self._sources: dict[Path, str] = {}
         self._trees: dict[Path, ast.Module] = {}
-        self._imports: dict[tuple[Path, bool], list[Path]] = {}
+        self._imports: dict[tuple[Path, bool, bool], list[Path]] = {}
         self._resolved: dict[tuple[Path, str, int], list[Path]] = {}
         self._unreadable: dict[Path, str] = {}
 
@@ -1042,11 +1045,11 @@ class RepositoryModules:
                 found += [candidate.resolve() for candidate in candidates]
         return found
 
-    def imports(self, path: Path, unique_loads: bool = False) -> list[Path]:
+    def imports(self, path: Path, unique_loads: bool = False, by_path: bool = True) -> list[Path]:
         """The repository files path's imports may load, in the order they appear: import statements, literal names
-        given importlib.import_module or __import__, and files loaded by path, every file a load may name, or, with
-        unique_loads, only a load whose path names one file."""
-        key = (path, unique_loads)
+        given importlib.import_module or __import__, and, unless by_path is False, files loaded by path, every file a
+        load may name, or, with unique_loads, only a load whose path names one file."""
+        key = (path, unique_loads, by_path)
         if key in self._imports:
             return self._imports[key]
         found: list[Path] = []
@@ -1067,7 +1070,8 @@ class RepositoryModules:
             else:
                 continue
             found += [file for name, level in names for file in self.resolve(path, name, level)]
-        found += self.loaded_files(path, unique_loads)
+        if by_path:
+            found += self.loaded_files(path, unique_loads)
         self._imports[key] = list(dict.fromkeys(found))
         return self._imports[key]
 
@@ -1244,6 +1248,550 @@ def pytest_configuration_problems(root: Path) -> list[str]:
     if table != {"ini_options": PYTEST_CONFIGURATION}:
         problems.append(f"pyproject.toml: [tool.pytest] must be ini_options = {PYTEST_CONFIGURATION!r}, not {table!r}")
     return problems
+
+
+# The builder of the command the runner starts a Python suite with, which the pytest-root policy reads as a pytest
+# start wherever a suite calls it.
+PYTEST_COMMAND = "suite_discovery.pytest_command"
+# The text of a module that may start pytest: a call of pytest_command, or a command list holding `-m pytest`. The
+# pytest-root policy reads a suite whose text, or the text of a module it imports, holds one, and follows a call into
+# a module whose text holds one, a stated limit: a function that starts pytest only through a module that names
+# neither is not followed.
+PYTEST_START_TEXT = re.compile(r"""pytest_command|["']-m["']\s*,\s*["']pytest["']""")
+# The options that pin a pytest run to a folder: --rootdir roots the run there and --confcutdir reads no conftest.py
+# above it, so either, naming the folder of the suite the run starts, keeps pytest from collecting any folder above.
+ROOT_PINNING_OPTIONS = frozenset({"--confcutdir", "--rootdir"})
+# The pytest options, pytest's own and the root conftest.py's, that take the next argument as their value, so a
+# command's argument after one is that value, never a suite. Every other argument that is not a literal is a suite.
+PYTEST_VALUE_OPTIONS = frozenset(
+    {
+        *ROOT_PINNING_OPTIONS,
+        "-c",
+        "--config-file",
+        "--basetemp",
+        "-p",
+        "-k",
+        "-m",
+        "-o",
+        "--override-ini",
+        "--ignore",
+        "--ignore-glob",
+        "--deselect",
+        "-W",
+        "--pythonwarnings",
+        "--junit-xml",
+        "--log-file",
+        "--suite-shard",
+        "--test-seconds",
+    }
+)
+# The file a pytest started on a suite outside the repository finds beside the suite: pytest takes it as the run's
+# configuration even when it is empty, and roots the run at its folder.
+PYTEST_INI = "pytest.ini"
+# The path methods that write a file, any of which leaves a pytest.ini that pytest reads.
+FILE_WRITES = frozenset({"write_text", "write_bytes", "touch"})
+# The calls that give a path back in another spelling; skill_scripts' PATH_METHODS are the path methods that give
+# back the same path.
+PATH_SPELLINGS = frozenset({"str", "os.fspath", "pathlib.Path", "os.path.abspath"})
+# The call that spells a path relative to the repository's root, which a pytest started there finds in the repository.
+REPOSITORY_RELATIVE = frozenset({"validation_support.relative"})
+# The calls that make or name a folder under the temporary directory, which lies outside the repository.
+TEMPORARY_FOLDERS = frozenset({"tempfile.mkdtemp", "tempfile.TemporaryDirectory", "tempfile.gettempdir"})
+
+# What a path expression names, as _path_key reads it.
+PathKey = tuple[object, ...]
+FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _parent_key(key: PathKey | None) -> PathKey | None:
+    """The key of the folder that holds the path a key names."""
+    if key is None:
+        return None
+    if key[0] == "join":
+        folder: PathKey = key[1]  # type: ignore[assignment]  # a join holds its folder's key first
+        return folder
+    return ("parent", key)
+
+
+def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] = frozenset()) -> PathKey | None:
+    """What a path expression names, as a key that two spellings of one path share: a name is followed to the one value
+    bound to it, a conversion to str or to a Path and a resolve() are the path they convert, `<folder> / "<name>"` joins
+    each literal name to the folder's key, and `.parent` and `.parents[<n>]` step up from a join to its folder. A name
+    nothing binds by assignment, a parameter or a loop's target among them, is ("name", <name>, <qualified name>), and
+    any other expression ("node", <expression>), which no other expression shares. None for a name bound more than
+    once."""
+    if (
+        isinstance(node, ast.Call)
+        and not node.keywords
+        and len(node.args) == 1
+        and not isinstance(node.args[0], ast.Starred)
+        and resolver.name(node.func) in PATH_SPELLINGS
+    ):
+        return _path_key(node.args[0], resolver, seen)
+    if (
+        isinstance(node, ast.Call)
+        and not node.args
+        and not node.keywords
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in PATH_METHODS
+    ):
+        return _path_key(node.func.value, resolver, seen)
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        values = bound_values(node, resolver)
+        if values == [node]:
+            return ("name", node.id, resolver.name(node))
+        if len(values) != 1 or id(values[0]) in seen:
+            return None
+        return _path_key(values[0], resolver, seen | {id(node)})
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        key = _path_key(node.left, resolver, seen)
+        if key is None:
+            return None
+        if not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+            return ("join", key, ("node", node.right))
+        for part in (part for part in re.split(r"[/\\]", node.right.value) if part):
+            key = ("join", key, part)
+        return key
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        return _parent_key(_path_key(node.value, resolver, seen))
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "parents"
+        and isinstance(node.slice, ast.Constant)
+        and type(node.slice.value) is int
+        and node.slice.value >= 0
+    ):
+        found = _path_key(node.value.value, resolver, seen)
+        for _ in range(node.slice.value + 1):
+            found = _parent_key(found)
+        return found
+    return ("node", node)
+
+
+def _key_base(key: PathKey) -> PathKey:
+    """The key a path's joins and steps up start from."""
+    while key[0] in {"join", "parent"}:
+        key = key[1]  # type: ignore[assignment]  # a join or a step up holds the key it starts from
+    return key
+
+
+def _in_repository(base: PathKey, resolver: CallableResolver) -> bool:
+    """Whether a path starting from base lies in the repository for a pytest started at its root: a literal that
+    path_containment reads as a relative path inside a tree on every platform, which names a path below the working
+    directory; a path validation_support.relative spells relative to the root; or a path from the module's own
+    __file__ or REPOSITORY_ROOT."""
+    if base[0] == "name":
+        return base[1] == "__file__" or str(base[2]).rsplit(".", 1)[-1] == "REPOSITORY_ROOT"
+    node = base[1]
+    if isinstance(node, ast.Call):
+        return resolver.name(node.func) in REPOSITORY_RELATIVE
+    return isinstance(node, ast.Constant) and isinstance(node.value, str) and written_refusal(node.value) is None
+
+
+def _parameter_names(function: FunctionNode) -> set[str]:
+    arguments = function.args
+    extra = [argument for argument in (arguments.vararg, arguments.kwarg) if argument is not None]
+    return {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, *extra]}
+
+
+def _pin_option(item: ast.expr) -> ast.expr | None:
+    """The value an f-string `--rootdir={folder}` or `--confcutdir={folder}` names, or None."""
+    if not (isinstance(item, ast.JoinedStr) and len(item.values) == 2):
+        return None
+    option, value = item.values
+    if (
+        isinstance(option, ast.Constant)
+        and isinstance(value, ast.FormattedValue)
+        and value.format_spec is None
+        and value.conversion == -1
+        and str(option.value).endswith("=")
+        and str(option.value).removesuffix("=") in ROOT_PINNING_OPTIONS
+    ):
+        return value.value
+    return None
+
+
+def _operands(operands: list[ast.expr]) -> tuple[list[ast.expr], list[ast.expr]]:
+    """The suites and the root-pinning options' values among the arguments a pytest command gives pytest. A literal is
+    an option or a relative path, the argument after an option of PYTEST_VALUE_OPTIONS is its value, and a starred
+    item is read as options, a stated limit: a suite it spreads is not read."""
+    suites: list[ast.expr] = []
+    pins: list[ast.expr] = []
+    index = 0
+    while index < len(operands):
+        item = operands[index]
+        index += 1
+        if isinstance(item, ast.Starred):
+            continue
+        if isinstance(item, ast.Constant):
+            if item.value in PYTEST_VALUE_OPTIONS and index < len(operands):
+                if item.value in ROOT_PINNING_OPTIONS:
+                    pins.append(operands[index])
+                index += 1
+            continue
+        pinned = _pin_option(item)
+        if pinned is not None:
+            pins.append(pinned)
+        else:
+            suites.append(item)
+    return suites, pins
+
+
+@dataclass(frozen=True)
+class _PytestStart:
+    """One pytest a function starts from the repository: the line, the suites it runs, the values it gives
+    --confcutdir or --rootdir, and, for a start this policy cannot read, why."""
+
+    line: int
+    suites: tuple[ast.expr, ...]
+    pins: tuple[ast.expr, ...] = ()
+    unread: str = ""
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """What a pytest start does with one suite: "" when the suite lies in the repository or the start pins its root;
+    "parameter" or "each" when the suite is a module-level function's parameter, or each item of one, which its callers
+    pin; "temporary" when it lies under the temporary folder and nothing pins its root; and "unread", with why, when
+    this policy cannot place it."""
+
+    kind: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class _Passing:
+    """The parameters of a module-level function whose argument, or each item of whose argument, is a suite it starts
+    pytest on from the repository with no root pinned, which its callers must pin: by position among the positional
+    ones (None for a keyword-only one), name, and whether each item is one; and why any start it holds cannot be
+    read."""
+
+    parameters: tuple[tuple[int | None, str, bool], ...] = ()
+    unread: tuple[str, ...] = ()
+
+
+class _ModuleReader:
+    """A module's syntax tree, its bindings, each node's parent and innermost function, and each function's calls and
+    command lists."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.tree = tree
+        self.resolver = CallableResolver(tree)
+        self.parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        self.functions: dict[int, FunctionNode | None] = {}
+        # The calls, lists, tuples, and loops of each function by its id, and of the module's own statements by
+        # id(None).
+        self.candidates: dict[int, list[ast.AST]] = {}
+        pending: list[tuple[ast.AST, FunctionNode | None]] = [(tree, None)]
+        while pending:
+            node, function = pending.pop()
+            self.functions[id(node)] = function
+            if isinstance(node, ast.Call | ast.List | ast.Tuple | ast.For):
+                self.candidates.setdefault(id(function), []).append(node)
+            inner = node if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) else function
+            pending += [(child, inner) for child in ast.iter_child_nodes(node)]
+        self.module_functions = module_functions(tree)
+
+
+def module_functions(tree: ast.Module) -> dict[str, FunctionNode]:
+    """The functions a module defines at its top level, in a module-level block too, by name."""
+    return {
+        node.name: node
+        for node in module_statements(tree.body)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+class _PytestRoots:
+    """The pytest runs a Python file starts, directly through pytest_command or a command list holding `-m pytest`, or
+    through a module-level function, its own or one a repository module it imports defines, that starts pytest on a
+    suite its caller gives it; and whether each suite it starts lies in the repository or has its root pinned."""
+
+    def __init__(self, root: Path) -> None:
+        self.modules = RepositoryModules(root)
+        self._readers: dict[Path, _ModuleReader] = {}
+        self._passing: dict[tuple[Path, str], _Passing] = {}
+
+    def reader(self, path: Path) -> _ModuleReader:
+        if path not in self._readers:
+            self._readers[path] = _ModuleReader(self.modules.tree(path))
+        return self._readers[path]
+
+    def names_a_start(self, path: Path) -> bool:
+        """Whether a module's text holds a pytest start, or that of a repository module it imports by name does: the
+        modules whose functions a call can name."""
+        return any(
+            PYTEST_START_TEXT.search(self.modules.source(module))
+            for module in [path, *self.modules.imports(path, by_path=False)]
+        )
+
+    def callee(self, path: Path, call: ast.Call) -> tuple[Path, FunctionNode] | None:
+        """The module-level function a call runs, defined in the file or in a repository module it imports whose text
+        holds a pytest start, or None."""
+        name = self.reader(path).resolver.name(call.func)
+        if not name or name == PYTEST_COMMAND or name in PROCESS_STARTS:
+            return None
+        module, _, function = name.rpartition(".")
+        if module == "<local>":
+            found = self.reader(path).module_functions.get(function)
+            return (path, found) if found is not None else None
+        for file in self.modules.resolve(path, module) if module else []:
+            if file != path and PYTEST_START_TEXT.search(self.modules.source(file)):
+                found = module_functions(self.modules.tree(file)).get(function)
+                if found is not None:
+                    return file, found
+        return None
+
+    def starts(self, path: Path, scope: FunctionNode | None) -> list[_PytestStart]:
+        """The pytest runs a function, or the module's own statements, start from the repository."""
+        reader = self.reader(path)
+        found: list[_PytestStart] = []
+        for node in reader.candidates.get(id(scope), []):
+            if isinstance(node, ast.Call) and reader.resolver.name(node.func) == PYTEST_COMMAND:
+                found += self._command_start(reader, node)
+            elif isinstance(node, ast.List | ast.Tuple):
+                found += self._list_start(reader, node)
+            elif isinstance(node, ast.Call) and (callee := self.callee(path, node)) is not None:
+                found += self._passed_starts(node, *callee)
+        return found
+
+    @staticmethod
+    def _started(reader: _ModuleReader, node: ast.AST) -> tuple[bool, ast.expr | None]:
+        """Whether a pytest command is started, and the working directory it is started in: it is unless an
+        assertion compares it before a process start runs it."""
+        current = node
+        while (parent := reader.parents.get(id(current))) is not None and not isinstance(parent, ast.stmt):
+            if isinstance(parent, ast.Call):
+                if reader.resolver.name(parent.func) in PROCESS_STARTS:
+                    return True, call_argument(parent, None, "cwd")
+                if isinstance(parent.func, ast.Attribute) and parent.func.attr.startswith("assert"):
+                    return False, None
+            current = parent
+        return not isinstance(parent, ast.Assert), None
+
+    @staticmethod
+    def _from_repository(reader: _ModuleReader, directory: ast.expr | None) -> bool:
+        """Whether a working directory lies in the repository: none, which a suite inherits from the runner, or one
+        this policy reads as a folder of the repository. A pytest started in any other folder roots there, as the
+        mutation gate's in its throwaway worktree does, a stated limit."""
+        if directory is None:
+            return True
+        key = _path_key(directory, reader.resolver)
+        return key is not None and _in_repository(_key_base(key), reader.resolver)
+
+    def _command_start(self, reader: _ModuleReader, call: ast.Call) -> list[_PytestStart]:
+        parent = reader.parents.get(id(call))
+        outer = reader.parents.get(id(parent)) if isinstance(parent, ast.Starred) else None
+        listed = outer if isinstance(outer, ast.List | ast.Tuple) else None
+        started, directory = self._started(reader, listed if listed is not None else call)
+        if not started or not self._from_repository(reader, directory):
+            return []
+        if not call.args or isinstance(call.args[0], ast.Starred):
+            return [_PytestStart(call.lineno, (), unread="pytest_command is given no one suite")]
+        after = listed.elts[[id(item) for item in listed.elts].index(id(parent)) + 1 :] if listed is not None else []
+        suites, pins = _operands([*call.args[1:], *after])
+        return [_PytestStart(call.lineno, (call.args[0], *suites), tuple(pins))]
+
+    def _list_start(self, reader: _ModuleReader, display: ast.List | ast.Tuple) -> list[_PytestStart]:
+        items = display.elts
+        found = next(
+            (
+                index + 2
+                for index in range(len(items) - 1)
+                if isinstance(first := items[index], ast.Constant)
+                and first.value == "-m"
+                and isinstance(second := items[index + 1], ast.Constant)
+                and second.value == "pytest"
+            ),
+            None,
+        )
+        if found is None:
+            return []
+        started, directory = self._started(reader, display)
+        if not started or not self._from_repository(reader, directory):
+            return []
+        suites, pins = _operands(items[found:])
+        return [_PytestStart(display.lineno, tuple(suites), tuple(pins))]
+
+    def _passed_starts(self, call: ast.Call, file: Path, function: FunctionNode) -> list[_PytestStart]:
+        """The pytest runs a call starts through a function that starts pytest on a suite its caller gives it."""
+        passing = self.passing(file, function)
+        found = [_PytestStart(call.lineno, (), unread=f"{function.name} {why}") for why in passing.unread]
+        for position, name, each in passing.parameters:
+            argument = call_argument(call, position, name)
+            if each and isinstance(argument, ast.List | ast.Tuple):
+                suites = tuple(item for item in argument.elts if not isinstance(item, ast.Starred))
+                unread = "" if len(suites) == len(argument.elts) else f"a starred item of {function.name}'s {name}"
+                found.append(_PytestStart(call.lineno, suites, unread=unread))
+            elif argument is None or isinstance(argument, ast.Starred) or each:
+                found.append(_PytestStart(call.lineno, (), unread=f"{function.name}'s {name} is not one it can read"))
+            else:
+                found.append(_PytestStart(call.lineno, (argument,)))
+        return found
+
+    def passing(self, path: Path, function: FunctionNode) -> _Passing:
+        """What a module-level function passes to its callers; see _Passing."""
+        key = (path, function.name)
+        if key in self._passing:
+            return self._passing[key]
+        # A function that calls itself, directly or through others, passes nothing further on that call.
+        self._passing[key] = _Passing()
+        positional = [argument.arg for argument in [*function.args.posonlyargs, *function.args.args]]
+        parameters: list[tuple[int | None, str, bool]] = []
+        unread: list[str] = []
+        for start in self.starts(path, function):
+            for verdict in self.verdicts(path, function, start):
+                if verdict.kind in {"parameter", "each"}:
+                    index = positional.index(verdict.detail) if verdict.detail in positional else None
+                    parameters.append((index, verdict.detail, verdict.kind == "each"))
+                elif verdict.kind:
+                    reason = verdict.detail or "the suite lies under the temporary folder and its root is not pinned"
+                    unread.append(f"starts pytest at line {start.line} on a suite it does not pin: {reason}")
+        self._passing[key] = _Passing(tuple(dict.fromkeys(parameters)), tuple(unread))
+        return self._passing[key]
+
+    def verdicts(self, path: Path, function: FunctionNode | None, start: _PytestStart) -> list[_Verdict]:
+        """A verdict on each suite a start runs."""
+        if start.unread:
+            return [_Verdict("unread", start.unread)]
+        return [self._verdict(path, function, start, suite) for suite in start.suites]
+
+    def _verdict(self, path: Path, function: FunctionNode | None, start: _PytestStart, suite: ast.expr) -> _Verdict:
+        reader = self.reader(path)
+        resolver = reader.resolver
+        key = _path_key(suite, resolver)
+        if key is None:
+            return _Verdict("unread", f"{ast.unparse(suite)} names a path bound more than once")
+        base = _key_base(key)
+        folder = _parent_key(key)
+        if _in_repository(base, resolver) or self._pinned(path, function, start, folder):
+            return _Verdict("")
+        if key[0] == "name" and function is not None:
+            given = str(key[1]) in _parameter_names(function)
+            passed = str(key[1]) if given else self._looped_parameter(reader, function, str(key[1]))
+            if passed and reader.module_functions.get(function.name) is function:
+                return _Verdict("parameter" if given else "each", passed)
+            if passed:
+                return _Verdict(
+                    "unread", f"{ast.unparse(suite)} comes from a parameter of a method or a nested function"
+                )
+        if base[0] == "node" and isinstance(base[1], ast.Call) and resolver.name(base[1].func) in TEMPORARY_FOLDERS:
+            return _Verdict("temporary")
+        return _Verdict("unread", f"{ast.unparse(suite)} is neither in the repository nor under a temporary folder")
+
+    @staticmethod
+    def _looped_parameter(reader: _ModuleReader, function: FunctionNode, name: str) -> str:
+        """The parameter a function's loop takes a name from, item by item, or ""."""
+        parameters = _parameter_names(function)
+        for node in reader.candidates.get(id(function), []):
+            if (
+                isinstance(node, ast.For)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+                and isinstance(node.iter, ast.Name)
+                and node.iter.id in parameters
+            ):
+                return node.iter.id
+        return ""
+
+    def _pinned(self, path: Path, function: FunctionNode | None, start: _PytestStart, folder: PathKey | None) -> bool:
+        """Whether a start pins its suite's folder: a --confcutdir or --rootdir naming it, a pytest.ini the function
+        writes there before the start, or a folder a function makes holding a pytest.ini."""
+        reader = self.reader(path)
+        if folder is None:
+            return False
+        if any(_path_key(pin, reader.resolver) == folder for pin in start.pins):
+            return True
+        if any(
+            line <= start.line and _path_key(written, reader.resolver) == folder
+            for line, written in self.ini_folders(reader, function)
+        ):
+            return True
+        if folder[0] == "node" and isinstance(folder[1], ast.Call):
+            made = self.callee(path, folder[1])
+            return made is not None and self.makes_ini_folder(*made)
+        return False
+
+    @staticmethod
+    def ini_folders(reader: _ModuleReader, function: FunctionNode | None) -> list[tuple[int, ast.expr]]:
+        """The line and folder of each pytest.ini a function, or the module's own statements, writes."""
+        return [
+            (node.lineno, node.func.value.left)
+            for node in reader.candidates.get(id(function), [])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in FILE_WRITES
+            and isinstance(node.func.value, ast.BinOp)
+            and isinstance(node.func.value.op, ast.Div)
+            and isinstance(node.func.value.right, ast.Constant)
+            and node.func.value.right.value == PYTEST_INI
+        ]
+
+    def makes_ini_folder(self, path: Path, function: FunctionNode) -> bool:
+        """Whether a function returns one folder, into which it writes a pytest.ini."""
+        reader = self.reader(path)
+        returned = [
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Return) and reader.functions.get(id(node)) is function
+        ]
+        keys = {_path_key(value, reader.resolver) if value is not None else None for value in returned}
+        return (
+            len(keys) == 1
+            and None not in keys
+            and any(_path_key(written, reader.resolver) in keys for _, written in self.ini_folders(reader, function))
+        )
+
+
+def pytest_root_problems(root: Path) -> list[str]:
+    """Report each pytest a Python regression suite starts from the repository on a suite outside it whose root it does
+    not pin, and each such start this policy cannot read.
+
+    With no configuration beside a suite, pytest roots a run at the path the suite and its working directory share. On
+    Windows the repository and the temporary folder lie on different drives, so a suite written under the temporary
+    folder roots at the repository, whose confcutdir leaves out no folder on the other drive: pytest collects every
+    folder above the suite, the temporary folder that every parallel suite writes in among them, and a stat of an entry
+    another suite removes meanwhile stops collection with exit 2, on Windows alone and only under load. A suite pins
+    the root with a pytest.ini written beside the suite it starts, before it starts it, or a --confcutdir or --rootdir
+    naming the suite's folder.
+
+    A start is a call to pytest_command, or a command list holding `-m pytest`, that no assertion compares before a
+    process start runs it, or a call of a module-level function, the suite's own or one a repository module it imports
+    defines, that starts pytest on a suite its caller gives it, or on each item of a list it gives. A pytest started
+    with a cwd this policy does not read as the repository's root starts elsewhere, as the mutation gate's in its own
+    worktree, and is not held here.
+
+    Stated limits: a pytest a suite starts by running a script, as tests/tools/test_python_diagnostics.py's run_tool
+    runs tools/python_diagnostics.py, whose own pytest takes the suites on its command line; one it starts through a
+    method, or another callable a name does not resolve to a module-level function; and a suite a starred item of a
+    command spreads, are not read.
+    """
+    problems: list[str] = []
+    reader = _PytestRoots(root)
+    for path in regression_suites(root):
+        if path.suffix.casefold() != ".py" or not reader.names_a_start(path):
+            continue
+        name = path.relative_to(root).as_posix()
+        tree = reader.reader(path).tree
+        functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)]
+        for function in [None, *functions]:
+            for start in reader.starts(path, function):
+                for verdict in reader.verdicts(path, function, start):
+                    if verdict.kind == "temporary":
+                        problems.append(
+                            f"{name}:{start.line} starts pytest from the repository on a suite under the temporary "
+                            f"folder and pins no root; write a {PYTEST_INI} beside the suite before starting it, or "
+                            "pass --confcutdir or --rootdir naming its folder, so pytest collects no folder above it"
+                        )
+                    elif verdict.kind == "unread":
+                        problems.append(
+                            f"{name}:{start.line} starts pytest from the repository on a suite this policy cannot "
+                            f"place in the repository or see pinned ({verdict.detail}); build the suite's path from a "
+                            f"tempfile folder in the function that starts it, and write a {PYTEST_INI} beside it or "
+                            "pass --confcutdir or --rootdir naming its folder"
+                        )
+    return problems + reader.modules.unreadable_problems()
 
 
 # What the validation pool's thread reads while the policy checks run on the main thread: it starts each job from a
@@ -1503,6 +2051,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
 
     def test_the_pytest_configuration_selects_and_skips_nothing(self) -> None:
         self.assertEqual([], pytest_configuration_problems(REPOSITORY_ROOT))
+
+    def test_a_pytest_a_suite_starts_on_a_suite_outside_the_repository_pins_its_root(self) -> None:
+        self.assertEqual([], pytest_root_problems(REPOSITORY_ROOT))
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
