@@ -1547,9 +1547,8 @@ OPTION_PROBES: dict[str, tuple[str, str, str, str]] = {
         "marker\n",
     ),
     "set -o posix": ("set -o posix", "alias e='echo aliased'\ne", "aliased\n", ""),
-    # Git Bash drops the carriage return that ends a line whatever igncr's setting, so the one probed stands inside a
-    # word, which igncr drops too.
-    "set -o igncr": ("set -o igncr", "printf '%s' x\ry", "xy", "x\ry"),
+    # A carriage return inside a quoted word, measured by the word's length, which no output path can lose.
+    "set -o igncr": ("set -o igncr", "v='x\ry'\nprintf '%s' \"${#v}\"", "2", "2"),
     "shopt expand_aliases": ("shopt -s expand_aliases", "alias e='echo aliased'\ne", "aliased\n", ""),
     "shopt extglob": ("shopt -s extglob", "!(echo marker)", "", "marker\n"),
     "shopt compat31": ("shopt -s compat31", *COMPAT_PROBE),
@@ -1587,9 +1586,20 @@ def test_every_refused_option_has_a_probe() -> None:
     assert sorted(VARIABLE_PROBES) == sorted(bash_syntax.OPTION_VARIABLES)
 
 
+# The refused options under which the only Bash that has them reads the probe the same whatever their setting, each
+# with why it stays refused.
+SAME_READING_ON_THE_RUNNER = {
+    "set -o igncr": (
+        "Git Bash, the one Bash with igncr, drops every carriage return it reads whatever igncr's setting, as the "
+        "word's length shows; the refusal stands for a build that keeps them, as Cygwin's documents igncr"
+    ),
+}
+
+
 @pytest.mark.parametrize("key", sorted(OPTION_PROBES))
 def test_bash_reads_or_runs_the_text_after_a_refused_option_otherwise(key: str, tmp_path: Path) -> None:
     turn_on, text, on, off = OPTION_PROBES[key]
+    assert (on == off) == (key in SAME_READING_ON_THE_RUNNER)
     if key not in runner_options()[1]:
         # The runner's Bash has no such option, so it refuses to turn it on and reads the text as at its default.
         result = platform_support.run_tool([bash_agreement.find_bash(), "-c", turn_on], separate_errors=True)
