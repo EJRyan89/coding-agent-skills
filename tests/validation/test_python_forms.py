@@ -25,10 +25,13 @@ from validation_support import (
     ARGUMENT_FIELDS,
     CALLEE_FORMS,
     IMPORT_FIELDS,
+    LITERAL_DISPLAYS,
     NOT_READ,
+    REFUSED_CALLEES,
     REPOSITORY_ROOT,
     CallableResolver,
     call_arguments,
+    chosen_callee,
     import_aliases,
     resolved_calls,
     write_fixture_tree,
@@ -78,7 +81,7 @@ def test_every_not_read_entry_names_a_catalogue_and_a_reason() -> None:
 @pytest.mark.parametrize(
     ("name", "runner", "pinned", "read", "prefix"),
     [
-        ("expression", runner_expressions(), PINNED_EXPRESSIONS, CALLEE_FORMS, CALLEE),
+        ("expression", runner_expressions(), PINNED_EXPRESSIONS, CALLEE_FORMS | set(REFUSED_CALLEES), CALLEE),
         (
             "import field",
             runner_fields(ast.Import, ast.ImportFrom, ast.alias),
@@ -101,13 +104,18 @@ def test_every_form_the_runners_ast_or_the_newest_python_defines_is_decided_once
     unread = not_read(prefix)
     catalogue = runner | pinned
     assert sorted(catalogue - read - unread) == [], (
-        f"decide each {name}: read it in validation_support's {name} table, or name it in NOT_READ with the reason"
+        f"decide each {name}: read it in validation_support's {name} table, refuse it there, or name it in NOT_READ "
+        "with the reason"
     )
     assert sorted(runner - pinned) == [], f"pin each {name} this Python defines"
     if sys.version_info >= PINNED_FROM_PYTHON:
         assert sorted(pinned - runner) == [], f"Python {sys.version_info[:2]} no longer defines these: unpin each"
     assert sorted((read | unread) - catalogue) == [], "remove each: no Python defines it"
-    assert sorted(read & unread) == [], "each is both read and in NOT_READ"
+    assert sorted(read & unread) == [], "each is both decided and in NOT_READ"
+
+
+def test_no_callee_form_is_both_read_and_refused() -> None:
+    assert sorted(CALLEE_FORMS & set(REFUSED_CALLEES)) == []
 
 
 # Each callee form CALLEE_FORMS reads, with calls of os.system through it, so a policy that refuses os.system reads
@@ -120,16 +128,7 @@ CALLEE_SAMPLES = {
         "import os\ngetattr(os, 'system')('x')",
         "import operator\nimport os\noperator.attrgetter('system')(os)('x')",
     ],
-    "Subscript": [
-        "import os\nvars(os)['system']('x')",
-        "import os\nos.__dict__['system']('x')",
-        "import os\n[os.system][0]('x')",
-        "import os\n(print, os.system)[1]('x')",
-        "import os\n{'run': os.system}['run']('x')",
-    ],
-    "BoolOp": ["import os\n(os.system or print)('x')", "import os\n(print and os.system)('x')"],
-    "IfExp": ["import os\n(print if quiet else os.system)('x')", "import os\n(os.system if loud else print)('x')"],
-    "NamedExpr": ["import os\n(run := os.system)('x')", "import os\n(run := (print or os.system))('x')"],
+    "Subscript": ["import os\nvars(os)['system']('x')", "import os\nos.__dict__['system']('x')"],
 }
 
 
@@ -156,48 +155,92 @@ def test_each_callee_form_read_names_the_function_the_call_runs(form: str, sourc
     assert "os.system" in [found.name for found in resolved_calls(call, CallableResolver(tree))]
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        # A literal that unpacks into itself may hold anything at the index, so the subscript names nothing.
-        "import os\n[*others, os.system][0]('x')",
-        "import os\n{**others, 'run': os.system}['run']('x')",
-        # What a function returns at run time is not read.
-        "import os\n(lambda: os.system)()('x')",
-    ],
-)
-def test_a_callee_whose_value_is_chosen_at_run_time_names_nothing(source: str) -> None:
-    tree = ast.parse(source)
+def test_a_callee_whose_value_a_function_returns_names_nothing() -> None:
+    # What a function returns at run time is not read.
+    tree = ast.parse("import os\n(lambda: os.system)()('x')")
     assert [found.name for found in resolved_calls(the_call(tree), CallableResolver(tree))] == [""]
 
 
-def test_a_callee_that_leads_back_to_itself_through_an_alternative_ends() -> None:
-    tree = ast.parse("import os\nrun = os.system\nwhile run:\n    run = run or run\nrun('x')")
-    assert [found.name for found in resolved_calls(the_call(tree), CallableResolver(tree))] == ["os.system"]
+# Each callee form that chooses a call's function by a value, with calls of os.system through it, each refused at the
+# source by the indirection policy: every REFUSED_CALLEES node, a subscript of every LITERAL_DISPLAYS literal, and
+# combinations of them.
+REFUSED_SAMPLES = {
+    "BoolOp": [
+        "(os.system or print)",
+        "(print and os.system)",
+        "(print or (os.system and print))",
+        "((run := os.system) or print)",
+    ],
+    "IfExp": [
+        "(print if quiet else os.system)",
+        "((os.system or print) if quiet else print)",
+        "(print if quiet else (run := os.system))",
+    ],
+    "NamedExpr": ["(run := os.system)", "(run := (print or os.system))"],
+    "Tuple": ["(print, os.system)[1]", "(print, (os.system if quiet else print))[1]"],
+    "List": ["[os.system][0]", "[*others, os.system][0]", "[(run := os.system)][0]"],
+    "Set": ["{os.system}[0]"],
+    "Dict": ["{'run': os.system}['run']", "{**others, 'run': os.system}['run']"],
+}
 
 
-# A policy that reads a call through resolved_calls and resolved_references refuses an option that reads a time as a
-# float or an int, whichever callee form CALLEE_FORMS reads chooses its add_argument or its type.
-TIME_OPTION = "('--timeout', type=float)"
+def test_every_refused_callee_form_has_a_sample() -> None:
+    displays = {display.__name__ for display in LITERAL_DISPLAYS}
+    assert sorted(REFUSED_SAMPLES) == sorted({*REFUSED_CALLEES, *displays})
 
 
 @pytest.mark.parametrize(
-    "line",
-    [
-        f"(parser.add_argument or print){TIME_OPTION}",
-        f"(print if quiet else parser.add_argument){TIME_OPTION}",
-        f"(add := parser.add_argument){TIME_OPTION}",
-        f"[parser.add_argument][0]{TIME_OPTION}",
-        f"{{'add': parser.add_argument}}['add']{TIME_OPTION}",
-        "parser.add_argument('--timeout', type=str if quiet else float)",
-    ],
+    ("form", "callee"), [(form, callee) for form, callees in REFUSED_SAMPLES.items() for callee in callees]
 )
-def test_a_policy_reading_calls_refuses_one_each_callee_form_chooses(line: str) -> None:
+def test_the_indirection_policy_refuses_each_callee_form_that_chooses_by_a_value(form: str, callee: str) -> None:
+    function = ast.parse(callee, mode="eval").body
+    held = function.value if isinstance(function, ast.Subscript) else function
+    assert type(held).__name__ == form
+    source = f"import os\n\n\ndef run(quiet, others):\n    {callee}('x')\n"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": f"def configure(parser, quiet):\n    {line}\n"})
-        found = python_checks.time_option_problems(root, sorted(root.rglob("*.py")))
-    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:2"]
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.indirection_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:5"]
+    assert chosen_callee(function) in found[0]
+
+
+def indirection_rows(body: str, *, cut: bool = True) -> list[str]:
+    """The indirection policy's problems for a skill's module that imports os and defines run(quiet, others, paths)
+    holding body, each cut to its place, or to its place and its refusal without the policy's remedy."""
+    source = f"import os\n\n\ndef run(quiet, others, paths):\n    {body}\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.indirection_problems(root, sorted(root.rglob("*.py")))
+    return [problem.split(" ", 1)[0] if cut else problem.partition(",")[0] for problem in found]
+
+
+@pytest.mark.parametrize(
+    "body", ["(fs := os).system('x')", "(fs := os).path.join('x')", "(text := str(quiet)).strip().upper()"]
+)
+def test_the_indirection_policy_refuses_an_attribute_called_on_an_assignment_expressions_value(body: str) -> None:
+    # A module held as a value is refused too, by its own rule.
+    assert "skills/alpha/scripts/alpha.py:5 calls an attribute of the value an assignment expression binds" in (
+        indirection_rows(body, cut=False)
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Stated limits: a method of a value an `or` or an if-expression chooses is read as a value's method, and an
+        # assignment expression passed as a value is not refused.
+        "(quiet or '').strip()",
+        "(quiet if others else '').strip()",
+        "list(map((rm := os.remove), paths))",
+        # A dispatch table and a generic class name nothing and are not refused.
+        "{'run': print}.get(quiet, print)('x')",
+        "frozenset[int]()",
+    ],
+)
+def test_the_indirection_policy_leaves_a_value_chosen_otherwise_alone(body: str) -> None:
+    assert indirection_rows(body) == []
 
 
 def import_rows() -> list[tuple[str, str, str]]:

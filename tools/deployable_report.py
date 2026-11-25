@@ -333,7 +333,7 @@ def tool_versions(
     found it, then each program VERSIONED names, found on PATH."""
     find = find or platform_support.find_executable
     versions = [("Python", tools.format_version(tools.python_version()))]
-    bash = (find_bash or platform_support.find_bash)()
+    bash = find_bash() if find_bash is not None else platform_support.find_bash()
     if bash is None:
         versions.append((platform_support.BASH_NAME, "not installed"))
     else:

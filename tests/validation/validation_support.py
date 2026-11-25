@@ -256,12 +256,25 @@ COMPUTED_NAME = "?"
 # from the runner's ast module and a pinned copy of the newest Python's: each is read here, refused by a check
 # validation runs, or named in NOT_READ with why, so a node or a field a new Python adds fails until it is decided.
 # The expressions resolved_calls and resolved_references read as a call's function, by the name of their ast node: a
-# name and an attribute through the module's imports; a call of functools.partial, or of a lookup attribute_lookups
-# reads; a subscript of a namespace, or of a literal tuple, list, or dict; and an `and` or `or`, an if-expression, or
-# an assignment expression, through evaluated_values. A call's function that is any other call, or a subscript of
-# anything else, names nothing: a stated limit, since what a function returns or a container holds at run time is
-# not read, and the indirection policy refuses the lookups that would reach a name by a value.
-CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript", "BoolOp", "IfExp", "NamedExpr"})
+# name and an attribute through the module's imports, a call of functools.partial or of a lookup attribute_lookups
+# reads, and a subscript of a namespace. They read only these direct forms and are not widened, as the decision in
+# docs/design.md that Python indirection is restricted rather than modelled holds: a call's function that is any other
+# call, or a subscript of anything but a namespace or a literal, names nothing, since what a function returns or a
+# container holds at run time is not read: a dispatch table, as `KINDS[kind](spec)`, and a generic class, as
+# `frozenset[int]()`, which runs the class, among them. A method called on the value an `and`, an `or`, or an
+# if-expression chooses, as `(text or "").strip()`, is read as a method of a value, not refused, and so is an
+# assignment expression passed as a value, as `map((rm := shutil.rmtree), paths)`: stated limits.
+CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript"})
+# The expressions that choose a call's function by a value, which the indirection policy in python_checks.py refuses
+# at the source as a call's function, in every module the claim policies read: an `and` or an `or`, an if-expression,
+# and an assignment expression, by their ast node, a subscript of a literal (LITERAL_DISPLAYS), and an attribute of an
+# assignment expression's value, which chosen_callee reads.
+REFUSED_CALLEES = {
+    "BoolOp": "an `and` or an `or`",
+    "IfExp": "an if-expression",
+    "NamedExpr": "an assignment expression",
+}
+LITERAL_DISPLAYS: dict[type[ast.expr], str] = {ast.Tuple: "tuple", ast.List: "list", ast.Set: "set", ast.Dict: "dict"}
 # The fields of an import statement CallableResolver and module_imports read, as `<node>.<field>`. A star import
 # binds names no reader sees, and ruff's F403, which validation runs on every module, refuses every one.
 IMPORT_FIELDS = frozenset(
@@ -286,7 +299,8 @@ NOT_READ = {
     ),
     "callee Lambda": (
         "names no callee statically: calling a lambda runs its body, whose own calls are read where they are written,"
-        " and a call of its result is a call of a call's return value, which is not read"
+        " though the arguments the call gives it, which its body may forward to another call, are not followed, and a"
+        " call of its result is a call of a call's return value, which is not read"
     ),
     "callee BinOp": (
         "names no callee statically: its value is what the operand's operator method returns at run time, which no "
@@ -478,6 +492,24 @@ def call_argument(call: ast.Call, position: int | None, *keywords: str) -> ast.e
     if named is not None:
         return named
     return next((found for found in call_arguments(call, position, ()) if isinstance(found, ast.Starred)), None)
+
+
+def chosen_callee(function: ast.expr) -> str:
+    """How a call's function is chosen by a value, as REFUSED_CALLEES and LITERAL_DISPLAYS word it: "calls the
+    function an if-expression chooses" for `(print if quiet else os.system)(x)`, "calls the function a subscript of a
+    literal list chooses" for `[os.system][0](x)`, and "calls an attribute of the value an assignment expression
+    binds" for `(fs := shutil).rmtree(p)`, however deep the attribute; "" for any other function. The shared readers
+    name nothing such a call runs, so the indirection policy refuses it."""
+    if (chosen := REFUSED_CALLEES.get(type(function).__name__)) is not None:
+        return f"calls the function {chosen} chooses"
+    if isinstance(function, ast.Subscript) and (display := LITERAL_DISPLAYS.get(type(function.value))) is not None:
+        return f"calls the function a subscript of a literal {display} chooses"
+    receiver = function
+    while isinstance(receiver, ast.Attribute):
+        receiver = receiver.value
+    if receiver is not function and isinstance(receiver, ast.NamedExpr):
+        return "calls an attribute of the value an assignment expression binds"
+    return ""
 
 
 def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
@@ -1309,49 +1341,6 @@ def bound_values(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
     return found
 
 
-def _alternatives(node: ast.expr) -> list[ast.expr] | None:
-    """The expressions one of which an expression evaluates to, or None when it is none of these forms: each operand
-    of an `and` or an `or`, both branches of an if-expression, an assignment expression's value, and each item of a
-    literal tuple or list, or each value of a literal dict, that a subscript reads, as `[os.system][0]`. A literal
-    that unpacks into itself, with `*` or `**`, may hold anything, so a subscript of one is none of these."""
-    if isinstance(node, ast.BoolOp):
-        return [*node.values]
-    if isinstance(node, ast.IfExp):
-        return [node.body, node.orelse]
-    if isinstance(node, ast.NamedExpr):
-        return [node.value]
-    if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Load):
-        return None
-    held = node.value
-    if isinstance(held, ast.Tuple | ast.List) and not any(isinstance(item, ast.Starred) for item in held.elts):
-        return [*held.elts]
-    if isinstance(held, ast.Dict) and all(key is not None for key in held.keys):
-        return [*held.values]
-    return None
-
-
-def evaluated_values(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
-    """Every expression an expression may evaluate to at the place it is read: bound_values of it, with each form
-    _alternatives reads replaced by the expressions it chooses between, each followed in turn, so `(os.system or
-    print)` and `(f := os.system)` may each be os.system. The call and reference readers read a callee here, which
-    CALLEE_FORMS names."""
-    found: list[ast.expr] = []
-    pending = [node]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop(0)
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        for value in bound_values(current, resolver):
-            alternatives = _alternatives(value)
-            if alternatives is None:
-                found.append(value)
-            else:
-                pending += alternatives
-    return list({id(value): value for value in found}.values())
-
-
 def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Reference]:
     """Each thing an expression may name, once bound_values follows it: its qualified name through the module's
     imports, with `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach),
@@ -1398,7 +1387,7 @@ class _ReferenceWalk:
 
     def references(self, node: ast.expr) -> list[Reference]:
         found: list[Reference] = []
-        for value in evaluated_values(node, self.resolver):
+        for value in bound_values(node, self.resolver):
             found += self._value(value)
         return list(dict.fromkeys(found))
 
@@ -1592,7 +1581,7 @@ def _calls_of(
     seen: set[int],
 ) -> list[ResolvedCall]:
     found: list[ResolvedCall] = []
-    for value in evaluated_values(function, resolver):
+    for value in bound_values(function, resolver):
         if (
             isinstance(value, ast.Call)
             and id(value) not in seen
