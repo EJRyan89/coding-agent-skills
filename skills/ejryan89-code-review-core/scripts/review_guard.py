@@ -21,9 +21,18 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
 - Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and its `source-file` and
   `source-search` commands (review_source.py) on every snapshot, lazy or written whole (its suite holds both kinds),
   where `review_source.py` itself refuses `source-file` on one that holds every file already, with the one path or
-  pattern the reviewer fills in, which may hold no double quote (ASCII or PowerShell's smart variants), backtick,
-  dollar sign, backslash, or line break. No quoted script or run in either may end in a backslash, which would
-  escape its closing quote.
+  pattern the reviewer fills in. bash_syntax reads the whole command: it must be one simple command, with no
+  redirection, pipeline, list, or expansion, and the value must be spelled exactly as `single_quoted` spells what
+  Bash reads, in single quotes with each quote of its own written as `'"'"'`, which PowerShell reads as the same
+  literal, and hold no line break, NUL, or PowerShell smart single quote, which ends a single-quoted string there. A
+  `$'...'` or a `'\''`, which Bash reads as a literal and PowerShell does not, is denied, and so is any word after
+  the value, which argparse could read as a second run or role. Claude Code asks before it runs a command in which a
+  `$` stands before a letter, even in single quotes, so a pattern holding one is denied with the step to write it as
+  `[$]`; a path holding one, which has no other spelling, is allowed and is asked about. The script and the run are
+  in double quotes, and may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, or
+  line break, nor end in a backslash, which would escape the closing quote. Each command is read as the reviewer
+  wrote it, less the ASCII spaces, tabs, and line feeds at either end, so a character Bash keeps there, such as a
+  form feed, a carriage return, U+001C to U+001F, U+0085, or a Unicode space, is read, and no allowed form holds it.
   The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
 - A role whose `run.json` entry declares its `self_check`, as the review-insights synthesis run does, runs that one
   command, exactly as declared, and none of the reviewer commands above. The run's author is the script that made
@@ -81,6 +90,7 @@ from typing import Any, BinaryIO
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import atomic_file
+import bash_syntax
 import file_lock
 import file_presence
 import hook_decision
@@ -113,16 +123,32 @@ QUOTED_VALUE = rf"[^{SHELL_BREAKS}]*[^{SHELL_BREAKS}\\]"
 # Each command names Python as review-prs's rendered grant does, by the platform's command.
 SELF_CHECK = re.compile(
     rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
-    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
+    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"\Z'
 )
 # The two commands review_source.py gives a reviewer: a lazy snapshot's both, or any other snapshot's search. The
-# script and the run must be the known ones; the path or pattern, the one value the reviewer chooses, holds no
-# backslash at all, so it can never end up outside its quotes.
+# script and the run must be the known ones; the path or pattern, the one value the reviewer chooses, is in single
+# quotes, which source_value then holds to single_quoted's spelling as bash_syntax reads the whole command.
 SOURCE_COMMAND = re.compile(
     rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) '
     rf'--run "(?P<run>{QUOTED_VALUE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)" '
-    rf'--(?P<option>path|pattern)="[^{SHELL_BREAKS}\\]+"$'
+    rf"--(?P<option>path|pattern)=(?P<value>'.*')\Z",
+    re.DOTALL,
 )
+# A single quote inside a single-quoted path or pattern: it closes the quotes, gives the quote inside double quotes,
+# and opens them again, which Bash and PowerShell read alike. Bash reads PowerShell's own `''` as an empty string,
+# and PowerShell reads Bash's `'\''` as a backslash and an open quote.
+QUOTE_IN_VALUE = "'\"'\"'"
+# What the guard drops from either end of a command before it reads it: the ASCII spaces, tabs, and line feeds Bash
+# reads as nothing there. Python's str.strip would also drop characters Bash keeps as a word or a command of their
+# own, such as a form feed, U+001C to U+001F, U+0085, or a Unicode space, so any of those left at an end is read, and
+# no allowed form holds one.
+COMMAND_PADDING = " \t\n"
+# What no path or pattern may hold: a line break or NUL, which ends the command or the argument, and PowerShell's
+# smart single quotes, each of which ends a single-quoted string there while Bash reads it as text.
+VALUE_BREAKS = frozenset("\r\n\0\u2018\u2019\u201a\u201b")
+# A dollar sign before a letter, which Claude Code asks about before it runs a granted command even inside single
+# quotes, so a headless review would deny it; a pattern writes a literal dollar sign as [$] instead.
+DOLLAR_BEFORE_LETTER = re.compile(r"\$[A-Za-z]")
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
 SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
 SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
@@ -612,7 +638,7 @@ def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
 
 def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
     try:
-        text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip()
+        text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip(COMMAND_PADDING)
     except FieldError:
         text = ""  # no command, which no allowed form matches
     declared = claim[1].get("self_check")
@@ -630,9 +656,59 @@ def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
         and _same(_path(match.group("script"), cwd), SOURCE_SCRIPT)
         and SOURCE_OPTIONS[match.group("command")] == match.group("option")
     ):
+        value = source_value(text, match.group("option"))
+        if value is None:
+            raise Denied(
+                f"give the {match.group('option')} on one line between the command's single quotes, as the prompt "
+                """gives it, as the command's last word, writing each single quote in it as '"'"'"""
+            )
+        if match.group("option") == "pattern" and DOLLAR_BEFORE_LETTER.search(value):
+            raise Denied(
+                "write each dollar sign in the pattern as [$]: Claude Code asks before it runs a command in which a $ "
+                "stands before a letter, even in single quotes"
+            )
         _check_own_run(match, cwd, claim, match.group("command"))
         return
     raise Denied("run no command except the self-check and source commands the prompt gives, exactly as written")
+
+
+def single_quoted(value: str) -> str:
+    """The one spelling of a path or pattern a source command takes, which Bash and PowerShell read as `value`."""
+    return "'" + value.replace("'", QUOTE_IN_VALUE) + "'"
+
+
+def source_value(text: str, option: str) -> str | None:
+    """The path or pattern of a source command, `text`, named `option`, as Bash reads it: when the text is a source
+    command whose last word, and only word after its role, is `--<option>=` and a value of one line, without a
+    PowerShell smart single quote, spelled as single_quoted spells it, and bash_syntax reads it as one simple command
+    with no redirection, pipeline, list, assignment, or expansion. None for any other text, and for text bash_syntax
+    refuses. A word after the value, such as a second --run or --role that argparse would take over the first, or a
+    comment, a glob, or PowerShell's --% or @args, leaves the text after the role longer than the value's spelling."""
+    match = SOURCE_COMMAND.fullmatch(text)
+    if match is None or match.group("option") != option or VALUE_BREAKS.intersection(text):
+        return None
+    try:
+        tree = bash_syntax.parse(text)
+    except bash_syntax.BashSyntaxError:
+        return None
+    if len(tree.items) != 1 or tree.items[0][1]:
+        return None
+    and_or = tree.items[0][0]
+    if and_or.rest or and_or.first.negated or len(and_or.first.commands) != 1:
+        return None
+    command = and_or.first.commands[0]
+    if not isinstance(command, bash_syntax.Simple) or command.redirects or not command.words:
+        return None
+    for word in command.words:
+        if word.assignment is not None or word.substitutions or any(part.kind != "text" for part in word.parts):
+            return None
+    prefix = f"--{option}="
+    last = command.words[-1]
+    read = bash_syntax.word_text(last)
+    value = read.removeprefix(prefix)
+    if value == read or not value or match.group("value") != single_quoted(value):
+        return None
+    return value
 
 
 def _check_own_run(match: re.Match[str], cwd: Path, claim: Claim, name: str) -> None:

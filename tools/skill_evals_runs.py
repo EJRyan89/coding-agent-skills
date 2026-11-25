@@ -350,7 +350,7 @@ def reviewer_grants(home: Path, skill: str) -> list[str]:
     """The commands a reviewer runs besides its file tools, granted in both shells at each spelling of the home's
     scripts: its self-check, which review_pipeline.py writes as python -B "<script>" validate-result --run "<run>"
     --role "<role>", and a lazy snapshot's two source commands, which review_source.py writes as python -B "<script>"
-    source-file --run "<run>" --role "<role>" --path="<path>", and the same with source-search and --pattern. Each
+    source-file --run "<run>" --role "<role>" --path='<path>', and the same with source-search and --pattern. Each
     names its script by its quoted path, so no other file matches; validation holds them to the skill grant rules.
     review-insights' synthesis runs only its self-check, granted at the deployed script's resolved path."""
     grants: list[str] = []

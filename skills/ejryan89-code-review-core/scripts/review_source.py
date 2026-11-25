@@ -6,14 +6,21 @@ these commands reads any other file, and searches the commit, through them. A sn
 has only the search, over the snapshot's own files, which serves a reviewer the runtime gives no Grep or Glob, as
 Claude Code does not give a subagent that lists Bash on macOS, Linux, and WSL:
 
-  python -B "<this script>" source-file --run "<run>" --role "<role>" --path="<path>"
+  python -B "<this script>" source-file --run "<run>" --role "<role>" --path='<path>'
       Writes the head file at <path> into the snapshot from the commit, by the blob id the manifest lists, and
       prints `SOURCE_FILE <absolute path>` to Read; `EXCLUDED <path> <reason>` when the snapshot leaves it out; or
       `FAILED <reason>`, as for a path the commit does not hold. The file is counted as read by the role.
-  python -B "<this script>" source-search --run "<run>" --role "<role>" --pattern="<pattern>"
+  python -B "<this script>" source-search --run "<run>" --role "<role>" --pattern='<pattern>'
       Prints `MATCH <path>:<line>: <text>` for each line of the commit's files that matches the extended regular
       expression, in the paths the snapshot can hold, then `MATCHES <n>`, or `MATCHES more than <n>` when it stopped.
       The search is counted as one search by the role.
+
+The reviewer fills in <path> or <pattern> inside the single quotes, where neither Bash nor PowerShell expands
+anything, and writes each single quote of its own as review_guard's QUOTE_IN_VALUE, `'"'"'`, which both shells read
+as one quote. `filled` fills one in so, and the guard allows that spelling alone. Claude Code still asks before a
+granted command in which a `$` stands before a letter, as in `'a$b'`, even inside single quotes, though a backtick,
+`$(`, `${`, and a double quote there run unasked, so the prompt tells a reviewer to write a dollar sign in a pattern
+as `[$]` and the guard denies a pattern that does not; a path holding one is asked about.
 
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
@@ -41,15 +48,16 @@ from console import run_main
 from executable_locator import PYTHON
 from flat_text import single_line
 from path_containment import resolved_path
-from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log, search_entry
+from review_guard import QUOTE_IN_VALUE, ROLE_ID, RUN_FILE, RUN_PREFIX, read_log, search_entry
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
 from typed_fields import FieldError, FieldReader
 
 SCRIPT = Path(__file__).resolve()
 # Python named as review-prs's rendered grant names it, by the platform's command.
-FILE_COMMAND = PYTHON + ' -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"'
-SEARCH_COMMAND = PYTHON + ' -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"'
+FILE_COMMAND = PYTHON + ' -B "{script}" source-file --run "{run}" --role "{role}" --path=\'<path>\''
+SEARCH_COMMAND = PYTHON + ' -B "{script}" source-search --run "{run}" --role "{role}" --pattern=\'<pattern>\''
+PLACEHOLDERS = ("<path>", "<pattern>")
 
 
 PRESENCE_ALLOWED = {
@@ -78,6 +86,16 @@ def source_commands(run: Path, role: str, *, script: Path | str = SCRIPT) -> tup
         FILE_COMMAND.format(script=script, run=run, role=role),
         SEARCH_COMMAND.format(script=script, run=run, role=role),
     )
+
+
+def filled(command: str, value: str) -> str:
+    """A command source_commands gives with its <path> or <pattern> filled in as a reviewer's prompt says: the value
+    inside the single quotes, each single quote of its own written as review_guard's QUOTE_IN_VALUE."""
+    for placeholder in PLACEHOLDERS:
+        head, found, tail = command.rpartition(placeholder)
+        if found:
+            return head + value.replace("'", QUOTE_IN_VALUE) + tail
+    raise ValueError(f"the command holds neither {' nor '.join(PLACEHOLDERS)}: {command}")
 
 
 def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:

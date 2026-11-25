@@ -57,14 +57,15 @@ Input contract (this replaces any instruction above about how to obtain the diff
 - SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing
   there may still be in the head commit. To read any other file, run this command with its
   repository-relative path in place of <path>, then Read the file it prints:
-  python -B "<source>/skills/ejryan89-code-review-core/scripts/review_source.py" source-file --run "<temp>/run" --role "generic-review" --path="<path>"
+  python -B "<source>/skills/ejryan89-code-review-core/scripts/review_source.py" source-file --run "<temp>/run" --role "generic-review" --path='<path>'
   It prints SOURCE_FILE <file>, EXCLUDED <path> <reason> for a file left out of the review
   (judge it from the diff), or FAILED when the commit has no such file. To search the code,
   run this command with an extended regular expression in place of <pattern>, rather than
   Grep or Glob over SOURCE_ROOT:
-  python -B "<source>/skills/ejryan89-code-review-core/scripts/review_source.py" source-search --run "<temp>/run" --role "generic-review" --pattern="<pattern>"
-  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write
-  [.] for a literal dot.
+  python -B "<source>/skills/ejryan89-code-review-core/scripts/review_source.py" source-search --run "<temp>/run" --role "generic-review" --pattern='<pattern>'
+  Put the path or pattern between the single quotes as it is, on one line, writing each
+  single quote in it as '"'"'. Claude Code asks before running a command in which a $
+  stands before a letter, even in single quotes, so write a dollar sign in a pattern as [$].
 - PULL_REQUEST_BODY_FILE holds the pull request's description as its author wrote it, which
   says what the author intends, not what the code does. Read it only when your instructions
   judge the change against what its description states. The pull request has none, so the file is empty.
