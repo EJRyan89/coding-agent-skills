@@ -14,7 +14,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import ClassVar
 from unittest import mock
@@ -37,6 +38,7 @@ from suite_discovery import (
     git_isolation_problems,
     pipe_race_problems,
     pool_shared_state_problems,
+    pytest_base,
     pytest_command,
     pytest_configuration_problems,
     recorded_cost_problems,
@@ -60,19 +62,32 @@ PLATFORM_ALLOWED = {
 }
 
 
-def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
-    """Run a fixture suite as the runner runs a suite, from the repository root, with its conftest.py as a plugin,
-    since a suite outside the repository is outside the root that loads it. A pytest.ini beside the suite makes its
-    folder the run's root, so pytest reads no folder above it, where other tests' temporary folders come and go."""
+def run_pytest(
+    suite: Path, *options: str, environment: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a fixture suite as the runner runs a suite, from the repository root with a base folder of its own, with its
+    conftest.py as a plugin, since a suite outside the repository is outside the root that loads it, and `environment`
+    over this process's. A pytest.ini beside the suite makes its folder the run's root, so pytest reads no folder above
+    it, where other tests' temporary folders come and go."""
     (suite.parent / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    return subprocess.run(
-        [*pytest_command(str(suite), *options), "-p", "conftest", "-p", "no:cacheprovider"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=REPOSITORY_ROOT,
-        check=False,
-    )
+    with pytest_base() as basetemp:
+        return subprocess.run(
+            [*pytest_command(str(suite), *options, basetemp=basetemp), "-p", "conftest", "-p", "no:cacheprovider"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=REPOSITORY_ROOT,
+            env={**os.environ, **(environment or {})},
+            check=False,
+        )
+
+
+# A suite whose test makes a temporary folder through pytest's tmp_path, and prints the folder it was given.
+TMP_PATH_SUITE = b"""\
+def test_makes_a_temporary_folder(tmp_path):
+    (tmp_path / "made").write_bytes(b"")
+    print("TMP_PATH", tmp_path)
+"""
 
 
 class SuiteDiscoveryFixtures(unittest.TestCase):
@@ -283,9 +298,10 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                     self.assertIn(expected, refused.stderr)
 
     def test_the_runner_starts_a_python_suite_through_pytest_on_its_one_file(self) -> None:
+        base = Path("pytest base") / "base"
         self.assertEqual(
-            [sys.executable, "-B", "-m", "pytest", "tests/test_a.py", "--suite-shard", "2/3"],
-            pytest_command("tests/test_a.py", "--suite-shard", "2/3"),
+            [sys.executable, "-B", "-m", "pytest", "tests/test_a.py", "--basetemp", str(base), "--suite-shard", "2/3"],
+            pytest_command("tests/test_a.py", "--suite-shard", "2/3", basetemp=base),
         )
         self.assertEqual(
             ["--suite-shard", "1/4", "--test-seconds", "A::test_a=13", "--test-seconds", "B::test_b=4.5"],
@@ -1056,6 +1072,72 @@ def test_the_pipe_race_policy_reads_a_script_once_at_a_depth_and_again_only_shal
     with mock.patch.object(suite_discovery, "_early_exit_program", counted):
         assert races_in(tmp_path, script) == []
     assert reads == ["f", "g", "bash -c cat", "cat", "bash -c cat", "bash -c cat", "cat", "bash -c echo 'x"]
+
+
+class PytestBaseFolderTests(unittest.TestCase):
+    """Every pytest the runner starts keeps its temporary folders in a base folder of its own, never in pytest's
+    default base, `pytest-of-<user>` in the temporary directory, which every other pytest process shares with its
+    `pytest-current` link: a process that ends removes the links there whose target is gone, so one that removes the
+    link between another's listing and its removal ends that other's session in a FileNotFoundError after its tests
+    all passed."""
+
+    def started(self, job: Callable[[], None]) -> tuple[list[str], Path]:
+        """The command `job` gives run_process and the base folder it names, checked while the job runs: a folder in a
+        folder of its own, empty, that the job made under the temporary directory and removes once it is done."""
+        commands: list[list[str]] = []
+
+        def run(arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT) -> None:
+            commands.append(list(arguments))
+            self.assertEqual(1, arguments.count("--basetemp"), arguments)
+            base = Path(arguments[arguments.index("--basetemp") + 1])
+            self.assertTrue(base.parent.is_dir(), base)
+            self.assertEqual([], list(base.parent.iterdir()))
+            self.assertTrue(base.parent.parent.samefile(tempfile.gettempdir()), base)
+            self.assertEqual(suite_discovery.PYTEST_ENVIRONMENT, environment)
+
+        with mock.patch.object(suite_discovery, "run_process", side_effect=run):
+            job()
+        [command] = commands
+        base = Path(command[command.index("--basetemp") + 1])
+        self.assertFalse(base.parent.exists(), base)
+        return command, base
+
+    def test_a_whole_suite_and_each_shard_start_pytest_with_a_base_folder_of_their_own(self) -> None:
+        suite = REPOSITORY_ROOT / "tests" / "test_a.py"
+        whole, whole_base = self.started(functools.partial(suite_discovery.run_test_script, suite))
+        first, first_base = self.started(functools.partial(suite_discovery.run_shard, suite, 0, 2, {"A::test_a": 9}))
+        second, second_base = self.started(functools.partial(suite_discovery.run_shard, suite, 1, 2, {}))
+        start = [sys.executable, "-B", "-m", "pytest", "tests/test_a.py", "--basetemp"]
+        self.assertEqual([*start, str(whole_base)], whole)
+        shard = ["--suite-shard", "1/2", "--test-seconds", "A::test_a=9"]
+        self.assertEqual([*start, str(first_base), *shard], first)
+        self.assertEqual([*start, str(second_base), "--suite-shard", "2/2"], second)
+        self.assertEqual(3, len({whole_base.parent, first_base.parent, second_base.parent}))
+
+    def test_two_tmp_path_suites_run_at_once_each_keep_their_folders_in_their_own_base(self) -> None:
+        # pytest makes its default base, pytest-of-<user>, in the folder PYTEST_DEBUG_TEMPROOT names, in place of the
+        # temporary directory, so a run that used the shared base would leave it in `shared`.
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as shared:
+            suites = []
+            for name in ("first", "second"):
+                (Path(temporary) / name).mkdir()
+                suites.append(Path(temporary) / name / "test_temporary.py")
+                suites[-1].write_bytes(TMP_PATH_SUITE)
+
+            def run(suite: Path) -> subprocess.CompletedProcess[str]:
+                return run_pytest(suite, "-s", environment={"PYTEST_DEBUG_TEMPROOT": shared})
+
+            with ThreadPoolExecutor(max_workers=len(suites)) as pool:
+                runs = list(pool.map(run, suites))
+            for ran in runs:
+                self.assertEqual(0, ran.returncode, ran.stdout + ran.stderr)
+            self.assertEqual([], sorted(entry.name for entry in Path(shared).iterdir()))
+            folders = [
+                line.split("TMP_PATH ", 1)[1] for ran in runs for line in ran.stdout.splitlines() if "TMP_PATH " in line
+            ]
+            self.assertEqual(2, len(set(folders)), folders)
+            for folder in folders:
+                self.assertIn("pytest-base-", folder)
 
 
 class SkillSuiteFixtures(unittest.TestCase):
