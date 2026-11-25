@@ -343,7 +343,7 @@ DEPTH = 300
 )
 def test_a_documented_limit_text_nested_past_the_recursion_limit_which_bash_reads_is_an_error(text: str) -> None:
     assert bash_agreement.bash_verdicts([text])[text][0]
-    with pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"):
+    with pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"):
         bash_syntax.parse(text)
 
 
@@ -832,12 +832,12 @@ def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) ->
 
 
 def test_simple_commands_raise_where_nesting_runs_past_the_recursion_limit() -> None:
-    with pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"):
+    with pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"):
         bash_syntax.simple_commands("echo $(" * DEPTH + "git am" + ")" * DEPTH)
     # The walk into each substitution recurses too, past where parse read the text whole.
     with (
         mock.patch.object(bash_syntax, "_tree_commands", side_effect=RecursionError("maximum recursion depth")),
-        pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"),
+        pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"),
     ):
         bash_syntax.simple_commands("git am")
 
