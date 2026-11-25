@@ -3334,9 +3334,15 @@ class BashReader:
         """What a compound command does to where the shell is (Effect): the greatest effect of each command it holds,
         each simple one read as read_simple reads it and judged by effect, as read_command_words follows it. A
         function definition runs code the guard does not read whenever a later command calls it, and a plain
-        assignment to DIRSTACK or one of its elements moves the stack a later popd reads."""
+        assignment to DIRSTACK or one of its elements moves the stack a later popd reads. A subshell, a coprocess,
+        which is read as one, a pipeline of several commands, and a background job run in a copy of the shell, so what
+        they hold moves nothing, as the reader reads them."""
         if isinstance(node, bash_syntax.FunctionDefinition):
             return Effect.UNREAD
+        if isinstance(node, bash_syntax.Subshell) or (
+            isinstance(node, bash_syntax.Pipeline) and len(node.commands) > 1
+        ):
+            return Effect.NOTHING
         if isinstance(node, bash_syntax.Simple):
             index = command_start(node.words)
             if index == len(node.words):
@@ -3344,7 +3350,7 @@ class BashReader:
             return self.effect([self.word_value(word) for word in node.words[index:]])
         parts: Iterable[object] = ()
         if isinstance(node, bash_syntax.CommandList):
-            parts = (and_or for and_or, _ in node.items)
+            parts = (and_or for and_or, background in node.items if not background)
         elif isinstance(node, bash_syntax.AndOr):
             parts = (node.first, *(pipeline for _, pipeline in node.rest))
         elif isinstance(node, bash_syntax.Pipeline):
@@ -3738,6 +3744,12 @@ def powershell_command(name: str) -> bool:
     return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
 
 
+def powershell_runs_itself(name: str) -> bool:
+    """Whether PowerShell runs a command's name as its own: a script file, which runs in the session, or a name it
+    finds among its own commands first (powershell_command); any other name is a program's."""
+    return name.lower().endswith(POWERSHELL_SCRIPT) or powershell_command(name)
+
+
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
     """gh, which runs git itself to check a branch out for the subcommands GH_CHECKOUTS names, in the checkout it runs
     in: read as a git call there. Its words are read up to its subcommand, past each flag GH_VALUED_FLAGS names with
@@ -4050,10 +4062,13 @@ class PowerShellReader:
             return certain(directory)
         self.read_redirections(command, directory)
         effect = self.effect(command)
+        name, *arguments = self.words(command)
         if effect is Effect.UNREAD:
+            if command.get("invocation") == "Dot" and name is not None and not powershell_runs_itself(name):
+                # A program dot-sourced into the session runs as it would without the dot, git among them.
+                self.read_native([name, *arguments], directory)
             return certain(UNREAD_CODE)
         outcome = certain(directory)
-        name, *arguments = self.words(command)
         if name is not None and not command.get("expression"):
             cmdlet = POWERSHELL_COMMANDS.get(name.lower())
             if cmdlet is None:

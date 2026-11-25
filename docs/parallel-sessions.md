@@ -746,6 +746,12 @@ Within what it reads, it judges only what the text shows, so these too are left 
   configuration a command writes into a repository it makes by any means but a redirection or a git call's words;
 - in PowerShell, a script file found on the path by a name written without `.ps1`, which runs in the session and may
   move its location, where the guard reads the name as a program's, which moves nothing;
+- in PowerShell, a method that moves the location, as `$ExecutionContext.SessionState.Path.SetLocation(...)`, which is
+  no command;
+- a shell one shell starts after code the guard does not read, as a `bash -c` from PowerShell after a dot-sourced
+  script or after `${env:BASH_FUNC_g%%} = ...`, or a `pwsh -Command` from Bash after an `eval`, which that code may
+  hand a function or `BASH_ENV` through the environment, where the guard reads the new shell as one holding no such
+  code, so a `cd` to a literal directory in it settles where its git calls run;
 - a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
   do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
   where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the

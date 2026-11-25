@@ -81,7 +81,10 @@ EXPORTED_FUNCTION_CALLS = (
     "! f",
     "time f",
 )
-EXPORTED_FUNCTION_COPIES = ("( f )", "f | cat", "(f) && true")
+EXPORTED_FUNCTION_COPIES = (
+    *("( f )", "f | cat", "(f) && true", "coproc f", "{ ( f ); }", "{ f | cat; }", "if true; then f | cat; fi"),
+    *("{ f & }", "while ( f ); do break; done", "if true; then coproc f; fi"),
+)
 
 
 def unread_code_forms(target: Path | str) -> tuple[str, ...]:
@@ -108,6 +111,7 @@ EFFECT_SAMPLES = (
     *("trap x DEBUG", "alias a=b", "mapfile -C cb x", 'mapfile -t "$X"', "compgen -F g x", "jobs -x cd /"),
     *("cd /", "pushd /", "popd +1", "dirs -c x", "DIRSTACK=x", "command cd /", "builtin cd /", "Command cd /"),
     *("mapfile -t x", "command -v git", "echo cd /", "git status", "/usr/bin/eval x", "env cd /", "x=1", "jobs -l"),
+    *("( f )", "f | cat", "f &", "coproc eval x", "( cd / )", "eval x | cat"),
 )
 
 
@@ -3783,18 +3787,24 @@ class UnderstoodSetTests(GuardTestCase):
         # A loop's second pass runs its commit after the code its first pass did not read.
         loop = f'for i in 1 2; do cd "{self.tree}"; git commit -m x; eval "$DEFINE"; done'
         self.assertEqual("deny", self.bash(loop, self.tree))
-        # A cd whose target the text does not settle, a builtin given no callback, a subshell, and a background job
-        # define nothing in the shell, so the cd after them settles where the commit runs.
-        for before in ('cd "$DIR"', "mapfile -t lines <<< x", '( eval "$DEFINE" )', 'eval "$DEFINE" | cat'):
+        # A cd whose target the text does not settle, a builtin given no callback, a subshell, a coprocess, a pipeline,
+        # and a background job define nothing in the shell, so the cd after them settles where the commit runs, alone
+        # and inside a compound command.
+        for copy in ('( eval "$DEFINE" )', 'eval "$DEFINE" | cat', 'coproc eval "$DEFINE"', 'eval "$DEFINE" &'):
+            for before in (copy, f"if true; then {copy}\nfi", f"{{ {copy}\n}}"):
+                command = f'{before}\ncd "{self.tree}"; g; git commit -m x'
+                with self.subTest(command=command):
+                    self.assertIsNone(self.bash(command, self.tree))
+        for before in ('cd "$DIR"', "mapfile -t lines <<< x"):
             command = f'{before}; cd "{self.tree}"; g; git commit -m x'
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
-        self.assertIsNone(self.bash(f'eval "$DEFINE" & cd "{self.tree}"; git commit -m x', self.tree))
 
     def test_a_compound_command_is_judged_by_the_effect_its_commands_are_followed_by(self) -> None:
         # Whether a compound command moves the shell is the one decision the reader follows each command by, so a
         # command the reader leaves somewhere else at the top level is one a group holding it is judged to move, and
-        # one that leaves code the guard does not read in the shell is one the group is judged to leave it in.
+        # one that leaves code the guard does not read in the shell is one the group is judged to leave it in; a
+        # subshell, a pipeline, and a background job leave neither.
         reading = hub_guard.Reading(environment={"BASH_FUNC_f%%": "() { :; }"})
         reader = hub_guard.BashReader(reading, 0, hub_guard.bash_start(reading))
         start = hub_guard.Directory(self.tree)
@@ -3802,7 +3812,7 @@ class UnderstoodSetTests(GuardTestCase):
         for command in EFFECT_SAMPLES:
             with self.subTest(command=command):
                 after = reader.read_text(command, start)
-                group = bash_syntax.parse(f"{{ {command}; }}").items[0][0].first.commands[0]
+                group = bash_syntax.parse(f"{{ {command}\n}}").items[0][0].first.commands[0]
                 effect = reader.compound_effect(group)
                 effects.add(effect)
                 self.assertEqual(after == hub_guard.UNREAD_CODE, effect is hub_guard.Effect.UNREAD)
@@ -4058,6 +4068,13 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.tree))
                 self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Once the session may hold such code, a location cmdlet in a pipeline of several commands, or inside another
+        # command, settles nothing either, and nor does a Set-Location after it.
+        for moved in (f"Set-Location '{self.tree}' | Out-Null", f"Write-Output (Set-Location '{self.tree}')"):
+            command = f"Foo-Bar; {moved}; Set-Location '{self.tree}'; git commit -m x"
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
         # Commands that move nothing leave the commit where the session is, in a body and a pipeline too.
         for command in (
             "Write-Output 1 | Sort-Object; git commit -m x",
@@ -4066,6 +4083,22 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.powershell(command, self.tree))
+
+    def test_a_program_dot_sourced_into_the_session_is_read_as_the_program(self) -> None:
+        # PowerShell runs a program dot-sourced into the session as it runs it without the dot, so its git call is
+        # judged where it runs, in a body and a pipeline too.
+        for command in (
+            ". git commit -m x",
+            ". 'git' commit -m x",
+            ". git.exe commit -m x",
+            "if ($true) { . git commit -m x }",
+            "1 | . git commit -m x",
+            ". git push",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+        self.assertIsNone(self.powershell(". git status", self.hub))
+        self.assertIsNone(self.powershell(". git commit -m x", self.tree))
 
     def test_a_location_powershell_may_move_is_unknown_after_it(self) -> None:
         outside = self.root / "not-a-repository"
