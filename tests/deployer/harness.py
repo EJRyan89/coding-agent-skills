@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -103,7 +104,8 @@ _READ_BYTES = Path.read_bytes
 
 
 def tree_state(root: Path, unreadable: Mapping[Path, str] | None = None) -> dict[str, str]:
-    """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
+    """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target,
+    and a FIFO, socket, or device by its kind, never opened, since opening a FIFO blocks.
 
     A link, a junction included, whose target lies in the tree is recorded and not followed, so a change through it is
     not counted twice. One whose target lies outside the tree is followed too, once, its target's state recorded under
@@ -154,6 +156,8 @@ def _tree_state(root: Path, walked: set[Path], unreadable: Mapping[Path, str]) -
                         )
                     else:
                         state[relative] += f" file {hashlib.sha256(_READ_BYTES(target)).hexdigest()}"
+            elif name in files and not stat.S_ISREG(mode := os.lstat(path).st_mode):
+                state[path.relative_to(root).as_posix()] = f"special {stat.S_IFMT(mode):o}"
             elif name in files:
                 state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(_READ_BYTES(path)).hexdigest()}"
             else:

@@ -28,7 +28,7 @@ from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
 
-from . import platform_support, state_files
+from . import hashing, platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DEBUG_HINT, DeployError, SourceRefusal, os_error
 from .names import safe_name_problem
@@ -283,9 +283,22 @@ def _refuse_link(path: Path) -> None:
         )
 
 
+def _refuse_special(path: Path) -> None:
+    """Refuse `path` when it is a FIFO, socket, device, or other special file by its own metadata, naming it by its
+    kind, since opening a FIFO blocks the deployment and no skill holds such a file. One whose metadata cannot be read
+    raises its OSError."""
+    kind = hashing.special_kind(os.lstat(path))
+    if kind is not None:
+        raise SourceRefusal(
+            f"ERROR: {kind[:1].upper()}{kind[1:]} found in deployable source tree: {platform_support.normalize(path)}",
+            SPECIAL_FILE,
+        )
+
+
 def _reject_links(root: Path) -> None:
-    """Refuse a link at a root the deployer reads a source from, skills/, agents/, or deploy-meta/, or anywhere below
-    it, before anything is read through one. A listing that fails is refused as an incomplete checkout."""
+    """Refuse a link or a special file at a root the deployer reads a source from, skills/, agents/, or deploy-meta/,
+    or anywhere below it, before anything is read through one or opened. A listing that fails is refused as an
+    incomplete checkout."""
     _refuse_link(root)
     pending = [root]
     while pending:
@@ -299,6 +312,7 @@ def _reject_links(root: Path) -> None:
         for entry in entries:
             path = Path(entry.path)
             _refuse_link(path)
+            _refuse_special(path)
             if entry.is_dir(follow_symlinks=False):
                 pending.append(path)
 
@@ -640,6 +654,7 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
 
 # What a refusal of the source's links, bundles, renamed skills, agents, and shared assets asks of its author.
 REAL_FOLDER = "Replace it with the file or folder it points at, or remove it, then retry."
+SPECIAL_FILE = "Remove it, or move it out of the checkout, then retry."
 BUNDLE_SHAPE = (
     "Make bundles in source.json an object mapping each bundle's name to an object with a non-empty members list "
     'of skill names and, where present, an opt_in of true or false; see "Opt-in skills and bundles" in '

@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -201,8 +202,13 @@ def held_elsewhere(path: Path) -> bool:
 
     The lock is taken and let go at once when it is free, so a process that tries it meanwhile is refused for that
     moment. The OSError of the open is raised as it came, and a `FileLockError` when the file system refuses the lock.
+    Anything at `path` but a regular file, as the stat that follows a link finds it, is refused with an OSError naming
+    the path before any open: it is no file a `take` made, and opening a FIFO blocks until another process opens its
+    other end. The stat and the open are two steps, so a file replaced by a FIFO between them is opened.
     """
     try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise OSError(errno.EINVAL, "it is not a regular file, so its lock is not tried", str(path))
         descriptor = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
         return False
