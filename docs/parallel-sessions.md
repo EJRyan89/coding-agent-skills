@@ -550,12 +550,16 @@ The configuration's limits:
   a directory now, or else nowhere the text settles, since an earlier command may make it one. A pipeline's commands
   and a background job run in subshells of their own, so a change there moves nothing after them. A target the text
   does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and `pushd`'s rotations leave the directory unknown.
-  `dirs -c` clears the stack, so a later `popd` stays where it is, and so does a `dirs` word the text does not settle
-  or that bundles a `c`. A compound command that holds a change leaves every git call in it and after it in a directory
+  The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads, as Bash reads them, clears it,
+  so a later `popd` stays where it is, while a bundle such as `-lc` or a word `dirs` refuses clears nothing. A `dirs`
+  word the text does not settle or `--`, a `pushd` or `popd` given an option or an entry's number, a plain assignment
+  to `DIRSTACK` or one of its elements, and every move the guard does not follow leave the stack unknown, so a later
+  `popd` goes where the text does not settle. A compound command that holds a change leaves every git call in it and after it in a directory
   the text does not settle. So do the commands that may move the shell in a way the guard does not follow: a builtin
   `BUILTINS_NOT_FOLLOWED` names (`.`, `source`, `eval`, `builtin`, `command` but with `-v` or `-V`, `trap`, `fc`,
   `alias`, `unalias`, `enable`, `hash`, `mapfile` and `readarray`, whose `-C` callback Bash 4 and later run in the
-  shell itself, and `compgen`, whose `-F` function runs there too), a function definition, a function the environment
+  shell itself, `compgen`, whose `-F` function runs there too, and `jobs`, whose `-x` command does), a function
+  definition, a function the environment
   hands the shell as `BASH_FUNC_<name>%%`, and a command whose name the text does not settle. Every other builtin
   Bash's `compgen -b` lists is one `MOVES_NOTHING` names, each with why. A git call whose place is unknown is judged
   as the bullet on where a git call acts says.
@@ -682,7 +686,13 @@ names what they changed there.
 Within what it reads, it judges only what the text shows, so these too are left to the check:
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
-  `cd`, and the git call after it, where the guard does not follow;
+  `cd`, and the git call after it, where the guard does not follow, and an element of `DIRSTACK` a builtin sets, as
+  `declare`, `read`, `printf -v`, or a name reference does, which moves a later `popd` the same way;
+- `shopt -s cdable_vars`, after which a later `cd name` goes to the directory a variable of that name holds, where the
+  guard places it in a folder of that name;
+- Bash 5.3's `${ command; }` and `${| command; }` substitutions, which run their commands in the shell itself, so a
+  `cd` in one moves it and a git call in one runs, where ejryan89-skill-core's `bash_syntax.py` reads each as a
+  parameter expansion whose value the text does not settle, running nothing;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
   not cover, such as a `for` or `select` loop whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }` whose
   own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, an arithmetic expansion holding a quoted parenthesis, as

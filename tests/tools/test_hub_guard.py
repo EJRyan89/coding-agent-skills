@@ -3708,25 +3708,59 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
 
-    def test_dirs_clearing_the_stack_keeps_a_later_popd_where_the_shell_is(self) -> None:
-        # Bash's popd stays where it is once dirs -c has cleared the stack, so the commit after it runs in the hub.
+    def test_dirs_clears_the_stack_only_as_bash_does_so_a_later_popd_goes_where_bash_goes(self) -> None:
+        # Bash clears the stack only for an exact -c among words dirs reads, and its popd then stays where it is, so
+        # the commit after it runs in the hub.
         for command in (
             f'pushd "{self.hub}"; dirs -c; popd; git commit -m x',
-            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -l -c; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c +5; popd; git commit -m x',
+            f'pushd "{self.hub}"; if true; then dirs -c; fi; popd; git commit -m x',
+            # A bundle, or a word dirs refuses, clears nothing, so popd goes back to the hub it left.
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -lc; popd; git commit -m x',
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -x -c; popd; git commit -m x',
+            # A word the text does not settle, and `--`, leave the stack unknown, so popd goes where it does not.
             f'pushd "{self.hub}"; dirs "$OPTION"; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -- -c; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
-        # dirs that only prints leaves the stack, so popd goes back to the worktree.
+        # A dirs that clears nothing leaves the stack, so popd goes back to the worktree.
         for command in (
             f'pushd "{self.hub}"; popd; git commit -m x',
             f'pushd "{self.hub}"; dirs -v; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c -x; popd; git commit -m x',
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_stack_the_text_does_not_settle_leaves_a_later_popd_where_the_text_does_not_settle(self) -> None:
+        # A move the guard does not follow, a pushd or popd given an option or an entry's number, and an assignment to
+        # DIRSTACK or one of its elements may change the stack, so the popd after them, even past a cd that settles
+        # where the shell is, goes where the text does not settle.
+        for command in (
+            f"""mapfile -C 'pushd -n "{self.hub}" >/dev/null; :' -c 1 <<< x; cd "{self.tree}"; popd; git commit -m x""",
+            f'pushd -n "{self.hub}"; cd "{self.tree}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; pushd +1; cd "{self.tree}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; pushd "{self.tree}"; popd +2; popd; git commit -m x',
+            f'pushd "{self.tree}"; DIRSTACK[1]="{self.hub}"; popd; git commit -m x',
+            f'pushd "{self.tree}"; DIRSTACK=("{self.tree}" "{self.hub}"); popd; git commit -m x',
+            f'eval \'pushd -n "{self.hub}"\'; cd "{self.tree}"; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A stack the text settles stays settled, so a popd back to the worktree is placed there.
+        self.assertIsNone(self.bash(f'pushd "{self.hub}"; pushd "{self.tree}"; popd; popd; git status', self.tree))
+        self.assertIsNone(self.bash(f'cd "{self.hub}"; cd "{self.tree}"; popd; git commit -m x', self.tree))
+
+    def test_the_builtins_the_guard_does_not_follow_are_the_ones_that_move_the_shell_unseen(self) -> None:
+        self.assertEqual("deny", self.bash(f'jobs -x cd "{self.hub}"; git commit -m x', self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
         self.assertEqual(
             {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"}
-            | {"mapfile", "readarray", "compgen"},
+            | {"mapfile", "readarray", "compgen", "jobs"},
             set(hub_guard.BUILTINS_NOT_FOLLOWED),
         )
 
@@ -5047,6 +5081,7 @@ MOVING_TEXT = {
     "readarray": """readarray -C 'cd "$2"; :' -c 1 <<< x""",
     # A function compgen -F runs is given the command, the word, and the word before as its own $1 to $3.
     "compgen": """target="$2"; g() { cd "$target"; }; compgen -F g x > /dev/null 2>&1""",
+    "jobs": 'jobs -x cd "$2"',
 }
 
 
@@ -5081,3 +5116,17 @@ def test_dirs_c_clears_the_stack_so_a_later_popd_stays_in_bash_itself(tmp_path: 
     command = [bash_agreement.find_bash(), "-c", script, "probe", *probe_folders(tmp_path)]
     result = platform_support.run_tool(command)
     assert result.output.split()[-1:] == ["stayed"], result.output
+
+
+@pytest.mark.parametrize("name", sorted(hub_guard.MOVES_NOTHING))
+def test_a_builtin_that_moves_nothing_runs_no_cd_its_words_name_in_bash_itself(name: str, tmp_path: Path) -> None:
+    # Given words that would move the shell if the builtin ran them as a command, alone and after the -x and -c
+    # options some builtins take to run one, the shell stays, or the builtin ends it, so nothing after it runs there.
+    if name not in runner_builtins()[1]:
+        return
+    folders = probe_folders(tmp_path)
+    for form in (f'{name} cd "$2"', f'{name} -x cd "$2"', f'{name} -c cd "$2"'):
+        body = f"f() {{ {form}; }}; f" if name in {"local", "return"} else form
+        script = f'cd "$1" && {body}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
+        result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script, "probe", *folders])
+        assert result.output.split()[-1:] != ["moved"], (form, result.output)

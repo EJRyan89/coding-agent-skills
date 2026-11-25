@@ -510,26 +510,30 @@ BUILTINS_NOT_FOLLOWED = {
     **dict.fromkeys(("alias", "unalias", "enable", "hash"), "changes what a later name runs"),
     **dict.fromkeys(("mapfile", "readarray"), "runs its -C callback in the shell itself, in Bash 4 and later"),
     "compgen": "runs its -F function in the shell itself",
+    "jobs": "runs its -x command in the shell itself",
 }
-# The Bash builtins that move neither the shell nor the stack popd reads, each with why.
+# The Bash builtins that run no command in the shell itself, so none moves the shell, each with why; a probe in
+# tests/tools/test_hub_guard.py holds each to Bash, run with words that would move it if it ran them as a command. One
+# that sets a variable may set an element of DIRSTACK, which moves a later popd: a stated limit in "What it does not
+# see" in docs/parallel-sessions.md, read only for a plain assignment (read_simple).
 MOVES_NOTHING = {
     **dict.fromkeys(
         (":", "true", "false", "[", "test", "echo", "printf", "pwd", "type", "help"), "only prints or tests"
     ),
-    **dict.fromkeys(("caller", "times", "history", "jobs", "ulimit", "umask"), "prints or sets process state"),
+    **dict.fromkeys(("caller", "times", "history", "ulimit", "umask"), "prints or sets process state"),
     **dict.fromkeys(
         ("break", "continue", "return", "exit", "logout", "shift"), "ends a loop, a function, or the shell"
     ),
     **dict.fromkeys(("bg", "fg", "wait", "disown", "kill", "suspend"), "acts on jobs, each in a process of its own"),
     **dict.fromkeys(
         ("declare", "typeset", "local", "export", "readonly", "unset", "let", "read", "getopts"),
-        "sets variables, and any command substitution in its words runs in a subshell",
+        "sets variables, running no command but a command substitution in its words, in a subshell",
     ),
     **dict.fromkeys(("set", "shopt"), "sets options; one that changes a later cd is the set and shopt catalogue's"),
     **dict.fromkeys(
         ("bind", "complete", "compopt"), "runs a command only at an interactive prompt's key or completion"
     ),
-    "exec": "replaces the shell with the program it names, so nothing after it runs",
+    "exec": "runs the program it names in the shell's place, read as a wrapper's command, or only redirects",
 }
 # The names beyond GIT_* that git reads to choose a file it reads or writes, or a program it runs, each with why; an
 # assignment to one before git is a part of the git call the guard does not settle (git_reads). A name git reads only
@@ -3031,21 +3035,51 @@ def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str |
 
 @dataclass(frozen=True)
 class Directory:
-    """Where a shell is, as far as the text settles it, and its pushd stack; None is a directory it does not."""
+    """Where a shell is, as far as the text settles it, and its pushd stack; None is a directory it does not. The
+    stack holds the entries the text settles from its top, and known_below says whether it ends there: False where a
+    command the guard does not follow may have pushed, popped, or set entries below them, so a popd past the last one
+    the text settles goes where the text does not settle."""
 
     cwd: Path | None
     stack: tuple[Path | None, ...] = ()
+    known_below: bool = True
 
 
-UNKNOWN = Directory(None)
+UNKNOWN = Directory(None, (), known_below=False)
+
+
+def pushed(directory: Directory) -> Directory:
+    """The stack a pushd or a Push-Location leaves: the directory it leaves on top of the one it had."""
+    return Directory(None, (directory.cwd, *directory.stack), directory.known_below)
+
+
+def popped(directory: Directory) -> Directory:
+    """Where a plain popd or Pop-Location goes: the top entry, the place it is when the stack is known to be empty,
+    since Bash's popd then fails and stays, or a place the text does not settle when it is not known."""
+    if directory.stack:
+        return Directory(directory.stack[0], directory.stack[1:], directory.known_below)
+    return directory if directory.known_below else UNKNOWN
+
+
+def elsewhere(directory: Directory) -> Directory:
+    """The same stack, in a directory the text does not settle."""
+    return replace(directory, cwd=None)
+
+
+def stack_unknown(directory: Directory) -> Directory:
+    """The same directory, with a stack the text does not settle."""
+    return Directory(directory.cwd, (), known_below=False)
 
 
 def joined(first: Directory, second: Directory) -> Directory:
     """A shell that may be in either directory: what the two agree on stays settled, and the rest is not."""
     cwd = first.cwd if same_place(first.cwd, second.cwd) else None
-    if len(first.stack) == len(second.stack) and all(map(same_place, first.stack, second.stack)):
-        return Directory(cwd, first.stack)
-    return Directory(cwd, (None,) * max(len(first.stack), len(second.stack)))
+    if len(first.stack) != len(second.stack):
+        return Directory(cwd, (None,) * min(len(first.stack), len(second.stack)), known_below=False)
+    stack = tuple(
+        entry if same_place(entry, other) else None for entry, other in zip(first.stack, second.stack, strict=True)
+    )
+    return Directory(cwd, stack, first.known_below and second.known_below)
 
 
 @dataclass(frozen=True)
@@ -3063,11 +3097,11 @@ def certain(directory: Directory) -> Outcome:
     return Outcome(directory, directory)
 
 
-def moved_to(directory: Directory, target: Path, stack: tuple[Path | None, ...]) -> Outcome:
-    """A directory change to target: where it succeeds, the shell is there; a target that is no directory now fails,
-    which leaves the shell where it was, unless an earlier command makes it one."""
+def moved_to(directory: Directory, target: Path, stacked: Directory) -> Outcome:
+    """A directory change to target, with the stack `stacked` holds: where it succeeds, the shell is there; a target
+    that is no directory now fails, which leaves the shell where it was, unless an earlier command makes it one."""
     path = Path(os.path.normpath(target))
-    arrived = Directory(path, stack)
+    arrived = replace(stacked, cwd=path)
     return certain(arrived) if path.is_dir() else Outcome(arrived, directory)
 
 
@@ -3284,7 +3318,9 @@ class BashReader:
         while index < len(words) and words[index].assignment is not None:
             index += 1
         if index == len(words):
-            return certain(directory)
+            # An assignment to DIRSTACK, or to one of its elements, changes the stack a later popd reads.
+            assigned = {word.assignment.name for word in words if word.assignment is not None}
+            return certain(stack_unknown(directory) if DIRSTACK in assigned else directory)
         prefixes: list[tuple[str, Word]] = []
         for word in words[:index]:
             assignment = word.assignment
@@ -3335,21 +3371,16 @@ class BashReader:
         return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
-        """A builtin that moves the shell: cd, pushd, and popd, followed, dirs, whose -c clears the stack popd reads,
-        and one BUILTINS_NOT_FOLLOWED names, which leaves where the shell is unknown. A dirs word the text does not
-        settle, or an option word holding a c, is taken to clear the stack, so a later popd stays where it is."""
+        """A builtin that moves the shell: cd, pushd, and popd, followed, dirs, whose -c clears the stack popd reads
+        (dirs_stack), and one BUILTINS_NOT_FOLLOWED names, which leaves where the shell is unknown."""
         if name in {"cd", "pushd"}:
             return self.read_cd(arguments, directory, push=name == "pushd")
         if name == "dirs":
-            clears = any(word is None or (word.startswith("-") and "c" in word[1:]) for word in arguments)
-            return certain(Directory(directory.cwd, ()) if clears else directory)
+            return certain(dirs_stack(arguments, directory))
         if name != "popd":
             return certain(UNKNOWN)
-        if arguments:
-            return certain(Directory(None, directory.stack[1:]))
-        if not directory.stack:
-            return certain(directory)
-        return certain(Directory(directory.stack[0], directory.stack[1:]))
+        # popd's +N, -N, and -n leave where it goes, or which entry it drops, to the stack's numbering.
+        return certain(UNKNOWN if arguments else popped(directory))
 
     def read_program(
         self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
@@ -3380,7 +3411,7 @@ class BashReader:
             return certain(UNKNOWN if wrapper in SHELL_WRAPPERS else directory)
         if not wrapped.words:
             return certain(directory)
-        start = Directory(None, directory.stack) if wrapped.moved else directory
+        start = elsewhere(directory) if wrapped.moved else directory
         outcome = self.read_command_words(wrapped.words, start, [*prefixes, *wrapped.assignments])
         return outcome if wrapper in SHELL_WRAPPERS else certain(directory)
 
@@ -3391,25 +3422,42 @@ class BashReader:
             arguments = arguments[1:]
         elif arguments and arguments[0] is not None and arguments[0].startswith(("-", "+")) and arguments[0] != "-":
             return certain(UNKNOWN)
-        stack = (directory.cwd, *directory.stack) if push else directory.stack
+        stacked = pushed(directory) if push else directory
         if not arguments:
             if push:
-                return certain(Directory(None, (None, *directory.stack[1:])))
+                return certain(replace(directory, cwd=None, stack=(None, *directory.stack[1:])))
             if self.start.home is None:
-                return certain(Directory(None, stack))
-            return moved_to(directory, self.start.home, stack)
+                return certain(elsewhere(stacked))
+            return moved_to(directory, self.start.home, stacked)
         if len(arguments) > 1:
             return certain(directory)  # Bash refuses more than one directory, and stays
         target = arguments[0]
         if target is None or target == "-":
-            return certain(Directory(None, stack))
+            return certain(elsewhere(stacked))
         path = Path(platform_support.from_shell_path(target))
         if not path.is_absolute():
             relative_to_cwd = target.startswith(("./", "../")) or target in {".", ".."}
             if directory.cwd is None or (self.start.cdpath and not relative_to_cwd):
-                return certain(Directory(None, stack))
+                return certain(elsewhere(stacked))
             path = directory.cwd / path
-        return moved_to(directory, path, stack)
+        return moved_to(directory, path, stacked)
+
+
+# The variable that holds the shell's directory stack, an assignment to which changes where a later popd goes.
+DIRSTACK = "DIRSTACK"
+# What dirs reads as a word of its own: an option it takes alone, as Bash reads none bundled, or an entry's number.
+DIRS_WORD = re.compile(r"-[clpv]|[+-][0-9]+")
+
+
+def dirs_stack(arguments: list[Word], directory: Directory) -> Directory:
+    """The stack after a dirs command, which never moves the shell: cleared where an exact -c stands and every word is
+    one dirs reads (DIRS_WORD), as Bash clears it then; as it was where a word dirs refuses stands, which ends it
+    unrun, or where no -c does; and not settled where a word the text does not settle, or `--`, stands among them."""
+    if any(word is None or word == "--" for word in arguments):
+        return stack_unknown(directory)
+    if all(DIRS_WORD.fullmatch(word) for word in arguments if word is not None) and "-c" in arguments:
+        return Directory(directory.cwd, (), known_below=True)
+    return directory
 
 
 # A word the text does not settle, handed to command_wrappers, which reads words as text: no word Bash makes holds NUL.
@@ -3886,7 +3934,7 @@ class PowerShellReader:
                     names = ", ".join(name for name, _ in wrapped.assignments if git_reads(name))
                     if names:
                         self.reading.cannot_read(f"an assignment before git, {names}, which git reads")
-                self.read_native(wrapped.words, Directory(None) if wrapped.moved else directory)
+                self.read_native(wrapped.words, elsewhere(directory) if wrapped.moved else directory)
         elif self.depth >= NESTING_LIMIT:
             return
         elif program in command_wrappers.SCRIPT_SHELLS:
@@ -3904,11 +3952,8 @@ class PowerShellReader:
         if cmdlet == "push-location":
             return self.read_location(arguments, directory, push=True)
         if cmdlet == "pop-location":
-            if arguments:
-                return certain(Directory(None, directory.stack[1:]))
-            if not directory.stack:
-                return certain(directory)
-            return certain(Directory(directory.stack[0], directory.stack[1:]))
+            # -StackName pops another stack, and -PassThru or another parameter is one the guard does not read.
+            return certain(UNKNOWN if arguments else popped(directory))
         return certain(directory)
 
     def read_location(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
@@ -3917,26 +3962,26 @@ class PowerShellReader:
         the text does not settle does."""
         if arguments and arguments[0] is not None and arguments[0].lower() in {"-path", "-literalpath"}:
             arguments = arguments[1:]
-        stack = (directory.cwd, *directory.stack) if push else directory.stack
+        stacked = pushed(directory) if push else directory
         start = home(self.reading.environment)
         if not arguments:
-            return certain(Directory(None, stack)) if start is None else moved_to(directory, start, stack)
+            return certain(elsewhere(stacked)) if start is None else moved_to(directory, start, stacked)
         target = arguments[0]
         if target is not None and target.startswith("-") and target != "-":
             return certain(UNKNOWN)
         if len(arguments) > 1 or target is None or target in {"-", "+"} or PROVIDER_PATH.match(target):
-            return certain(Directory(None, stack))
+            return certain(elsewhere(stacked))
         if target == "~" or target.startswith(("~/", "~\\")):
             if start is None:
-                return certain(Directory(None, stack))
+                return certain(elsewhere(stacked))
             path = start / target[2:]
         else:
             path = Path(target)
         if not path.is_absolute():
             if directory.cwd is None:
-                return certain(Directory(None, stack))
+                return certain(elsewhere(stacked))
             path = directory.cwd / path
-        return moved_to(directory, path, stack)
+        return moved_to(directory, path, stacked)
 
 
 ShellReader = Callable[[str, "Path | None", Reading, int], None]
