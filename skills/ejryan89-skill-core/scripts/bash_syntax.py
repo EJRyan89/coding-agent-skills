@@ -87,8 +87,9 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   one a startup file sets, and an interactive shell's, which expands aliases and history by default.
 - A set or shopt behind a name the text does not settle, as `"$x" -o posix`, or in a text eval or another shell runs,
   which each reader reads as its own text, is read where that text is; and POSIXLY_CORRECT or BASH_COMPAT assigned
-  other than before a command, as a declaration builtin's NAME=value, or by ${NAME:=word}, as by `read`, `printf -v`,
-  a loop, a name reference, or arithmetic, is not seen.
+  other than before a command, as a declaration builtin's NAME=value, or by ${NAME:=word}, as by a declaration that
+  gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name reference, or an arithmetic assignment,
+  is not seen.
 """
 
 from __future__ import annotations
@@ -196,9 +197,12 @@ OPTIONS_REFUSED: dict[str, str] = {
 }
 # The letters by which set turns on an option OPTIONS_REFUSED names, as -k or within a bundle such as -ek.
 SET_LETTERS = {"H": "histexpand", "k": "keyword"}
-# The variables whose assignment turns on an option OPTIONS_REFUSED names, each with that option: POSIXLY_CORRECT turns
-# on POSIX mode, and BASH_COMPAT sets the compatibility level the compat options set.
-OPTION_VARIABLES = {"POSIXLY_CORRECT": "set -o posix", "BASH_COMPAT": "shopt compat31"}
+# The variables whose assignment changes how Bash reads as an option OPTIONS_REFUSED does, each with what it does:
+# POSIXLY_CORRECT turns on POSIX mode, and BASH_COMPAT sets the compatibility level the compat options set.
+OPTION_VARIABLES = {
+    "POSIXLY_CORRECT": f"turns on posix: {OPTIONS_REFUSED['set -o posix']}",
+    "BASH_COMPAT": f"sets the compatibility level the compat options set: {COMPATIBILITY}",
+}
 # Each reserved word, `set -o` option, and `shopt` option the reader neither reads nor refuses, with why.
 NOT_READ: dict[str, str] = {
     "set -o xtrace": (
@@ -221,6 +225,9 @@ COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "u
 # with the words each may follow: -p right after `time`, and -- right after `time` or its -p. Any other word there, a
 # second -p or -- among them, is the timed command's own.
 TIME_OPTIONS = {"-p": ("time",), "--": ("time", "-p")}
+# Unquoted text Bash expands into other words when the command runs: a glob, which names the files it matches, and a
+# brace expansion, `{a,b}` or `{1..3}`.
+EXPANDS_TO_WORDS = re.compile(r"[*?]|\[.*\]|\{[^{}]*(?:,|\.\.)[^{}]*\}")
 # The builtins whose arguments Bash reads as assignments, so NAME=( ) among them is an array.
 DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "local", "readonly", "typeset"})
 # The declaration builtins that assign the variable a NAME=value argument names, as Bash assigns one before a command.
@@ -1533,7 +1540,7 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
                 for command in pipeline.commands:
                     yield from _tree_commands(command)
         return
-    refusal = option_refusal(node) if isinstance(node, Simple) else None
+    refusal = option_refusal(node)
     if refusal is not None:
         raise NotRead(refusal)
     yield node
@@ -1568,20 +1575,23 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
 
 
 def settled_text(word: Word) -> str | None:
-    """A word's text after quote removal when the text settles it, each of its parts literal text; else None."""
-    if all(part.kind == "text" for part in word.parts):
+    """A word's text after quote removal when the text settles it, each of its parts literal text and no unquoted one
+    holding a glob or a brace expansion (EXPANDS_TO_WORDS), which Bash makes other words of; else None."""
+    if all(part.kind == "text" and (part.quoted or not EXPANDS_TO_WORDS.search(part.text)) for part in word.parts):
         return "".join(part.text for part in word.parts)
     return None
 
 
-def option_refusal(command: Simple) -> str | None:
-    """Why the reader does not read the text after a simple command: it turns on an option OPTIONS_REFUSED names, by
-    set or shopt, behind builtin or command too, or may, given a word the text does not settle where either reads an
-    option; or it assigns a variable OPTION_VARIABLES names, before a command, as a declaration builtin's NAME=value,
-    or by ${NAME:=word}. None for any other command, set and shopt that print or test options and turn one off
-    included. Bash runs a command only through the name it has when the command runs, so a set or shopt behind a name
-    the text does not settle is not read, a limit the module states."""
-    words = list(command.words)
+def option_refusal(command: Command) -> str | None:
+    """Why the reader does not read the text after a command: a simple one that turns on an option OPTIONS_REFUSED
+    names, by set or shopt, behind builtin or command too, or may, given a word the text does not settle where either
+    reads an option; or any that assigns a variable OPTION_VARIABLES names, before a simple command's name, as a
+    declaration builtin's NAME=value, or by ${NAME:=word} in a word it expands (expanded_words) or an unquoted
+    here-document's body. None for any other command, set and shopt that print or test options and turn one off
+    included, and for a function's definition, whose body is read as its own command. Bash runs a command only through
+    the name it has when the command runs, so a set or shopt behind a name the text does not settle is not read, a
+    limit the module states."""
+    words = list(command.words) if isinstance(command, Simple) else []
     assigned: list[str] = []
     while words and words[0].assignment is not None:
         assigned.append(words.pop(0).raw)
@@ -1589,12 +1599,14 @@ def option_refusal(command: Simple) -> str | None:
     program = settled_text(words[0]) if words else None
     if program in ASSIGNING_BUILTINS:
         assigned += [word.raw for word in words[1:] if word.assignment is not None]
-    expanded = [*command.words, *(redirect.target for redirect in command.redirects if redirect.target is not None)]
-    names = [NAME.match(text) for text in assigned + [name for word in expanded for name in word.assigns]]
+    expansions = [
+        *(word.assigns for word in expanded_words(command)),
+        *(doc.assigns for doc in here_documents(command)),
+    ]
+    names = [NAME.match(text) for text in assigned + [name for assigns in expansions for name in assigns]]
     for name in (match.group() for match in names if match is not None):
         if name in OPTION_VARIABLES:
-            option = OPTION_VARIABLES[name]
-            return f"it assigns {name}, which turns on {option_name(option)}: {OPTIONS_REFUSED[option]}"
+            return f"it assigns {name}, which {OPTION_VARIABLES[name]}"
     if program == "set":
         return set_refusal(words[1:])
     if program == "shopt":
@@ -1603,11 +1615,13 @@ def option_refusal(command: Simple) -> str | None:
 
 
 def builtin_words(words: list[Word]) -> list[Word]:
-    """A command's words from the builtin `builtin` or `command` runs, past either and command's options; none for a
-    command given -v or -V, which only looks a name up."""
+    """A command's words from the builtin `builtin` or `command` runs, past either, the `--` builtin takes, and
+    command's options; none for a command given -v or -V, which only looks a name up."""
     while words and settled_text(words[0]) in ("builtin", "command"):
         runs_options = settled_text(words[0]) == "command"
         words = words[1:]
+        if not runs_options and words and settled_text(words[0]) == "--":
+            words = words[1:]
         while runs_options and words and (option := settled_text(words[0])) is not None and option[:1] == "-":
             words = words[1:]
             if option == "--":

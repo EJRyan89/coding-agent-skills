@@ -252,7 +252,10 @@ cannot read, holding a command that turns on a `set -o` or `shopt` option under 
 `command` too, or by an assignment to `POSIXLY_CORRECT` or `BASH_COMPAT`; and `set` or `shopt` given a word the text
 does not settle. Every option Bash's `set -o` and `shopt -p` print is decided there. The policy does not follow
 `xtrace`, which expands `PS4` before each traced command, running a substitution its value holds, nor an option the
-script does not turn on itself, as the environment or a shell's start options set one. In PowerShell it
+script does not turn on itself, as the environment or a shell's start options set one, nor
+`POSIXLY_CORRECT` or `BASH_COMPAT` set other than by NAME=value before a command, a declaration builtin's NAME=value,
+or `${NAME:=word}`, as a declaration that gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name
+reference, or an arithmetic assignment sets one. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`

@@ -1339,7 +1339,6 @@ def test_every_option_the_reader_decides_is_one_bash_has() -> None:
     catalogue = runner_options()[1] | PINNED_OPTIONS | GIT_BASH_OPTIONS
     decided = bash_syntax.OPTIONS_READ | bash_syntax.OPTIONS_REFUSED.keys() | option_keys(bash_syntax.NOT_READ)
     assert sorted(decided - catalogue) == [], "remove each: no Bash has it"
-    assert set(bash_syntax.OPTION_VARIABLES.values()) <= bash_syntax.OPTIONS_REFUSED.keys()
 
 
 def test_each_letter_set_turns_on_a_refused_option_by_is_the_one_bash_reads() -> None:
@@ -1373,7 +1372,8 @@ def turning_on(key: str) -> list[str]:
         forms += [f"set -{letter}" for letter, option in bash_syntax.SET_LETTERS.items() if option == name]
         forms += [f"set -e{letter}u x" for letter, option in bash_syntax.SET_LETTERS.items() if option == name]
     first = forms[0]
-    return [*forms, f"builtin {first}", f"command {first}", f"command -p -- {first}", f"'{first[:1]}'{first[1:]}"]
+    wrapped = [f"builtin {first}", f"builtin -- {first}", f"command {first}", f"command -p -- {first}"]
+    return [*forms, *wrapped, f"'{first[:1]}'{first[1:]}"]
 
 
 def placed(command: str) -> list[str]:
@@ -1449,6 +1449,9 @@ def test_turning_an_option_off_or_printing_it_is_read_and_turning_on_a_read_one_
         'x="$POSIXLY_CORRECT"',
         "echo POSIXLY_CORRECT=1",
         "git BASH_COMPAT=1 status",
+        "shopt -s 'null*'",
+        'shopt -s "{nullglob,dotglob}"',
+        "set -o \\{posix,x}",
     ],
 )
 def test_set_and_shopt_that_turn_no_refused_option_on_and_other_commands_are_read(text: str) -> None:
@@ -1472,13 +1475,26 @@ def test_set_and_shopt_that_turn_no_refused_option_on_and_other_commands_are_rea
         (': "${POSIXLY_CORRECT:=1}"', "POSIXLY_CORRECT"),
         ("echo x > ${BASH_COMPAT=31}", "BASH_COMPAT"),
         ("x=$(BASH_COMPAT=31)", "BASH_COMPAT"),
+        # A word a compound command expands, an unquoted here-document's body, and arithmetic assign too.
+        ("case ${POSIXLY_CORRECT:=1} in *) :;; esac", "POSIXLY_CORRECT"),
+        ("case x in ${BASH_COMPAT:=31}) :;; esac", "BASH_COMPAT"),
+        ("for i in ${POSIXLY_CORRECT:=1}; do :; done", "POSIXLY_CORRECT"),
+        ("select i in ${BASH_COMPAT=31}; do :; done", "BASH_COMPAT"),
+        ("cat <<EOF\n${POSIXLY_CORRECT:=1}\nEOF", "POSIXLY_CORRECT"),
+        ("(( ${POSIXLY_CORRECT:=1} ))", "POSIXLY_CORRECT"),
+        ("for (( ${BASH_COMPAT:=31}; ; )); do break; done", "BASH_COMPAT"),
+        ("{ :; } > ${POSIXLY_CORRECT:=1}", "POSIXLY_CORRECT"),
     ],
 )
 def test_assigning_a_variable_that_turns_on_a_refused_option_is_not_read(text: str, variable: str) -> None:
     bash_agreement.assert_reader_agrees([text])
-    option = bash_syntax.OPTION_VARIABLES[variable]
-    with pytest.raises(bash_syntax.NotRead, match=rf"^it assigns {variable}, which turns on {option.split()[-1]}: "):
+    reason = re.escape(f"it assigns {variable}, which {bash_syntax.OPTION_VARIABLES[variable]}")
+    with pytest.raises(bash_syntax.NotRead, match=rf"^{reason}$"):
         bash_syntax.simple_commands(text)
+
+
+def test_a_quoted_here_document_s_body_assigns_nothing() -> None:
+    assert bash_syntax.simple_commands("cat <<'EOF'\n${POSIXLY_CORRECT:=1}\nEOF") != []
 
 
 @pytest.mark.parametrize(
@@ -1493,6 +1509,15 @@ def test_assigning_a_variable_that_turns_on_a_refused_option_is_not_read(text: s
         ('shopt "$x" extglob', "shopt"),
         ("shopt -p $(echo x)", "shopt"),
         ('builtin set -o "$x"', "set"),
+        # A glob names the files it matches and a brace expansion makes several words, so either may name any option.
+        ("shopt -s {nullglob,extglob}", "shopt"),
+        ("shopt -s ext{glob,quote}", "shopt"),
+        ("shopt -s ext?lob", "shopt"),
+        ("shopt -s extglo[b]", "shopt"),
+        ("shopt -s ext*", "shopt"),
+        ("set -o {posix,errexit}", "set"),
+        ("set -{k,e}", "set"),
+        ("set -o posi{1..2}", "set"),
     ],
 )
 def test_set_or_shopt_given_a_word_the_text_does_not_settle_is_not_read(text: str, builtin: str) -> None:
@@ -1509,9 +1534,9 @@ def test_parse_reads_a_command_that_turns_on_a_refused_option_as_any_other() -> 
     assert simple_commands(tree) == [["shopt", "-s", "extglob"], ["git", "commit", "-m", "x"]]
 
 
-# How Bash runs each script, from an empty folder, with the option turned on and without, showing that it reads or
+# How Bash runs each script, from an empty folder, with the option turned on and turned off, showing that it reads or
 # runs the text after the option otherwise; each where the runner's Bash has the option, or, for a variable, from the
-# release that reads it.
+# release that reads it, with the variable assigned and not.
 COMPAT_PROBE = ('[[ a =~ "." ]] && echo matched', "matched\n", "")
 OPTION_PROBES: dict[str, tuple[str, str, str, str]] = {
     "set -o keyword": ("set -k", "printf '%s\\n' a=b last", "last\n", "a=b\nlast\n"),
@@ -1522,12 +1547,19 @@ OPTION_PROBES: dict[str, tuple[str, str, str, str]] = {
         "marker\n",
     ),
     "set -o posix": ("set -o posix", "alias e='echo aliased'\ne", "aliased\n", ""),
-    "set -o igncr": ("set -o igncr", "printf '%s' x\r", "x", "x\r"),
+    # Git Bash drops the carriage return that ends a line whatever igncr's setting, so the one probed stands inside a
+    # word, which igncr drops too.
+    "set -o igncr": ("set -o igncr", "printf '%s' x\ry", "xy", "x\ry"),
     "shopt expand_aliases": ("shopt -s expand_aliases", "alias e='echo aliased'\ne", "aliased\n", ""),
     "shopt extglob": ("shopt -s extglob", "!(echo marker)", "", "marker\n"),
     "shopt compat31": ("shopt -s compat31", *COMPAT_PROBE),
     **{
-        f"shopt compat{level}": (f"shopt -s compat{level}", 'echo "${BASH_COMPAT-}"', f"{level}\n", "\n")
+        f"shopt compat{level}": (
+            f"shopt -s compat{level}",
+            f'[[ "${{BASH_COMPAT-}}" == {level} ]] && echo level',
+            "level\n",
+            "",
+        )
         for level in ("32", "40", "41", "42", "43", "44")
     },
 }
@@ -1563,7 +1595,9 @@ def test_bash_reads_or_runs_the_text_after_a_refused_option_otherwise(key: str, 
         result = platform_support.run_tool([bash_agreement.find_bash(), "-c", turn_on], separate_errors=True)
         assert result.returncode != 0, result.output
         return
-    assert (run_probe(tmp_path, f"{turn_on}\n{text}"), run_probe(tmp_path, text)) == (on, off)
+    name = bash_syntax.option_name(key)
+    turn_off = f"set +o {name}" if set_option(key) else f"shopt -u {name}"
+    assert (run_probe(tmp_path, f"{turn_on}\n{text}"), run_probe(tmp_path, f"{turn_off}\n{text}")) == (on, off)
 
 
 @pytest.mark.parametrize("variable", sorted(VARIABLE_PROBES))
