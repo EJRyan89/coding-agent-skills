@@ -542,23 +542,26 @@ class CrossSkillContractTests(unittest.TestCase):
             script.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
             run = root / "code-review-run-spaced"
             role = "generic-review"
-            value = "src/O'Neil \u2018service\u2019 [new] (old) & newer;|.cs"
-            pattern = "class [A-Z]+Service;|GetAssignments( |[(])"
+            # A path or pattern goes between single quotes, each of its own written as '"'"'; a PowerShell smart
+            # single quote, which ends a single-quoted string there, is one the guard refuses.
+            value = "src/O'Neil \u201cservice\u201d [new] (old) & newer;|.cs"
+            pattern = 'class [A-Z]+Service;|GetAssignments( |[(])|it\'s "q" `x` $(y) \\d'
             commands = [
                 (
                     review_run.SELF_CHECK_COMMAND.format(script=script.as_posix(), run=run.as_posix(), role=role),
                     review_guard.SELF_CHECK,
+                    None,
                     ["validate-result", "--run", run.as_posix(), "--role", role],
                 ),
                 *[
                     (
-                        command.replace(placeholder, chosen),
+                        review_source.filled(command, chosen),
                         review_guard.SOURCE_COMMAND,
+                        (option, chosen),
                         [name, "--run", str(run), "--role", role, f"--{option}={chosen}"],
                     )
-                    for command, placeholder, chosen, name, option in zip(
+                    for command, chosen, name, option in zip(
                         review_source.source_commands(run, role, script=script.as_posix()),
-                        ("<path>", "<pattern>"),
                         (value, pattern),
                         ("source-file", "source-search"),
                         ("path", "pattern"),
@@ -566,8 +569,12 @@ class CrossSkillContractTests(unittest.TestCase):
                     )
                 ],
             ]
-            for command, validator, expected in commands:
+            for command, validator, chosen_value, expected in commands:
                 self.assertIsNotNone(validator.fullmatch(command))
+                if chosen_value is not None:
+                    # The guard reads the whole command, and the value it reads is the one the script receives.
+                    option, chosen = chosen_value
+                    self.assertEqual(chosen, review_guard.source_value(command, option))
                 for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                     with self.subTest(command=command, shell=shell):
                         if executable is None:
@@ -583,7 +590,7 @@ class CrossSkillContractTests(unittest.TestCase):
                         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                         self.assertEqual(expected, json.loads(result.stdout))
 
-    def test_powershell_smart_double_quote_command_breaks_are_denied_without_execution(self) -> None:
+    def test_a_powershell_smart_quote_that_breaks_a_source_command_is_denied_without_execution(self) -> None:
         from deployer import platform_support
 
         executable = platform_support.find_pwsh(os.environ.get("PATH", ""))
@@ -596,8 +603,12 @@ class CrossSkillContractTests(unittest.TestCase):
             "@($ast.EndBlock.Statements.Count, $errors.Count) | ConvertTo-Json -Compress"
         )
         fetch = review_source.source_commands(Path("C:/code-review-run-example"), "generic-review")[0]
-        for quote in ("\u201c", "\u201d", "\u201e"):
-            command = fetch.replace("<path>", f"Service{quote}; Write-Output marker; #")
+        # Inside the value's single quotes PowerShell ends the string at a smart single quote, so the rest runs as a
+        # second statement, and reads a smart double quote as text, as Bash reads both.
+        breaks = {"\u2018": True, "\u2019": True, "\u201a": True, "\u201b": True, "\u201c": False, "\u201d": False}
+        for quote, breaks_out in breaks.items():
+            value = f"Service{quote}; Write-Output marker; #"
+            command = review_source.filled(fetch, value)
             with self.subTest(quote=quote):
                 result = subprocess.run(
                     [executable, "-NoProfile", "-Command", parser],
@@ -609,8 +620,13 @@ class CrossSkillContractTests(unittest.TestCase):
                     timeout=30,
                 )
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-                self.assertEqual([2, 0], json.loads(result.stdout))
-                self.assertIsNone(review_guard.SOURCE_COMMAND.fullmatch(command))
+                statements = json.loads(result.stdout)[0]
+                if breaks_out:
+                    self.assertLess(1, statements, "PowerShell runs what follows the quote")
+                    self.assertIsNone(review_guard.source_value(command, "path"))
+                else:
+                    self.assertEqual(1, statements)
+                    self.assertEqual(value, review_guard.source_value(command, "path"))
 
     def test_the_reviewer_hook_blocks_the_call_when_the_guard_is_missing_or_broken(self) -> None:
         # A PreToolUse hook that fails with any exit code but 2 lets the call through unguarded, and PowerShell's
