@@ -179,10 +179,15 @@ fi
 # Windows reads a name, so git there takes git_dir as GIT_DIR. ejryan89-skill-core's bounded_process.py leaves the same out of
 # every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given. A list git
 # cannot give would leave every variable in place, so it stops the update.
-# git's trace variables, every name starting GIT_TRACE, and the GIT_REDIRECT_STD* variables with which Git for Windows
-# moves a stream to a file, are unset too, and trace2's three targets set to 0, which outranks a target the system or
-# global configuration names: a trace written to stderr would turn git's quiet no, an exit 1 with nothing on stderr,
-# into a failure, and a stream moved away would empty or hide an answer. Each read below takes git's stdout alone.
+# Before git first runs, git's trace variables, every name starting GIT_TRACE, and the GIT_REDIRECT_STD* variables with
+# which Git for Windows moves a stream elsewhere, are unset, in any case, and trace2's three targets set to 0, which
+# outranks a target the system or global configuration names: a trace written to stderr would turn git's quiet no, an
+# exit 1 with nothing on stderr, into a failure, and a stream moved away would empty an answer, as the list of
+# repository-selecting variables, or join stderr to it. Each read below takes git's stdout alone.
+for NAME in $(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(TRACE|REDIRECT_STD)/) print NAME }'); do
+  unset "$NAME"
+done
+export GIT_TRACE2=0 GIT_TRACE2_PERF=0 GIT_TRACE2_EVENT=0
 if ! LOCAL_ENV_VARS=$(git rev-parse --local-env-vars 2>"$GIT_ERRORS"); then
   echo "FAILED cannot list git's repository-selecting variables: $(one_line "$(cat -- "$GIT_ERRORS")")"
   exit 1
@@ -193,13 +198,10 @@ for NAME in $(printf '%s\n' "$LOCAL_ENV_VARS" | awk '
     wanted["GIT_NAMESPACE"] = 1
     delete wanted["GIT_CONFIG_PARAMETERS"]
     delete wanted["GIT_CONFIG_COUNT"]
-    for (NAME in ENVIRON) {
-      if (toupper(NAME) in wanted || toupper(NAME) ~ /^GIT_(TRACE|REDIRECT_STD)/) print NAME
-    }
+    for (NAME in ENVIRON) if (toupper(NAME) in wanted) print NAME
   }'); do
   unset "$NAME"
 done
-export GIT_TRACE2=0 GIT_TRACE2_PERF=0 GIT_TRACE2_EVENT=0
 
 # What a release tag is, and their order, is ejryan89-skill-core's release_tags.py, the one definition the release notes
 # and the upgrade-notes check read too: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1
@@ -348,8 +350,7 @@ raises_breaking() {
 # refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. A full name is exact only while
 # the ref exists, as git's lookup rules go on to other refs when it does not, so each lookup whose answer is whether a
 # ref exists goes through ref_object, and a ref is named to git in a revision only once it is known to exist. The
-# checkout of main names it by its short name, which checkout resolves as a branch first, and the switch back names the
-# branch the clone was found on to switch, which takes a branch alone.
+# switch to main and the switch back name a branch by its short name to switch, which takes a branch alone.
 MAIN=refs/heads/main
 ORIGIN_MAIN=refs/remotes/origin/main
 
@@ -545,6 +546,20 @@ fi
 # check above. remote_refs.py names the same refs as MAIN and ORIGIN_MAIN above.
 remote_refs fetch "$CLONE" || exit 1
 
+# origin/main as the fetch left it, looked up exactly before anything names it in a revision: AFTER_COMMIT, the full
+# object id main is fast-forwarded to and every list of the pulled commits ends at, so a ref named like a short id never
+# stands in for it. A fetch that left no such ref, or a lookup git cannot answer, stops the update.
+FOUND=0
+ref_object "$ORIGIN_MAIN" || FOUND=$?
+if [ "$FOUND" -eq 1 ]; then
+  echo "FAILED cannot look up $ORIGIN_MAIN: the clone has no such ref"
+  exit 1
+elif [ "$FOUND" -eq 2 ]; then
+  echo "FAILED cannot look up $ORIGIN_MAIN: $GIT_REASON"
+  exit 1
+fi
+AFTER_COMMIT=$GIT_OUT
+
 # The highest release on origin/main: the release the release channel deploys, and the one the stop below compares on
 # either channel. RELEASE_REF is that tag's full name and RELEASE_COMMIT its commit; DEPLOY_END is the commit the
 # update would deploy, which the stop's commit list ends at.
@@ -646,9 +661,9 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   fi
 fi
 
-# A diverged main stops before the checkout, so the clone stays on the branch it was found on. A clone with no local
-# main yet, which the exact lookup's quiet no alone says, leaves the decision to the checkout, which creates main from
-# origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
+# A diverged main stops before the switch to main, so the clone stays on the branch it was found on. A clone with no
+# local main yet, which the exact lookup's quiet no alone says, leaves the decision to the switch, which creates main
+# at origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
 # reason, never a diverged main.
 HAS_MAIN=0
 MAIN_COMMIT=
@@ -690,22 +705,11 @@ if [ -z "$FOUND_ON" ]; then
   echo "FAILED cannot read the branch or the commit the clone is on: git named none"
   exit 1
 fi
-# Main's commits before and after the fast-forward are full object ids, which the fast-forward and every range below
-# name, so a ref named like a short id never stands in for one: after it is origin/main, looked up exactly, and before
-# it local main, or origin/main too when the clone has no local main yet, which the checkout then creates there.
-FOUND=0
-ref_object "$ORIGIN_MAIN" || FOUND=$?
-if [ "$FOUND" -eq 1 ]; then
-  echo "FAILED cannot look up $ORIGIN_MAIN: the clone has no such ref"
-  exit 1
-elif [ "$FOUND" -eq 2 ]; then
-  echo "FAILED cannot look up $ORIGIN_MAIN: $GIT_REASON"
-  exit 1
-fi
-AFTER_COMMIT=$GIT_OUT
+# Main's commit before the fast-forward is a full object id too: local main's, or origin/main's when the clone has no
+# local main yet, which the switch below then creates there.
 BEFORE_COMMIT=${MAIN_COMMIT:-$AFTER_COMMIT}
-# Every short name the report prints is read before the checkout, so a FAILED line never follows a change to the clone;
-# the deployed commit is known already.
+# Every short name the report prints is read before the switch to main, so a FAILED line never follows a change to the
+# clone; the deployed commit is known already.
 AFTER=$(short_name "$AFTER_COMMIT" "main after the fast-forward") || { echo "$AFTER"; exit 1; }
 BEFORE=$AFTER
 if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
@@ -715,11 +719,19 @@ OLD=
 if [ -n "$KNOWN_COMMIT" ]; then
   OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
 fi
-if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
+# Main is switched to with switch, which takes a branch alone, so with no local main a ref such as
+# refs/remotes/main/HEAD, which checkout would resolve main through, never leaves HEAD detached. With no local main,
+# which the exact lookup above found, main is created at origin/main, named in full now that it is known to exist, and
+# tracking it, as checkout's guess would have made it.
+if [ "$HAS_MAIN" -eq 0 ]; then
+  OUTPUT=$(git -C "$CLONE" switch --quiet main 2>&1)
+else
+  OUTPUT=$(git -C "$CLONE" switch --quiet --create main --track "$ORIGIN_MAIN" 2>&1)
+fi || {
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
-fi
+}
 # A branch is switched back to with switch, which takes a branch alone, so a tag of the same name cannot be picked; a
 # detached HEAD is returned to its commit. Git's error is printed only when a step fails, as the step's reason.
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$AFTER_COMMIT" 2>&1); then

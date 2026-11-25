@@ -322,4 +322,73 @@ expect_status 0 "warned release"
 expect_first_line "UP_TO_DATE v4.0.0" "warned release"
 expect_deployed "warned release" "--all --at refs/tags/v4.0.0"
 
+# Git for Windows moves a stream wherever GIT_REDIRECT_STDOUT or GIT_REDIRECT_STDERR says, and the update unsets both
+# before its first git call: a stdout moved to a file would empty the list of repository-selecting variables, so a
+# GIT_DIR naming another clone would steer every later call, and a stderr joined to stdout would read the warning a
+# deprecated setting prints as a changed file. Other platforms' git reads neither variable.
+begin_case 'streams git for Windows redirects'
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    new_clone
+    OTHER=$CLONE
+    OTHER_HEAD=$(git -C "$OTHER" rev-parse HEAD)
+    new_clone
+    BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+    publish "change while stdout is redirected"
+    AFTER=$(git -C "$SEED" rev-parse HEAD)
+    : >"$FIXTURE/redirected stdout"
+    export GIT_REDIRECT_STDOUT
+    GIT_REDIRECT_STDOUT=$(cygpath -w "$FIXTURE/redirected stdout")
+    export GIT_DIR="$OTHER/.git" GIT_INDEX_FILE="$OTHER/.git/index"
+    run_subject "$CLONE" main
+    unset GIT_REDIRECT_STDOUT GIT_DIR GIT_INDEX_FILE
+    expect_status 0 "redirected stdout"
+    expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "redirected stdout"
+    [ "$(git -C "$OTHER" rev-parse HEAD)" = "$OTHER_HEAD" ] || fail "redirected stdout: the other clone moved"
+    expect_deployed "redirected stdout"
+    new_clone
+    git_quiet -C "$CLONE" config core.fsyncObjectFiles true
+    BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+    publish "change while stderr is joined to stdout"
+    AFTER=$(git -C "$SEED" rev-parse HEAD)
+    export GIT_REDIRECT_STDERR='2>&1'
+    run_subject "$CLONE" main
+    unset GIT_REDIRECT_STDERR
+    expect_status 0 "stderr joined to stdout"
+    expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "stderr joined to stdout"
+    expect_deployed "stderr joined to stdout"
+    ;;
+esac
+
+# A git that fails without a word is named by its exit status, never an empty answer: a list of commits git log cannot
+# give is an UNLISTED line naming git log's status, and a short name rev-parse cannot give a FAILED line naming its. A
+# stand-in for git answers each form in FAKE_GIT_SILENT, <form>=><status>, with that status and nothing on either
+# stream.
+begin_case 'git silent where the update reads it'
+cat >"$WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+IFS='|' read -r -a entries <<<"\${FAKE_GIT_SILENT:-}"
+for entry in "\${entries[@]}"; do
+  if [[ " \$* " == *" \${entry%%=>*} "* ]]; then
+    exit "\${entry#*=>}"
+  fi
+done
+exec "$(command -v git)" "\$@"
+EOF
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+publish "change git log cannot list"
+AFTER=$(git -C "$SEED" rev-parse HEAD)
+PATH="$WRAPPER:$PATH" FAKE_GIT_SILENT="log --oneline --no-decorate=>3" run_subject "$CLONE" main
+expect_status 0 "git log silent"
+expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "git log silent"
+expect_listed "UNLISTED $BEFORE..$AFTER git log exited 3 and printed nothing" "git log silent"
+expect_deployed "git log silent"
+new_clone
+publish "change whose short name git cannot give"
+PATH="$WRAPPER:$PATH" FAKE_GIT_SILENT="rev-parse --short=>3" run_subject "$CLONE" main
+expect_failed "FAILED cannot read the short name of main after the fast-forward: git rev-parse exited 3 and printed nothing" \
+  "git rev-parse --short silent"
+expect_not_deployed "git rev-parse --short silent"
+
 echo "update.sh refs tests passed"

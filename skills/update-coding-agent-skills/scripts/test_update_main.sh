@@ -703,4 +703,24 @@ if grep -q "^still on main:" <<<"$OUTPUT"; then fail "refused on a shared name: 
   fail "refused on a shared name: HEAD is not the branch topic: $(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)"
 expect_not_deployed "refused on a shared name"
 
+# With no local main, main is created on the branch at origin/main, tracking it, and switched to as a branch: a ref
+# named refs/remotes/main/HEAD, through which checkout would resolve main to another commit and leave HEAD detached
+# there, is never taken for it.
+begin_case 'no local main beside refs/remotes/main/HEAD'
+new_clone
+git_quiet -C "$CLONE" checkout -q --detach
+git_quiet -C "$CLONE" branch -q -D main
+SIDE=$(git -C "$CLONE" commit-tree -p HEAD -m "not on main" "HEAD^{tree}")
+git_quiet -C "$CLONE" update-ref refs/remotes/main/HEAD "$SIDE"
+publish "change past a lookalike remote HEAD"
+run_subject "$CLONE" main
+expect_status 0 "remote main HEAD"
+expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "remote main HEAD"
+[ "$(git -C "$CLONE" symbolic-ref --quiet HEAD)" = "refs/heads/main" ] ||
+  fail "remote main HEAD: HEAD is not the branch main: $(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$(git -C "$SEED" rev-parse HEAD)" ] || fail "remote main HEAD: main not at origin/main"
+[ "$(git -C "$CLONE" rev-parse --symbolic-full-name 'main@{upstream}')" = "refs/remotes/origin/main" ] ||
+  fail "remote main HEAD: main does not track origin/main"
+expect_deployed "remote main HEAD"
+
 echo "update.sh main channel tests passed"
