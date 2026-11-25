@@ -948,10 +948,14 @@ class MovedFilePolicy(unittest.TestCase):
     def test_a_moved_file_missing_from_its_folder_or_back_at_the_root_fails(self) -> None:
         files = self.tree()
         del files[".github/SECURITY.md"]
+        # A folder in a moved file's place is named as what it is, never as missing.
+        del files[".github/CONTRIBUTING.md"]
+        files[".github/CONTRIBUTING.md/notes.md"] = "x\n"
         files["requirements-dev.txt"] = "x\n"
         self.assertEqual(
             [
-                ".github/SECURITY.md is not a file, though MOVED_OFF_ROOT names it",
+                ".github/CONTRIBUTING.md is not a file, though MOVED_OFF_ROOT names it",
+                ".github/SECURITY.md is missing, though MOVED_OFF_ROOT names it",
                 "requirements-dev.txt is at the repository root, though MOVED_OFF_ROOT moved it to requirements/",
             ],
             self.problems(files),

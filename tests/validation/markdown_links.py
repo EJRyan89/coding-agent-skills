@@ -620,8 +620,9 @@ def moved_file_problems(root: Path) -> list[str]:
     again, so the table moved_path_problems reads stays the tree's."""
     problems: list[str] = []
     for moved, folder in MOVED_OFF_ROOT.items():
-        if not file_presence.is_present(root / folder / moved, other_is_absent=True):
-            problems.append(f"{folder}/{moved} is not a file, though MOVED_OFF_ROOT names it")
+        reason = file_presence.refusal_reason(root / folder / moved)
+        if reason is not None:
+            problems.append(f"{folder}/{moved} {reason}, though MOVED_OFF_ROOT names it")
         if file_presence.is_there(root / moved):
             problems.append(f"{moved} is at the repository root, though MOVED_OFF_ROOT moved it to {folder}/")
     return problems
