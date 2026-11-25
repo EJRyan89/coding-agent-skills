@@ -7,6 +7,10 @@ a pytest.mark.skipif decorator, whose condition reads only the platform is left 
 module defines under an `if` on the platform.
 Any other skip that must stay states its reason beside the code, in a module-level SKIP_ALLOWED keyed by the qualified
 name of the function or class that holds it, `<module>` for module level; an entry that sanctions nothing fails.
+
+A reader or a policy that leaves an entry of a language's published catalogue unread names it in a module-level
+NOT_READ = {entry: reason} beside the code, which its catalogue test reads, as bash_syntax.py's reserved words; each
+such table maps every entry to its reason, as SKIP_ALLOWED does.
 """
 
 from __future__ import annotations
@@ -16,12 +20,14 @@ import re
 import unittest
 from pathlib import Path
 
+from duplication import DUPLICATION_ROOTS
 from path_containment import posix_within
 from python_checks import FORMAT_ROOTS, ISSUE_REFERENCE_EXCLUDED, file_comments
 from validation_support import (
     MODULE_SCOPE,
     REPOSITORY_ROOT,
     import_aliases,
+    is_test_script,
     module_allowance,
     python_trees,
     qualified_name,
@@ -29,6 +35,10 @@ from validation_support import (
 )
 
 ALLOWANCE = "SKIP_ALLOWED"
+# The table of the entries of a published catalogue a reader leaves unread, each with why. It stands beside the reader
+# or the policy it excuses, in the repository's own Python but its suites and fixtures, DUPLICATION_ROOTS; a suite and
+# a fault driver under tests/ name their own rows, which may share the name, as a fault driver's NOT_READ reason does.
+NOT_READ_TABLE = "NOT_READ"
 # What skips a test or expects it to fail, by the dotted name the module's imports resolve it to.
 UNITTEST_MARKERS = frozenset({"skip", "skipIf", "skipUnless", "expectedFailure", "SkipTest"})
 UNITTEST_MODULES = ("unittest", "unittest.case")
@@ -181,6 +191,28 @@ def skip_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+def not_read_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each module-level NOT_READ of a reader or a policy that does not map each catalogue entry to its reason."""
+    problems: list[str] = []
+    paths = sorted(
+        (
+            path
+            for path in files
+            if checked(root, path)
+            and not is_test_script(path)
+            and any(posix_within(path.relative_to(root).as_posix(), prefix) for prefix in DUPLICATION_ROOTS)
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    for _, name, tree in python_trees(paths, root, problems):
+        if module_allowance(tree, NOT_READ_TABLE) is None:
+            problems.append(
+                f"{name} {NOT_READ_TABLE} must map each catalogue entry the module leaves unread to its reason, as a "
+                "literal dictionary of non-empty texts"
+            )
+    return problems
+
+
 def later_comment_problems(root: Path, files: list[Path]) -> list[str]:
     """Each comment that leaves work for later, as path:line and the word."""
     problems: list[str] = []
@@ -200,6 +232,9 @@ def later_comment_problems(root: Path, files: list[Path]) -> list[str]:
 class WorkaroundPolicies(unittest.TestCase):
     def test_repository_skips_no_test_and_expects_no_failure(self) -> None:
         self.assertEqual([], skip_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_gives_every_catalogue_entry_left_unread_its_reason(self) -> None:
+        self.assertEqual([], not_read_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_leaves_no_work_for_later_in_a_comment(self) -> None:
         self.assertEqual([], later_comment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

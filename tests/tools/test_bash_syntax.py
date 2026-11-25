@@ -998,3 +998,104 @@ def test_a_substitution_and_a_body_keep_the_script_line_of_each_character() -> N
     assert empty is not None
     assert isinstance(empty.body, bash_syntax.Source)
     assert empty.body.lines == (3,)
+
+
+# Bash's reserved words as the newest Bash prints them with `compgen -k`, pinned so a runner whose Bash is older, as
+# macOS's /bin/bash 3.2, which has no coproc, still holds the reader to every one.
+PINNED_RESERVED_WORDS = frozenset(
+    {"if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do", "done", "in"}
+    | {"function", "time", "{", "}", "!", "[[", "]]", "coproc"}
+)
+
+
+def runner_reserved_words() -> frozenset[str]:
+    """The reserved words the validated Bash, Git Bash on Windows and the first bash on PATH elsewhere, prints."""
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", "compgen -k"], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    words = frozenset(result.output.split())
+    assert "if" in words, f"compgen -k printed no reserved words: {result.output!r}"
+    return words
+
+
+def refused_at_a_commands_start(word: str) -> bool:
+    """Whether the reader refuses `word` where a command starts, with a command after it."""
+    try:
+        bash_syntax.parse(f"{word} git status")
+    except BashSyntaxError:
+        return True
+    return False
+
+
+def test_every_reserved_word_bash_prints_is_read_refused_or_not_read_with_a_reason() -> None:
+    catalogue = runner_reserved_words() | PINNED_RESERVED_WORDS
+    undecided = sorted(
+        word
+        for word in catalogue
+        if word not in bash_syntax.RESERVED
+        and word not in bash_syntax.NOT_READ
+        and not refused_at_a_commands_start(word)
+    )
+    assert undecided == [], (
+        "read each in bash_syntax.RESERVED, refuse it where a command starts, or name it in bash_syntax.NOT_READ "
+        "with the reason, and add it to PINNED_RESERVED_WORDS"
+    )
+    assert sorted(runner_reserved_words() - PINNED_RESERVED_WORDS) == [], "pin each in PINNED_RESERVED_WORDS"
+
+
+def test_every_reserved_word_the_reader_reads_or_leaves_unread_is_one_bash_reserves() -> None:
+    catalogue = runner_reserved_words() | PINNED_RESERVED_WORDS
+    assert sorted(bash_syntax.RESERVED - catalogue) == []
+    assert sorted(bash_syntax.NOT_READ.keys() - catalogue) == [], "remove each: no Bash reserves it"
+
+
+def test_no_reserved_word_is_both_decided_and_not_read() -> None:
+    decided = {
+        word for word in bash_syntax.NOT_READ if word in bash_syntax.RESERVED or refused_at_a_commands_start(word)
+    }
+    assert sorted(decided) == [], "remove each from bash_syntax.NOT_READ: the reader reads or refuses it"
+
+
+@pytest.mark.parametrize("text", ["]]", "]] x", "! ]]", "x | ]]"])
+def test_a_closing_double_bracket_where_a_command_starts_is_refused_as_bash_refuses_it(text: str) -> None:
+    assert not bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError, match=r"^`\]\]` where a command should start$"):
+        bash_syntax.parse(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "coproc git commit -m x",
+        "coproc NAME { git commit; }",
+        "coproc { git push; }",
+        "echo a | coproc git push",
+        "! coproc git push",
+        "time coproc git push",
+        "true && coproc git push",
+        "f() { coproc git push; }",
+        "echo $(coproc git push)",
+    ],
+)
+def test_a_documented_limit_a_coprocess_bash_reads_is_refused(text: str) -> None:
+    # Bash 4 and later read each as a coprocess, running its command in the background; Bash 3.2 reads the simple ones
+    # as a program named coproc. The reader reads neither, so a reader of what a script runs never passes its command.
+    with pytest.raises(bash_syntax.NotRead, match=r"^`coproc` is not read: "):
+        bash_syntax.simple_commands(text)
+
+
+def test_a_coprocess_in_a_here_documents_body_is_refused_where_a_substitution_bash_refuses_runs_nothing() -> None:
+    # Bash runs a body's coprocess, so the reader refuses it rather than passing over it as it passes over a
+    # substitution Bash itself refuses, which runs nothing; the git call after each is read either way.
+    assert simple_commands_of("cat <<EOF\n$(fi)\n$(git status)\nEOF\n") == [["cat"], ["git", "status"]]
+    with pytest.raises(bash_syntax.NotRead, match=r"^`coproc` is not read: "):
+        bash_syntax.simple_commands("cat <<EOF\n$(coproc git push)\n$(git status)\nEOF\n")
+
+
+def simple_commands_of(text: str) -> list[list[str]]:
+    return [[word.raw for word in command.words] for command in bash_syntax.simple_commands(text)]
+
+
+@pytest.mark.parametrize("text", ["'coproc' git push", "\\coproc git push", "x=1 coproc git push", "echo coproc"])
+def test_coproc_quoted_after_an_assignment_or_as_an_argument_is_a_word(text: str) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    bash_syntax.parse(text)

@@ -49,6 +49,9 @@ guard's suite does on every Bash command it reads and the deployer's rendering s
 checks for quoting. Where they differ is a limit stated here and pinned there:
 - Inside `[[ ]]` the expression's own grammar is not read, so text Bash refuses there, such as `[[ -n ]]`, is read;
   Bash runs none of a command it refuses.
+- A coprocess, `coproc [NAME] command`, which Bash 4 and later read and Bash 3.2 reads as a program named coproc,
+  raises NotRead, a BashSyntaxError, wherever a command starts, a here-document body's substitution included, so its
+  command is never passed as read.
 - Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
   raises BashSyntaxError.
 - A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
@@ -106,11 +109,18 @@ HERE_DOCUMENTS = frozenset({"<<", "<<-"})
 # A word written right before a redirection that names the file descriptor it redirects, as 2 in 2>&1.
 DESCRIPTOR = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
 CASE_ENDS = frozenset({";;", ";&", ";;&"})
-# Words Bash reads as reserved at the start of a command.
+# Words Bash reads as reserved at the start of a command, where each one that does not start a compound command is
+# refused. tests/tools/test_bash_syntax.py holds every word Bash's `compgen -k` prints to being one of these, refused
+# where a command starts, or named in NOT_READ with why.
 RESERVED = frozenset(
     {"!", "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "for", "select", "do", "done", "case"}
-    | {"esac", "in", "function", "time", "[["}
+    | {"esac", "in", "function", "time", "[[", "]]"}
 )
+# The reserved word of a coprocess, `coproc [NAME] command`, refused where a command starts: the reader does not read
+# the command a coprocess runs in the background, so a reader of what a script runs never passes it unread.
+COPROCESS = "coproc"
+# Each word Bash reserves that the reader neither reads nor refuses, with why; none is left undecided.
+NOT_READ: dict[str, str] = {}
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 # The start of an expansion that assigns, ${NAME:=word} or ${NAME=word}, to a subscript or not, or through ${!NAME.
 ASSIGNING = re.compile(r"\$\{(!?)([A-Za-z_]\w*(?:\[.*?\])?):?=", re.ASCII)
@@ -141,6 +151,11 @@ class BashSyntaxError(ValueError):
     bare_case = False
     # Whether any substitution the text holds, at any depth, held such a pattern, read or not before the refusal.
     holds_bare_case = False
+
+
+class NotRead(BashSyntaxError):
+    """Text Bash reads and runs that this grammar does not read, such as a coprocess: never text Bash runs nothing of,
+    so a reader that passes over a substitution Bash refuses still refuses this."""
 
 
 class Source(str):
@@ -1140,6 +1155,8 @@ class Parser:
         if compound is not None:
             self.index += 1
             return compound(self)
+        if isinstance(token, Word) and token.literal == COPROCESS:
+            raise NotRead(f"`{COPROCESS}` is not read: a coprocess runs its command in the background")
         if isinstance(token, Word) and token.literal in RESERVED - {"[["}:
             raise BashSyntaxError(f"`{token.literal}` where a command should start")
         return self.simple()
@@ -1406,10 +1423,13 @@ def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Command]:
     """The commands an unquoted here-document's substitutions run: one the grammar cannot parse runs nothing, and those
     after it are read, rather than refusing the text. Bash 3.2, and Bash 5.3 at a backquoted one, go on past it as
     this does; Bash 5.3 stops expanding the body at a `$( )` one, so for it this reads more than it runs, on purpose,
-    since a reader that read less could miss a git command another Bash runs."""
+    since a reader that read less could miss a git command another Bash runs. One Bash reads and the grammar does not,
+    NotRead, is refused, since Bash runs it."""
     for text in substitutions:
         try:
             tree = parse(text)
+        except NotRead:
+            raise
         except BashSyntaxError:
             continue
         yield from _tree_commands(tree)

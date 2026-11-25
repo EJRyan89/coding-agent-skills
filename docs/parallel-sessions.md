@@ -677,10 +677,11 @@ Within what it reads, it judges only what the text shows, so these too are left 
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
   `cd`, and the git call after it, where the guard does not follow;
-- a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
-  not cover, such as `coproc`, an arithmetic `for` whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }`
-  whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, or an arithmetic expansion holding a quoted
-  parenthesis, as `$(( ")" ))`: the whole command is not read, though Bash runs the lines before a syntax error;
+- a git call before or after a part of the command Bash refuses, or in, before, or after one that ejryan89-skill-core's
+  `bash_syntax.py` does not cover, such as a `coproc` wherever a command starts, an arithmetic `for` whose body is a
+  `{ }` group, inside `(( ))` a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`,
+  or an arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`: the whole command is not read, though Bash
+  runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
   its `-I`, `-i`, or `--replace` replaces, which it reads as the literal it is;
