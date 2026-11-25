@@ -9,6 +9,8 @@ import contextlib
 import errno
 import functools
 import importlib
+import importlib.util
+import inspect
 import io
 import itertools
 import json
@@ -753,16 +755,123 @@ class ProcessArgumentFixtures(unittest.TestCase):
             self.assert_own_group(step_options, bounded=False)
 
 
-# What each of pytest's exits reads as with neither, with a collection error in its output, and with the traceback of
-# a SystemExit raised while pytest imported a test module.
+# pytest's exit codes as pytest.ExitCode names them in pytest 9.2.0, its newest release when they were pinned, which
+# "Exit codes" in pytest's reference documents. Pinned, so a runner whose pytest is older still holds the gate to each.
+PINNED_PYTEST_EXITS = {
+    "OK": 0,
+    "TESTS_FAILED": 1,
+    "INTERRUPTED": 2,
+    "INTERNAL_ERROR": 3,
+    "USAGE_ERROR": 4,
+    "NO_TESTS_COLLECTED": 5,
+    "MAX_WARNINGS_ERROR": 6,
+}
+PINNED_FROM_PYTEST = (9, 2, 0)
+# coverage.py's exit codes as coverage/cmdline.py binds them in coverage.py 7.17.5, its newest release when they were
+# pinned: `OK, ERR, FAIL_UNDER = 0, 1, 2`. Only the Mutation workflow installs coverage.py, so where it is not
+# installed these alone hold the gate, and the release they were read from must be at least as new, in its major and
+# minor version, as the one requirements/requirements-mutation.in pins.
+PINNED_COVERAGE_EXITS = {"OK": 0, "ERR": 1, "FAIL_UNDER": 2}
+PINNED_FROM_COVERAGE = (7, 17, 5)
+MUTATION_REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "requirements-mutation.in"
+# Exits neither program documents, which a process's end gives instead: a signal's on POSIX, as a kill or a Ctrl-C
+# sends it, which subprocess reads as its negative number; a Windows status, such as an access violation's or a
+# Ctrl-C's; and a number neither names.
+UNDOCUMENTED_EXITS = (-9, -2, 0xC0000005, 0xC000013A, 9)
+
+
+def runner_pytest_exits() -> dict[str, int]:
+    """The exit codes the installed pytest names."""
+    return {member.name: int(member) for member in pytest.ExitCode}
+
+
+def runner_coverage_exits() -> dict[str, int] | None:
+    """The exit codes the installed coverage.py's command line binds, read from its one assignment of OK, or None where
+    coverage.py is not installed."""
+    if importlib.util.find_spec("coverage") is None:
+        return None
+    cmdline = importlib.import_module("coverage.cmdline")
+    for statement in ast.parse(inspect.getsource(cmdline)).body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        [target] = statement.targets
+        if not isinstance(target, ast.Tuple) or not isinstance(statement.value, ast.Tuple):
+            continue
+        names = [name.id for name in target.elts if isinstance(name, ast.Name)]
+        if "OK" in names:
+            values = [ast.literal_eval(value) for value in statement.value.elts]
+            return dict(zip(names, values, strict=True))
+    raise AssertionError("coverage/cmdline.py no longer binds OK, ERR, and its other exits in one assignment")
+
+
+def documented_exits() -> dict[str, set[int]]:
+    """Each program's documented exit codes: the pinned ones and those the installed release names."""
+    return {
+        "pytest": {*PINNED_PYTEST_EXITS.values(), *runner_pytest_exits().values()},
+        "coverage": {*PINNED_COVERAGE_EXITS.values(), *(runner_coverage_exits() or {}).values()},
+    }
+
+
+def test_the_pinned_pytest_exits_hold_every_one_the_runners_pytest_names() -> None:
+    runner = runner_pytest_exits()
+    assert runner.items() <= PINNED_PYTEST_EXITS.items(), (
+        "pin each exit the runner's pytest names, as its reference documents it, and decide it in "
+        "tools/mutation_gate.py"
+    )
+    if tuple(int(part) for part in pytest.version_tuple[:3]) >= PINNED_FROM_PYTEST:
+        assert runner == PINNED_PYTEST_EXITS
+
+
+def test_the_pinned_coverage_exits_hold_every_one_the_installed_or_locked_release_names() -> None:
+    runner = runner_coverage_exits()
+    if runner is not None:
+        assert runner.items() <= PINNED_COVERAGE_EXITS.items()
+    locked = re.search(r"^coverage==(\d+)\.(\d+)\.", MUTATION_REQUIREMENTS.read_text(encoding="utf-8"), re.MULTILINE)
+    assert locked is not None
+    assert (int(locked[1]), int(locked[2])) <= PINNED_FROM_COVERAGE[:2], (
+        "read the `OK, ERR, FAIL_UNDER` line of coverage/cmdline.py at the release requirements-mutation.in pins, pin "
+        "each exit it binds, decide each new one in tools/mutation_gate.py, and raise PINNED_FROM_COVERAGE"
+    )
+
+
+def read_exits() -> dict[str, set[int]]:
+    """Each program's exits the gate reads: pytest's where a mutant runs, and coverage.py's in a reach."""
+    pytest_read = {0, mutation_gate.TESTS_FAILED_EXIT, mutation_gate.INTERNAL_ERROR_EXIT}
+    return {
+        "pytest": pytest_read | mutation_gate.COLLECTION_EXITS | mutation_gate.UNJUDGED_EXITS.keys(),
+        "coverage": {0, mutation_gate.COVERAGE_ERROR_EXIT},
+    }
+
+
+def test_every_documented_exit_is_read_or_named_not_read_and_never_both() -> None:
+    documented, read = documented_exits(), read_exits()
+    for program, codes in documented.items():
+        for exit_code in codes:
+            named = f"{program} {exit_code}" in mutation_gate.NOT_READ
+            assert (exit_code in read[program]) != named, (
+                f"{program}'s exit {exit_code}: read it in tools/mutation_gate.py or name it in NOT_READ with why"
+            )
+    for entry in mutation_gate.NOT_READ:
+        program, _, number = entry.partition(" ")
+        assert program in documented, f"{entry} names no program the gate reads"
+        assert int(number) in documented[program], f"{entry} is no exit {program} documents"
+
+
+def test_each_exit_named_unjudged_says_what_it_means() -> None:
+    assert all(why.strip() for why in mutation_gate.UNJUDGED_EXITS.values())
+
+
+# What each of pytest's exits reads as with neither, with a collection error in its output, with the traceback of
+# a SystemExit raised while pytest imported a test module, and with the line pytest opens with when importing a
+# conftest.py raised.
 EXIT_STATUSES = {
-    pytest.ExitCode.OK: (PASSED, PASSED, PASSED),
-    pytest.ExitCode.TESTS_FAILED: (KILLED, KILLED, KILLED),
-    pytest.ExitCode.INTERRUPTED: (ERRORED, KILLED, ERRORED),
-    pytest.ExitCode.INTERNAL_ERROR: (ERRORED, ERRORED, KILLED),
-    pytest.ExitCode.USAGE_ERROR: (ERRORED, KILLED, ERRORED),
-    pytest.ExitCode.NO_TESTS_COLLECTED: (ERRORED, ERRORED, ERRORED),
-    pytest.ExitCode.MAX_WARNINGS_ERROR: (ERRORED, ERRORED, ERRORED),
+    0: (PASSED, PASSED, PASSED, PASSED),
+    1: (KILLED, KILLED, KILLED, KILLED),
+    2: (ERRORED, KILLED, ERRORED, KILLED),
+    3: (ERRORED, ERRORED, KILLED, ERRORED),
+    4: (ERRORED, KILLED, ERRORED, KILLED),
+    5: (ERRORED, ERRORED, ERRORED, ERRORED),
+    6: (ERRORED, ERRORED, ERRORED, ERRORED),
 }
 # The end of pytest's internal error when a test module's import raised a SystemExit, as `sibling_scripts` raises
 # MissingSibling, which pytest lets end its run.
@@ -772,11 +881,19 @@ COLLECTION_EXIT = (
     b'INTERNALERROR>   File "/tree/tests/test_x.py", line 4, in <module>\n'
     b"INTERNALERROR> skill_roots.MissingSibling: skill x has no scripts under /tree/skills\n"
 )
+# What pytest prints first, exiting with its usage error, when importing a conftest.py raised, as a mutant that breaks
+# a module the root conftest.py imports makes it.
+CONFTEST_ERROR = (
+    b"ImportError while loading conftest '/tree/conftest.py'.\n"
+    b"conftest.py:63: in <module>\n"
+    b"    from bounded_process import REPOSITORY_VARIABLES\n"
+    b"E   SyntaxError: invalid syntax\n"
+)
 
 
-def test_every_pytest_exit_code_has_a_reading() -> None:
-    """A member pytest adds later fails here until its reading is decided."""
-    assert set(EXIT_STATUSES) == set(pytest.ExitCode)
+def test_every_documented_pytest_exit_has_a_reading() -> None:
+    """An exit pytest adds later fails here until its reading is decided."""
+    assert set(EXIT_STATUSES) == documented_exits()["pytest"]
 
 
 def bounded(command: list[str]) -> list[str]:
@@ -794,11 +911,16 @@ def finishing(returncode: int, output: bytes) -> Callable[..., types.SimpleNames
     return run
 
 
-@pytest.mark.parametrize(("code", "statuses"), [*EXIT_STATUSES.items(), (9, (ERRORED, ERRORED, ERRORED))])
-def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, statuses: tuple[str, str, str]) -> None:
+@pytest.mark.parametrize(
+    ("code", "statuses"),
+    [*EXIT_STATUSES.items(), *((code, (ERRORED,) * 4) for code in UNDOCUMENTED_EXITS)],
+)
+def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(
+    code: int, statuses: tuple[str, str, str, str]
+) -> None:
     collection = b"==== ERRORS ====\n____ ERROR collecting tests/x.py ____\nImportError\n"
     found = []
-    for output in (b"!!! KeyboardInterrupt !!!\n", collection, COLLECTION_EXIT):
+    for output in (b"!!! KeyboardInterrupt !!!\n", collection, COLLECTION_EXIT, CONFTEST_ERROR):
         with (
             mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(int(code), output)),
             mock.patch("deployer.platform_support.process_tree"),
@@ -830,6 +952,74 @@ def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: py
         ):
             run_suite(Path("tree"), "tests/x.py", 42.0)
     assert capsys.readouterr().out == ""
+
+
+def test_an_unjudged_exit_logs_what_it_means_beside_it(capsys: pytest.CaptureFixture[str]) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(5, b"no tests ran in 0.01s\n")),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
+    assert capsys.readouterr().out == (
+        "errored     tests/x.py: pytest exited 5 (no test collected): no tests ran in 0.01s\n"
+    )
+
+
+# Every exit a step can end with but 0: each documented one and each a process's end gives instead.
+FAILING_PYTEST_EXITS = sorted({*documented_exits()["pytest"], *UNDOCUMENTED_EXITS} - {0})
+FAILING_COVERAGE_EXITS = sorted({*documented_exits()["coverage"], *UNDOCUMENTED_EXITS} - {0})
+
+
+@pytest.mark.parametrize("code", FAILING_PYTEST_EXITS)
+def test_a_suite_that_exits_anything_but_0_unmutated_fails_unmutated(code: int) -> None:
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, b"")),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        reach = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
+    assert reach == f"failed unmutated with exit code {code}"
+
+
+@pytest.mark.parametrize(
+    ("code", "listed"), [(0, ["tests/x.py::test_a"]), *((code, []) for code in FAILING_PYTEST_EXITS)]
+)
+def test_a_suites_listing_is_read_only_from_pytest_exiting_0(code: int, listed: list[str]) -> None:
+    with (
+        tempfile.TemporaryDirectory() as temporary,
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=finishing(code, b"tests/x.py::test_a\n")),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert mutation_gate.suite_tests(Path("tree"), "tests/x.py", Path(temporary) / "listing") == listed
+
+
+def coverage_steps(step: str, code: int, printed: bytes) -> Callable[..., types.SimpleNamespace]:
+    """A bounded runner whose suite passes and whose coverage step `step` exits `code`, printing `printed`."""
+
+    def run(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
+        if step in command:
+            return types.SimpleNamespace(returncode=code, stdout=b"", stderr=printed)
+        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    return run
+
+
+@pytest.mark.parametrize("code", FAILING_COVERAGE_EXITS)
+def test_a_coverage_step_that_exits_anything_but_0_fails_but_json_reporting_no_data_with_its_error(code: int) -> None:
+    found = {}
+    for step in ("combine", "json"):
+        with (
+            mock.patch.object(
+                mutation_gate, "run_bounded", side_effect=coverage_steps(step, code, b"No data to report.")
+            ),
+            mock.patch("deployer.platform_support.process_tree"),
+        ):
+            found[step] = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
+    assert found["combine"] == f"failed in `coverage combine` with exit code {code}: `No data to report.`"
+    if code == 1:
+        assert isinstance(found["json"], Reach)
+        assert dict(found["json"].lines) == {"tools/calc.py": frozenset()}
+    else:
+        assert found["json"] == f"failed in `coverage json` with exit code {code}: `No data to report.`"
 
 
 def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replaced(
@@ -1008,6 +1198,17 @@ class RunSuiteFixtures(unittest.TestCase):
         # pytest exits 2, interrupted, having failed to collect the module, as a mutant that breaks an import does.
         self.assertEqual(KILLED, self.run_tree({"tests/test_x.py": "import not_a_module_anywhere\n"}))
         self.assertEqual(KILLED, self.run_tree({"tests/test_x.py": "def test_x(:\n    pass\n"}))
+
+    def test_a_conftest_py_pytest_fails_to_import_kills_the_mutant(self) -> None:
+        # pytest exits 4, its usage error, having failed to import conftest.py, as a mutant that breaks a module the
+        # root conftest.py imports makes it, whether the run names the suite or its tests.
+        files = {
+            "conftest.py": "import broken\n",
+            "broken.py": "x = (\n",
+            "tests/test_x.py": "def test_x():\n    pass\n",
+        }
+        self.assertEqual(KILLED, self.run_tree(files))
+        self.assertEqual(KILLED, self.run_tree(files, ["tests/test_x.py::test_x"]))
 
     def test_a_test_module_pytest_fails_to_collect_kills_the_mutant_whose_run_named_its_tests(self) -> None:
         # pytest reports the failed collection, then exits 4, a usage error, since it finds none of the named tests, as
