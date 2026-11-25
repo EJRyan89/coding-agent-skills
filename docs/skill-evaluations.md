@@ -96,6 +96,12 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   model and judges every run. Each line about one run names it as `run=<run>`, and a `RUNS` line per scenario and
   model gives the runs that passed every expectation, of the runs, and whether that is all of them (the pass^k of k
   runs), some, which is an inconsistent result, or none. `--records` judges `<model>-<run>.json` records the same way.
+- **A scenario known to vary** passes inconsistently on unchanged code, so one run of it cannot tell a regression from
+  noise. Its `scenario.json` marks it with `"varies": true`, and every run, a recorded one included, runs it three
+  times at least on each model (`VARYING_RUNS` in `tools/skill_evals_scenarios.py`) while the other scenarios run once,
+  or as often as `--runs` asks. Mark a scenario only once repeated runs on unchanged code disagree, after reading the
+  failing runs' records for the cause: a scenario that measures two things, such as a defect and the category a
+  reviewer files it under where the brief allows several, is tightened to measure one rather than marked.
 - **An expectation scoped to one reviewer:** a `finding` or `no_finding_above` expectation that names a `source`
   counts only findings that reviewer raised, alone or with others, so a scenario built to judge one specialist is not
   decided by what other reviewers notice in its fixture. `review-repository`'s `closed-spellings` control expects no
@@ -184,7 +190,13 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
 One row per skill and model, replaced by each full run with `--write`. "Passed" counts expectations over every run
 of every scenario the judged part ran on: the reviewers, or a trigger scenario's sessions. "Runs" is the runs of each
 scenario; with more than one, each scenario's counts end with the runs that passed every expectation, as
-`7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario is "not run" for a model when none of its reviewers started, such as
+`7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario known to vary
+always ends so, with `varies` after its runs, as `2/3 (2/3 runs, varies)`, and "Runs" counts the
+other scenarios' runs. Read such a cell against the scenario's spread, the counts its earlier rows in this file's
+history recorded: some runs of three failing is within it, while none of three passing, or a fall below its usual
+count that a rerun repeats, is a regression to look into. A cell without `varies` is a
+scenario that passes the same way run after run, so a single failing run of it is worth a rerun with `--runs 3`
+before it is called a regression. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
 name no path of the machine; the run's `FAIL` lines keep the whole reason. A by-name run that started no reviewer

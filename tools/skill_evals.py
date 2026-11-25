@@ -9,7 +9,9 @@ SKILL is one skill's name, a folder of scenarios under tests/fixtures/skill-eval
 usage error, and a skill with no scenario there fails the run. Repeated --scenario and --model names count once, in
 first-occurrence order. Without --scenario, every scenario is selected in name order. --timeout is a positive number
 of seconds. --runs, a positive count and 1 unless given, runs each scenario that many times on each model and judges
-every run, since one run is one sample of what a model does.
+every run, since one run is one sample of what a model does. A scenario marked `"varies": true`, one known to pass
+inconsistently on unchanged code, runs three times at least (VARYING_RUNS in tools/skill_evals_scenarios.py), so its
+result is a pass count of several runs wherever one run could not tell a regression from noise.
 
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
@@ -56,6 +58,7 @@ The scenario.json:
       skill is started with as --stage),
    "by_name": true  (a document scenario with no base, started with the document's file name alone),
    "reviewer": "<reviewer>"  (a repository reviewer's scenario, whose skill is review-prs),
+   "varies": true  (a scenario of any mode known to pass inconsistently on unchanged code; left out otherwise),
    "expectations": [<expectation>, ...]}
 
 A document or base path leads from the scenario's folder to a file, which may be another scenario's under the same
@@ -391,9 +394,10 @@ is written in the results file as not run with a fixed
 phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
 machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
 run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
-markers. Every other skill's row is written back as it was. A row's Runs cell is the runs of each scenario, and with
-more than one, each scenario's counts in By scenario end with the runs that passed every expectation, of the runs
-judged, as the citation's cells do; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
+markers. Every other skill's row is written back as it was. A row's Runs cell is the runs of each scenario not marked
+as varying, or of every scenario when each is, and with more than one, each scenario's counts in By scenario end with
+the runs that passed every expectation, of the runs judged, as the citation's cells do; a marked scenario's always do,
+ending `, varies` inside the parentheses, as `2/3 (2/3 runs, varies)`, in the citation's cells too; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
 is left out of both counts, as a scenario none of whose runs held a judgment is `not run`, except a by-name run's
 `resolved` judged on the session's calls alone, which counts as that run's one expectation, and makes a model none of
 whose reviewers ran a row whose Model ID is `none`. Such a run counts among the scenario's runs only when that

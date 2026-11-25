@@ -1,4 +1,5 @@
-"""Read a pull request's commits into a local checkout for review."""
+"""Read a pull request's commits into a local checkout for review. Only a pull request whose head branch is a branch
+of this repository reaches here: one from a fork is refused before any of its commits is fetched."""
 
 from __future__ import annotations
 
