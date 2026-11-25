@@ -2378,6 +2378,18 @@ class PytestScriptRootPolicy(unittest.TestCase):
         problems, _ = self.reading(body)
         self.assertEqual([self.unpinned(body)], problems)
 
+    def test_a_pytest_ini_written_before_the_run_pins_a_starred_argument(self) -> None:
+        body = """\
+            class FixtureRunTests(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls) -> None:
+                    folder = Path(tempfile.mkdtemp())
+                    (folder / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+                    cls.suites = {"a": str(folder / "test_a.py")}
+                    run_tool(*cls.suites.values())
+            """
+        self.assertEqual([], self.reading(body)[0])
+
     def test_a_script_given_a_working_directory_of_its_own_is_still_held(self) -> None:
         # tools/python_diagnostics.py starts its pytest from the repository's root whatever folder it is started in.
         source = self.BARE + textwrap.dedent(

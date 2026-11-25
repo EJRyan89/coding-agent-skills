@@ -2139,7 +2139,9 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     starts pytest on them, so every positional argument is read as a suite, and an option the parser declares through
     anything but a literal add_argument is read as a flag; a script that takes its suites by an option, from
     sys.argv, from parse_known_args' remainder, by a positional declared with dest=, or through a parser another
-    module builds; a script whose pytest start lies two imports away; a starred argument, which is judged by the
+    module builds; a script whose pytest start lies two imports away; a script start inside a module the suite
+    imports, as a helper module's own run_tool, which is not followed as a pytest start one import away is, since
+    only the suite's own command lists are read for a script; a starred argument, which is judged by the
     folders its function makes, never by where its items come from; a literal absolute path given a script, which is
     skipped as a literal; a starred item after an option that takes a value, which is read as suites; a function of a
     module loaded by its path, or another callable a name does not resolve to a module-level function; a suite a
