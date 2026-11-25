@@ -274,9 +274,9 @@ class Manifest:
         """Replace the manifest file. A value the JSON writer refuses is a DeployError naming the file, which the
         run's journaled recovery handles. The paths the manifest records are refused before any write by the allowlist
         `config.derived_values` holds HOME and SOURCE_ROOT to, so none reaches it holding a lone surrogate. A name
-        recorded as a skill and as a shared asset, which load refuses, is refused before any write too; a deployment
-        refuses that collision while it plans, so none reaches it."""
-        _refuse_a_name_owned_as_skill_and_shared(self.data)
+        owned by two sources, or recorded as a skill and as a shared asset, which load refuses, is refused before any
+        write too; a deployment refuses either collision while it plans, so none reaches it."""
+        _owners_or_refusal(self.data)
         self.data["manifest_version"] = MANIFEST_VERSION
         try:
             text = json_writer.dumps(self.data, indent=2)
@@ -492,16 +492,22 @@ def load(path: Path) -> Manifest:
         )
     data = _validate(raw, sources, version, path)
     _upgrade_dependencies(data)
-    manifest = Manifest(path, data)
+    return Manifest(path, data, _owners_or_refusal(data))
+
+
+def _owners_or_refusal(data: ManifestData) -> dict[str, dict[str, str]]:
+    """Each kind's items by name with the source that owns each, or a refusal of a manifest that records one name as
+    owned by two sources, or as a skill and as a shared asset: load refuses to read such a manifest, and save refuses
+    to write one, so no run saves a manifest the next refuses."""
+    owners = _by_kind()
     for kind in KINDS:
-        _record_owners(data, kind.key, kind.title, manifest.owners_of(kind))
+        _record_owners(data, kind.key, kind.title, owners[kind.key])
     _refuse_a_name_owned_as_skill_and_shared(data)
-    return manifest
+    return owners
 
 
 def _refuse_a_name_owned_as_skill_and_shared(data: ManifestData) -> None:
-    """Refuse a manifest that records one name as a skill and as a shared asset, which share one destination folder:
-    load refuses to read such a manifest, and save refuses to write one, so no run saves a manifest the next refuses."""
+    """Refuse a manifest that records one name as a skill and as a shared asset, which share one destination folder."""
     skills: dict[str, str] = {}
     shared: dict[str, str] = {}
     for source_id, entry in data["sources"].items():

@@ -157,42 +157,77 @@ def source_entries(draw: st.DrawFn) -> dict[str, Any]:
     return entry
 
 
-def manifest_refusal_due(entry: dict[str, Any]) -> bool:
-    """Whether saving the entry is refused before the manifest is written: a text no UTF-8 file holds, or one name
-    recorded as a skill and as a shared asset, which share one destination folder."""
-    texts = [value for value in (entry["source_dir"], entry["deployed_at"]) if isinstance(value, str)]
-    return any(has_surrogate(text) for text in texts) or bool(set(entry["skills"]) & set(entry["shared"]))
+KINDS = ("skills", "shared", ADAPTERS, "agents")
 
 
-SHARED_WITH_A_SKILL = {
-    "source_dir": "/a",
-    "deployed_at": None,
-    "requested_bundles": [],
-    "requested_bundle_members": {},
-    "requested_skills": ["0"],
-    "skills": {"0": {"hash": "sha256:" + "0" * 64, "skill_deps": [], "shared_deps": ["0"], "agent_deps": []}},
-    "shared": {"0": {"hash": "sha256:" + "1" * 64, "role": "owner"}},
-    ADAPTERS: {},
-    "agents": {},
-}
+def manifest_refusal_due(entries: list[dict[str, Any]]) -> bool:
+    """Whether saving the sources' entries is refused before the manifest is written: a text no UTF-8 file holds, one
+    name of one kind recorded by two sources, or one name recorded as a skill and as a shared asset, which share one
+    destination folder, by one source or two."""
+    texts = [
+        value for entry in entries for value in (entry["source_dir"], entry["deployed_at"]) if isinstance(value, str)
+    ]
+    if any(has_surrogate(text) for text in texts):
+        return True
+    if len(entries) == 2 and any(set(entries[0][kind]) & set(entries[1][kind]) for kind in KINDS):
+        return True
+    skills = {name for entry in entries for name in entry["skills"]}
+    return bool(skills & {name for entry in entries for name in entry["shared"]})
+
+
+def one_skill(name: str, shared: str | None = None) -> dict[str, Any]:
+    """A source's entry recording the one skill name, and, when shared is given, a shared asset of that name."""
+    return {
+        "source_dir": "/a",
+        "deployed_at": None,
+        "requested_bundles": [],
+        "requested_bundle_members": {},
+        "requested_skills": [name],
+        "skills": {
+            name: {
+                "hash": "sha256:" + "0" * 64,
+                "skill_deps": [],
+                "shared_deps": [shared] if shared else [],
+                "agent_deps": [],
+            }
+        },
+        "shared": {shared: {"hash": "sha256:" + "1" * 64, "role": "owner"}} if shared else {},
+        ADAPTERS: {},
+        "agents": {},
+    }
+
+
+SHARED_WITH_A_SKILL = one_skill("0", "0")
 
 
 @GENERATED
-@given(source_id=SOURCE_IDS, entry=source_entries(), run_id=st.sampled_from(("", "20260101-000000-ab12")))
-# save once wrote this entry, and load refused it: one name owned as a skill and as a shared asset.
-@example(source_id="a/b", entry=SHARED_WITH_A_SKILL, run_id="")
+@given(
+    source_id=SOURCE_IDS,
+    entry=source_entries(),
+    second=st.none() | st.tuples(SOURCE_IDS, source_entries()),
+    run_id=st.sampled_from(("", "20260101-000000-ab12")),
+)
+# save once wrote each of these, and load refused it: one name owned as a skill and as a shared asset, and one skill
+# owned by two sources.
+@example(source_id="a/b", entry=SHARED_WITH_A_SKILL, second=None, run_id="")
+@example(source_id="a/b", entry=one_skill("s"), second=("c/d", one_skill("s")), run_id="")
 def test_the_manifest_reads_back_every_generated_source_entry_or_refuses_it_unwritten(
-    source_id: str, entry: dict[str, Any], run_id: str
+    source_id: str, entry: dict[str, Any], second: tuple[str, dict[str, Any]] | None, run_id: str
 ) -> None:
-    """The manifest saves the generated entry and reads back exactly it and the run ID, and saving what it read gives
-    the same bytes; or, where manifest_refusal_due says so, save refuses and no manifest is written."""
-    expected = {"last_run_id": run_id, "sources": {source_id: entry}}
+    """The manifest saves the generated entries, of one source or two, and reads back exactly them and the run ID,
+    and saving what it read gives the same bytes; or, where manifest_refusal_due says so, save refuses and no manifest
+    is written."""
+    sources = (
+        {source_id: entry} if second is None or second[0] == source_id else {source_id: entry, second[0]: second[1]}
+    )
+    expected = {"last_run_id": run_id, "sources": sources}
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / ".deploy-manifest.json"
         written = manifest.load(path)
         written.data["last_run_id"] = run_id
-        written.sources[source_id] = copy.deepcopy(entry)  # type: ignore[assignment]  # the shape a run records
-        if manifest_refusal_due(entry):
+        for name, recorded in sources.items():
+            written.sources[name] = copy.deepcopy(recorded)  # type: ignore[assignment]  # the shape a run records
+        if manifest_refusal_due(list(sources.values())):
             with pytest.raises(DeployError):
                 written.save()
             assert not path.exists(), "the manifest was written before its refusal"
@@ -206,11 +241,23 @@ def test_the_manifest_reads_back_every_generated_source_entry_or_refuses_it_unwr
         assert again.read_bytes() == saved
 
 
+def test_a_manifest_naming_one_item_as_owned_by_two_sources_is_refused_unwritten() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / ".deploy-manifest.json"
+        written = manifest.load(path)
+        written.sources["a/b"] = one_skill("s")  # type: ignore[assignment]  # as a run records it
+        written.sources["c/d"] = one_skill("s")  # type: ignore[assignment]  # as a run records it
+        with pytest.raises(DeployError) as refused:
+            written.save()
+        assert str(refused.value).splitlines()[0] == "ERROR: Skill 's' is owned by both 'a/b' and 'c/d' in manifest"
+        assert not path.exists()
+
+
 def test_a_manifest_naming_one_destination_as_a_skill_and_a_shared_asset_is_refused_unwritten() -> None:
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / ".deploy-manifest.json"
         written = manifest.load(path)
-        written.sources["a/b"] = copy.deepcopy(SHARED_WITH_A_SKILL)  # type: ignore[assignment]  # as a run records it
+        written.sources["a/b"] = one_skill("0", "0")  # type: ignore[assignment]  # as a run records it
         with pytest.raises(DeployError) as refused:
             written.save()
         assert str(refused.value).splitlines()[0] == (
