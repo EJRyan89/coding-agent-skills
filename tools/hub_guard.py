@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import enum
 import functools
 import math
 import os
@@ -521,6 +522,25 @@ CALLBACK_OPTIONS = {"mapfile": "C", "readarray": "C", "compgen": "F", "jobs": "x
 DIRSTACK = "DIRSTACK"
 
 
+def command_start(words: Sequence[bash_syntax.Word]) -> int:
+    """The index of a simple command's name: the first word past the assignments before it, or len(words) where it
+    has none."""
+    index = 0
+    while index < len(words) and words[index].assignment is not None:
+        index += 1
+    return index
+
+
+def assigns_dirstack(words: Sequence[bash_syntax.Word]) -> bool:
+    """Whether a command's assignments give DIRSTACK, or one of its elements, a value."""
+    return any(word.assignment is not None and word.assignment.name == DIRSTACK for word in words)
+
+
+def bare_name(name: str) -> bool:
+    """Whether a command's name holds no directory, so Bash looks it up among its functions and builtins."""
+    return "/" not in name and "\\" not in name
+
+
 def may_move(name: str | None, arguments: list[Word]) -> bool:
     """Whether a command whose name is `name`, given `arguments`, may move the shell or its stack: a name the text does
     not settle, a builtin FOLLOWED_BUILTINS names, and one BUILTINS_NOT_FOLLOWED names, but one of CALLBACK_OPTIONS
@@ -634,6 +654,11 @@ POWERSHELL_UNDERSTOOD = {
 POWERSHELL_LOCATION = {**dict.fromkeys(("set-location", "cd", "chdir", "sl"), "set-location")}
 POWERSHELL_PUSH = {**dict.fromkeys(("push-location", "pushd"), "push-location")}
 POWERSHELL_POP = {**dict.fromkeys(("pop-location", "popd"), "pop-location")}
+# The cmdlets the reader follows as moving the location.
+POWERSHELL_MOVES = frozenset({"set-location", "push-location", "pop-location"})
+# The extension of a PowerShell script file, which runs in the session itself, so a Set-Location in it moves the
+# session, however it is invoked.
+POWERSHELL_SCRIPT = ".ps1"
 # A PowerShell path on a provider other than the file system: a drive whose name is more than one letter, such as
 # env:, alias:, or HKLM:, or a provider-qualified path such as Environment::. A location there is no checkout.
 PROVIDER_PATH = re.compile(r"^(?:(?:[\w.]+\\)?[A-Za-z]\w*::|[A-Za-z][\w-]+:)")
@@ -3069,14 +3094,25 @@ class Directory:
     """Where a shell is, as far as the text settles it, and its pushd stack; None is a directory it does not. The
     stack holds the entries the text settles from its top, and known_below says whether it ends there: False where a
     command the guard does not follow may have pushed, popped, or set entries below them, so a popd past the last one
-    the text settles goes where the text does not settle."""
+    the text settles goes where the text does not settle. unread_code says whether the shell may hold code the guard
+    did not read that a later command runs in it, a function, an alias, or a trap, which may move it again: from
+    there on no command settles where it is, a cd to a literal directory included (UNREAD_CODE)."""
 
     cwd: Path | None
     stack: tuple[Path | None, ...] = ()
     known_below: bool = True
+    unread_code: bool = False
 
 
 UNKNOWN = Directory(None, (), known_below=False)
+# Where a shell is once it may hold code the guard did not read, for every command after it.
+UNREAD_CODE = Directory(None, (), known_below=False, unread_code=True)
+
+
+def unknown_from(directory: Directory) -> Directory:
+    """A directory the text does not settle, after `directory`: UNREAD_CODE once the shell may hold code the guard did
+    not read, so that a later command never settles it again, and UNKNOWN otherwise."""
+    return UNREAD_CODE if directory.unread_code else UNKNOWN
 
 
 def pushed(directory: Directory) -> Directory:
@@ -3103,7 +3139,10 @@ def stack_unknown(directory: Directory) -> Directory:
 
 
 def joined(first: Directory, second: Directory) -> Directory:
-    """A shell that may be in either directory: what the two agree on stays settled, and the rest is not."""
+    """A shell that may be in either directory: what the two agree on stays settled, and the rest is not; one that may
+    hold code the guard did not read on either way holds it after both."""
+    if first.unread_code or second.unread_code:
+        return UNREAD_CODE
     cwd = first.cwd if same_place(first.cwd, second.cwd) else None
     if len(first.stack) != len(second.stack):
         return Directory(cwd, (None,) * min(len(first.stack), len(second.stack)), known_below=False)
@@ -3126,6 +3165,18 @@ class Outcome:
 
 def certain(directory: Directory) -> Outcome:
     return Outcome(directory, directory)
+
+
+class Effect(enum.IntEnum):
+    """What a command does to where the shell is, the one decision each reader both follows a command by and judges a
+    compound command holding it by, so the two cannot differ: it moves NOTHING; it is FOLLOWED, as cd, pushd, popd,
+    and dirs are, or a plain assignment to DIRSTACK; or it runs code the guard does not read (UNREAD) in the shell
+    itself, which may move it, now or whenever a later command runs a function, an alias, or a trap it defines. A
+    compound command's effect is the greatest of its commands'."""
+
+    NOTHING = 0
+    FOLLOWED = 1
+    UNREAD = 2
 
 
 def moved_to(directory: Directory, target: Path, stacked: Directory) -> Outcome:
@@ -3183,7 +3234,9 @@ class BashReader:
     Only a list of simple commands is placed exactly: a command that runs only when another succeeds or fails goes on
     from that outcome, a subshell, a pipeline's commands, and a background job run in a copy whose changes die with it,
     and a compound command that changes the directory leaves every git call in it, and every one after it, in a
-    directory the text does not settle.
+    directory the text does not settle. A command that runs code the guard does not read in the shell itself, or
+    defines a function, leaves every command after it there for good (UNREAD_CODE), since that code may define a
+    function, an alias, or a trap a later command runs, which may move the shell again after a cd the guard follows.
     """
 
     def __init__(self, reading: Reading, depth: int, start: BashStart, bash_3_2: bool = False) -> None:
@@ -3243,15 +3296,27 @@ class BashReader:
         return Outcome(outcome.fail, outcome.ok) if node.negated else outcome
 
     def read_command(self, node: bash_syntax.Command, directory: Directory) -> Outcome:
+        """One command, from `directory`; once the shell may hold code the guard did not read, the command is read
+        there and leaves the shell there, whatever it does."""
         self.reading.time_left()
+        outcome = self.read_node(node, directory)
+        return certain(UNREAD_CODE) if directory.unread_code else outcome
+
+    def read_node(self, node: bash_syntax.Command, directory: Directory) -> Outcome:
         if isinstance(node, bash_syntax.Simple):
             return self.read_simple(node, directory)
         if isinstance(node, bash_syntax.FunctionDefinition):
-            # A function may run cd under any name a later command calls, so where the shell is after one is unknown.
-            return certain(UNKNOWN)
+            # A later command may call the function by its name, which may run cd or define another by any name.
+            return certain(UNREAD_CODE)
         self.read_redirects(node.redirects, directory)
-        moves = changes_directory(node)
-        inside = UNKNOWN if moves else directory
+        effect = self.compound_effect(node)
+        # A loop runs its body again after code it does not read may have defined what an earlier command calls, so
+        # every command of a compound command holding such code is read from there.
+        inside = {
+            Effect.NOTHING: directory,
+            Effect.FOLLOWED: unknown_from(directory),
+            Effect.UNREAD: UNREAD_CODE,
+        }[effect]
         if isinstance(node, bash_syntax.Loop):
             # An arithmetic for's header is expanded before the first pass, so its substitutions run.
             self.read_words([*(node.words or []), *node.header], directory)
@@ -3261,9 +3326,56 @@ class BashReader:
             self.read_words([node.expression], directory)
         for body in bash_syntax.command_bodies(node):
             self.read_list(body, inside)
-        if moves and not isinstance(node, bash_syntax.Subshell):
-            return certain(UNKNOWN)
-        return certain(directory)
+        if effect is Effect.NOTHING or isinstance(node, bash_syntax.Subshell):
+            return certain(directory)
+        return certain(inside)
+
+    def compound_effect(self, node: object) -> Effect:
+        """What a compound command does to where the shell is (Effect): the greatest effect of each command it holds,
+        each simple one read as read_simple reads it and judged by effect, as read_command_words follows it. A
+        function definition runs code the guard does not read whenever a later command calls it, and a plain
+        assignment to DIRSTACK or one of its elements moves the stack a later popd reads."""
+        if isinstance(node, bash_syntax.FunctionDefinition):
+            return Effect.UNREAD
+        if isinstance(node, bash_syntax.Simple):
+            index = command_start(node.words)
+            if index == len(node.words):
+                return Effect.FOLLOWED if assigns_dirstack(node.words) else Effect.NOTHING
+            return self.effect([self.word_value(word) for word in node.words[index:]])
+        parts: Iterable[object] = ()
+        if isinstance(node, bash_syntax.CommandList):
+            parts = (and_or for and_or, _ in node.items)
+        elif isinstance(node, bash_syntax.AndOr):
+            parts = (node.first, *(pipeline for _, pipeline in node.rest))
+        elif isinstance(node, bash_syntax.Pipeline):
+            parts = node.commands
+        elif isinstance(node, bash_syntax.Command):
+            parts = bash_syntax.command_bodies(node)
+        return max((self.compound_effect(part) for part in parts), default=Effect.NOTHING)
+
+    def effect(self, values: list[Word]) -> Effect:
+        """What a command, its words given name first, does to where the shell is (Effect): the one decision
+        read_command_words follows it by and compound_effect judges a compound command holding it by. It runs code
+        the guard does not read where its name is one the text does not settle, a function the environment hands the
+        shell, a builtin BUILTINS_NOT_FOLLOWED names given words may_move reads as moving, or `command` or `builtin`
+        whose words do not settle what it runs, or that runs such a command; cd, pushd, popd, and dirs are followed,
+        through `command` or `builtin` too; and every other command moves nothing."""
+        name, arguments = values[0], values[1:]
+        if name is None:
+            return Effect.UNREAD
+        if not bare_name(name):
+            return Effect.NOTHING
+        if folded(name) in self.start.functions:
+            return Effect.UNREAD
+        wrapper = shell_wrapper(name)
+        if wrapper is not None:
+            wrapped = wrapped_command(wrapper, arguments)
+            if wrapped is None:
+                return Effect.UNREAD
+            return self.effect(wrapped.words) if wrapped.words else Effect.NOTHING
+        if name in FOLLOWED_BUILTINS:
+            return Effect.FOLLOWED
+        return Effect.UNREAD if name in BUILTINS_NOT_FOLLOWED and may_move(name, arguments) else Effect.NOTHING
 
     def read_words(self, words: Iterable[bash_syntax.Word], directory: Directory) -> list[Word]:
         """Each word's value, None where the text does not settle it, once every substitution in it is read."""
@@ -3345,13 +3457,10 @@ class BashReader:
         words = node.words
         values = self.read_words(words, directory)
         self.read_redirects(node.redirects, directory)
-        index = 0
-        while index < len(words) and words[index].assignment is not None:
-            index += 1
+        index = command_start(words)
         if index == len(words):
             # An assignment to DIRSTACK, or to one of its elements, changes the stack a later popd reads.
-            assigned = {word.assignment.name for word in words if word.assignment is not None}
-            return certain(stack_unknown(directory) if DIRSTACK in assigned else directory)
+            return certain(stack_unknown(directory) if assigns_dirstack(words) else directory)
         prefixes: list[tuple[str, Word]] = []
         for word in words[:index]:
             assignment = word.assignment
@@ -3382,34 +3491,30 @@ class BashReader:
     def read_command_words(
         self, values: list[Word], directory: Directory, prefixes: list[tuple[str, Word]] | None = None
     ) -> Outcome:
-        """A command's words, its name first: git and a gh checkout are read as git calls, cd, pushd, and popd are
-        followed, and a command that may move the shell in a way the guard does not follow leaves where it is unknown:
-        a name the text does not settle, a function the environment hands the shell, and a builtin
-        BUILTINS_NOT_FOLLOWED names. Any other command is a program the guard does not read."""
+        """A command's words, its name first, followed by its effect (effect): one that runs code the guard does not
+        read leaves the shell where no later command settles it (UNREAD_CODE); a wrapper is read as the command it
+        runs; cd, pushd, popd, and dirs are followed; and git and a gh checkout are read as git calls. Any other command
+        is a program the guard does not read."""
         name, arguments = values[0], values[1:]
-        if name is None:
-            return certain(UNKNOWN)
+        if name is None or self.effect(values) is Effect.UNREAD:
+            return certain(UNREAD_CODE)
         program = command_name(name) or ""
-        bare = "/" not in name and "\\" not in name
-        if bare and folded(name) in self.start.functions:
-            return certain(UNKNOWN)
+        bare = bare_name(name)
         wrapper = command_wrappers.wrapper_name(program)
         if wrapper in command_wrappers.COMMAND_WRAPPERS and (bare or wrapper not in SHELL_WRAPPERS):
             return self.read_wrapped(wrapper, arguments, directory, prefixes or [])
-        if bare and name in {*BUILTINS_NOT_FOLLOWED, *FOLLOWED_BUILTINS}:
-            return self.read_builtin(name, arguments, directory) if may_move(name, arguments) else certain(directory)
+        if bare and name in FOLLOWED_BUILTINS:
+            return self.read_builtin(name, arguments, directory)
         self.read_program(program, arguments, directory, prefixes or [])
         return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
-        """A builtin that moves the shell: cd, pushd, and popd, followed, dirs, whose -c clears the stack popd reads
-        (dirs_stack), and one BUILTINS_NOT_FOLLOWED names, which leaves where the shell is unknown."""
+        """A builtin FOLLOWED_BUILTINS names: cd, pushd, and popd, which move the shell, and dirs, whose -c clears the
+        stack popd reads (dirs_stack)."""
         if name in {"cd", "pushd"}:
             return self.read_cd(arguments, directory, push=name == "pushd")
         if name == "dirs":
             return certain(dirs_stack(arguments, directory))
-        if name != "popd":
-            return certain(UNKNOWN)
         # popd's +N, -N, and -n leave where it goes, or which entry it drops, to the stack's numbering.
         return certain(UNKNOWN if arguments else popped(directory))
 
@@ -3507,6 +3612,15 @@ CHDIR_LONG = "--chdir"
 # The wrappers that run their command in the shell itself, so a cd there moves it, rather than in a process of their
 # own; exec replaces the shell, so nothing after it runs.
 SHELL_WRAPPERS = frozenset({"command", "builtin"})
+
+
+def shell_wrapper(name: str) -> str | None:
+    """The wrapper of SHELL_WRAPPERS a command's name runs, by the name read_command_words reads a wrapper by, where
+    the name holds no directory; None for any other name."""
+    wrapper = command_wrappers.wrapper_name(command_name(name) or "")
+    return wrapper if wrapper in SHELL_WRAPPERS and bare_name(name) else None
+
+
 # The wrappers that add words from their input to the command they run.
 INPUT_WRAPPERS = frozenset({"xargs"})
 
@@ -3658,27 +3772,6 @@ def gh_flag_with_value(word: str) -> bool:
 DESCRIPTOR_TARGET = re.compile(r"[0-9]+-?|-")
 
 
-def changes_directory(node: object) -> bool:
-    """Whether a compound command holds a command that may change the shell's directory or its stack: one may_move
-    names, a function definition, or a plain assignment to DIRSTACK or one of its elements."""
-    if isinstance(node, bash_syntax.FunctionDefinition):
-        return True
-    if isinstance(node, bash_syntax.Simple):
-        words = [word for word in node.words if word.assignment is None]
-        if not words:
-            return any(word.assignment is not None and word.assignment.name == DIRSTACK for word in node.words)
-        return may_move(words[0].literal, [word.literal for word in words[1:]])
-    if isinstance(node, bash_syntax.CommandList):
-        return any(changes_directory(and_or) for and_or, _ in node.items)
-    if isinstance(node, bash_syntax.AndOr):
-        return any(changes_directory(pipeline) for pipeline in (node.first, *(each for _, each in node.rest)))
-    if isinstance(node, bash_syntax.Pipeline):
-        return any(changes_directory(command) for command in node.commands)
-    return isinstance(node, bash_syntax.Command) and any(
-        changes_directory(body) for body in bash_syntax.command_bodies(node)
-    )
-
-
 def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:
     """Reads a Bash command started in cwd with the environment the hook was given: as Bash 4 and later read it, and,
     where it holds a case pattern those and Bash 3.2 read apart (BARE_CASE), as Bash 3.2 reads it too, so the git
@@ -3772,7 +3865,7 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     reader = PowerShellReader(reading, commands, depth)
     followed = all(node in POWERSHELL_UNDERSTOOD for node in nodes) and not reader.read_forms(output)
     if not followed or not isinstance(statements, list):
-        moves = any(reader.may_move(command) for command in commands)
+        moves = any(reader.effect(command) is not Effect.NOTHING for command in commands)
         for command in commands:
             reader.read_git_only(command, Directory(None if moves else cwd))
         return
@@ -3856,13 +3949,27 @@ class PowerShellReader:
         ]
         return words or [None]
 
-    def may_move(self, command: Any) -> bool:
-        """Whether a command may move the session's location: one that names a location cmdlet, or whose name the
-        text does not settle; an expression standing as a command moves nothing."""
-        if isinstance(command, dict) and command.get("expression"):
-            return False
+    def effect(self, command: Any) -> Effect:
+        """What a command does to the session's location (Effect): the one decision read_command follows it by and a
+        statement, a pipeline, or a command the reader does not follow is judged by. It runs code the guard does not
+        read in the session where it is dot-sourced into it, its name is one the text does not settle, it is a script
+        file, which runs in the session, ForEach-Object given a member's name, which it calls, or a name PowerShell
+        keeps for its own commands that POWERSHELL_COMMANDS does not hold; a location cmdlet is followed; and an
+        expression standing as a command, and every other command, move nothing."""
+        if not isinstance(command, dict) or command.get("expression"):
+            return Effect.NOTHING
         name = self.words(command)[0]
-        return name is None or name.lower() in {**POWERSHELL_LOCATION, **POWERSHELL_PUSH, **POWERSHELL_POP}
+        if command.get("invocation") == "Dot" or name is None or name.lower().endswith(POWERSHELL_SCRIPT):
+            return Effect.UNREAD
+        cmdlet = POWERSHELL_COMMANDS.get(name.lower())
+        if cmdlet is None:
+            return Effect.UNREAD if powershell_command(name) else Effect.NOTHING
+        if cmdlet == "foreach-object" and any(
+            not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
+            for element in [*(command.get("elements") or [])[1:], *self.attached(command)]
+        ):
+            return Effect.UNREAD
+        return Effect.FOLLOWED if cmdlet in POWERSHELL_MOVES else Effect.NOTHING
 
     def read_git_only(self, command: Any, directory: Directory) -> None:
         """A command's git call and its redirections, from a directory read_powershell settles or leaves unknown."""
@@ -3879,15 +3986,23 @@ class PowerShellReader:
         if not isinstance(pipelines, list) or not isinstance(operators, list) or not isinstance(nested, list):
             self.reading.notes.append("a PowerShell statement the reader could not list")
             return UNKNOWN
-        # A command inside the statement's expressions runs before it, in the session, so one that may move the
-        # location leaves it unknown for the statement and after it.
-        inside = self.read_pipeline(nested, directory).merged() if nested else directory
-        if not same_place(inside.cwd, directory.cwd) or any(
-            self.may_move(self.commands[index])
-            for index in nested
-            if isinstance(index, int) and index < len(self.commands)
-        ):
-            directory = UNKNOWN
+        # The commands inside the statement's expressions and bodies run before it, in the session, in an order a
+        # pipeline does not show, so where one may move the location, each is read from where the text does not settle,
+        # and so is the statement, and every command after it.
+        effect = max(
+            (
+                self.effect(self.commands[index])
+                for index in nested
+                if isinstance(index, int) and index < len(self.commands)
+            ),
+            default=Effect.NOTHING,
+        )
+        if effect is Effect.UNREAD:
+            directory = UNREAD_CODE
+        elif effect is Effect.FOLLOWED:
+            directory = unknown_from(directory)
+        if nested:
+            self.read_pipeline(nested, directory)
         if not pipelines:
             # An assignment, an if, or a foreach: what it runs is all nested, read above.
             return directory
@@ -3917,41 +4032,35 @@ class PowerShellReader:
         commands = [self.commands[index] for index in indexes if isinstance(index, int) and index < len(self.commands)]
         if len(commands) == 1:
             return self.read_command(commands[0], directory)
-        moved = False
         for command in commands:
-            moved = self.may_move(command) or moved
             self.read_command(command, directory)
         # Every command of a PowerShell pipeline runs in the session, so a location one sets outlives it.
-        return certain(UNKNOWN if moved else directory)
+        effect = max((self.effect(command) for command in commands), default=Effect.NOTHING)
+        if effect is Effect.UNREAD:
+            return certain(UNREAD_CODE)
+        return certain(directory if effect is Effect.NOTHING else unknown_from(directory))
 
     def read_command(self, command: Any, directory: Directory) -> Outcome:
-        """One command of a pipeline: git and a gh checkout are read as git calls, the location cmdlets are followed,
-        and a command that may move the location in a way the guard does not follow leaves it unknown: one
-        dot-sourced into the session, one whose name the text does not settle, ForEach-Object given a member's name,
-        which it calls, and a name PowerShell keeps for its own commands that POWERSHELL_COMMANDS does not hold. Any
-        other command is a program the guard does not read."""
+        """One command of a pipeline, followed by its effect (effect): one that runs code the guard does not read
+        leaves the location where no later command settles it (UNREAD_CODE), the location cmdlets are followed, and
+        git and a gh checkout are read as git calls. Any other command is a program the guard does not read. Once the
+        session may hold code the guard did not read, the command is read there and leaves the location there."""
         self.reading.time_left()
         if not isinstance(command, dict):
             return certain(directory)
         self.read_redirections(command, directory)
-        if command.get("expression"):
-            return certain(directory)
-        name = self.words(command)[0]
-        if command.get("invocation") == "Dot" or name is None:
-            return certain(UNKNOWN)
-        arguments = self.words(command)[1:]
-        cmdlet = POWERSHELL_COMMANDS.get(name.lower())
-        if cmdlet is not None:
-            if cmdlet == "foreach-object" and any(
-                not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
-                for element in [*(command.get("elements") or [])[1:], *self.attached(command)]
-            ):
-                return certain(UNKNOWN)
-            return self.read_cmdlet(cmdlet, arguments, directory)
-        if powershell_command(name):
-            return certain(UNKNOWN)
-        self.read_native([name, *arguments], directory)
-        return certain(directory)
+        effect = self.effect(command)
+        if effect is Effect.UNREAD:
+            return certain(UNREAD_CODE)
+        outcome = certain(directory)
+        name, *arguments = self.words(command)
+        if name is not None and not command.get("expression"):
+            cmdlet = POWERSHELL_COMMANDS.get(name.lower())
+            if cmdlet is None:
+                self.read_native([name, *arguments], directory)
+            elif effect is Effect.FOLLOWED:
+                outcome = self.read_cmdlet(cmdlet, arguments, directory)
+        return certain(UNREAD_CODE) if directory.unread_code else outcome
 
     def read_native(self, words: list[Word], directory: Directory) -> None:
         """A native program a command starts, read as the Bash reader reads one: git and a gh checkout as git calls, a
@@ -3984,16 +4093,12 @@ class PowerShellReader:
             read_powershell_start(program, arguments, directory.cwd, self.reading, self.depth + 1)
 
     def read_cmdlet(self, cmdlet: str, arguments: list[Word], directory: Directory) -> Outcome:
-        """A command POWERSHELL_COMMANDS names: one that moves the location is followed, and any other moves
-        nothing."""
-        if cmdlet == "set-location":
-            return self.read_location(arguments, directory, push=False)
-        if cmdlet == "push-location":
-            return self.read_location(arguments, directory, push=True)
-        if cmdlet == "pop-location":
-            # -StackName pops another stack, and -PassThru or another parameter is one the guard does not read.
-            return certain(UNKNOWN if arguments else popped(directory))
-        return certain(directory)
+        """A cmdlet POWERSHELL_MOVES names, followed."""
+        if cmdlet in {"set-location", "push-location"}:
+            return self.read_location(arguments, directory, push=cmdlet == "push-location")
+        # Pop-Location's -StackName pops another stack, and -PassThru or another parameter is one the guard does not
+        # read.
+        return certain(UNKNOWN if arguments else popped(directory))
 
     def read_location(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
         """Set-Location or Push-Location to a literal file-system path, by -Path, -LiteralPath, or position; a leading
