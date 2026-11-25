@@ -137,13 +137,16 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "
 
-# Every Bash builtin is decided here, as tests/tools/test_command_wrapper_catalogues.py holds to each builtin the
-# validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's: command, builtin, and exec are
-# wrappers of COMMAND_WRAPPERS, read as the command they run, and OPTION_WRAPPERS are, given their option;
-# SCRIPT_BUILTINS run a script each reader reads; a use
-# REFUSED_BUILTINS names runs text no reader reads, so `unwrapped` gives it as UNREAD_PROGRAM; RUNS_NOTHING run no
-# command but themselves; and NOT_READ names each builtin that runs text in a way no script reaches, or changes what
-# a later word runs, with why.
+# Every Bash builtin is decided here, in exactly one table, as tests/tools/test_command_wrapper_catalogues.py holds to
+# each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's:
+# - COMMAND_WRAPPERS holds command, builtin, and exec, each read as the command it runs;
+# - OPTION_WRAPPERS holds the builtins read as the command they run only given their option, as jobs -x;
+# - SCRIPT_BUILTINS holds the builtins that run a script each reader reads, eval and trap;
+# - REFUSED_BUILTINS holds the builtins with a use that runs text no reader reads, each with when and why, a use
+#   `unwrapped` gives as UNREAD_PROGRAM, while every other use of the builtin runs nothing;
+# - RUNS_NOTHING holds the builtins that run no command but themselves, whatever their words;
+# - NOT_READ holds, each with why, the builtins that run text only in a way no script reaches, or change what a later
+#   word runs, which no reader judges.
 # The builtins that run a script each reader reads: eval's arguments, and the action a trap sets (trap_action).
 SCRIPT_BUILTINS = frozenset({"eval", "trap"})
 # The builtins that run the command their operands name, in the shell itself, only given an option, each with its

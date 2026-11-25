@@ -234,7 +234,7 @@ shell, as `gfind`, is not, a stated limit, since no script here names one. Only 
 `\;` or `';'` that ends a `find -exec` action, is a word of the command it stands in. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
 abbreviated option or one the wrapper's table does not list is a program the policy cannot read. So is a builtin's use
 that runs text no reader reads, as `command_wrappers.REFUSED_BUILTINS` names each: `.` and `source`, `fc` but for a
-listing, `mapfile` or `readarray -C`, `compgen -C`, `-F`, or `-W`, whose wordlist's substitutions it expands, `enable
+listing, `mapfile -C` or `readarray -C`, `compgen -C`, `-F`, or `-W`, whose wordlist's substitutions it expands, `enable
 -f`, and a word whose array subscript holds a command or process substitution, or Bash 5.3's `${ command; }`, a nested
 subscript's included, for `let`, `declare`, `typeset`, `local`, `read`, `printf`, `unset`, `test`, `[`, `wait -p`,
 `export`, `readonly`, or `getopts`, which Bash expands even where the word is quoted, for the last three once the
