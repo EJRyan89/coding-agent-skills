@@ -8921,6 +8921,18 @@ def test_indirection_policy_refuses_each_standard_resolver(name: str) -> None:
     assert refused == marked
 
 
+def test_indirection_policy_refuses_a_call_whose_function_a_value_chooses() -> None:
+    source = "import os\n\n\ndef run(quiet):\n    (print if quiet else os.system)('x')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.indirection_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:5 calls the function an if-expression chooses, which chooses a callable by a "
+        "value, which no policy reading the code can follow; spell the name, or state why in INDIRECTION_ALLOWED"
+    ]
+
+
 @pytest.mark.parametrize(
     "body",
     [
