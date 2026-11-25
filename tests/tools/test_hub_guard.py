@@ -64,6 +64,57 @@ def guard_in_process(stdin: str, cwd: Path, environment: Mapping[str, str]) -> t
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+# Each call of a function f the environment hands the shell that Bash runs in the shell itself, so a move it makes
+# outlives the call, and each it runs in a copy of the shell, a subshell's or a pipeline's.
+EXPORTED_FUNCTION_CALLS = (
+    "f",
+    "if true; then f; fi",
+    "if false; then :; else f; fi",
+    "{ f; }",
+    "while f; do break; done",
+    "until f; do :; done",
+    "for x in 1; do f; done",
+    "select x in 1; do f; break; done <<< 1",
+    "case x in x) f;; esac",
+    "true && f",
+    "false || f",
+    "! f",
+    "time f",
+)
+EXPORTED_FUNCTION_COPIES = (
+    *("( f )", "f | cat", "(f) && true", "coproc f", "{ ( f ); }", "{ f | cat; }", "if true; then f | cat; fi"),
+    *("{ f & }", "while ( f ); do break; done", "if true; then coproc f; fi"),
+)
+
+
+def unread_code_forms(target: Path | str) -> tuple[str, ...]:
+    """Commands that leave code in the shell, which the guard does not read, that a later command runs there and that
+    moves it to target: a function g, one defined by eval, by a file `.` reads, and by eval named only by a variable,
+    RUN; an alias g; a DEBUG trap, which runs before every command; and a call to the function f the environment hands
+    the shell, which sets one."""
+    define = f'g() {{ cd "{target}"; }}'
+    return (
+        define,
+        f"eval '{define}'",
+        f". /dev/stdin <<< '{define}'",
+        f"\"$RUN\" '{define}'",
+        f"shopt -s expand_aliases\nalias g='cd \"{target}\"'",
+        f"trap 'cd \"{target}\"' DEBUG",
+        "f",
+    )
+
+
+# Commands, each read alone, whose effect on where the shell is the reader follows them by: with the function f in the
+# environment, a builtin or a wrapper in each form the reader reads it in, and programs that move nothing.
+EFFECT_SAMPLES = (
+    *("f", "command f", "eval x", "source x", ". x", '"$X"', 'command "$X"', "builtin eval x", "g() { :; }"),
+    *("trap x DEBUG", "alias a=b", "mapfile -C cb x", 'mapfile -t "$X"', "compgen -F g x", "jobs -x cd /"),
+    *("cd /", "pushd /", "popd +1", "dirs -c x", "DIRSTACK=x", "command cd /", "builtin cd /", "Command cd /"),
+    *("mapfile -t x", "command -v git", "echo cd /", "git status", "/usr/bin/eval x", "env cd /", "x=1", "jobs -l"),
+    *("( f )", "f | cat", "f &", "coproc eval x", "( cd / )", "eval x | cat"),
+)
+
+
 class GuardTestCase(HubTestCase):
     """A test that hands the hook one event, as Claude Code does, and reads the guard's decision.
 
@@ -3708,6 +3759,67 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
 
+    def test_a_function_the_environment_hands_the_shell_moves_it_wherever_a_command_calls_it(self) -> None:
+        # Bash runs an exported function in the shell itself, inside a compound command as at the top level, so the
+        # commit after the call runs in the hub (test_an_exported_function_moves_the_shell_from_every_compound_command).
+        environment = {**self.environment, "BASH_FUNC_f%%": f'() {{ cd "{self.hub}"; }}'}
+        for call in EXPORTED_FUNCTION_CALLS:
+            with self.subTest(call=call):
+                self.assertEqual("deny", self.bash(f"{call}; git commit -m x", self.tree, environment))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A subshell's and a pipeline's commands run in a copy of the shell, so the call moves nothing after them.
+        for call in EXPORTED_FUNCTION_COPIES:
+            with self.subTest(call=call):
+                self.assertIsNone(self.bash(f"{call}; git commit -m x", self.tree, environment))
+        # Without the function in the environment, f is a program, which moves nothing.
+        self.assertIsNone(self.bash("if true; then f; fi; git commit -m x", self.tree))
+
+    def test_code_the_guard_does_not_read_may_move_the_shell_again_after_a_cd_it_follows(self) -> None:
+        # Each defines a function, an alias, or a trap the commands after it run in the shell itself, so the cd into
+        # the worktree does not settle where the commit runs: Bash runs it in the hub
+        # (test_code_bash_defines_moves_the_shell_after_a_later_cd).
+        environment = {**self.environment, "BASH_FUNC_f%%": f"() {{ trap 'cd \"{self.hub}\"' DEBUG; }}"}
+        for before in unread_code_forms(self.hub):
+            command = f'{before}\ncd "{self.tree}"\ng\ngit commit -m x'
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree, environment))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A loop's second pass runs its commit after the code its first pass did not read.
+        loop = f'for i in 1 2; do cd "{self.tree}"; git commit -m x; eval "$DEFINE"; done'
+        self.assertEqual("deny", self.bash(loop, self.tree))
+        # A cd whose target the text does not settle, a builtin given no callback, a subshell, a coprocess, a pipeline,
+        # and a background job define nothing in the shell, so the cd after them settles where the commit runs, alone
+        # and inside a compound command.
+        for copy in ('( eval "$DEFINE" )', 'eval "$DEFINE" | cat', 'coproc eval "$DEFINE"', 'eval "$DEFINE" &'):
+            for before in (copy, f"if true; then {copy}\nfi", f"{{ {copy}\n}}"):
+                command = f'{before}\ncd "{self.tree}"; g; git commit -m x'
+                with self.subTest(command=command):
+                    self.assertIsNone(self.bash(command, self.tree))
+        for before in ('cd "$DIR"', "mapfile -t lines <<< x"):
+            command = f'{before}; cd "{self.tree}"; g; git commit -m x'
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_compound_command_is_judged_by_the_effect_its_commands_are_followed_by(self) -> None:
+        # Whether a compound command moves the shell is the one decision the reader follows each command by, so a
+        # command the reader leaves somewhere else at the top level is one a group holding it is judged to move, and
+        # one that leaves code the guard does not read in the shell is one the group is judged to leave it in; a
+        # subshell, a pipeline, and a background job leave neither.
+        reading = hub_guard.Reading(environment={"BASH_FUNC_f%%": "() { :; }"})
+        reader = hub_guard.BashReader(reading, 0, hub_guard.bash_start(reading))
+        start = hub_guard.Directory(self.tree)
+        effects = set()
+        for command in EFFECT_SAMPLES:
+            with self.subTest(command=command):
+                after = reader.read_text(command, start)
+                group = bash_syntax.parse(f"{{ {command}\n}}").items[0][0].first.commands[0]
+                effect = reader.compound_effect(group)
+                effects.add(effect)
+                self.assertEqual(after == hub_guard.UNREAD_CODE, effect is hub_guard.Effect.UNREAD)
+                if after != start:
+                    self.assertIsNot(hub_guard.Effect.NOTHING, effect)
+        self.assertEqual(set(hub_guard.Effect), effects)
+
     def test_dirs_clears_the_stack_only_as_bash_does_so_a_later_popd_goes_where_bash_goes(self) -> None:
         # Bash clears the stack only for an exact -c among words dirs reads, and its popd then stays where it is, so
         # the commit after it runs in the hub.
@@ -3928,6 +4040,65 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertIsNone(self.powershell("git status > $null", self.hub))
         self.assertEqual("deny", self.powershell("'x' > '$null'", self.hub))
         self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
+
+    def test_a_command_is_followed_by_its_effect_in_a_body_and_a_pipeline_as_alone(self) -> None:
+        # An if's body runs its commands one after another in the session, so the commit after Set-Location runs in
+        # the hub. A dot-sourced script, a script file, which runs in the session
+        # (test_a_powershell_script_file_moves_the_session_it_runs_in), a hyphenated name, and ForEach-Object given a
+        # member's name run code the guard does not read, which may move the location, in a body or a pipeline of
+        # several commands as alone.
+        for command in (
+            f"if ($true) {{ Set-Location '{self.hub}'; git commit -m x }}",
+            "if ($true) { . ./x.ps1; Write-Output 1 }; git commit -m x",
+            "if ($true) { ./x.ps1; Write-Output 1 }; git commit -m x",
+            "if ($true) { Foo-Bar; Write-Output 1 }; git commit -m x",
+            "Foo-Bar | Write-Output; git commit -m x",
+            ". ./x.ps1 | Write-Output; git commit -m x",
+            "1 | ForEach-Object Moo | Write-Output; git commit -m x",
+            "./x.ps1; git commit -m x",
+            "& ./X.PS1; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Such code may define a function by a location cmdlet's name, which PowerShell runs before the cmdlet, so a
+        # Set-Location after it settles nothing.
+        for before in (". ./x.ps1", "./x.ps1", "Foo-Bar", "Invoke-Expression 'x'"):
+            command = f"{before}; Set-Location '{self.tree}'; git commit -m x"
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Once the session may hold such code, a location cmdlet in a pipeline of several commands, or inside another
+        # command, settles nothing either, and nor does a Set-Location after it.
+        for moved in (f"Set-Location '{self.tree}' | Out-Null", f"Write-Output (Set-Location '{self.tree}')"):
+            command = f"Foo-Bar; {moved}; Set-Location '{self.tree}'; git commit -m x"
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Commands that move nothing leave the commit where the session is, in a body and a pipeline too.
+        for command in (
+            "Write-Output 1 | Sort-Object; git commit -m x",
+            "if ($true) { Write-Output 1; Get-Location }; git commit -m x",
+            f"Get-ChildItem | Select-Object -First 1; Set-Location '{self.tree}'; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.powershell(command, self.tree))
+
+    def test_a_program_dot_sourced_into_the_session_is_read_as_the_program(self) -> None:
+        # PowerShell runs a program dot-sourced into the session as it runs it without the dot, so its git call is
+        # judged where it runs, in a body and a pipeline too.
+        for command in (
+            ". git commit -m x",
+            ". 'git' commit -m x",
+            ". git.exe commit -m x",
+            "if ($true) { . git commit -m x }",
+            "1 | . git commit -m x",
+            ". git push",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+        self.assertIsNone(self.powershell(". git status", self.hub))
+        self.assertIsNone(self.powershell(". git commit -m x", self.tree))
 
     def test_a_location_powershell_may_move_is_unknown_after_it(self) -> None:
         outside = self.root / "not-a-repository"
@@ -5196,6 +5367,58 @@ def test_a_builtin_that_moves_nothing_runs_no_cd_its_words_name_in_bash_itself(n
         script = f'cd "$1" && {body}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
         result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script, "probe", *folders])
         assert result.output.split()[-1:] != ["moved"], (form, result.output)
+
+
+def moving_probe(tmp_path: Path, function: str, text: str) -> tuple[str, str]:
+    """Where the validated Bash ends after text, run by a bash that starts in one folder and is handed, exported, the
+    function f, whose body is `function`, which may name the other folder as $TARGET, and the first as $1; with RUN
+    naming eval. Gives the folder text may move to and the one Bash ends in, each as its pwd -P prints it."""
+    start, target = probe_folders(tmp_path)
+    script = tmp_path / "probe.sh"
+    script.write_bytes(f"{text}\npwd -P\n".encode())
+    outer = (
+        f'cd "$2" && pwd -P && cd "$1" && export TARGET="$2" && f() {{ {function}; }} && export -f f && '
+        'RUN=eval exec "$BASH" "$3" "$1"'
+    )
+    command = [bash_agreement.find_bash(), "-c", outer, "probe", start, target, platform_support.normalize(script)]
+    lines = platform_support.run_tool(command, separate_errors=True).output.splitlines()
+    assert len(lines) >= 2, lines
+    return lines[0], lines[-1]
+
+
+@pytest.mark.parametrize("call", EXPORTED_FUNCTION_CALLS)
+def test_an_exported_function_moves_the_shell_from_every_compound_command(call: str, tmp_path: Path) -> None:
+    target, ended = moving_probe(tmp_path, 'cd "$TARGET"', f"{call} > /dev/null 2>&1")
+    assert ended == target
+
+
+@pytest.mark.parametrize("call", EXPORTED_FUNCTION_COPIES)
+def test_an_exported_function_in_a_copy_of_the_shell_moves_nothing_after_it(call: str, tmp_path: Path) -> None:
+    target, ended = moving_probe(tmp_path, 'cd "$TARGET"', f"{call} > /dev/null 2>&1")
+    assert ended != target
+
+
+@pytest.mark.parametrize("index", range(len(unread_code_forms(""))))
+def test_code_bash_defines_moves_the_shell_after_a_later_cd(index: int, tmp_path: Path) -> None:
+    # The code each form leaves runs at `g`, or before every command, after the cd back to where the shell started.
+    form = unread_code_forms("$TARGET")[index]
+    target, ended = moving_probe(tmp_path, "trap 'cd \"$TARGET\"' DEBUG", f'{form}\ncd "$1"\ng > /dev/null 2>&1')
+    assert ended == target
+
+
+def test_a_powershell_script_file_moves_the_session_it_runs_in(tmp_path: Path) -> None:
+    # PowerShell runs a script file in the session, by its path or by &, so a Set-Location in it outlives it.
+    start, target = tmp_path / "start", tmp_path / "target"
+    start.mkdir()
+    target.mkdir()
+    script = tmp_path / "move.ps1"
+    script.write_bytes(f"Set-Location -LiteralPath '{target}'\n".encode())
+    pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+    assert pwsh is not None
+    for call in (f"& '{script}'", f"'{script}' | ForEach-Object {{ & $_ }}"):
+        text = f"Set-Location -LiteralPath '{start}'; {call}; (Get-Location).ProviderPath"
+        result = platform_support.run_tool([pwsh, "-NoProfile", "-NonInteractive", "-Command", text])
+        assert Path(result.output.splitlines()[-1]).resolve() == target.resolve(), result.output
 
 
 def test_a_join_keeps_each_entry_both_stacks_settle_and_no_more() -> None:
