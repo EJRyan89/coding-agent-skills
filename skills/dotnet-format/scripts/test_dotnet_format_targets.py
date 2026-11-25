@@ -1553,6 +1553,20 @@ class FileListTests(unittest.TestCase):
         self.assertEqual("there is no changed file to list", str(context.exception))
         mkstemp.assert_not_called()
 
+    def test_an_empty_name_or_one_holding_nul_is_refused_before_a_list_is_written(self) -> None:
+        # The reader refuses an empty name and splits a name at a NUL, so the writer refuses both, as no name git lists
+        # is either; tests/malformed_input/test_generated_round_trip.py found the pair.
+        cases = {
+            "": "the changed file '' has an empty name, which no path is",
+            "a\0b.cs": "the changed file 'a\\x00b.cs' holds a NUL, which ends a name in FILE_LIST",
+        }
+        for name, reason in cases.items():
+            with self.subTest(name=name):
+                with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
+                    targets.write_file_list(["A.cs", name])
+                self.assertEqual(reason, str(context.exception))
+                mkstemp.assert_not_called()
+
     def test_a_name_that_is_not_utf_8_is_refused_before_a_list_is_written(self) -> None:
         with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
             targets.write_file_list(["A.cs", "caf\udce9.cs"])
