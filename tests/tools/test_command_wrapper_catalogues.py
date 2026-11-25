@@ -599,9 +599,9 @@ def test_every_builtin_bash_prints_is_decided_once() -> None:
 # For each use REFUSED_BUILTINS names, a script whose use runs the command `touch M` hidden from every reader, in a
 # folder of its own, with the first Bash release known to run it: Bash 3.2 runs a subscript's command for let,
 # declare, typeset, local, read, and unset, and, once the variable has the integer attribute, for export, readonly,
-# and getopts; Bash 5.3 for printf -v, test -v, and [ -v too, and for Bash 5.3's `${ command; }` forms in a
-# subscript. compgen -W expands every command substitution its wordlist holds, on both. fc runs history, which a script
-# keeps off, and enable -f needs a shared object, so neither is probed.
+# and getopts; Bash 5.3 for printf -v, test -v, [ -v, and wait -p, which Bash 5.1 added, too, and for Bash 5.3's
+# `${ command; }` forms in a subscript. compgen -W expands every command substitution its wordlist holds, on both. fc
+# runs history, which a script keeps off, and enable -f needs a shared object, so neither is probed.
 REFUSED_PROBES = [
     ("source", "printf 'touch M\\n' > s.sh; source ./s.sh", (3, 2)),
     (".", "printf 'touch M\\n' > s.sh; . ./s.sh", (3, 2)),
@@ -633,6 +633,7 @@ REFUSED_PROBES = [
     ("let", "let 'a[${ touch M; }]=1'", PINNED_FROM_BASH),
     ("declare", "declare 'a[${| touch M; }]=1'", PINNED_FROM_BASH),
     ("read", "read 'a[${ touch M; }]' <<< x", PINNED_FROM_BASH),
+    ("wait", "sleep 0 & wait -n -p 'a[$(touch M)]'", PINNED_FROM_BASH),
 ]
 # Builtins that RUNS_NOTHING holds, given a word whose subscript holds a command, which no Bash expands.
 QUIET_PROBES = {
