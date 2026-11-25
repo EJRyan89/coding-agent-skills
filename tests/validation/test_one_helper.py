@@ -500,6 +500,10 @@ REFUSED_CLOSING: dict[str, tuple[str, str]] = {
     ),
     "an autolinked reference": ('import re\nP = re.compile(r"fixes GH-(\\d+)")\n', OWN_PATTERN),
     "an issue's URL": ('import re\nP = re.compile(r"closes https://github\\.com/\\S+/issues/(\\d+)")\n', OWN_PATTERN),
+    "a pull request's URL": (
+        'import re\nP = re.compile(r"closes https://github\\.com/\\S+/pull/(\\d+)")\n',
+        OWN_PATTERN,
+    ),
     "a pattern re.escape reads": ('import re\nP = re.escape("Closes #")\n', OWN_PATTERN),
     "a str method": ('def f(line):\n    return line.startswith("Closes #")\n', COMPARED),
     "an in comparison": ('def f(text):\n    return "fixes #" in text.lower()\n', COMPARED),

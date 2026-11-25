@@ -2,18 +2,23 @@
 
 GitHub closes an issue a pull request or a commit message on the default branch names after a closing keyword,
 `close`, `fix`, or `resolve` in any of their forms and any case, with an optional colon. Its closing-keyword
-documentation names two forms of the issue, `#<n>` in the same repository and `<owner>/<repo>#<n>`, and its autolink
-documentation two more it links an issue by, `GH-<n>` and the issue's URL, `https://github.com/<owner>/<repo>/issues/<n>`.
-This reads all four, and spellings of them GitHub's pages leave open: a keyword or a reference in Markdown emphasis
-(`**Closes** #<n>`), no space after the keyword or its colon (`CLOSES:#<n>`), a URL in angle brackets, over `http`,
-through `www.`, or with no scheme. Every caller refuses what it reads, so a spelling GitHub may not close by costs a
-refusal the author can rewrite, while one left unread would let an issue close unseen.
+documentation names two forms of the issue, `#<n>` in the same repository and `<owner>/<repo>#<n>`, and says a keyword
+before a pull request's reference closes that pull request; its autolink documentation adds `GH-<n>` and the URL of an
+issue or a pull request, `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>`. This reads each of them, and
+spellings of them GitHub's pages leave open: a keyword or a reference in Markdown emphasis (`**Closes** #<n>`), no
+space after the keyword or its colon (`CLOSES:#<n>`), a URL in angle brackets, over `http`, through `www.`, or with no
+scheme. Every caller refuses what it reads, so a spelling GitHub may not close by costs a refusal the author can
+rewrite, while one left unread would let an issue close unseen. `KEYWORDS` holds the keywords, and the module's suite
+holds them to GitHub's documented list and every documented keyword and reference form to being read, refused as a
+keyword before the start of a reference, or named in `NOT_READ`.
 
-What it does not see: a keyword and its reference on different lines, a reference after the first in a list that
-names its keyword once (`Closes #<n>, #<m>`; GitHub's pages ask for the keyword before each), `_` or `~` emphasis, a
-backslash-escaped `\\#<n>`, a keyword in another language, and a reference GitHub resolves through a repository's custom
-autolink prefix. `stray_closing_lines` also does not see a closing reference inside a comment copied character for
-character from the pull request template, which the squash commit still carries.
+What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines or with a
+no-break space between them, `_` or `~` emphasis, a backslash-escaped `\\#<n>`, a keyword in another language, a
+reference GitHub resolves through a repository's custom autolink prefix, a reference written as a Markdown link's text,
+and a URL through `redirect.github.com`, which GitHub's autolink page offers so that a URL makes no backlink. It also
+does not see a reference after the first in a list that names its keyword once (`Closes #<n>, #<m>`; GitHub's pages
+ask for the keyword before each). `stray_closing_lines` also does not see a closing reference inside a comment copied
+character for character from the pull request template, which the squash commit still carries.
 
 A pull request is squash-merged with its title as the commit's title and its body, as written, HTML comments included,
 as the message, so `pull_request_references` reads the title and the body together and reads inside comments. Every
@@ -51,8 +56,29 @@ from github_remote import OWNER_AND_NAME
 from hidden_comments import Reading, hidden_spans, read_comments
 from text_lines import text_lines
 
-# GitHub's closing keywords, as a pattern a caller may build on.
-CLOSING_KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+# GitHub's closing keywords, each read in any case. The module's suite holds them to the list GitHub's closing-keyword
+# page documents, and every keyword and reference form GitHub's pages document to being read, refused as a keyword
+# before the start of a reference, or named in NOT_READ with why.
+KEYWORDS = ("close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved")
+# The keywords as a pattern a caller may build on.
+CLOSING_KEYWORDS = rf"(?:{'|'.join(KEYWORDS)})"
+# Each spelling of a closing reference the reader neither reads nor refuses, with why; the docstring states them.
+NOT_READ = {
+    "Closes\n#1": "a keyword and its reference on different lines: GitHub's pages write them on one, and read across a "
+    "line break, a keyword ending a line of prose would take the next line's number",
+    "Closes\u00a0#1": "a no-break space between the keyword and the reference, which GitHub's pages never write; the "
+    "reader takes only spaces and tabs there",
+    "_Closes_ #1": "`_` emphasis around the keyword, which GitHub's pages never write; the reader reads `*` emphasis",
+    "~~Closes~~ #1": "a struck-out keyword, which GitHub's pages never write and its author has struck out",
+    "Closes \\#1": "a backslash-escaped number, which GitHub's pages never write",
+    "Schließt #1": "a keyword in another language: GitHub's closing-keyword page lists English keywords only",
+    "Closes JIRA-1": "a custom autolink prefix, which each repository sets for itself and points at another tracker",
+    "Closes [#1](https://github.com/o/r/issues/1)": "a reference written as a Markdown link's text, which GitHub's "
+    "pages never write",
+    "Closes https://redirect.github.com/o/r/issues/1": "a `redirect.github.com` URL, which GitHub's autolink page "
+    "offers so that a URL makes no backlink, the link a closing keyword makes, and through which Dependabot writes "
+    "the issue links of the changelogs it quotes",
+}
 # A repository as GitHub names one in a reference: an owner and a name of github_remote's repository characters.
 REPOSITORY = OWNER_AND_NAME
 # What may come between a keyword and its reference: Markdown's `*` emphasis, spaces or tabs, one optional colon, and
@@ -67,12 +93,13 @@ GITHUB_URL = r"(?:https?://)?(?:www\.)?github\.com/"
 # How a reference starts, so a caller can refuse a line that starts one and names no issue this reads, such as
 # `Closes #abc`; `GH-` starts one only before a digit, so prose such as `fixes GH-hosted runners` starts none.
 REFERENCE_START = rf"(?:(?:{REPOSITORY})?#|GH-[0-9]|{GITHUB_URL})"
-# A closing keyword and the issue it closes, in each form; the number is the digits GitHub reads, ending at a word end.
+# A closing keyword and the issue it closes, in each form, a pull request's URL among them; the number is the digits
+# GitHub reads, ending at a word end.
 CLOSING_REFERENCE = re.compile(
     rf"{CLOSING_PREFIX}"
     rf"(?:(?P<repository>{REPOSITORY})?#(?P<number>[0-9]+)"
     rf"|GH-(?P<autolinked>[0-9]+)"
-    rf"|{GITHUB_URL}(?P<linked>{REPOSITORY})/issues/(?P<linked_number>[0-9]+))\b",
+    rf"|{GITHUB_URL}(?P<linked>{REPOSITORY})/(?:issues|pull)/(?P<linked_number>[0-9]+))\b",
     re.IGNORECASE,
 )
 # A closing keyword and the start of an issue reference, which a title may not hold anywhere and a body line may not
@@ -87,8 +114,8 @@ CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 
 @dataclass(frozen=True)
 class ClosingReference:
-    """An issue a body closes: its repository as the reference names it, None for one in the same repository, and its
-    number."""
+    """An issue, or a pull request, a body closes: its repository as the reference names it, None for one in the same
+    repository, and its number."""
 
     repository: str | None
     number: int

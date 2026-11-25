@@ -394,8 +394,8 @@ reader owed its table entry, or that a fault driver's `refusal_gaps` in `tests/m
 for a run owed its refusal line, is refused by the known-failure closing check, in `tests/validation/known_failures.py`:
 the issue would close while that work is undone. It reads every closing reference, through ejryan89-skill-core's
 `closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`, `GH-<number>`,
-`<owner>/<repo>#<number>` naming this repository, or the issue's URL, and the spellings of them GitHub's pages leave
-open, which that module's docstring names with what it does not see. It reads the title and the body alike, HTML
+`<owner>/<repo>#<number>` naming this repository, or the URL of the issue or of a pull request, and the spellings of
+them GitHub's pages leave open, which that module's docstring names with what it does not see. It reads the title and the body alike, HTML
 comments included: the squash commit carries the title and the body as written, comments and all, and GitHub closes
 an issue a commit message on the default branch names, so a reference hidden from the rendered body still closes its
 issue. It reads them from `--pr-title <file>` and `--pr-body <file>` locally and the pull request in continuous
