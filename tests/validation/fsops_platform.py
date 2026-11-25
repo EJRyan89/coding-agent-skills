@@ -942,7 +942,11 @@ def write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> l
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
         elif isinstance(node, ast.Call) and not resolver.unresolved(node):
-            function = read(resolver.function(node))
+            # An assignment expression calls the value it binds, as `(rm := shutil.rmtree)(path)` calls rmtree.
+            callee = node.func
+            while isinstance(callee, ast.NamedExpr):
+                callee = callee.value
+            function = read(resolver.original(callee))
             call = ast.copy_location(ast.Call(func=function, args=node.args, keywords=node.keywords), node)
             if token := _call_writes(call, resolver, bindings):
                 found.append((call, token))

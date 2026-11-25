@@ -1894,6 +1894,34 @@ def test_filesystem_write_policy_reads_a_write_called_through_any_lookup_by_name
     )
 
 
+# Each callee form validation_support's CALLEE_FORMS reads by the value it evaluates to, around a write, with the
+# problems beyond the write the policy reports for it: a subscript it cannot settle is reported as a lookup too.
+CHOSEN_CALLEE_FORMS = [
+    pytest.param("(shutil.rmtree or print)", [], id="an or"),
+    pytest.param("(print if quiet else shutil.rmtree)", [], id="an if-expression"),
+    pytest.param("(remove := shutil.rmtree)", [], id="an assignment expression"),
+    pytest.param("(remove := (other := shutil.rmtree))", [], id="a nested assignment expression"),
+    pytest.param(
+        "[shutil.rmtree][0]",
+        ["cannot resolve the callable [shutil.rmtree][0] looks up; call a known callable instead"],
+        id="a subscripted literal",
+    ),
+]
+
+
+@pytest.mark.parametrize(("callee", "also"), CHOSEN_CALLEE_FORMS)
+def test_filesystem_write_policy_reads_a_write_each_callee_form_chooses(
+    tmp_path: Path, callee: str, also: list[str]
+) -> None:
+    write_fixture_tree(
+        tmp_path, {"deployer/chosen.py": f"import shutil\n\n\ndef go(path, quiet):\n    {callee}(path)\n"}
+    )
+    assert [
+        "deployer/chosen.py:5 writes with shutil.rmtree; route it through deployer/fsops.py",
+        *(f"deployer/chosen.py:5 {problem}" for problem in also),
+    ] == filesystem_write_problems(tmp_path)
+
+
 SCRIPTS = TREE_READ_SKILLS[0]
 TREE_READ_ADVICE = "read it through ejryan89-skill-core's tree_reader, or state why in TREE_READ_ALLOWED"
 
