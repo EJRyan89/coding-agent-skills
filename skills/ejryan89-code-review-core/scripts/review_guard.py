@@ -138,13 +138,13 @@ SOURCE_COMMAND = re.compile(
 # and opens them again, which Bash and PowerShell read alike. Bash reads PowerShell's own `''` as an empty string,
 # and PowerShell reads Bash's `'\''` as a backslash and an open quote.
 QUOTE_IN_VALUE = "'\"'\"'"
-# What no path or pattern may hold: a line break or NUL, which ends the command or the argument, and PowerShell's
-# smart single quotes, each of which ends a single-quoted string there while Bash reads it as text.
 # What the guard drops from either end of a command before it reads it: the ASCII spaces, tabs, and line feeds Bash
 # reads as nothing there. Python's str.strip would also drop characters Bash keeps as a word or a command of their
 # own, such as a form feed, U+001C to U+001F, U+0085, or a Unicode space, so any of those left at an end is read, and
 # no allowed form holds one.
 COMMAND_PADDING = " \t\n"
+# What no path or pattern may hold: a line break or NUL, which ends the command or the argument, and PowerShell's
+# smart single quotes, each of which ends a single-quoted string there while Bash reads it as text.
 VALUE_BREAKS = frozenset("\r\n\0\u2018\u2019\u201a\u201b")
 # A dollar sign before a letter, which Claude Code asks about before it runs a granted command even inside single
 # quotes, so a headless review would deny it; a pattern writes a literal dollar sign as [$] instead.
