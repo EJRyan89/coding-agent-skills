@@ -1,5 +1,5 @@
 """A FIFO, socket, device, or other special file in a tree the deployer reads is refused by name and kind, before any
-read, so the deployment never blocks opening one (#3235).
+read, so the deployment never blocks opening one.
 
 The FIFO tests run on Linux and macOS only: Windows has no FIFO a folder can hold, its named pipes living in their own
 namespace, and its counterpart special file, the AF_UNIX socket a folder can hold, is a reparse point, which the
