@@ -122,9 +122,9 @@ max-statements = 50
 [tool.mypy]
 python_version = "3.12"
 # The optional error codes beyond --strict that every root passes, so a name a path leaves unbound, a condition that is
-# always true, a match that leaves a case unhandled, a method that overrides without `@override`, and a
-# `type: ignore` without its codes are errors. warn_unreachable
-# and mutable-override are declined; "Considered and declined" in docs/design.md says why.
+# always true, a match that leaves a case unhandled, a method that overrides without `@override`, a `type: ignore`
+# without its codes, and a `reveal_type` left behind are errors. warn_unreachable, mutable-override, and
+# disallow_any_explicit (explicit-any) are declined; "Considered and declined" in docs/design.md says why.
 enable_error_code = [
     "deprecated",
     "exhaustive-match",
@@ -135,8 +135,11 @@ enable_error_code = [
     "redundant-self",
     "truthy-bool",
     "truthy-iterable",
+    "unimported-reveal",
     "unused-awaitable",
 ]
+# no-any-unimported: a type that becomes Any because its module is not followed is an error in a signature or a base.
+disallow_any_unimported = true
 # No platform is set, so mypy checks each module as the host running validation sees it: a Windows leg checks the
 # Windows branches and a Linux one the others, and code for the other platform carries its `type: ignore` reason.
 # tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths, and
