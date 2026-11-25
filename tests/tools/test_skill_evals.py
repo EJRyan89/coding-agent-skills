@@ -8004,7 +8004,7 @@ def test_a_row_of_every_scenario_marked_counts_their_runs(tmp_path: Path) -> Non
     scenarios = skill_evals_scenarios.load_scenarios("demo", root=tmp_path)
     run = skill_evals_runs.Run
     reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
-    runs = {
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
         (name, "haiku", index): run({}, None, reviewer, session) for name in ("first", "second") for index in (1, 2, 3)
     }
     outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
@@ -8028,7 +8028,7 @@ def test_a_marked_scenario_s_cell_is_read_back_as_one_measured_scenario(tmp_path
     scenarios = varying_scenarios(tmp_path)
     run = skill_evals_runs.Run
     reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
-    runs = {
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
         ("steady", "haiku", None): run({}, None, reviewer, session),
         **{("varying", "haiku", index): run({}, None, reviewer, session) for index in (1, 2, 3)},
     }
