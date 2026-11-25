@@ -245,7 +245,14 @@ writes: an ANSI-C `$'...'` word whose escape spells such a substitution; text an
 `[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
 `${a['$(x)']}`, which Bash 5.3 runs; an option word a variable or a substitution fills, as
 `o=-W; compgen "$o" '$(x)' x`, which the policy takes as the literal its text is; and `enable -n`, which makes a later
-name run the program of that name, as `hash -p` makes one run another file. In PowerShell it
+name run the program of that name, as `hash -p` makes one run another file. The grammar does not read a script, which the policy reports as Bash it
+cannot read, holding a command that turns on a `set -o` or `shopt` option under which Bash reads the text after it otherwise, as
+`bash_syntax.OPTIONS_REFUSED` names each: `expand_aliases`, `extglob`, POSIX mode, `keyword` (`set -k`), `histexpand`
+(`set -H`), a compat level, or Git Bash's `igncr`, turned on by `set` or `shopt` in any spelling, behind `builtin` or
+`command` too, or by an assignment to `POSIXLY_CORRECT` or `BASH_COMPAT`; and `set` or `shopt` given a word the text
+does not settle. Every option Bash's `set -o` and `shopt -p` print is decided there. The policy does not follow
+`xtrace`, which expands `PS4` before each traced command, running a substitution its value holds, nor an option the
+script does not turn on itself, as the environment or a shell's start options set one. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import sys
 import unittest
@@ -1072,15 +1073,20 @@ def test_a_bash_as_new_as_the_pin_prints_every_pinned_word() -> None:
         )
 
 
+def reserved_words_not_read() -> set[str]:
+    """The keys of bash_syntax.NOT_READ that name a reserved word, the rest naming an option."""
+    return bash_syntax.NOT_READ.keys() - option_keys(bash_syntax.NOT_READ)
+
+
 def test_every_reserved_word_the_reader_reads_or_leaves_unread_is_one_bash_reserves() -> None:
     catalogue = runner_bash()[1] | PINNED_RESERVED_WORDS
     assert sorted(bash_syntax.RESERVED - catalogue) == []
-    assert sorted(bash_syntax.NOT_READ.keys() - catalogue) == [], "remove each: no Bash reserves it"
+    assert sorted(reserved_words_not_read() - catalogue) == [], "remove each: no Bash reserves it"
 
 
 def test_no_reserved_word_is_both_decided_and_not_read() -> None:
     decided = {
-        word for word in bash_syntax.NOT_READ if word in bash_syntax.RESERVED or refused_at_a_commands_start(word)
+        word for word in reserved_words_not_read() if word in bash_syntax.RESERVED or refused_at_a_commands_start(word)
     }
     assert sorted(decided) == [], "remove each from bash_syntax.NOT_READ: the reader reads or refuses it"
 
@@ -1259,3 +1265,381 @@ def test_a_here_documents_unclosed_expansion_is_refused_by_name() -> None:
 def test_a_body_s_refused_substitution_is_refused_by_name_with_the_grammar_s_reason() -> None:
     with pytest.raises(bash_syntax.NotRead, match=r"^a here-document body's substitution is not read \(.+\)$"):
         bash_syntax.simple_commands("cat <<EOF\n$(if)\nEOF\n")
+
+
+# Bash's `set -o` and `shopt` options, keyed as bash_syntax keys them, as the newest Bash prints them with `set -o` and
+# `shopt -p`, pinned so a runner whose Bash is older, as macOS's /bin/bash 3.2, still holds the reader to every one, and
+# from PINNED_FROM_BASH on every one must still be one the runner's Bash prints; and the options Git Bash adds, which
+# no other Bash prints.
+PINNED_OPTIONS = frozenset(
+    f"set -o {name}"
+    for name in (
+        *("allexport", "braceexpand", "emacs", "errexit", "errtrace", "functrace", "hashall", "histexpand", "history"),
+        *("ignoreeof", "interactive-comments", "keyword", "monitor", "noclobber", "noexec", "noglob", "nolog"),
+        *("notify", "nounset", "onecmd", "physical", "pipefail", "posix", "privileged", "verbose", "vi", "xtrace"),
+    )
+) | frozenset(
+    f"shopt {name}"
+    for name in (
+        *("array_expand_once", "assoc_expand_once", "autocd", "bash_source_fullpath", "cdable_vars", "cdspell"),
+        *("checkhash", "checkjobs", "checkwinsize", "cmdhist", "compat31", "compat32", "compat40", "compat41"),
+        *("compat42", "compat43", "compat44", "complete_fullquote", "direxpand", "dirspell", "dotglob", "execfail"),
+        *("expand_aliases", "extdebug", "extglob", "extquote", "failglob", "force_fignore", "globasciiranges"),
+        *("globskipdots", "globstar", "gnu_errfmt", "histappend", "histreedit", "histverify", "hostcomplete"),
+        *("huponexit", "inherit_errexit", "interactive_comments", "lastpipe", "lithist", "localvar_inherit"),
+        *("localvar_unset", "login_shell", "mailwarn", "no_empty_cmd_completion", "nocaseglob", "nocasematch"),
+        *("noexpand_translation", "nullglob", "patsub_replacement", "progcomp", "progcomp_alias", "promptvars"),
+        *("restricted_shell", "shift_verbose", "sourcepath", "varredir_close", "xpg_echo"),
+    )
+)
+GIT_BASH_OPTIONS = frozenset({"set -o igncr", "shopt completion_strip_exe"})
+OPTION_KEY = re.compile(r"(set -o|shopt) (\S+)")
+
+
+@functools.cache
+def runner_options() -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the options its `set -o` and `shopt -p`
+    print, keyed as bash_syntax keys them."""
+    script = 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"; set -o; shopt -p'
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    release, *lines = result.output.splitlines()
+    major, minor = release.split()
+    options = {f"shopt {words[2]}" if words[0] == "shopt" else f"set -o {words[0]}" for words in map(str.split, lines)}
+    return (int(major), int(minor)), frozenset(options)
+
+
+def option_keys(table: object) -> set[str]:
+    """The keys of a table of bash_syntax's that name an option."""
+    assert isinstance(table, (dict, frozenset))
+    return {key for key in table if OPTION_KEY.fullmatch(key)}
+
+
+def test_every_option_bash_prints_is_read_refused_or_not_read_with_a_reason() -> None:
+    catalogue = runner_options()[1] | PINNED_OPTIONS | GIT_BASH_OPTIONS
+    tables = (bash_syntax.OPTIONS_READ, bash_syntax.OPTIONS_REFUSED, option_keys(bash_syntax.NOT_READ))
+    undecided = sorted(option for option in catalogue if sum(option in table for table in tables) != 1)
+    assert undecided == [], (
+        "decide each in exactly one of bash_syntax.OPTIONS_READ, OPTIONS_REFUSED, and NOT_READ, with the reason, and "
+        "add it to PINNED_OPTIONS"
+    )
+    assert sorted(runner_options()[1] - PINNED_OPTIONS - GIT_BASH_OPTIONS) == [], "pin each in PINNED_OPTIONS"
+
+
+def test_a_bash_as_new_as_the_pin_prints_every_pinned_option() -> None:
+    release, options = runner_options()
+    if release >= PINNED_FROM_BASH:
+        assert sorted(PINNED_OPTIONS - options) == [], (
+            f"Bash {release} no longer has these: remove each from PINNED_OPTIONS and from bash_syntax's tables, and "
+            "pin PINNED_FROM_BASH to this release"
+        )
+
+
+def test_every_option_the_reader_decides_is_one_bash_has() -> None:
+    catalogue = runner_options()[1] | PINNED_OPTIONS | GIT_BASH_OPTIONS
+    decided = bash_syntax.OPTIONS_READ | bash_syntax.OPTIONS_REFUSED.keys() | option_keys(bash_syntax.NOT_READ)
+    assert sorted(decided - catalogue) == [], "remove each: no Bash has it"
+    assert set(bash_syntax.OPTION_VARIABLES.values()) <= bash_syntax.OPTIONS_REFUSED.keys()
+
+
+def test_each_letter_set_turns_on_a_refused_option_by_is_the_one_bash_reads() -> None:
+    # Every letter set takes, tried alone in a subshell of its own, with each refused set option it turns on.
+    names = " ".join(option_name for key in bash_syntax.OPTIONS_REFUSED if (option_name := set_option(key)))
+    script = (
+        'for letter in {a..z} {A..Z}; do ( set -"$letter" > /dev/null 2>&1 || exit 0; '
+        f'for name in {names}; do [[ -o $name ]] && echo "$letter $name"; done ); done'
+    )
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    found = {tuple(line.split()) for line in result.output.splitlines()}
+    assert found == set(bash_syntax.SET_LETTERS.items())
+
+
+def set_option(key: str) -> str | None:
+    """The name of the set option a key names; None for a shopt option's key."""
+    match = OPTION_KEY.fullmatch(key)
+    assert match is not None
+    return match.group(2) if match.group(1) == "set -o" else None
+
+
+def turning_on(key: str) -> list[str]:
+    """Every form of a command that turns the option a key names on, each spelling set and shopt take."""
+    name = bash_syntax.option_name(key)
+    if set_option(key) is None:
+        forms = [f"shopt -s {name}", f"shopt -s nullglob {name}", f"shopt -qs {name}", f"shopt -s -- {name}"]
+    else:
+        forms = [f"set -o {name}", f"set -eo {name}", f"set -o pipefail -o {name}", f"set -o -e -o {name}"]
+        forms += [f"shopt -so {name}", f"shopt -s -o {name}", f"shopt -o -s nullglob {name}"]
+        forms += [f"set -{letter}" for letter, option in bash_syntax.SET_LETTERS.items() if option == name]
+        forms += [f"set -e{letter}u x" for letter, option in bash_syntax.SET_LETTERS.items() if option == name]
+    first = forms[0]
+    return [*forms, f"builtin {first}", f"command {first}", f"command -p -- {first}", f"'{first[:1]}'{first[1:]}"]
+
+
+def placed(command: str) -> list[str]:
+    """A command where a script may stand it: alone with a git call after it, in a group, a substitution, a function's
+    body, after `&&`, and in an `if`."""
+    return [
+        f"{command}\ngit commit -m x",
+        f"{{ {command}; }}",
+        f"x=$({command})",
+        f"f() {{ {command}; }}",
+        f"true && {command}",
+        f"if true; then {command}; fi",
+    ]
+
+
+@pytest.mark.parametrize("key", sorted(bash_syntax.OPTIONS_REFUSED))
+def test_a_command_that_turns_on_a_refused_option_is_not_read_wherever_it_stands(key: str) -> None:
+    texts = [text for command in turning_on(key) for text in placed(command)]
+    bash_agreement.assert_reader_agrees(texts)
+    name = bash_syntax.option_name(key)
+    for text in texts:
+        with pytest.raises(bash_syntax.NotRead, match=rf"^it turns on {re.escape(name)}: "):
+            bash_syntax.simple_commands(text)
+        with pytest.raises(bash_syntax.NotRead, match=rf"^it turns on {re.escape(name)}: "):
+            bash_syntax.every_command(text)
+
+
+def turning_off_or_reading(key: str) -> list[str]:
+    """Commands that turn the option a key names off, print it, or test it, which set and shopt read as they do."""
+    name = bash_syntax.option_name(key)
+    if set_option(key) is None:
+        return [f"shopt -u {name}", f"shopt -p {name}", f"shopt -q {name}", f"shopt {name}", f"shopt -s -u {name}"]
+    return [f"set +o {name}", f"shopt -uo {name}", f"shopt -po {name}", f"set -- -o {name}"]
+
+
+@pytest.mark.parametrize("key", sorted(PINNED_OPTIONS | GIT_BASH_OPTIONS))
+def test_turning_an_option_off_or_printing_it_is_read_and_turning_on_a_read_one_too(key: str) -> None:
+    texts = turning_off_or_reading(key)
+    if key not in bash_syntax.OPTIONS_REFUSED:
+        texts += turning_on(key)
+    for text in texts:
+        command = bash_syntax.command_words(bash_syntax.simple_commands(text)[0])
+        assert command[0] in ("set", "shopt", "builtin", "command"), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "set +k",
+        "set +H",
+        "set -o",
+        "set +o",
+        "shopt",
+        "shopt -s",
+        "shopt -p",
+        "set -- -k",
+        "set - -k",
+        "set x -k",
+        "set -e x -k",
+        "shopt -x extglob",
+        "shopt -s -u extglob",
+        "shopt extglob",
+        "command -v set -k",
+        "command -pV shopt -s extglob",
+        "echo set -o posix",
+        "echo shopt -s extglob",
+        "set -o pipefail -o",
+        "set -e -- -k",
+        'set -- "$@"',
+        'set x "$@"',
+        "shopt -s nullglob",
+        "unset POSIXLY_CORRECT",
+        'x="$POSIXLY_CORRECT"',
+        "echo POSIXLY_CORRECT=1",
+        "git BASH_COMPAT=1 status",
+    ],
+)
+def test_set_and_shopt_that_turn_no_refused_option_on_and_other_commands_are_read(text: str) -> None:
+    # Each turns a refused option off, prints or tests options, sets positional parameters, is refused by Bash as
+    # setting nothing, or only names set or shopt as data.
+    bash_agreement.assert_reader_agrees([text])
+    assert bash_syntax.simple_commands(text) != []
+
+
+@pytest.mark.parametrize(
+    ("text", "variable"),
+    [
+        ("POSIXLY_CORRECT=1", "POSIXLY_CORRECT"),
+        ("POSIXLY_CORRECT=1 :", "POSIXLY_CORRECT"),
+        ("x=1 POSIXLY_CORRECT= git status", "POSIXLY_CORRECT"),
+        ("export POSIXLY_CORRECT=1", "POSIXLY_CORRECT"),
+        ("declare -x POSIXLY_CORRECT=y", "POSIXLY_CORRECT"),
+        ("f() { local POSIXLY_CORRECT=y; }", "POSIXLY_CORRECT"),
+        ("builtin readonly BASH_COMPAT=42", "BASH_COMPAT"),
+        ('typeset BASH_COMPAT="31"', "BASH_COMPAT"),
+        (': "${POSIXLY_CORRECT:=1}"', "POSIXLY_CORRECT"),
+        ("echo x > ${BASH_COMPAT=31}", "BASH_COMPAT"),
+        ("x=$(BASH_COMPAT=31)", "BASH_COMPAT"),
+    ],
+)
+def test_assigning_a_variable_that_turns_on_a_refused_option_is_not_read(text: str, variable: str) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    option = bash_syntax.OPTION_VARIABLES[variable]
+    with pytest.raises(bash_syntax.NotRead, match=rf"^it assigns {variable}, which turns on {option.split()[-1]}: "):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "builtin"),
+    [
+        ('set -o "$x"', "set"),
+        ("set $flags", "set"),
+        ('set "$@"', "set"),
+        ("set -e $x", "set"),
+        ('set -o "posix$x"', "set"),
+        ('shopt -s "$x"', "shopt"),
+        ('shopt "$x" extglob', "shopt"),
+        ("shopt -p $(echo x)", "shopt"),
+        ('builtin set -o "$x"', "set"),
+    ],
+)
+def test_set_or_shopt_given_a_word_the_text_does_not_settle_is_not_read(text: str, builtin: str) -> None:
+    # Any such word may be an option or an option's name, or, unquoted, split into several, so it may turn any on.
+    bash_agreement.assert_reader_agrees([text])
+    with pytest.raises(bash_syntax.NotRead, match=rf"^{builtin} is given a word the text does not settle"):
+        bash_syntax.simple_commands(text)
+
+
+def test_parse_reads_a_command_that_turns_on_a_refused_option_as_any_other() -> None:
+    # The hub guard reads a tree by parse and follows no option's effect, so the tree stays Bash's reading up to the
+    # option and past it.
+    tree = parse("shopt -s extglob\ngit commit -m x")
+    assert simple_commands(tree) == [["shopt", "-s", "extglob"], ["git", "commit", "-m", "x"]]
+
+
+# How Bash runs each script, from an empty folder, with the option turned on and without, showing that it reads or
+# runs the text after the option otherwise; each where the runner's Bash has the option, or, for a variable, from the
+# release that reads it.
+COMPAT_PROBE = ('[[ a =~ "." ]] && echo matched', "matched\n", "")
+OPTION_PROBES: dict[str, tuple[str, str, str, str]] = {
+    "set -o keyword": ("set -k", "printf '%s\\n' a=b last", "last\n", "a=b\nlast\n"),
+    "set -o histexpand": (
+        "set -o history -o histexpand",
+        "set -o history\necho marker\n!!",
+        "marker\nmarker\n",
+        "marker\n",
+    ),
+    "set -o posix": ("set -o posix", "alias e='echo aliased'\ne", "aliased\n", ""),
+    "set -o igncr": ("set -o igncr", "printf '%s' x\r", "x", "x\r"),
+    "shopt expand_aliases": ("shopt -s expand_aliases", "alias e='echo aliased'\ne", "aliased\n", ""),
+    "shopt extglob": ("shopt -s extglob", "!(echo marker)", "", "marker\n"),
+    "shopt compat31": ("shopt -s compat31", *COMPAT_PROBE),
+    **{
+        f"shopt compat{level}": (f"shopt -s compat{level}", 'echo "${BASH_COMPAT-}"', f"{level}\n", "\n")
+        for level in ("32", "40", "41", "42", "43", "44")
+    },
+}
+VARIABLE_PROBES = {
+    "POSIXLY_CORRECT": ((3, 2), "POSIXLY_CORRECT=1", "alias e='echo aliased'\ne", "aliased\n", ""),
+    "BASH_COMPAT": ((4, 3), "BASH_COMPAT=31", *COMPAT_PROBE),
+}
+
+
+def run_probe(folder: Path, text: str) -> str:
+    """What the runner's Bash prints to its standard output running text as a script from an empty folder."""
+    empty = folder / "empty"
+    empty.mkdir(exist_ok=True)
+    script = folder / "probe.sh"
+    script.write_bytes(f'cd "$1" || exit 1\n{text}\n'.encode())
+    result = platform_support.run_tool(
+        [bash_agreement.find_bash(), platform_support.normalize(script), platform_support.normalize(empty)],
+        separate_errors=True,
+    )
+    return result.output
+
+
+def test_every_refused_option_has_a_probe() -> None:
+    assert sorted(OPTION_PROBES) == sorted(bash_syntax.OPTIONS_REFUSED)
+    assert sorted(VARIABLE_PROBES) == sorted(bash_syntax.OPTION_VARIABLES)
+
+
+@pytest.mark.parametrize("key", sorted(OPTION_PROBES))
+def test_bash_reads_or_runs_the_text_after_a_refused_option_otherwise(key: str, tmp_path: Path) -> None:
+    turn_on, text, on, off = OPTION_PROBES[key]
+    if key not in runner_options()[1]:
+        # The runner's Bash has no such option, so it refuses to turn it on and reads the text as at its default.
+        result = platform_support.run_tool([bash_agreement.find_bash(), "-c", turn_on], separate_errors=True)
+        assert result.returncode != 0, result.output
+        return
+    assert (run_probe(tmp_path, f"{turn_on}\n{text}"), run_probe(tmp_path, text)) == (on, off)
+
+
+@pytest.mark.parametrize("variable", sorted(VARIABLE_PROBES))
+def test_bash_reads_or_runs_the_text_after_assigning_an_option_s_variable_otherwise(
+    variable: str, tmp_path: Path
+) -> None:
+    since, assignment, text, on, off = VARIABLE_PROBES[variable]
+    expected = (on, off) if runner_options()[0] >= since else (off, off)
+    assert (run_probe(tmp_path, f"{assignment}\n{text}"), run_probe(tmp_path, text)) == expected
+
+
+# A corpus of the forms an option might change Bash's reading of, defined as a function after an alias whose name it
+# uses, and the read options Bash cannot print its reading under, each with why.
+CORPUS = r"""alias e='echo aliased'
+f() {
+  e one # a comment $(echo commented)
+  echo "${x:-'}'}" "${x:-$'}'}" '${y}' "$(echo sub)" `echo back` $'a\tb' "$((1 + 2))"
+  !(echo negated)
+  time -p echo timed
+  echo {a,b} *.none ~ a=b
+  x=1 y[0]=2 echo assigned
+  case a in a) echo case ;; esac
+  [[ a == a && -n x ]] && echo condition
+  cat <<EOF
+body $(echo body)
+EOF
+}"""
+CORPUS_UNPRINTED = {
+    "set -o noexec": "runs nothing more, declare -f included",
+    "set -o onecmd": "ends the shell after the next command, before declare -f",
+}
+
+
+def corpus_readings(folder: Path, options: list[str]) -> dict[str, str]:
+    """Bash's reading of CORPUS, as `declare -f` prints it, with no option set, keyed "", and with each option of
+    options turned on and off, keyed by the option and its setting."""
+    corpus = folder / "corpus.sh"
+    corpus.write_bytes(CORPUS.encode())
+    script = r"""corpus=$(< "$1"); shift
+read_corpus() { eval "$corpus"; declare -f f; }
+echo "== "; ( read_corpus )
+for option in "$@"; do
+  kind=${option%% *} name=${option##* }
+  for setting in on off; do
+    echo "== $option $setting"
+    (
+      if [[ $kind == set ]]; then
+        if [[ $setting == on ]]; then set -o "$name"; else set +o "$name"; fi
+      elif [[ $setting == on ]]; then shopt -s "$name"; else shopt -u "$name"; fi
+      read_corpus
+    ) 2> /dev/null
+  done
+done"""
+    result = platform_support.run_tool(
+        [bash_agreement.find_bash(), "-c", script, "corpus", platform_support.normalize(corpus), *options]
+    )
+    readings: dict[str, str] = {}
+    for section in result.output.split("== ")[1:]:
+        heading, _, reading = section.partition("\n")
+        readings[heading] = reading
+    return readings
+
+
+def test_bash_reads_the_same_commands_whatever_a_read_option_s_setting(tmp_path: Path) -> None:
+    probed = sorted(bash_syntax.OPTIONS_READ - CORPUS_UNPRINTED.keys())
+    readings = corpus_readings(tmp_path, [*probed, "shopt extglob", "shopt expand_aliases", "set -o posix"])
+    assert "aliased" not in readings[""]
+    assert "negated" in readings[""]
+    changed = [
+        f"{key} {setting}"
+        for key in probed
+        for setting in ("on", "off")
+        if readings[f"{key} {setting}"] != readings[""]
+    ]
+    assert changed == []
+    # The corpus shows a reading the refused options change.
+    for key in ("shopt extglob", "shopt expand_aliases", "set -o posix"):
+        assert readings[f"{key} on"] != readings[""], key
+    assert sorted(CORPUS_UNPRINTED.keys() - bash_syntax.OPTIONS_READ) == []
