@@ -273,7 +273,10 @@ class Manifest:
     def save(self) -> None:
         """Replace the manifest file. A value the JSON writer refuses is a DeployError naming the file, which the
         run's journaled recovery handles. The paths the manifest records are refused before any write by the allowlist
-        `config.derived_values` holds HOME and SOURCE_ROOT to, so none reaches it holding a lone surrogate."""
+        `config.derived_values` holds HOME and SOURCE_ROOT to, so none reaches it holding a lone surrogate. A name
+        recorded as a skill and as a shared asset, which load refuses, is refused before any write too; a deployment
+        refuses that collision while it plans, so none reaches it."""
+        _refuse_a_name_owned_as_skill_and_shared(self.data)
         self.data["manifest_version"] = MANIFEST_VERSION
         try:
             text = json_writer.dumps(self.data, indent=2)
@@ -492,11 +495,22 @@ def load(path: Path) -> Manifest:
     manifest = Manifest(path, data)
     for kind in KINDS:
         _record_owners(data, kind.key, kind.title, manifest.owners_of(kind))
-    for name in sorted(manifest.skill_owners):
-        if name in manifest.shared_owners:
+    _refuse_a_name_owned_as_skill_and_shared(data)
+    return manifest
+
+
+def _refuse_a_name_owned_as_skill_and_shared(data: ManifestData) -> None:
+    """Refuse a manifest that records one name as a skill and as a shared asset, which share one destination folder:
+    load refuses to read such a manifest, and save refuses to write one, so no run saves a manifest the next refuses."""
+    skills: dict[str, str] = {}
+    shared: dict[str, str] = {}
+    for source_id, entry in data["sources"].items():
+        for kind, named in ((SKILL, skills), (SHARED, shared)):
+            named.update(dict.fromkeys(cast(dict[str, object], entry.get(kind.key, {})), source_id))
+    for name in sorted(skills):
+        if name in shared:
             raise DeployError(
-                f"ERROR: Destination name '{name}' is owned as a skill by '{manifest.skill_owners[name]}' "
-                f"and as a shared asset by '{manifest.shared_owners[name]}' in manifest",
+                f"ERROR: Destination name '{name}' is owned as a skill by '{skills[name]}' "
+                f"and as a shared asset by '{shared[name]}' in manifest",
                 *MANIFEST_REMEDY,
             )
-    return manifest

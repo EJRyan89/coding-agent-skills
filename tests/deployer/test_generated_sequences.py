@@ -15,8 +15,9 @@ apart from the deployer, of what the actions so far should have left:
 - the skills the manifest owns are the ones selected, with each edited skill the selection dropped, which is preserved,
   and the runtime adapters, the shared asset, and the agent follow them;
 - a killed run that journaled a change leaves a recovery the dry run announces, one killed before it journaled any is
-  only deleted, and the next run completes either, so the killed run is as if it never started, however many runs are
-  killed in a row; a completed run leaves no lock and no staged run behind.
+  only deleted, and the next run recovers either: a run killed before it committed, which its manifest shows by not
+  naming it as the last run, is as if it never started, and one killed after is as if it had completed, however many
+  runs are killed in a row; a completed run leaves no lock and no staged run behind.
 
 Every run is deterministic, as "Generated tests" in docs/dependency-updates.md says, with the example and step budget
 GENERATED names. A failing run prints the minimized action sequence, which rerunning the suite reproduces.
@@ -27,7 +28,7 @@ from __future__ import annotations
 import contextlib
 import json
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, override
 from unittest import mock
@@ -47,8 +48,8 @@ from hypothesis.stateful import (
 
 from deployer import fsops, platform_support
 
-# The budget: sequences, and actions in each, with no deadline and no too_slow health check, the two checks that fail
-# on wall-clock time; derandomize and no database, so every run tries the same sequences.
+# The budget: sequences, and actions in each, with no deadline and no too_slow health check, which fail on wall-clock
+# time; derandomize and no database, so every run tries the same sequences.
 GENERATED = settings(
     derandomize=True,
     database=None,
@@ -144,6 +145,7 @@ class DeploymentSequences(RuleBasedStateMachine):
         self.uninstalled = False
         self.backups_seen: dict[str, str] = {}
         self.pending = False
+        self.killed_after_commit = False
 
     @override
     def teardown(self) -> None:
@@ -186,6 +188,7 @@ class DeploymentSequences(RuleBasedStateMachine):
                     result = d.deploy(*arguments, changes_home=KILLED, probe=dead)
             except SystemExit:
                 self.pending = True
+                self.killed_after_commit = self.committed()
                 return None
         assert result.code == 0, result.output
         if journaled:
@@ -194,6 +197,15 @@ class DeploymentSequences(RuleBasedStateMachine):
             assert "Dropped the unterminated last line" in result.output, result.output
         self.pending = False
         return result
+
+    def committed(self) -> bool:
+        """Whether the killed run committed before it was killed: the manifest names a run whose staging folder
+        remains as the last run, the point after which recovery completes a run rather than rolling it back."""
+        d = self.deployed
+        if not d.manifest_file.is_file():
+            return False
+        last = json.loads(d.manifest_file.read_bytes()).get("last_run_id", "")
+        return bool(last) and (d.home / ".claude" / "deployer" / "staging" / last).is_dir()
 
     def journaled(self) -> bool:
         """Whether a killed run left a journal holding a whole entry, which records a change to recover, worked out
@@ -219,7 +231,7 @@ class DeploymentSequences(RuleBasedStateMachine):
             # An uninstall chose nothing, so --all no longer carries the opt-in skill a run before it chose.
             self.chosen = False
         selected = self.selected()
-        if self.run("--all", *arguments, kill_at=kill_at) is None:
+        if self.run("--all", *arguments, kill_at=kill_at) is None and not self.killed_after_commit:
             return
         self.uninstalled = False
         if OPT_IN not in self.present():
@@ -266,7 +278,7 @@ class DeploymentSequences(RuleBasedStateMachine):
         self.uninstalled = True
         self.completed(set(), set())
 
-    @rule(line=st.integers(min_value=1, max_value=4), force=st.booleans())
+    @rule(line=st.integers(min_value=1, max_value=6), force=st.booleans())
     def deploy_killed_partway(self, line: int, force: bool) -> None:
         # A new template version gives the run a change to journal, so the kill lands inside it.
         self.change_a_template(ALWAYS)
@@ -361,6 +373,9 @@ class DeploymentSequences(RuleBasedStateMachine):
         for path, state in self.backups_seen.items():
             assert found.get(path) == state, f"backup {path} was removed or changed"
         self.backups_seen = found
+        if self.pending:
+            # A run killed after it committed moves the edit into its permanent backup as recovery completes it.
+            return
         kept = [
             (path.parent.name, path.read_bytes())
             for path in (d.skills_dir / BACKUPS).glob("*/*/SKILL.md")
@@ -372,3 +387,27 @@ class DeploymentSequences(RuleBasedStateMachine):
 
 def test_every_generated_deployment_sequence_keeps_the_deployers_invariants() -> None:
     run_state_machine_as_test(DeploymentSequences, settings=GENERATED)
+
+
+def test_a_forced_run_killed_after_it_committed_is_completed_and_keeps_the_edit_in_a_backup() -> None:
+    """The sequence a randomized run found while the model held every killed run to never having started: a forced
+    run killed after it committed, as it journals the preservation of the user's edit, is completed by the next
+    run's recovery, which keeps the edit in a permanent backup, and a later uninstall removes the skill it replaced."""
+    machine = DeploymentSequences()
+    try:
+        machine.first_deployment()
+        steps: list[Callable[[], None]] = [
+            lambda: machine.deploy_forcing_everything(),
+            lambda: machine.edit_an_installed_skill(ALWAYS, "edited\n"),
+            lambda: machine.deploy_killed_partway(3, True),
+            lambda: machine.deploy_killed_partway(3, False),
+            lambda: machine.uninstall(),
+        ]
+        for step in steps:
+            step()
+            machine.a_pending_recovery_is_announced_and_a_completed_run_leaves_nothing_behind()
+            machine.each_owned_skill_holds_its_last_render_or_the_users_edit()
+            machine.no_backup_is_ever_removed_or_changed_and_each_forced_edit_has_one()
+        assert [name for name, _ in machine.expected_backups] == [ALWAYS]
+    finally:
+        machine.teardown()
