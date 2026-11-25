@@ -1909,12 +1909,12 @@ brief repeats or stands in for.
 - **Prompt:** `agents/code-review-reviewer.md`, `.claude/skills/review-repository/references/untested-changes.md`,
   `.claude/skills/review-repository/references/sibling-spellings.md`
 - **Guard:** `tests/fixtures/skill-evals/review-repository/input-body`, which evaluate-skill runs on each model
-  and which fails a sibling-spellings review that names no form of the fixed effect the fix leaves open. Whether the
-  rest of an instruction still matches the code it describes is a judgment no policy can read: validation compares
-  each rendered reviewer prompt with its sample under docs/runtime-prompts, which shows a change in the prompt but
-  not drift in the code it describes. The release audit and the twin sweep before each tag read the instructions
-  against the code, and "Documentation" in [implementing-changes.md](implementing-changes.md#documentation) states
-  the rule.
+  and which fails a review in which sibling-spellings raises no MUST_FIX Missed sibling on the fix's added lines; it
+  does not read which form the finding names. Whether the rest of an instruction still matches the code it describes
+  is a judgment no policy can read: validation compares each rendered reviewer prompt with its sample under
+  docs/runtime-prompts, which shows a change in the prompt but not drift in the code it describes. The release audit
+  and the twin sweep before each tag read the instructions against the code, and "Documentation" in
+  [implementing-changes.md](implementing-changes.md#documentation) states the rule.
 - **Search for:** `Grep or Glob` or `Glob and Grep` in a reviewer prompt or `agents/code-review-reviewer.md`, where a
   runtime that lists `Bash` leaves both out; a sentence of a file under `.claude/skills/review-repository/references/`
   or `skills/ejryan89-code-review-core/references/` that names a rule or an output line a script in the same change
