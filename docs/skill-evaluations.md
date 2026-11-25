@@ -191,12 +191,12 @@ One row per skill and model, replaced by each full run with `--write`. "Passed" 
 of every scenario the judged part ran on: the reviewers, or a trigger scenario's sessions. "Runs" is the runs of each
 scenario; with more than one, each scenario's counts end with the runs that passed every expectation, as
 `7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario known to vary
-always ends so, with `varies` after its runs, as `2/3 (2/3 runs, varies)`, and "Runs" counts the
+always ends so, with `varies` after its runs, as `2/3 (2/3 runs; varies)`, and "Runs" counts the
 other scenarios' runs. Read such a cell against the scenario's spread, the counts its earlier rows in this file's
 history recorded: some runs of three failing is within it, while none of three passing, or a fall below its usual
 count that a rerun repeats, is a regression to look into. A cell without `varies` is a
-scenario that passes the same way run after run, so a single failing run of it is worth a rerun with `--runs 3`
-before it is called a regression. A scenario is "not run" for a model when none of its reviewers started, such as
+scenario not known to vary, so a single failing run of it is worth a rerun with `--runs 3` before it is called a
+regression. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
 name no path of the machine; the run's `FAIL` lines keep the whole reason. A by-name run that started no reviewer

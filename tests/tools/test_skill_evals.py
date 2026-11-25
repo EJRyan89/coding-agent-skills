@@ -7961,7 +7961,7 @@ def test_a_varying_scenario_is_judged_over_its_runs_and_its_counts_say_it_varies
     assert status == 1
     assert "PASS demo steady haiku finding a.go:3 MUST_FIX" in lines
     assert [line for line in lines if line.startswith("RUNS ")] == ["RUNS varying haiku 2/3 some"]
-    assert lines[-2:] == ["| steady | 1/1 |", "| varying | 2/3 (2/3 runs, varies) |"]
+    assert lines[-2:] == ["| steady | 1/1 |", "| varying | 2/3 (2/3 runs; varies) |"]
 
 
 def test_a_row_gives_a_steady_scenario_s_runs_and_says_which_scenario_varies(tmp_path: Path) -> None:
@@ -7983,7 +7983,7 @@ def test_a_row_gives_a_steady_scenario_s_runs_and_says_which_scenario_varies(tmp
         "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
     )
     cells = row.split(" | ")
-    assert (cells[5], cells[6], cells[7]) == ("3/4", "1", "steady 1/1, varying 2/3 (2/3 runs, varies)")
+    assert (cells[5], cells[6], cells[7]) == ("3/4", "1", "steady 1/1, varying 2/3 (2/3 runs; varies)")
     # With every scenario run several times, the Runs cell is the steady scenarios' count.
     runs = {
         (name, "haiku", index): run({}, None, reviewer, session)
@@ -7994,4 +7994,49 @@ def test_a_row_gives_a_steady_scenario_s_runs_and_says_which_scenario_varies(tmp
     (row,) = skill_evals_results.result_rows(
         "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
     )
-    assert row.split(" | ")[6:8] == ["5", "steady 5/5 (5/5 runs), varying 5/5 (5/5 runs, varies)"]
+    assert row.split(" | ")[6:8] == ["5", "steady 5/5 (5/5 runs), varying 5/5 (5/5 runs; varies)"]
+
+
+def test_a_row_of_every_scenario_marked_counts_their_runs(tmp_path: Path) -> None:
+    # With no scenario left unmarked, the Runs cell is the marked scenarios' runs, never an empty count.
+    write_scenario(tmp_path, "first", scenario_spec(varies=True))
+    write_scenario(tmp_path, "second", scenario_spec(varies=True))
+    scenarios = skill_evals_scenarios.load_scenarios("demo", root=tmp_path)
+    run = skill_evals_runs.Run
+    reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+    runs = {
+        (name, "haiku", index): run({}, None, reviewer, session) for name in ("first", "second") for index in (1, 2, 3)
+    }
+    outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
+    (row,) = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row.split(" | ")[6:8] == ["3", "first 3/3 (3/3 runs; varies), second 3/3 (3/3 runs; varies)"]
+
+
+def test_a_trigger_or_synthesis_scenario_may_be_marked_as_varying_too(tmp_path: Path) -> None:
+    # The mark is read before the mode's own fields, so a scenario of every mode takes it.
+    trigger = trigger_scenario(tmp_path, {**TRIGGER_SPEC, "varies": True}, demo_checkout(tmp_path))
+    assert (trigger.mode, trigger.varies) == (skill_evals_scenarios.TRIGGER, True)
+    synthesis_scenario(tmp_path, synthesis_spec(varies=True))
+    (synthesis,) = skill_evals_scenarios.load_scenarios("review-insights", root=tmp_path)
+    assert (synthesis.mode, synthesis.varies) == (skill_evals_scenarios.SYNTHESIS, True)
+
+
+def test_a_marked_scenario_s_cell_is_read_back_as_one_measured_scenario(tmp_path: Path) -> None:
+    # The suffix sits after a separator no By scenario cell splits on, so the row's reader finds each scenario once.
+    scenarios = varying_scenarios(tmp_path)
+    run = skill_evals_runs.Run
+    reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+    runs = {
+        ("steady", "haiku", None): run({}, None, reviewer, session),
+        **{("varying", "haiku", index): run({}, None, reviewer, session) for index in (1, 2, 3)},
+    }
+    outcomes = [Outcome(name, "haiku", "verdict APPROVED", None, None, index) for name, _, index in runs]
+    rows = skill_evals_results.result_rows(
+        "demo", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    written = skill_evals_results.replace_results(RESULTS_TEXT, "demo", rows)
+    assert evaluation_results.measured_scenarios(written, "demo") == {"steady", "varying"}
+    by_scenario = rows[0].split(" | ")[7]
+    assert [item.partition(" ")[0] for item in by_scenario.split(", ")] == ["steady", "varying"]

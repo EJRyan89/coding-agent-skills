@@ -218,18 +218,18 @@ alone, under the path review-document reviews it by. An entrypoint manifest rout
 expectation with one fails the load. A manifest that sets `uncovered` to `ignore` gives the generic reviewer no file
 once a specialist matches any, as the pipeline decides it.
 
-Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
-run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
-for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record, and for a by-name
-scenario the session's stream-json transcript beside it, <model>.jsonl or <model>-<run>.jsonl, whose missing or
-unreadable file fails every expectation as a `run` failure, and whose message or tool call in a shape it does not read
-as a `record` failure, since the `resolved` kind reads the calls there. A by-name scenario's missing or unreadable
-record still has its `resolved` judged on that transcript, when the transcript shows what a run's stream must: a last
-result event saying the session ended with no error, which a session ended at its time limit never writes, the skill
-listed if any were, nothing denied, and the session on SESSION_MODEL alone, with a last `resolve` that returned an
-error read as above. It cannot see the exit code or whether Claude Code started, which a run reads from the process.
-A missing transcript, an unread one, or one that shows otherwise leaves `resolved` a `run` failure with the rest, and
-one that is there but cannot be read adds why to the record's reason.
+Records come from a record source, a function of a scenario, a model, and which run, that returns the record that run
+wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, or for a scenario marked varies,
+DIR/<scenario>/<model>-<run>.json for each of its runs from 1: the record JSON a run finalized, or a trigger scenario's
+trigger record, and for a by-name scenario the session's stream-json transcript beside it, <model>.jsonl or
+<model>-<run>.jsonl, whose missing or unreadable file fails every expectation as a `run` failure, and whose message or
+tool call in a shape it does not read as a `record` failure, since the `resolved` kind reads the calls there. A by-name
+scenario's missing or unreadable record still has its `resolved` judged on that transcript, when the transcript shows
+what a run's stream must: a last result event saying the session ended with no error, which a session ended at its time
+limit never writes, the skill listed if any were, nothing denied, and the session on SESSION_MODEL alone, with a last
+`resolve` that returned an error read as above. It cannot see the exit code or whether Claude Code started, which a run
+reads from the process. A missing transcript, an unread one, or one that shows otherwise leaves `resolved` a `run`
+failure with the rest, and one that is there but cannot be read adds why to the record's reason.
 It holds a review record to what a run's record is held to: ejryan89-code-review-core's record contract
 (validate_record), the review version of the scenario's mode, a guard that held every reviewer, and every
 reviewer's `model` naming that model's ID, or the ID of the model its route pins.
@@ -282,7 +282,7 @@ allowed-tools grant the rest. The session's mode, acceptEdits, also approves mkd
 on paths inside the run's home, most of them also behind a safe environment variable or a wrapper such as timeout,
 nice, or nohup, so a skill that runs one of them without granting it passes where a user in the default mode would be
 asked, and no "had a command denied" judgment sees it.
-Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1
+Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1, or for a scenario marked varies,
 <home>/.skill-evals/<run>/<scenario>, and its temporary directory is a folder there, through TMPDIR, which Python
 reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
 The record judged is the latest record of the pull request recorded there, read and validated by
@@ -315,8 +315,9 @@ tools/skill_evals_runs.py states beside its constants. Each session runs without
 skills and agents and the sign-in, so a session whose init event lists no skill counts for nothing rather than being
 judged.
 
-Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
-FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:
+Output, one fact per line. With --runs above 1, or for a scenario marked varies, every line about one of its runs, a
+TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or FAIL line, names it as ` run=<run>` after its model, and the lines are
+otherwise as they are for one run:
   HOME "<dir>"                                    the throwaway directory, one home per model inside it
   DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run, also
                                                   when the home's reviewer agent cannot be passed with --agents, or
@@ -354,7 +355,8 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   <kind> is `judgment` for what the record shows, or the `run` or
                                                   `record` of its NOT_COUNTED line
   RUNS <scenario> <model> <passed>/<runs> all|some|none
-                                                  with --runs above 1, after the outcomes, one per scenario and model:
+                                                  with --runs above 1, or for a scenario marked varies, after the
+                                                  outcomes, one per such scenario and model:
                                                   the runs that passed every expectation of theirs, of the runs, and
                                                   whether that is every run (all, the pass^k of k runs), some, which
                                                   is an inconsistent result, or none
@@ -369,9 +371,10 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
 expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
-RUNS line's count, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines, each NOT_COUNTED line with its
-reason as the results file records it, and each judgment's FAIL line, so the block names no path of the machine. With
---records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
+RUNS line's count, or `(<passed>/<runs> runs; varies)` for a scenario marked varies, and in a text fence the RUNTIME,
+REVIEWER, and GUARDED lines, each NOT_COUNTED line with its reason as the results file records it, and each
+judgment's FAIL line, so the block names no path of the machine. With --records, the table alone follows the
+outcomes. Then `WROTE <file>` when --write replaced the skill's
 rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and the home is gone; otherwise the home
 stays for its transcripts. Before `SAMPLE`, --write prints `KEPT <model>` for each model, in run order, no record of
 which counted, every expectation on it failing with the `run` or `record` kind, and of which the skill has a row: such a
@@ -379,7 +382,8 @@ run measured nothing of the model, so its committed row stays as it was written 
 or a pass count of 0. A `resolved` judged on the session's calls alone is the session's, on SESSION_MODEL, so it
 measures nothing of the model either. A model the skill has no row of loses nothing, and its row is written. When no
 record of any model counted, every committed row stays and the skill's rows change only where a model had none.
-Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
+Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, with --runs above 1 or for a
+scenario marked varies, the
 run whose transcript the reader checks against its verdicts: of the runs that passed every expectation, the first after
 the scenario and model the skill's row of the samples table names, in scenario order and then model order, wrapping
 round, so successive recorded runs read each scenario on each model in turn. It replaces the skill's samples row with
@@ -397,8 +401,9 @@ run: the header, its separator, then rows of the header's columns, each naming a
 markers. Every other skill's row is written back as it was. A row's Runs cell is the runs of each scenario not marked
 as varying, or of every scenario when each is, and with more than one, each scenario's counts in By scenario end with
 the runs that passed every expectation, of the runs judged, as the citation's cells do; a marked scenario's always do,
-ending `, varies` inside the parentheses, as `2/3 (2/3 runs, varies)`, in the citation's cells too; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
-is left out of both counts, as a scenario none of whose runs held a judgment is `not run`, except a by-name run's
+ending `; varies` inside the parentheses, as `2/3 (2/3 runs; varies)`, in the citation's cells too, a separator no
+cell splits on; a run none of whose judged part ran, reviewers or a trigger scenario's sessions, is left out of both
+counts, as a scenario none of whose runs held a judgment is `not run`, except a by-name run's
 `resolved` judged on the session's calls alone, which counts as that run's one expectation, and makes a model none of
 whose reviewers ran a row whose Model ID is `none`. Such a run counts among the scenario's runs only when that
 `resolved` failed, as a run that failed, so a run that measured nothing of the reviewers never counts as one that

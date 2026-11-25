@@ -177,7 +177,7 @@ def counts(outcomes: Sequence[Outcome], varies: bool = False) -> str:
     outcomes are passes judged on the session's calls alone is no run judged, since it measured nothing of the
     reviewers; one whose such judgment failed is a run that failed. Several runs none of which is judged read
     `(0/0 runs)`, so the cell still says the scenario ran several times. A scenario known to vary says so after its
-    runs, as `2/3 (2/3 runs, varies)`, so a fail is read against its usual spread."""
+    runs, as `2/3 (2/3 runs; varies)`, so a fail is read against its usual spread."""
     passed = f"{sum(1 for outcome in outcomes if outcome.failure is None)}/{len(outcomes)}"
     numbered = {
         outcome.run
@@ -187,7 +187,7 @@ def counts(outcomes: Sequence[Outcome], varies: bool = False) -> str:
     if all(outcome.run is None for outcome in outcomes):
         return passed
     failed = {outcome.run for outcome in outcomes if outcome.failure is not None}
-    marked = ", varies" if varies else ""
+    marked = "; varies" if varies else ""
     return f"{passed} ({len(numbered - failed)}/{len(numbered)} runs{marked})"
 
 
