@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -299,6 +299,7 @@ class RefValidationTests(unittest.TestCase):
 class DeployAtTests(DeployerTestCase):
     """A fixture repository with a tagged release and a later commit on main that changes alpha and adds beta."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_config()
@@ -318,6 +319,7 @@ class DeployAtTests(DeployerTestCase):
         self.head = git(self.source, "rev-parse", "HEAD")
         self.exports: list[Path] = []
 
+    @override
     def deploy(self, *arguments: str, stdin: str = "", **options: Any) -> Result:
         """Deploy as the harness does, recording each directory an --at run exports into."""
         real = source_ref.export

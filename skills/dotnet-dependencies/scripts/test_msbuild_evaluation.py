@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -221,6 +222,7 @@ def unsettled_rows(entries: list[Unsettled]) -> list[tuple[str, str, str, str]]:
 
 
 class EvaluationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-evaluation-")).resolve()
         self.addCleanup(self.remove_root)

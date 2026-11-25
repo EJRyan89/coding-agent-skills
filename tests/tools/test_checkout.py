@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,6 +31,7 @@ def make_checkout(root: Path) -> Path:
 
 
 class CheckoutTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="checkout-test.")
         self.base = Path(self._temporary.name).resolve()
@@ -40,6 +42,7 @@ class CheckoutTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

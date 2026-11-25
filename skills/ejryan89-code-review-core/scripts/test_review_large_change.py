@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -118,16 +118,19 @@ class OverLimitGitHub(RecordingGitHub):
             raise AssertionError(f"unexpected gh call: {list(arguments)}")
         return self.served[command]
 
+    @override
     def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
         self.calls.append(("get_pull_diff", repository, number))
         return GitHubClient.get_pull_diff(self, repository, number)
 
+    @override
     def list_pull_files(self, repository: str, number: int) -> PullFiles:
         self.calls.append(("list_pull_files", repository, number))
         return super().list_pull_files(repository, number)
 
 
 class LargeChangeFixture(PrepareFixture):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.over = OverLimitGitHub(self.head, self.base)
@@ -146,6 +149,7 @@ class LargeChangeFixture(PrepareFixture):
 class FilesApiTests(LargeChangeFixture):
     """Without a checkout, GitHub's files API serves the change, every page of it."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.configure(checkout=False)

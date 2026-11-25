@@ -16,7 +16,7 @@ import types
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, ClassVar, get_args
+from typing import Any, ClassVar, get_args, override
 from unittest import mock
 
 import file_presence
@@ -2979,6 +2979,7 @@ class KeptBesideItsItemTests(DeployerTestCase):
 
     RUN_ID = "20991231-000000-beef"
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -3101,6 +3102,7 @@ class BackupProbeTests(DeployerTestCase):
     """The deployment proves, before its first change, that it can make a folder and a file under each root's
     .backups, and a refused run leaves the home as it found it, a .backups the probe made included."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

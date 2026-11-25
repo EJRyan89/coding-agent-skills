@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -46,6 +46,7 @@ def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
 
 
 class SkillReferenceTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-reference-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -81,6 +82,7 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.reference = self.root / "docs" / "skills.md"
         self.reference.write_text(INITIAL_REFERENCE, encoding="utf-8")
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

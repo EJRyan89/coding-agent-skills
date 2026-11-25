@@ -19,7 +19,7 @@ import unittest
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -841,6 +841,7 @@ SNAPSHOT_KINDS: list[tuple[str, Mutation, str]] = [
 
 
 class SourceSnapshotVerificationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="snapshot-verify-")
         self.addCleanup(temporary.cleanup)
@@ -979,6 +980,7 @@ class OwnNameTests(unittest.TestCase):
     out of the root is refused as escaping it. A link inside the root merges two spellings on every platform, as a
     case-insensitive file system or a short name does on Windows."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="own-name-")
         self.addCleanup(temporary.cleanup)
@@ -1022,6 +1024,7 @@ class SnapshotLinkTests(unittest.TestCase):
     """Real junctions made below a snapshot's root after it was written, as anything that can write to the run could
     make them. A junction's target holds the listed file's exact bytes, so only the walk can tell it apart."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="snapshot-links-")
         self.addCleanup(temporary.cleanup)
@@ -1119,6 +1122,7 @@ class SafeSnapshotPathTests(unittest.TestCase):
     makes, which looks for a link at each step below the root before calling the file missing. Links are directory
     junctions on Windows and symbolic links elsewhere, so each case holds on every platform."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="snapshot-path-")
         self.addCleanup(temporary.cleanup)
@@ -1261,6 +1265,7 @@ class SnapshotStampTests(unittest.TestCase):
     that time cannot vouch for, and anything else gets the full contents pass. Times are set explicitly, so whether a
     file counts as written before the manifest never depends on the clock's resolution."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="snapshot-stamp-")
         self.addCleanup(temporary.cleanup)

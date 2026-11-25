@@ -16,7 +16,7 @@ import unittest
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1125,6 +1125,7 @@ class LinkAtTheTargetTests(unittest.TestCase):
     removed. The cases with a create that follows the link emulate Windows' exclusive create, so they hold on every
     platform; the platform's own create follows the link only on Windows."""
 
+    @override
     def setUp(self) -> None:
         with tempfile.TemporaryDirectory() as probe:
             try:

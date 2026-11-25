@@ -18,7 +18,7 @@ import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -500,6 +500,7 @@ class FixtureTemplateTests(unittest.TestCase):
 
 
 class PipelineFixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1539,6 +1540,7 @@ class WaitReviewersTests(PipelineFixture):
     reviewers run. The skill's tool grants end with the turn that invoked it, so check and finalize must run
     in that turn."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.clock = FakeClock()
@@ -2788,6 +2790,7 @@ INLINE_ONLY = "is reviewed inline; work its roles with next-role"
 class ReadCountTests(PipelineFixture):
     """check reduces the reviewer guard's read log to counts, and finalize records them; no path outlives check."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
@@ -2937,6 +2940,7 @@ class GuardClaimTests(PipelineFixture):
     """On Claude Code, check and finalize take a native subagent's result only once the reviewer guard claimed its
     role: its read log, or the role's entry in run.json's reads once check counted the log."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
@@ -3039,6 +3043,7 @@ class GuardClaimTests(PipelineFixture):
 class InlineReviewTests(PipelineFixture):
     """The orchestrating session works each role itself, one at a time, where reviewers do not start as subagents."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.clock = FakeClock()
@@ -3390,6 +3395,7 @@ class UnstatableRunStateTests(unittest.TestCase):
     """A run's state file or folder whose stat fails is the OSError check, wait, and unfinalized report, never read as
     missing: a read log as no reads, a run as recorded, a host's claim or outcome as no host or none yet."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3441,6 +3447,7 @@ class FakeClock:
 class CopilotHostTests(PipelineFixture):
     """dispatch starts the Copilot CLI host detached; wait and check follow it by its PID and start time."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.configure(self.repository_reviewer("review/copilot.json"))
@@ -4983,6 +4990,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     )
     GENERIC = "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.manifest = self.local_manifest()
@@ -5434,6 +5442,7 @@ class FixtureCanaryTests(PipelineFixture):
     """`prepare --canary --fixture` reviews a local fixture with no gh call, records as a canary does, and a fixture
     re-review carries its prior record's ledger as a real re-review does."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.no_github = NoGitHub()
@@ -5950,6 +5959,7 @@ class FixtureCanaryTests(PipelineFixture):
 class SnapshotSizeTests(PipelineFixture):
     """validate-reviewer measures the source snapshot prepare would write, and refuses one prepare would refuse."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         # The snapshot holds exact blobs; with conversion off, the fixture's files commit unchanged as blobs too.
@@ -7049,6 +7059,7 @@ class RunAndBatchFieldTests(unittest.TestCase):
         ({"schema_version": {"value": 1}}, ".schema_version", "an integer", "an object"),
     )
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -7236,6 +7247,7 @@ class ReviewerRootTests(PipelineFixture):
     and resources come from that checkout at its trusted ref, the include patterns and the manifest from the reviewed
     repository's own configuration, and the record names the root, the commit, and each file's hash."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.conventions = self.root / "conventions checkout"
@@ -7664,6 +7676,7 @@ class GenericInstructionsTests(PipelineFixture):
     profile, so a redeployment that changes them after prepare fails the run in every dispatch mode, whether the
     generic reviewer reviews alone or beside specialists, as a redeployed suite profile does."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         # A copy of the deployed instructions the test can redeploy, in place of the real ones.

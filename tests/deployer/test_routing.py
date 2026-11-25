@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import override
 from unittest import mock
 
 from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
@@ -32,6 +33,7 @@ OLD_USAGE_NAMES = {
 
 
 class RoutingTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -82,6 +84,7 @@ class DeployUsageErrorTests(DeployerTestCase):
 
     HELP = f"Run '{DEPLOY_COMMAND} --help' for usage."
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

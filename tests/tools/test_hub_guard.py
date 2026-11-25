@@ -17,7 +17,7 @@ import unicodedata
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -76,6 +76,7 @@ class GuardTestCase(HubTestCase):
     end_to_end = False
     resident_pwsh = True
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         # The reading clock stands still unless a test moves it: a reading in this process ends with the reading time
@@ -483,6 +484,7 @@ class UnstatablePlaceTests(GuardTestCase):
     place that is not there, passed over for the folder above it, or read as one that runs nothing, so a command naming
     git there is refused and an edit there is protected."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.outside = self.root / "outside"
@@ -538,6 +540,7 @@ class AliasLookupPlaceTests(unittest.TestCase):
     """alias_lookups reads no alias at a place the text does not settle, or at one where no folder is, before it looks
     for the checkout there: each runs nothing, so it has no configuration to read."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1036,6 +1039,7 @@ class PlaceLookupTests(GuardTestCase):
     reach stay in view, and a command naming git is refused. A start inside a git directory is looked up as the
     repository git acts on there."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.outside = self.root / "outside"
@@ -4315,6 +4319,7 @@ class WithinTests(unittest.TestCase):
     or the folder holding the global configuration, `may_lie_in` counts every spelling some file system may read as
     the folder's, asking no directory."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="guard-within-")
         self.addCleanup(temporary.cleanup)

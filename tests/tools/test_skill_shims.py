@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -48,12 +49,14 @@ TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u
 
 
 class SkillShimsTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-shims-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
         self.write("source.json", "{}\n")
         self.write(".claude/skills/widget-check/SKILL.md", SKILL)
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

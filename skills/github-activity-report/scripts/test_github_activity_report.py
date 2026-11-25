@@ -12,7 +12,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -479,6 +479,7 @@ class FakeGitHub(DatedSearch):
         super().__init__()
         self.reviews: dict[str, list[dict[str, Any]]] = {}
 
+    @override
     def graphql(self, arguments: list[str]) -> CommandResult:
         values = dict(entry.partition("=")[::2] for entry in arguments[1::2])
         if "q" in values:
@@ -1136,6 +1137,7 @@ class GroupGitHub(FakeGitHub):
         self.team_failure: str | None = None
         self.member_pages: list[list[str]] | None = None
 
+    @override
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
         endpoint = arguments[3]
         self.endpoints.append(endpoint)

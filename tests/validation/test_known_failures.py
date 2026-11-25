@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -44,6 +45,7 @@ ISSUE_ANSWER = f'{{"state": "OPEN", "url": "https://github.com/{REPOSITORY}/issu
 
 
 class KnownFailureFixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -387,6 +389,7 @@ class PendingShapeTests(KnownFailureFixture):
 class OpenIssueTests(KnownFailureFixture):
     """Each issue an entry names is open, as GitHub answers through gh; an empty list asks GitHub nothing."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         git(self.root, "init", "--quiet")

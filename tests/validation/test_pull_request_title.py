@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -124,6 +125,7 @@ class HeadBranch(unittest.TestCase):
     """head_branch reads GITHUB_HEAD_REF in CI, where the checkout is a detached merge ref, and the checkout's own
     branch elsewhere; when neither names a branch, the title's type is left unconstrained."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

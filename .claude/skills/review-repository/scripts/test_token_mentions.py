@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 
 import token_mentions
 from conditions import read_files
@@ -24,6 +25,7 @@ def changed(path: str, start: int, lines: list[str]) -> str:
 class TokenMentionsTests(unittest.TestCase):
     maxDiff = None
 
+    @override
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

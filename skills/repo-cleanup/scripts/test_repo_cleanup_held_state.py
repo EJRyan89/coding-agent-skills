@@ -7,6 +7,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -22,6 +23,7 @@ git_config = GIT_CONFIG
 class HeldStateTests(CleanupTestCase):
     """held_state keeps a worktree when Git cannot say what its removal would lose, as its docstring says."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.worktree = Path(tempfile.mkdtemp(prefix="repo cleanup held ")).resolve()

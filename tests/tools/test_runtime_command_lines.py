@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -119,6 +119,7 @@ def refusing(refusal: Completed) -> Answer:
 
 
 class RuntimeCommandLinesTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="runtime-command-lines-test.")
         self.addCleanup(temporary.cleanup)

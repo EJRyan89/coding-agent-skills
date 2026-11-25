@@ -16,7 +16,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -193,6 +193,7 @@ class FakeSdk:
 
 
 class Fixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-graph-")).resolve()
         self.addCleanup(self.remove_root)
@@ -3356,6 +3357,7 @@ def refused_reached(touched: Iterable[str]) -> list[str]:
 class PathBoundTests(Fixture):
     """Every path a file names stays inside the examined tree, and every read is of a regular file within the bound."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         marker = mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", TEST_MARKER)

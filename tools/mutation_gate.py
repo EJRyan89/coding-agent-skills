@@ -216,7 +216,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
-from typing import Any, TypeVar
+from typing import Any, TypeVar, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "validation"))
@@ -873,6 +873,7 @@ class NameReaders(ast.NodeVisitor):
         self.at_import: set[int] = set()
         self.depth = 0
 
+    @override
     def visit_Name(self, node: ast.Name) -> None:
         if node.id in self.names and isinstance(node.ctx, ast.Load):
             (self.lines if self.depth else self.at_import).add(node.lineno)

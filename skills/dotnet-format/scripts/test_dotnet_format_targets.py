@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, override
 from unittest import mock
 
 import pytest
@@ -261,6 +261,7 @@ class Services(targets.Services):
 
 
 class ResolveTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1348,6 +1349,7 @@ class ResolveTests(unittest.TestCase):
 
 
 class ListedRefusalTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1515,6 +1517,7 @@ class ConsoleTests(unittest.TestCase):
 class FileListTests(unittest.TestCase):
     """The one reader of a FILE_LIST, which the formatter and the layout checker both use."""
 
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1591,6 +1594,7 @@ class LocatedToolsTests(unittest.TestCase):
     that absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
     fresh one, so the only programs found are the ones a test puts there."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="targets locator ")
@@ -1678,6 +1682,7 @@ def holdable_breaks(directory: Path) -> list[str]:
 class OneLineFactTests(unittest.TestCase):
     """A name or a reason holding a line break or a tab stays one fact on one line, through `fact_line`."""
 
+    @override
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

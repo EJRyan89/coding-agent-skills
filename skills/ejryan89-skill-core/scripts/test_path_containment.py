@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,6 +66,7 @@ def link_folder(target: Path, link: Path) -> None:
 
 @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
 class ResolvedPathTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -111,6 +113,7 @@ class ResolvedPathTests(unittest.TestCase):
 
 
 class WithinTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -223,6 +226,7 @@ class MayLieInTests(unittest.TestCase):
     """`may_lie_in` takes every spelling some file system may read as the tree's for the tree's, without asking any
     directory, so a check that refuses what lies inside refuses each of them."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -420,6 +424,7 @@ class WrittenRefusalTests(unittest.TestCase):
 
 
 class RefusalTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

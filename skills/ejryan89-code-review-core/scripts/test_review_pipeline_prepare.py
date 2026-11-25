@@ -23,7 +23,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -310,16 +310,19 @@ class RecordingGitHub(GitHubClient):
     def _refuse(arguments: Sequence[str]) -> CommandResult:
         raise AssertionError(f"unexpected gh call: {list(arguments)}")
 
+    @override
     def get_pull(self, repository: str, number: int) -> dict[str, Any]:
         self.calls.append(("get_pull", repository, number))
         served = self.pulls[0] if len(self.pulls) == 1 else self.pulls.pop(0)
         pull: dict[str, Any] = json.loads(json.dumps(served))
         return pull
 
+    @override
     def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
         self.calls.append(("get_pull_diff", repository, number))
         return self.diff, self.undecodable
 
+    @override
     def list_open_review_threads(self, repository: str, number: int) -> list[Comment]:
         self.calls.append(("list_open_review_threads", repository, number))
         threads: list[Comment] = json.loads(json.dumps(self.threads))
@@ -377,6 +380,7 @@ class RecordingTarball:
 class PrepareFixture(unittest.TestCase):
     maxDiff = None
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1439,6 +1443,7 @@ class InitialReviewTests(PrepareFixture):
 class SnapshotFromGitHubTests(PrepareFixture):
     """Without a checkout the snapshot is GitHub's tarball: each exclusion reason, and what reaches the request."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.configure(checkout=False)

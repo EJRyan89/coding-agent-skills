@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, get_args, override
 from unittest import mock
 
 import pytest
@@ -428,6 +428,7 @@ class UnmanagedDiffTests(DeployerTestCase):
     under CONFLICT in a dry run, its first forty lines under SKIPPED in a deployment and a line saying how many more
     the dry run shows, and none for a managed skill."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -525,6 +526,7 @@ class ValidateSharedAssetsTests(unittest.TestCase):
     """plan.validate_shared_assets called directly: the mapping it returns, and each refusal's exact message in the
     order its checks run."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="shared-assets.")
         self.addCleanup(temporary.cleanup)
@@ -788,6 +790,7 @@ class ValidateSharedAssetsTests(unittest.TestCase):
 class ContextStepTests(unittest.TestCase):
     """The selection and migration steps pipeline.py runs, called directly on a Context."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="context-steps.")
         self.addCleanup(temporary.cleanup)

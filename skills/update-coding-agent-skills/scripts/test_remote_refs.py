@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -69,7 +70,8 @@ class Unauthorized(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - the base class's parameter name
+    @override
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
 

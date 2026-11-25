@@ -10,6 +10,7 @@ import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,6 +34,7 @@ class LocatorTestCase(unittest.TestCase):
     nothing on the machine running the test is found. Off Windows, where no package manager links commands into a
     folder of its own, `links` is the folder PATH names after the first, the place the locator looks next."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="executable locator ")
         self.addCleanup(temporary.cleanup)
@@ -417,6 +419,7 @@ class ClientsRunNoShellScriptTests(unittest.TestCase):
 
     PAYLOAD = "x&echo.INJECTED&rem"
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="shell script shims ")
         self.addCleanup(temporary.cleanup)

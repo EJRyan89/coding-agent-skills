@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -15,6 +16,7 @@ from search_boundary import CLAUDE_INSTRUCTIONS_AND_MEMORY_OFF_VARIABLES, bound_
 
 
 class BoundSearchTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

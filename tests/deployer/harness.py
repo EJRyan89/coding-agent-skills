@@ -16,7 +16,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -279,6 +279,7 @@ class _Tee(io.StringIO):
         super().__init__()
         self.shared = shared
 
+    @override
     def write(self, text: str) -> int:
         self.shared.write(text)
         return super().write(text)
@@ -798,5 +799,6 @@ def deployer() -> Iterator[Deployment]:
 class DeployerTestCase(unittest.TestCase, Deployment):
     """The unittest form of a Deployment: each test starts in a fresh one, removed after its cleanups run."""
 
+    @override
     def setUp(self) -> None:
         self.start(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="deploy-test."))))

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -52,6 +53,7 @@ CLEAN_REQUIREMENTS = "# Development dependencies.\n\nruff==0.16.10\n  # Indented
 
 
 class ToolchainFixtures(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.

@@ -15,7 +15,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, TypeVar
+from typing import Any, TypeVar, override
 from unittest import mock
 
 import pytest
@@ -65,6 +65,7 @@ def build_template() -> None:
 class CleanupTestCase(unittest.TestCase):
     git_config = GIT_CONFIG
 
+    @override
     def setUp(self) -> None:
         # The seals a plan's save writes go to a throwaway folder of the test's, never the user's temporary directory.
         seals = Path(tempfile.mkdtemp(prefix="repo cleanup seals ")).resolve()
@@ -326,6 +327,7 @@ class FakeGitHub:
 class Fixture(CleanupTestCase):
     """A clone under a REPOS_ROOT with spaces, whose github.com origin is rewritten to a local bare remote."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup ")).resolve()
@@ -1945,6 +1947,7 @@ class SweepTests(SweepFixture):
 class WorktreeTestCase(CleanupTestCase):
     """A repository whose worktrees a test adds, fills, and removes as apply removes a stale one."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup remove ")).resolve()

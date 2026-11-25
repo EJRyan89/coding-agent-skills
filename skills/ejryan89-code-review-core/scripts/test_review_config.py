@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -72,6 +72,7 @@ def valid_config() -> dict[str, Any]:
 
 
 class ConfigCommandTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -699,6 +700,7 @@ class ReviewerRootTests(unittest.TestCase):
     Git checkout's top folder, or whose trusted ref does not resolve there, naming the repository, and write then
     writes nothing."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -971,6 +973,7 @@ class LocalManifestTests(unittest.TestCase):
     repository: validate and write refuse one inside checkout_path or inside any working tree of the same repository,
     naming the path, and write then writes nothing."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -22,6 +23,7 @@ LOCALE_ENCODING_ENVIRONMENT = {"PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "L
 
 
 class ModuleClosureTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="module closure ")
         self.addCleanup(temporary.cleanup)

@@ -7181,6 +7181,7 @@ class PythonChecksPolicies(unittest.TestCase):
             [
                 "deprecated",
                 "exhaustive-match",
+                "explicit-override",
                 "ignore-without-code",
                 "possibly-undefined",
                 "redundant-expr",

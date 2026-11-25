@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -37,6 +38,7 @@ ACCENTED = "tools/résumé.py"
 class RealDiffTests(unittest.TestCase):
     """Each header a real `git diff` writes names the path it was given."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -156,6 +158,7 @@ def link_folder(link: Path, target: Path) -> None:
 
 
 class SnapshotPathTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()

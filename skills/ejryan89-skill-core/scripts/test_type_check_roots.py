@@ -8,6 +8,7 @@ import tomllib
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -56,6 +57,7 @@ def write_tree(root: Path, files: Mapping[str, str]) -> None:
 
 
 class Fixture(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

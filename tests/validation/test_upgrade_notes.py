@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, override
 from unittest import mock
 
 import pytest
@@ -525,6 +525,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.assertEqual([item], [problem.split(":", 1)[0] for problem in self.problems(changed)])
         self.assertEqual([], self.problems(changed, self.body(self.entry(f"`{item}`"))))
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

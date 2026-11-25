@@ -11,6 +11,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,6 +45,7 @@ class PolicyReadingFailureTests(CleanupTestCase):
     """What a command reads of the lists fails closed: a record whose lists are not lines, and an added entry Git
     cannot be asked about."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup policy reading ")).resolve()

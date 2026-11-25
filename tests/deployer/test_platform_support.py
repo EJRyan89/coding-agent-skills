@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -25,6 +25,7 @@ from deployer.errors import DeployError
 if platform_support.WINDOWS:
 
     class FindBashTests(DeployerTestCase):
+        @override
         def setUp(self) -> None:
             super().setUp()
             self.program_files = self.root / "Program Files"
@@ -115,6 +116,7 @@ if platform_support.WINDOWS:
     class FindExecutableTests(DeployerTestCase):
         """The deployer finds a program by ejryan89-skill-core's locator, the one the skills' scripts use."""
 
+        @override
         def setUp(self) -> None:
             super().setUp()
             (self.root / "empty path").mkdir()
@@ -145,6 +147,7 @@ else:
     class UnixProgramTests(DeployerTestCase):
         """Off Windows, Bash, PowerShell, and every other program are the ones PATH names, with no link folder."""
 
+        @override
         def setUp(self) -> None:
             super().setUp()
             self.bin = self.root / "usr bin"
@@ -182,6 +185,7 @@ class WorkingDirectoryTests(DeployerTestCase):
 
     PROGRAMS = ("pwsh", "powershell", "git", "mypy")
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.planted = self.root / "working directory"
@@ -204,6 +208,7 @@ class WorkingDirectoryTests(DeployerTestCase):
         self.started_in = Path.cwd()
         os.chdir(self.planted)
 
+    @override
     def tearDown(self) -> None:
         # Leave the folder before the harness removes it, which Windows refuses while it is a working directory.
         os.chdir(self.started_in)
@@ -230,6 +235,7 @@ class GitBashVariableTests(DeployerTestCase):
     """Windows' Bash lookup, run on every platform: GIT_BASH and PROGRAMFILES name a Bash only by an absolute path,
     so a Bash in the working directory is never the one that checks rendered scripts."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.planted = self.root / "working directory"
@@ -246,6 +252,7 @@ class GitBashVariableTests(DeployerTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    @override
     def tearDown(self) -> None:
         # Leave the folder before the harness removes it, which Windows refuses while it is a working directory.
         os.chdir(self.started_in)
@@ -394,6 +401,7 @@ class LocatorTests(unittest.TestCase):
 class AppExecutionAliasTests(unittest.TestCase):
     """An app execution alias is a reparse point in the local application data's WindowsApps folder, on Windows."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -464,6 +472,7 @@ class LinkJudgementTests(unittest.TestCase):
     """The deployer judges a link as ejryan89-skill-core's link_probe does, and refuses to judge a path it cannot
     read."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -637,6 +646,7 @@ class NormalizeTests(unittest.TestCase):
 
 
 class ShellPathTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(platform_support, "WINDOWS", True)
@@ -944,6 +954,7 @@ class ProcessStatusTests(unittest.TestCase):
 class SignalTerminationTests(unittest.TestCase):
     """Off Windows, Python reports a process a signal ended by the negated signal number."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(platform_support, "WINDOWS", False)
@@ -962,6 +973,7 @@ class SignalTerminationTests(unittest.TestCase):
 
 
 class TerminationStatusTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(platform_support, "WINDOWS", True)
@@ -987,6 +999,7 @@ class DeployerGitShellScriptTests(unittest.TestCase):
     """An echo-only `git.cmd` that leaves a mark when it runs, first on PATH before the real git: the deployer's own
     git, for `--at`, the deployed commit, and the Bash beside git, starts the real git and never the shell script."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="deployer git shim ")
         self.addCleanup(temporary.cleanup)

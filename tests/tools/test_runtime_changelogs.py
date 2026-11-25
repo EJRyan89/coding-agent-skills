@@ -17,7 +17,7 @@ import unittest
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 import pytest
 
@@ -617,6 +617,7 @@ class RepositoryTermsTests(unittest.TestCase):
     terms: ClassVar[list[Term]]
 
     @classmethod
+    @override
     def setUpClass(cls) -> None:
         cls.terms = watch.terms(REPOSITORY)
 
@@ -1019,6 +1020,7 @@ def test_a_response_cut_short_fails_as_unreadable_never_raises(monkeypatch: pyte
         def geturl(self) -> str:
             return "https://docs.example.com/guide"
 
+        @override
         def read(self, *_: object) -> bytes:
             raise http.client.IncompleteRead(b"par", 10)
 

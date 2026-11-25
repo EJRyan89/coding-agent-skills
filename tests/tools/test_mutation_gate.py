@@ -24,7 +24,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -618,6 +618,7 @@ class ContextFixtures(unittest.TestCase):
 class ProcessArgumentFixtures(unittest.TestCase):
     """What each process the gate starts for a suite reaches the bounded runner with."""
 
+    @override
     def setUp(self) -> None:
         self.calls: list[tuple[list[str], float, dict[str, object], list[str]]] = []
         # Each tree names what it was asked for, so a test reads what each command's tree holds.
@@ -1282,6 +1283,7 @@ class CoverageReachFixtures(unittest.TestCase):
 
 
 class TryMutantFixtures(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3374,6 +3376,7 @@ class FlushRecorder(io.StringIO):
         super().__init__()
         self.flushed: list[str] = []
 
+    @override
     def flush(self) -> None:
         self.flushed.append(self.getvalue())
 
@@ -3807,6 +3810,7 @@ class UnrunFixtures(unittest.TestCase):
     """A local run of the mutants a CI run's Linux leg left without a verdict, over the fixture repository, with the
     reach stubbed and the suite runner recording which mutant it ran against."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -5362,6 +5366,7 @@ class CarryFixtures(unittest.TestCase):
     """A run of the fixture repository's pull request after an earlier run of it finished, which left its verdict
     for the select step to carry, with the generator stubbed and no reach measured."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -5555,6 +5560,7 @@ SAVE_ENVIRONMENT = {
 class SaveVerdictFixtures(unittest.TestCase):
     """The join of a run of the fixture repository, which leaves a finished run's verdict for the next run."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -17,6 +17,7 @@ import unittest
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -554,10 +555,12 @@ class _BindingReader(ast.NodeVisitor):
         for name in names - declared_elsewhere:
             self.scope.bindings.setdefault(name, [])
 
+    @override
     def visit(self, node: ast.AST) -> None:
         self.scopes[id(node)] = self.scope
         super().visit(node)
 
+    @override
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in self.annotations | self.updates:
             for value in self.values.get(id(node), [None]):
@@ -595,6 +598,7 @@ class _BindingReader(ast.NodeVisitor):
             default = defaults.get(id(argument))
             self.scope.bind(argument.arg, default if default is not None else f"<local>.{argument.arg}")
 
+    @override
     def visit_Import(self, node: ast.Import) -> None:
         for found in module_imports(node):
             for name, target in found.bindings:
@@ -603,6 +607,7 @@ class _BindingReader(ast.NodeVisitor):
                 if owner is not None:
                     owner.imports.add(name)
 
+    @override
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             target = f"{node.module}.{alias.name}" if node.level == 0 and node.module else f"<local>.{alias.name}"
@@ -663,15 +668,19 @@ class _BindingReader(ast.NodeVisitor):
             self.visit(statement)
         self.scope = parent
 
+    @override
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._definition(node)
 
+    @override
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._definition(node)
 
+    @override
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._definition(node)
 
+    @override
     def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
         self.visit(node.name)
         parent = self.scope
@@ -680,6 +689,7 @@ class _BindingReader(ast.NodeVisitor):
             self.visit(child)
         self.scope = parent
 
+    @override
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._argument_defaults(node.args)
         self._argument_annotations(node.args)
@@ -703,18 +713,23 @@ class _BindingReader(ast.NodeVisitor):
             self.visit(expression)
         self.scope = parent
 
+    @override
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._comprehension(node)
 
+    @override
     def visit_SetComp(self, node: ast.SetComp) -> None:
         self._comprehension(node)
 
+    @override
     def visit_DictComp(self, node: ast.DictComp) -> None:
         self._comprehension(node)
 
+    @override
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
         self._comprehension(node)
 
+    @override
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         scope = self.scope
         while scope.is_comprehension and scope.parent is not None:
@@ -723,23 +738,27 @@ class _BindingReader(ast.NodeVisitor):
             scope.bind(node.target.id, node.value)
         self.visit(node.value)
 
+    @override
     def visit_Global(self, node: ast.Global) -> None:
         scope = self.scope
         while scope.parent is not None:
             scope = scope.parent
         self.scope.redirects.update(dict.fromkeys(node.names, scope))
 
+    @override
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
         parent = self.scope.parent
         if parent is not None:
             for name in node.names:
                 self.scope.redirects[name] = parent.owner(name) or parent
 
+    @override
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.name is not None:
             self.scope.bind(node.name, None)
         self.generic_visit(node)
 
+    @override
     def visit_Match(self, node: ast.Match) -> None:
         self.visit(node.subject)
         for case in node.cases:
@@ -755,15 +774,18 @@ class _BindingReader(ast.NodeVisitor):
             for statement in case.body:
                 self.visit(statement)
 
+    @override
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
         if node.name is not None:
             self.scope.bind(node.name, None)
         self.generic_visit(node)
 
+    @override
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
         if node.name is not None:
             self.scope.bind(node.name, None)
 
+    @override
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
         if node.rest is not None:
             self.scope.bind(node.rest, None)

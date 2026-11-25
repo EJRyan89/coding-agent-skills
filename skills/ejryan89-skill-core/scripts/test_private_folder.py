@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -113,6 +113,7 @@ class RuntimeDirectoryTests(unittest.TestCase):
     no link, the user owns with mode 0700, in a parent no other account can rename it out of; anything else leaves the
     state folder in the temporary directory."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -290,6 +291,7 @@ class ParentRefusalTests(unittest.TestCase):
 class AncestryRefusalTests(unittest.TestCase):
     """Every folder from a resolved parent up to the root, of which a link is one that was put there since."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -313,6 +315,7 @@ class AncestryRefusalTests(unittest.TestCase):
 class TemporaryDirectoryTests(unittest.TestCase):
     """The temporary directory a run's folder is made in, judged before anything is made in it."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -383,6 +386,7 @@ class TemporaryDirectoryTests(unittest.TestCase):
 class TemporaryDirectoryCommandTests(unittest.TestCase):
     """`private_folder.py temporary-directory <folder>`, which a Bash script such as update.sh runs before mktemp."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -461,6 +465,7 @@ class RecordingTests(unittest.TestCase):
 
 
 class EnsureTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -609,6 +614,7 @@ class WindowsTests(unittest.TestCase):
     profile, which other accounts cannot write: only the folder's kind is judged, so a link or junction and a file are
     refused, and a folder's mode bits and its parent's, which say nothing there, are not."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

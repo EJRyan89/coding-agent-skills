@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 import pytest
@@ -257,6 +257,7 @@ class Fixture(AuditTestCase):
 
     template: ClassVar[FixtureTemplate] = FIXTURE
 
+    @override
     def setUp(self) -> None:
         self.temporary = Path(tempfile.mkdtemp(prefix="audit-repository-test-")).resolve()
         self.addCleanup(remove_tree, self.temporary)
@@ -949,6 +950,7 @@ class MilestoneTests(Fixture):
 
     def test_gh_printing_something_else_fails(self) -> None:
         class Odd(StubGitHub):
+            @override
             def __call__(self, command: Sequence[str]) -> CommandResult:
                 self.commands.append(list(command))
                 return CommandResult(0, json.dumps({"not": "a list"}), "")
@@ -1508,6 +1510,7 @@ class GuidanceTests(Fixture):
 
     template = GUIDANCE_FIXTURE
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(mock.patch.dict(audit.RUNTIME_FACTS, FIXTURE_FACTS, clear=True))
@@ -2066,6 +2069,7 @@ class TwinTests(Fixture):
 
     template = TWIN_FIXTURE
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.first_fix = git(self.root, "rev-parse", "HEAD~1")

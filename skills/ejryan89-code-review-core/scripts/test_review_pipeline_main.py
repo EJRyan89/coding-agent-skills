@@ -15,7 +15,7 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -126,6 +126,7 @@ def by_first_argument(outcomes: dict[Any, Any]) -> Callable[..., Any]:
 
 
 class MainCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         for name in STUBBED:
             self.stub(name, effect=raising(AssertionError(f"main called {name} unexpectedly")))
@@ -438,6 +439,7 @@ RUNS_ALONE = "--runs takes no other option; the run list holds them"
 class RunListCase(MainCase):
     """A case whose prepare writes its run list, or whose commands read one, in a temporary directory of its own."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.directory = Path(tempfile.mkdtemp(prefix="review-pipeline-main-"))

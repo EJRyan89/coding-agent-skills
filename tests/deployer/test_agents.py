@@ -8,6 +8,7 @@ import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 from harness import DeployerTestCase, backup_entry, install_entry, journal_line
@@ -24,6 +25,7 @@ def sha256(content: bytes) -> str:
 
 
 class AgentDeploymentTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

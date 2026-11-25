@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -336,6 +336,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         """The file whose operating-system lock a holder takes before it reads, removes, or makes the lock directory."""
         return self.directory.with_name(f"{self.directory.name}.held")
 
+    @override
     def __enter__(self) -> ResourceLock:
         deadline = time.monotonic() + self.timeout_seconds
         try:
@@ -504,6 +505,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         shutil.rmtree(stale, ignore_errors=True)
         return True
 
+    @override
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if not self._held:
             return

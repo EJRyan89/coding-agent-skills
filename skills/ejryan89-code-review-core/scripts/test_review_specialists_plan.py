@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -568,6 +568,7 @@ class PlanFixture(unittest.TestCase):
     """A temporary root holding source/ (the snapshot), reviewer/ (a materialized reviewer), diff.patch, and
     request.json, and work/, which build_plan creates. Every read, condition run, and write is recorded."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1466,6 +1467,7 @@ class DispositionTests(PlanFixture):
 class LinkTests(PlanFixture):
     """A symbolic link is named only in the prompt of the role that reviews it."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.files: dict[str, str | bytes] = {

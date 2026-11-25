@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -137,6 +138,7 @@ class PidRangeTests(unittest.TestCase):
 class ProcStatusTests(unittest.TestCase):
     """How /proc is read, from stat files written as Linux writes them, on every platform."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="process-identity-test.")
         self.addCleanup(temporary.cleanup)

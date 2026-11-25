@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -19,10 +19,12 @@ DECISION = {"decision": "This source grants each script by name (docs/design.md,
 
 
 class LoadTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.path = Path(self._temporary.name) / "provenance.json"
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

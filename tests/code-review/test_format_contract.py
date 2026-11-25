@@ -38,7 +38,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -1824,6 +1824,7 @@ class FormatContractTest(unittest.TestCase):
     fixtures: ClassVar[dict[str, list[Fixture]]]
 
     @classmethod
+    @override
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls.scratch = tempfile.TemporaryDirectory()
@@ -1879,6 +1880,7 @@ class FormatContractTest(unittest.TestCase):
         }
 
     @classmethod
+    @override
     def tearDownClass(cls) -> None:
         cls.scratch.cleanup()
 

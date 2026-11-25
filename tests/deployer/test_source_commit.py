@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result, git
@@ -18,6 +18,7 @@ FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
 
 class SourceCommitTests(DeployerTestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

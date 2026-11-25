@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 import pytest
@@ -91,6 +92,7 @@ class FakeRuntimes:
 
 
 class DeployableReportTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="deployable-report-test.")
         root = Path(self._temporary.name).resolve()
@@ -114,6 +116,7 @@ class DeployableReportTests(unittest.TestCase):
         self.results_file = root / "results.json"
         self.summary_file = root / "summary.md"
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

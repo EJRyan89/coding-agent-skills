@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import sys
-from typing import Any, NoReturn
+from typing import Any, NoReturn, override
 
 from .errors import DEBUG_VARIABLE, DeployError, print_error
 from .platform_support import PYTHON
@@ -61,13 +61,16 @@ class _Parser(argparse.ArgumentParser):
         self.deploy_options: list[argparse.Action] = []
         self.commands: dict[str, argparse.ArgumentParser] = {}
 
+    @override
     def format_help(self) -> str:
         """Surround help with blank lines, like every other deploy.py output."""
         return f"\n{super().format_help()}\n"
 
+    @override
     def error(self, message: str) -> NoReturn:
         raise usage_error(message, prog=self.prog)
 
+    @override
     def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
         if message:
             sys.stderr.write(message)

@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,6 +66,7 @@ class PlanSealTests(Fixture):
     """A swept repository offering a local-only branch and a leftover directory, beside a branch with an open pull
     request and a folder outside every worktree area, which the sweep offers neither of."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         git(self.clone, "branch", "scratch", "main")
@@ -400,6 +401,7 @@ class PlanSealTests(Fixture):
 class PlanFieldTests(CleanupTestCase):
     """What the plan reader accepts and refuses, field by field, on plans saved with the script's own writer."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         root = Path(tempfile.mkdtemp(prefix="repo cleanup fields ")).resolve()
@@ -711,6 +713,7 @@ class SealReadingTests(CleanupTestCase):
     """A seal repo-cleanup cannot read is refused as that, never as a plan changed since its save, and no plan or
     record is saved where the seals lie."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup seal reading ")).resolve()
@@ -793,6 +796,7 @@ class SealsFolderTests(CleanupTestCase):
     Linux with TMPDIR unset is the shared /tmp; one another account owns or can write, or a link, is refused before
     any seal is read or written, so no other account can empty the folder or fill it."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup seals folder ")).resolve()

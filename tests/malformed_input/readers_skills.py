@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 from reader_table import REPOSITORY, NotText, Reader, Refused, text_of
@@ -386,6 +386,7 @@ class _SynthesisPrompt(str):
 
     __hash__ = str.__hash__
 
+    @override
     def __eq__(self, other: object) -> bool:
         return other == SYNTHESIS_PROMPT or str.__eq__(self, other)
 

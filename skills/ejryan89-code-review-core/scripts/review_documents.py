@@ -36,6 +36,7 @@ from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import override
 from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -665,6 +666,7 @@ class _AnchoredMatcher(difflib.SequenceMatcher[str]):
         super().__init__(None, base, head)
         self.base, self.head = base, head
 
+    @override
     def get_matching_blocks(self) -> list[difflib.Match]:
         base, head = self.base, self.head
         shorter = min(len(base), len(head))

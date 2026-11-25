@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -24,6 +24,7 @@ from deployer import fsops, platform_support
 
 
 class FilesystemOperationTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="deploy-fsops.")
         self.addCleanup(temporary.cleanup)

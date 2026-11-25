@@ -79,6 +79,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -135,6 +136,7 @@ class Base:
     remote: str
     branch: str
 
+    @override
     def __str__(self) -> str:
         return f"{self.remote}/{self.branch}"
 

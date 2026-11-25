@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -126,6 +127,7 @@ class RaisesTests(unittest.TestCase):
 
 
 class LastReleaseTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))

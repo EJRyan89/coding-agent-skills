@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,6 +71,7 @@ def stat_answers(failure: OSError, *, failed_follow: bool) -> Callable[..., os.s
 
 
 class FilePresenceTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -208,6 +209,7 @@ HELPERS = (is_present, is_directory, is_there, is_occupied)
 
 
 class DirectoryTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -257,6 +259,7 @@ class DirectoryTests(unittest.TestCase):
 
 
 class OccupiedTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -280,6 +283,7 @@ class OccupiedTests(unittest.TestCase):
 
 
 class ThereTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -310,6 +314,7 @@ class ThereTests(unittest.TestCase):
 
 
 class LinkToNothingOnTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -377,6 +382,7 @@ class LinkToNothingOnTests(unittest.TestCase):
 
 
 class RefusalReasonTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -488,6 +494,7 @@ TREE = (
 
 
 class MatchingTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -740,6 +747,7 @@ class SidecarTests(unittest.TestCase):
     or SMB volume, planted here with the bytes macOS writes, so these hold on every platform; any other `._` entry is
     the caller's."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

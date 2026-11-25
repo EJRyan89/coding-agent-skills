@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -201,6 +201,7 @@ class ScreeningTests(unittest.TestCase):
 
 
 class SynthesisFixture(InsightFixture):
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.commit("owner/repo", 7, ["Correctness", "Style"], adapter=REPOSITORY_ADAPTER)
@@ -1483,6 +1484,7 @@ class StageTests(unittest.TestCase):
 class SuiteProfileTests(SynthesisFixture):
     """A reviewer built partly from the profile the suite ships: the synthesis offers only the repository's files."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         adapter = {
@@ -1891,6 +1893,7 @@ class GuardTests(SynthesisFixture):
 
     AGENT = "a71dab35ebc1b97eb"
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(review_guard, "CLAIMS", self.root / "claims")

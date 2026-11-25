@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 from harness import (
@@ -632,6 +632,7 @@ class UnlistedFolderTests(DeployerTestCase):
     """A deployed folder the deployer cannot list is evidence that never existed: no check may judge it free of links
     or its skill unmodified, so the deployment refuses it before changing anything."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()
@@ -694,6 +695,7 @@ class UnencodableNameTests(DeployerTestCase):
     """A deployed file whose name is not valid UTF-8 cannot be hashed: the dry run and the deployment refuse it as a
     DeployError naming the item and the path, never an uncaught UnicodeEncodeError."""
 
+    @override
     def setUp(self) -> None:
         super().setUp()
         self.make_source_json()

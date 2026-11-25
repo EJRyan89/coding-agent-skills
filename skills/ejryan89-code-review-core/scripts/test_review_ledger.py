@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -855,6 +855,7 @@ class FindingNameTests(unittest.TestCase):
 class LedgerReportTests(unittest.TestCase):
     """The report renders a pull request's whole ledger, from the three-version fixture in review_fixture.py."""
 
+    @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

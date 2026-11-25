@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest import mock
 
 import pytest
@@ -119,6 +119,7 @@ ASSETS = {
 
 
 class ReaderTests(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-reader-")).resolve()
         self.addCleanup(self.remove_root)
@@ -571,6 +572,7 @@ class ReaderTests(unittest.TestCase):
 class PathBoundTests(unittest.TestCase):
     """The lexical rule for the paths files name, the examined tree, and the bounded read."""
 
+    @override
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-bounds-")).resolve()
         self.addCleanup(self.remove_root)

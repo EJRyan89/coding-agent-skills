@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import override
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -49,6 +50,7 @@ def renderer(prompts: dict[str, str]) -> Callable[[Path], dict[str, str]]:
 
 
 class RuntimePromptsTestCase(unittest.TestCase):
+    @override
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-prompts-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -56,6 +58,7 @@ class RuntimePromptsTestCase(unittest.TestCase):
         (self.root / ".claude" / "skills").mkdir(parents=True)
         (self.root / "source.json").write_text("{}\n", encoding="utf-8")
 
+    @override
     def tearDown(self) -> None:
         self._temporary.cleanup()
 

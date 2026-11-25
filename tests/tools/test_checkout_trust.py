@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -59,6 +60,7 @@ class CheckoutTests(unittest.TestCase):
     # The home conftest.py's git_home fixture gives the running test's git.
     git_home: GitHome
 
+    @override
     def setUp(self) -> None:
         self.git = GitClient()
         self.root = own_checkout(temporary_root(self), self.git)
