@@ -85,8 +85,8 @@ PARAMETERS: tuple[tuple[str, str, str], ...] = (
     ("psconsolefile", "p", VALUE),
     ("cfn", "cfn", VALUE),
 )
-# Each way PowerShell binds an argument to a parameter, as powershell_commands.BINDING_MODES names them, that pwsh's
-# start-up parameters take, with how startup_command reads it.
+# Each way PowerShell binds an argument to a parameter, of those powershell_commands' READ_MODES and REFUSED_MODES
+# name, that pwsh's start-up parameters take, with how startup_command reads it.
 READ_MODES = {
     "position": "the first word that names no parameter: pwsh's script file, or Windows PowerShell's command",
     "name": "a parameter's whole name, by PARAMETERS, after any dash, en dash, em dash, horizontal bar, or slash",
@@ -113,6 +113,8 @@ NOT_READ = {
 # as its CharExtensions.IsDash; a slash also starts a parameter, on every system.
 DASHES = frozenset({"-", chr(0x2013), chr(0x2014), chr(0x2015)})
 PARAMETER_STARTS = DASHES | {"/"}
+# The file -File reads its script from standard input by, as pwsh's ParseFile takes it: this word exactly, untrimmed.
+STANDARD_INPUT = "-"
 # The programs whose start-up parameters these are, by the name a command calls them, without .exe.
 POWERSHELL_PROGRAMS = frozenset({"powershell", "pwsh"})
 
@@ -163,12 +165,12 @@ def startup_command(
     words: Sequence[str | None], positional_command: bool = False, positional_file: bool = False
 ) -> StartupCommand | UnknownWord | None:
     """The command PowerShell's start-up parameters run: -Command, -CommandWithArgs, or -EncodedCommand, in any
-    spelling PowerShell reads as one, before any -File; given `positional_command`, the first word that names no
-    parameter, which Windows PowerShell runs as -Command's. Given `positional_file`, that word ends the reading with no
-    command, since pwsh runs it as -File's; given neither, it is passed over, as is a word whose dash names no
-    parameter. None for a start-up that runs no command the words hold. A parameter holds the next word where
-    PARAMETERS names it a VALUE. A word given as None, one whose text the caller cannot read, gives UnknownWord where
-    it is reached."""
+    spelling PowerShell reads as one, before any -File but `-File -`, which reads a script from standard input and reads
+    on; given `positional_command`, the first word that names no parameter, which Windows PowerShell runs as
+    -Command's. Given `positional_file`, that word ends the reading with no command, since pwsh runs it as -File's;
+    given neither, it is passed over, as is a word whose dash names no parameter. None for a start-up that runs no
+    command the words hold. A parameter holds the next word where PARAMETERS names it a VALUE. A word given as None,
+    one whose text the caller cannot read, gives UnknownWord where it is reached."""
     rest = iter(enumerate(words))
     for index, word in rest:
         if word is None:
@@ -181,7 +183,13 @@ def startup_command(
             if positional_file:
                 return None
         elif kind == FILE:
-            return None
+            # -File - reads the script from standard input and goes on reading parameters, so a later -Command runs;
+            # any other file ends the parameters, its arguments after it.
+            following = next(rest, None)
+            if following is not None and following[1] is None:
+                return UnknownWord(following[0])
+            if following is None or following[1] != STANDARD_INPUT:
+                return None
         elif kind == COMMAND_WITH_ARGUMENTS:
             return StartupCommand(index + 1, with_arguments=True)
         elif kind == COMMAND:

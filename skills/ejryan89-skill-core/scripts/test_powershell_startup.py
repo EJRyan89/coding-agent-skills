@@ -36,6 +36,11 @@ from powershell_startup import StartupCommand, UnknownWord, parameter_kind, para
         (["\u2013c", "jq ."], StartupCommand(1)),
         ([" -c ", "jq ."], StartupCommand(1)),
         (["-co", "jq ."], StartupCommand(1)),
+        # -File - reads a script from standard input and reads on, so a -Command after it runs; any other file ends it.
+        (["-File", "-", "-c", "jq ."], StartupCommand(3)),
+        (["-f", "-", "-NoProfile", "-c", "jq ."], StartupCommand(4)),
+        (["-File", None, "-c", "jq ."], UnknownWord(1)),
+        (["-File", " -", "-c", "jq ."], None),
         # -EncodedArguments takes a value, so a -Command after it runs.
         (["-ea", "AAAA", "-c", "jq ."], StartupCommand(3)),
         (["-EncodedCommand", "agBxAA=="], StartupCommand(1, encoded=True)),
@@ -220,11 +225,12 @@ def spellings(name: str) -> list[str]:
 
 
 def word_lists() -> list[list[str]]:
-    """Every spelling of every start-up parameter, given a value and a later -c, and given a script alone; and the
-    words that name no parameter."""
+    """Every spelling of every start-up parameter, given a value and a later -c, given a script alone, and given - and
+    a later -c; and the words that name no parameter."""
     names = sorted({name for name, _, _ in powershell_startup.PARAMETERS} | PINNED_PARAMETERS)
-    lists = [[word, *tail] for name in names for word in spellings(name) for tail in ([ENCODED, "-c", "X"], ["X"])]
-    return [*lists, ["--", "-c", "X"], ["-", "-c", "X"], ["X", "-c", "Y"], ["-c", "-"]]
+    tails = ([ENCODED, "-c", "X"], ["X"], ["-", "-c", "X"])
+    lists = [[word, *tail] for name in names for word in spellings(name) for tail in tails]
+    return [*lists, ["--", "-c", "X"], ["-", "-c", "X"], ["X", "-c", "Y"], ["-c", "-"], ["-File", " -", "-c", "X"]]
 
 
 @functools.cache
@@ -237,8 +243,8 @@ def parsed() -> tuple[list[list[str]], list[dict[str, Any]], list[str], set[int]
 
 def pwsh_runs(words: list[str], result: dict[str, Any]) -> StartupCommand | None:
     """The command pwsh's parser runs for the words, where the reader's start and kind must be the same, or None where
-    it runs none: it threw, it stopped the start-up, it reads its standard input, or it runs a file."""
-    if "threw" in result or result["abort"] or result["stdin"] or result["command"] is None:
+    it runs none: it threw, it stopped the start-up, or it runs a file, or only what its standard input holds."""
+    if "threw" in result or result["abort"] or result["command"] is None:
         return None
     if result["encoded"]:
         return StartupCommand(words.index(ENCODED), encoded=True)

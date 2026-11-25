@@ -182,6 +182,11 @@ READ_MODES = {
     "alias": "each alias the command's parameters table holds",
     "colon-joined": "-Name:value binds value, a switch's included; a switch takes no value otherwise",
     "remaining arguments": "the positional arguments past the command's positions bind its remaining parameter",
+    "splatting": (
+        "a splat of a variable assigned once, before it in its script block, from a hashtable literal of constants, "
+        "with no other mention, binds each key by name (Get-Splat); any other splat may bind any parameter by name, so "
+        "each parameter otherwise bound only by position is unread, and a command with a refused parameter is unread"
+    ),
 }
 REFUSED_MODES = {
     "pipeline value": (
@@ -189,10 +194,6 @@ REFUSED_MODES = {
         "and the command unread where that is a refused parameter"
     ),
     "pipeline property name": "as a pipeline value",
-    "splatting": (
-        "a splat may bind any parameter by name, so each parameter otherwise bound only by position is unread, and a "
-        "command with a refused parameter is unread"
-    ),
     "end of parameters": "-- names no parameter, so the command is unread",
 }
 # The binding modes the reader leaves unread, each with why; every one is read or refused today.
@@ -255,6 +256,9 @@ COMMANDS_RUN = (
     "[Management.Automation.Cmdlet]::CommonParameters + [Management.Automation.Cmdlet]::OptionalCommonParameters), "
     "[StringComparer]::OrdinalIgnoreCase); "
     "$unknown = [object]::new(); "
+    "$variableCommands = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
+    "foreach ($command in Get-Command -Noun Variable) { [void]$variableCommands.Add($command.Name) }; "
+    "foreach ($alias in Get-Alias -Definition *-Variable) { [void]$variableCommands.Add($alias.Name) }; "
     "function Get-Literal($element) { "
     "if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) { return $element.Value }; "
     "if ($element -is [Management.Automation.Language.ExpandableStringExpressionAst] -and "
@@ -270,15 +274,66 @@ COMMANDS_RUN = (
     "if ($matched.Count -gt 1) { $matched = @(foreach ($entry in $matched) { "
     "if (-not $common.Contains($entry[0])) { ,$entry } }) }; "
     "if ($matched.Count -eq 1) { return ,$matched[0] }; return $null }; "
+    # The constant an expression statement holds, as its AST, or null: a string, a number, $true, $false, or $null.
+    "function Get-Constant($statement) { "
+    "if ($statement -is [Management.Automation.Language.PipelineAst] -and $statement.PipelineElements.Count -eq 1) { "
+    "$statement = $statement.PipelineElements[0] }; "
+    "if ($statement -is [Management.Automation.Language.CommandExpressionAst]) { $statement = $statement.Expression }; "
+    "if ($statement -is [Management.Automation.Language.ConstantExpressionAst] -or "
+    "($statement -is [Management.Automation.Language.ExpandableStringExpressionAst] -and "
+    "$statement.NestedExpressions.Count -eq 0) -or "
+    "($statement -is [Management.Automation.Language.VariableExpressionAst] -and "
+    "@('true', 'false', 'null') -contains $statement.VariablePath.UserPath)) { return $statement }; return $null }; "
+    # The keys and constants of the hashtable a splatted variable holds, as pairs, where the source it stands in, $item
+    # and $tree, settles them: the variable, unqualified, is assigned once, by =, from a hashtable literal of constants
+    # under literal keys, as a statement of the script block the splat runs in, before it; every other mention of it is
+    # an unqualified splat, by the AST and by its text; and the source reaches no variable by name, through a command
+    # of pwsh's Variable noun or its alias ($variableCommands), the variable: drive, or PSVariable or SessionState, and
+    # dot-sources nothing. Null for any other splat.
+    "function Get-Splat($variable) { "
+    "$name = $variable.VariablePath.UserPath; $text = [string]$item[1]; "
+    "if (-not $variable.VariablePath.IsUnqualified -or $text -match '(?i)variable:|PSVariable|SessionState') { "
+    "return $null }; "
+    "if (@($tree.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and "
+    "($node.InvocationOperator -eq 'Dot' -or $variableCommands.Contains([string]$node.GetCommandName())) }, "
+    "$true)).Count) { return $null }; "
+    "$pattern = '(?i)[$@]\\{?(\\w+:)?' + [regex]::Escape($name) + '(?![\\w])'; "
+    "$mentions = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and "
+    "$node.VariablePath.UserPath -match ('(?i)^(\\w+:)?' + [regex]::Escape($name) + '$') }, $true)); "
+    "if ([regex]::Matches($text, $pattern).Count -ne $mentions.Count) { return $null }; "
+    "$assignments = @($mentions | Where-Object { -not $_.Splatted }); "
+    "if ($assignments.Count -ne 1 -or -not $assignments[0].VariablePath.IsUnqualified -or "
+    "@($mentions | Where-Object { $_.Splatted -and -not $_.VariablePath.IsUnqualified }).Count) { return $null }; "
+    "$assignment = $assignments[0].Parent; "
+    "if ($assignment -isnot [Management.Automation.Language.AssignmentStatementAst] -or "
+    "$assignment.Left -ne $assignments[0] -or $assignment.Operator -ne 'Equals' -or "
+    "$assignment.Parent -isnot [Management.Automation.Language.NamedBlockAst] -or "
+    "$assignment.Extent.EndOffset -gt $variable.Extent.StartOffset) { return $null }; "
+    "$block = $variable; while ($block -isnot [Management.Automation.Language.ScriptBlockAst]) { "
+    "$block = $block.Parent }; "
+    "if ($assignment.Parent.Parent -ne $block) { return $null }; "
+    "$table = $assignment.Right; "
+    "if ($table -is [Management.Automation.Language.PipelineAst] -and $table.PipelineElements.Count -eq 1) { "
+    "$table = $table.PipelineElements[0] }; "
+    "if ($table -is [Management.Automation.Language.CommandExpressionAst]) { $table = $table.Expression }; "
+    "if ($table -isnot [Management.Automation.Language.HashtableAst]) { return $null }; "
+    "$pairs = [Collections.Generic.List[object]]::new(); "
+    "foreach ($pair in $table.KeyValuePairs) { $value = Get-Constant $pair.Item2; "
+    "if ($pair.Item1 -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $null -eq $value) { "
+    "return $null }; $pairs.Add(@($pair.Item1.Value, $value)) }; "
+    "return ,$pairs.ToArray() }; "
     # What a bound command's arguments bind each parameter to, by the entry _bound_commands gives it, or null where the
     # command is unread: a parameter it cannot place, or one of its refused parameters bound, or perhaps bound by a
-    # splat or the pipeline. A parameter a splat or the pipeline may bind holds $unknown.
+    # splat Get-Splat cannot settle or by the pipeline, which holds $unknown in each parameter it may bind. A splat
+    # Get-Splat settles binds each of its keys by name, as pwsh does before it binds by position.
     "function Get-Bound($command, $spec) { "
     "$elements = $command.CommandElements; $bound = @{}; "
     "$positional = [Collections.Generic.List[object]]::new(); $splatted = $false; "
     "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
     "if ($element -is [Management.Automation.Language.VariableExpressionAst] -and $element.Splatted) { "
-    "$splatted = $true; continue }; "
+    "$pairs = Get-Splat $element; if ($null -eq $pairs) { $splatted = $true; continue }; "
+    "foreach ($pair in $pairs) { $entry = Find-Parameter $spec[1] $pair[0]; "
+    "if ($null -eq $entry) { return $null }; $bound[$entry[0]] = $pair[1] }; continue }; "
     "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { "
     "$positional.Add($element); continue }; "
     "$entry = Find-Parameter $spec[1] $element.ParameterName; "
@@ -327,7 +382,12 @@ COMMANDS_RUN = (
     "if (-not $name -and $elements[0].Extent.Text -match '\\.ps1\\W*$') { continue }; "
     "if (-not $name) { $first = $elements[0]; "
     "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
-    "$innerSpec = if ($inner.Count -eq 1) { $specs[[string]$inner[0].GetCommandName()] } else { $null }; "
+    # Only the bare call in parentheses, `& (Get-Command name)`, runs the command it names; a member or an index taken
+    # off its result, or any other expression around it, is unread.
+    "$innerSpec = if ($inner.Count -eq 1 -and $first -is [Management.Automation.Language.ParenExpressionAst] -and "
+    "$first.Pipeline -is [Management.Automation.Language.PipelineAst] -and "
+    "$first.Pipeline.PipelineElements.Count -eq 1 -and $first.Pipeline.PipelineElements[0] -eq $inner[0]) { "
+    "$specs[[string]$inner[0].GetCommandName()] } else { $null }; "
     "if ($innerSpec -and $innerSpec[0] -eq 'Get-Command') { "
     "$bound = Get-Bound $inner[0] $specs['Get-Command']; "
     "$name = if ($null -ne $bound) { Get-Literal $bound.Name } else { $null }; "
@@ -405,8 +465,9 @@ def unlisted_reason(finished: Finished, lines: Sequence[str]) -> str:
 
 
 def listed(sources: Sequence[object], timeout: float = READ_SECONDS, script: str | None = None) -> list[Any]:
-    """The JSON array a pwsh script prints as its last line, given `sources` in the JSON file SOURCES_VARIABLE names:
-    by default COMMANDS_RUN's, as the module holds it when called, list of each command the sources run, read by pwsh's parser in one call for them all.
+    """The JSON array `script` prints as its last line, run by pwsh with `sources` in the JSON file SOURCES_VARIABLE
+    names. `script` defaults to COMMANDS_RUN, as the module holds it at the call, whose array lists each command the
+    sources run, {source, name, words or arguments} or {source, unread}, read by pwsh's parser in one call for them all.
     Raises PowerShellUnread when pwsh is not found, does not finish within `timeout` seconds, exits with a status other
     than 0, or prints no list, naming the reason pwsh printed on one line, or its exit code when it printed none."""
     program = find_executable("pwsh")

@@ -192,12 +192,14 @@ def test_each_bound_command_s_table_is_what_pwsh_lists(command: str) -> None:
 @dataclass(frozen=True)
 class Row:
     """One way to bind a bound command's arguments: the mode it shows, the read parameter it binds, the statements
-    before the command, and the command."""
+    before the command, and the command; `unread` where the reader must leave that parameter unread, as a splat whose
+    table the source does not settle, whatever the mode's table says."""
 
     mode: str
     target: str
     setup: str
     call: str
+    unread: bool = False
 
     @property
     def command(self) -> str:
@@ -239,6 +241,7 @@ def rows() -> list[Row]:
                     ]
             colon = "$true" if switch else "'1'"
             found.append(Row("colon-joined", target, "", f"{name} -{parameter}:{colon} {tail}"))
+            found.append(Row("splatting", target, f"$s = @{{ {parameter} = {colon} }}", f"{name} {tail} @s"))
             if parameter in bound.read:
                 value = tail.split()[0] if parameter == target else "more"
                 found.append(
@@ -261,7 +264,20 @@ def rows() -> list[Row]:
                         f"[pscustomobject]@{{ {parameter} = {literal} }} | {name} {tail}",
                     )
                 )
-        found.append(Row("splatting", target, "$s = @('prog', 'other')", f"{name} @s"))
+        # A splat whose table the source does not settle may bind any parameter by name, so the read one is unread: an
+        # array, a table changed after it is assigned, and one assigned in a branch.
+        first = tail.split()[0]
+        found += [
+            Row("splatting", target, "$s = @('prog', 'other')", f"{name} @s", unread=True),
+            Row(
+                "splatting",
+                target,
+                f"$s = @{{ Verbose = $true }}; $s['{target}'] = 'other'",
+                f"{name} {first} @s",
+                True,
+            ),
+            Row("splatting", target, f"if ($true) {{ $s = @{{ {target} = 'other' }} }}", f"{name} {first} @s", True),
+        ]
         found.append(Row("end of parameters", target, "", f"{name} -- {tail}"))
         if bound.remaining:
             found.append(Row("remaining arguments", target, "", f"{name} {tail} more words"))
@@ -330,6 +346,12 @@ def binding_problems(row: Row, binding: dict[str, Any], reading: dict[str, objec
         expected = theirs.get(parameter, [] if parameter == "ArgumentList" else None)
         if reading[parameter] != UNKNOWN and reading[parameter] != expected:
             problems.append(f"{parameter}: read {reading[parameter]!r} where pwsh bound {expected!r}")
+    if row.unread:
+        return (
+            [*problems, f"{row.target} read, though the row's splat is unread"]
+            if reading[row.target] != UNKNOWN
+            else problems
+        )
     if row.mode in powershell_commands.READ_MODES and reading[row.target] == UNKNOWN and row.target in theirs:
         problems.append(f"{row.target} unread, though {row.mode} is read")
     if row.mode in powershell_commands.REFUSED_MODES and reading[row.target] != UNKNOWN:
@@ -352,3 +374,22 @@ def test_each_binding_mode_pwsh_binds_has_a_row_pwsh_binds(mode: str) -> None:
     if mode in powershell_commands.NOT_READ:
         return
     assert any(row.mode == mode and "bound" in binding for row, binding, _ in judged_rows())
+
+
+def test_a_splat_the_source_settles_keeps_the_command_read_for_audit_skill() -> None:
+    # audit-skill reads a script's git calls through `read`, which drops what is unread, so a splat of options the
+    # source settles must leave the command it binds read, and one it does not settle must leave it out.
+    assert powershell_commands.read(
+        [
+            "$o = @{ Wait = $true; NoNewWindow = $true }; Start-Process git -ArgumentList 'push' @o",
+            "$o = @{ Wait = $true }; Start-Process git 'push' @o",
+            "$o = @{ Verbose = $true }; iex 'git push' @o",
+            "$o = @{ Wait = $true }; $o.FilePath = 'rm'; Start-Process git 'push' @o",
+        ]
+    ) == [[["git", "push"]], [["git", "push"]], [["git", "push"]], []]
+
+
+def test_only_the_bare_call_in_parentheses_runs_the_command_get_command_names() -> None:
+    assert powershell_commands.read(
+        ["& (Get-Command git) push", "& (Get-Command git).Source push", "& (Get-Command git)[0] push"]
+    ) == [[["git", "push"]], [], []]
