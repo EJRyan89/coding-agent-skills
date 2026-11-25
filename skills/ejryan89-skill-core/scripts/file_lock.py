@@ -81,6 +81,12 @@ def refusal_step(error: FileLockError, subject: str, place: str) -> str:
     )
 
 
+def _link_to_nothing(path: Path) -> FileExistsError:
+    """The refusal of a symbolic link to nothing in the lock file's place, naming the path: `open_for_lock` refuses to
+    create through it, and `held_elsewhere` refuses it as that open would, so a preview never reads it as free."""
+    return FileExistsError(errno.EEXIST, "a symbolic link to nothing is in the lock file's place; remove it", str(path))
+
+
 # How many times `open_for_lock` tries the exclusive create and the open of a file already there, while a release
 # deletes the file between the two.
 OPEN_ATTEMPTS = 3
@@ -102,9 +108,7 @@ def open_for_lock(path: Path) -> int:
             return os.open(path, os.O_RDWR)
         except FileNotFoundError:
             if file_presence.is_occupied(path):
-                raise FileExistsError(
-                    errno.EEXIST, "a symbolic link to nothing is in the lock file's place; remove it", str(path)
-                ) from None
+                raise _link_to_nothing(path) from None
             if attempt == OPEN_ATTEMPTS:
                 raise
         attempt += 1
@@ -198,7 +202,8 @@ def _let_go(descriptor: int) -> None:
 
 def held_elsewhere(path: Path) -> bool:
     """Whether another open of the file at `path` holds its lock, one in this process included, creating nothing:
-    False when no file is there.
+    False when nothing is there, and a symbolic link to nothing refused with the `FileExistsError` `open_for_lock`
+    gives it, since a `take` refuses that link rather than finding the lock free.
 
     The lock is taken and let go at once when it is free, so a process that tries it meanwhile is refused for that
     moment. The OSError of the open is raised as it came, and a `FileLockError` when the file system refuses the lock.
@@ -211,6 +216,8 @@ def held_elsewhere(path: Path) -> bool:
             raise OSError(errno.EINVAL, "it is not a regular file, so its lock is not tried", str(path))
         descriptor = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
+        if file_presence.is_occupied(path):
+            raise _link_to_nothing(path) from None
         return False
     try:
         if not try_lock(descriptor):

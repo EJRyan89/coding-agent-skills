@@ -225,10 +225,28 @@ class DeploymentTests(DeployerTestCase):
             result = self.deploy_fails("--all", "--dry-run", pattern="not a regular file")
         self.assertEqual(set(), opened)
         self.assertIn(
-            f"ERROR: Could not finish the dry run: {forward(fifo)}: "
+            f"ERROR: Could not open the deployment lock: {forward(fifo)}: "
             "it is not a regular file, so its lock is not tried\n",
             result.output,
         )
+
+    def test_a_link_to_nothing_at_the_lock_file_is_refused_by_a_dry_run_as_by_the_deployment(self) -> None:
+        # The dry run asks whether another process holds the file lock, whose stat and open find nothing through a
+        # link to nothing; the deployment's open refuses that link, so the dry run refuses it with the same line.
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        target = self.paths.deployer_dir / "nowhere"
+        self.paths.lock_file.symlink_to(target)
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="symbolic link to nothing")
+                self.assertIn(
+                    f"ERROR: Could not open the deployment lock: {forward(self.paths.lock_file)}: "
+                    "a symbolic link to nothing is in the lock file's place; remove it\n",
+                    result.output,
+                )
+                self.assertTrue(self.paths.lock_file.is_symlink())
+                self.assertFalse(os.path.lexists(target))
+        self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_a_fifo_in_the_place_of_a_held_locks_token_is_never_opened_and_its_record_stays(self) -> None:
         # A token that is not the file this run wrote is not this run's, so the release leaves the record.
