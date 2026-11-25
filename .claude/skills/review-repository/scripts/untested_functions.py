@@ -109,8 +109,9 @@ from text_lines import LINE_BREAK, program_lines
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
-        ".claude/skills/review-repository/scripts/doc_passages.py speaks the same condition protocol and states "
-        "the same exemption; validation reads an exemption from the script it excuses, so neither imports it"
+        ".claude/skills/review-repository/scripts/doc_passages.py and "
+        ".claude/skills/review-repository/scripts/token_mentions.py speak the same condition protocol and state "
+        "the same exemption; validation reads an exemption from the script it excuses, so none imports it"
     ),
 }
 

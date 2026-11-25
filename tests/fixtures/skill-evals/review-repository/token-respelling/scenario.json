@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": ".github/workflows/validate.yml", "lines": [13], "severity": "SHOULD_FIX", "category": "Code-document drift", "source": "workflow-token"}
+  ]
+}
