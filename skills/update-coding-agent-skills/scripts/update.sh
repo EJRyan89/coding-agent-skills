@@ -179,8 +179,17 @@ fi
 # Windows reads a name, so git there takes git_dir as GIT_DIR. ejryan89-skill-core's bounded_process.py leaves the same out of
 # every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given. A list git
 # cannot give would leave every variable in place, so it stops the update.
-if ! LOCAL_ENV_VARS=$(git rev-parse --local-env-vars 2>&1); then
-  echo "FAILED cannot list git's repository-selecting variables: $(one_line "$LOCAL_ENV_VARS")"
+# Before git first runs, git's trace variables, every name starting GIT_TRACE, and the GIT_REDIRECT_STD* variables with
+# which Git for Windows moves a stream elsewhere, are unset, in any case, and trace2's three targets set to 0, which
+# outranks a target the system or global configuration names: a trace written to stderr would turn git's quiet no, an
+# exit 1 with nothing on stderr, into a failure, and a stream moved away would empty an answer, as the list of
+# repository-selecting variables, or join stderr to it. Each read below takes git's stdout alone.
+while IFS= read -r NAME; do
+  unset "$NAME"
+done < <(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(TRACE|REDIRECT_STD)/) print NAME }')
+export GIT_TRACE2=0 GIT_TRACE2_PERF=0 GIT_TRACE2_EVENT=0
+if ! LOCAL_ENV_VARS=$(git rev-parse --local-env-vars 2>"$GIT_ERRORS"); then
+  echo "FAILED cannot list git's repository-selecting variables: $(one_line "$(cat -- "$GIT_ERRORS")")"
   exit 1
 fi
 for NAME in $(printf '%s\n' "$LOCAL_ENV_VARS" | awk '
@@ -254,9 +263,13 @@ if ! git_quiet rev-parse --git-dir; then
 fi
 
 # Untracked files are allowed: Git refuses a fast-forward that would overwrite one. Read without the index refresh a
-# status otherwise writes back, so the check never takes the clone's index lock.
-if ! DIRTY=$(git -C "$CLONE" --no-optional-locks status --porcelain --untracked-files=no 2>&1); then
-  echo "FAILED git status failed: $(one_line "$DIRTY")"
+# status otherwise writes back, so the check never takes the clone's index lock. Its stdout alone is the answer, and its
+# exit status alone whether it gave one: a warning on stderr from a status that succeeded is not a changed file.
+STATUS_CODE=0
+DIRTY=$(git -C "$CLONE" --no-optional-locks status --porcelain --untracked-files=no 2>"$GIT_ERRORS") || STATUS_CODE=$?
+if [ "$STATUS_CODE" -ne 0 ]; then
+  REASON=$(one_line "$(cat -- "$GIT_ERRORS")")
+  echo "FAILED git status failed: ${REASON:-git status exited $STATUS_CODE and printed nothing}"
   exit 1
 fi
 if [ -n "$DIRTY" ]; then
@@ -294,21 +307,27 @@ releases_naming() {
   printf '%s' "$names"
 }
 # The commits git log lists for a range, one a line; when git cannot list them, an UNLISTED line naming the range and
-# git's error in their place, and status 1, so a failure never reads as a range holding no commits.
+# git's error in their place, and status 1, so a failure never reads as a range holding no commits. Each end of a range
+# is a full object id or a ref's full name known to exist, never a short id, which git resolves as a ref of that name
+# first. The commits are git's stdout alone, so a warning on stderr is never listed as one.
 log_lines() {
-  local listed code=0
-  listed=$(git -C "$CLONE" log --oneline --no-decorate "$1" 2>&1) || code=$?
+  local listed code=0 reason
+  listed=$(git -C "$CLONE" log --oneline --no-decorate "$1" 2>"$GIT_ERRORS") || code=$?
   if [ "$code" -ne 0 ]; then
-    echo "UNLISTED $1 $(one_line "$listed")"
+    reason=$(one_line "$(cat -- "$GIT_ERRORS")")
+    echo "UNLISTED $1 ${reason:-git log exited $code and printed nothing}"
     return 1
   fi
   [ -z "$listed" ] || printf '%s\n' "$listed" | tr -d '\r'
 }
-# A commit's short name; when git cannot give it, a FAILED line naming the second argument, and status 1.
+# The short name of a commit given by its full object id, for display alone; when git cannot give it, a FAILED line
+# naming the second argument, and status 1.
 short_name() {
-  local named
-  if ! named=$(git -C "$CLONE" rev-parse --short "$1" 2>&1); then
-    echo "FAILED cannot read the short name of $2: $(one_line "$named")"
+  local named code=0 reason
+  named=$(git -C "$CLONE" rev-parse --short "$1" 2>"$GIT_ERRORS") || code=$?
+  if [ "$code" -ne 0 ]; then
+    reason=$(one_line "$(cat -- "$GIT_ERRORS")")
+    echo "FAILED cannot read the short name of $2: ${reason:-git rev-parse exited $code and printed nothing}"
     return 1
   fi
   printf '%s\n' "$named" | tr -d '\r'
@@ -331,7 +350,7 @@ raises_breaking() {
 # refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. A full name is exact only while
 # the ref exists, as git's lookup rules go on to other refs when it does not, so each lookup whose answer is whether a
 # ref exists goes through ref_object, and a ref is named to git in a revision only once it is known to exist. The
-# checkout and the switch back name a branch by its short name, which checkout resolves as a branch first.
+# switch to main and the switch back name a branch by its short name to switch, which takes a branch alone.
 MAIN=refs/heads/main
 ORIGIN_MAIN=refs/remotes/origin/main
 
@@ -509,11 +528,11 @@ remote_refs shadows "$CLONE" || exit 1
 SHADOWS=$(printf '%s\n' "$REMOTE_OUT" | awk '$1 == "ON_ORIGIN" { print $2 " on origin" }')
 # The clone's own tags are listed rather than probed one by one, so tags git cannot read stop the update instead of
 # reading as none.
-if ! OUTPUT=$(git -C "$CLONE" for-each-ref --format='%(refname)' refs/tags/main refs/tags/origin/main 2>&1); then
-  echo "FAILED cannot read the clone's tags: $(one_line "$OUTPUT")"
+if ! git_quiet for-each-ref --format='%(refname)' refs/tags/main refs/tags/origin/main; then
+  echo "FAILED cannot read the clone's tags: ${GIT_REASON:-git answered no}"
   exit 1
 fi
-LOCAL_SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
+LOCAL_SHADOWS=$(printf '%s\n' "$GIT_OUT" |
   awk '$0 == "refs/tags/main" || $0 == "refs/tags/origin/main" { print $0 " in the clone" }')
 SHADOWS+="${SHADOWS:+${LOCAL_SHADOWS:+$'\n'}}$LOCAL_SHADOWS"
 if [ -n "$SHADOWS" ]; then
@@ -527,6 +546,20 @@ fi
 # check above. remote_refs.py names the same refs as MAIN and ORIGIN_MAIN above.
 remote_refs fetch "$CLONE" || exit 1
 
+# origin/main as the fetch left it, looked up exactly before anything names it in a revision: AFTER_COMMIT, the full
+# object id main is fast-forwarded to and every list of the pulled commits ends at, so a ref named like a short id never
+# stands in for it. A fetch that left no such ref, or a lookup git cannot answer, stops the update.
+FOUND=0
+ref_object "$ORIGIN_MAIN" || FOUND=$?
+if [ "$FOUND" -eq 1 ]; then
+  echo "FAILED cannot look up $ORIGIN_MAIN: the clone has no such ref"
+  exit 1
+elif [ "$FOUND" -eq 2 ]; then
+  echo "FAILED cannot look up $ORIGIN_MAIN: $GIT_REASON"
+  exit 1
+fi
+AFTER_COMMIT=$GIT_OUT
+
 # The highest release on origin/main: the release the release channel deploys, and the one the stop below compares on
 # either channel. RELEASE_REF is that tag's full name and RELEASE_COMMIT its commit; DEPLOY_END is the commit the
 # update would deploy, which the stop's commit list ends at.
@@ -539,11 +572,11 @@ if [ "$CHANNEL" = release ]; then
   fi
   RELEASE_REF="refs/tags/$TARGET"
   # Without --quiet, which silences --verify's error, git names why the tag cannot be read.
-  if ! RELEASE_COMMIT=$(git -C "$CLONE" rev-parse --verify "$RELEASE_REF^{commit}" 2>&1); then
-    echo "FAILED cannot read the commit of $RELEASE_REF: $(one_line "$RELEASE_COMMIT")"
+  if ! git_quiet rev-parse --verify "$RELEASE_REF^{commit}"; then
+    echo "FAILED cannot read the commit of $RELEASE_REF: ${GIT_REASON:-git answered no}"
     exit 1
   fi
-  RELEASE_COMMIT=$(printf '%s' "$RELEASE_COMMIT" | tr -d '\r')
+  RELEASE_COMMIT=$GIT_OUT
   DEPLOY_END=$RELEASE_REF
   # A user's pin at the release's own commit is the deployment the update would make, so it does not stop it; the
   # deployer keeps the pin's ref as the user wrote it, so the next release stops here again.
@@ -628,16 +661,18 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   fi
 fi
 
-# A diverged main stops before the checkout, so the clone stays on the branch it was found on. A clone with no local
-# main yet, which the exact lookup's quiet no alone says, leaves the decision to the checkout, which creates main from
-# origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
+# A diverged main stops before the switch to main, so the clone stays on the branch it was found on. A clone with no
+# local main yet, which the exact lookup's quiet no alone says, leaves the decision to the switch, which creates main
+# at origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
 # reason, never a diverged main.
 HAS_MAIN=0
+MAIN_COMMIT=
 ref_object "$MAIN" || HAS_MAIN=$?
 if [ "$HAS_MAIN" -eq 2 ]; then
   echo "FAILED cannot look up $MAIN: $GIT_REASON"
   exit 1
 elif [ "$HAS_MAIN" -eq 0 ]; then
+  MAIN_COMMIT=$GIT_OUT
   ANCESTOR=0
   git_quiet merge-base --is-ancestor "$MAIN" "$ORIGIN_MAIN" || ANCESTOR=$?
   if [ "$ANCESTOR" -eq 1 ]; then
@@ -653,9 +688,11 @@ fi
 # The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
 # symbolic-ref --quiet says HEAD is detached only by its quiet no; any other failure of it, or of the commit lookup,
 # which runs without --quiet so git names why it cannot resolve HEAD, leaves nothing to return to, so the update stops
-# before it switches branches, with git's reason. An answer naming nothing is refused too.
+# before it switches branches, with git's reason. An answer naming nothing is refused too. The branch is read by its
+# full name, never --short, which names it heads/<branch> when a tag shares its name, a revision that checkout would
+# leave HEAD detached at.
 SYMBOLIC=0
-git_quiet symbolic-ref --quiet --short HEAD || SYMBOLIC=$?
+git_quiet symbolic-ref --quiet HEAD || SYMBOLIC=$?
 if [ "$SYMBOLIC" -eq 2 ]; then
   echo "FAILED cannot read the branch the clone is on: $GIT_REASON"
   exit 1
@@ -668,29 +705,45 @@ if [ -z "$FOUND_ON" ]; then
   echo "FAILED cannot read the branch or the commit the clone is on: git named none"
   exit 1
 fi
-# Every short name the report prints is read before the checkout, so a FAILED line never follows a change to the clone:
-# main after the fast-forward is origin/main, main before it is origin/main too when the clone has no local main yet,
-# which the checkout then creates there, and the deployed commit is known already.
-AFTER=$(short_name "$ORIGIN_MAIN" "main after the fast-forward") || { echo "$AFTER"; exit 1; }
+# Main's commit before the fast-forward is a full object id too: local main's, or origin/main's when the clone has no
+# local main yet, which the switch below then creates there.
+BEFORE_COMMIT=${MAIN_COMMIT:-$AFTER_COMMIT}
+# Every short name the report prints is read before the switch to main, so a FAILED line never follows a change to the
+# clone; the deployed commit is known already.
+AFTER=$(short_name "$AFTER_COMMIT" "main after the fast-forward") || { echo "$AFTER"; exit 1; }
 BEFORE=$AFTER
-if [ "$HAS_MAIN" -eq 0 ]; then
-  BEFORE=$(short_name "$MAIN" "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
+if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
+  BEFORE=$(short_name "$BEFORE_COMMIT" "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
 fi
 OLD=
 if [ -n "$KNOWN_COMMIT" ]; then
   OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
 fi
-if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
+# Main is switched to with switch, which takes a branch alone, so with no local main a ref such as
+# refs/remotes/main/HEAD, which checkout would resolve main through, never leaves HEAD detached. With no local main,
+# which the exact lookup above found, main is created at origin/main, named in full now that it is known to exist, and
+# tracking it, as checkout's guess would have made it.
+if [ "$HAS_MAIN" -eq 0 ]; then
+  OUTPUT=$(git -C "$CLONE" switch --quiet main 2>&1)
+else
+  OUTPUT=$(git -C "$CLONE" switch --quiet --create main --track "$ORIGIN_MAIN" 2>&1)
+fi || {
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
-fi
-if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
+}
+# A branch is switched back to with switch, which takes a branch alone, so a tag of the same name cannot be picked; a
+# detached HEAD is returned to its commit. Git's error is printed only when a step fails, as the step's reason.
+if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$AFTER_COMMIT" 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
-  if [ -n "$FOUND_ON" ] && [ "$FOUND_ON" != "main" ] &&
-    ! OUTPUT=$(git -C "$CLONE" checkout --quiet "$FOUND_ON" 2>&1); then
-    echo "still on main: cannot switch back to $FOUND_ON: $(one_line "$OUTPUT")"
+  FOUND_BRANCH=${FOUND_ON#refs/heads/}
+  if [ "$FOUND_ON" != "$MAIN" ]; then
+    if [ "$FOUND_BRANCH" != "$FOUND_ON" ]; then
+      OUTPUT=$(git -C "$CLONE" switch --quiet "$FOUND_BRANCH" 2>&1)
+    else
+      OUTPUT=$(git -C "$CLONE" switch --quiet --detach "$FOUND_ON" 2>&1)
+    fi || echo "still on main: cannot switch back to $FOUND_BRANCH: $(one_line "$OUTPUT")"
   fi
   exit 1
 fi
@@ -699,11 +752,11 @@ fi
 # deployed commit to the release: the commits the release adds, and those the deployment had that the release does
 # not carry, as when the installation followed main past the release.
 if [ "$CHANNEL" = main ]; then
-  if [ "$BEFORE" = "$AFTER" ]; then
+  if [ "$BEFORE_COMMIT" = "$AFTER_COMMIT" ]; then
     echo "UP_TO_DATE $AFTER"
   else
     echo "UPDATED $BEFORE..$AFTER"
-    log_lines "$BEFORE..$AFTER"
+    log_lines "$BEFORE_COMMIT..$AFTER_COMMIT"
   fi
 elif [ "$DEPLOYED_COMMIT" = "$RELEASE_COMMIT" ]; then
   echo "UP_TO_DATE $TARGET"
@@ -714,7 +767,7 @@ elif [ -z "$KNOWN_COMMIT" ]; then
   echo "UPDATED unknown..$TARGET"
   [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
   if [ "$HAS_MAIN" -eq 0 ]; then
-    log_lines "$BEFORE..$RELEASE_REF"
+    log_lines "$BEFORE_COMMIT..$RELEASE_REF"
   else
     echo "UNLISTED $MAIN..$RELEASE_REF $NO_LIST_BASE"
   fi

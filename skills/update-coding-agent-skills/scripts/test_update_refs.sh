@@ -233,4 +233,162 @@ EOF
   expect_not_deployed "git cannot give ${READING%%|*}"
 done
 
+# The commits an update lists after its first line, up to the deployer's output or the CROSSED line, are the given
+# lines exactly.
+expect_listed() {
+  local listed
+  listed=$(printf '%s\n' "$OUTPUT" | awk 'NR > 1 && ($0 == "fake deploy ran" || /^CROSSED /) { exit } NR > 1')
+  [ "$listed" = "$1" ] || fail "$2: expected the commits:"$'\n'"$1"$'\n'"got: $OUTPUT"
+}
+
+# The pulled commits are listed from main's full object ids, never its short ones, which git would resolve as a ref
+# first: a tag named like main's short id before the fast-forward, and a branch named like its short id after it, each
+# at the first commit, would otherwise list every commit since then, or none.
+begin_case 'refs named like short ids'
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+publish "first change past a lookalike"
+publish "second change past a lookalike"
+AFTER=$(git -C "$SEED" rev-parse HEAD)
+ROOT=$(git -C "$CLONE" rev-list --max-parents=0 HEAD)
+git_quiet -C "$CLONE" tag "$(git -C "$CLONE" rev-parse --short "$BEFORE")" "$ROOT"
+git_quiet -C "$CLONE" branch "$(git -C "$SEED" rev-parse --short "$AFTER")" "$ROOT"
+run_subject "$CLONE" main
+expect_status 0 "refs named like short ids"
+expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "refs named like short ids"
+expect_no_stderr "refs named like short ids"
+expect_listed "$(git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER")" "refs named like short ids"
+expect_deployed "refs named like short ids"
+
+# The release channel lists the commits the release adds to local main as it was, when check names no deployed commit,
+# from main's full object id too.
+begin_case 'release ref named like a short id'
+new_clone
+git_quiet -C "$CLONE" reset --quiet --hard v3.0.0
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+git_quiet -C "$CLONE" tag "$(git -C "$CLONE" rev-parse --short "$BEFORE")" "$ROOT"
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" release --cross-major
+expect_status 0 "release ref named like a short id"
+expect_first_line "UPDATED unknown..v4.0.0" "release ref named like a short id"
+expect_no_stderr "release ref named like a short id"
+expect_listed "$(git -C "$CLONE" log --oneline --no-decorate "$BEFORE..v4.0.0")" "release ref named like a short id"
+expect_deployed "release ref named like a short id" "--all --at refs/tags/v4.0.0"
+
+# What git writes to stderr while it succeeds is never read as its answer: a trace an inherited GIT_TRACE asks for, in
+# any case, and a trace2 target the global configuration names, which the update leaves out of git's environment so
+# git's quiet no stays one, as on a detached HEAD, and a warning, which a stand-in for git writes before every call.
+# A clean clone so traced is not dirty, and the commits listed and the release compared are git's answers alone.
+begin_case 'a trace or a warning on stderr'
+for TRACE in GIT_TRACE GIT_TRACE2 Git_Trace global-trace2; do
+  new_clone
+  git_quiet -C "$CLONE" checkout -q --detach
+  BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+  publish "change under a trace: $TRACE"
+  AFTER=$(git -C "$SEED" rev-parse HEAD)
+  if [ "$TRACE" = global-trace2 ]; then
+    TRACE_CONFIG="$FIXTURE/trace2.gitconfig"
+    { cat -- "$GIT_CONFIG_GLOBAL" && printf '[trace2]\n  normalTarget = true\n'; } >"$TRACE_CONFIG"
+    GIT_CONFIG_GLOBAL=$TRACE_CONFIG run_subject "$CLONE" main
+  else
+    export "$TRACE=1"
+    run_subject "$CLONE" main
+    unset "$TRACE"
+  fi
+  expect_status 0 "traced by $TRACE"
+  expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "traced by $TRACE"
+  expect_listed "$(git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER")" "traced by $TRACE"
+  expect_deployed "traced by $TRACE"
+done
+WARNING_SHIM="$FIXTURE/warning shim"
+mkdir -p "$WARNING_SHIM"
+cat >"$WARNING_SHIM/git" <<EOF
+#!/usr/bin/env bash
+echo "warning: written by the test" >&2
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$WARNING_SHIM/git"
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+publish "change under a warning"
+AFTER=$(git -C "$SEED" rev-parse HEAD)
+PATH="$WARNING_SHIM:$PATH" run_subject "$CLONE" main
+expect_status 0 "warned main"
+expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "warned main"
+expect_listed "$(git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER")" "warned main"
+expect_deployed "warned main"
+FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse "v4.0.0^{commit}")" PATH="$WARNING_SHIM:$PATH" \
+  run_subject "$CLONE" release
+expect_status 0 "warned release"
+expect_first_line "UP_TO_DATE v4.0.0" "warned release"
+expect_deployed "warned release" "--all --at refs/tags/v4.0.0"
+
+# Git for Windows moves a stream wherever GIT_REDIRECT_STDOUT or GIT_REDIRECT_STDERR says, and the update unsets both
+# before its first git call: a stdout moved to a file would empty the list of repository-selecting variables, so a
+# GIT_DIR naming another clone would steer every later call, and a stderr joined to stdout would read the warning a
+# deprecated setting prints as a changed file. Other platforms' git reads neither variable.
+begin_case 'streams git for Windows redirects'
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    new_clone
+    OTHER=$CLONE
+    OTHER_HEAD=$(git -C "$OTHER" rev-parse HEAD)
+    new_clone
+    BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+    publish "change while stdout is redirected"
+    AFTER=$(git -C "$SEED" rev-parse HEAD)
+    : >"$FIXTURE/redirected stdout"
+    export GIT_REDIRECT_STDOUT
+    GIT_REDIRECT_STDOUT=$(cygpath -w "$FIXTURE/redirected stdout")
+    export GIT_DIR="$OTHER/.git" GIT_INDEX_FILE="$OTHER/.git/index"
+    run_subject "$CLONE" main
+    unset GIT_REDIRECT_STDOUT GIT_DIR GIT_INDEX_FILE
+    expect_status 0 "redirected stdout"
+    expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "redirected stdout"
+    [ "$(git -C "$OTHER" rev-parse HEAD)" = "$OTHER_HEAD" ] || fail "redirected stdout: the other clone moved"
+    expect_deployed "redirected stdout"
+    new_clone
+    git_quiet -C "$CLONE" config core.fsyncObjectFiles true
+    BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+    publish "change while stderr is joined to stdout"
+    AFTER=$(git -C "$SEED" rev-parse HEAD)
+    export GIT_REDIRECT_STDERR='2>&1'
+    run_subject "$CLONE" main
+    unset GIT_REDIRECT_STDERR
+    expect_status 0 "stderr joined to stdout"
+    expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "stderr joined to stdout"
+    expect_deployed "stderr joined to stdout"
+    ;;
+esac
+
+# A git that fails without a word is named by its exit status, never an empty answer: a list of commits git log cannot
+# give is an UNLISTED line naming git log's status, and a short name rev-parse cannot give a FAILED line naming its. A
+# stand-in for git answers each form in FAKE_GIT_SILENT, <form>=><status>, with that status and nothing on either
+# stream.
+begin_case 'git silent where the update reads it'
+cat >"$WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+IFS='|' read -r -a entries <<<"\${FAKE_GIT_SILENT:-}"
+for entry in "\${entries[@]}"; do
+  if [[ " \$* " == *" \${entry%%=>*} "* ]]; then
+    exit "\${entry#*=>}"
+  fi
+done
+exec "$(command -v git)" "\$@"
+EOF
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+publish "change git log cannot list"
+AFTER=$(git -C "$SEED" rev-parse HEAD)
+PATH="$WRAPPER:$PATH" FAKE_GIT_SILENT="log --oneline --no-decorate=>3" run_subject "$CLONE" main
+expect_status 0 "git log silent"
+expect_first_line "UPDATED $(head_of "$CLONE" "$BEFORE")..$(head_of "$CLONE" "$AFTER")" "git log silent"
+expect_listed "UNLISTED $BEFORE..$AFTER git log exited 3 and printed nothing" "git log silent"
+expect_deployed "git log silent"
+new_clone
+publish "change whose short name git cannot give"
+PATH="$WRAPPER:$PATH" FAKE_GIT_SILENT="rev-parse --short=>3" run_subject "$CLONE" main
+expect_failed "FAILED cannot read the short name of main after the fast-forward: git rev-parse exited 3 and printed nothing" \
+  "git rev-parse --short silent"
+expect_not_deployed "git rev-parse --short silent"
+
 echo "update.sh refs tests passed"

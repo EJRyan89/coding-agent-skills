@@ -423,16 +423,19 @@ expect_not_deployed "major stop list git cannot read"
 
 # A short name git cannot give, of main before or after the fast-forward or of the deployed commit, ends the update
 # with a FAILED line naming it, never an UPDATED line with an empty end. Each is read before the checkout, so the clone
-# is left on the branch it was found on, with nothing merged, though origin/main is ahead of local main.
+# is left on the branch it was found on, with nothing merged, though origin/main is ahead of local main. Each is read
+# from its full object id; local main is the deployed commit here, so the deployed commit's is the second such call.
 begin_case 'short names git cannot give'
 publish "unreleased change"
 git_quiet -C "$CLONE" checkout -q -b names-aside
 LOCAL_MAIN=$(git -C "$CLONE" rev-parse refs/heads/main)
-for SITE in "rev-parse --short refs/heads/main|main before the fast-forward" \
-  "rev-parse --short refs/remotes/origin/main|main after the fast-forward" \
-  "rev-parse --short $V71|the deployed commit $V71"; do
-  IFS='|' read -r FORM WHAT <<<"$SITE"
-  failing_git "$FORM" 1 "$CLONE" release --cross-major
+[ "$LOCAL_MAIN" = "$V71" ] || fail "short names git cannot give: local main is not the deployed commit $V71"
+ORIGIN_MAIN_COMMIT=$(git -C "$SEED" rev-parse HEAD)
+for SITE in "rev-parse --short $LOCAL_MAIN|1|main before the fast-forward" \
+  "rev-parse --short $ORIGIN_MAIN_COMMIT|1|main after the fast-forward" \
+  "rev-parse --short $V71|2|the deployed commit $V71"; do
+  IFS='|' read -r FORM NTH WHAT <<<"$SITE"
+  failing_git "$FORM" "$NTH" "$CLONE" release --cross-major
   expect_failed "FAILED cannot read the short name of $WHAT: $NOT_A_REPOSITORY" "short name of $WHAT"
   expect_not_deployed "short name of $WHAT"
   [ "$(git -C "$CLONE" branch --show-current)" = "names-aside" ] || fail "short name of $WHAT: the clone left its branch"
@@ -472,10 +475,26 @@ expect_failed "FAILED cannot look up refs/heads/main: git show-ref exited 1 and 
 expect_nothing_run "git silent reading main's object"
 begin_case 'git names no branch'
 git_quiet -C "$CLONE" checkout -q -b silent-aside
-PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="symbolic-ref --quiet --short HEAD=>0" run_subject "$CLONE" release --cross-major
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="symbolic-ref --quiet HEAD=>0" run_subject "$CLONE" release --cross-major
 expect_failed "FAILED cannot read the branch or the commit the clone is on: git named none" "git names no branch"
 [ "$(git -C "$CLONE" branch --show-current)" = "silent-aside" ] || fail "git names no branch: the clone left its branch"
 expect_not_deployed "git names no branch"
+git_quiet -C "$CLONE" checkout -q main
+
+# Main's commit after the fast-forward is origin/main's, looked up exactly before the checkout; a lookup that finds no
+# such ref, or that git cannot answer, stops the update with a FAILED line before anything is switched or merged.
+begin_case 'origin/main git cannot look up'
+git_quiet -C "$CLONE" checkout -q -b origin-aside
+LOCAL_MAIN=$(git -C "$CLONE" rev-parse refs/heads/main)
+for SILENT in "1|the clone has no such ref" "3|git show-ref exited 3 and printed nothing"; do
+  PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="show-ref --verify --quiet refs/remotes/origin/main=>${SILENT%%|*}" \
+    run_subject "$CLONE" release --cross-major
+  expect_failed "FAILED cannot look up refs/remotes/origin/main: ${SILENT#*|}" "origin/main lookup ${SILENT%%|*}"
+  [ "$(git -C "$CLONE" branch --show-current)" = "origin-aside" ] ||
+    fail "origin/main lookup ${SILENT%%|*}: the clone left its branch"
+  [ "$(git -C "$CLONE" rev-parse refs/heads/main)" = "$LOCAL_MAIN" ] || fail "origin/main lookup ${SILENT%%|*}: main moved"
+  expect_not_deployed "origin/main lookup ${SILENT%%|*}"
+done
 git_quiet -C "$CLONE" checkout -q main
 
 # A clone whose branch or commit git cannot name stops before the checkout, on the branch it was found on, with git's
@@ -484,7 +503,7 @@ git_quiet -C "$CLONE" checkout -q main
 # names no commit yet, which git explains only without --quiet, names git's reason.
 begin_case 'branch git cannot name'
 git_quiet -C "$CLONE" checkout -q -b aside
-failing_git "symbolic-ref --quiet --short HEAD" 1 "$CLONE" release --cross-major
+failing_git "symbolic-ref --quiet HEAD" 1 "$CLONE" release --cross-major
 expect_failed "FAILED cannot read the branch the clone is on: $NOT_A_REPOSITORY" "branch git cannot name"
 [ "$(git -C "$CLONE" branch --show-current)" = "aside" ] || fail "branch git cannot name: the clone left its branch"
 expect_not_deployed "branch git cannot name"

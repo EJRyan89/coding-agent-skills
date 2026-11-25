@@ -39,9 +39,9 @@ whose changed lines yield no mutant is named in the summary, never left out of i
 mutmut's own runner is not used: it records which tests reach a function only inside its pytest process and finds a
 mutant by a module name it derives from the file's path, while the suites here reach most modules through the
 subprocesses they start (deploy.py, a skill's script) and import a skill's or a tool's module by its bare name. So the
-gate runs the suites as the validation runner does, `python -B -m pytest <suite>` from the root of a throwaway git
-worktree at HEAD, one worktree per worker, with the mutant written into the worktree's copy of the module, where every
-process the suite starts imports it.
+gate runs the suites as the validation runner does, `python -B -m pytest <suite> --basetemp <folder>`, with a base
+folder of its own for its temporary folders, from the root of a throwaway git worktree at HEAD, one worktree per worker,
+with the mutant written into the worktree's copy of the module, where every process the suite starts imports it.
 
 Which suites run against a mutant is measured, not guessed. The suites that reach the changed modules, as
 `job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py, which records
@@ -237,7 +237,7 @@ from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, importers, python_imports, reached_suites
 from path_containment import relative_within, resolved_path
-from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_base, pytest_command
 from suite_names import is_suite_name
 from text_lines import program_lines, text_lines
 from type_check_roots import REPOSITORY_SKILLS
@@ -1042,9 +1042,11 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
             # Both streams go to one file in the order pytest wrote them, whose start and end are read back: pytest
             # names a failed collection and its own error at the start, and a MemoryError that ended it at the end,
             # however long its traceback.
-            with (Path(temporary) / "suite-output").open("w+b") as written:
+            with pytest_base() as basetemp, (Path(temporary) / "suite-output").open("w+b") as written:
                 finished = run_bounded(
-                    platform_support.memory_bounded(pytest_command(target, "-x", "-q"), MEMORY_BOUND),
+                    platform_support.memory_bounded(
+                        pytest_command(target, "-x", "-q", basetemp=basetemp), MEMORY_BOUND
+                    ),
                     timeout,
                     stdout=written,
                     stderr=written,
@@ -1258,9 +1260,9 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         try:
             # Both streams go to one file in the order pytest wrote them, and only its end is read back, where pytest
             # gives its summary however long the output before it.
-            with (folder / "suite-output").open("w+b") as written:
+            with pytest_base() as basetemp, (folder / "suite-output").open("w+b") as written:
                 finished = run_bounded(
-                    platform_support.memory_bounded(pytest_command(suite, "-q"), MEMORY_BOUND),
+                    platform_support.memory_bounded(pytest_command(suite, "-q", basetemp=basetemp), MEMORY_BOUND),
                     timeout,
                     stdout=written,
                     stderr=written,
@@ -1318,9 +1320,9 @@ def suite_tests(tree: Path, suite: str, listing: Path) -> list[str]:
     """The node ids of a suite's tests, or none when pytest cannot list them, which runs the whole suite against every
     mutant. The listing is written to a file, so no output limit cuts it short."""
     try:
-        with listing.open("wb") as output:
+        with pytest_base() as basetemp, listing.open("wb") as output:
             finished = run_bounded(
-                pytest_command(suite, "--collect-only", "-q"),
+                pytest_command(suite, "--collect-only", "-q", basetemp=basetemp),
                 MINIMUM_SUITE_SECONDS,
                 stdout=output,
                 cwd=tree,

@@ -395,7 +395,7 @@ mkdir -p "$WRAPPER"
 cat >"$WRAPPER/git" <<EOF
 #!/usr/bin/env bash
 case " \$* " in
-  *" checkout --quiet topic "*) echo "error: switch refused by the test" >&2; exit 1 ;;
+  *" switch --quiet topic "*) echo "error: switch refused by the test" >&2; exit 1 ;;
 esac
 exec "$(command -v git)" "\$@"
 EOF
@@ -681,5 +681,46 @@ run_subject "$CLONE" main
 expect_status 1 "local tag only"
 expect_first_line "NOT_FAST_FORWARD" "local tag only"
 expect_not_deployed "local tag only"
+
+# The branch the clone was found on is recorded by its full name and switched back to as a branch, so a tag of the
+# same name, which git's short form of the branch would have to step around as heads/<branch>, never leaves HEAD
+# detached at the branch's commit after a fast-forward git refuses.
+begin_case 'refused on a branch a tag shares its name with'
+new_clone
+git_quiet -C "$CLONE" checkout -b topic
+git_quiet -C "$CLONE" tag topic
+printf 'added\n' >"$SEED/added again.txt"
+git_quiet -C "$SEED" add "added again.txt"
+git_quiet -C "$SEED" commit -m "add another file"
+git_quiet -C "$SEED" push origin main
+printf 'untracked copy\n' >"$CLONE/added again.txt"
+run_subject "$CLONE" main
+expect_status 1 "refused on a shared name"
+expect_first_line "NOT_FAST_FORWARD" "refused on a shared name"
+expect_no_stderr "refused on a shared name"
+if grep -q "^still on main:" <<<"$OUTPUT"; then fail "refused on a shared name: not switched back: $OUTPUT"; fi
+[ "$(git -C "$CLONE" symbolic-ref --quiet HEAD)" = "refs/heads/topic" ] ||
+  fail "refused on a shared name: HEAD is not the branch topic: $(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)"
+expect_not_deployed "refused on a shared name"
+
+# With no local main, main is created on the branch at origin/main, tracking it, and switched to as a branch: a ref
+# named refs/remotes/main/HEAD, through which checkout would resolve main to another commit and leave HEAD detached
+# there, is never taken for it.
+begin_case 'no local main beside refs/remotes/main/HEAD'
+new_clone
+git_quiet -C "$CLONE" checkout -q --detach
+git_quiet -C "$CLONE" branch -q -D main
+SIDE=$(git -C "$CLONE" commit-tree -p HEAD -m "not on main" "HEAD^{tree}")
+git_quiet -C "$CLONE" update-ref refs/remotes/main/HEAD "$SIDE"
+publish "change past a lookalike remote HEAD"
+run_subject "$CLONE" main
+expect_status 0 "remote main HEAD"
+expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "remote main HEAD"
+[ "$(git -C "$CLONE" symbolic-ref --quiet HEAD)" = "refs/heads/main" ] ||
+  fail "remote main HEAD: HEAD is not the branch main: $(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$(git -C "$SEED" rev-parse HEAD)" ] || fail "remote main HEAD: main not at origin/main"
+[ "$(git -C "$CLONE" rev-parse --symbolic-full-name 'main@{upstream}')" = "refs/remotes/origin/main" ] ||
+  fail "remote main HEAD: main does not track origin/main"
+expect_deployed "remote main HEAD"
 
 echo "update.sh main channel tests passed"
