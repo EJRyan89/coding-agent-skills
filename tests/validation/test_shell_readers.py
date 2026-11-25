@@ -952,7 +952,8 @@ START_PROCESS_UNREAD_ARGUMENT_LISTS = (
     ("Start-Process pwsh -ArgumentList $arguments", "pwsh", "pwsh <value>"),
     ("Start-Process pwsh -ArgumentList '-c', $script", "pwsh", "pwsh -c <value>"),
     ("Start-Process -FilePath powershell -ArgumentList @($arguments)", "powershell", "powershell <value>"),
-    ("Start-Process pwsh @options", "pwsh", "pwsh <value>"),
+    # A splat may bind -ArgumentList by name, so the arguments of a program -FilePath names are unread.
+    ("Start-Process -FilePath pwsh @options", "pwsh", "pwsh <value>"),
     ("Start-Process pwsh -ArgumentList '-c \"jq .'", "pwsh", "pwsh <value>"),
 )
 
@@ -964,10 +965,12 @@ def test_the_command_policy_refuses_a_start_process_argument_list_it_cannot_read
     assert set(powershell_reading[source].programs) == {program, f"{UNREAD_PROGRAM}{unread}"}
 
 
-# A parameter Start-Process does not have, or a prefix of more than one, leaves its program unread rather than guessed.
+# A parameter Start-Process does not have, or a prefix of more than one, leaves its program unread rather than guessed,
+# as does a splat beside a program given by position, since the splat may bind -FilePath by name.
 START_PROCESS_UNPLACED_PARAMETERS = (
     "Start-Process -Bogus x pwsh '-c jq .'",
     "Start-Process -W pwsh '-c jq .'",
+    "Start-Process pwsh @options",
     "start -Re x rg foo",
 )
 

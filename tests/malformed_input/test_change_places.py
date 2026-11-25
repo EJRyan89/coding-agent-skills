@@ -117,7 +117,7 @@ NOT_HELD: dict[str, str] = {
         "it wrote when the JSON write fails; it replaces nothing"
     ),
     "review_documents._pdftotext": THROWAWAY,
-    "powershell_commands.read": THROWAWAY,
+    "powershell_commands.listed": THROWAWAY,
     "review_document.output_root": THROWAWAY,
     "review_document.write_file": "writes a fixture into the --output folder, which must be new or empty, or a new "
     "temporary one",

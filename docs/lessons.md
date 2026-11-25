@@ -625,7 +625,11 @@ or removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_only_a_call_that_starts_git_names_a_subcommand`,
   `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcommand`,
   and `skills/ejryan89-skill-core/scripts/test_forms_considered.py::test_the_section_is_the_one_github_renders`, which
-  holds the Forms considered reader to the section GitHub renders for each body
+  holds the Forms considered reader to the section GitHub renders for each body,
+  `skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_the_reader_binds_every_spelling_of_every_parameter_as_pwsh_s_binder_does`,
+  which binds every spelling of every parameter of each cmdlet the PowerShell reader binds with pwsh's own binder, and
+  `skills/ejryan89-skill-core/scripts/test_powershell_startup.py::test_the_reader_runs_the_command_pwsh_s_parser_runs_for_every_spelling_of_every_parameter`,
+  which runs pwsh's start-up parser in process over every spelling of every start-up parameter
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a

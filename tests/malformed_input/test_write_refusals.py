@@ -535,7 +535,7 @@ REFUSALS: tuple[Row, ...] = (
     ),
     Row("review_config.load_config", "review_config.validate_config", _load_config, f"ConfigurationError: {REASON}"),
     Row(
-        "powershell_commands.read",
+        "powershell_commands.listed",
         DUMPS,
         lambda _: raised(powershell_commands.PowerShellUnread, lambda: powershell_commands.read(["Get-Item x"])),
         f"PowerShellUnread: the sources cannot be handed to pwsh: {REASON}",

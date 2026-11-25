@@ -246,19 +246,24 @@ writes: an ANSI-C `$'...'` word whose escape spells such a substitution; text an
 `${a['$(x)']}`, which Bash 5.3 runs; an option word a variable or a substitution fills, as
 `o=-W; compgen "$o" '$(x)' x`, which the policy takes as the literal its text is; and `enable -n`, which makes a later
 name run the program of that name, as `hash -p` makes one run another file. In PowerShell it
-reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
-`-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
-splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`
-runs, and the program a wrapper or `find`'s `-exec` runs, read through the same table of wrappers as in Bash, since
-`pwsh` on Linux runs them as programs; a wrapped program that is not a literal, an argument list that is not literal
-where a script would stand, and a `Start-Process` parameter the cmdlet does not have or a prefix of more than one, are
+reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
+joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every
+command of the string `Invoke-Expression` runs, and the program a wrapper or `find`'s `-exec` runs, read through the
+same table of wrappers as in Bash, since `pwsh` on Linux runs them as programs. The three cmdlets' arguments are bound
+as pwsh's binder binds them, by position, by name, alias, or any prefix it places, and joined by a colon, as
+ejryan89-skill-core's `powershell_commands.BOUND_COMMANDS` holds; a wrapped program that is not a literal, an argument
+list that is not literal where a script would stand, a parameter the cmdlet does not have or a prefix pwsh cannot
+place, `--`, a splat beside a parameter bound by position, a cmdlet a pipeline feeds a parameter it would read, and
+`Get-Command` given `-Verb`, `-Noun`, `-UseAbbreviationExpansion`, `-UseFuzzyMatching`, or a wildcard in its name are
 programs it cannot read. In Python it reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell
 reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows PowerShell's first positional word
-runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them; an `-EncodedCommand`, a script
-read from standard input, and one a word the policy cannot read holds are programs it cannot read. In PowerShell it
-reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. The git subcommand a
+runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them, in every spelling pwsh's
+start-up parser takes, after a dash, a doubled dash, an en or em dash, or a slash, and padded with whitespace; an
+`-EncodedCommand`, a script read from standard input, and one a word the policy cannot read holds are programs it
+cannot read. In PowerShell it reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a
+literal. The git subcommand a
 Bash or PowerShell script runs, which a skill's runtime support is held to, is read the same way, in the command a
 wrapper or `find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a
 shell's `-c`, a `trap`'s action, or a PowerShell start-up runs as well as at the script's own level, a PowerShell script's commands

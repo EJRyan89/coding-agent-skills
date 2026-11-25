@@ -3721,10 +3721,19 @@ class UnderstoodSetTests(GuardTestCase):
             "pwsh -CommandWithArgs 'git checkout -b x'",
             "pwsh -NoLogo -NonInteractive -NoProfile -c 'git switch feat/demo'",
             "powershell -NoProfile 'git checkout -b x'",
+            # Every spelling pwsh's start-up parser takes: a doubled dash, a slash, an en dash, whitespace around the
+            # parameter, -co, and a -Command after -EncodedArguments' value.
+            'pwsh --command "git commit -m x"',
+            "pwsh /c 'git checkout -b x'",
+            "pwsh \u2013c 'git checkout -b x'",
+            "pwsh ' -c' 'git checkout -b x'",
+            "pwsh -co 'git checkout -b x'",
+            "pwsh -ea AAAA -c 'git checkout -b x'",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
         self.assertEqual("deny", self.powershell("pwsh -nop -Command 'git checkout -b x'", self.hub))
+        self.assertEqual("deny", self.powershell('pwsh --command "git commit -m x"', self.hub))
         # An encoded command is a script the text does not settle, which may run any git, so it is refused while a hub
         # is guarded, from the hub and from a worktree alike.
         for cwd in (self.hub, self.tree):
