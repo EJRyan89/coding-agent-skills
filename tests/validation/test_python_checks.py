@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -891,6 +892,128 @@ def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() 
     # mypy names a program given with -c as <string>, and ends its lines with CRLF on Windows.
     errors = re.findall(r"(?m)^(.*?):(\d+): error: .*?\r?$", str(raised.value))
     assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]
+
+
+# Every error code the pinned mypy defines, on by default or not. A code a later release adds fails the test below until
+# it is decided, a code a flag gates included, which mypy's table marks on and its off-by-default list leaves out.
+MYPY_ERROR_CODES = [
+    "abstract",
+    "annotation-unchecked",
+    "arg-type",
+    "assert-type",
+    "assignment",
+    "attr-defined",
+    "await-not-async",
+    "call-arg",
+    "call-overload",
+    "comparison-overlap",
+    "deprecated",
+    "dict-item",
+    "empty-body",
+    "exhaustive-match",
+    "exit-return",
+    "explicit-any",
+    "explicit-override",
+    "func-returns-value",
+    "has-type",
+    "ignore-without-code",
+    "import",
+    "import-not-found",
+    "import-untyped",
+    "index",
+    "list-item",
+    "literal-required",
+    "maybe-unrecognized-str-typeform",
+    "metaclass",
+    "method-assign",
+    "misc",
+    "mutable-override",
+    "name-defined",
+    "name-match",
+    "narrowed-type-not-subtype",
+    "no-any-return",
+    "no-any-unimported",
+    "no-overload-impl",
+    "no-redef",
+    "no-untyped-call",
+    "no-untyped-def",
+    "nonetype-type",
+    "operator",
+    "overload-cannot-match",
+    "overload-overlap",
+    "override",
+    "possibly-undefined",
+    "prop-decorator",
+    "redundant-cast",
+    "redundant-expr",
+    "redundant-self",
+    "return",
+    "return-value",
+    "safe-super",
+    "str-bytes-safe",
+    "str-format",
+    "str-unpack",
+    "syntax",
+    "top-level-await",
+    "truthy-bool",
+    "truthy-function",
+    "truthy-iterable",
+    "type-abstract",
+    "type-arg",
+    "type-var",
+    "typeddict-item",
+    "typeddict-readonly-mutated",
+    "typeddict-unknown-key",
+    "unimported-reveal",
+    "union-attr",
+    "unreachable",
+    "untyped-decorator",
+    "unused-awaitable",
+    "unused-coroutine",
+    "unused-ignore",
+    "used-before-def",
+    "valid-newtype",
+    "valid-type",
+    "var-annotated",
+]
+
+# What a failure of the test below asks for, whichever list it names.
+MYPY_CODE_REMEDY = (
+    "Try each new code over every root as the static type check runs it, then enable it in pyproject.toml (in "
+    "enable_error_code, or by its flag), or record it as declined in the test's recorded table and under \"Considered "
+    'and declined" in docs/design.md, naming it in CONTRIBUTING.md\'s "Python checks" too; a code on by default '
+    "with no flag needs only its name in MYPY_ERROR_CODES. Drop a code mypy no longer has from every one of them."
+)
+
+
+def test_every_optional_mypy_code_is_enabled_or_recorded() -> None:
+    # Every code the installed mypy leaves off by default is enabled in enable_error_code or named here with where its
+    # decision is recorded, and mypy's whole list of codes is MYPY_ERROR_CODES, so a code a new mypy release adds,
+    # behind a flag or not, fails until it is decided, and an entry mypy no longer has fails too.
+    # test_type_check_configuration_is_pinned pins the flags of unreachable, explicit-any, and no-any-unimported.
+    # A regression suite may import mypy: this reads its table of codes and runs no check.
+    from mypy import errorcodes
+
+    names = set(errorcodes.error_codes)
+    added, gone = sorted(names - set(MYPY_ERROR_CODES)), sorted(set(MYPY_ERROR_CODES) - names)
+    assert (added, gone) == ([], []), f"mypy's error codes changed: added {added}, gone {gone}. {MYPY_CODE_REMEDY}"
+    configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
+    recorded = {
+        # --strict sets warn_unused_ignores, and every root has a run of its own with --strict.
+        "unused-ignore": "enabled by --strict",
+        "mutable-override": 'declined: "Considered and declined" in docs/design.md',
+        # The maintainer chose to adopt it; a pull request of its own adds @override everywhere it reports.
+        "explicit-override": "adopted, and enabled by the pull request that adds its @override decorators",
+    }
+    enabled = set(configuration["enable_error_code"])
+    both = sorted(enabled & set(recorded))
+    assert not both, f"{both} enabled in pyproject.toml and recorded as not enabled; keep each in one place"
+    optional = {code.code for code in errorcodes.error_codes.values() if not code.default_enabled}
+    undecided, stale = sorted(optional - enabled - set(recorded)), sorted((enabled | set(recorded)) - optional)
+    assert (undecided, stale) == ([], []), (
+        f"optional mypy codes neither enabled nor recorded: {undecided}; enabled or recorded but not optional in mypy: "
+        f"{stale}. {MYPY_CODE_REMEDY}"
+    )
 
 
 # A module that builds a fact line by `build` in one function and reads lines by `body` in another.

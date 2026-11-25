@@ -61,7 +61,7 @@ Dependabot changes `requirements-dev.in` and recompiles the locks that hold the 
 
 ### After a Dependabot pull request for mypy
 
-Dependabot changes `requirements-dev.in` and recompiles the locks that hold the package; `lock_problems` fails unless both moved together. A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then fix each error the type check newly names, one commit per root. Run the complete validation before merging.
+Dependabot changes `requirements-dev.in` and recompiles the locks that hold the package; `lock_problems` fails unless both moved together. A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then fix each error the type check newly names, one commit per root. When `test_every_optional_mypy_code_is_enabled_or_recorded` in `tests/validation/test_python_checks.py` fails, the release added or removed an error code: try each new optional code over every root, then enable it in `pyproject.toml` or record it as declined in the test and under "Considered and declined" in [Design](design.md#considered-and-declined), name it in [Python checks](../CONTRIBUTING.md#python-checks), and add every new code's name to the test's `MYPY_ERROR_CODES`. Run the complete validation before merging.
 
 ### After a Dependabot pull request for pytest
 

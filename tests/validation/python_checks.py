@@ -7176,7 +7176,7 @@ class PythonChecksPolicies(unittest.TestCase):
         # Default strictness, and no module, suite, or import is exempt; every root is also checked with --strict, as
         # [tool.validation] lists them. No platform: each host checks the code as it runs there, so every platform's
         # branches are checked on the platform that runs them.
-        # The optional error codes beyond --strict, each a check every root passes; warn_unreachable is not set.
+        # The optional error codes beyond --strict, each a check every root passes.
         self.assertEqual(
             [
                 "deprecated",
@@ -7187,12 +7187,23 @@ class PythonChecksPolicies(unittest.TestCase):
                 "redundant-self",
                 "truthy-bool",
                 "truthy-iterable",
+                "unimported-reveal",
                 "unused-awaitable",
             ],
             configuration["enable_error_code"],
         )
+        # no-any-unimported is on in mypy's table but reported only under this flag. warn_unreachable and
+        # disallow_any_explicit, the flags of unreachable and explicit-any, are declined, so the keys below omit them.
+        self.assertIs(True, configuration["disallow_any_unimported"])
         self.assertEqual(
-            ["enable_error_code", "explicit_package_bases", "mypy_path", "python_version"], sorted(configuration)
+            [
+                "disallow_any_unimported",
+                "enable_error_code",
+                "explicit_package_bases",
+                "mypy_path",
+                "python_version",
+            ],
+            sorted(configuration),
         )
 
     def test_strict_type_check_areas_only_grow(self) -> None:
