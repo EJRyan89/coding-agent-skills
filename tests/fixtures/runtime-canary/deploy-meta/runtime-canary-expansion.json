@@ -1,0 +1,9 @@
+{
+    "required_vars": ["PYTHON"],
+    "shared_deps": [],
+    "runtime_support": {
+        "claude-code": "full",
+        "codex": {"level": "none", "needs": [], "reason": "The probe checks a Claude Code permission rule, which this runtime does not apply."},
+        "copilot-cli": {"level": "none", "needs": [], "reason": "The probe checks a Claude Code permission rule, which this runtime does not apply."}
+    }
+}

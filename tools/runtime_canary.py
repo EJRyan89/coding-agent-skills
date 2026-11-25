@@ -20,7 +20,8 @@ a git repository of its own, so no runtime reads project skills or agents from t
 temporary directory among them, as Copilot CLI and Claude Code do from a folder outside any repository; a home git
 cannot make one is FAILED "<reason>", which stops the run before any runtime starts. Each installed runtime then starts
 with the home as its working directory, so it finds the deployed skills as project skills, and with a fixed prompt
-naming one skill: the fixture runtime-canary-probe, then each SKILL given. It prints one fact per line:
+naming one skill: the fixtures runtime-canary-probe and runtime-canary-expansion, then each SKILL given. It
+prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home, removed at the end unless the run failed
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
@@ -33,7 +34,8 @@ naming one skill: the fixture runtime-canary-probe, then each SKILL given. It pr
   DISCOVERY_NOT_ATTEMPTED <runtime> <skill> "<reason>"  the deployer gave the skill no adapter, so none is looked for
   DISCOVERY_FAILED <runtime> "<reason>"         it cannot read the runtime's skill list
   SUPPLIED <runtime> "<key>=<value>"            a setting the canary passes in place of the configuration it ignores
-  RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] KEPT "<ambient>"
+  RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] [denied "<tool>: <command>"]
+                                              KEPT "<ambient>"
   RUNTIME <runtime> <skill> UNCOUNTED "<reason>" KEPT "<ambient>"  it ran the real profile's installed copy
   RUNTIME <runtime> <skill> BLOCKED "<policy>" KEPT "<ambient>"
   RUNTIME <runtime> <skill> FAILED "<reason>" KEPT "<ambient>"
@@ -99,6 +101,21 @@ to write. A records file holding a whole line the canary will not read, such as 
 or JSON nested past the recursion limit, fails that run naming the file and the line. A run ends at --timeout, or on
 Ctrl+C, with every process the runtime started, and a runtime the canary cannot start for a skill, as when its own
 update has moved its program away, is FAILED with why; each line prints as it is made, so none before it is lost.
+The expansion probe reproduces the rule audit-skill's EXPANDS and the skill_grants policy rest on: its one grant covers
+its script with any arguments, and its fence runs the script once with the word literal and once with "$PWD". Under
+Claude Code its RUNTIME line is RAN, naming the literal run, only when the recorder saw the literal run and the
+session's result denied the expanding command, as a non-interactive run denies a command it would ask about; denied then
+names that command. A denial counts only by its tool and text: the literal command's text as it ran unprompted, which
+the grant therefore matched, with its last word, literal, replaced by "$PWD" and nothing after it, character for
+character, which the one Bash grammar reads as the expanding command. So the two differ only in the expansion, and no
+other spacing, quoting, path spelling, or trailing text can make a denial count. It is FAILED when a command the one
+Bash grammar reads as the expanding one went undenied in a session that reached its result and the recorder saw the
+script run with the directory it expanded to, since Claude Code then ran it unprompted; when the literal command never
+ran; when the stream holds no result event listing the denials, as a session that ended early leaves it; when a denial
+came near the expanding command without its text; when the expanding command was neither denied nor run; when the script
+ran only with arguments neither command gives, as a model that writes the directory out does; or when the model never
+tried the expanding command, each of which shows nothing either way. It declares none for Codex and Copilot CLI, which
+apply no such rule.
 Copilot's headless mode cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model
 is called for it.
 --discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
@@ -154,6 +171,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bash_syntax
 import frontmatter
 import json_reader
 import json_writer
@@ -197,6 +215,17 @@ PARTIAL_OUTCOME = {"user-only-start": "UNSUPPORTED"}
 UNSTARTED = ("NOT_ATTEMPTED", "UNSUPPORTED")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
 FIXTURE_SKILL = "runtime-canary-probe"
+# The fixture whose one grant covers its script with any arguments, and whose fence runs the script once with
+# EXPANSION_LITERAL and once with EXPANSION_VARIABLE. It reproduces the rule audit-skill's EXPANDS and validation's
+# skill_grants policy rest on: Claude Code runs the literal command unprompted and asks before the one that expands a
+# shell variable, which a non-interactive run denies. Only Claude Code applies the rule, so the skill declares none
+# for the others.
+EXPANSION_SKILL = "runtime-canary-expansion"
+EXPANSION_SCRIPT = "expansion_probe.py"
+EXPANSION_LITERAL = "literal"
+EXPANSION_VARIABLE = "$PWD"
+# The expanding command's last word as the fence writes it: the variable, double-quoted.
+EXPANSION_WORD = f'"{EXPANSION_VARIABLE}"'
 STATE = ".runtime-canary"
 HOME_PREFIX = "runtime-canary-"
 # The file in STATE that names a home the canary made, which --remove-home requires before it deletes anything.
@@ -270,6 +299,14 @@ INSTRUCTION = (
     "from the skill's own directory or a sibling skill's, with --help as that script's only arguments, then stop "
     f"and report what it printed. This is a {RUNTIME_CANARY_MARKER} session."
 )
+# The expansion probe needs both of its commands run as written, so it takes its own instruction.
+INSTRUCTIONS = {
+    EXPANSION_SKILL: (
+        "Do nothing else. Run each command in its instructions once, in order, each on its own and exactly as "
+        "written, without changing or filling in any argument. If a command is denied, do not run it again or in "
+        f"another form. Then stop and report what each printed. This is a {RUNTIME_CANARY_MARKER} session."
+    ),
+}
 # Without a [windows] sandbox value, which --ignore-user-config leaves out, Codex on Windows runs read-only even
 # under --sandbox workspace-write and refuses every command. A -c override still applies beside that flag. The
 # value is left bare, which Codex reads as a string, so cmd.exe never sees a quote. mxc is the implementation OpenAI
@@ -711,7 +748,7 @@ def unsupported(runtime: str, skill: str, home: Path) -> str:
 
 
 def prompt(runtime: str, skill: str) -> str:
-    return f"{MENTION[runtime]}{skill} {INSTRUCTION}"
+    return f"{MENTION[runtime]}{skill} {INSTRUCTIONS.get(skill, INSTRUCTION)}"
 
 
 def supplied(runtime: str, codex_sandbox: str) -> list[str]:
@@ -921,6 +958,11 @@ def discovery_lines(
 def recorded_scripts(started: list[dict[str, Any]]) -> list[tuple[str, str, int | None]]:
     """Each script file the recorders saw start, with its directory and the status it exited with, if recorded.
     A command string, a module run with -m, and standard input name no script file, so none counts."""
+    return [(script, cwd, status) for script, cwd, status, _ in recorded_runs(started)]
+
+
+def recorded_runs(started: list[dict[str, Any]]) -> list[tuple[str, str, int | None, list[object]]]:
+    """recorded_scripts with the arguments each script was given after its own path, as the recorder kept them."""
 
     def key(record: dict[str, Any]) -> str:
         return json_writer.dumps([record.get("argv"), record.get("cwd"), record.get("pid")])
@@ -936,7 +978,8 @@ def recorded_scripts(started: list[dict[str, Any]]) -> list[tuple[str, str, int 
         if "exit" in record or not argv or not isinstance(argv[0], str) or argv[0] in ("", "-c", "-m", "-"):
             continue
         cwd = str(record.get("cwd", ""))
-        scripts.append((forward(Path(cwd) / argv[0] if cwd else argv[0]), forward(cwd), exits.get(key(record))))
+        script = forward(Path(cwd) / argv[0] if cwd else argv[0])
+        scripts.append((script, forward(cwd), exits.get(key(record)), list(argv[1:])))
     return scripts
 
 
@@ -1024,6 +1067,188 @@ def verdict(
     return Verdict("FAILED", quote(reason))
 
 
+@dataclass(frozen=True)
+class ShellCall:
+    """A shell command Claude Code's stream shows: one the model asked to run, or one the session's result denied,
+    with the tool_use id that pairs the two, or "" when the stream gives none."""
+
+    identifier: str
+    tool: str
+    command: str
+
+
+def shell_call(identifier: object, tool: object, given: object) -> ShellCall | None:
+    """The shell command a tool_use or a permission denial names, or None for another tool or no command."""
+    command = given.get("command") if isinstance(given, dict) else None
+    if not isinstance(tool, str) or tool not in ("Bash", "PowerShell") or not isinstance(command, str):
+        return None
+    return ShellCall(identifier if isinstance(identifier, str) else "", tool, command)
+
+
+@dataclass(frozen=True)
+class ShellCalls:
+    """What Claude Code's stream shows of the shell: each command the model asked to run, from its assistant messages'
+    tool_use items, each one the session's result denied, from permission_denials, and whether the stream holds a
+    result event whose permission_denials is a list, without which the denials are unknown rather than none."""
+
+    uses: list[ShellCall]
+    denied: list[ShellCall]
+    finished: bool
+
+
+def shell_calls(output: str) -> ShellCalls:
+    """The shell commands Claude Code's stream shows. A stream in a shape this does not read shows none and no result,
+    and discovery_failure fails its run."""
+    uses: list[ShellCall] = []
+    denied: list[ShellCall] = []
+    finished = False
+    try:
+        for event in claude_events(output):
+            message = event.get("message") if event.get("type") == "assistant" else None
+            content = message.get("content") if isinstance(message, dict) else None
+            for item in content if isinstance(content, list) else []:
+                if isinstance(item, dict) and item.get("type") == "tool_use":
+                    call = shell_call(item.get("id"), item.get("name"), item.get("input"))
+                    uses += [call] if call is not None else []
+            listed = event.get("permission_denials") if event.get("type") == "result" else None
+            # A result whose denials are not a list, as a release that drops or renames the field writes, lists none.
+            finished = finished or isinstance(listed, list)
+            for entry in listed if isinstance(listed, list) else []:
+                if isinstance(entry, dict):
+                    call = shell_call(entry.get("tool_use_id"), entry.get("tool_name"), entry.get("tool_input"))
+                    denied += [call] if call is not None else []
+    except StreamError:
+        return ShellCalls([], [], finished=False)
+    return ShellCalls(uses, denied, finished)
+
+
+def probe_command(command: str, script: Path, last: str) -> bool:
+    """Whether Bash reads a shell command as the expansion probe's fence command ending in `last` as written, quotes
+    included: by ejryan89-skill-core's Bash grammar, one simple command and nothing else, no redirection, whose words
+    are the platform's Python command, -B, the deployed script compared lexically, and `last`. A compound command, a
+    pipeline, a substitution, another path, or another last word is not it. This finds the literal run's command and
+    the denials that come near the expanding one; a denial counts only by its text, which expansion_verdict compares."""
+    try:
+        commands = bash_syntax.every_command(command)
+    except bash_syntax.BashSyntaxError:
+        return False
+    if len(commands) != 1 or not isinstance(commands[0], bash_syntax.Simple) or commands[0].redirects:
+        return False
+    words = commands[0].words
+    return (
+        len(words) == 4
+        and [bash_syntax.word_text(word) for word in words[:2]] == [platform_support.PYTHON, "-B"]
+        and lexical(bash_syntax.word_text(words[2])) == lexical(script)
+        and words[3].raw == last
+    )
+
+
+def expansion_verdict(
+    home: Path, started: list[dict[str, Any]], output: str, denials: Sequence[str], found: Verdict, timed_out: bool
+) -> Verdict:
+    """The expansion probe's outcome from the verdict `found` the run reached as any skill's: RAN with the literal
+    command's run and the expanding command Claude Code denied, or FAILED.
+
+    `output` is Claude Code's stream and `started` the recorder's records, which show what ran: the literal run, and a
+    run whose one argument is the directory it ran from, which the expanding command gives. A command counts as denied
+    when a denial names its tool_use id or its text. The literal command ran unprompted, so the grant matched its
+    text; a denial counts only when it is of the same tool and its text is that command's text, character for
+    character, with its last word, EXPANSION_LITERAL, replaced by EXPANSION_WORD, and Bash reads it as the expanding
+    command, so nothing follows that word, not even a comment; the two commands then differ only in the expansion and
+    the denial answers it, never the text a grant matches. A stream with no result event listing its denials shows
+    nothing either way. A command Bash reads as the expanding one, run undenied with its run
+    recorded, is the rule failing: Claude Code ran it without asking. A denial that comes near the expanding command
+    without that text, the expanding command neither denied nor run, another run of the script with nothing denied,
+    and a run that never tried the expanding command each show nothing either way, so each has its own FAILED reason;
+    a run the fence does not give, after the denial, changes nothing the denial showed."""
+    if found.word != "RAN":
+        return found
+    script = home / ".claude" / "skills" / EXPANSION_SKILL / "scripts" / EXPANSION_SCRIPT
+    runs = [run for run in recorded_runs(started) if lexical(run[0]) == lexical(script)]
+    literal = [run for run in runs if run[3] == [EXPANSION_LITERAL]]
+    expanded = [run for run in runs if len(run[3]) == 1 and lexical(str(run[3][0])) == lexical(run[1])]
+    calls = shell_calls(output)
+    denied_ids = {call.identifier for call in calls.denied if call.identifier}
+    denied_commands = {call.command for call in calls.denied}
+
+    def was_denied(call: ShellCall) -> bool:
+        return (bool(call.identifier) and call.identifier in denied_ids) or call.command in denied_commands
+
+    if not calls.finished:
+        return Verdict(
+            "FAILED",
+            quote(
+                "the session's stream holds no result event listing the commands Claude Code denied, as a session "
+                f"that ended early leaves it, so whether it asked before the command that expands {EXPANSION_VARIABLE} "
+                "is unknown"
+            ),
+        )
+    undenied = [
+        call for call in calls.uses if probe_command(call.command, script, EXPANSION_WORD) and not was_denied(call)
+    ]
+    if undenied and expanded:
+        return Verdict(
+            "FAILED",
+            quote(
+                f"ran the granted command that expands {EXPANSION_VARIABLE} unprompted, {undenied[0].tool}: "
+                f"{undenied[0].command}, so Claude Code no longer asks before such a command, which audit-skill's "
+                "EXPANDS and the skill_grants policy rest on"
+            ),
+        )
+    if not literal:
+        denied_too = f"; denied: {'; '.join(denials)}" if denials else ""
+        return Verdict("FAILED", quote(f"never ran the literal command {EXPANSION_LITERAL}{denied_too}"))
+    # The one text a denial may have: the literal command's, which the grant matched, with its last word replaced.
+    wanted = {
+        (call.tool, call.command.removesuffix(EXPANSION_LITERAL) + EXPANSION_WORD)
+        for call in calls.uses
+        if not was_denied(call)
+        and call.command.endswith(EXPANSION_LITERAL)
+        and probe_command(call.command, script, EXPANSION_LITERAL)
+    }
+    asked = [
+        call
+        for call in calls.denied
+        if (call.tool, call.command) in wanted and probe_command(call.command, script, EXPANSION_WORD)
+    ]
+    if asked:
+        ran = ran_line(EXPANSION_SKILL, literal[0][0], literal[0][1], literal[0][2], timed_out)
+        return Verdict("RAN", f"{ran.detail} denied {quote(f'{asked[0].tool}: {asked[0].command}')}")
+    return Verdict("FAILED", quote(unshown(script, calls, undenied, runs)))
+
+
+def unshown(
+    script: Path,
+    calls: ShellCalls,
+    undenied: Sequence[ShellCall],
+    runs: Sequence[tuple[str, str, int | None, list[object]]],
+) -> str:
+    """Why an expansion run whose literal command ran shows nothing about the expanding one."""
+    near = [call for call in calls.denied if probe_command(call.command, script, EXPANSION_WORD)]
+    if near:
+        return (
+            f"Claude Code denied {near[0].tool}: {near[0].command}, which expands {EXPANSION_VARIABLE} but is not the "
+            "literal command's text with its last word replaced, so the denial may answer its text rather than the "
+            "expansion"
+        )
+    if undenied:
+        return (
+            f"Claude Code neither denied nor ran the command that expands {EXPANSION_VARIABLE}, "
+            f"{undenied[0].tool}: {undenied[0].command}, so the run shows nothing about it"
+        )
+    others = [run for run in runs if run[3] != [EXPANSION_LITERAL]]
+    if others:
+        return (
+            f"ran the skill's script with the arguments {json_writer.dumps(others[0][3], ensure_ascii=False)}, which "
+            f"neither of its commands gives, and no command that expands {EXPANSION_VARIABLE} was denied, so the run "
+            "shows nothing about it"
+        )
+    return (
+        f"ran the literal command but never tried the one that expands {EXPANSION_VARIABLE}, so the run shows "
+        "nothing about it"
+    )
+
+
 def marked(probes: list[dict[str, Any]], run: str) -> list[dict[str, Any]]:
     """The probe records that carry the run's identifier, which the fixture's probe reads from the home it ran in."""
     return [record for record in probes if record.get("run") == run]
@@ -1091,6 +1316,8 @@ def run_skill(
             unread=unread_rejections(runtime, completed),
             cause=blocked_cause(runtime, codex_sandbox),
         )
+        if skill == EXPANSION_SKILL:
+            outcome = expansion_verdict(home, started, completed.stdout, denials, outcome, completed.timed_out)
     if runtime == "claude" and (nothing := discovery_failure(completed.stdout)):
         outcome = Verdict("FAILED", quote(nothing))
     return [
@@ -1260,7 +1487,7 @@ def checked(
     (state / "recorder" / "sitecustomize.py").write_text(RECORDER, encoding="utf-8")
     # Line feeds only: Git Bash reads a carriage return as part of the command.
     (state / "recorder" / "bash_env.sh").write_text(BASH_RECORDER, encoding="utf-8", newline="\n")
-    ordered = [FIXTURE_SKILL, *(skill for skill in dict.fromkeys(skills) if skill != FIXTURE_SKILL)]
+    ordered = list(dict.fromkeys([FIXTURE_SKILL, EXPANSION_SKILL, *skills]))
     closure = dependencies(sources)
     declared = declarations(sources)
     run = RuntimeChecks(

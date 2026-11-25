@@ -49,6 +49,21 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RUN_PROCESS = runtime_canary.run_process
 
 FIXTURE = "runtime-canary-probe"
+# The fixture that reproduces Claude Code's prompt before a granted command that expands a shell variable, and what
+# it declares for Codex and Copilot CLI, pinned here rather than read from its metadata.
+EXPANSION = "runtime-canary-expansion"
+EXPANSION_NONE = "The probe checks a Claude Code permission rule, which this runtime does not apply."
+# The expansion fixture's own instruction, pinned here rather than read from the tool.
+EXPANSION_INSTRUCTION = (
+    "Do nothing else. Run each command in its instructions once, in order, each on its own and exactly as written, "
+    "without changing or filling in any argument. If a command is denied, do not run it again or in another form. "
+    "Then stop and report what each printed. This is a RUNTIME-CANARY-RUN session."
+)
+# Why an expansion run whose stream lists no denials shows nothing, pinned here rather than read from the tool.
+UNLISTED_DENIALS = (
+    "the session's stream holds no result event listing the commands Claude Code denied, as a session that ended early "
+    "leaves it, so whether it asked before the command that expands $PWD is unknown"
+)
 HIDDEN_REASON = "A hidden dependency no runtime starts."
 # What the canary says of a skill the deployer gave no adapter, pinned here rather than read from the tool.
 NO_ADAPTER = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
@@ -194,6 +209,104 @@ def run_python(*arguments: str, timed_out: bool = False) -> Callable[[list[str],
         )
         stdout = json.dumps({"stdout": process.stdout}) + "\n"
         return Completed(-1 if timed_out else 0, stdout, process.stderr, timed_out=timed_out)
+
+    return action
+
+
+def listed_fixtures(adapters: str) -> list[tuple[str, str, bool]]:
+    """Both fixture skills' canary copies, enabled, as a runtime lists the adapters the canary home holds."""
+    return [(FIXTURE, f"{adapters}/{FIXTURE}", True), (EXPANSION, f"{adapters}/{EXPANSION}", True)]
+
+
+def claude_events(*events: dict[str, Any]) -> str:
+    """A Claude Code stream of these events, one JSON object a line."""
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def probe_script(home: Path) -> str:
+    return forward(home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py")
+
+
+def literal_command(home: Path) -> str:
+    """The expansion fixture's first command as Claude Code runs it, with the home as the skill's root."""
+    return f'{PYTHON} -B "{probe_script(home)}" literal'
+
+
+def expanding(home: Path) -> str:
+    """The expansion fixture's second command as Claude Code runs or denies it, with the home as the skill's root."""
+    return f'{PYTHON} -B "{probe_script(home)}" "$PWD"'
+
+
+# One shell command of a fake Claude Code session: its text, the arguments the deployed script runs with when the
+# command runs it, or None when it runs nothing, and whether the session's result denies it.
+Step = tuple[str, Sequence[str] | None, bool]
+
+
+def expansion_run(
+    home: Path, steps: Sequence[Step], identified: bool = True, denial_ids: bool = True, finished: bool = True
+) -> Callable[[list[str], Path, dict[str, str]], Completed]:
+    """Claude Code running the expansion fixture: a tool_use for each step's command, the deployed script run with the
+    environment the canary gave it wherever a step runs it, so the recorder is real, and a result whose
+    permission_denials name each step denied by its tool_use id, each event shaped as Claude Code 2.1.323 wrote it in
+    the runtime canary's expansion run; without `identified`, with no tool_use ids, without `denial_ids`, with none on
+    the denials alone, and without `finished`, ended before its result event, as a session that runs out of time is.
+    Like a stream with no init event, it names no skill."""
+
+    def action(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+        events: list[dict[str, Any]] = []
+        denials = []
+        for number, (text, runs, denied) in enumerate(steps):
+            use = {"command": text, "description": "Run expansion probe"}
+            # The id that pairs a tool_use with its result and its denial, which a stream may leave out.
+            paired = {"tool_use_id": f"toolu_{number:02d}"} if identified else {}
+            events.append(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                **({"id": paired["tool_use_id"]} if identified else {}),
+                                "name": "Bash",
+                                "input": use,
+                                "caller": {"type": "direct"},
+                            }
+                        ]
+                    },
+                }
+            )
+            if runs is not None:
+                subprocess.run(
+                    [sys.executable, "-B", probe_script(home), *runs],
+                    cwd=cwd,
+                    env=environment,
+                    capture_output=True,
+                    check=True,
+                )
+            result = "Quoted text in this command can't be checked before it runs" if denied else "ran"
+            events.append(
+                {
+                    "type": "user",
+                    "message": {"content": [{"type": "tool_result", "content": result, "is_error": denied, **paired}]},
+                }
+            )
+            denials += [{"tool_name": "Bash", **(paired if denial_ids else {}), "tool_input": use}] if denied else []
+        if finished:
+            events.append({"type": "result", "subtype": "success", "permission_denials": denials})
+        return Completed(0, claude_events(*events), "")
+
+    return action
+
+
+def by_skill(
+    actions: Mapping[str, Callable[[list[str], Path, dict[str, str]], Completed]],
+) -> Callable[[list[str], Path, dict[str, str]], Completed]:
+    """A runtime that answers each run with the action for the skill its prompt starts, or exits 0 doing nothing."""
+
+    def action(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+        skill = command[command.index("-p") + 1].split()[0].lstrip("/$")
+        chosen = actions.get(skill)
+        return chosen(command, cwd, environment) if chosen else Completed(0, "", "")
 
     return action
 
@@ -1443,12 +1556,25 @@ class RunTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         base = {**os.environ, "PYTHONPATH": "existing", "HOME": "real-home-left-alone"}
         self.canary(runner, runtimes=runtime_canary.RUNTIMES, environment=base)
-        runs = {
-            Path(arguments[0]).name: (arguments, cwd, environment)
-            for kind, arguments, cwd, environment in runner.calls
-            if kind == "run"
-        }
+        runs: dict[str, tuple[list[str], Path, Mapping[str, str]]] = {}
+        prompts: dict[str, list[str]] = {}
+        for kind, arguments, cwd, environment in runner.calls:
+            if kind == "run":
+                runs.setdefault(Path(arguments[0]).name, (arguments, cwd, environment))
+                prompts.setdefault(Path(arguments[0]).name, []).append(
+                    arguments[-1] if "-p" not in arguments else arguments[arguments.index("-p") + 1]
+                )
         self.assertEqual(set(runtime_canary.RUNTIMES), set(runs))
+        # The expansion fixture runs on Claude Code alone, with its own instruction; it declares none for the others.
+        self.assertEqual(
+            [
+                f"/{FIXTURE} {runtime_canary.INSTRUCTION}",
+                f"/{EXPANSION} {EXPANSION_INSTRUCTION}",
+            ],
+            prompts["claude"],
+        )
+        self.assertEqual(1, len(prompts["codex"]))
+        self.assertEqual(1, len(prompts["copilot"]))
         recorder = self.home / ".runtime-canary" / "recorder"
         for runtime, (_, cwd, environment) in runs.items():
             with self.subTest(runtime=runtime):
@@ -1865,7 +1991,11 @@ class MatrixTests(RuntimeCanaryTestCase):
 
         self.assertIn('RUNTIME codex gamma NOT_ATTEMPTED "No Bash on this runtime."', lines)
         self.assertEqual(
-            [f"MATRIX codex {FIXTURE} AGREES full", "MATRIX codex gamma AGREES none"],
+            [
+                f"MATRIX codex {FIXTURE} AGREES full",
+                f"MATRIX codex {EXPANSION} AGREES none",
+                "MATRIX codex gamma AGREES none",
+            ],
             [line for line in lines if line.startswith("MATRIX ")],
         )
         prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
@@ -1947,7 +2077,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         runner.listings["codex"] = [
             ("alpha", "C:/Profiles/YourName/.agents/skills/alpha", True),
             ("alpha", f"{adapters}/alpha", True),
-            (FIXTURE, f"{adapters}/{FIXTURE}", True),
+            *listed_fixtures(adapters),
         ]
         lines = self.canary(
             runner,
@@ -1958,6 +2088,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         self.assertEqual(
             [
                 f'DISCOVERED codex {FIXTURE} "{forward(self.home)}/.agents/skills/{FIXTURE}"',
+                f'DISCOVERED codex {EXPANSION} "{forward(self.home)}/.agents/skills/{EXPANSION}"',
                 f'DISCOVERED codex alpha "{forward(self.home)}/.agents/skills/alpha"',
                 'SHADOWED codex alpha "C:/Profiles/YourName/.agents/skills/alpha"',
                 "UNDISCOVERED codex gamma",
@@ -1976,8 +2107,8 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         # Codex lists no copy of core; Copilot lists the home's own deployed copy as a project skill, since it runs in
         # the home, as Copilot CLI did in the v0.7.0 release canary.
-        runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
-        runner.listings["copilot"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True), ("core", core, True)]
+        runner.listings["codex"] = listed_fixtures(adapters)
+        runner.listings["copilot"] = [*listed_fixtures(adapters), ("core", core, True)]
         for runtime in ("codex", "copilot"):
             runner.actions[runtime] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
 
@@ -1995,7 +2126,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         for runtime in ("codex", "copilot"):
             self.assertIn(f'RUNTIME {runtime} core NOT_ATTEMPTED "{HIDDEN_REASON}"', lines)
             self.assertIn(f"MATRIX {runtime} core AGREES none", lines)
-        # No model run is spent on core: only the fixture runs.
+        # No model run is spent on core, nor on the expansion fixture, which declares none here: only the probe runs.
         prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
         self.assertEqual(2, len(prompts))
         self.assertFalse([prompt for prompt in prompts if "core" in prompt.split()[0]])
@@ -2003,7 +2134,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
     def test_a_hidden_dependency_in_a_discovery_only_run_exits_0(self) -> None:
         adapters = forward(self.home / ".agents" / "skills")
         runner = FakeRuntimes()
-        runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+        runner.listings["codex"] = listed_fixtures(adapters)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = runtime_canary.canary(
@@ -2049,6 +2180,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
                 runner = FakeRuntimes()
                 runner.listings[runtime] = [
                     (FIXTURE, f"{adapters}/{FIXTURE}", False),
+                    (EXPANSION, f"{adapters}/{EXPANSION}", True),
                     ("alpha", f"{adapters}/alpha", True),
                     ("alpha", other, False),
                 ]
@@ -2063,6 +2195,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
                     [
                         f'DISABLED {runtime} {FIXTURE} "{adapters}/{FIXTURE}"',
                         f"UNDISCOVERED {runtime} {FIXTURE}",
+                        f'DISCOVERED {runtime} {EXPANSION} "{adapters}/{EXPANSION}"',
                         f'DISCOVERED {runtime} alpha "{adapters}/alpha"',
                         f'DISABLED {runtime} alpha "{other}"',
                     ],
@@ -2071,7 +2204,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
 
     def test_a_discovery_only_run_exits_1_on_any_undiscovered_skill(self) -> None:
         adapters = forward(self.home / ".agents" / "skills")
-        for listing, code in (([], 1), ([(FIXTURE, f"{adapters}/{FIXTURE}", True)], 0)):
+        for listing, code in (([], 1), (listed_fixtures(adapters), 0)):
             with self.subTest(listed=len(listing)):
                 runner = FakeRuntimes()
                 runner.listings["codex"] = listing
@@ -2153,9 +2286,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         for discovery_only in (True, False):
             with self.subTest(discovery_only=discovery_only):
                 runner = FakeRuntimes()
-                runner.listings = {
-                    runtime: [(FIXTURE, f"{adapters}/{FIXTURE}", True)] for runtime in ("codex", "copilot")
-                }
+                runner.listings = {runtime: listed_fixtures(adapters) for runtime in ("codex", "copilot")}
                 runner.actions = {runtime: run_python(script, "--help") for runtime in ("codex", "copilot")}
                 code, lines = self.outcome(runner, runtimes=("codex", "copilot"), discovery_only=discovery_only)
                 self.assertEqual(0, code, lines)
@@ -2178,7 +2309,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         for installed, code in (((), 1), (("codex",), 0)):
             with self.subTest(installed=installed):
                 runner = FakeRuntimes()
-                runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+                runner.listings["codex"] = listed_fixtures(adapters)
                 result, lines = self.outcome(
                     runner, runtimes=("codex", "copilot"), installed=installed, discovery_only=True
                 )
@@ -2210,7 +2341,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         for runtimes in (("codex",), ("claude", "codex")):
             with self.subTest(runtimes=runtimes):
                 runner = FakeRuntimes()
-                runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+                runner.listings["codex"] = listed_fixtures(adapters)
                 code, lines = self.outcome(runner, runtimes=runtimes, discovery_only=True)
                 self.assertEqual(0, code, lines)
                 self.assertIn(f'DISCOVERED codex {FIXTURE} "{adapters}/{FIXTURE}"', lines)
@@ -2235,7 +2366,10 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
     def test_a_run_whose_every_skill_was_never_started_checked_nothing(self) -> None:
         # The fixture declares full for every runtime and always runs first, so this takes a fixture that declares
         # none, as the hidden dependency does: its runs and its listing are both NOT_ATTEMPTED, and both agree.
-        with mock.patch.object(runtime_canary, "FIXTURE_SKILL", "core"):
+        with (
+            mock.patch.object(runtime_canary, "FIXTURE_SKILL", "core"),
+            mock.patch.object(runtime_canary, "EXPANSION_SKILL", "core"),
+        ):
             code, lines = self.outcome(FakeRuntimes(), ["core"], ("codex",), sources=[self.make_source(hidden=True)])
         self.assertEqual(1, code, lines)
         self.assertIn(f'RUNTIME codex core NOT_ATTEMPTED "{HIDDEN_REASON}"', lines)
@@ -2254,7 +2388,11 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         def fail(*_: object) -> list[str]:
             raise discovery.ListingError("stub listing unavailable")
 
-        with mock.patch.object(runtime_canary, "FIXTURE_SKILL", "alpha"), mock.patch.object(runner, "talk", fail):
+        with (
+            mock.patch.object(runtime_canary, "FIXTURE_SKILL", "alpha"),
+            mock.patch.object(runtime_canary, "EXPANSION_SKILL", "alpha"),
+            mock.patch.object(runner, "talk", fail),
+        ):
             code, lines = self.outcome(runner, ["alpha"], ("copilot",), sources=[self.make_source(user_only=True)])
         self.assertEqual(1, code, lines)
         self.assertIn(
@@ -2272,7 +2410,14 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         # Claude Code has no listing, and a stream without its init event names no skill, so the RUNTIME line is the
         # only one that shows the run checked it.
         runner = FakeRuntimes()
-        runner.actions["claude"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: expansion_run(
+                    self.home, [(literal_command(self.home), ["literal"], False), (expanding(self.home), None, True)]
+                ),
+            }
+        )
         code, lines = self.outcome(runner, runtimes=("claude",))
         self.assertEqual(0, code, lines)
         self.assertTrue([line for line in lines if line.startswith(f"RUNTIME claude {FIXTURE} RAN ")], lines)
@@ -2347,6 +2492,476 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         self.assertIn("unknown skill: no-such-skill", stderr.getvalue())
 
 
+class ExpansionProbeTests(RuntimeCanaryTestCase):
+    """The expansion fixture reproduces the rule audit-skill's EXPANDS rests on, judged from the recorder's arguments
+    and Claude Code's permission denials. Each case runs Claude Code alone, the probe fixture passing."""
+
+    def script(self) -> str:
+        return f"{self.skill_dir(EXPANSION)}/scripts/expansion_probe.py"
+
+    def expansion_line(self, steps: Sequence[Step]) -> tuple[int, str]:
+        """The canary's exit code and the expansion fixture's RUNTIME line when Claude Code runs these steps."""
+        runner = FakeRuntimes()
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: expansion_run(self.home, steps),
+            }
+        )
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        found = [line for line in lines if line.startswith(f"RUNTIME claude {EXPANSION} ")]
+        self.assertEqual(1, len(found), lines)
+        self.assertIn(f"MATRIX claude {FIXTURE} AGREES full", lines)
+        return code, found[0]
+
+    def literal(self) -> Step:
+        return literal_command(self.home), ["literal"], False
+
+    def asked(self) -> Step:
+        return expanding(self.home), None, True
+
+    def failed(self, reason: str) -> str:
+        return f"RUNTIME claude {EXPANSION} FAILED {json.dumps(reason)} {self.kept('claude')}"
+
+    def test_the_fixture_runs_its_granted_script_once_literally_and_once_expanding_pwd(self) -> None:
+        self.assertEqual(0, runtime_canary.deploy(self.home, runtime_canary.FIXTURE_SOURCE)[0])
+        skill = (self.home / ".claude" / "skills" / EXPANSION / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        own = '\\"${CLAUDE_SKILL_DIR}/scripts/expansion_probe.py\\" *'
+        self.assertIn(f'allowed-tools: ["Bash({PYTHON} -B {own})", "PowerShell({PYTHON} -B {own})"]', skill)
+        commands = [line for line in skill if line.startswith(f"{PYTHON} -B ")]
+        self.assertEqual(
+            [
+                f'{PYTHON} -B "${{CLAUDE_SKILL_DIR}}/scripts/expansion_probe.py" literal',
+                f'{PYTHON} -B "${{CLAUDE_SKILL_DIR}}/scripts/expansion_probe.py" "$PWD"',
+            ],
+            commands,
+        )
+        process = subprocess.run(
+            [sys.executable, "-B", self.script(), "literal"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual((0, "RUNTIME_CANARY_EXPANSION literal\n"), (process.returncode, process.stdout))
+
+    def test_audit_skill_reports_the_expanding_command_alone_as_expands(self) -> None:
+        # The probe tests exactly the command audit-skill reports: its second, which a grant covers by its text.
+        source = runtime_canary.FIXTURE_SOURCE / "skills" / EXPANSION / "SKILL.md"
+        inventory = REPOSITORY_ROOT / "skills" / "audit-skill" / "scripts" / "skill_inventory.py"
+        process = subprocess.run(
+            [sys.executable, "-B", str(inventory), "tools", str(source)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(0, process.returncode, process.stdout + process.stderr)
+        lines = process.stdout.splitlines()
+        self.assertEqual(
+            ['{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/expansion_probe.py" "$PWD"'],
+            [line.split(" ", 2)[2] for line in lines if line.startswith("EXPANDS ")],
+        )
+        self.assertFalse([line for line in lines if line.startswith(("UNGRANTED ", "MISSING_ALLOWED "))], lines)
+
+    def test_the_literal_command_run_and_the_expanding_one_denied_is_ran(self) -> None:
+        # The recorded run: the literal command ran unprompted and the expanding one was denied, paired by id.
+        code, line = self.expansion_line([self.literal(), self.asked()])
+        self.assertEqual(0, code)
+        self.assertEqual(
+            f'RUNTIME claude {EXPANSION} RAN "{self.script()}" "{forward(self.home)}"{PYTHON_EXIT} '
+            f"denied {json.dumps('Bash: ' + expanding(self.home))} {self.kept('claude')}",
+            line,
+        )
+
+    def test_the_expanding_command_run_unprompted_fails(self) -> None:
+        reason = (
+            f"ran the granted command that expands $PWD unprompted, Bash: {expanding(self.home)}, so Claude Code no "
+            "longer asks before such a command, which audit-skill's EXPANDS and the skill_grants policy rest on"
+        )
+        ran = (expanding(self.home), [str(self.home)], False)
+        for steps in ([self.literal(), ran], [ran]):
+            with self.subTest(steps=len(steps)):
+                code, line = self.expansion_line(steps)
+                self.assertEqual(1, code)
+                self.assertEqual(self.failed(reason), line)
+
+    def test_a_denial_counts_only_as_the_literal_commands_text_with_its_last_word_replaced(self) -> None:
+        # Each denial holds the script's name, or $PWD, or both. A command that is not the fence's says the model never
+        # tried the expanding one; one Bash reads as the expanding command, whose text differs from what the grant
+        # matched, says the denial may answer that text.
+        never = "ran the literal command but never tried the one that expands $PWD, so the run shows nothing about it"
+        script = probe_script(self.home)
+        folder = script.rsplit("/scripts/", 1)[0]
+        for denied in (
+            f'{PYTHON} -B "/elsewhere/expansion_probe.py" "$PWD"',
+            f'cat "{script}"; echo "$PWD"',
+            f'{PYTHON} -B "{script}" "$PWD" > /dev/null',
+            f'{PYTHON} -B "{script}" "$PWD"; echo done',
+            f'({PYTHON} -B "{script}" "$PWD")',
+            f'{PYTHON} -B "{script}" $PWD',
+            f'{PYTHON} -B "{script}" --help',
+            f'{PYTHON} -B "{script}" "$PWD" extra',
+            f'{PYTHON} "{script}" "$PWD"',
+            f'{PYTHON} -X "{script}" "$PWD"',
+            f'other -B "{script}" "$PWD"',
+            f'{PYTHON} -B "{script}" "$HOME"',
+            f'{PYTHON} -B "{script}" "$PWD',
+            'echo "$PWD"',
+        ):
+            with self.subTest(denied=denied):
+                code, line = self.expansion_line([self.literal(), (denied, None, True)])
+                self.assertEqual(1, code)
+                self.assertEqual(self.failed(never), line)
+        for denied in (
+            f'{PYTHON}\t-B "{script}" "$PWD"',
+            f'{PYTHON}  -B "{script}" "$PWD"',
+            f'"{PYTHON}" -B "{script}" "$PWD"',
+            f'{PYTHON} "-B" "{script}" "$PWD"',
+            f"{PYTHON} -B '{script}' \"$PWD\"",
+            f'{PYTHON} -B "{folder}/./scripts/expansion_probe.py" "$PWD"',
+            f'{PYTHON} -B "{folder}/x/../scripts/expansion_probe.py" "$PWD"',
+            f'{PYTHON} -B "{script}" "$PWD" # x',
+            f'{PYTHON} -B "{script}" \\\n"$PWD"',
+            f'{PYTHON} -B "{script}" "$PWD" &',
+            f'{PYTHON} -B "{script}" "$PWD";',
+        ):
+            with self.subTest(denied=denied):
+                code, line = self.expansion_line([self.literal(), (denied, None, True)])
+                self.assertEqual(1, code)
+                self.assertEqual(
+                    self.failed(
+                        f"Claude Code denied Bash: {denied}, which expands $PWD but is not the literal command's text "
+                        "with its last word replaced, so the denial may answer its text rather than the expansion"
+                    ),
+                    line,
+                )
+        # A literal command with text after its last word has no word to replace, even a comment ending in the word,
+        # and one the grammar does not read as the fence's gives no text, so no denial counts.
+        cd = f'cd "{forward(self.home)}" && '
+        for literal, denied in (
+            (f'{PYTHON} -B "{script}" literal # c', f'{PYTHON} -B "{script}" literal # c"$PWD"'),
+            (f'{PYTHON} -B "{script}" literal # literal', f'{PYTHON} -B "{script}" literal # "$PWD"'),
+            (f'{cd}{PYTHON} -B "{script}" literal', f'{cd}{PYTHON} -B "{script}" "$PWD"'),
+        ):
+            with self.subTest(literal=literal):
+                code, line = self.expansion_line([(literal, ["literal"], False), (denied, None, True)])
+                self.assertEqual(1, code)
+                self.assertEqual(self.failed(never), line)
+        # A path in another case is the same file only where its folder ignores case, so either reason may follow;
+        # neither is a pass.
+        code, line = self.expansion_line([self.literal(), (f'{PYTHON} -B "{script.upper()}" "$PWD"', None, True)])
+        self.assertEqual(1, code)
+        self.assertTrue(line.startswith(f"RUNTIME claude {EXPANSION} FAILED "), line)
+
+    def test_a_result_whose_denials_are_not_a_list_shows_no_denial_and_never_an_unprompted_run(self) -> None:
+        # A release that drops or renames permission_denials lists none, which is not the same as none denied.
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        started = [
+            {"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1},
+            {"argv": [str(script), str(self.home)], "cwd": str(self.home), "pid": 2},
+        ]
+        use = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": expanding(self.home)}}
+        for result in (
+            {"type": "result"},
+            {"type": "result", "permission_denials": None},
+            {"type": "result", "denials": []},
+        ):
+            with self.subTest(result=result):
+                stream = claude_events({"type": "assistant", "message": {"content": [use]}}, result)
+                found = runtime_canary.Verdict("RAN", "x")
+                verdict = runtime_canary.expansion_verdict(self.home, started, stream, [], found, False)
+                self.assertEqual(runtime_canary.Verdict("FAILED", json.dumps(UNLISTED_DENIALS)), verdict)
+
+    def test_a_session_that_ends_before_its_result_shows_no_denial_and_never_an_unprompted_run(self) -> None:
+        # Without the result event the denials are unknown, so a denied command that the model then wrote out is not
+        # read as the expanding command run unprompted.
+        reason = UNLISTED_DENIALS
+        typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
+        for steps in ([self.literal(), self.asked(), typed], [self.literal(), self.asked()]):
+            with self.subTest(steps=len(steps)):
+                runner = FakeRuntimes()
+                runner.actions["claude"] = by_skill(
+                    {
+                        FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                        EXPANSION: expansion_run(self.home, steps, finished=False),
+                    }
+                )
+                code, lines = self.outcome(runner, runtimes=("claude",))
+                self.assertEqual(1, code)
+                self.assertIn(self.failed(reason), lines)
+
+    def test_a_denial_is_paired_by_its_tool_use_id_whatever_command_it_names(self) -> None:
+        # The denial names the expanding command's id with other text, so that command was denied; read by text
+        # alone, it would be undenied, and the written-out directory its run unprompted.
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        stream = claude_events(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": expanding(self.home)}}
+                    ]
+                },
+            },
+            {
+                "type": "result",
+                "permission_denials": [{"tool_name": "Bash", "tool_use_id": "a", "tool_input": {"command": "x"}}],
+            },
+        )
+        started = [
+            {"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1},
+            {"argv": [str(script), str(self.home)], "cwd": str(self.home), "pid": 2},
+        ]
+        found = runtime_canary.Verdict("RAN", "x")
+        verdict = runtime_canary.expansion_verdict(self.home, started, stream, ["Bash: x"], found, False)
+        self.assertEqual("FAILED", verdict.word)
+        self.assertNotIn("unprompted", verdict.detail)
+
+    def test_a_denial_by_another_tool_does_not_count_for_the_literal_commands_text(self) -> None:
+        # The grant matched the literal command's text in Bash, which says nothing of PowerShell's.
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        literal = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": literal_command(self.home)}}
+        other = {"type": "tool_use", "id": "b", "name": "PowerShell", "input": {"command": expanding(self.home)}}
+        stream = claude_events(
+            {"type": "assistant", "message": {"content": [literal, other]}},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "PowerShell", "tool_use_id": "b", "tool_input": {"command": expanding(self.home)}}
+                ],
+            },
+        )
+        started = [{"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1}]
+        verdict = runtime_canary.expansion_verdict(
+            self.home, started, stream, [], runtime_canary.Verdict("RAN", "x"), False
+        )
+        reason = (
+            f"Claude Code denied PowerShell: {expanding(self.home)}, which expands $PWD but is not the literal "
+            "command's text with its last word replaced, so the denial may answer its text rather than the expansion"
+        )
+        self.assertEqual(runtime_canary.Verdict("FAILED", json.dumps(reason)), verdict)
+
+    def test_a_literal_command_that_was_denied_gives_no_text_for_a_denial(self) -> None:
+        # The grant matched no text of a denied literal command, so its text with $PWD proves nothing, even when the
+        # literal run happened through another command.
+        script = probe_script(self.home)
+        spaced = f'{PYTHON}  -B "{script}" literal'
+        steps: list[Step] = [
+            (spaced, None, True),
+            (f'cd "{forward(self.home)}" && {PYTHON} -B "{script}" literal', ["literal"], False),
+            (f'{PYTHON}  -B "{script}" "$PWD"', None, True),
+        ]
+        code, line = self.expansion_line(steps)
+        self.assertEqual(1, code)
+        self.assertIn("is not the literal command's text with its last word replaced", line)
+
+    def test_a_denial_without_its_tool_use_id_is_paired_by_its_command(self) -> None:
+        # The tool_use keeps its id and the denial has none, so only the command pairs them; read as undenied, the
+        # written-out directory would be the expanding command run unprompted.
+        typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
+        runner = FakeRuntimes()
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: expansion_run(self.home, [self.literal(), self.asked(), typed], denial_ids=False),
+            }
+        )
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        self.assertEqual(0, code, lines)
+        self.assertIn(f"MATRIX claude {EXPANSION} AGREES full", lines)
+
+    def test_a_run_the_fence_does_not_give_is_never_read_as_the_rule_failing(self) -> None:
+        # A model that writes the directory out, or runs the script with --help, ran no expansion. The reason prints
+        # the arguments as the recorder kept them, so the expectation holds them as given, Windows separators too.
+        for arguments in ([str(self.home)], ["--help"]):
+            with self.subTest(arguments=arguments):
+                stray = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', arguments, False)
+                code, line = self.expansion_line([self.literal(), stray])
+                self.assertEqual(1, code)
+                self.assertEqual(
+                    self.failed(
+                        f"ran the skill's script with the arguments {json.dumps(arguments)}, which neither of its "
+                        "commands gives, and no command that expands $PWD was denied, so the run shows nothing about it"
+                    ),
+                    line,
+                )
+
+    def test_the_expanding_command_neither_denied_nor_run_shows_nothing(self) -> None:
+        # A run of the script with another argument is not the expanding command's: only the directory it ran from is.
+        help_run = (f'{PYTHON} -B "{probe_script(self.home)}" --help', ["--help"], False)
+        for extra in ([], [help_run]):
+            with self.subTest(extra=len(extra)):
+                code, line = self.expansion_line([self.literal(), (expanding(self.home), None, False), *extra])
+                self.assertEqual(1, code)
+                self.assertEqual(
+                    self.failed(
+                        f"Claude Code neither denied nor ran the command that expands $PWD, Bash: "
+                        f"{expanding(self.home)}, so the run shows nothing about it"
+                    ),
+                    line,
+                )
+
+    def test_a_run_that_never_tried_the_expanding_command_shows_nothing_and_fails(self) -> None:
+        code, line = self.expansion_line([self.literal()])
+        self.assertEqual(1, code)
+        self.assertEqual(
+            self.failed(
+                "ran the literal command but never tried the one that expands $PWD, so the run shows nothing about it"
+            ),
+            line,
+        )
+
+    def test_an_expanding_denial_without_the_literal_run_fails(self) -> None:
+        help_run = (f'{PYTHON} -B "{probe_script(self.home)}" --help', ["--help"], False)
+        code, line = self.expansion_line([help_run, self.asked()])
+        self.assertEqual(1, code)
+        self.assertEqual(
+            self.failed(f"never ran the literal command literal; denied: Bash: {expanding(self.home)}"), line
+        )
+
+    def test_a_run_of_no_script_keeps_the_reason_any_skill_gets(self) -> None:
+        code, line = self.expansion_line([self.asked()])
+        self.assertEqual(1, code)
+        self.assertEqual(self.failed(f"never ran a script from the skill; denied: Bash: {expanding(self.home)}"), line)
+
+    def test_the_path_written_out_after_the_denial_still_passes(self) -> None:
+        # The denial shows Claude Code asked; a model that then writes the directory out ran no expansion.
+        typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
+        code, line = self.expansion_line([self.literal(), self.asked(), typed])
+        self.assertEqual(0, code)
+        self.assertTrue(line.startswith(f'RUNTIME claude {EXPANSION} RAN "{self.script()}" '), line)
+
+    def test_the_stream_reader_reads_only_shell_tool_uses_of_assistant_messages_and_denials_of_a_result(self) -> None:
+        bash = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "x"}}
+        stream = claude_events(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        "odd",
+                        {"type": "text", "name": "Bash", "input": {"command": "text"}},
+                        {"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": "f"}},
+                        {"type": "tool_use", "id": "n", "name": "Bash", "input": "not an object"},
+                        bash,
+                    ]
+                },
+            },
+            {"type": "user", "message": {"content": [{**bash, "id": "u", "input": {"command": "user"}}]}},
+            {"type": "system", "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "system"}}]},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "Read", "tool_use_id": "r", "tool_input": {"file_path": "f"}},
+                    {"tool_name": "Bash", "tool_use_id": "a", "tool_input": {"command": "x"}},
+                ],
+            },
+        )
+        call = runtime_canary.ShellCall("a", "Bash", "x")
+        self.assertEqual(runtime_canary.ShellCalls([call], [call], finished=True), runtime_canary.shell_calls(stream))
+        # A list of denials on another event is not a result's.
+        only = claude_events({"type": "system", "permission_denials": []})
+        self.assertIs(False, runtime_canary.shell_calls(only).finished)
+        self.assertIs(False, runtime_canary.shell_calls(claude_events({"type": "assistant"})).finished)
+        self.assertIs(False, runtime_canary.shell_calls("").finished)
+
+    def test_a_record_without_its_directory_names_its_script_as_given(self) -> None:
+        self.assertEqual(
+            [("tool.py", "", None, ["argument"])],
+            runtime_canary.recorded_runs([{"argv": ["tool.py", "argument"], "pid": 1}]),
+        )
+
+    def test_the_expansion_lines_carry_every_denial_the_timeout_and_arguments_as_written(self) -> None:
+        script = self.home / ".claude" / "skills" / EXPANSION / "scripts" / "expansion_probe.py"
+        found = runtime_canary.Verdict("RAN", "x")
+        result = claude_events({"type": "result", "permission_denials": []})
+        literal_run = {"argv": [str(script), "literal"], "cwd": str(self.home), "pid": 1}
+        # No literal run: every denial the run had follows, joined, and none follows when there was none.
+        for denials, after in ((["Bash: a", "Bash: b"], "; denied: Bash: a; Bash: b"), ([], "")):
+            with self.subTest(denials=denials):
+                verdict = runtime_canary.expansion_verdict(self.home, [], result, denials, found, False)
+                self.assertEqual(
+                    runtime_canary.Verdict("FAILED", json.dumps(f"never ran the literal command literal{after}")),
+                    verdict,
+                )
+        # A run of the script with an argument that is not ASCII prints it as given.
+        stray = {"argv": [str(script), "café"], "cwd": str(self.home), "pid": 2}
+        verdict = runtime_canary.expansion_verdict(self.home, [literal_run, stray], result, [], found, False)
+        self.assertIn('[\\"café\\"]', verdict.detail)
+        # A session that ran out of time after the literal run says so on its RAN line.
+        use = {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": literal_command(self.home)}}
+        stream = claude_events(
+            {"type": "assistant", "message": {"content": [use]}},
+            {
+                "type": "result",
+                "permission_denials": [
+                    {"tool_name": "Bash", "tool_use_id": "b", "tool_input": {"command": expanding(self.home)}}
+                ],
+            },
+        )
+        verdict = runtime_canary.expansion_verdict(self.home, [literal_run], stream, [], found, True)
+        self.assertEqual("RAN", verdict.word)
+        self.assertIn(" timed-out denied ", verdict.detail)
+
+    def test_a_run_that_timed_out_after_the_denial_carries_it_to_the_runtime_line(self) -> None:
+        action = expansion_run(self.home, [self.literal(), self.asked()])
+        runner = FakeRuntimes()
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: lambda *arguments: dataclasses.replace(action(*arguments), timed_out=True),
+            }
+        )
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        self.assertEqual(0, code, lines)
+        found = [line for line in lines if line.startswith(f"RUNTIME claude {EXPANSION} RAN ")]
+        self.assertTrue(found and " timed-out denied " in found[0], lines)
+
+    def test_a_stream_without_tool_use_ids_pairs_the_denial_by_its_command(self) -> None:
+        typed = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', [str(self.home)], False)
+        runner = FakeRuntimes()
+        runner.actions["claude"] = by_skill(
+            {
+                FIXTURE: run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help"),
+                EXPANSION: expansion_run(self.home, [self.literal(), self.asked(), typed], identified=False),
+            }
+        )
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        self.assertEqual(0, code, lines)
+        self.assertIn(f"MATRIX claude {EXPANSION} AGREES full", lines)
+        calls = runtime_canary.shell_calls('{"type": "result", "permission_denials": 3}\n')
+        self.assertEqual(runtime_canary.ShellCalls([], [], finished=False), calls)
+        calls = runtime_canary.shell_calls('{"type": "result", "permission_denials": []}\n')
+        self.assertEqual(runtime_canary.ShellCalls([], [], finished=True), calls)
+        stream = claude_events(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "x"}}]},
+            },
+            {"type": "result", "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "x"}}, "odd"]},
+        )
+        call = runtime_canary.ShellCall("", "Bash", "x")
+        self.assertEqual(runtime_canary.ShellCalls([call], [call], finished=True), runtime_canary.shell_calls(stream))
+        # Another tool's command is no shell call, a stream with no result event finished nothing, and a stream this
+        # does not read shows none.
+        self.assertIsNone(runtime_canary.shell_call("id", "Read", {"command": "x"}))
+        self.assertFalse(runtime_canary.shell_calls(claude_events({"type": "assistant"})).finished)
+        self.assertEqual(runtime_canary.ShellCalls([], [], finished=False), runtime_canary.shell_calls("[1]\n"))
+
+    def test_codex_and_copilot_never_start_the_expansion_fixture(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        runner = FakeRuntimes()
+        for runtime in ("codex", "copilot"):
+            runner.listings[runtime] = listed_fixtures(adapters)
+            runner.actions[runtime] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+        lines = self.canary(runner, runtimes=("codex", "copilot"))
+        for runtime in ("codex", "copilot"):
+            self.assertIn(f'RUNTIME {runtime} {EXPANSION} NOT_ATTEMPTED "{EXPANSION_NONE}"', lines)
+            self.assertIn(f"MATRIX {runtime} {EXPANSION} AGREES none", lines)
+        prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
+        self.assertFalse([prompt for prompt in prompts if EXPANSION in prompt], prompts)
+
+
 class RecordTests(RuntimeCanaryTestCase):
     @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", False)
     def test_the_record_holds_each_version_and_the_recorded_kinds_naming_no_path_of_this_machine(self) -> None:
@@ -2356,6 +2971,7 @@ class RecordTests(RuntimeCanaryTestCase):
         runner.listings["codex"] = [
             (FIXTURE, f"{adapters}/{FIXTURE}", True),
             (FIXTURE, f"{forward(profile)}/.agents/skills/{FIXTURE}", True),
+            (EXPANSION, f"{adapters}/{EXPANSION}", True),
         ]
         runner.actions["codex"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
         with mock.patch.object(platform_support, "home_directory", return_value=profile):
@@ -2367,9 +2983,12 @@ class RecordTests(RuntimeCanaryTestCase):
                 "VERSION codex 0.160.0",
                 f'DISCOVERED codex {FIXTURE} "<temp>/.agents/skills/{FIXTURE}"',
                 f'SHADOWED codex {FIXTURE} "<home>/.agents/skills/{FIXTURE}"',
+                f'DISCOVERED codex {EXPANSION} "<temp>/.agents/skills/{EXPANSION}"',
                 f'RUNTIME codex {FIXTURE} RAN "{script}" "<temp>"{PYTHON_EXIT} {self.kept("codex")}',
+                f'RUNTIME codex {EXPANSION} NOT_ATTEMPTED "{EXPANSION_NONE}"',
                 'SKIPPED copilot "copilot is not installed"',
                 f"MATRIX codex {FIXTURE} AGREES full",
+                f"MATRIX codex {EXPANSION} AGREES none",
                 "RECORD_END",
             ],
             self.recorded,

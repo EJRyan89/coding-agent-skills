@@ -85,7 +85,7 @@
     ],
     "EXPANDS": [
       {
-        "decision": "Claude Code asks before it runs a command that expands a shell variable or a command substitution, whatever allowed-tools grants. No Claude Code page states this: the permissions, permission-modes, skills, and tools-reference pages match a rule against the command's text and say nothing of a matched command that expands one. The check rests on this source's hand check in Claude Code on Windows, recorded under Granting tools in docs/adding-a-skill.md, until the repository keeps a reproduction."
+        "decision": "Claude Code asks before it runs a command that expands a shell variable or a command substitution, whatever allowed-tools grants. No Claude Code page states this: the permissions, permission-modes, skills, and tools-reference pages match a rule against the command's text and say nothing of a matched command that expands one. Its reproduction is the expansion probe of this source's runtime canary, tools/runtime_canary.py, which runs the fixture skill runtime-canary-expansion: a grant covers the skill's script with any arguments, Claude Code runs it unprompted with a literal argument and denies the same command ending in $PWD, double-quoted, in a non-interactive run, and the probe fails when that command runs unprompted. The probe expands that one double-quoted variable: an unquoted $NAME, a ${NAME}, and a command substitution, which EXPANDS also reports, rest on this source's check by hand recorded under Granting tools in docs/adding-a-skill.md."
       }
     ],
     "GRANTED_REPOSITORY_CODE": [
