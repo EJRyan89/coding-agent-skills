@@ -1,17 +1,20 @@
 """Regression suites: how they are found, sharded, and run, the rules the skill guide states for them, that every
 module is named by a test, and that the root conftest.py isolates git for every Python suite.
 
-Each Python suite runs as `python -B -m pytest <suite>`, or as one shard of it with conftest.py's --suite-shard, in
-a process of its own; a Bash or PowerShell suite runs as a program.
+Each Python suite runs as `python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its own for its
+temporary folders, or as one shard of it with conftest.py's --suite-shard, in a process of its own; a Bash or
+PowerShell suite runs as a program.
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import itertools
 import re
 import sys
+import tempfile
 import tomllib
 import unittest
 from collections.abc import Iterable, Iterator, Mapping
@@ -20,6 +23,7 @@ from pathlib import Path
 from typing import TypeGuard
 
 import file_presence
+import private_folder
 from bash_syntax import (
     BashSyntaxError,
     Command,
@@ -178,10 +182,31 @@ def suite_discovery_documentation_problems(root: Path) -> list[str]:
     return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
 
 
-def pytest_command(target: str, *options: str) -> list[str]:
-    """How the runner starts a Python suite: pytest on the one file, from the repository root, with no bytecode. Its
-    environment holds PYTEST_ENVIRONMENT over the one it inherits."""
-    return [sys.executable, "-B", "-m", "pytest", target, *options]
+def pytest_command(target: str, *options: str, basetemp: Path) -> list[str]:
+    """How the runner starts a Python suite: pytest on the one file, from the repository root, with no bytecode, and
+    with `basetemp`, a folder pytest_base makes, as the base of every temporary folder its tests make. Its environment
+    holds PYTEST_ENVIRONMENT over the one it inherits."""
+    return [sys.executable, "-B", "-m", "pytest", target, "--basetemp", str(basetemp), *options]
+
+
+# The folder pytest_base hands a pytest as its --basetemp: one below the throwaway folder it makes, never that folder
+# itself, since pytest removes and remakes the folder it is given.
+PYTEST_BASE = "base"
+
+
+@contextlib.contextmanager
+def pytest_base() -> Iterator[Path]:
+    """A base folder of its own for one pytest process's temporary folders, under a throwaway folder in the temporary
+    directory that is removed once the process is done.
+
+    Without one, pytest keeps every process's temporary folders in one base, `pytest-of-<user>` in the temporary
+    directory, with a `pytest-current` link to the newest, and each process that ends removes every link it finds
+    there whose target is gone. Two processes ending together race over the same link: when one removes it between
+    the other's listing and its removal, the other's session ends in a FileNotFoundError after its tests all passed.
+    pytest neither shares nor removes a base it is given, so each process lists and removes only its own folders, and
+    the throwaway folder's removal takes them."""
+    with tempfile.TemporaryDirectory(prefix="pytest-base-", dir=private_folder.temporary_directory()) as made:
+        yield Path(made) / PYTEST_BASE
 
 
 # What every pytest the runner and the mutation gate start holds over the environment it inherits, so a suite is judged
@@ -196,7 +221,8 @@ def run_test_script(path: Path) -> None:
     target = relative(path)
     suffix = path.suffix.casefold()
     if suffix == ".py":
-        run_process(pytest_command(target), PYTEST_ENVIRONMENT)
+        with pytest_base() as basetemp:
+            run_process(pytest_command(target, basetemp=basetemp), PYTEST_ENVIRONMENT)
     elif suffix == ".sh":
         run_bash_suite(target)
     elif suffix == ".ps1":
@@ -256,7 +282,9 @@ def shard_options(index: int, count: int, recorded: Mapping[str, float]) -> list
 
 
 def run_shard(suite: Path, index: int, count: int, recorded: Mapping[str, float]) -> None:
-    run_process(pytest_command(relative(suite), *shard_options(index, count, recorded)), PYTEST_ENVIRONMENT)
+    with pytest_base() as basetemp:
+        options = shard_options(index, count, recorded)
+        run_process(pytest_command(relative(suite), *options, basetemp=basetemp), PYTEST_ENVIRONMENT)
 
 
 def suite_jobs(
@@ -2456,13 +2484,14 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         # would pass as having none.
         known = {
             "tests/test_conftest.py:120",
-            "tests/validation/test_suite_discovery.py:69",
+            "tests/validation/test_suite_discovery.py:75",
             "tests/validation/test_job_pool.py:551",
             "tests/tools/test_python_diagnostics.py:124",
-            "tests/tools/test_python_diagnostics.py:175",
-            "tests/tools/test_python_diagnostics.py:200",
-            "tests/tools/test_python_diagnostics.py:216",
-            "tests/tools/test_python_diagnostics.py:241",
+            "tests/tools/test_python_diagnostics.py:176",
+            "tests/tools/test_python_diagnostics.py:201",
+            "tests/tools/test_python_diagnostics.py:217",
+            "tests/tools/test_python_diagnostics.py:242",
+            "tests/tools/test_python_diagnostics.py:261",
         }
         # Each start by its line, so a start rewritten into a form the reader does not read fails here; a start that
         # only moves to another line is named here by its new one.

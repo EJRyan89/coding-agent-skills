@@ -37,7 +37,7 @@ from job_pool import (
 )
 from job_selection import stale_job_seconds_problems
 from process_identity import process_status
-from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_base, pytest_command
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support
@@ -542,14 +542,14 @@ class NoteFixtures(unittest.TestCase):
         # test_atomic_file.py's teardown report, from a passing pytest run under the repository's pytest configuration,
         # as the runner starts a suite: its report reaches the runner's output and the step summary.
         scripts = REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts"
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, pytest_base() as basetemp:
             suite = Path(temporary) / "test_left_attached.py"
             suite.write_text(LEFT_ATTACHED.format(scripts=str(scripts)), encoding="utf-8")
             # The repository's configuration, read where the suite sits outside the repository, would have pytest
             # walk every folder above the suite up to the drive, the shared temporary folder included, whose entries
             # other suites remove while it lists them; --confcutdir keeps the walk inside the suite's own folder.
             command = pytest_command(
-                str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"), "--confcutdir", temporary
+                str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"), "--confcutdir", temporary, basetemp=basetemp
             )
             job = Job("left attached", "left attached", 1, lambda: run_process(command, PYTEST_ENVIRONMENT))
             with contextlib.redirect_stdout(io.StringIO()) as printed:
