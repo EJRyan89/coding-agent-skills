@@ -68,5 +68,6 @@ folder ends at the tree's top.
 the SDK's `dotnet format` on a `.slnx` solution, which the global tool cannot open, and on a `.sln` whose projects are
 all SDK-style, so a `.slnx` needs an SDK at the floor that reads it; it runs the global tool on any other `.sln`, one
 holding a project in the format before SDK-style ones. `dotnet-dependencies` reads project
-files on its own and uses the SDK, when present, for `dotnet nuget why`. `python deploy.py check` reports both tools
+files and restores on its own, and uses the SDK for `dotnet nuget why` only through `ask_sdk.py`, which you approve, for a project
+whose restore it cannot place. `python deploy.py check` reports both tools
 and their floors, and [Requirements](installation.md#requirements) lists them with their install commands.

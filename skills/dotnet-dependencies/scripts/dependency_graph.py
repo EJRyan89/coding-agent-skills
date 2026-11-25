@@ -23,13 +23,19 @@ forward slashes:
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
                   not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
                   bound stopped it at; its facts are missing
-    SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed, or was not asked since the
-                  .NET host or MSBuild would read a file the reader refused or cannot place; the graph walk answered
+    SDK_NOT_ASKED <project> <reason>                         why's walk may not have read the restore's assets file
+                  MSBuild reads for the project, and why: a place it cannot settle, where it reads obj/'s, or one
+                  outside the examined tree, where it reads none; then that ask_sdk.py would have `dotnet nuget why`
+                  locate it, or, run, that dotnet is not installed; once per project
+    SDK_FAILED    <project> <name> <reason>                  under ask_sdk.py, `dotnet nuget why` failed; the graph
+                  walk answered, the reason saying so where it answered from a restore it read from obj/
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
-                  assembly a package ships, or `name (vversion, graph vother)` for a package the SDK resolves at one
-                  version and the walk at another, every other version the walk took joined by `;` as in
-                  `graph v12.0.3;v11.0.0`; the source says whether `dotnet nuget why` answered or the walk did
+                  assembly a package ships, or `name (vversion, graph vother)` for a package reached through a
+                  project reference that the project the chain starts from resolves at one version and the referenced
+                  project's own restore, or the walk under the SDK's answer, at another, every other version the walk
+                  took joined by `;` as in `graph v12.0.3;v11.0.0`; the source says whether `dotnet nuget why`
+                  answered or the walk did
     TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit, the SDK's counted; the
                   first ones printed
     MISSING       <name>                                     no project reaches the name
@@ -42,8 +48,9 @@ forward slashes:
     SUMMARY       the result: why prints <paths> <names found> <names missing>, or with --all <items reached>;
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
-<frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
-project with no restore, whose facts are not kept per framework. Each project is evaluated as MSBuild evaluates it,
+<frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, a runtime-specific
+target as `<framework>/<runtime>`, as in `net8.0/win-x64`, or `-` for a project with no restore, whose facts are not
+kept per framework. Each project is evaluated as MSBuild evaluates it,
 once per build (msbuild_evaluation's docstring): its files and the files it imports in import order for the
 properties, then its items with the final properties. A project with no restore counts every Include and Update that
 may apply in one of its builds, and a Remove only where it applies in every build, and one that cannot be settled in
@@ -90,43 +97,50 @@ too, and lists each folder on the way, reading the metadata of a case-swapped na
 names by case, but reads no file's contents; `repo/../repo/Linked/Sub/../Other/Other.csproj`, with Linked leading
 outside, is resolved through Linked and then refused.
 
-`why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json no
-older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an answer,
-is an SDK_FAILED line. The SDK runs in the project's folder and evaluates the project through MSBuild, so a project is
-never passed to it when they would read a file the reader refused for where it lies, outside the examined tree or
-through a link leading out of it: an import, one the reader does not read because its condition cannot be settled or its
-path is a wildcard included, a nearest Directory.Build.props, Directory.Packages.props, or Directory.Build.targets, a
-*OfFileAbove start or candidate, an Exists() path, the restore's <project file>.nuget.g.props, .nuget.g.targets, or
-assets file where the files leave $(MSBuildProjectExtensionsPath), $(BaseIntermediateOutputPath), and
-$(ProjectAssetsFile) (msbuild_evaluation's docstring), the project's .user file, or the nearest global.json at or above
-the project's folder, which the .NET host reads to pick the SDK and MSBuild's resolvers read too; nor when they may read
-a file whose path the reader cannot settle, an Import's, such as one naming a property no file sets, or one of the
-restore's, such as after an Import the reader did not read, which may set its folder; nor when a global.json candidate
-cannot be stat. The walk answers that project alone, and an SDK_FAILED line for each name says why, naming the first
-such file. The graph walk runs for every project too: for a project the SDK answered, the walk's chains along a route
-the SDK printed are printed once with it, named `sdk`, with the walk's hops at the SDK's versions, and the walk's
-version of a package after `graph` where a referenced project's own restore resolves it apart, a split `conflicts`
-reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly or one through a
-packages.config project; for every other project it answers alone. So whether dotnet is installed changes which source a
-route names and which version leads where the two differ, never which routes are printed. A path a solution or project
-names is read only inside the examined tree, the checkout holding the solution or directory searched, and every read
-only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's docstring). Nothing inside the
-tree is stat, listed, or read through a link that leads outside it, judged from each name's own metadata and each link's
-text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for projects follows no link entry out of the
-tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE line naming the link and its target, and
-any other such entry is reported as a link the search does not follow, so a file link the script also reads, such as a
-linked Directory.Packages.props, is named twice, by the search and by the read. A --root is judged as named, before it
-is stat or resolved: the checkout holding it, the innermost one, nearest at or above it, is found from the top down
-(msbuild_reader.examined_tree), following a link on its way only while no checkout lies above it, and taken as it stands
-before the first link inside a checkout, so a link above the checkout, such as macOS's /var or a link to the place a
-repository is kept, is the user's own choice of root and is followed, while a link inside the checkout is never followed
-to look for a marker below it. A solution or folder --root names that such a link leads out of the checkout, and a
-solution in the root folder so linked, is a FAILED line naming the link; one whose link stays inside the checkout is
-read through. A `..` in --root is taken as the system takes it, inside the checkout (followed_inside): one after a link
-steps back from where the link leads, so a link before it that leads out of the checkout fails the run the same way, and
-one that climbs out of the checkout at its top leaves it there and is judged again in the folder it reaches. A project
-the search finds or a solution lists, an import, the nearest Directory.Build.props or Directory.Packages.props, a
-restore's assets, a packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec,
+An SDK-style project's chains come from the restore's assets file, which the walk reads where MSBuild's NuGet targets
+read it, as the project's files leave $(ProjectAssetsFile), else project.assets.json in $(MSBuildProjectExtensionsPath),
+which follows $(BaseIntermediateOutputPath), else obj/ (msbuild_evaluation's docstring), when that place lies inside the
+examined tree. It reads every target there, a runtime-specific one, which a package's runtime.json may add packages to,
+as a framework of its own, and below a project reference it takes what that restore records for the referenced project,
+the framework it resolves to and the packages and projects that flow from it, at the versions that restore resolves and
+along the edges it records, as the starting project builds with them, the referenced project's own restore's version
+after `graph` where it differs, a private package or project being walked on its own restore, a chain only the walk sees
+(PathFinder's docstring); `why --all`, `where`, and `conflicts` reach packages the same way, so its answer holds every
+chain, version, and framework `dotnet nuget why` prints from the same file, which is all that command reads once it has
+located the file. Where the files leave the place unsettled, such as after an Import the reader did not read, which may
+set it, or under the SDK's artifacts layout, the walk reads the assets file in obj/, where a restore writes it unless a
+file moves it, which may not be the one the build uses; where they leave it outside the tree, it reads none. For each
+such project, `why` prints an SDK_NOT_ASKED line saying so, and asks the SDK nothing: `dotnet nuget why` evaluates the
+project through MSBuild, and MSBuild and the .NET host that starts it read and run whatever the project and the
+machine's SDK configuration lead them to, beyond the examined tree: imports, the restore's generated .nuget.g.props and
+.targets, the project's .user file, the nearest global.json, whose sdk.paths names the SDK the host runs and whose
+msbuild-sdks the resolvers read, and every NuGet.Config from the project's folder up for a versioned MSBuild SDK. This
+script starts no dotnet; ask_sdk.py, which the skill grants to no runtime, answers `why` as it does and asks the SDK,
+with dotnet installed, about exactly those projects, whatever else MSBuild would read for them, once per project and
+name, in the project's folder. For a project the SDK answered, the walk takes the project file alone,
+leaving out a restore it read from obj/ (answered_view): its chains along a route the SDK printed are printed once with
+it, named `sdk`, under the framework the SDK names, with the walk's hops at the SDK's versions and the walk's version of
+a package after `graph` where it differs, and the walk adds every chain the SDK cannot see, such as one ending in an
+assembly or one through a packages.config project. A run that fails, even after printing part of an answer, is an
+SDK_FAILED line, and the walk answers that project, the line saying so where it answers from obj/. A path a solution or
+project names is read only inside the examined tree, the checkout holding the solution or directory searched, and every
+read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's docstring). Nothing inside
+the tree is stat, listed, or read through a link that leads outside it, judged from each name's own metadata and each
+link's text (ejryan89-skill-core's folder_walk.outside_link_refusal). The search for projects follows no link entry out
+of the tree, not even to learn what it leads to: a .csproj so linked is an UNREADABLE line naming the link and its
+target, and any other such entry is reported as a link the search does not follow, so a file link the script also reads,
+such as a linked Directory.Packages.props, is named twice, by the search and by the read. A --root is judged as named,
+before it is stat or resolved: the checkout holding it, the innermost one, nearest at or above it, is found from the top
+down (msbuild_reader.examined_tree), following a link on its way only while no checkout lies above it, and taken as it
+stands before the first link inside a checkout, so a link above the checkout, such as macOS's /var or a link to the
+place a repository is kept, is the user's own choice of root and is followed, while a link inside the checkout is never
+followed to look for a marker below it. A solution or folder --root names that such a link leads out of the checkout,
+and a solution in the root folder so linked, is a FAILED line naming the link; one whose link stays inside the checkout
+is read through. A `..` in --root is taken as the system takes it, inside the checkout (followed_inside): one after a
+link steps back from where the link leads, so a link before it that leads out of the checkout fails the run the same
+way, and one that climbs out of the checkout at its top leaves it there and is judged again in the folder it reaches. A
+project the search finds or a solution lists, an import, the nearest Directory.Build.props or Directory.Packages.props,
+a restore's assets, a packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec,
 that a link on its way, its own name included, leads outside the tree is an UNREADABLE line naming the link and its
 target; and an Exists() condition below such a link is reported and unsettled. A link whose target stays inside the tree
 is read through. The NuGet cache lies outside the tree and is read where it is, resolved first, through a reader bound
@@ -134,30 +148,20 @@ to the cache folder, so a link inside it that leads out of it is reported, not f
 tree is compared with another by its text, never by asking its folders how they compare names, so no folder outside the
 tree is listed to compare it. Limits: the names of the assemblies below a package's lib folder are found by the reader's
 search, which enters no folder link, so the assemblies below one that stays inside are not named, a Windows junction
-among them, and no folder holding a `.git` entry, which it takes for a nested checkout, reading no file's contents; a
-wildcard Import is judged as text and by its folder
-before the wildcard, since the reader expands none, so a link a wildcard matches is not judged, nor a link named after a
-`..` that follows a wildcard, as in `../*/../Shared/Common.props`, and so, of the restore's files, only the NuGet ones
-are judged, though MSBuild imports every <project file>.*.props and .targets in that folder; the restore's folder no
-file sets is taken as obj/, though the environment or the command line may set it; the search for global.json stops, as
-MSBuild's searches do, at anything of that name but a folder, a link to nothing included, which the .NET host may pass
-over to read one further up; an Exists() or *OfFileAbove path the reader cannot settle is stat by MSBuild wherever it
-leads, though no file there is read; the restore's generated files, the project's .user file, and the nearest
-global.json are judged by where they lie, never by what they hold, so an Import or a ProjectAssetsFile a generated file
-holds, a global.json's sdk.paths, which the .NET host honours from SDK 10, or its msbuild-sdks, that leads outside the
-tree is not seen, nor what the NuGet SDK resolver reads for a versioned MSBuild SDK, every NuGet.Config from the
-project's folder up and the user's and the machine's, or what it downloads; a link inside the checkout whose absolute
-target names the checkout through another spelling of its path, such as /tmp for macOS's /private/tmp, is refused as
-leading out of it, since a target is taken as inside only when it names the checkout as the checkout's own path is
-written; a `..` after a link or after a name that is not there, in --root or --project, is judged as Linux and macOS
-take it, after following the link, and refused as missing after a name not there, so on Windows a path the system would
-take by name can be refused; and the look at the links and the read are two steps (folder_walk.followed_inside), so a
-name replaced by a link between them is read through, and a hard link, being the file itself, is read as a file of the
-tree wherever its other names lie. The script changes nothing on disk but the graph file and runs no restore or build;
-it prints a last line FAILED <reason> when it cannot finish, such as when the root cannot be resolved, a solution found
-in the root folder, or a solution or folder --root names, is one a link inside the checkout leads out of it (`<root>
-cannot be examined: <reason>`), --project names no project of the root, --output is inside a skills directory, the home
-folder is not known, or the graph file cannot be written.
+among them, and no folder holding a `.git` entry, which it takes for a nested checkout, reading no file's contents; the
+restore's folder no file sets is taken as obj/, though the environment or the command line may set it, and a
+ProjectAssetsFile the restore's generated .nuget.g.props sets is not seen, since the reader does not read that file; a
+link inside the checkout whose absolute target names the checkout through another spelling of its path, such as /tmp for
+macOS's /private/tmp, is refused as leading out of it, since a target is taken as inside only when it names the checkout
+as the checkout's own path is written; a `..` after a link or after a name that is not there, in --root or --project, is
+judged as Linux and macOS take it, after following the link, and refused as missing after a name not there, so on
+Windows a path the system would take by name can be refused; and the look at the links and the read are two steps
+(folder_walk.followed_inside), so a name replaced by a link between them is read through, and a hard link, being the
+file itself, is read as a file of the tree wherever its other names lie. The script changes nothing on disk but the
+graph file and runs no restore or build; it prints a last line FAILED <reason> when it cannot finish, such as when the
+root cannot be resolved, a solution found in the root folder, or a solution or folder --root names, is one a link inside
+the checkout leads out of it (`<root> cannot be examined: <reason>`), --project names no project of the root, --output
+is inside a skills directory, the home folder is not known, or the graph file cannot be written.
 
 Exit status:
   0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
@@ -174,7 +178,7 @@ import sys
 import tempfile
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 
@@ -189,20 +193,28 @@ from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolut
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path
 from flat_text import fact_line, flat_text
 from folder_walk import BOUNDED, NotEntered, followed_inside, is_hidden, names_below, outside_link_refusal
-from msbuild_evaluation import Build, ProjectFile, Sources, UnplacedImport, Unsettled, read_project, tree_key
+from msbuild_evaluation import (
+    DEFAULT_RESTORE_FOLDER,
+    Build,
+    ProjectFile,
+    Sources,
+    Unsettled,
+    read_project,
+    tree_key,
+)
 from msbuild_reader import (
     ASSETS_FILE,
     CONFIG_FILES,
     PACKAGES_CONFIG,
+    RUNTIME_SEPARATOR,
     AssemblyRef,
     Assets,
     PackageNode,
     PackageRef,
-    Refused,
+    ProjectEntry,
     Unreadable,
     examined_tree,
     matching_framework,
-    nearest_file,
     os_unreadable,
     package_assemblies,
     read_assets,
@@ -210,6 +222,8 @@ from msbuild_reader import (
     read_packages_config,
     read_redirects,
     read_solution,
+    runtime_target,
+    target_framework,
 )
 from ordinal_case import ordinal_fold
 from path_containment import resolved_path, within
@@ -251,6 +265,8 @@ class Target:
     direct: list[PackageRef] = field(default_factory=list)
     project_refs: list[Path] = field(default_factory=list)
     assemblies: list[AssemblyRef] = field(default_factory=list)
+    # What the restore recorded for each project this framework reaches, directly or through another (`ProjectEntry`).
+    entries: list[ProjectEntry] = field(default_factory=list)
 
     def node(self, package: str) -> PackageNode | None:
         return self.nodes.get(ordinal_fold(package))
@@ -266,14 +282,24 @@ class Project:
     readable: bool = True
     targets: list[Target] = field(default_factory=lambda: [Target(NO_FRAMEWORK)])
     edges: str = "direct"
-    sdk_answers: bool = False
-    # Why a project the SDK would answer is not asked (`sdk_withheld`), the reason its SDK_FAILED line gives.
-    sdk_withheld: str | None = None
+    # Why the walk may not have read the SDK-style project's assets file MSBuild reads (`located_assets`), which
+    # ask_sdk.py has `dotnet nuget why` locate; None when it read it or the project has none to read.
+    assets_unread: str | None = None
+    # The targets the project file alone gives (`file_target`), which the walk takes for a project the SDK answered in
+    # place of a restore it may have guessed at (`answered_view`).
+    unrestored: list[Target] = field(default_factory=list)
+    # Whether the project's packages flow into the restore of a PackageReference project referencing it: False for a
+    # packages.config project, whose packages the walk takes from its own folder.
+    flows: bool = True
 
     def targets_for(self, framework: str) -> list[Target]:
-        """The targets a walk under `framework` enters: the target of that framework, else every one."""
-        match = matching_framework(framework, (target.framework for target in self.targets))
-        return [target for target in self.targets if target.framework == match] or self.targets
+        """The targets a walk under `framework` enters: the target of that framework, else, for a runtime-specific one,
+        the target of the framework it builds (`target_framework`), else every target that names no runtime."""
+        names = [target.framework for target in self.targets]
+        match = matching_framework(framework, names) or matching_framework(target_framework(framework), names)
+        found = [target for target in self.targets if target.framework == match]
+        plain = [target for target in self.targets if target.framework == target_framework(target.framework)]
+        return found or plain or self.targets
 
     def references_for(self, framework: str, key: PathKey) -> tuple[list[Path], list[AssemblyRef]]:
         """The projects and assemblies the targets a walk under `framework` enters reference, each once, a project by
@@ -393,22 +419,20 @@ def find_projects(
 SKIPPED_REASON = "the .NET search skips a folder so named, a version-control, dependency, build-output, or IDE folder"
 HIDDEN_REASON = "the folder is hidden, its name starting with a dot, which the search prunes"
 RETRY_ADVICE = "pass --root at its solution or its folder"
-SDK_NOT_ASKED = (
-    "dotnet nuget why was not asked, since MSBuild would reach {file}, which the reader refused: it lies outside the"
-    " examined tree or a link on its way leads out of it"
+# Why the walk does not read an SDK-style project's assets file (`located_assets`), and what an SDK_NOT_ASKED line
+# adds: how ask_sdk.py would have `dotnet nuget why` locate it, and what that lets read; or, run through it, why the
+# SDK was still not asked.
+ASSETS_UNSETTLED = (
+    "the walk cannot settle {written}, which names the restore's assets file, so it reads the one in obj/, if any,"
+    " where a restore writes it unless a file moves it, which may not be the one the build uses"
 )
-SDK_UNPLACED = (
-    "dotnet nuget why was not asked, since MSBuild may read the Import of {written} in {file}, whose path the reader"
-    " cannot settle"
+ASSETS_NOT_READ = "the walk does not read the restore's assets file at {file}: {reason}"
+ASK_SDK_ADVICE = (
+    "; rerun the query through ask_sdk.py to have dotnet nuget why locate it, which lets MSBuild and the .NET host read"
+    " and run whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
 )
-SDK_UNPLACED_GENERATED = (
-    "dotnet nuget why was not asked, since MSBuild reads the restore's {written} for {file}, whose path the reader"
-    " cannot settle"
-)
-SDK_NOT_JUDGED = (
-    "dotnet nuget why was not asked, since the reader cannot tell whether the .NET host reads {file}: {reason}"
-)
-GLOBAL_JSON = "global.json"
+NO_DOTNET = "; ask_sdk.py ran, but dotnet is not installed"
+GUESSED_RESTORE = "; the walk answered from the restore's assets file in obj/, which may not be the one the build uses"
 
 
 def followed_named(path: Path, tree: Path) -> tuple[Path | None, str | None]:
@@ -986,11 +1010,12 @@ def assembly_references(graph: Graph, project: Project, framework: str) -> list[
     return build.assemblies
 
 
-def closure_from_assets(graph: Graph, project: Project, assets_path: Path, services: Services) -> None:
-    """One target per framework the assets file restored, each with its own packages and direct references; the
-    project keeps its direct target when the file cannot be read or restored no framework."""
+def closure_from_assets(graph: Graph, project: Project, assets_path: Path) -> None:
+    """One target per target the assets file restored, each with its own packages and its framework's direct
+    references, a runtime-specific target's those of the framework it builds (`target_framework`); the project keeps
+    its direct target when the file cannot be read or restored no framework."""
     try:
-        assets = read_assets(assets_path, graph.reader, project.file.frameworks)
+        assets = read_assets(assets_path, graph.reader, project.file.frameworks, project.file.path.parent)
     except Unreadable as error:
         graph.refuse(error)
         return
@@ -1000,66 +1025,42 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
         Target(
             framework,
             {ordinal_fold(package): node for package, node in nodes.items()},
-            direct_references(graph, project, assets, framework),
-            project_references(graph, project, assets, framework),
-            assembly_references(graph, project, framework),
+            direct_references(graph, project, assets, target_framework(framework)),
+            project_references(graph, project, assets, target_framework(framework)),
+            assembly_references(graph, project, target_framework(framework)),
+            assets.projects.get(framework, []),
         )
         for framework, nodes in assets.nodes.items()
     ]
     project.edges = "assets"
-    try:
-        fresh = graph.reader.status(assets_path).st_mtime >= graph.reader.status(project.file.path).st_mtime
-    except OSError as error:
-        # Whether the restore is older than the project cannot be told, so the SDK is not asked to answer for it.
-        graph.refuse(os_unreadable(error, assets_path))
-        fresh = False
-    if fresh and services.which("dotnet") is not None:
-        # The SDK reads what sdk_withheld judges, so a project it withholds is never asked about and the walk answers it
-        # alone.
-        project.sdk_withheld = sdk_withheld(graph, project)
-        project.sdk_answers = project.sdk_withheld is None
 
 
-def sdk_withheld(graph: Graph, project: Project) -> str | None:
-    """Why `dotnet nuget why` is not asked about a restored project, None when it is: the .NET host and MSBuild would
-    read or stat a file the reader cannot judge to lie inside the examined tree. The first file the project's
-    evaluation refused for where it lies, else the first it could not place (`ProjectFile.unplaced`), else the nearest
-    global.json (`global_json_withheld`)."""
-    refused = project.file.refused()
-    if refused:
-        return SDK_NOT_ASKED.format(file=graph.relative(refused[0]))
-    unplaced = project.file.unplaced()
-    if unplaced:
-        return unplaced_reason(graph, unplaced[0])
-    return global_json_withheld(graph, project)
+def located_assets(graph: Graph, project: Project) -> Path | None:
+    """Where the walk reads the SDK-style project's assets file: where its evaluation leaves `$(ProjectAssetsFile)`,
+    else project.assets.json in the restore's folder (`ProjectFile.assets`), when that lies inside the examined tree
+    and no link on its way leads out of it; or, where the evaluation cannot settle it, as after an Import the reader
+    did not read, which may set it, project.assets.json in obj/, where a restore writes it by default. The project's
+    `assets_unread` then says why the walk may not have read the file MSBuild reads: a place the evaluation cannot
+    settle, or one outside the tree, which only MSBuild, through `dotnet nuget why`, can read, the walk reading none
+    for the second; a link leading out is also reported against the file, never followed."""
+    place = project.file.assets()
+    if place.path is None:
+        project.assets_unread = ASSETS_UNSETTLED.format(written=place.written)
+        return project.file.path.parent / DEFAULT_RESTORE_FOLDER / ASSETS_FILE
+    reason = refusal(place.path, graph.tree)
+    if reason is None and (reason := outside_link_refusal(place.path, graph.tree)) is not None:
+        graph.refuse(Unreadable(place.path, reason))
+    if reason is not None:
+        project.assets_unread = ASSETS_NOT_READ.format(file=graph.relative(place.path), reason=reason)
+        return None
+    return place.path
 
 
-def unplaced_reason(graph: Graph, entry: UnplacedImport) -> str:
-    template = SDK_UNPLACED_GENERATED if entry.generated else SDK_UNPLACED
-    return template.format(written=entry.written, file=graph.relative(entry.file))
-
-
-def global_json_withheld(graph: Graph, project: Project) -> str | None:
-    """Why the nearest global.json keeps the SDK from a project, None when it does not. The SDK runs in the project's
-    folder (`sdk_why.run_why`), so the .NET host, which picks the SDK and its resolvers by the nearest global.json at or
-    above the folder it runs in, and MSBuild's resolvers, which search from the project's folder, read the one this
-    search finds, as `nearest_file` searches: kept from the SDK when it lies outside the examined tree, a link on its
-    way leads out of it, or a candidate cannot be stat."""
-    try:
-        found = nearest_file(project.file.path.parent, GLOBAL_JSON, graph.reader)
-    except Refused as error:
-        return SDK_NOT_ASKED.format(file=graph.relative(error.file))
-    except Unreadable as error:
-        return SDK_NOT_JUDGED.format(file=graph.relative(error.file), reason=error.reason)
-    if found is not None and refusal(found, graph.tree) is not None:
-        return SDK_NOT_ASKED.format(file=graph.relative(found))
-    return None
-
-
-def build_closure(graph: Graph, project: Project, services: Services) -> None:
+def build_closure(graph: Graph, project: Project) -> None:
     """Fill the project's targets: the direct packages, their package nodes, and where their edges came from."""
     config = project.file.path.parent / PACKAGES_CONFIG
     if _present(graph, config):
+        project.flows = False
         direct: list[PackageRef] = []
         try:
             direct = read_packages_config(config, graph.reader)
@@ -1074,10 +1075,10 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
         closure_from_nuspecs(graph, project, direct, folders)
         refuse_file_unevaluated(graph, project, packages=False)
         return
-    project.targets = [file_target(project, list(project.file.packages))]
-    assets_path = project.file.path.parent / "obj" / ASSETS_FILE
-    if project.file.style == "sdk" and _present(graph, assets_path):
-        closure_from_assets(graph, project, assets_path, services)
+    project.targets = project.unrestored = [file_target(project, list(project.file.packages))]
+    assets_path = located_assets(graph, project) if project.file.style == "sdk" else None
+    if assets_path is not None and _present(graph, assets_path):
+        closure_from_assets(graph, project, assets_path)
     if project.targets[0].framework == NO_FRAMEWORK:
         refuse_file_unevaluated(graph, project, packages=True)
 
@@ -1096,7 +1097,7 @@ def _present(graph: Graph, path: Path) -> bool:
         return False
 
 
-def build_graph(root: Path, services: Services, narrowed: Path | None = None) -> Graph:
+def build_graph(root: Path, narrowed: Path | None = None) -> Graph:
     """Read the solution's projects and, for each one whose file could be read, its packages and redirects. A search
     for projects that finds none fails as `no_projects` says."""
     unreadable: list[tuple[Path, str]] = []
@@ -1112,7 +1113,7 @@ def build_graph(root: Path, services: Services, narrowed: Path | None = None) ->
     load_projects(graph, listed)
     for project in graph.projects.values():
         if project.readable:
-            build_closure(graph, project, services)
+            build_closure(graph, project)
             read_configs(graph, project)
     return graph
 
@@ -1146,6 +1147,16 @@ def package_hop(target: Target, package: str, requested: str | None) -> Hop:
     return ("package", node.id if node else package, node.version if node else requested or "")
 
 
+def package_step(owner: Target, package: str, requested: str | None, own: Target | None) -> Hop:
+    """A package hop of the walk (`package_hop`) in `owner`, the starting project's restore below a project reference,
+    with the version `own`, the referenced project's own target, resolves after `graph` where it differs."""
+    kind, name, version = package_hop(owner, package, requested)
+    node = own.node(package) if own is not None else None
+    if node is not None and version and node.version != version:
+        return kind, name, f"{version}, graph v{node.version}"
+    return kind, name, version
+
+
 def assembly_hop(name: str, version: str | None, hint_path: str | None) -> Hop:
     return ("assembly" if hint_path else "framework", name, version or "")
 
@@ -1158,6 +1169,91 @@ def labelled(rows: Iterable[tuple[str, Row]]) -> list[tuple[str, Row]]:
         if framework not in frameworks:
             frameworks.append(framework)
     return [(";".join(frameworks), row) for row, frameworks in merged.items()]
+
+
+@dataclass(frozen=True)
+class Visit:
+    """How the walk enters a project: under which framework, and, for a project whose packages flow into the starting
+    project's restore, that restore (`root`) and what it recorded for the project (`entry`), which the starting project
+    itself, whose restore it is, has none of. A project walked on its own restore has neither."""
+
+    framework: str
+    root: Target | None = None
+    entry: ProjectEntry | None = None
+
+
+@dataclass(frozen=True)
+class Entered:
+    """What the walk meets in a project it enters (`entered`): each referenced project with how it is entered, each
+    package with what it asked for, the target it is walked in, and the project's own target, whose version follows
+    after `graph` where it differs, and the assemblies it references."""
+
+    children: list[tuple[Project, Visit]]
+    packages: list[tuple[str, str | None, Target, Target | None]]
+    assemblies: list[AssemblyRef]
+
+
+def entered(graph: Graph, project: Project, visit: Visit) -> Entered:
+    """What the walk meets in `project` entered as `visit` says. A project the starting project's restore recorded
+    (`visit.entry`) gives the packages that entry says flow, walked in that restore, and its other direct packages, a
+    private one, walked in its own; any other gives its own direct packages, in its own restore. A referenced project
+    is entered as `child_visit` says."""
+    projects, assemblies = project.references_for(visit.framework, graph.key)
+    targets = project.targets_for(visit.framework)
+    flowing: dict[str, tuple[str, str]] = {}
+    packages: list[tuple[str, str | None, Target, Target | None]] = []
+    if visit.root is not None and visit.entry is not None:
+        root = visit.root
+        flowing = {
+            ordinal_fold(name): (name, version)
+            for name, version in visit.entry.dependencies.items()
+            if root.node(name) is not None
+        }
+        own = targets[0] if len(targets) == 1 else None
+        packages += [(name, version, root, own) for name, version in flowing.values()]
+    for target in targets:
+        packages += [
+            (direct.id, direct.version, target, None)
+            for direct in target.direct
+            if ordinal_fold(direct.id) not in flowing
+        ]
+    children = [
+        (child, child_visit(graph, child, visit))
+        for child in (graph.project_at(reference) for reference in projects)
+        if child is not None
+    ]
+    return Entered(children, packages, assemblies)
+
+
+def child_visit(graph: Graph, child: Project, visit: Visit) -> Visit:
+    """How the walk enters `child`, referenced by a project entered as `visit`: on the starting project's restore,
+    under the framework it records the child resolving to, when that restore records the child, the project entered
+    names it among what flows from it (the starting project itself flows every reference), and the child's packages
+    flow at all; otherwise on the child's own restore, under the same framework."""
+    root = visit.root
+    if root is None or not child.flows:
+        return Visit(visit.framework)
+    found = root_entry(graph, root, child)
+    if found is None:
+        return Visit(visit.framework)
+    if visit.entry is not None and ordinal_fold(found.name) not in {
+        ordinal_fold(name) for name in visit.entry.dependencies
+    }:
+        return Visit(visit.framework)
+    return Visit(found.framework or visit.framework, root, found)
+
+
+def root_entry(graph: Graph, root: Target, child: Project) -> ProjectEntry | None:
+    """What the restore `root` recorded for `child`: the entry whose library names its file, else, for an entry whose
+    library names none, the one named after the file."""
+    key = graph.key(child.file.path)
+    named = None
+    for entry in root.entries:
+        if entry.path is not None and graph.key(entry.path) == key:
+            return entry
+        if entry.path is None and named is None and ordinal_fold(entry.name) == ordinal_fold(child.file.path.stem):
+            named = entry
+    return named
 
 
 class PathFinder:
@@ -1176,12 +1272,25 @@ class PathFinder:
     back to the project the walk started from enter branches whose only way to the name is through a project the
     path has passed, and a ladder of project pairs sharing one `AssemblyName` finds each chain again under the same
     hops, never reaching the limit. Neither is a form a working solution writes: a reference cycle fails restore with
-    NU1108, and a project referencing two projects of one `AssemblyName` gets both assemblies at one name."""
+    NU1108, and a project referencing two projects of one `AssemblyName` gets both assemblies at one name.
 
-    def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
+    Below a project reference, the walk takes what the starting project's restore (`root`) recorded for the project
+    it enters (`entered`): the framework it resolves to, and the packages and projects that flow from it, each package
+    at the version that restore resolves and along the edges it records, as the starting project builds with it and
+    `dotnet nuget why` prints it, the version the referenced project's own restore resolves after `graph` where it
+    differs (`package_step`). What does not flow, a package or project reference the project marks `PrivateAssets`,
+    a packages.config project, or a project the restore records nothing for, is walked on its own restore, a chain
+    only the walk sees, as is everything below a starting project with no restore."""
+
+    def __init__(
+        self, graph: Graph, target: str, framework: str, limit: int | None = None, root: Target | None = None
+    ) -> None:
         self.graph = graph
         self.target = ordinal_fold(target)
         self.framework = framework
+        # The starting project's restored target, whose packages and edges a referenced project's packages are walked
+        # on, as `dotnet nuget why` walks them; None for a starting project with no restore.
+        self.root = root
         self.limit = PATH_LIMIT if limit is None else limit
         self.found: list[tuple[Hop, ...]] = []
         self.truncated = False
@@ -1191,7 +1300,7 @@ class PathFinder:
     def chains_from(self, project: Project) -> None:
         """Every chain from `project`."""
         self.projects = self.reaching_projects(project)
-        self.from_project(project, (), frozenset())
+        self.from_project(project, Visit(self.framework, self.root), (), frozenset())
 
     def record(self, path: tuple[Hop, ...]) -> None:
         if path in self.found:
@@ -1221,9 +1330,11 @@ class PathFinder:
         return reaching
 
     def reaching_projects(self, start: Project) -> frozenset[str]:
-        """The keys of the projects `start` reaches from which a chain ends at the name: each referencing a project
-        of that name, holding a direct package from which a chain ends at it, or referencing an assembly of that
-        name, and each referencing one of those."""
+        """The keys of the projects `start` reaches from which a chain may end at the name: each referencing a
+        project of that name, holding a direct package from which a chain ends at it in its own restore or the
+        starting project's, or referencing an assembly of that name, under any of its frameworks, and each
+        referencing one of those. It is read for every framework of each project, since the walk may enter one under
+        the framework a restore resolves it to, so it keeps every project the walk can end at the name from."""
         dependents: dict[str, list[str]] = {}
         pending: list[str] = []
         walked = {self.graph.key(start.file.path)}
@@ -1231,11 +1342,13 @@ class PathFinder:
         while queue:
             project = queue.popleft()
             key = self.graph.key(project.file.path)
-            projects, assemblies = project.references_for(self.framework, self.graph.key)
+            projects, assemblies = references_of(project.targets, self.graph.key)
+            owners = [*project.targets, *([] if self.root is None else [self.root])]
             ends = any(ordinal_fold(assembly.name) == self.target for assembly in assemblies) or any(
-                ordinal_fold(direct.id) in self.reaching_packages(target)
-                for target in project.targets_for(self.framework)
+                ordinal_fold(direct.id) in self.reaching_packages(owner)
+                for target in project.targets
                 for direct in target.direct
+                for owner in owners
             )
             for reference in projects:
                 child = self.graph.project_at(reference)
@@ -1251,33 +1364,36 @@ class PathFinder:
                 pending.append(key)
         return reaching_keys(pending, dependents)
 
-    def from_project(self, project: Project, path: tuple[Hop, ...], seen: frozenset[str]) -> None:
+    def from_project(self, project: Project, visit: Visit, path: tuple[Hop, ...], seen: frozenset[str]) -> None:
         key = self.graph.key(project.file.path)
         if self.truncated or key in seen or key not in self.projects:
             return
         seen = seen | {key}
-        projects, assemblies = project.references_for(self.framework, self.graph.key)
-        for reference in projects:
-            child = self.graph.project_at(reference)
-            if child is not None:
-                hop: Hop = ("project", child.file.assembly_name, "")
-                if self.names_target(child):
-                    self.record((*path, hop))
-                self.from_project(child, (*path, hop), seen)
-        for target in project.targets_for(self.framework):
-            for direct in target.direct:
-                self.from_package(target, direct.id, direct.version, path, frozenset())
-        for assembly in assemblies:
+        step = entered(self.graph, project, visit)
+        for child, child_visit in step.children:
+            hop: Hop = ("project", child.file.assembly_name, "")
+            if self.names_target(child):
+                self.record((*path, hop))
+            self.from_project(child, child_visit, (*path, hop), seen)
+        for package, requested, owner, own in step.packages:
+            self.from_package(owner, package, requested, path, frozenset(), own)
+        for assembly in step.assemblies:
             if ordinal_fold(assembly.name) == self.target:
                 self.record((*path, assembly_hop(assembly.name, assembly.version, assembly.hint_path)))
 
     def from_package(
-        self, owner: Target, package: str, requested: str | None, path: tuple[Hop, ...], seen: frozenset[str]
+        self,
+        owner: Target,
+        package: str,
+        requested: str | None,
+        path: tuple[Hop, ...],
+        seen: frozenset[str],
+        own: Target | None = None,
     ) -> None:
         fold = ordinal_fold(package)
         if self.truncated or fold in seen or fold not in self.reaching_packages(owner):
             return
-        path = (*path, package_hop(owner, package, requested))
+        path = (*path, package_step(owner, package, requested, own))
         if fold == self.target:
             self.record(path)
             return
@@ -1288,7 +1404,7 @@ class PathFinder:
         if shipped is not None:
             self.record((*path, ("assembly", shipped, "")))
         for dependency, version in node.dependencies.items():
-            self.from_package(owner, dependency, version, path, seen | {fold})
+            self.from_package(owner, dependency, version, path, seen | {fold}, own)
 
 
 def reaching_keys(start: Iterable[str], dependents: dict[str, list[str]]) -> frozenset[str]:
@@ -1313,53 +1429,66 @@ class Reached:
     first_hop: str
 
 
-Step = tuple[Hop, Target | None, Project | None]  # the hop, the target a package hop is resolved in, the project
+# The hop, the target a package hop is resolved in, and the project a project hop enters, with how it enters it.
+Step = tuple[Hop, Target | None, tuple[Project, Visit] | None]
 
 
 def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
     """Everything the project reaches under one framework, breadth first, each name once per version, with the
-    direct reference that brought it in first. A package's edges are its owner project's, so a package met again
-    through another project is walked again there: the two projects may resolve it to different versions."""
-    found: dict[tuple[str, str, str], Reached] = {}
-    walked_projects = {graph.key(project.file.path)}
-    walked_packages: set[tuple[int, str]] = set()  # the target's identity and the package's case-folded id
-    queue: deque[tuple[Step, str]] = deque()
+    direct reference that brought it in first. A project's packages are taken as the walk takes them (`entered`): a
+    referenced project's from the project's own restore where they flow into it, at the versions it resolves, else
+    from that project's own, so a package met again through another project may be walked again there. A project is
+    walked once for each way it is entered (`Visit`), so one met first through a private reference is still walked
+    where it flows, and a name reached both ways takes its first hop from a route that flows, whatever the order of
+    the references."""
+    found: dict[tuple[str, str, str], tuple[Reached, bool]] = {}  # the name -> how first reached, and whether it flows
+    root = next((target for target in project.targets if target.framework == framework), None)
+    start = Visit(framework, root if project.edges == "assets" else None)
+    walked_projects = {(graph.key(project.file.path), start.framework, start.root is not None)}
+    # The target's identity, the package's case-folded id, and whether the route to it flows, so a package met first
+    # on a private route is walked again on one that flows.
+    walked_packages: set[tuple[int, str, bool]] = set()
+    queue: deque[tuple[Step, str, bool]] = deque()
 
-    def own_steps(owner: Project) -> list[Step]:
-        steps: list[Step] = []
-        projects, assemblies = owner.references_for(framework, graph.key)
-        for reference in projects:
-            child = graph.project_at(reference)
-            if child is not None:
-                steps.append((("project", child.file.assembly_name, ""), None, child))
-        for target in owner.targets_for(framework):
-            steps += [(package_hop(target, direct.id, direct.version), target, None) for direct in target.direct]
-        steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in assemblies]
+    def own_steps(owner: Project, visit: Visit) -> list[Step]:
+        step = entered(graph, owner, visit)
+        steps: list[Step] = [
+            (("project", child.file.assembly_name, ""), None, (child, how)) for child, how in step.children
+        ]
+        steps += [(package_hop(target, package, wanted), target, None) for package, wanted, target, _ in step.packages]
+        steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in step.assemblies]
         return steps
 
-    def enqueue(steps: Iterable[Step], first: str | None) -> None:
-        queue.extend((step, first or hop_text(step[0])) for step in steps)
+    def enqueue(steps: Iterable[Step], first: str | None, flows: bool) -> None:
+        queue.extend((step, first or hop_text(step[0]), flows) for step in steps)
 
-    enqueue(own_steps(project), None)
+    # Below a starting project with no restore nothing is told apart, so every route counts as one that flows.
+    enqueue(own_steps(project, start), None, True)
     while queue:
-        (hop, target, child), first = queue.popleft()
+        (hop, target, child), first, flows = queue.popleft()
         kind, name, version = hop
-        found.setdefault(
-            (kind if kind != "framework" else "assembly", ordinal_fold(name), version),
-            Reached(kind, name, version, first),
-        )
-        if child is not None and graph.key(child.file.path) not in walked_projects:
-            walked_projects.add(graph.key(child.file.path))
-            enqueue(own_steps(child), first)
-        elif target is not None and (id(target), ordinal_fold(name)) not in walked_packages:
-            walked_packages.add((id(target), ordinal_fold(name)))
+        if child is not None:
+            # A project hop flows when the project is entered where it flows.
+            flows = flows and (child[1].root is not None or start.root is None)
+        key = (kind if kind != "framework" else "assembly", ordinal_fold(name), version)
+        if key not in found or (flows and not found[key][1]):
+            found[key] = (Reached(kind, name, version, first), flows)
+        if child is not None:
+            entered_project, visit = child
+            visit_key = (graph.key(entered_project.file.path), visit.framework, visit.root is not None)
+            if visit_key not in walked_projects:
+                walked_projects.add(visit_key)
+                enqueue(own_steps(entered_project, visit), first, flows)
+        elif target is not None and (id(target), ordinal_fold(name), flows) not in walked_packages:
+            walked_packages.add((id(target), ordinal_fold(name), flows))
             node = target.node(name)
             if node is not None:
                 enqueue(
                     [(package_hop(target, dep, wanted), target, None) for dep, wanted in node.dependencies.items()],
                     first,
+                    flows,
                 )
-    return list(found.values())
+    return [reached for reached, _ in found.values()]
 
 
 def named_project(graph: Graph, narrowed: Path) -> Project | None:
@@ -1393,22 +1522,37 @@ def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     return [project]
 
 
+def sdk_candidates(
+    graph: Graph, projects: list[Project], ask_sdk: bool, services: Services, out: Emitter
+) -> list[Project]:
+    """The projects `dotnet nuget why` is asked about: run through ask_sdk.py (`ask_sdk`), with dotnet installed, each
+    SDK-style project whose assets file the walk does not read (`located_assets`), whatever else its evaluation reads;
+    the walk answers every other project alone. Otherwise each such project is an SDK_NOT_ASKED line, once, saying why
+    the walk does not read its assets and what ask_sdk.py would do, or that dotnet is not installed."""
+    unread = [project for project in projects if project.assets_unread is not None]
+    if ask_sdk and services.which("dotnet") is not None:
+        return unread
+    for project in unread:
+        out.line(
+            "SDK_NOT_ASKED", graph.label(project), f"{project.assets_unread}{NO_DOTNET if ask_sdk else ASK_SDK_ADVICE}"
+        )
+    return []
+
+
 def sdk_answers(
-    graph: Graph, projects: list[Project], name: str, services: Services, out: Emitter
+    graph: Graph, candidates: list[Project], name: str, services: Services, out: Emitter
 ) -> dict[str, list[SdkPath]]:
-    """The SDK's chains per project it answered, keyed by the project's path; each failed run is printed, and so is each
-    project the SDK would answer but is not asked about (`sdk_withheld`), with the reason it gives."""
-    for project in projects:
-        if project.sdk_withheld is not None:
-            out.line("SDK_FAILED", graph.label(project), name, project.sdk_withheld)
-    candidates = [project for project in projects if project.sdk_answers]
+    """The SDK's chains per project it answered among `candidates` (`sdk_candidates`), keyed by the project's path;
+    each failed run is printed, saying so where the walk then answers from a restore it read from obj/, which may not
+    be the build's."""
     if not candidates:
         return {}
     answer = run_why([project.file.path for project in candidates], name, services, DEFAULT_TIMEOUT_SECONDS)
     for project in candidates:
         failure = answer.failures.get(project.file.path)
         if failure:
-            out.line("SDK_FAILED", graph.label(project), name, failure)
+            guessed = GUESSED_RESTORE if project.edges == "assets" else ""
+            out.line("SDK_FAILED", graph.label(project), name, f"{failure}{guessed}")
     return {
         graph.key(project.file.path): answer.paths[project.file.path]
         for project in candidates
@@ -1419,11 +1563,17 @@ def sdk_answers(
 def same_route(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
     """Whether a chain of the graph walk takes the route the SDK printed: the same packages and projects in order,
     whatever their versions. The SDK prints each package at the version the answering project resolves, and the
-    walk takes a referenced project's packages from that project's own restore, which may resolve another."""
+    walk takes a referenced project's packages from that project's own file, which may name another. A project
+    hop is one the SDK printed with no version (`sdk_hop`)."""
     return len(walked) == len(printed.hops) and all(
-        kind in ("package", "project") and ordinal_fold(name) == ordinal_fold(sdk_name)
-        for (kind, name, _), (sdk_name, _) in zip(walked, printed.hops, strict=True)
+        kind == sdk_hop(sdk_name, sdk_version)[0] and ordinal_fold(name) == ordinal_fold(sdk_name)
+        for (kind, name, _), (sdk_name, sdk_version) in zip(walked, printed.hops, strict=True)
     )
+
+
+def sdk_hop(name: str, version: str) -> Hop:
+    """A hop the SDK printed: a package with its version, or a referenced project, which it prints by name alone."""
+    return ("package", name, version) if version else ("project", name, "")
 
 
 def merged_chain(printed: SdkPath, walked: list[tuple[Hop, ...]]) -> str:
@@ -1431,7 +1581,7 @@ def merged_chain(printed: SdkPath, walked: list[tuple[Hop, ...]]) -> str:
     reads alike from both: each package at the SDK's version, and the walk's own versions of it that differ named after
     `graph`, joined by `;` in the order the walk found them."""
     if not walked:
-        return " > ".join(hop_text(("package", *hop)) for hop in printed.hops)
+        return " > ".join(hop_text(sdk_hop(*hop)) for hop in printed.hops)
     hops: list[str] = []
     for position, (_, sdk_version) in enumerate(printed.hops):
         kind, hop_name, _ = walked[0][position]
@@ -1445,6 +1595,15 @@ def merged_chain(printed: SdkPath, walked: list[tuple[Hop, ...]]) -> str:
     return " > ".join(hops)
 
 
+def answered_view(project: Project) -> Project:
+    """The project as the walk takes it once the SDK has answered it: a project the SDK answers is one whose assets
+    file the walk could not place, and a restore it read from obj/ instead may not be the build's, so the walk takes
+    the project file alone (`unrestored`), as for a project with no restore."""
+    if project.assets_unread is None:
+        return project
+    return replace(project, targets=project.unrestored, edges="direct")
+
+
 def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] | None, out: Emitter) -> int:
     """Print the chains from the project to the name, labelled with their frameworks; return how many lines. Each
     chain the SDK printed is named `sdk`, and holds every chain the walk found along the same route, so a route is
@@ -1454,24 +1613,28 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     first, and TRUNCATED names every framework a chain past the limit holds for, whichever found it."""
     walked: list[tuple[str, tuple[Hop, ...]]] = []
     truncated: list[str] = []
-    for target in project.targets:
-        finder = PathFinder(graph, name, target.framework)
-        finder.chains_from(project)
+    start = project if sdk is None else answered_view(project)
+    for target in start.targets:
+        finder = PathFinder(graph, name, target.framework, root=target if start.edges == "assets" else None)
+        finder.chains_from(start)
         walked += [(target.framework, chain) for chain in finder.found]
         if finder.truncated:
             truncated.append(target.framework)
     rows: list[tuple[str, Row]] = []
     claimed: set[int] = set()
+    # The SDK names a framework as the restore wrote it, so it is labelled with the name the project gives it, and a
+    # runtime-specific one with its runtime after that name.
+    names = [*(target.framework for target in start.targets), *project.file.frameworks]
     for answer in sdk or []:
-        framework = (
-            matching_framework(answer.framework, (target.framework for target in project.targets))
-            or answer.framework
-            or NO_FRAMEWORK
-        )
+        written, _, runtime = answer.framework.partition(RUNTIME_SEPARATOR)
+        framework = runtime_target(matching_framework(written, names) or written, runtime) or NO_FRAMEWORK
+        # The walk takes a project the SDK answers from its project file alone (`answered_view`), so its chains hold
+        # for every framework (`NO_FRAMEWORK`), and each framework the SDK prints takes them along its own routes.
         matched = [
             index
             for index, (walked_framework, chain) in enumerate(walked)
-            if index not in claimed and walked_framework == framework and same_route(chain, answer)
+            if (walked_framework == NO_FRAMEWORK or (index not in claimed and walked_framework == framework))
+            and same_route(chain, answer)
         ]
         claimed.update(matched)
         rows.append((framework, ("sdk", merged_chain(answer, [walked[index][1] for index in matched]))))
@@ -1491,11 +1654,14 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     return len(printed)
 
 
-def why_query(graph: Graph, names: list[str], narrowed: Path | None, services: Services, out: Emitter) -> None:
+def why_query(
+    graph: Graph, names: list[str], narrowed: Path | None, ask_sdk: bool, services: Services, out: Emitter
+) -> None:
     projects = selected_projects(graph, narrowed)
+    candidates = sdk_candidates(graph, projects, ask_sdk, services, out)
     paths, found, missing = 0, 0, 0
     for name in names:
-        answered = sdk_answers(graph, projects, name, services, out)
+        answered = sdk_answers(graph, candidates, name, services, out)
         count = sum(
             project_paths(graph, project, name, answered.get(graph.key(project.file.path)), out) for project in projects
         )
@@ -1795,12 +1961,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def run(arguments: argparse.Namespace, services: Services, out: Emitter) -> None:
-    graph = build_graph(arguments.root, services, arguments.project)
+    graph = build_graph(arguments.root, arguments.project)
     print_graph(graph, out)
     if arguments.command == "why" and arguments.all:
         why_all_query(graph, arguments.project, out)
     elif arguments.command == "why":
-        why_query(graph, arguments.names, arguments.project, services, out)
+        why_query(graph, arguments.names, arguments.project, arguments.ask_sdk, services, out)
     elif arguments.command == "where":
         where_query(graph, arguments.assembly, arguments.project, out)
     elif arguments.command == "conflicts":
@@ -1809,10 +1975,15 @@ def run(arguments: argparse.Namespace, services: Services, out: Emitter) -> None
         graph_query(graph, arguments.project, arguments.format, arguments.output, out)
 
 
-def main(argv: Sequence[str] | None = None, services: Services | None = None) -> int:
+def main(argv: Sequence[str] | None = None, services: Services | None = None, ask_sdk: bool = False) -> int:
+    """Run the query `argv` names; `ask_sdk`, which only ask_sdk.py passes, with its runner, has `why` ask `dotnet nuget
+    why` about the projects whose assets the walk cannot place (`sdk_candidates`)."""
     parsed = parser()
     arguments = parsed.parse_args(argv)
+    arguments.ask_sdk = ask_sdk
     if arguments.command == "why":
+        if ask_sdk and arguments.all:
+            parsed.error("ask_sdk.py takes names, not --all")
         if arguments.all and (arguments.names or arguments.project is None):
             parsed.error("--all takes --project and no names")
         if not arguments.all and not arguments.names:
