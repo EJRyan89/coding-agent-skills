@@ -1476,12 +1476,14 @@ class PytestRootPolicy(unittest.TestCase):
     )
 
     def problems(self, body: str) -> list[str]:
+        return self.reading({"tests/test_a.py": self.HEADER + textwrap.dedent(body)})[0]
+
+    def reading(self, files: Mapping[str, str]) -> tuple[list[str], list[str]]:
+        """pytest_root_reading over a fixture tree holding the runner module and files."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            write_fixture_tree(
-                root, {"tests/test_a.py": self.HEADER + textwrap.dedent(body), "tools/runner.py": self.RUNNER}
-            )
-            return suite_discovery.pytest_root_problems(root)
+            write_fixture_tree(root, {"tools/runner.py": self.RUNNER, **files})
+            return suite_discovery.pytest_root_reading(root)
 
     def line(self, body: str) -> int:
         """The line of the fixture suite that `# start` marks."""
@@ -1545,6 +1547,36 @@ class PytestRootPolicy(unittest.TestCase):
                         suite = Path(temporary) / "test_sleeping.py"
                         runner.run_suite(str(suite))  # start
                 """,
+            "a repository function given the suite as a keyword argument": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        runner.run_suite(suite=str(Path(temporary) / "test_child.py"))  # start
+                """,
+            "a name that is no literal joined to a temporary folder": """\
+                NAMES = ("test_child.py",)
+
+
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        for name in NAMES:
+                            subprocess.run(pytest_command(str(Path(temporary) / name)), check=True)  # start
+                """,
+            "a pytest.ini beside the suite of a run that names another configuration file": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        (Path(temporary) / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+                        configuration = str(REPOSITORY_ROOT / "pyproject.toml")
+                        subprocess.run(pytest_command(str(suite), "-c", configuration), check=True)  # start
+                """,
+            "a --rootdir naming the suite's folder in a run that names another configuration file": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        named = REPOSITORY_ROOT / "pyproject.toml"
+                        command = [*pytest_command(str(suite), "--rootdir", temporary), f"-c{named}"]  # start
+                        subprocess.run(command, check=True)
+                """,
             "a repository function that starts pytest on each suite of a list": """\
                 def test_runs() -> None:
                     with tempfile.TemporaryDirectory() as temporary:
@@ -1596,6 +1628,21 @@ class PytestRootPolicy(unittest.TestCase):
                             str(suite), "-c", str(REPOSITORY_ROOT / "pyproject.toml"), "--confcutdir", temporary
                         )
                         subprocess.run(command, check=True)
+                """,
+            "a pytest.ini written by the name suite_discovery gives it, or one bound to the literal": """\
+                from suite_discovery import PYTEST_INI
+
+                CONFIGURATION = "pytest.ini"
+
+
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as other:
+                        suite = Path(temporary) / "test_child.py"
+                        (Path(temporary) / PYTEST_INI).write_text("[pytest]\\n", encoding="utf-8")
+                        subprocess.run(pytest_command(str(suite)), check=True)
+                        elsewhere = Path(other) / "test_child.py"
+                        (Path(other) / CONFIGURATION).write_text("[pytest]\\n", encoding="utf-8")
+                        subprocess.run(pytest_command(str(elsewhere)), check=True)
                 """,
             # tests/tools/test_python_diagnostics.py's suite_folder.
             "a folder a helper makes holding a pytest.ini": """\
@@ -1688,10 +1735,104 @@ class PytestRootPolicy(unittest.TestCase):
                 def test_runs() -> None:
                     runner.run_temporary()  # start
                 """,
+            "str(tmp_path) comes from a parameter pytest gives the test or fixture test_runs": """\
+                def test_runs(tmp_path: Path) -> None:
+                    subprocess.run(pytest_command(str(tmp_path)), cwd=REPOSITORY_ROOT, check=True)  # start
+                """,
+            "str(suite) comes from a parameter pytest gives the test or fixture started": """\
+                import pytest
+
+
+                @pytest.fixture
+                def started(suite: Path) -> int:
+                    return subprocess.run(pytest_command(str(suite)), check=False).returncode  # start
+                """,
+            "a starred item of run's suites": """\
+                SUITES = ["tests/test_b.py"]
+
+
+                def test_runs() -> None:
+                    runner.run([*SUITES])  # start
+                """,
+            "str(REPOSITORY_ROOT.parents[1] / 'elsewhere' / 'test_x.py') is neither in the repository nor under a "
+            "temporary folder": """\
+                def test_runs() -> None:
+                    subprocess.run(pytest_command(str(REPOSITORY_ROOT.parents[1] / "elsewhere" / "test_x.py")))  # start
+                """,
         }
         for why, body in cases.items():
             with self.subTest(why):
                 self.assertEqual([self.unplaced(body, why)], self.problems(body))
+
+    def test_a_suite_that_starts_no_pytest_reads_no_start_and_passes(self) -> None:
+        body = "def test_runs() -> None:\n    subprocess.run([sys.executable, '-c', 'pass'], check=True)\n"
+        self.assertEqual(([], []), self.reading({"tests/test_a.py": self.HEADER + body}))
+
+    def test_a_suite_or_a_module_it_follows_that_cannot_be_read_is_named(self) -> None:
+        unreadable_suite = self.HEADER + "def test_runs(:\n    pytest_command('x')\n"
+        problems, _ = self.reading({"tests/test_a.py": unreadable_suite})
+        self.assertEqual(["tests/test_a.py"], [problem.split(" ", 1)[0] for problem in problems], problems)
+        calling = self.HEADER + "def test_runs() -> None:\n    runner.run_suite('tests/test_b.py')\n"
+        problems, _ = self.reading(
+            {"tests/test_a.py": calling, "tools/runner.py": "def run_suite(:\n    pytest_command\n"}
+        )
+        self.assertEqual(["tools/runner.py"], [problem.split(" ", 1)[0] for problem in problems], problems)
+
+    def test_a_call_through_a_local_binding_looks_up_no_module_file(self) -> None:
+        # A call through a name the module binds itself resolves to a placeholder such as `<local>.helper.run_suite`,
+        # which names no module: looking it up as one would stat `tests/<local>.py`, a name Windows refuses.
+        body = """\
+            def make() -> object:
+                return object()
+
+
+            def test_runs() -> None:
+                helper = make()
+                with tempfile.TemporaryDirectory() as temporary:
+                    helper.run_suite(str(Path(temporary) / "test_child.py"))
+            """
+        looked_up: list[list[str]] = []
+        module_file = suite_discovery.RepositoryModules._module_file
+
+        def recorded(base: Path, parts: list[str]) -> Path | None:
+            looked_up.append(parts)
+            return module_file(base, parts)
+
+        with mock.patch.object(suite_discovery.RepositoryModules, "_module_file", staticmethod(recorded)):
+            self.assertEqual([], self.problems(body))
+        self.assertTrue(looked_up)
+        self.assertEqual([], [parts for parts in looked_up if any("<" in part or ">" in part for part in parts)])
+
+    def test_a_module_a_suite_loads_by_its_path_is_not_followed(self) -> None:
+        # A stated limit: a call cannot name a function of a module loaded by its path, so the start reader asks
+        # RepositoryModules for the modules a suite imports by name alone.
+        loading = textwrap.dedent(
+            """\
+            import importlib.util
+            import tempfile
+            from pathlib import Path
+
+            REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+            SPEC = importlib.util.spec_from_file_location("runner", REPOSITORY_ROOT / "tools" / "runner.py")
+
+
+            def test_runs() -> None:
+                runner = importlib.util.module_from_spec(SPEC)
+                with tempfile.TemporaryDirectory() as temporary:
+                    runner.run_suite(str(Path(temporary) / "test_child.py"))
+            """
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"tools/runner.py": self.RUNNER, "tests/test_a.py": loading})
+            modules = suite_discovery.RepositoryModules(root)
+            suite = root / "tests" / "test_a.py"
+            loaded = (root / "tools" / "runner.py").resolve()
+            # Asked by name first, then with loads by path, each answer kept apart.
+            self.assertNotIn(loaded, modules.imports(suite, by_path=False))
+            self.assertIn(loaded, modules.imports(suite))
+            self.assertNotIn(loaded, modules.imports(suite, by_path=False))
+            self.assertEqual(([], []), suite_discovery.pytest_root_reading(root))
 
 
 class PoolSharedStatePolicy(unittest.TestCase):
