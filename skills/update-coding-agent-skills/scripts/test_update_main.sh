@@ -395,7 +395,7 @@ mkdir -p "$WRAPPER"
 cat >"$WRAPPER/git" <<EOF
 #!/usr/bin/env bash
 case " \$* " in
-  *" checkout --quiet topic "*) echo "error: switch refused by the test" >&2; exit 1 ;;
+  *" switch --quiet topic "*) echo "error: switch refused by the test" >&2; exit 1 ;;
 esac
 exec "$(command -v git)" "\$@"
 EOF
@@ -681,5 +681,26 @@ run_subject "$CLONE" main
 expect_status 1 "local tag only"
 expect_first_line "NOT_FAST_FORWARD" "local tag only"
 expect_not_deployed "local tag only"
+
+# The branch the clone was found on is recorded by its full name and switched back to as a branch, so a tag of the
+# same name, which git's short form of the branch would have to step around as heads/<branch>, never leaves HEAD
+# detached at the branch's commit after a fast-forward git refuses.
+begin_case 'refused on a branch a tag shares its name with'
+new_clone
+git_quiet -C "$CLONE" checkout -b topic
+git_quiet -C "$CLONE" tag topic
+printf 'added\n' >"$SEED/added again.txt"
+git_quiet -C "$SEED" add "added again.txt"
+git_quiet -C "$SEED" commit -m "add another file"
+git_quiet -C "$SEED" push origin main
+printf 'untracked copy\n' >"$CLONE/added again.txt"
+run_subject "$CLONE" main
+expect_status 1 "refused on a shared name"
+expect_first_line "NOT_FAST_FORWARD" "refused on a shared name"
+expect_no_stderr "refused on a shared name"
+if grep -q "^still on main:" <<<"$OUTPUT"; then fail "refused on a shared name: not switched back: $OUTPUT"; fi
+[ "$(git -C "$CLONE" symbolic-ref --quiet HEAD)" = "refs/heads/topic" ] ||
+  fail "refused on a shared name: HEAD is not the branch topic: $(git -C "$CLONE" rev-parse --symbolic-full-name HEAD)"
+expect_not_deployed "refused on a shared name"
 
 echo "update.sh main channel tests passed"
