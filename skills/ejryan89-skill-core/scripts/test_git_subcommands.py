@@ -337,11 +337,18 @@ def test_a_trap_action_the_grammar_refuses_raises_as_eval_s_script_does(action: 
         ('cat <<EOF\n$(git log) $(echo "a) $(git push)\nEOF\ngit pull', {"log", "pull"}),
         ("cat <<EOF\n$(git log) $(if) $(git push)\nEOF", {"log", "push"}),
         ('cat <<EOF\n`if` `echo "a` $(git push)\nEOF', {"push"}),
-        ("cat <<EOF\n$(for ((i = 0; i < 1; i++)) { :; }) $(git push)\nEOF", {"push"}),
     ],
 )
 def test_a_body_s_substitution_bash_cannot_read_runs_nothing(script: str, expected: set[str]) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# A substitution in a here-document's body that Bash reads and runs, but the grammar does not read, raises NotRead
+# rather than being passed over as one that runs nothing.
+def test_a_body_s_substitution_bash_runs_that_the_grammar_does_not_read_raises() -> None:
+    script = "cat <<EOF\n$(for ((i = 0; i < 1; i++)) { git push; }) $(git pull)\nEOF"
+    with pytest.raises(bash_syntax.NotRead):
+        git_subcommands.bash_git_subcommands(script, no_powershell)
 
 
 # Bash 5 runs each substitution inside `(( ))`, a for's arithmetic header, and their quoted strings, single or double.
