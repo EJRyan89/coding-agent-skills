@@ -1934,6 +1934,204 @@ class PytestRootPolicy(unittest.TestCase):
             self.assertEqual(([], []), suite_discovery.pytest_root_reading(root))
 
 
+class PytestScriptRootPolicy(unittest.TestCase):
+    """A suite that runs a repository script whose own pytest takes the suites on its command line, as
+    tests/tools/test_python_diagnostics.py's run_tool runs tools/python_diagnostics.py, pins each suite's root too."""
+
+    # A script that starts pytest on the suites its command line gives it, through tools/runner.py, with an option that
+    # takes a value and a flag, as tools/python_diagnostics.py's parser holds.
+    TOOL = textwrap.dedent(
+        """\
+        import argparse
+        from pathlib import Path
+
+        from tools import runner
+
+
+        def main(arguments: list[str] | None = None) -> int:
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--summary", type=Path)
+            parser.add_argument("--quiet", action="store_true")
+            parser.add_argument("suites", nargs="*")
+            namespace = parser.parse_args(arguments)
+            return max(runner.run(namespace.suites), default=0)
+        """
+    )
+    # What each fixture suite starts with: tests/tools/test_python_diagnostics.py's TOOL, run_tool, and suite_folder.
+    HEADER = textwrap.dedent(
+        """\
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        import unittest
+        from pathlib import Path
+
+        REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+        TOOL = REPOSITORY_ROOT / "tools" / "tool.py"
+
+
+        def run_tool(*arguments: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, "-B", str(TOOL), *arguments], env=environment, cwd=REPOSITORY_ROOT, check=False
+            )
+
+
+        def suite_folder() -> Path:
+            folder = Path(tempfile.mkdtemp(prefix="fixture-"))
+            (folder / "pytest.ini").write_bytes(b"[pytest]\\n")
+            return folder
+
+
+        """
+    )
+
+    def reading(self, body: str, tool: str | None = None) -> tuple[list[str], list[str]]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tools/runner.py": PytestRootPolicy.RUNNER,
+                    "tools/tool.py": self.TOOL if tool is None else tool,
+                    "tests/test_a.py": self.HEADER + textwrap.dedent(body),
+                },
+            )
+            return suite_discovery.pytest_root_reading(root)
+
+    def line(self, body: str) -> int:
+        lines = (self.HEADER + textwrap.dedent(body)).splitlines()
+        return next(number for number, text in enumerate(lines, 1) if text.endswith("# start"))
+
+    def unpinned(self, body: str) -> str:
+        return (
+            f"tests/test_a.py:{self.line(body)} starts pytest from the repository on a suite under the temporary "
+            f"folder and pins no root; {PytestRootPolicy.PINNING}"
+        )
+
+    def unplaced(self, body: str, why: str) -> str:
+        return (
+            f"tests/test_a.py:{self.line(body)} starts pytest from the repository on a suite this policy cannot place "
+            f"in the repository or see pinned ({why}); build the suite's path from a tempfile folder in the function "
+            "that starts it, and write a pytest.ini beside it or pass --confcutdir or --rootdir naming its folder"
+        )
+
+    def test_a_script_given_a_suite_under_a_temporary_folder_with_no_root_pinned_fails(self) -> None:
+        cases = {
+            # tests/tools/test_python_diagnostics.py's CleanRunTests before it pinned its fixture folders.
+            "run_tool given one suite": """\
+                class CleanRunTests(unittest.TestCase):
+                    def test_a_run_whose_every_suite_passes_exits_0(self) -> None:
+                        with tempfile.TemporaryDirectory() as temporary:
+                            suite = Path(temporary) / "test_clean.py"
+                            completed = run_tool(str(suite))  # start
+                """,
+            # Its FixtureRunTests, whose suites a dict holds, spread after an option and its value.
+            "run_tool given an option's value and suites spread from a folder the function makes": """\
+                class FixtureRunTests(unittest.TestCase):
+                    @classmethod
+                    def setUpClass(cls) -> None:
+                        folder = Path(tempfile.mkdtemp(prefix="python-diagnostics-test-"))
+                        cls.addClassCleanup(shutil.rmtree, folder)
+                        cls.suites = {}
+                        for name in ("test_a.py", "test_b.py"):
+                            cls.suites[name] = str(folder / name)
+                        summary = folder / "summary.md"
+                        cls.completed = run_tool("--summary", str(summary), *cls.suites.values())  # start
+                """,
+            "the script started as a program, by a literal path, given a flag and a suite": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = str(Path(temporary) / "test_child.py")
+                        subprocess.run([sys.executable, "-B", "tools/tool.py", "--quiet", suite], check=True)  # start
+                """,
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                problems, _ = self.reading(body)
+                self.assertEqual([self.unpinned(body)], problems)
+
+    def test_a_script_given_suites_whose_roots_are_pinned_or_in_the_repository_passes(self) -> None:
+        # tests/tools/test_python_diagnostics.py's forms since its fixture folders hold a pytest.ini.
+        body = """\
+            class FixtureRunTests(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls) -> None:
+                    folder = suite_folder()
+                    cls.addClassCleanup(shutil.rmtree, folder)
+                    cls.suites = {}
+                    for name in ("test_a.py", "test_b.py"):
+                        cls.suites[name] = str(folder / name)
+                    summary = folder / "summary.md"
+                    cls.completed = run_tool("--summary", str(summary), *cls.suites.values())  # read
+
+
+            class CleanRunTests(unittest.TestCase):
+                def test_a_run_whose_every_suite_passes_exits_0(self) -> None:
+                    folder = suite_folder()
+                    suite = folder / "test_clean.py"
+                    completed = run_tool(str(suite))  # read
+
+
+            class UsageTests(unittest.TestCase):
+                def test_a_run_given_no_suite_or_one_in_the_repository(self) -> None:
+                    run_tool(environment={})  # read
+                    run_tool("tests/no_such_suite.py", "tests")  # read
+                    with tempfile.TemporaryDirectory() as temporary:
+                        summary = Path(temporary) / "summary.md"
+                        run_tool("--summary", str(summary), "tests/test_b.py")  # read
+            """
+        problems, read = self.reading(body)
+        self.assertEqual([], problems)
+        # Each run_tool call is read as a start, and so is the command run_tool itself starts the script with.
+        lines = (self.HEADER + textwrap.dedent(body)).splitlines()
+        marked = [number for number, text in enumerate(lines, 1) if text.endswith("# read") or "*arguments]" in text]
+        self.assertEqual(sorted(f"tests/test_a.py:{number}" for number in marked), sorted(read))
+
+    def test_a_script_start_this_policy_cannot_read_is_named(self) -> None:
+        cases = {
+            "a starred item of the script's arguments, in a function that makes no folder": """\
+                SUITES = ["x"]
+
+
+                def test_runs() -> None:
+                    run_tool(*SUITES)  # start
+                """,
+            "str(suite) is neither in the repository nor under a temporary folder": """\
+                SUITES = {"a": Path("x")}
+
+
+                def test_runs() -> None:
+                    suite = SUITES["a"]
+                    run_tool(str(suite))  # start
+                """,
+        }
+        for why, body in cases.items():
+            with self.subTest(why):
+                problems, _ = self.reading(body)
+                self.assertEqual([self.unplaced(body, why)], problems)
+
+    def test_a_script_that_starts_no_pytest_or_takes_no_suite_is_not_a_start(self) -> None:
+        body = """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    run_tool(str(Path(temporary) / "test_child.py"))
+            """
+        quiet = textwrap.dedent(
+            """\
+            import argparse
+
+
+            def main() -> int:
+                argparse.ArgumentParser().add_argument("names", nargs="*")
+                return 0
+            """
+        )
+        self.assertEqual(([], []), self.reading(body, quiet))
+        options_only = self.TOOL.replace('parser.add_argument("suites", nargs="*")', 'parser.add_argument("--suite")')
+        self.assertEqual(([], []), self.reading(body, options_only))
+
+
 class PoolSharedStatePolicy(unittest.TestCase):
     RUNNER = "import alpha\nimport beta\n\nPOLICY_MODULES = (alpha, beta)\n"
 

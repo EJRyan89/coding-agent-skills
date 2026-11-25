@@ -51,7 +51,7 @@ from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
 from path_containment import posix_within, relative_within, within, written_refusal
 from shell_targets import run_bash_suite
-from skill_scripts import PATH_METHODS, STANDARD_STREAMS
+from skill_scripts import INTERPRETER, PATH_METHODS, STANDARD_STREAMS
 from toolchain import find_powershell
 from type_check_roots import MYPY_PATH_PREFIX
 from validation_support import (
@@ -1258,6 +1258,9 @@ PYTEST_COMMAND = "suite_discovery.pytest_command"
 # a module whose text holds one, a stated limit: a function that starts pytest only through a module that names
 # neither is not followed.
 PYTEST_START_TEXT = re.compile(r"""pytest_command|["']-m["']\s*,\s*["']pytest["']""")
+# The text of a suite that may run a repository script as a program, whose own pytest the policy reads too: the
+# interpreter, and a literal naming a Python file. A suite with neither is not read for a script it starts.
+SCRIPT_START_TEXT = (re.compile(r"\bsys\.executable\b"), re.compile(r"""["'][^"'\s]*\.py["']"""))
 # The options that pin a pytest run to a folder: --rootdir roots the run there and --confcutdir reads no conftest.py
 # above it, so either, naming the folder of the suite the run starts, keeps pytest from collecting any folder above.
 ROOT_PINNING_OPTIONS = frozenset({"--confcutdir", "--rootdir"})
@@ -1297,6 +1300,16 @@ FILE_WRITES = frozenset({"write_text", "write_bytes", "touch"})
 # The calls that give a path back in another spelling; skill_scripts' PATH_METHODS are the path methods that give
 # back the same path.
 PATH_SPELLINGS = frozenset({"str", "os.fspath", "pathlib.Path", "os.path.abspath"})
+# The interpreter's options that take the next argument as their value, in a command that starts a repository script
+# with skill_scripts' INTERPRETER; -m and -c end its options with a module or a program text, which no script file
+# names.
+INTERPRETER_VALUE_OPTIONS = frozenset({"-X", "-W"})
+INTERPRETER_PROGRAMS = ("-m", "-c")
+# The argparse actions of an option that takes the next argument as its value; any other action is read as a flag, so
+# the argument after it is read as a suite.
+VALUE_ACTIONS = frozenset({"store", "append", "extend"})
+# The characters no folder or file name a script's path is built from may hold: Windows refuses each in a name.
+UNNAMEABLE = frozenset('<>:"|?*')
 # The name pytest_root_problems reads a pytest.ini by, when a suite writes it by the constant rather than the literal.
 PYTEST_INI_NAME = "suite_discovery.PYTEST_INI"
 # The call that spells a path relative to the repository's root, which a pytest started there finds in the repository.
@@ -1485,27 +1498,42 @@ class _PytestStart:
     pins: tuple[tuple[str, ast.expr], ...] = ()
     configured: bool = False
     unread: str = ""
+    # For a script started as a program, the options its parser declares that take a value.
+    options: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class _Verdict:
     """What a pytest start does with one suite: "" when the suite lies in the repository or the start pins its root;
     "parameter" or "each" when the suite is a module-level function's parameter, or each item of one, which its callers
-    pin; "temporary" when it lies under the temporary folder and nothing pins its root; and "unread", with why, when
-    this policy cannot place it."""
+    pin; "spread" when a module-level function spreads its own starred parameter into a script's arguments, which its
+    callers give; "temporary" when it lies under the temporary folder and nothing pins its root; and "unread", with
+    why, when this policy cannot place it."""
 
     kind: str
     detail: str = ""
 
 
 @dataclass(frozen=True)
-class _Passing:
-    """The parameters of a module-level function whose argument, or each item of whose argument, is a suite it starts
-    pytest on from the repository with no root pinned, which its callers must pin: by position among the positional
-    ones (None for a keyword-only one), name, whether each item is one, and whether its start names its configuration
-    file; and why any start it holds cannot be read."""
+class _Passed:
+    """A parameter of a module-level function whose argument holds a suite it starts pytest on from the repository with
+    no root pinned, which its callers must pin: its position among the positional parameters (None for a keyword-only
+    one, and the count of them for a starred one), its name, and whether its argument is the suite ("one"), a list of
+    suites ("each"), or, for a starred parameter, each argument from its position on, given to a script whose parser
+    takes the options that take a value ("spread"); and whether its start names its configuration file."""
 
-    parameters: tuple[tuple[int | None, str, bool, bool], ...] = ()
+    position: int | None
+    name: str
+    kind: str
+    configured: bool
+    options: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _Passing:
+    """The parameters a module-level function passes suites through, and why any start it holds cannot be read."""
+
+    parameters: tuple[_Passed, ...] = ()
     unread: tuple[str, ...] = ()
 
 
@@ -1554,6 +1582,69 @@ def _pytest_calls(function: FunctionNode, resolver: CallableResolver) -> bool:
     )
 
 
+def script_parser(tree: ast.Module) -> tuple[frozenset[str], bool]:
+    """The options a script's argparse parser declares that take a value, and whether it takes a positional argument:
+    each add_argument call the module makes, its option strings from its literal arguments. An option whose action is
+    not one of VALUE_ACTIONS, or whose nargs is 0, is a flag."""
+    options: set[str] = set()
+    positional = False
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+        ):
+            continue
+        names = [str(item.value) for item in node.args if isinstance(item, ast.Constant)]
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        action, nargs = keywords.get("action"), keywords.get("nargs")
+        if names and not any(name.startswith("-") for name in names):
+            positional = True
+        elif (action is None or (isinstance(action, ast.Constant) and action.value in VALUE_ACTIONS)) and not (
+            isinstance(nargs, ast.Constant) and nargs.value == 0
+        ):
+            options |= {name for name in names if name.startswith("-")}
+    return frozenset(options), positional
+
+
+def _script_arguments(items: list[ast.expr], options: frozenset[str]) -> list[ast.expr]:
+    """The suites among the arguments a command gives a script: every argument but a literal, which is an option or a
+    relative path, the value after an option of `options`, and an f-string that opens with a dash. A starred item is
+    kept, and judged by the folders its function makes."""
+    suites: list[ast.expr] = []
+    index = 0
+    while index < len(items):
+        item = items[index]
+        index += 1
+        if isinstance(item, ast.Constant):
+            index += 1 if str(item.value) in options else 0
+            continue
+        lead = item.values[0] if isinstance(item, ast.JoinedStr) and item.values else None
+        if isinstance(lead, ast.Constant) and str(lead.value).startswith("-"):
+            continue
+        suites.append(item)
+    return suites
+
+
+def _concrete_path(key: PathKey, file: Path, root: Path) -> Path | None:
+    """The path a key names, from the module's own file, REPOSITORY_ROOT, or a relative literal at the root, through
+    literal joins and steps up; None for any other key, or one whose names Windows refuses."""
+    if key[0] == "join":
+        folder = _concrete_path(key[1], file, root)  # type: ignore[arg-type]  # a join holds its folder's key first
+        part = key[2]
+        if folder is None or not isinstance(part, str) or UNNAMEABLE & set(part):
+            return None
+        return folder.parent if part == ".." else folder if part == "." else folder / part
+    if key[0] == "parent":
+        inner = _concrete_path(key[1], file, root)  # type: ignore[arg-type]  # a step up holds the key it starts from
+        return inner.parent if inner is not None else None
+    if key[0] == "name":
+        return file if key[1] == "__file__" else root if str(key[2]).rsplit(".", 1)[-1] == "REPOSITORY_ROOT" else None
+    node = key[1]
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and written_refusal(node.value) is None:
+        parts = [part for part in re.split(r"[/\\]", node.value) if part not in {"", "."}]
+        return None if any(UNNAMEABLE & set(part) for part in parts) else root.joinpath(*parts)
+    return None
+
+
 def module_functions(tree: ast.Module) -> dict[str, FunctionNode]:
     """The functions a module defines at its top level, in a module-level block too, by name."""
     return {
@@ -1591,6 +1682,39 @@ class _PytestRoots:
             for module in [path, *self.modules.imports(path, by_path=False)]
         )
 
+    def names_a_script(self, path: Path) -> bool:
+        """Whether a suite may run a repository script that may start pytest as a program: its text holds
+        SCRIPT_START_TEXT, and a command list it holds opens with the interpreter and names, after its options, a path
+        whose literal end, joined to the suite's folder or the root, is a repository file whose text, or a module's it
+        imports by name, names a pytest start. Read without the binding reader, which only such a suite is given."""
+        text = self.modules.source(path)
+        if not all(pattern.search(text) for pattern in SCRIPT_START_TEXT):
+            return False
+        tree = self.modules.tree(path)
+        names = name_values(tree)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.List | ast.Tuple) and node.elts):
+                continue
+            if not ast.unparse(node.elts[0]).endswith(INTERPRETER.rpartition(".")[2]):
+                continue
+            script = next(
+                (item for item in node.elts[1:] if not (isinstance(item, ast.Constant) and str(item.value)[:1] == "-")),
+                None,
+            )
+            parts = path_parts(script, names) if script is not None else []
+            tail = [str(part) for part in itertools.takewhile(lambda part: part is not None, reversed(parts))][::-1]
+            if not tail or not tail[-1].endswith(".py") or any(UNNAMEABLE & set(part) for part in tail):
+                continue
+            for base in (path.parent, self.root):
+                candidate = base.joinpath(*tail)
+                if (
+                    within(candidate, self.root)
+                    and file_presence.is_present(candidate, other_is_absent=True)
+                    and self.names_a_start(candidate)
+                ):
+                    return True
+        return False
+
     def callee(self, path: Path, call: ast.Call) -> tuple[Path, FunctionNode] | None:
         """The module-level function a call runs, defined in the file or in a repository module it imports whose text
         holds a pytest start, or None."""
@@ -1620,7 +1744,7 @@ class _PytestRoots:
             if isinstance(node, ast.Call) and reader.resolver.name(node.func) == PYTEST_COMMAND:
                 found += self._command_start(reader, node)
             elif isinstance(node, ast.List | ast.Tuple):
-                found += self._list_start(reader, node)
+                found += self._list_start(reader, node) or self._script_start(path, reader, node)
             elif isinstance(node, ast.Call) and (callee := self.callee(path, node)) is not None:
                 found += self._passed_starts(node, *callee)
         return found
@@ -1683,17 +1807,62 @@ class _PytestRoots:
         suites, pins, configured = _operands(items[found:])
         return [_PytestStart(display.lineno, tuple(suites), tuple(pins), configured)]
 
+    def script(self, path: Path, node: ast.expr) -> frozenset[str] | None:
+        """The options that take a value of the repository script a command names, when it may start pytest on the
+        suites its command line gives it: its text, or a repository module's it imports by name, names a pytest start,
+        and its parser takes a positional argument, which this policy reads as the suites, without following the
+        parsed arguments to the start, a stated limit; None for any other program."""
+        key = _path_key(node, self.reader(path).resolver)
+        file = _concrete_path(key, path, self.root) if key is not None else None
+        if (
+            file is None
+            or file.suffix != ".py"
+            or not within(file.resolve(), self.root.resolve())
+            or not file_presence.is_present(file, other_is_absent=True)
+            or not self.names_a_start(file)
+        ):
+            return None
+        options, positional = script_parser(self.modules.tree(file))
+        return options if positional else None
+
+    def _script_start(self, path: Path, reader: _ModuleReader, display: ast.List | ast.Tuple) -> list[_PytestStart]:
+        """A repository script a command list starts with the interpreter, whose own pytest takes the suites its
+        command line gives it, as tests/tools/test_python_diagnostics.py's run_tool starts
+        tools/python_diagnostics.py."""
+        items = display.elts
+        if not items or reader.resolver.name(items[0]) != INTERPRETER:
+            return []
+        index = 1
+        while index < len(items) and isinstance(flag := items[index], ast.Constant) and str(flag.value).startswith("-"):
+            if str(flag.value).startswith(INTERPRETER_PROGRAMS):
+                return []
+            index += 2 if flag.value in INTERPRETER_VALUE_OPTIONS else 1
+        options = self.script(path, items[index]) if index < len(items) else None
+        if options is None:
+            return []
+        started, directory = self._started(reader, display)
+        if not started or not self._from_repository(reader, directory):
+            return []
+        suites = _script_arguments(items[index + 1 :], options)
+        return [_PytestStart(display.lineno, tuple(suites), options=options)]
+
     def _passed_starts(self, call: ast.Call, file: Path, function: FunctionNode) -> list[_PytestStart]:
         """The pytest runs a call starts through a function that starts pytest on a suite its caller gives it."""
         passing = self.passing(file, function)
         found = [_PytestStart(call.lineno, (), unread=f"{function.name} {why}") for why in passing.unread]
-        for position, name, each, configured in passing.parameters:
-            argument = call_argument(call, position, name)
-            if each and isinstance(argument, ast.List | ast.Tuple):
+        for passed in passing.parameters:
+            name, configured = passed.name, passed.configured
+            if passed.kind == "spread":
+                given = call.args[passed.position or 0 :]
+                suites = tuple(_script_arguments(given, passed.options))
+                found.append(_PytestStart(call.lineno, suites, configured=configured, options=passed.options))
+                continue
+            argument = call_argument(call, passed.position, name)
+            if passed.kind == "each" and isinstance(argument, ast.List | ast.Tuple):
                 suites = tuple(item for item in argument.elts if not isinstance(item, ast.Starred))
                 unread = "" if len(suites) == len(argument.elts) else f"a starred item of {function.name}'s {name}"
                 found.append(_PytestStart(call.lineno, suites, configured=configured, unread=unread))
-            elif argument is None or isinstance(argument, ast.Starred) or each:
+            elif argument is None or isinstance(argument, ast.Starred) or passed.kind == "each":
                 found.append(_PytestStart(call.lineno, (), unread=f"{function.name}'s {name} is not one it can read"))
             else:
                 found.append(_PytestStart(call.lineno, (argument,), configured=configured))
@@ -1707,13 +1876,18 @@ class _PytestRoots:
         # A function that calls itself, directly or through others, passes nothing further on that call.
         self._passing[key] = _Passing()
         positional = [argument.arg for argument in [*function.args.posonlyargs, *function.args.args]]
-        parameters: list[tuple[int | None, str, bool, bool]] = []
+        parameters: list[_Passed] = []
         unread: list[str] = []
         for start in self.starts(path, function):
             for verdict in self.verdicts(path, function, start):
-                if verdict.kind in {"parameter", "each"}:
+                if verdict.kind == "spread":
+                    parameters.append(
+                        _Passed(len(positional), verdict.detail, "spread", start.configured, start.options)
+                    )
+                elif verdict.kind in {"parameter", "each"}:
                     index = positional.index(verdict.detail) if verdict.detail in positional else None
-                    parameters.append((index, verdict.detail, verdict.kind == "each", start.configured))
+                    kind = "one" if verdict.kind == "parameter" else "each"
+                    parameters.append(_Passed(index, verdict.detail, kind, start.configured))
                 elif verdict.kind:
                     reason = verdict.detail or "the suite lies under the temporary folder and its root is not pinned"
                     unread.append(f"starts pytest at line {start.line} on a suite it does not pin: {reason}")
@@ -1729,6 +1903,8 @@ class _PytestRoots:
     def _verdict(self, path: Path, function: FunctionNode | None, start: _PytestStart, suite: ast.expr) -> _Verdict:
         reader = self.reader(path)
         resolver = reader.resolver
+        if isinstance(suite, ast.Starred):
+            return self._spread_verdict(path, function, suite)
         key = _path_key(suite, resolver)
         if key is None:
             return _Verdict("unread", f"{ast.unparse(suite)} names a path bound more than once")
@@ -1753,6 +1929,38 @@ class _PytestRoots:
         if base[0] == "node" and isinstance(base[1], ast.Call) and resolver.name(base[1].func) in TEMPORARY_FOLDERS:
             return _Verdict("temporary", "configured" if start.configured else "")
         return _Verdict("unread", f"{ast.unparse(suite)} is neither in the repository nor under a temporary folder")
+
+    def _spread_verdict(self, path: Path, function: FunctionNode | None, suite: ast.Starred) -> _Verdict:
+        """A verdict on the suites a starred argument spreads into a script's arguments: a module-level function's own
+        starred parameter passes them to its callers; otherwise they are read as suites under the folders the function
+        makes, a stated limit, pinned when each folder holds a pytest.ini and named when the function makes none."""
+        reader = self.reader(path)
+        vararg = function.args.vararg if function is not None else None
+        if (
+            function is not None
+            and vararg is not None
+            and isinstance(suite.value, ast.Name)
+            and suite.value.id == vararg.arg
+        ):
+            if _pytest_calls(function, reader.resolver) or reader.module_functions.get(function.name) is not function:
+                return _Verdict("unread", f"{ast.unparse(suite)} comes from a parameter no caller it reads gives")
+            return _Verdict("spread", vararg.arg)
+        made = [
+            node
+            for node in reader.candidates.get(id(function), [])
+            if isinstance(node, ast.Call)
+            and (reader.resolver.name(node.func) in TEMPORARY_FOLDERS or self._makes_ini(path, node))
+        ]
+        if not made:
+            return _Verdict("unread", "a starred item of the script's arguments, in a function that makes no folder")
+        written = {_path_key(folder, reader.resolver) for _, folder in self.ini_folders(reader, function)}
+        if all(self._makes_ini(path, node) or ("node", node) in written for node in made):
+            return _Verdict("")
+        return _Verdict("temporary")
+
+    def _makes_ini(self, path: Path, call: ast.Call) -> bool:
+        made = self.callee(path, call)
+        return made is not None and self.makes_ini_folder(*made)
 
     @staticmethod
     def _looped_parameter(reader: _ModuleReader, function: FunctionNode, name: str) -> str:
@@ -1851,23 +2059,34 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     that is a parameter pytest gives a test or a fixture, or one of a method or a nested function, is named, since no
     caller this policy reads pins it.
 
-    Stated limits, which no repository code writes but the first: a pytest a suite starts by running a script, as
-    tests/tools/test_python_diagnostics.py's run_tool runs tools/python_diagnostics.py, whose own pytest takes the
-    suites on its command line; a function of a module loaded by its path, or another callable a name does not resolve
-    to a module-level function; a suite a starred item of a `-m pytest` command list spreads; a `-m pytest` list that
-    holds no suite and is extended later, by unpacking, append, or +=; pytest started as a program of its own, through
-    pytest.main, or with `-mpytest` as one argument; a start whose cwd this policy does not read as a folder of the
-    repository, which starts elsewhere, as the mutation gate's in its own worktree; and a start inside an assertion
-    through a runner PROCESS_STARTS does not name, which is read as a command the assertion compares; a suite a starred
-    item spreads after pytest_command's first argument, as `pytest_command(suite, *more)`, which is read as options; a
-    literal naming an absolute path or a drive joined to a repository path, read as folders below it; and `-c<file>`
-    as one literal, which is not read as naming a configuration file.
+    A suite that runs a repository script as a program, a command list opening with the interpreter and naming the
+    script, as tests/tools/test_python_diagnostics.py's run_tool runs tools/python_diagnostics.py, starts pytest on
+    each argument the command gives the script that is not an option or the value of an option its parser declares,
+    when the script's text, or a module's it imports by name, names a pytest start and its parser takes a positional
+    argument. A function that spreads its own starred parameter into such a command, as run_tool does, passes each
+    argument from that position on to its callers. A starred argument is read as suites under the folders the
+    function that gives it makes: pinned when each holds a pytest.ini, failed when one is a temporary folder that does
+    not, and named when the function makes none.
+
+    Stated limits, which no repository code writes: a script started through `-m <module>` or `-c`, or whose path
+    names a file only through a binding this policy does not follow; the parsed arguments, which are not followed to
+    the function that starts pytest on them, so every positional argument is read as a suite, and an option the
+    parser declares through anything but a literal add_argument is read as a flag; a function of a module loaded by
+    its path, or another callable a name does not resolve to a module-level function; a suite a starred item of a
+    `-m pytest` command list spreads; a `-m pytest` list that holds no suite and is extended later, by unpacking,
+    append, or +=; pytest started as a program of its own, through pytest.main, or with `-mpytest` as one argument; a
+    start whose cwd this policy does not read as a folder of the repository, which starts elsewhere, as the mutation
+    gate's in its own worktree; a start inside an assertion through a runner PROCESS_STARTS does not name, which is
+    read as a command the assertion compares; a suite a starred item spreads after pytest_command's first argument, as
+    `pytest_command(suite, *more)`, which is read as options; a literal naming an absolute path or a drive joined to a
+    repository path, read as folders below it; and `-c<file>` as one literal, which is not read as naming a
+    configuration file.
     """
     problems: list[str] = []
     read: list[str] = []
     reader = _PytestRoots(root)
     for path in regression_suites(root):
-        if path.suffix.casefold() != ".py" or not reader.names_a_start(path):
+        if path.suffix.casefold() != ".py" or not (reader.names_a_start(path) or reader.names_a_script(path)):
             continue
         name = path.relative_to(root).as_posix()
         tree = reader.reader(path).tree
@@ -2166,7 +2385,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
             "tests/test_conftest.py:120",
             "tests/validation/test_suite_discovery.py:69",
             "tests/validation/test_job_pool.py:551",
+            "tests/tools/test_python_diagnostics.py:124",
             "tests/tools/test_python_diagnostics.py:175",
+            "tests/tools/test_python_diagnostics.py:200",
             "tests/tools/test_python_diagnostics.py:216",
             "tests/tools/test_python_diagnostics.py:241",
         }

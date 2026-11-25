@@ -1809,7 +1809,9 @@ or removed fails validation until its pattern follows it.
   `tests/validation/test_suite_discovery.py::PytestRootPolicy`
 - **Search for:** `pytest_command(` and `"-m", "pytest"` in a suite that writes the suite it starts under a temporary
   folder; a call into a module whose function starts pytest on the suite it is given, such as
-  `python_diagnostics.run_suite(`, on a suite under a temporary folder with nothing beside it.
+  `python_diagnostics.run_suite(`, on a suite under a temporary folder with nothing beside it; a `sys.executable`
+  command naming a repository script that starts pytest on its arguments, such as `run_tool(` running
+  `tools/python_diagnostics.py`, given a suite under a temporary folder with nothing beside it.
 - **Examples:** #3301, whose `tests/tools/test_python_diagnostics.py` turned main's Windows legs red; #3304, which
   wrote a pytest.ini beside its fixture suites.
 
