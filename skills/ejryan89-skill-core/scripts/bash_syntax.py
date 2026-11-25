@@ -85,11 +85,16 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - An option the text does not turn on itself is not seen: one the environment's SHELLOPTS, BASHOPTS, POSIXLY_CORRECT,
   or BASH_COMPAT turns on, one a shell is started with, as `bash -O extglob` or `--posix`, or on a script's first line,
   one a startup file sets, and an interactive shell's, which expands aliases and history by default.
-- A set or shopt behind a name the text does not settle, as `"$x" -o posix`, or in a text eval or another shell runs,
-  which each reader reads as its own text, is read where that text is; and POSIXLY_CORRECT or BASH_COMPAT assigned
-  other than before a command, as a declaration builtin's NAME=value, or by ${NAME:=word}, as by a declaration that
-  gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name reference, or an arithmetic assignment,
-  is not seen.
+- A set or shopt behind a name the text does not settle, as `"$x" -o posix`, or behind a glob or a brace expansion in
+  the command's name or in command's options, as `{set,-k}` or `command -[p] set -k`, or in a text eval or another
+  shell runs, which each reader reads as its own text, is read where that text is; and POSIXLY_CORRECT or BASH_COMPAT
+  assigned other than before a command, as a declaration builtin's NAME=value, or by ${NAME:=word}, as by a
+  declaration that gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name reference, or an
+  arithmetic assignment, or by ${NAME:=word} in an array assignment's element or inside `$(( ))`, as
+  `x=( ${POSIXLY_CORRECT:=1} )`, is not seen.
+- A brace expansion whose quoted or escaped text or inner braces split it, as `shopt -s {'extglob',x}`,
+  `{x\\,y,extglob}`, or `{{a},extglob}`, is read as the one word its text spells, so set or shopt given one is read as
+  given that word.
 """
 
 from __future__ import annotations

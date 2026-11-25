@@ -255,7 +255,11 @@ does not settle. Every option Bash's `set -o` and `shopt -p` print is decided th
 script does not turn on itself, as the environment or a shell's start options set one, nor
 `POSIXLY_CORRECT` or `BASH_COMPAT` set other than by NAME=value before a command, a declaration builtin's NAME=value,
 or `${NAME:=word}`, as a declaration that gives no value, a `{NAME}>` redirection, `read`, `printf -v`, a loop, a name
-reference, or an arithmetic assignment sets one. In PowerShell it
+reference, or an arithmetic assignment sets one, or `${NAME:=word}` in an array assignment's element or inside
+`$(( ))` does, as `x=( ${POSIXLY_CORRECT:=1} )`; nor a set or shopt behind a glob or a brace expansion in the
+command's name or in `command`'s options, as `{set,-k}` or `command -[p] set -k`; nor a brace expansion whose quoted
+or escaped text or inner braces split it, as `shopt -s {'extglob',x}`, `{x\,y,extglob}`, or `{{a},extglob}`, which
+it reads as the one word its text spells. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`
