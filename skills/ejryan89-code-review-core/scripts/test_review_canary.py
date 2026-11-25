@@ -27,6 +27,7 @@ from git_client import subprocess_runner
 from link_probe import is_link_or_junction
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
+from test_atomic_file import attached_volume
 from test_review_archive import unstatable
 from test_review_runtime_validation import directory_link
 from typed_fields import FieldError
@@ -664,19 +665,8 @@ class RealSidecarVolumeTests(unittest.TestCase):
 
     def test_the_sidecars_macos_writes_on_fat_and_exfat_are_never_committed(self) -> None:
         for file_system in ("MS-DOS", "ExFAT"):
-            with self.subTest(file_system=file_system), tempfile.TemporaryDirectory() as temporary:
-                image = Path(temporary).resolve() / "volume.dmg"
-                mount = Path(temporary).resolve() / "mount"
-                mount.mkdir()
-                hdiutil = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE"]
-                subprocess.run([*hdiutil, str(image)], check=True, capture_output=True, timeout=120)
-                attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
-                subprocess.run(attach, check=True, capture_output=True, timeout=120)
-                try:
-                    self._check_volume(mount)
-                finally:
-                    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
-                    subprocess.run(detach, check=True, capture_output=True, timeout=120)
+            with self.subTest(file_system=file_system), attached_volume(file_system) as mount:
+                self._check_volume(mount)
 
     def _check_volume(self, volume: Path) -> None:
         directory = write_fixture(volume / "fixture", {"doc.md": b"old\n"}, {"doc.md": b"new\n", "docs/a.md": b"a\n"})
