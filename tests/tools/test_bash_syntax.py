@@ -1225,3 +1225,32 @@ def test_arithmetic_the_reader_may_not_close_in_a_here_documents_body_is_refused
 def test_a_documented_limit_a_reserved_word_after_a_close_or_a_close_in_a_regex_group_is_an_error(text: str) -> None:
     with pytest.raises(BashSyntaxError):
         bash_syntax.parse(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("! (( x > 1 ))", []),
+        ("{ (( x > 1 )); }", []),
+        ("if (( x > 1 )); then (( x > 1 )); elif (( x > 1 )); then (( x > 1 )); else (( x > 1 )); fi", []),
+        ("while (( x > 1 )); do (( x > 1 )); done", []),
+        ("until (( x > 1 )); do (( x > 1 )); done", []),
+        ("time (( x > 1 ))", []),
+        ("coproc (( x > 1 ))", []),
+        ("if true; then a=(1) git push; fi", [["true"], ["git", "push"]]),
+    ],
+)
+def test_after_each_reserved_word_that_opens_a_command_a_command_starts(text: str, expected: list[list[str]]) -> None:
+    # Bash reads `((` as an arithmetic command, and NAME=( ) as an array assignment, only where a command starts, which
+    # each of these words opens; elsewhere `(( x > 1 ))` would be two subshells running a program x with its output
+    # sent to a file named 1.
+    if "coproc" not in text or bash_reads_coprocesses():
+        bash_agreement.assert_reader_agrees([text])
+    assert [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)] == expected
+
+
+def test_a_here_documents_unclosed_expansion_is_refused_by_name() -> None:
+    with pytest.raises(
+        bash_syntax.NotRead, match=r"^a here-document's body holds an expansion the reader does not close$"
+    ):
+        bash_syntax.simple_commands('cat <<EOF\n$(echo "a)\nEOF\n')

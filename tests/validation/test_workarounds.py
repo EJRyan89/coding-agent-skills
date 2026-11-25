@@ -256,6 +256,9 @@ TABLE = "NOT_READ: dict[str, str] = {'coproc': 'a reason'}\n"
         "import reader\nreader.NOT_READ['fi'] = ''\n",
         "import reader\nreader.NOT_READ = {}\n",
         "(NOT_READ := {})\n",
+        "def outer() -> None:\n    def inner() -> None:\n        NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ.update(fi='')\n",
         "class Reader:\n    NOT_READ = {}\n\n    def add(self) -> None:\n        NOT_READ['fi'] = ''\n",
         "class Reader:\n    NOT_READ = {}\n    add = lambda self: NOT_READ.update(fi='')\n",
     ],
@@ -284,6 +287,8 @@ def test_a_write_to_a_not_read_table_after_its_own_assignment_fails(write: str) 
         "def add(**NOT_READ: str) -> None:\n    NOT_READ['x'] = ''\n",
         "ADD = lambda NOT_READ: NOT_READ.update(x='')\n",
         "class Reader:\n    def add(self, NOT_READ: dict[str, str]) -> None:\n        NOT_READ['x'] = ''\n",
+        "REASONS = list(NOT_READ.values()) + [NOT_READ.copy()]\n",
+        "KNOWN = NOT_READ.__contains__('coproc') and NOT_READ.__getitem__('coproc') and NOT_READ.__len__()\n",
         "COPY = dict(NOT_READ)\n",
     ],
 )
@@ -299,3 +304,19 @@ def test_a_module_whose_table_cannot_be_read_names_the_module_never_passes_empty
         (root / READER).write_bytes(b"NOT_READ = {'x': '\xff'}\n")
         problems = not_read_problems(root, [root / "tools" / "broken.py", root / READER])
     assert [problem.split(" ")[0] for problem in problems] == [READER, "tools/broken.py"], problems
+
+
+@pytest.mark.parametrize("before", ["WORDS = ['coproc']\n", "class Words:\n    pass\n\n\nWords.first = 'coproc'\n"])
+def test_a_not_read_table_after_another_module_level_assignment_is_read_from_its_own(before: str) -> None:
+    assert fixture_not_read({READER: before + TABLE}) == []
+
+
+def test_each_not_read_problem_names_its_module_its_line_and_what_to_do() -> None:
+    assert fixture_not_read(
+        {READER: TABLE + "\nNOT_READ['fi'] = ''\n", "tools/reader.py": "NOT_READ = {'x': ''}\n"}
+    ) == [
+        f"{READER}:3 writes NOT_READ after the assignment validation reads its reasons from; add each entry to that "
+        "literal instead",
+        "tools/reader.py NOT_READ must map each catalogue entry the module leaves unread to its reason, as a literal "
+        "dictionary of non-empty texts",
+    ]
