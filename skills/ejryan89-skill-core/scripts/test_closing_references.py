@@ -13,6 +13,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from closing_references import (
+    CLOSING_KEYWORDS,
+    KEYWORDS,
+    NOT_READ,
     REPOSITORY,
     ClosingReference,
     closing_references,
@@ -37,6 +40,7 @@ from closing_references import (
         ("resolved #12", ClosingReference(None, 12)),
         ("Closes owner/repo.name#12", ClosingReference("owner/repo.name", 12)),
         ("Fixes https://github.com/owner/repo/issues/12", ClosingReference("owner/repo", 12)),
+        ("Fixes https://github.com/owner/repo/pull/12", ClosingReference("owner/repo", 12)),
     ],
 )
 def test_each_keyword_and_reference_form_is_read(text: str, expected: ClosingReference) -> None:
@@ -50,7 +54,6 @@ def test_each_keyword_and_reference_form_is_read(text: str, expected: ClosingRef
         "discloses #12",  # a keyword inside a word
         "Closes #",  # no number
         "Closes https://example.com/owner/repo/issues/12",  # another host
-        "Closes https://github.com/owner/repo/pull/12",  # a pull request, not an issue
         f"Closes #1{'0' * 5000}",  # past the digit limit
         "Closes #12a",  # a number running into a word
         "fixes GH-hosted runners",  # GH- with no number
@@ -85,12 +88,70 @@ def test_a_reference_is_in_a_repository_by_its_name_in_any_case_or_by_naming_non
     assert not ClosingReference("other/repo", 1).in_repository("Owner/Repo")
 
 
+# GitHub's closing keywords as its page "Linking a pull request to an issue" lists them
+# (https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue),
+# pinned here because GitHub publishes no list a test can read, so a keyword the page adds is pinned by hand and then
+# fails the catalogue test until the reader reads it, refuses it, or names it in NOT_READ.
+DOCUMENTED_KEYWORDS = ("close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved")
+# What the same page says may follow a keyword: a space, or a colon, with the keyword in upper case too.
+DOCUMENTED_SEPARATORS = (" ", ": ")
+# Each form of an issue or pull request reference GitHub's pages document, written for number 1 of o/r: the closing
+# page's two, `#<n>` and `<owner>/<repo>#<n>`, which also says a keyword before a pull request's reference closes that
+# pull request; the rows of the "Issues and pull requests" table of its autolink page
+# (https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls),
+# which adds `GH-<n>` and the URL of an issue or a pull request; and the `redirect.github.com` URL that page's
+# "Avoiding backlinks to linked references" offers in place of `github.com`.
+DOCUMENTED_REFERENCES = {
+    "#1": ClosingReference(None, 1),
+    "o/r#1": ClosingReference("o/r", 1),
+    "GH-1": ClosingReference(None, 1),
+    "https://github.com/o/r/issues/1": ClosingReference("o/r", 1),
+    "https://github.com/o/r/pull/1": ClosingReference("o/r", 1),
+    "https://redirect.github.com/o/r/issues/1": ClosingReference("o/r", 1),
+}
+
+
+def decided(text: str, expected: ClosingReference) -> bool:
+    """Whether the reader reads `text` as closing `expected` and nothing else, or refuses it as a keyword before the
+    start of a reference that names no issue it reads."""
+    read = closing_references(text)
+    return read == [expected] or (read == [] and title_holds_closing_reference(text))
+
+
+def test_the_reader_reads_no_keyword_github_does_not_document() -> None:
+    assert sorted(set(KEYWORDS) - set(DOCUMENTED_KEYWORDS)) == [], "remove each: GitHub documents no such keyword"
+    # Each documented keyword is a word of the pattern in any case, and a word that only starts like one is none.
+    for keyword in DOCUMENTED_KEYWORDS:
+        for spelled in (keyword, keyword.title(), keyword.upper(), keyword.swapcase()):
+            assert re.fullmatch(CLOSING_KEYWORDS, spelled, re.IGNORECASE), spelled
+    for word in ("clos", "closing", "closure", "fixing", "fixs", "fixd", "resolv", "resolving", "resolution", "fixe"):
+        assert not re.fullmatch(CLOSING_KEYWORDS, word, re.IGNORECASE), word
+
+
+def test_every_documented_keyword_and_reference_is_read_refused_or_not_read_with_a_reason() -> None:
+    undecided = [
+        text
+        for keyword, separator, reference in itertools.product(
+            DOCUMENTED_KEYWORDS, DOCUMENTED_SEPARATORS, DOCUMENTED_REFERENCES
+        )
+        for spelled in (keyword, keyword.title(), keyword.upper())
+        if not decided(text := f"{spelled}{separator}{reference}", DOCUMENTED_REFERENCES[reference])
+        and not (
+            (f"{keyword} #1" in NOT_READ or f"Closes {reference}" in NOT_READ)
+            and closing_references(text) == []
+            and not title_holds_closing_reference(text)
+        )
+    ]
+    assert undecided == [], (
+        "read each in closing_references, refuse it as a keyword before a reference's start, or name its keyword as "
+        "`<keyword> #1`, or its reference as `Closes <reference>`, in closing_references.NOT_READ with the reason"
+    )
+
+
 # The catalogue the reader covers, from which the table below is generated, so a spelling added to one axis is read in
-# every combination with the others. Each keyword form, in three cases:
-KEYWORDS = [
-    spelled
-    for keyword in ("close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved")
-    for spelled in (keyword, keyword.title(), keyword.upper())
+# every combination with the others. Each documented keyword, in three cases:
+SPELLED_KEYWORDS = [
+    spelled for keyword in DOCUMENTED_KEYWORDS for spelled in (keyword, keyword.title(), keyword.upper())
 ]
 # What may stand between the keyword and the reference, `{}` marking where the keyword goes.
 SEPARATORS = ["{} ", "{}: ", "{}:", "{}", "{}\t", "{} : ", "**{}** ", "**{}:** ", "**{}**: ", "{} **"]
@@ -107,13 +168,15 @@ REFERENCES = {
     "github.com/o/r/issues/12": ClosingReference("o/r", 12),
     "<https://github.com/o/r/issues/12>": ClosingReference("o/r", 12),
     "https://github.com/o/r/issues/12#issuecomment-1": ClosingReference("o/r", 12),
+    "https://github.com/o/r/pull/12": ClosingReference("o/r", 12),
+    "https://github.com/o/r/pull/12/files": ClosingReference("o/r", 12),
 }
 
 
 @pytest.mark.parametrize(
     ("keyword", "separator", "reference"),
     [
-        *((keyword, separator, "#12") for keyword, separator in itertools.product(KEYWORDS, SEPARATORS)),
+        *((keyword, separator, "#12") for keyword, separator in itertools.product(SPELLED_KEYWORDS, SEPARATORS)),
         *(
             ("Closes", separator, reference)
             for separator, reference in itertools.product(SEPARATORS, list(REFERENCES)[1:])
@@ -145,21 +208,13 @@ def test_each_spelling_the_review_found_unread_is_read(text: str) -> None:
     assert [reference.number for reference in closing_references(text)] == [1]
 
 
-# What the reader does not see, as its docstring names it; a row that starts to read fails here, so the docstring is
-# brought along with the reader.
-NOT_READ = {
-    "Closes\n#1": "a keyword and its reference on different lines",
-    "_Closes_ #1": "`_` emphasis",
-    "~~Closes~~ #1": "`~` emphasis",
-    "Closes \\#1": "a backslash-escaped number",
-    "Schließt #1": "a keyword in another language",
-    "Closes JIRA-1": "a custom autolink prefix",
-}
-
-
+# What the reader does not see, as its NOT_READ names it; a row that starts to read, or to be refused, fails here, so
+# the table and the docstring are brought along with the reader.
 @pytest.mark.parametrize("text", list(NOT_READ))
-def test_what_the_docstring_names_as_unseen_is_not_read(text: str) -> None:
-    assert closing_references(text) == [], NOT_READ[text]
+def test_what_not_read_names_is_neither_read_nor_refused(text: str) -> None:
+    assert closing_references(text) == [], f"remove it from closing_references.NOT_READ: {NOT_READ[text]}"
+    assert not title_holds_closing_reference(text), f"remove it from closing_references.NOT_READ: {NOT_READ[text]}"
+    assert stray_closing_lines(f"{text}\n", TEMPLATE) == [], NOT_READ[text]
 
 
 def test_only_the_first_of_a_list_that_names_its_keyword_once_is_read() -> None:
