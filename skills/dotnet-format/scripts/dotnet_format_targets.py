@@ -174,13 +174,18 @@ class Failed(Exception):
 def write_file_list(names: list[str]) -> str:
     """Write `names` to a new temporary FILE_LIST, each in UTF-8 and ended by a NUL, and return its path.
 
-    Raises Failed, before anything is written, for no names, which resolve stops on before it writes a list, and for
-    a name that is not UTF-8, which git lists only on a file system that holds such names; every other name
-    `read_file_list` returns as written."""
+    Raises Failed, before anything is written, for no names, which resolve stops on before it writes a list, for an
+    empty name or one holding a NUL, which git never lists and `read_file_list` would refuse or split, and for a name
+    that is not UTF-8, which git lists only on a file system that holds such names; every other name `read_file_list`
+    returns as written."""
     if not names:
         raise Failed("there is no changed file to list")
     encoded: list[bytes] = []
     for name in names:
+        if not name:
+            raise Failed(f"the changed file {name!r} has an empty name, which no path is")
+        if "\0" in name:
+            raise Failed(f"the changed file {name!r} holds a NUL, which ends a name in FILE_LIST")
         try:
             encoded.append(name.encode("utf-8") + b"\0")
         except UnicodeEncodeError:
