@@ -605,7 +605,10 @@ class CrossSkillContractTests(unittest.TestCase):
         fetch = review_source.source_commands(Path("C:/code-review-run-example"), "generic-review")[0]
         # Inside the value's single quotes PowerShell ends the string at a smart single quote, so the rest runs as a
         # second statement, and reads a smart double quote as text, as Bash reads both.
-        breaks = {"\u2018": True, "\u2019": True, "\u201a": True, "\u201b": True, "\u201c": False, "\u201d": False}
+        breaks = {
+            **dict.fromkeys(("\u2018", "\u2019", "\u201a", "\u201b"), True),
+            **dict.fromkeys(("\u201c", "\u201d", "\u201e"), False),
+        }
         for quote, breaks_out in breaks.items():
             value = f"Service{quote}; Write-Output marker; #"
             command = review_source.filled(fetch, value)
