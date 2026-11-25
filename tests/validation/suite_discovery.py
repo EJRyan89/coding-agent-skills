@@ -1259,8 +1259,10 @@ PYTEST_COMMAND = "suite_discovery.pytest_command"
 # neither is not followed.
 PYTEST_START_TEXT = re.compile(r"""pytest_command|["']-m["']\s*,\s*["']pytest["']""")
 # The text of a suite that may run a repository script as a program, whose own pytest the policy reads too: the
-# interpreter, and a literal naming a Python file. A suite with neither is not read for a script it starts.
-SCRIPT_START_TEXT = (re.compile(r"\bsys\.executable\b"), re.compile(r"""["'][^"'\s]*\.py["']"""))
+# interpreter's name, however the module imports or binds it, and a literal naming a Python file, which the path of a
+# script this policy can read ends with. A suite with neither is not read for a script it starts; one with both is
+# read through its syntax tree, which resolves the interpreter through the module's imports.
+SCRIPT_START_TEXT = (re.compile(r"\bexecutable\b"), re.compile(r"""["'][^"'\s]*\.py["']"""))
 # The options that pin a pytest run to a folder: --rootdir roots the run there and --confcutdir reads no conftest.py
 # above it, so either, naming the folder of the suite the run starts, keeps pytest from collecting any folder above.
 ROOT_PINNING_OPTIONS = frozenset({"--confcutdir", "--rootdir"})
@@ -1605,6 +1607,27 @@ def script_parser(tree: ast.Module) -> tuple[frozenset[str], bool]:
     return frozenset(options), positional
 
 
+def _script_index(items: list[ast.expr]) -> int | None:
+    """Where a command list that opens with the interpreter names its script: the first item after the interpreter's
+    options, the value -X or -W takes skipped; None when -m or -c ends them with a module or a program text, or
+    nothing follows them."""
+    index = 1
+    while index < len(items) and isinstance(flag := items[index], ast.Constant) and str(flag.value).startswith("-"):
+        if str(flag.value).startswith(INTERPRETER_PROGRAMS):
+            return None
+        index += 2 if flag.value in INTERPRETER_VALUE_OPTIONS else 1
+    return index if index < len(items) else None
+
+
+def _names_interpreter(node: ast.expr, aliases: dict[str, str], names: Mapping[str, list[ast.expr]]) -> bool:
+    """Whether an expression names the interpreter through the module's imports, directly or through a name the module
+    binds once to it, without the binding reader."""
+    if qualified_name(node, aliases) == INTERPRETER:
+        return True
+    values = names.get(node.id, []) if isinstance(node, ast.Name) else []
+    return len(values) == 1 and qualified_name(values[0], aliases) == INTERPRETER
+
+
 def _script_arguments(items: list[ast.expr], options: frozenset[str]) -> list[ast.expr]:
     """The suites among the arguments a command gives a script: every argument but a literal, which is an option or a
     relative path, the value after an option of `options`, and an f-string that opens with a dash. A starred item is
@@ -1684,29 +1707,32 @@ class _PytestRoots:
 
     def names_a_script(self, path: Path) -> bool:
         """Whether a suite may run a repository script that may start pytest as a program: its text holds
-        SCRIPT_START_TEXT, and a command list it holds opens with the interpreter and names, after its options, a path
-        whose literal end, joined to the suite's folder or the root, is a repository file whose text, or a module's it
-        imports by name, names a pytest start. Read without the binding reader, which only such a suite is given."""
+        SCRIPT_START_TEXT, and a command list it holds opens with the interpreter, resolved through the module's
+        imports, and names, after the interpreter's options, a path whose literal end, joined to the suite's folder or
+        any folder above it up to the root, is a repository file whose text, or a module's it imports by name, names a
+        pytest start. Read without the binding reader, which only such a suite is given; it can only choose more
+        suites than the reader finds a start in, never fewer."""
         text = self.modules.source(path)
         if not all(pattern.search(text) for pattern in SCRIPT_START_TEXT):
             return False
         tree = self.modules.tree(path)
         names = name_values(tree)
+        aliases = import_aliases(tree)
+        folders = [path.parent, *(folder for folder in path.parent.parents if within(folder, self.root))]
         for node in ast.walk(tree):
             if not (isinstance(node, ast.List | ast.Tuple) and node.elts):
                 continue
-            if not ast.unparse(node.elts[0]).endswith(INTERPRETER.rpartition(".")[2]):
+            index = _script_index(node.elts)
+            if index is None or not _names_interpreter(node.elts[0], aliases, names):
                 continue
-            script = next(
-                (item for item in node.elts[1:] if not (isinstance(item, ast.Constant) and str(item.value)[:1] == "-")),
-                None,
-            )
-            parts = path_parts(script, names) if script is not None else []
+            parts = path_parts(node.elts[index], names)
             tail = [str(part) for part in itertools.takewhile(lambda part: part is not None, reversed(parts))][::-1]
             if not tail or not tail[-1].endswith(".py") or any(UNNAMEABLE & set(part) for part in tail):
                 continue
-            for base in (path.parent, self.root):
-                candidate = base.joinpath(*tail)
+            for folder in folders:
+                candidate = folder
+                for part in tail:
+                    candidate = candidate.parent if part == ".." else candidate if part == "." else candidate / part
                 if (
                     within(candidate, self.root)
                     and file_presence.is_present(candidate, other_is_absent=True)
@@ -1832,16 +1858,14 @@ class _PytestRoots:
         items = display.elts
         if not items or reader.resolver.name(items[0]) != INTERPRETER:
             return []
-        index = 1
-        while index < len(items) and isinstance(flag := items[index], ast.Constant) and str(flag.value).startswith("-"):
-            if str(flag.value).startswith(INTERPRETER_PROGRAMS):
-                return []
-            index += 2 if flag.value in INTERPRETER_VALUE_OPTIONS else 1
-        options = self.script(path, items[index]) if index < len(items) else None
-        if options is None:
+        index = _script_index(items)
+        options = self.script(path, items[index]) if index is not None else None
+        if index is None or options is None:
             return []
-        started, directory = self._started(reader, display)
-        if not started or not self._from_repository(reader, directory):
+        # The script starts its own pytest, from where it chooses, as tools/python_diagnostics.py starts it from the
+        # repository's root, so the working directory the script itself is given decides nothing here.
+        started, _ = self._started(reader, display)
+        if not started:
             return []
         suites = _script_arguments(items[index + 1 :], options)
         return [_PytestStart(display.lineno, tuple(suites), options=options)]
@@ -1904,7 +1928,7 @@ class _PytestRoots:
         reader = self.reader(path)
         resolver = reader.resolver
         if isinstance(suite, ast.Starred):
-            return self._spread_verdict(path, function, suite)
+            return self._spread_verdict(path, function, start, suite)
         key = _path_key(suite, resolver)
         if key is None:
             return _Verdict("unread", f"{ast.unparse(suite)} names a path bound more than once")
@@ -1930,10 +1954,13 @@ class _PytestRoots:
             return _Verdict("temporary", "configured" if start.configured else "")
         return _Verdict("unread", f"{ast.unparse(suite)} is neither in the repository nor under a temporary folder")
 
-    def _spread_verdict(self, path: Path, function: FunctionNode | None, suite: ast.Starred) -> _Verdict:
+    def _spread_verdict(
+        self, path: Path, function: FunctionNode | None, start: _PytestStart, suite: ast.Starred
+    ) -> _Verdict:
         """A verdict on the suites a starred argument spreads into a script's arguments: a module-level function's own
         starred parameter passes them to its callers; otherwise they are read as suites under the folders the function
-        makes, a stated limit, pinned when each folder holds a pytest.ini and named when the function makes none."""
+        makes, a stated limit, pinned when each folder holds a pytest.ini written before the start and named when the
+        function makes none."""
         reader = self.reader(path)
         vararg = function.args.vararg if function is not None else None
         if (
@@ -1953,7 +1980,11 @@ class _PytestRoots:
         ]
         if not made:
             return _Verdict("unread", "a starred item of the script's arguments, in a function that makes no folder")
-        written = {_path_key(folder, reader.resolver) for _, folder in self.ini_folders(reader, function)}
+        written = {
+            _path_key(folder, reader.resolver)
+            for line, folder in self.ini_folders(reader, function)
+            if line <= start.line
+        }
         if all(self._makes_ini(path, node) or ("node", node) in written for node in made):
             return _Verdict("")
         return _Verdict("temporary")
@@ -2069,18 +2100,24 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     not, and named when the function makes none.
 
     Stated limits, which no repository code writes: a script started through `-m <module>` or `-c`, or whose path
-    names a file only through a binding this policy does not follow; the parsed arguments, which are not followed to
-    the function that starts pytest on them, so every positional argument is read as a suite, and an option the
-    parser declares through anything but a literal add_argument is read as a flag; a function of a module loaded by
-    its path, or another callable a name does not resolve to a module-level function; a suite a starred item of a
-    `-m pytest` command list spreads; a `-m pytest` list that holds no suite and is extended later, by unpacking,
-    append, or +=; pytest started as a program of its own, through pytest.main, or with `-mpytest` as one argument; a
-    start whose cwd this policy does not read as a folder of the repository, which starts elsewhere, as the mutation
-    gate's in its own worktree; a start inside an assertion through a runner PROCESS_STARTS does not name, which is
-    read as a command the assertion compares; a suite a starred item spreads after pytest_command's first argument, as
-    `pytest_command(suite, *more)`, which is read as options; a literal naming an absolute path or a drive joined to a
-    repository path, read as folders below it; and `-c<file>` as one literal, which is not read as naming a
-    configuration file.
+    names a file only through a binding this policy does not follow; a script command extended after it is built, by
+    `+ [suite]`, append, or `+ list(arguments)`; the parsed arguments, which are not followed to the function that
+    starts pytest on them, so every positional argument is read as a suite, and an option the parser declares through
+    anything but a literal add_argument is read as a flag; a script that takes its suites by an option, from
+    sys.argv, from parse_known_args' remainder, by a positional declared with dest=, or through a parser another
+    module builds; a script whose pytest start lies two imports away; a starred argument, which is judged by the
+    folders its function makes, never by where its items come from; a literal absolute path given a script, which is
+    skipped as a literal; a starred item after an option that takes a value, which is read as suites; a function of a
+    module loaded by its path, or another callable a name does not resolve to a module-level function; a suite a
+    starred item of a `-m pytest` command list spreads; a `-m pytest` list that holds no suite and is extended later,
+    by unpacking, append, or +=; pytest started as a program of its own, through pytest.main, or with `-mpytest` as
+    one argument; a pytest_command or `-m pytest` start whose cwd this policy does not read as a folder of the
+    repository, which starts elsewhere, as the mutation gate's in its own worktree, while a script's own cwd decides
+    nothing, since the script starts its pytest from where it chooses; a start inside an assertion through a runner
+    PROCESS_STARTS does not name, which is read as a command the assertion compares; a suite a starred item spreads
+    after pytest_command's first argument, as `pytest_command(suite, *more)`, which is read as options; a literal
+    naming an absolute path or a drive joined to a repository path, read as folders below it; and `-c<file>` as one
+    literal, which is not read as naming a configuration file.
     """
     problems: list[str] = []
     read: list[str] = []

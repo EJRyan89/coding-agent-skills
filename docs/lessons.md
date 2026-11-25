@@ -1806,7 +1806,8 @@ or removed fails validation until its pattern follows it.
   tests/validation/test_job_pool.py passes --confcutdir.
 - **Guard:**
   `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_a_pytest_a_suite_starts_on_a_suite_outside_the_repository_pins_its_root`,
-  `tests/validation/test_suite_discovery.py::PytestRootPolicy`
+  `tests/validation/test_suite_discovery.py::PytestRootPolicy`,
+  `tests/validation/test_suite_discovery.py::PytestScriptRootPolicy`
 - **Search for:** `pytest_command(` and `"-m", "pytest"` in a suite that writes the suite it starts under a temporary
   folder; a call into a module whose function starts pytest on the suite it is given, such as
   `python_diagnostics.run_suite(`, on a suite under a temporary folder with nothing beside it; a `sys.executable`

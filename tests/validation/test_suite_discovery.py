@@ -2111,6 +2111,251 @@ class PytestScriptRootPolicy(unittest.TestCase):
                 problems, _ = self.reading(body)
                 self.assertEqual([self.unplaced(body, why)], problems)
 
+    # A suite with no run_tool of its own, so the pre-check reads only what its body holds.
+    BARE = textwrap.dedent(
+        """\
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+        TOOL = REPOSITORY_ROOT / "tools" / "tool.py"
+
+
+        """
+    )
+
+    def tree_reading(self, files: Mapping[str, str], root: Path | None = None) -> tuple[list[str], list[str]]:
+        """pytest_root_reading over a tree holding the runner, the tool, and files, at root or a new folder."""
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = root if root is not None else Path(temporary)
+            write_fixture_tree(tree, {"tools/runner.py": PytestRootPolicy.RUNNER, "tools/tool.py": self.TOOL, **files})
+            return suite_discovery.pytest_root_reading(tree)
+
+    def problem(self, name: str, source: str, why: str | None = None) -> str:
+        """The problem for the start `# start` marks in source, unpinned, or unplaced with why."""
+        line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# start"))
+        if why is None:
+            return (
+                f"{name}:{line} starts pytest from the repository on a suite under the temporary folder and pins no "
+                f"root; {PytestRootPolicy.PINNING}"
+            )
+        return (
+            f"{name}:{line} starts pytest from the repository on a suite this policy cannot place in the repository or "
+            f"see pinned ({why}); build the suite's path from a tempfile folder in the function that starts it, and "
+            "write a pytest.ini beside it or pass --confcutdir or --rootdir naming its folder"
+        )
+
+    def test_an_interpreter_named_through_an_import_or_a_binding_is_read(self) -> None:
+        spellings = {
+            "from sys import executable": ("from sys import executable\n", "executable"),
+            "import sys as system": ("import sys as system\n", "system.executable"),
+            "a name bound to sys.executable": ("PYTHON = sys.executable\n", "PYTHON"),
+        }
+        for name, (binding, interpreter) in spellings.items():
+            source = (
+                self.BARE
+                + binding
+                + textwrap.dedent(
+                    f"""\
+
+
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = str(Path(temporary) / "test_child.py")
+                        subprocess.run([{interpreter}, str(TOOL), suite], check=True)  # start
+                """
+                )
+            )
+            with self.subTest(name):
+                problems, _ = self.tree_reading({"tests/test_a.py": source})
+                self.assertEqual([self.problem("tests/test_a.py", source)], problems)
+
+    def test_a_script_a_folder_above_the_suite_holds_is_read(self) -> None:
+        # The suite lies a folder below the one that holds the script, which the pre-check finds from any folder
+        # between the suite's and the root.
+        source = textwrap.dedent(
+            """\
+            import subprocess
+            import sys
+            import tempfile
+            from pathlib import Path
+
+            TOOL = Path(__file__).resolve().parents[1] / "tool.py"
+
+
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, str(TOOL), suite], check=True)  # start
+            """
+        )
+        problems, _ = self.tree_reading({"tests/sub/test_a.py": source, "tests/tool.py": self.TOOL})
+        self.assertEqual([self.problem("tests/sub/test_a.py", source)], problems)
+
+    def test_the_interpreters_options_are_skipped_and_a_module_or_program_is_no_script(self) -> None:
+        valued = self.BARE + textwrap.dedent(
+            """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, "-X", "dev", "-W", "error", str(TOOL), suite], check=True)  # start
+            """
+        )
+        problems, _ = self.tree_reading({"tests/test_a.py": valued})
+        self.assertEqual([self.problem("tests/test_a.py", valued)], problems)
+        for program in ('"-m", str(TOOL)', '"-c", str(TOOL)', '"-m", "tools.tool"', '"-c", "pass", str(TOOL)'):
+            # Read beside run_tool, so the pre-check passes the suite and the script reader decides.
+            source = self.HEADER + textwrap.dedent(
+                f"""\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = str(Path(temporary) / "test_child.py")
+                        subprocess.run([sys.executable, {program}, suite], check=True)
+                """
+            )
+            with self.subTest(program):
+                problems, _ = self.tree_reading({"tests/test_a.py": source})
+                self.assertEqual([], problems)
+
+    def test_an_options_value_and_a_dash_led_f_string_are_no_suite_and_a_flags_next_argument_is(self) -> None:
+        tool = self.TOOL.replace(
+            '    parser.add_argument("--quiet", action="store_true")\n',
+            '    parser.add_argument("--quiet", action="store_true")\n'
+            '    parser.add_argument("--include", action="append")\n'
+            '    parser.add_argument("--extend", action="extend", nargs="+")\n'
+            '    parser.add_argument("--off", nargs=0)\n',
+        )
+        body = """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    folder = Path(temporary)
+                    one, two, suite = str(folder / "a"), str(folder / "b"), str(folder / "test_c.py")
+                    run_tool(f"--summary={folder}", "--include", one, "--extend", two, "--off", suite)  # start
+            """
+        problems, _ = self.reading(body, tool)
+        self.assertEqual([self.unpinned(body)], problems)
+
+    def test_a_script_path_built_through_steps_up_and_dots_is_read_and_one_windows_refuses_is_never_looked_up(
+        self,
+    ) -> None:
+        stepped = self.BARE.replace(
+            'TOOL = REPOSITORY_ROOT / "tools" / "tool.py"',
+            'TOOL = Path(__file__).resolve().parent / "missing" / ".." / ".." / "tools" / "." / "tool.py"',
+        ) + textwrap.dedent(
+            """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, str(TOOL), suite], check=True)  # start
+            """
+        )
+        problems, _ = self.tree_reading({"tests/test_a.py": stepped})
+        self.assertEqual([self.problem("tests/test_a.py", stepped)], problems)
+        # Read beside run_tool, whose command the pre-check finds, so the commands below reach the script reader.
+        refused = self.HEADER + textwrap.dedent(
+            """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, "tools/<tool>.py", suite], check=True)
+                    subprocess.run([sys.executable, str(REPOSITORY_ROOT / "tools" / "<tool>.py"), suite], check=True)
+            """
+        )
+        asked: list[str] = []
+        is_present = file_presence.is_present
+
+        def recorded(path: Path, *arguments: object, **options: object) -> bool:
+            asked.append(str(path))
+            return is_present(path, *arguments, **options)  # type: ignore[arg-type]  # the arguments it was given
+
+        with mock.patch.object(file_presence, "is_present", recorded):
+            problems, _ = self.tree_reading({"tests/test_a.py": refused})
+        self.assertEqual([], problems)
+        self.assertTrue(asked)
+        self.assertEqual([], [path for path in asked if "<" in path or ">" in path])
+
+    def test_a_starred_parameter_no_caller_it_reads_gives_is_named(self) -> None:
+        why = "*arguments comes from a parameter no caller it reads gives"
+        cases = {
+            "a method": """\
+                class Runner:
+                    def run(self, *arguments: str) -> None:
+                        subprocess.run([sys.executable, "-B", str(TOOL), *arguments], check=False)  # start
+                """,
+            "a nested function": """\
+                def test_runs() -> None:
+                    def run(*arguments: str) -> None:
+                        subprocess.run([sys.executable, "-B", str(TOOL), *arguments], check=False)  # start
+
+                    run("tests/test_b.py")
+                """,
+        }
+        for name, body in cases.items():
+            source = self.BARE + textwrap.dedent(body)
+            with self.subTest(name):
+                problems, _ = self.tree_reading({"tests/test_a.py": source})
+                self.assertEqual([self.problem("tests/test_a.py", source, why)], problems)
+
+    def test_a_script_that_is_missing_or_lies_outside_the_root_is_not_read(self) -> None:
+        # Each read beside run_tool, so the pre-check passes the suite and the script reader decides.
+        missing = self.HEADER + textwrap.dedent(
+            """\
+            MISSING = REPOSITORY_ROOT / "tools" / "missing.py"
+
+
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    subprocess.run([sys.executable, str(MISSING), str(Path(temporary) / "test_child.py")], check=True)
+            """
+        )
+        problems, _ = self.tree_reading({"tests/test_a.py": missing})
+        self.assertEqual([], problems)
+        outside = self.HEADER + textwrap.dedent(
+            """\
+            BESIDE = Path(__file__).resolve().parents[2] / "tool.py"
+
+
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    subprocess.run([sys.executable, str(BESIDE), str(Path(temporary) / "test_child.py")], check=True)
+            """
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            # A script beside the root, which names a start itself, so only its place keeps it unread.
+            (Path(temporary) / "tool.py").write_bytes(
+                (self.TOOL + "\nfrom suite_discovery import pytest_command\n").encode("utf-8")
+            )
+            problems, _ = self.tree_reading({"tests/test_a.py": outside}, Path(temporary) / "repository")
+            self.assertEqual([], problems)
+
+    def test_a_pytest_ini_written_after_the_run_pins_no_starred_argument(self) -> None:
+        body = """\
+            class FixtureRunTests(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls) -> None:
+                    folder = Path(tempfile.mkdtemp())
+                    cls.suites = {"a": str(folder / "test_a.py")}
+                    run_tool(*cls.suites.values())  # start
+                    (folder / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+            """
+        problems, _ = self.reading(body)
+        self.assertEqual([self.unpinned(body)], problems)
+
+    def test_a_script_given_a_working_directory_of_its_own_is_still_held(self) -> None:
+        # tools/python_diagnostics.py starts its pytest from the repository's root whatever folder it is started in.
+        source = self.BARE + textwrap.dedent(
+            """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, str(TOOL), suite], cwd=temporary, check=True)  # start
+            """
+        )
+        problems, _ = self.tree_reading({"tests/test_a.py": source})
+        self.assertEqual([self.problem("tests/test_a.py", source)], problems)
+
     def test_a_script_that_starts_no_pytest_or_takes_no_suite_is_not_a_start(self) -> None:
         body = """\
             def test_runs() -> None:
