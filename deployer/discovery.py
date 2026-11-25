@@ -217,10 +217,20 @@ def _receive(
     deadline: float,
     timeout: float,
 ) -> bool:
-    """Add each line to received until answered accepts one, which returns True, or the output ends."""
+    """Add each line to received until answered accepts one, which returns True, or the output ends.
+
+    The deadline is read before each line is taken and again once it arrives, never only when no line is waiting:
+    Queue.get returns a queued line however little time is left, so a program whose output never pauses would
+    otherwise outlive it. Once the deadline has passed, the program is killed and no line is taken, an answer
+    included."""
     while True:
+        left = deadline - time.monotonic()
         try:
-            line = lines.get(timeout=max(deadline - time.monotonic(), 0))
+            if left <= 0:
+                raise queue.Empty
+            line = lines.get(timeout=left)
+            if time.monotonic() >= deadline:
+                raise queue.Empty
         except queue.Empty:
             process.kill()
             raise ListingError(f"no answer within {timeout:g} seconds") from None
