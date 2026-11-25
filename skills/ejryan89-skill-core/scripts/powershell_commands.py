@@ -288,11 +288,12 @@ COMMANDS_RUN = (
     # and $tree, settles them: the variable, unqualified, is assigned once, by =, from a hashtable literal of constants
     # under literal keys, as a statement of the script block the splat runs in, before it; every other mention of it is
     # an unqualified splat, by the AST and by its text; and the source reaches no variable by name, through a command
-    # of pwsh's Variable noun or its alias ($variableCommands), the variable: drive, or PSVariable or SessionState, and
-    # dot-sources nothing. Null for any other splat.
+    # of pwsh's Variable noun or its alias ($variableCommands), the variable: drive, PSVariable, SessionState, or
+    # GetVariableValue, and dot-sources nothing. Null for any other splat.
     "function Get-Splat($variable) { "
     "$name = $variable.VariablePath.UserPath; $text = [string]$item[1]; "
-    "if (-not $variable.VariablePath.IsUnqualified -or $text -match '(?i)variable:|PSVariable|SessionState') { "
+    "if (-not $variable.VariablePath.IsUnqualified -or "
+    "$text -match '(?i)variable:|PSVariable|SessionState|GetVariableValue') { "
     "return $null }; "
     "if (@($tree.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and "
     "($node.InvocationOperator -eq 'Dot' -or $variableCommands.Contains([string]$node.GetCommandName())) }, "
@@ -329,17 +330,22 @@ COMMANDS_RUN = (
     "function Get-Bound($command, $spec) { "
     "$elements = $command.CommandElements; $bound = @{}; "
     "$positional = [Collections.Generic.List[object]]::new(); $splatted = $false; "
+    "$spread = [Collections.Generic.List[object]]::new(); "
     "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
     "if ($element -is [Management.Automation.Language.VariableExpressionAst] -and $element.Splatted) { "
     "$pairs = Get-Splat $element; if ($null -eq $pairs) { $splatted = $true; continue }; "
-    "foreach ($pair in $pairs) { $entry = Find-Parameter $spec[1] $pair[0]; "
-    "if ($null -eq $entry) { return $null }; $bound[$entry[0]] = $pair[1] }; continue }; "
+    "foreach ($pair in $pairs) { $spread.Add($pair) }; continue }; "
     "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { "
     "$positional.Add($element); continue }; "
     "$entry = Find-Parameter $spec[1] $element.ParameterName; "
     "if ($null -eq $entry) { return $null }; "
     "$bound[$entry[0]] = if ($element.Argument) { $element.Argument } elseif ($entry[1]) { $true } "
     "else { $at++; $elements[$at] } }; "
+    # A settled splat's key binds only a parameter no name in the command binds: pwsh binds the one given by name,
+    # wherever the splat stands.
+    "foreach ($pair in $spread) { $entry = Find-Parameter $spec[1] $pair[0]; "
+    "if ($null -eq $entry) { return $null }; "
+    "if (-not $bound.ContainsKey($entry[0])) { $bound[$entry[0]] = $pair[1] } }; "
     "foreach ($name in $spec[2]) { if ($bound.ContainsKey($name)) { continue }; "
     "if ($splatted) { $bound[$name] = $unknown } "
     "elseif ($positional.Count) { $bound[$name] = $positional[0]; $positional.RemoveAt(0) } }; "

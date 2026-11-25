@@ -254,6 +254,16 @@ def rows() -> list[Row]:
                 )
                 found.append(Row("splatting", parameter, f"$s = @{{ {parameter} = '{value}' }}", f"{name} @s"))
                 found.append(Row("splatting", parameter, f"$s = @{{ {parameter} = 'other' }}", f"{name} {tail} @s"))
+                # The parameter given by name beside a splat holding the same key binds the named value, on either
+                # side of the splat.
+                words = tail.split()
+                rest = " ".join(words[1:]) if parameter == target else words[0]
+                named = f"-{parameter} {value}"
+                setup = f"$s = @{{ {parameter} = 'splat' }}"
+                found += [
+                    Row("splatting", parameter, setup, f"{name} {rest} {named} @s".replace("  ", " ")),
+                    Row("splatting", parameter, setup, f"{name} @s {rest} {named}".replace("  ", " ")),
+                ]
             if parameter in bound.pipeline:
                 literal = "$true" if switch else "'prog'"
                 found.append(

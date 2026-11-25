@@ -249,8 +249,8 @@ name run the program of that name, as `hash -p` makes one run another file. In P
 reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
 joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every
 command of the string `Invoke-Expression` runs, and the program a wrapper or `find`'s `-exec` runs, read through the
-same table of wrappers as in Bash, since `pwsh` on Linux runs them as programs. The three cmdlets' arguments are bound
-as pwsh's binder binds them, by position, by name, alias, or any prefix it places, and joined by a colon, as
+same table of wrappers as in Bash, since `pwsh` on Linux runs them as programs. These cmdlets' arguments are bound as
+pwsh's binder binds them, by position, by name, alias, or any prefix it places, and joined by a colon, as
 ejryan89-skill-core's `powershell_commands.BOUND_COMMANDS` holds; a wrapped program that is not a literal, an argument
 list that is not literal where a script would stand, a parameter the cmdlet does not have or a prefix pwsh cannot
 place, `--`, a splat whose hashtable the source does not settle (a splat of a variable assigned once, before it in
@@ -259,8 +259,10 @@ pipeline feeds a parameter it would read, `Get-Command` given `-Verb`, `-Noun`, 
 `-UseFuzzyMatching`, or a wildcard in its name, and a member or an index taken off its result, as
 `& (Get-Command git).Source`, are programs it cannot read. Stated limits: a cmdlet called by its module-qualified
 name, as `Microsoft.PowerShell.Management\Start-Process`, is read as a program of that name, which the policy refuses
-as undeclared rather than binding its arguments; and Windows PowerShell's start-up, which no runner can parse in
-process, is read with pwsh's start-up parser. In Python it reads every program of a command a runner gives a shell, such as `os.system`
+as undeclared rather than binding its arguments; Windows PowerShell's start-up, which no runner can parse in
+process, is read with pwsh's start-up parser; and a splatted hashtable changed by code the source builds at run time,
+or reached through `$PSCmdlet.GetVariableValue` or a drive path built from text, is read as its literal. In Python it
+reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell
 reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows PowerShell's first positional word
