@@ -1496,6 +1496,14 @@ class PytestRootPolicy(unittest.TestCase):
             f"folder and pins no root; {self.PINNING}"
         )
 
+    def configured_unpinned(self, body: str) -> str:
+        return (
+            f"tests/test_a.py:{self.line(body)} starts pytest from the repository on a suite under the temporary "
+            "folder, naming its configuration file, and pins no root; pass --confcutdir naming the suite's folder, "
+            "since a run that names its configuration file reads no pytest.ini beside the suite, so pytest collects no "
+            "folder above it"
+        )
+
     def unplaced(self, body: str, why: str) -> str:
         return (
             f"tests/test_a.py:{self.line(body)} starts pytest from the repository on a suite this policy cannot place "
@@ -1561,22 +1569,6 @@ class PytestRootPolicy(unittest.TestCase):
                         for name in NAMES:
                             subprocess.run(pytest_command(str(Path(temporary) / name)), check=True)  # start
                 """,
-            "a pytest.ini beside the suite of a run that names another configuration file": """\
-                def test_runs() -> None:
-                    with tempfile.TemporaryDirectory() as temporary:
-                        suite = Path(temporary) / "test_child.py"
-                        (Path(temporary) / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
-                        configuration = str(REPOSITORY_ROOT / "pyproject.toml")
-                        subprocess.run(pytest_command(str(suite), "-c", configuration), check=True)  # start
-                """,
-            "a --rootdir naming the suite's folder in a run that names another configuration file": """\
-                def test_runs() -> None:
-                    with tempfile.TemporaryDirectory() as temporary:
-                        suite = Path(temporary) / "test_child.py"
-                        named = REPOSITORY_ROOT / "pyproject.toml"
-                        command = [*pytest_command(str(suite), "--rootdir", temporary), f"-c{named}"]  # start
-                        subprocess.run(command, check=True)
-                """,
             "a repository function that starts pytest on each suite of a list": """\
                 def test_runs() -> None:
                     with tempfile.TemporaryDirectory() as temporary:
@@ -1595,6 +1587,81 @@ class PytestRootPolicy(unittest.TestCase):
         for name, body in cases.items():
             with self.subTest(name):
                 self.assertEqual([self.unpinned(body)], self.problems(body))
+
+    def test_a_run_that_names_its_configuration_file_is_pinned_by_confcutdir_alone(self) -> None:
+        cases = {
+            "a pytest.ini beside the suite of a run that names another configuration file": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        (Path(temporary) / "pytest.ini").write_text("[pytest]\\n", encoding="utf-8")
+                        configuration = str(REPOSITORY_ROOT / "pyproject.toml")
+                        subprocess.run(pytest_command(str(suite), "-c", configuration), check=True)  # start
+                """,
+            "a --rootdir naming the suite's folder in a run that names another configuration file": """\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = Path(temporary) / "test_child.py"
+                        named = REPOSITORY_ROOT / "pyproject.toml"
+                        command = [*pytest_command(str(suite), "--rootdir", temporary), f"-c{named}"]  # start
+                        subprocess.run(command, check=True)
+                """,
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                self.assertEqual([self.configured_unpinned(body)], self.problems(body))
+
+    def test_a_step_up_or_across_in_a_literal_is_read_against_the_root(self) -> None:
+        climbing = """\
+            def test_runs() -> None:
+                subprocess.run(pytest_command(str(REPOSITORY_ROOT / ".." / "elsewhere" / "test_x.py")))  # start
+            """
+        why = (
+            "str(REPOSITORY_ROOT / '..' / 'elsewhere' / 'test_x.py') is neither in the repository nor under a "
+            "temporary folder"
+        )
+        self.assertEqual([self.unplaced(climbing, why)], self.problems(climbing))
+        staying = """\
+            def test_runs() -> None:
+                subprocess.run(pytest_command(str(REPOSITORY_ROOT / "tests" / "." / "tests" / "x.py")), check=True)
+                subprocess.run(pytest_command("tests/../tests/x.py"), check=True)  # start
+            """
+        why = "'tests/../tests/x.py' is neither in the repository nor under a temporary folder"
+        self.assertEqual([self.unplaced(staying, why)], self.problems(staying))
+
+    def test_a_module_found_under_a_root_given_unresolved_is_read_against_it(self) -> None:
+        # RepositoryModules resolves the modules it finds, so a root spelled through `..`, as one under macOS's /var
+        # or a Windows 8.3 short name is spelled unresolved, must be compared resolved too, or a followed module's
+        # cwd from its own resolved __file__ reads as outside the repository and its start is not held.
+        runner = textwrap.dedent(
+            """\
+            import subprocess
+            from pathlib import Path
+
+            from suite_discovery import pytest_command
+
+            ROOT = Path(__file__).resolve().parents[1]
+
+
+            def run_suite(suite: str) -> int:
+                return subprocess.run(pytest_command(suite), cwd=ROOT, check=False).returncode
+            """
+        )
+        body = """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    runner.run_suite(str(Path(temporary) / "test_x.py"))  # start
+            """
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "x").mkdir()
+            root = Path(temporary) / "x" / ".."
+            write_fixture_tree(
+                root, {"tools/runner.py": runner, "tests/test_a.py": self.HEADER + textwrap.dedent(body)}
+            )
+            self.assertEqual(
+                ([self.unpinned(body)], ["tests/test_a.py:" + str(self.line(body))]),
+                suite_discovery.pytest_root_reading(root),
+            )
 
     def test_each_form_the_repository_pins_a_root_in_passes(self) -> None:
         cases = {

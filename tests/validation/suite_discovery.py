@@ -1286,8 +1286,8 @@ PYTEST_VALUE_OPTIONS = frozenset(
     }
 )
 # The options that name the configuration file a pytest run reads, in place of any beside the suite: with one, a
-# pytest.ini beside the suite is not read, the run roots at the named file's folder whatever --rootdir says, and only
-# --confcutdir naming the suite's folder keeps pytest from collecting the folders above it.
+# pytest.ini beside the suite is not read and the run's confcutdir defaults to the named file's folder, whatever
+# --rootdir says, so only --confcutdir naming the suite's folder keeps pytest from collecting the folders above it.
 CONFIGURATION_OPTIONS = frozenset({"-c", "--config-file"})
 # The file a pytest started on a suite outside the repository finds beside the suite: pytest takes it as the run's
 # configuration even when it is empty, and roots the run at its folder.
@@ -1576,7 +1576,9 @@ class _PytestRoots:
 
     def reader(self, path: Path) -> _ModuleReader:
         if path not in self._readers:
-            relative = relative_within(path, self.root)
+            # RepositoryModules resolves the modules it finds, so the root is compared resolved too: a root under a
+            # folder a link names, as macOS's /var or a Windows 8.3 short name, would otherwise place no module in it.
+            relative = relative_within(path.resolve(), self.root.resolve())
             depth = len(relative.parts) if relative is not None else None
             self._readers[path] = _ModuleReader(self.modules.tree(path), depth)
         return self._readers[path]
@@ -1749,7 +1751,7 @@ class _PytestRoots:
                     "unread", f"{ast.unparse(suite)} comes from a parameter of a method or a nested function"
                 )
         if base[0] == "node" and isinstance(base[1], ast.Call) and resolver.name(base[1].func) in TEMPORARY_FOLDERS:
-            return _Verdict("temporary")
+            return _Verdict("temporary", "configured" if start.configured else "")
         return _Verdict("unread", f"{ast.unparse(suite)} is neither in the repository nor under a temporary folder")
 
     @staticmethod
@@ -1770,8 +1772,8 @@ class _PytestRoots:
     def _pinned(self, path: Path, function: FunctionNode | None, start: _PytestStart, folder: PathKey | None) -> bool:
         """Whether a start pins its suite's folder: a --confcutdir or --rootdir naming it, a pytest.ini the function
         writes there before the start, or a folder a function makes holding a pytest.ini. A start that names its
-        configuration file reads no pytest.ini beside the suite and roots where that file lies, so only --confcutdir
-        pins it."""
+        configuration file reads no pytest.ini beside the suite, and its confcutdir defaults to that file's folder
+        whatever --rootdir says, so only --confcutdir pins it."""
         reader = self.reader(path)
         if folder is None:
             return False
@@ -1840,7 +1842,8 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     another suite removes meanwhile stops collection with exit 2, on Windows alone and only under load. A suite pins
     the root with a pytest.ini written beside the suite it starts, before it starts it, or a --confcutdir or --rootdir
     naming the suite's folder; a start that names its configuration file with -c or --config-file reads no pytest.ini
-    beside the suite and roots where that file lies, so only --confcutdir pins it.
+    beside the suite, and its confcutdir defaults to that file's folder whatever --rootdir says, so only --confcutdir
+    pins it.
 
     A start is a call to pytest_command, or a command list holding `-m pytest`, that no assertion compares before a
     process start runs it, or a call of a module-level function, the suite's own or one a repository module it imports
@@ -1855,7 +1858,10 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     holds no suite and is extended later, by unpacking, append, or +=; pytest started as a program of its own, through
     pytest.main, or with `-mpytest` as one argument; a start whose cwd this policy does not read as a folder of the
     repository, which starts elsewhere, as the mutation gate's in its own worktree; and a start inside an assertion
-    through a runner PROCESS_STARTS does not name, which is read as a command the assertion compares.
+    through a runner PROCESS_STARTS does not name, which is read as a command the assertion compares; a suite a starred
+    item spreads after pytest_command's first argument, as `pytest_command(suite, *more)`, which is read as options; a
+    literal naming an absolute path or a drive joined to a repository path, read as folders below it; and `-c<file>`
+    as one literal, which is not read as naming a configuration file.
     """
     problems: list[str] = []
     read: list[str] = []
@@ -1870,7 +1876,14 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
             for start in reader.starts(path, function):
                 read.append(f"{name}:{start.line}")
                 for verdict in reader.verdicts(path, function, start):
-                    if verdict.kind == "temporary":
+                    if verdict.kind == "temporary" and verdict.detail == "configured":
+                        problems.append(
+                            f"{name}:{start.line} starts pytest from the repository on a suite under the temporary "
+                            "folder, naming its configuration file, and pins no root; pass --confcutdir naming the "
+                            "suite's folder, since a run that names its configuration file reads no pytest.ini "
+                            "beside the suite, so pytest collects no folder above it"
+                        )
+                    elif verdict.kind == "temporary":
                         problems.append(
                             f"{name}:{start.line} starts pytest from the repository on a suite under the temporary "
                             f"folder and pins no root; write a {PYTEST_INI} beside the suite before starting it, or "
@@ -2149,13 +2162,17 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         self.assertEqual([], problems)
         # The places that start pytest on a suite outside the repository, which a reader that stopped finding starts
         # would pass as having none.
-        places = {
-            "tests/test_conftest.py",
-            "tests/validation/test_suite_discovery.py",
-            "tests/validation/test_job_pool.py",
-            "tests/tools/test_python_diagnostics.py",
+        known = {
+            "tests/test_conftest.py:120",
+            "tests/validation/test_suite_discovery.py:69",
+            "tests/validation/test_job_pool.py:551",
+            "tests/tools/test_python_diagnostics.py:175",
+            "tests/tools/test_python_diagnostics.py:216",
+            "tests/tools/test_python_diagnostics.py:241",
         }
-        self.assertEqual(places, places & {start.rpartition(":")[0] for start in read}, read)
+        # Each start by its line, so a start rewritten into a form the reader does not read fails here; a start that
+        # only moves to another line is named here by its new one.
+        self.assertEqual(known, known & set(read), read)
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
