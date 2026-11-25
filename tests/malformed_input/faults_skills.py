@@ -1553,6 +1553,11 @@ DRIVERS: list[Driver] = [
     ),
 ]
 NOT_RUN: dict[str, str] = {
+    **{
+        f"{ASK_SDK} {command}": f"ask_sdk.py runs why alone: it puts why before its arguments, so {command} is a "
+        "package name there, never a command; dependency_graph.py's driver drives the command"
+        for command in ("where", "conflicts", "graph")
+    },
     "skills/ejryan89-skill-core/scripts/private_folder.py": "reads no file: it stats the folder it is named and each "
     "folder above it, and a folder is no input the harness can fault; test_private_folder.py holds its refusals of a "
     "folder that does not exist, one another account could rename, and a stat that fails",
