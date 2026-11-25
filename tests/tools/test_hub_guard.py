@@ -707,6 +707,39 @@ class EndToEndTests(GuardTestCase):
         self.both(json.dumps(event))
         self.assertIn("nests deeper than the reader follows", self.stderr)
 
+    def test_a_git_write_in_or_beside_a_coprocess_or_after_a_multi_line_test_is_refused_from_the_hub(self) -> None:
+        # The reader reads a coprocess's command as a subshell's and a `[[ ]]` over its line breaks to its `]]`, as
+        # Bash does (tests/tools/test_bash_syntax.py holds both), so the git call in or beside each is judged.
+        for command in (
+            "coproc git commit -m x",
+            "git commit -m x && coproc true",
+            "coproc true; git commit -m x",
+            "git commit -m x\ncoproc true",
+            "[[ -n x\n]]; git commit -m x",
+            'if [[ -n "$a" &&\n -n "$b"\n]]; then git commit -m x; fi',
+        ):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.hub)}
+                self.assertEqual("deny", self.both(event))
+
+    def test_a_git_write_in_a_body_s_substitution_the_reader_refuses_is_unread_and_one_beside_the_body_denied(
+        self,
+    ) -> None:
+        # Bash runs whatever a substitution in an unquoted here-document's body holds, so one the reader refuses leaves
+        # the command unread, allowed with a note; a git write beside the here-document is still judged.
+        for command in (
+            "cat <<EOF\n$(if [ -n x ]; then git commit -m x; fi })\nEOF",
+            "cat <<EOF\n$(for x in a; { git commit -m x; })\nEOF",
+        ):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.hub)}
+                self.assertIsNone(self.both(json.dumps(event)))
+                self.assertIn("Bash would not read it as written, or the guard cannot", self.stderr)
+        for command in ("cat <<EOF\n$(if)\nEOF\ngit commit -m x", "git commit -m x; cat <<EOF\n$(fi)\nEOF"):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.hub)}
+                self.assertEqual("deny", self.both(json.dumps(event)))
+
 
 class ReaderFailureTests(GuardTestCase):
     """A reader or a judgment that fails leaves a command the guard does not read: refused while a guarded hub is in

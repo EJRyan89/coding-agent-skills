@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from validation_support import write_fixture_tree
-from workarounds import later_comment_problems, skip_problems
+from workarounds import later_comment_problems, not_read_problems, skip_problems
 
 SUITE = "tests/test_fixture.py"
 
@@ -174,3 +174,149 @@ class WorkaroundFixtures(unittest.TestCase):
         )
         self.assertEqual(1, len(fixture_problems({"skills/a/scripts/test_x.py": later})[1]))
         self.assertEqual(1, len(fixture_problems({"deploy.py": later})[1]))
+
+
+def fixture_not_read(files: dict[str, str]) -> list[str]:
+    """The NOT_READ problems of a fixture tree."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository with spaces"
+        write_fixture_tree(root, files)
+        return not_read_problems(root, [root / name for name in files])
+
+
+READER = "skills/a/scripts/reader.py"
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "NOT_READ = {'coproc': ''}\n",
+        "NOT_READ = {'coproc': '   '}\n",
+        "NOT_READ = {'coproc': 1}\n",
+        "NOT_READ = {1: 'a reason'}\n",
+        "NOT_READ = ['coproc']\n",
+        "NOT_READ = 'coproc'\n",
+        "NOT_READ = {'coproc': REASON}\n",
+        "NOT_READ: dict[str, str] = {'coproc': ''}\n",
+    ],
+)
+def test_a_not_read_table_that_does_not_give_each_entry_its_reason_fails(table: str) -> None:
+    for name in (READER, "tools/reader.py", "deployer/reader.py", ".claude/skills/a/scripts/reader.py"):
+        assert [problem.split(" NOT_READ")[0] for problem in fixture_not_read({name: table})] == [name], (name, table)
+    assert [problem.split(" NOT_READ")[0] for problem in fixture_not_read({"tests/validation/policy.py": table})] == [
+        "tests/validation/policy.py"
+    ]
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "NOT_READ = {'coproc': 'runs its command in the background'}\n",
+        "NOT_READ: dict[str, str] = {}\n",
+        "NOT_READ = {}\n",
+        "CATALOGUE = ['coproc']\n",
+        "def f() -> None:\n    NOT_READ = 'a local name is no table'\n",
+    ],
+)
+def test_a_not_read_table_giving_each_entry_its_reason_or_none_passes(table: str) -> None:
+    assert fixture_not_read({READER: table}) == []
+
+
+def test_a_suite_a_fault_driver_and_a_fixture_name_their_own_not_read() -> None:
+    text = "NOT_READ = 'a reason a fault driver shares'\n"
+    files = {
+        "skills/a/scripts/test_reader.py": text,
+        "tests/malformed_input/faults_x.py": text,
+        "tests/tools/agreement.py": text,
+        "tests/fixtures/repo/skills/a/scripts/reader.py": text,
+        "skills/a/scripts/reader.sh": text,
+    }
+    assert fixture_not_read(files) == []
+
+
+TABLE = "NOT_READ: dict[str, str] = {'coproc': 'a reason'}\n"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "NOT_READ['fi'] = ''\n",
+        "NOT_READ['fi'] = 'a reason'\n",
+        "NOT_READ.update({'fi': ''})\n",
+        "NOT_READ.setdefault('fi', '')\n",
+        "NOT_READ |= {'fi': ''}\n",
+        "NOT_READ = {'fi': ''}\n",
+        "NOT_READ: dict[str, str] = {}\n",
+        "del NOT_READ['coproc']\n",
+        "NOT_READ.pop('coproc')\n",
+        "if True:\n    NOT_READ = {}\n",
+        "def add() -> None:\n    NOT_READ['fi'] = ''\n",
+        "def add() -> None:\n    NOT_READ.update(fi='')\n",
+        "def rebind() -> None:\n    global NOT_READ\n    NOT_READ = {}\n",
+        "import reader\nreader.NOT_READ['fi'] = ''\n",
+        "import reader\nreader.NOT_READ = {}\n",
+        "(NOT_READ := {})\n",
+        "def outer() -> None:\n    def inner() -> None:\n        NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ.update(fi='')\n",
+        "class Reader:\n    NOT_READ = {}\n\n    def add(self) -> None:\n        NOT_READ['fi'] = ''\n",
+        "class Reader:\n    NOT_READ = {}\n    add = lambda self: NOT_READ.update(fi='')\n",
+    ],
+)
+def test_a_write_to_a_not_read_table_after_its_own_assignment_fails(write: str) -> None:
+    problems = fixture_not_read({READER: TABLE + write})
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{READER}:"), problems
+    assert "writes NOT_READ after the assignment" in problems[0], problems
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "REASON = NOT_READ['coproc']\n",
+        "REASON = NOT_READ.get('coproc')\n",
+        "WORDS = sorted(NOT_READ.keys()) + [word for word, _ in NOT_READ.items()]\n",
+        "def known(word: str) -> bool:\n    return word in NOT_READ\n",
+        "def local() -> dict[str, str]:\n    NOT_READ = {}\n    NOT_READ['x'] = ''\n    return NOT_READ\n",
+        "class Reader:\n    NOT_READ = {'x': ''}\n",
+        "class Reader:\n    def add(self) -> None:\n        NOT_READ = {}\n        NOT_READ['x'] = ''\n",
+        "def add(NOT_READ: dict[str, str]) -> None:\n    NOT_READ['x'] = ''\n",
+        "def add(NOT_READ: dict[str, str], /) -> None:\n    NOT_READ.update(x='')\n",
+        "def add(*, NOT_READ: dict[str, str]) -> None:\n    NOT_READ['x'] = ''\n",
+        "def add(*NOT_READ: dict[str, str]) -> None:\n    del NOT_READ[0]\n",
+        "def add(**NOT_READ: str) -> None:\n    NOT_READ['x'] = ''\n",
+        "ADD = lambda NOT_READ: NOT_READ.update(x='')\n",
+        "class Reader:\n    def add(self, NOT_READ: dict[str, str]) -> None:\n        NOT_READ['x'] = ''\n",
+        "REASONS = list(NOT_READ.values()) + [NOT_READ.copy()]\n",
+        "KNOWN = NOT_READ.__contains__('coproc') and NOT_READ.__getitem__('coproc') and NOT_READ.__len__()\n",
+        "COPY = dict(NOT_READ)\n",
+    ],
+)
+def test_a_not_read_table_read_but_never_written_after_its_assignment_passes(use: str) -> None:
+    assert fixture_not_read({READER: TABLE + use}) == []
+
+
+def test_a_module_whose_table_cannot_be_read_names_the_module_never_passes_empty() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository with spaces"
+        write_fixture_tree(root, {"tools/broken.py": "NOT_READ = {'x':\n"})
+        (root / "skills" / "a" / "scripts").mkdir(parents=True)
+        (root / READER).write_bytes(b"NOT_READ = {'x': '\xff'}\n")
+        problems = not_read_problems(root, [root / "tools" / "broken.py", root / READER])
+    assert [problem.split(" ")[0] for problem in problems] == [READER, "tools/broken.py"], problems
+
+
+@pytest.mark.parametrize("before", ["WORDS = ['coproc']\n", "class Words:\n    pass\n\n\nWords.first = 'coproc'\n"])
+def test_a_not_read_table_after_another_module_level_assignment_is_read_from_its_own(before: str) -> None:
+    assert fixture_not_read({READER: before + TABLE}) == []
+
+
+def test_each_not_read_problem_names_its_module_its_line_and_what_to_do() -> None:
+    assert fixture_not_read(
+        {READER: TABLE + "\nNOT_READ['fi'] = ''\n", "tools/reader.py": "NOT_READ = {'x': ''}\n"}
+    ) == [
+        f"{READER}:3 writes NOT_READ after the assignment validation reads its reasons from; add each entry to that "
+        "literal instead",
+        "tools/reader.py NOT_READ must map each catalogue entry the module leaves unread to its reason, as a literal "
+        "dictionary of non-empty texts",
+    ]
