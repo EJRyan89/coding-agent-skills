@@ -3,6 +3,6 @@
   "reviewer": "review-repository",
   "mode": "initial",
   "expectations": [
-    {"kind": "finding", "path": "skills/ejryan89-code-review-core/scripts/review_github.py", "lines": [14, 16], "severity": "MUST_FIX"}
+    {"kind": "finding", "path": "skills/ejryan89-code-review-core/scripts/review_github.py", "lines": [16], "severity": "MUST_FIX"}
   ]
 }
