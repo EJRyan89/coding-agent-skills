@@ -2227,15 +2227,50 @@ class PytestScriptRootPolicy(unittest.TestCase):
             '    parser.add_argument("--extend", action="extend", nargs="+")\n'
             '    parser.add_argument("--off", nargs=0)\n',
         )
+        # Each argument the script's parser takes as an option or its value is one this policy would name as unplaced
+        # if it read it as a suite, so only the suite after the flag is judged, and found unpinned.
         body = """\
+            NAMES = {"one": Path("x"), "two": Path("y"), "three": Path("z")}
+
+
             def test_runs() -> None:
                 with tempfile.TemporaryDirectory() as temporary:
-                    folder = Path(temporary)
-                    one, two, suite = str(folder / "a"), str(folder / "b"), str(folder / "test_c.py")
-                    run_tool(f"--summary={folder}", "--include", one, "--extend", two, "--off", suite)  # start
+                    one, two, suite = str(NAMES["one"]), str(NAMES["two"]), str(Path(temporary) / "test_c.py")
+                    run_tool(f"--summary={NAMES['three']}", "--include", one, "--extend", two, "--off", suite)  # start
             """
         problems, _ = self.reading(body, tool)
         self.assertEqual([self.unpinned(body)], problems)
+
+    def test_the_interpreters_options_are_read_from_its_documented_catalogue_and_an_unknown_one_is_named(
+        self,
+    ) -> None:
+        # Python's command-line documentation: -c, -m, -W, -X, and --check-hash-based-pycs take a separate value.
+        self.assertEqual(frozenset({"-W", "-X", "--check-hash-based-pycs"}), suite_discovery.INTERPRETER_VALUE_OPTIONS)
+        self.assertEqual(("-m", "-c"), suite_discovery.INTERPRETER_PROGRAMS)
+        for options in ('"--check-hash-based-pycs", "always"', '"-IB"', '"-Wdefault", "-Xdev"', '"-OO", "--version"'):
+            source = self.BARE + textwrap.dedent(
+                f"""\
+                def test_runs() -> None:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        suite = str(Path(temporary) / "test_child.py")
+                        subprocess.run([sys.executable, {options}, str(TOOL), suite], check=True)  # start
+                """
+            )
+            with self.subTest(options):
+                problems, _ = self.tree_reading({"tests/test_a.py": source})
+                self.assertEqual([self.problem("tests/test_a.py", source)], problems)
+        unknown = self.BARE + textwrap.dedent(
+            """\
+            def test_runs() -> None:
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite = str(Path(temporary) / "test_child.py")
+                    subprocess.run([sys.executable, "--frobnicate", "x", str(TOOL), suite], check=True)  # start
+                    subprocess.run([sys.executable, "--frobnicate", "tests/test_b.py"], check=True)
+            """
+        )
+        why = "the interpreter's option --frobnicate, which this policy does not know, comes before the script"
+        problems, _ = self.tree_reading({"tests/test_a.py": unknown})
+        self.assertEqual([self.problem("tests/test_a.py", unknown, why)], problems)
 
     def test_a_script_path_built_through_steps_up_and_dots_is_read_and_one_windows_refuses_is_never_looked_up(
         self,

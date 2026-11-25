@@ -1302,11 +1302,16 @@ FILE_WRITES = frozenset({"write_text", "write_bytes", "touch"})
 # The calls that give a path back in another spelling; skill_scripts' PATH_METHODS are the path methods that give
 # back the same path.
 PATH_SPELLINGS = frozenset({"str", "os.fspath", "pathlib.Path", "os.path.abspath"})
-# The interpreter's options that take the next argument as their value, in a command that starts a repository script
-# with skill_scripts' INTERPRETER; -m and -c end its options with a module or a program text, which no script file
-# names.
-INTERPRETER_VALUE_OPTIONS = frozenset({"-X", "-W"})
+# The interpreter's command-line options, as Python's documentation of its command line lists them, in a command that
+# starts a repository script with skill_scripts' INTERPRETER: those that take the next argument as their value, -W and
+# -X also written with the value joined, as -Wdefault; -m and -c, which end the options with a module or a program
+# text, which no script file names; and the flags, the short ones also combined behind one dash, as -IB. An option
+# none of these names is read as one this policy does not know, and a start behind it is named rather than guessed.
+INTERPRETER_VALUE_OPTIONS = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+INTERPRETER_JOINED_VALUES = ("-W", "-X")
 INTERPRETER_PROGRAMS = ("-m", "-c")
+INTERPRETER_SHORT_FLAGS = frozenset("bBdEhiIOPqRsSuvVx")
+INTERPRETER_LONG_FLAGS = frozenset({"--help", "--help-env", "--help-xoptions", "--help-all", "--version"})
 # The argparse actions of an option that takes the next argument as its value; any other action is read as a flag, so
 # the argument after it is read as a suite.
 VALUE_ACTIONS = frozenset({"store", "append", "extend"})
@@ -1607,16 +1612,32 @@ def script_parser(tree: ast.Module) -> tuple[frozenset[str], bool]:
     return frozenset(options), positional
 
 
-def _script_index(items: list[ast.expr]) -> int | None:
-    """Where a command list that opens with the interpreter names its script: the first item after the interpreter's
-    options, the value -X or -W takes skipped; None when -m or -c ends them with a module or a program text, or
-    nothing follows them."""
+def _interpreter_flag(option: str) -> bool:
+    """Whether an interpreter option takes no separate value: a long flag, -W or -X with its value joined, or short
+    flags behind one dash."""
+    if option in INTERPRETER_LONG_FLAGS or (option[:2] in INTERPRETER_JOINED_VALUES and len(option) > 2):
+        return True
+    return len(option) > 1 and not option.startswith("--") and set(option[1:]) <= INTERPRETER_SHORT_FLAGS
+
+
+def _script_positions(items: list[ast.expr]) -> tuple[list[int], str]:
+    """Where a command list that opens with the interpreter may name its script, and an option before it that this
+    policy does not know: the first item after the interpreter's options, the value an option of
+    INTERPRETER_VALUE_OPTIONS takes skipped; none when -m or -c ends them with a module or a program text, or nothing
+    follows them; and, behind an option none of the interpreter's catalogues names, every item after it, which may
+    each be the script, with the option."""
     index = 1
     while index < len(items) and isinstance(flag := items[index], ast.Constant) and str(flag.value).startswith("-"):
-        if str(flag.value).startswith(INTERPRETER_PROGRAMS):
-            return None
-        index += 2 if flag.value in INTERPRETER_VALUE_OPTIONS else 1
-    return index if index < len(items) else None
+        option = str(flag.value)
+        if option.startswith(INTERPRETER_PROGRAMS):
+            return [], ""
+        if option in INTERPRETER_VALUE_OPTIONS:
+            index += 2
+        elif _interpreter_flag(option):
+            index += 1
+        else:
+            return list(range(index + 1, len(items))), option
+    return ([index] if index < len(items) else []), ""
 
 
 def _names_interpreter(node: ast.expr, aliases: dict[str, str], names: Mapping[str, list[ast.expr]]) -> bool:
@@ -1722,23 +1743,30 @@ class _PytestRoots:
         for node in ast.walk(tree):
             if not (isinstance(node, ast.List | ast.Tuple) and node.elts):
                 continue
-            index = _script_index(node.elts)
-            if index is None or not _names_interpreter(node.elts[0], aliases, names):
-                continue
-            parts = path_parts(node.elts[index], names)
-            tail = [str(part) for part in itertools.takewhile(lambda part: part is not None, reversed(parts))][::-1]
-            if not tail or not tail[-1].endswith(".py") or any(UNNAMEABLE & set(part) for part in tail):
-                continue
-            for folder in folders:
-                candidate = folder
-                for part in tail:
-                    candidate = candidate.parent if part == ".." else candidate if part == "." else candidate / part
-                if (
-                    within(candidate, self.root)
-                    and file_presence.is_present(candidate, other_is_absent=True)
-                    and self.names_a_start(candidate)
-                ):
-                    return True
+            positions, _ = _script_positions(node.elts)
+            if _names_interpreter(node.elts[0], aliases, names) and any(
+                self._names_a_script_file(node.elts[index], names, folders) for index in positions
+            ):
+                return True
+        return False
+
+    def _names_a_script_file(self, node: ast.expr, names: Mapping[str, list[ast.expr]], folders: list[Path]) -> bool:
+        """Whether an expression's literal path end, joined to one of the folders with `..` and `.` read as steps, is a
+        repository file whose text, or a module's it imports by name, names a pytest start."""
+        parts = path_parts(node, names)
+        tail = [str(part) for part in itertools.takewhile(lambda part: part is not None, reversed(parts))][::-1]
+        if not tail or not tail[-1].endswith(".py") or any(UNNAMEABLE & set(part) for part in tail):
+            return False
+        for folder in folders:
+            candidate = folder
+            for part in tail:
+                candidate = candidate.parent if part == ".." else candidate if part == "." else candidate / part
+            if (
+                within(candidate, self.root)
+                and file_presence.is_present(candidate, other_is_absent=True)
+                and self.names_a_start(candidate)
+            ):
+                return True
         return False
 
     def callee(self, path: Path, call: ast.Call) -> tuple[Path, FunctionNode] | None:
@@ -1858,15 +1886,19 @@ class _PytestRoots:
         items = display.elts
         if not items or reader.resolver.name(items[0]) != INTERPRETER:
             return []
-        index = _script_index(items)
-        options = self.script(path, items[index]) if index is not None else None
-        if index is None or options is None:
+        positions, unknown = _script_positions(items)
+        scripts = [(index, options) for index in positions if (options := self.script(path, items[index])) is not None]
+        if not scripts:
             return []
         # The script starts its own pytest, from where it chooses, as tools/python_diagnostics.py starts it from the
         # repository's root, so the working directory the script itself is given decides nothing here.
         started, _ = self._started(reader, display)
         if not started:
             return []
+        if unknown:
+            why = f"the interpreter's option {unknown}, which this policy does not know, comes before the script"
+            return [_PytestStart(display.lineno, (), unread=why)]
+        index, options = scripts[0]
         suites = _script_arguments(items[index + 1 :], options)
         return [_PytestStart(display.lineno, tuple(suites), options=options)]
 
@@ -2094,7 +2126,9 @@ def pytest_root_reading(root: Path) -> tuple[list[str], list[str]]:
     script, as tests/tools/test_python_diagnostics.py's run_tool runs tools/python_diagnostics.py, starts pytest on
     each argument the command gives the script that is not an option or the value of an option its parser declares,
     when the script's text, or a module's it imports by name, names a pytest start and its parser takes a positional
-    argument. A function that spreads its own starred parameter into such a command, as run_tool does, passes each
+    argument. The interpreter's own options before the script are read from Python's documented catalogue, and one
+    outside it, before a script that starts pytest, names the start rather than guessing which argument is the
+    script. A function that spreads its own starred parameter into such a command, as run_tool does, passes each
     argument from that position on to its callers. A starred argument is read as suites under the folders the
     function that gives it makes: pinned when each holds a pytest.ini, failed when one is a temporary folder that does
     not, and named when the function makes none.
