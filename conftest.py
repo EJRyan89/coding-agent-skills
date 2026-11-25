@@ -1,9 +1,10 @@
 """pytest's setup for every Python regression suite: git isolated from the shell for each test and each fixture, and
 one shard of a suite when the runner splits it.
 
-tests/run_validation.py starts each Python suite, or each shard of a large one, as `python -B -m pytest <suite>` from
-the repository root, which pytest finds as its root by pyproject.toml, so this file is loaded for every suite under
-tests/ and each skill's scripts/. pytest puts the suite's own directory first on sys.path, as `python <suite>` did.
+tests/run_validation.py starts each Python suite, or each shard of a large one, as
+`python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its own for its temporary folders, from the
+repository root, which pytest finds as its root by pyproject.toml, so this file is loaded for every suite under tests/
+and each skill's scripts/. pytest puts the suite's own directory first on sys.path, as `python <suite>` did.
 
 Git takes configuration, hooks, and even the repository it works on from the environment: a command-scope setting in
 `GIT_CONFIG_COUNT` outranks every file, a global `core.hooksPath` runs the user's hooks on a fixture's commit, and

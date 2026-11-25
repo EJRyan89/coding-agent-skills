@@ -1816,6 +1816,27 @@ or removed fails validation until its pattern follows it.
 - **Examples:** #3301, whose `tests/tools/test_python_diagnostics.py` turned main's Windows legs red; #3304, which
   wrote a pytest.ini beside its fixture suites.
 
+### A pytest the repository starts keeps its temporary folders in a base of its own
+
+- **Rule:** Every pytest the runner, the mutation gate, or a repository tool starts is given a fresh base folder of its
+  own for the temporary folders its tests make, as pytest's `--basetemp`.
+- **Why:** Without one, every pytest process keeps its temporary folders in one base, `pytest-of-<user>` in the
+  temporary directory, and each process that ends removes every link there whose target is gone, `pytest-current`
+  among them. Two processes ending together race over the same link, and the one whose removal comes second ends its
+  session in a FileNotFoundError after its tests all passed. The race shows only when two suites that use `tmp_path`
+  end at once, so it fails a required check at random on a pull request that touches neither suite.
+- **Use:** `tests.validation.suite_discovery:pytest_base`, the folder `tests.validation.suite_discovery:pytest_command`
+  requires as its base, which mypy holds every caller to give.
+- **Guard:**
+  `tests/validation/test_suite_discovery.py::PytestBaseFolderTests`,
+  `tests/tools/test_mutation_gate.py::ProcessArgumentFixtures`,
+  `tests/tools/test_mutation_gate.py::RunSuiteFixtures::test_a_suite_keeps_its_temporary_folders_in_a_base_folder_of_its_own`,
+  `tests/tools/test_python_diagnostics.py::BaseFolderTests`
+- **Search for:** a command list holding `"-m", "pytest"` with no `--basetemp`, whose suite requests `tmp_path`,
+  `tmpdir`, or `tmp_path_factory`; a suite that builds such a list itself is held by no guard, and needs no base while
+  its suite makes no temporary folder through pytest.
+- **Examples:** #3317, a suite whose tests all passed failing at session end on a macOS leg.
+
 ## Prompt patterns
 
 These patterns are about the prompts that do the work: a skill's steps and description, a reviewer's instructions,

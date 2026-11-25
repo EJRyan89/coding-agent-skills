@@ -7,9 +7,9 @@ It runs every regression suite under tests/ and each skill's scripts/ in one poo
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
 in tests/validation/, one module per family, each with its fixture tests beside it as
 tests/validation/test_<module>.py, which run in the pool as regression suites. Each Python suite runs as
-`python -B -m pytest <suite>` from the repository root, where pytest loads the root conftest.py, and a large one is
-split into shards, each its own pytest process that conftest.py's --suite-shard deals the suite's tests to, so no single
-suite sets the length of the run.
+`python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its own for its temporary folders, from the
+repository root, where pytest loads the root conftest.py, and a large one is split into shards, each its own pytest
+process that conftest.py's --suite-shard deals the suite's tests to, so no single suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
 none of either, alone or beside one that does, is a usage error rather than a run that passes without it. -k
 selects by name, so --changed and --full, which select by the change, are usage errors beside it. VALIDATION_JOBS sets

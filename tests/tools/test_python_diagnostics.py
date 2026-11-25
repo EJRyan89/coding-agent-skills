@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validati
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from flat_text import flat_text
-from suite_discovery import PYTEST_ENVIRONMENT, pytest_command, regression_suites
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_base, pytest_command, regression_suites
 
 from tools import python_diagnostics, unraisable_record
 
@@ -171,17 +171,18 @@ class FixtureFolderTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder)
         suite = folder / "test_clean.py"
         suite.write_bytes(textwrap.dedent(FIXTURES["test_clean.py"]).encode("utf-8"))
-        completed = subprocess.run(
-            [*pytest_command(str(suite)), "--collect-only"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, **PYTEST_ENVIRONMENT},
-            cwd=REPOSITORY_ROOT,
-            timeout=RUN_SECONDS,
-            check=False,
-        )
+        with pytest_base() as basetemp:
+            completed = subprocess.run(
+                [*pytest_command(str(suite), basetemp=basetemp), "--collect-only"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, **PYTEST_ENVIRONMENT},
+                cwd=REPOSITORY_ROOT,
+                timeout=RUN_SECONDS,
+                check=False,
+            )
         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
         lines = [line.strip() for line in completed.stdout.splitlines()]
         self.assertIn("configfile: pytest.ini", lines, completed.stdout)
@@ -242,6 +243,24 @@ class SuiteTimeTests(unittest.TestCase):
         self.assertEqual("it ran past 1 seconds", outcome.failure)
         self.assertFalse(outcome.passed)
         self.assertLess(outcome.seconds, 30)
+
+
+class BaseFolderTests(unittest.TestCase):
+    def test_a_suite_keeps_its_temporary_folders_in_a_base_folder_of_its_own(self) -> None:
+        # pytest makes the base every pytest process shares, pytest-of-<user>, in the folder PYTEST_DEBUG_TEMPROOT
+        # names, so a run that used it would leave it in `shared`.
+        folder = suite_folder()
+        self.addCleanup(shutil.rmtree, folder)
+        suite = folder / "test_temporary.py"
+        suite.write_bytes(b"def test_makes_a_folder(tmp_path):\n    (tmp_path / 'made').write_bytes(b'')\n")
+        record, shared = folder / "record", folder / "shared"
+        record.mkdir()
+        shared.mkdir()
+        inherited = {**os.environ, "PYTEST_DEBUG_TEMPROOT": str(shared)}
+        environment = python_diagnostics.child_environment(inherited, folder, record)
+        outcome = python_diagnostics.run_suite(str(suite), environment, record)
+        self.assertIsNone(outcome.failure, outcome.output)
+        self.assertEqual([], list(shared.iterdir()))
 
 
 class UsageTests(unittest.TestCase):
