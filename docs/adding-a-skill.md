@@ -213,8 +213,9 @@ A command that runs another reads as both. Validation reads Bash, a script, a fe
 shell, through ejryan89-skill-core's `bash_syntax.py`, the repository's one Bash grammar, which Bash's own syntax
 check holds: a command wherever Bash starts one, a here-document's body as data handed to its command's input, of
 which only the command substitutions of an unquoted one run, a comment to its line's end, and arithmetic as running
-no program. A here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
-`source /dev/stdin <<EOF`, is read as data too, so a program in its body goes unread; no script here writes one. A
+no program. A here-document a shell reads as its script, as in `bash <<EOF` or `bash -s <<'EOF'`, is read as data
+too, so a program in its body goes unread; no script here writes one. `source /dev/stdin <<EOF` is refused, as every
+`source` is, below. A
 file holding Bash the grammar refuses fails the policy, which names it, and so does a Python script handing a shell
 such Bash fail the shared-client and checker policies: Bash runs the lines before a syntax error, so none of the
 file's programs can be trusted as read. A script a shell is handed with `-c` as an f-string in a list, as in
@@ -231,7 +232,11 @@ what their bare names run, matched as written in Bash and in any case in PowerSh
 manager installs it with, a g or a u, as `gtimeout` or `uenv`, is read as the wrapper it builds; a prefixed `find` or
 shell, as `gfind`, is not, a stated limit, since no script here names one. Only an unquoted operator or keyword is syntax: a quoted or escaped `;`, `&`, `|`, `(`, or `{`, such as the
 `\;` or `';'` that ends a `find -exec` action, is a word of the command it stands in. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
-abbreviated option or one the wrapper's table does not list is a program the policy cannot read. In PowerShell it
+abbreviated option or one the wrapper's table does not list is a program the policy cannot read. So is a builtin's use
+that runs text no reader reads, as `command_wrappers.REFUSED_BUILTINS` names each: `.` and `source`, `fc` but for a
+listing, `mapfile` or `readarray -C`, `compgen -C` or `-F`, `enable -f`, and a word whose array subscript holds a
+command or process substitution for `let`, `declare`, `typeset`, `local`, `read`, `printf`, `unset`, `test`, or `[`,
+which Bash expands even where the word is quoted. Every builtin Bash's `compgen -b` lists is decided there. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`

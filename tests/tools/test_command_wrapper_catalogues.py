@@ -28,9 +28,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bash_agreement
+import bash_syntax
+import command_wrappers
 import option_reader
 from command_wrappers import COMMAND_WRAPPERS, UNREAD_PROGRAM, unwrapped
 
@@ -540,3 +545,173 @@ class ReaderTests(unittest.TestCase):
             ),
             help_options(text),
         )
+
+
+# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
+# /bin/bash 3.2, which has no mapfile, still holds the decisions to every one, and the release they were printed by,
+# from which on every pinned builtin must still be one the runner's Bash prints.
+PINNED_BUILTINS = frozenset(
+    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
+    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
+    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
+    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
+    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
+)
+PINNED_FROM_BASH = (5, 3)
+
+
+def runner_builtins() -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the builtins it prints."""
+    return bash_agreement.compgen("-b")
+
+
+def builtin_tables() -> dict[str, set[str]]:
+    """Each table command_wrappers decides a builtin in, by name."""
+    return {
+        "COMMAND_WRAPPERS": set(COMMAND_WRAPPERS) & (PINNED_BUILTINS | runner_builtins()[1]),
+        "SCRIPT_BUILTINS": set(command_wrappers.SCRIPT_BUILTINS),
+        "OPTION_WRAPPERS": set(command_wrappers.OPTION_WRAPPERS),
+        "REFUSED_BUILTINS": set(command_wrappers.REFUSED_BUILTINS),
+        "RUNS_NOTHING": set(command_wrappers.RUNS_NOTHING),
+        "NOT_READ": set(command_wrappers.NOT_READ),
+    }
+
+
+def test_every_builtin_bash_prints_is_decided_once() -> None:
+    release, names = runner_builtins()
+    catalogue = names | PINNED_BUILTINS
+    tables = builtin_tables()
+    decided = set().union(*tables.values())
+    assert sorted(catalogue - decided) == [], (
+        "decide each in command_wrappers: a wrapper, OPTION_WRAPPERS, SCRIPT_BUILTINS, REFUSED_BUILTINS, RUNS_NOTHING,"
+        " or NOT_READ"
+    )
+    assert sorted(names - PINNED_BUILTINS) == [], "pin each in PINNED_BUILTINS"
+    if release >= PINNED_FROM_BASH:
+        assert sorted(PINNED_BUILTINS - names) == [], f"Bash {release} no longer has these: unpin and undecide each"
+    assert sorted(decided - catalogue) == [], "remove each from its table: no Bash has it"
+    for (first, one), (second, other) in itertools.combinations(tables.items(), 2):
+        assert sorted(one & other) == [], f"each is in both {first} and {second}"
+
+
+# For each use REFUSED_BUILTINS names, a script whose use runs the command `touch M` hidden from every reader, in a
+# folder of its own, with the first Bash release known to run it: Bash 3.2 runs a subscript's command for let,
+# declare, typeset, local, read, and unset, and Bash 5.3 for printf -v, test -v, and [ -v too. fc runs history, which a
+# script keeps off, and enable -f needs a shared object, so neither is probed.
+REFUSED_PROBES = {
+    "source": ("printf 'touch M\\n' > s.sh; source ./s.sh", (3, 2)),
+    ".": ("printf 'touch M\\n' > s.sh; . ./s.sh", (3, 2)),
+    "mapfile": ("mapfile -C 'touch M' -c 1 <<< x", (4, 0)),
+    "readarray": ("readarray -C 'touch M' -c 1 <<< x", (4, 0)),
+    "compgen": ("compgen -C 'touch M' x", (3, 2)),
+    "let": ("let 'a[$(touch M)]=1'", (3, 2)),
+    "declare": ("declare 'a[$(touch M)]=1'", (3, 2)),
+    "typeset": ("typeset 'a[$(touch M)]=1'", (3, 2)),
+    "local": ("f() { local 'a[$(touch M)]=1'; }; f", (3, 2)),
+    "read": ("read 'a[$(touch M)]' <<< x", (3, 2)),
+    "unset": ("unset 'a[$(touch M)]'", (3, 2)),
+    "printf": ("printf -v 'a[$(touch M)]' x", PINNED_FROM_BASH),
+    "test": ("test -v 'a[$(touch M)]'", PINNED_FROM_BASH),
+    "[": ("[ -v 'a[$(touch M)]' ]", PINNED_FROM_BASH),
+}
+# Builtins that take a variable's name, whose subscript no Bash expands, so RUNS_NOTHING holds them.
+QUIET_PROBES = {
+    "export": "export 'a[$(touch M)]=1'",
+    "readonly": "readonly 'b[$(touch M)]=1'",
+    "getopts": "getopts a 'a[$(touch M)]'",
+}
+
+
+def runs_hidden_command(script: str, folder: Path) -> bool:
+    """Whether the validated Bash, running `script` in `folder` with an array `a` set, makes the marker file M."""
+    command = [find_bash(), "-c", f'cd "$1" || exit 1; a=(1); {script}', "probe", platform_support.normalize(folder)]
+    platform_support.run_tool(command)
+    return (folder / "M").exists()
+
+
+def builtin_words(script: str, name: str) -> list[str]:
+    """The words of the simple command in `script` whose program is the builtin `name`."""
+    commands = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(script)]
+    return next(words for words in commands if words[:1] == [name])
+
+
+@pytest.mark.parametrize("name", list(REFUSED_PROBES))
+def test_each_refused_builtin_use_runs_its_hidden_command_in_bash_and_every_reader_refuses_it(
+    name: str, tmp_path: Path
+) -> None:
+    script, since = REFUSED_PROBES[name]
+    assert name in command_wrappers.REFUSED_BUILTINS
+    assert unwrapped(builtin_words(script, name))[0].startswith(UNREAD_PROGRAM)
+    release, names = runner_builtins()
+    if name in names and release >= since:
+        assert runs_hidden_command(script, tmp_path), f"Bash {release} ran nothing for {script}"
+
+
+@pytest.mark.parametrize("name", list(QUIET_PROBES))
+def test_a_builtin_that_runs_nothing_runs_no_command_a_subscript_holds_and_is_read(name: str, tmp_path: Path) -> None:
+    script = QUIET_PROBES[name]
+    assert name in command_wrappers.RUNS_NOTHING
+    assert unwrapped(builtin_words(script, name)) == []
+    assert not runs_hidden_command(script, tmp_path), f"Bash {runner_builtins()[0]} ran {script}"
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ["mapfile", "-t", "lines"],
+        ["compgen", "-W", "a b", "a"],
+        ["enable", "-n", "echo"],
+        ["fc", "-l"],
+        ["printf", "-v", "a[1]", "x"],
+        ["printf", "%s\n", "a[b]"],
+        ["read", "-r", "line"],
+        ["let", "a[1]=2"],
+    ],
+)
+def test_a_builtin_use_that_runs_no_hidden_text_is_read(words: list[str]) -> None:
+    assert unwrapped(words) == []
+
+
+@pytest.mark.parametrize(
+    ("words", "reason"),
+    [
+        (["source", "x"], "runs a file's commands"),
+        ([".", "x"], "runs a file's commands"),
+        (["fc"], "runs commands again from the history"),
+        (["fc", "-s"], "runs commands again from the history"),
+        (["fc", "-le"], "runs commands again from the history"),
+        (["mapfile", "-tC", "cb", "lines"], "runs its -C callback in the shell itself"),
+        (["readarray", "-C", "cb"], "runs its -C callback in the shell itself"),
+        (["compgen", "-F", "f", "x"], "runs its -C command or its -F function"),
+        (["enable", "-f", "lib.so", "x"], "loads a builtin from a shared object"),
+        (["printf", "-v", "a[`x`]", "y"], "expands a command substitution in an array subscript"),
+        (["test", "-v", "a[<(x)]"], "expands a command substitution in an array subscript"),
+        (["declare", "a[>(x)]=1"], "expands a command substitution in an array subscript"),
+    ],
+)
+def test_each_refused_builtin_use_is_an_unread_program_naming_why(words: list[str], reason: str) -> None:
+    assert unwrapped(words) == [f"{UNREAD_PROGRAM}{words[0]} {reason}"]
+    # A wrapper's command is read as the command it runs, so a refused use behind one is refused there.
+    assert unwrapped(["command", *words]) == words
+
+
+@pytest.mark.parametrize(
+    ("words", "runs"),
+    [
+        (["jobs", "-x", "git", "push"], ["git", "push"]),
+        (["jobs", "-lx", "cd", "/x"], ["cd", "/x"]),
+        (["jobs", "-x", "--", "cd", "/x"], ["cd", "/x"]),
+        (["jobs", "-l"], []),
+        (["jobs", "%1"], []),
+        (["jobs", "--", "-x", "y"], []),
+        (["jobs", "-q", "x"], [f"{UNREAD_PROGRAM}jobs -q"]),
+    ],
+)
+def test_jobs_given_x_runs_the_command_its_operands_name_and_otherwise_none(words: list[str], runs: list[str]) -> None:
+    assert unwrapped(words) == runs
+
+
+def test_jobs_given_x_runs_its_command_in_bash_itself(tmp_path: Path) -> None:
+    assert "jobs" in command_wrappers.OPTION_WRAPPERS
+    assert runs_hidden_command("jobs -x touch M", tmp_path)
+    assert unwrapped(builtin_words("jobs -x touch M", "jobs")) == ["touch", "M"]
