@@ -373,7 +373,7 @@ class DeploymentSequences(RuleBasedStateMachine):
         for path, state in self.backups_seen.items():
             assert found.get(path) == state, f"backup {path} was removed or changed"
         self.backups_seen = found
-        if self.pending:
+        if self.pending and self.killed_after_commit:
             # A run killed after it committed moves the edit into its permanent backup as recovery completes it.
             return
         kept = [
