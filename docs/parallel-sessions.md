@@ -684,7 +684,8 @@ The hook sees the command text, and the guard reads git's words in it: it does n
 run by its own words, which it allows whatever those words are, so what a script file, `eval`, a `trap`'s action, a
 builtin's use that runs text no reader reads (`command_wrappers.REFUSED_BUILTINS`, as a `source`d file, a `mapfile -C`
 callback, or a command substitution in the quoted array subscript `printf -v` or `read` names, or one outside a
-builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variable, or `a['$(x)']=1`), the command
+builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
+`${a['$(x)']}`, which Bash 5.3 runs), the command
 `jobs -x` runs, which the guard reads only as a move it does not follow, a later name `hash -p` points at another
 program, a function, a program
 that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a

@@ -152,17 +152,18 @@ OPTION_WRAPPERS = {"jobs": (option_table("lnprsx"), "x")}
 # The builtins whose words name a variable or an arithmetic expression whose array subscript Bash expands as it reads
 # the word, so a command substitution the subscript's text holds runs even where the word was quoted, as in
 # `printf -v 'a[$(touch x)]' y`; export, readonly, and getopts do once the variable they set has the integer
-# attribute, as after `declare -i x`, and so does compgen -V filling an integer array.
+# attribute, as after `declare -i x`.
 SUBSCRIPT_BUILTINS = frozenset(
     {"let", "declare", "typeset", "local", "read", "printf", "unset", "test", "[", "export", "readonly", "getopts"}
 )
-# A command or process substitution anywhere after a subscript's `[` in a word, a nested subscript's included, which
-# errs toward refusing a word whose substitution stands after its subscript closes.
-SUBSCRIPT_SUBSTITUTION = re.compile(r"\[.*(?:\$\(|`|[<>]\()", re.DOTALL)
+# A command or process substitution anywhere after a subscript's `[` in a word, a nested subscript's included, and
+# Bash 5.3's `${ command; }` and `${| command; }`, which run in the shell itself; it errs toward refusing a word whose
+# substitution stands after its subscript closes.
+SUBSCRIPT_SUBSTITUTION = re.compile(r"\[.*(?:\$\(|`|[<>]\(|\$\{[\s|])", re.DOTALL)
 # The builtins that run text no reader reads given one of these option letters, each with the letters and why.
 OPTION_RUNNERS = {
     **dict.fromkeys(("mapfile", "readarray"), ("C", "runs its -C callback in the shell itself")),
-    "compgen": ("CF", "runs its -C command or its -F function"),
+    "compgen": ("CFW", "runs its -C command or its -F function, or expands its -W wordlist's substitutions"),
     # enable -n, which makes a later name run the program of that name in the builtin's place, as hash -p makes a later
     # name run another file, is not refused: a stated limit, since no reader follows what a later name runs.
     "enable": ("f", "loads a builtin from a shared object"),
@@ -176,8 +177,6 @@ REFUSED_BUILTINS = {
         for name, (letters, reason) in OPTION_RUNNERS.items()
     },
     **dict.fromkeys(SUBSCRIPT_BUILTINS, "given a word whose array subscript holds a command or process substitution"),
-    "compgen": "given -C or -F, which run a command or a function, or a word whose array subscript holds a command or "
-    "process substitution, which -V may fill an integer array with",
 }
 # The builtins that run no command but themselves, whatever their words.
 RUNS_NOTHING = frozenset(
@@ -259,11 +258,12 @@ def option_wrapped(words: list[str]) -> list[str]:
 def builtin_refusal(words: list[str]) -> str | None:
     """Why a builtin's words run text no reader reads, as REFUSED_BUILTINS names each such use, or None. An option
     letter is read in any option word, alone or bundled, wherever it stands, so a word that may hold one is taken to,
-    erring toward refusing, and a subscript's substitution is read in any word of a SUBSCRIPT_BUILTINS builtin or of
-    compgen, whose -V fills an array. Stated limits, since no script here writes one: a subscript a variable fills, as
-    `read "a[$i]"`, whose value Bash expands again; an ANSI-C `$'...'` word whose escape spells the substitution; and
-    text an integer variable receives as data, as `declare -i i; read i <<< 'a[$(x)]'` or a mapfile into an integer
-    array. None of these is refused, since a reader sees no substitution in the word."""
+    erring toward refusing, and a subscript's substitution is read in any word of a SUBSCRIPT_BUILTINS builtin.
+    Stated limits, since no script here writes one: a subscript a variable fills, as `read "a[$i]"`, whose value Bash
+    expands again; an ANSI-C `$'...'` word whose escape spells the substitution; text an integer variable receives as
+    data, as `declare -i i; read i <<< 'a[$(x)]'` or a mapfile into an integer array; none of which is refused, since a
+    reader sees no substitution in the word; and `enable -n`, which makes a later name run the program of that name in
+    the builtin's place, as `hash -p` makes one run another file, since no reader follows what a later name runs."""
     head, rest = words[0], words[1:]
     letters = {letter for word in rest if word.startswith("-") and word not in {"-", "--"} for letter in word[1:]}
     if head in {".", "source"}:
@@ -272,7 +272,7 @@ def builtin_refusal(words: list[str]) -> str | None:
         return "runs commands again from the history"
     if head in OPTION_RUNNERS and letters & set(OPTION_RUNNERS[head][0]):
         return OPTION_RUNNERS[head][1]
-    if (head in SUBSCRIPT_BUILTINS or head == "compgen") and any(SUBSCRIPT_SUBSTITUTION.search(word) for word in rest):
+    if head in SUBSCRIPT_BUILTINS and any(SUBSCRIPT_SUBSTITUTION.search(word) for word in rest):
         return "expands a command substitution in an array subscript"
     return None
 

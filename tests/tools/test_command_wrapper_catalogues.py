@@ -558,6 +558,8 @@ PINNED_BUILTINS = frozenset(
     | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
 )
 PINNED_FROM_BASH = (5, 3)
+# Why compgen given -C, -F, or -W runs text no reader reads.
+COMPGEN_REASON = "runs its -C command or its -F function, or expands its -W wordlist's substitutions"
 
 
 def runner_builtins() -> tuple[tuple[int, int], frozenset[str]]:
@@ -597,8 +599,9 @@ def test_every_builtin_bash_prints_is_decided_once() -> None:
 # For each use REFUSED_BUILTINS names, a script whose use runs the command `touch M` hidden from every reader, in a
 # folder of its own, with the first Bash release known to run it: Bash 3.2 runs a subscript's command for let,
 # declare, typeset, local, read, and unset, and, once the variable has the integer attribute, for export, readonly,
-# and getopts; Bash 5.3 for printf -v, test -v, [ -v, and compgen -V too. fc runs history, which a script keeps off,
-# and enable -f needs a shared object, so neither is probed.
+# and getopts; Bash 5.3 for printf -v, test -v, and [ -v too, and for Bash 5.3's `${ command; }` forms in a
+# subscript. compgen -W expands every command substitution its wordlist holds, on both. fc runs history, which a script
+# keeps off, and enable -f needs a shared object, so neither is probed.
 REFUSED_PROBES = [
     ("source", "printf 'touch M\\n' > s.sh; source ./s.sh", (3, 2)),
     (".", "printf 'touch M\\n' > s.sh; . ./s.sh", (3, 2)),
@@ -624,7 +627,12 @@ REFUSED_PROBES = [
     ("test", "test -v 'a[$(touch M)]'", PINNED_FROM_BASH),
     ("test", "test -v 'a[b[0]+$(touch M)]'", PINNED_FROM_BASH),
     ("[", "[ -v 'a[$(touch M)]' ]", PINNED_FROM_BASH),
-    ("compgen", "declare -ai arr; compgen -V arr -W 'a[$(touch M)]'", PINNED_FROM_BASH),
+    ("compgen", "compgen -W '$(touch M)' x", (3, 2)),
+    ("compgen", "compgen -aW '`touch M`' x", (3, 2)),
+    ("printf", "printf -v 'a[${ touch M; }]' y", PINNED_FROM_BASH),
+    ("let", "let 'a[${ touch M; }]=1'", PINNED_FROM_BASH),
+    ("declare", "declare 'a[${| touch M; }]=1'", PINNED_FROM_BASH),
+    ("read", "read 'a[${ touch M; }]' <<< x", PINNED_FROM_BASH),
 ]
 # Builtins that RUNS_NOTHING holds, given a word whose subscript holds a command, which no Bash expands.
 QUIET_PROBES = {
@@ -670,7 +678,7 @@ def test_a_builtin_that_runs_nothing_runs_no_command_a_subscript_holds_and_is_re
     "words",
     [
         ["mapfile", "-t", "lines"],
-        ["compgen", "-W", "a b", "a"],
+        ["compgen", "-A", "file", "a"],
         ["enable", "-n", "echo"],
         ["fc", "-l"],
         ["printf", "-v", "a[1]", "x"],
@@ -679,7 +687,7 @@ def test_a_builtin_that_runs_nothing_runs_no_command_a_subscript_holds_and_is_re
         ["let", "a[1]=2"],
         ["export", "PATH=/usr/bin"],
         ["getopts", "ab:", "option"],
-        ["compgen", "-V", "names", "-W", "a b"],
+        ["printf", "-v", "a[${#x}]", "y"],
     ],
 )
 def test_a_builtin_use_that_runs_no_hidden_text_is_read(words: list[str]) -> None:
@@ -696,8 +704,12 @@ def test_a_builtin_use_that_runs_no_hidden_text_is_read(words: list[str]) -> Non
         (["fc", "-le"], "runs commands again from the history"),
         (["mapfile", "-tC", "cb", "lines"], "runs its -C callback in the shell itself"),
         (["readarray", "-C", "cb"], "runs its -C callback in the shell itself"),
-        (["compgen", "-F", "f", "x"], "runs its -C command or its -F function"),
-        (["compgen", "-V", "arr", "-W", "a[$(x)]"], "expands a command substitution in an array subscript"),
+        (["compgen", "-F", "f", "x"], COMPGEN_REASON),
+        (["compgen", "-W", "$(x)", "a"], COMPGEN_REASON),
+        (["compgen", "-aW", "a b", "a"], COMPGEN_REASON),
+        (["compgen", "-V", "arr", "-W", "a[$(x)]"], COMPGEN_REASON),
+        (["printf", "-v", "a[${ x; }]", "y"], "expands a command substitution in an array subscript"),
+        (["declare", "a[${| x; }]=1"], "expands a command substitution in an array subscript"),
         (["let", "a[b[0]+$(x)]=1"], "expands a command substitution in an array subscript"),
         (["export", "x=a[`y`]"], "expands a command substitution in an array subscript"),
         (["enable", "-f", "lib.so", "x"], "loads a builtin from a shared object"),
@@ -736,5 +748,7 @@ def test_jobs_given_x_runs_its_command_in_bash_itself(tmp_path: Path) -> None:
 
 def test_each_option_runner_s_reason_names_every_letter_that_refuses_it() -> None:
     for name, (letters, _) in command_wrappers.OPTION_RUNNERS.items():
-        reason = command_wrappers.REFUSED_BUILTINS[name]
-        assert [letter for letter in letters if f"-{letter}" not in reason] == [], name
+        given = command_wrappers.REFUSED_BUILTINS[name].partition(":")[0]
+        assert [letter for letter in letters if f"-{letter}" not in given] == [], name
+    # compgen's -W expands its wordlist's substitutions, so its reason names it with -C and -F.
+    assert command_wrappers.REFUSED_BUILTINS["compgen"].startswith("given -C or -F or -W:")

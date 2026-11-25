@@ -234,14 +234,16 @@ shell, as `gfind`, is not, a stated limit, since no script here names one. Only 
 `\;` or `';'` that ends a `find -exec` action, is a word of the command it stands in. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
 abbreviated option or one the wrapper's table does not list is a program the policy cannot read. So is a builtin's use
 that runs text no reader reads, as `command_wrappers.REFUSED_BUILTINS` names each: `.` and `source`, `fc` but for a
-listing, `mapfile` or `readarray -C`, `compgen -C` or `-F`, `enable -f`, and a word whose array subscript holds a
-command or process substitution, a nested subscript's included, for `let`, `declare`, `typeset`, `local`, `read`,
-`printf`, `unset`, `test`, `[`, `export`, `readonly`, `getopts`, or `compgen`, which Bash expands even where the word is
-quoted, for the last four once the variable has the integer attribute. Every builtin Bash's `compgen -b` lists is
-decided there. The policy does not see, and no script here writes: an ANSI-C `$'...'` word whose escape spells such a
-substitution; text an integer variable receives as data, as `declare -i i; read i <<< 'a[$(x)]'`; and a quoted
-subscript's substitution outside a builtin's words, as `[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, an assignment to
-an integer variable, or `a['$(x)']=1`. In PowerShell it
+listing, `mapfile` or `readarray -C`, `compgen -C`, `-F`, or `-W`, whose wordlist's substitutions it expands, `enable
+-f`, and a word whose array subscript holds a command or process substitution, or Bash 5.3's `${ command; }`, a nested
+subscript's included, for `let`, `declare`, `typeset`, `local`, `read`, `printf`, `unset`, `test`, `[`, `export`,
+`readonly`, or `getopts`, which Bash expands even where the word is quoted, for the last three once the variable has the
+integer attribute. Every builtin Bash's `compgen -b` lists is decided there. The policy does not see, and no script here
+writes: an ANSI-C `$'...'` word whose escape spells such a substitution; text an integer variable receives as data, as
+`declare -i i; read i <<< 'a[$(x)]'`; a quoted subscript's substitution outside a builtin's words, as
+`[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
+`${a['$(x)']}`, which Bash 5.3 runs; and `enable -n`, which makes a later name run the program of that name, as
+`hash -p` makes one run another file. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, every command of the string `Invoke-Expression`
