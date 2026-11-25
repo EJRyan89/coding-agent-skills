@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import pytest
+
+from github_client import is_read
+
+
+def test_a_view_is_a_read() -> None:
+    assert is_read(["pr", "view", "7", "--json", "title"])
+
+
+def test_a_comment_is_a_change() -> None:
+    assert not is_read(["pr", "comment", "7", "--body", "Looks good"])
+
+
+def test_an_api_call_is_a_read_unless_it_names_another_method() -> None:
+    assert is_read(["api", "repos/o/r/pulls/7"])
+    assert not is_read(["api", "-X", "POST", "repos/o/r/issues"])
+    assert not is_read(["api", "--method=PATCH", "repos/o/r/issues/7"])
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["api", "repos/o/r/issues", "-f", "title=Flaky"],
+        ["api", "repos/o/r/issues", "-ftitle=Flaky"],
+        ["api", "repos/o/r/issues", "-F", "draft=true"],
+        ["api", "repos/o/r/issues", "--field", "title=Flaky"],
+        ["api", "repos/o/r/issues", "--raw-field=title=Flaky"],
+        ["api", "repos/o/r/issues", "-if", "title=Flaky"],
+        ["api", "graphql", "-f", "query=mutation { addStar }"],
+    ],
+)
+def test_a_parameter_with_no_method_is_a_post(arguments: list[str]) -> None:
+    assert not is_read(arguments)
+
+
+def test_a_parameter_with_get_named_is_a_read() -> None:
+    assert is_read(["api", "search/issues", "-X", "GET", "-f", "q=is:open"])
+    assert is_read(["api", "search/issues", "-f", "q=is:open", "-iXGET"])
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["api", "repos/o/r/issues", "-f", "-X=GET"],
+        ["api", "repos/o/r/issues", "-f", "title=Flaky", "-H", "-XGET"],
+        ["api", "repos/o/r/issues", "-F", "draft=true", "--header", "--method=GET"],
+    ],
+)
+def test_a_method_an_option_could_take_as_its_value_is_not_a_read(arguments: list[str]) -> None:
+    assert not is_read(arguments)
+
+
+def test_a_double_dash_an_option_takes_as_its_value_ends_no_scan() -> None:
+    assert not is_read(["api", "repos/o/r/issues", "--template", "--", "-f", "title=Flaky"])
+    assert is_read(["api", "repos/o/r/issues", "--", "-f"])

@@ -1341,6 +1341,55 @@ class SiblingSpellingsTests(unittest.TestCase):
             json.loads((directory / "scenario.json").read_text(encoding="utf-8"))["expectations"],
         )
 
+    def test_the_brief_states_the_effect_and_then_every_form_that_reaches_it(self) -> None:
+        # Fixes that taught a guard one spelling passed review while an operand, a mode, or another subcommand
+        # reached the same effect, so the brief names the effect first and those forms by kind.
+        brief = " ".join((REPOSITORY / specialist("sibling-spellings")["profile"]).read_text(encoding="utf-8").split())
+        steps = [brief.index(f"**{step}.**") for step in ("The effect", "The forms", "The contract", "The catalogue")]
+        self.assertEqual(sorted(steps), steps)
+        for phrase in (
+            "not only the spellings of the construct the fix reads",
+            "cancelled by its `--no-` form, read at its last value",
+            "a positional operand or a boolean mode instead of an option's value",
+            "another subcommand, option, or configuration route that writes the same file, ref, or setting",
+            "another body or input source",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, brief)
+
+    def test_the_input_body_scenario_reads_every_spelling_of_a_parameter_and_no_other_body_source(self) -> None:
+        directory = SCENARIOS / "input-body"
+        pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+        self.assertEqual(MANIFEST_PATH, pull["manifest_path"])
+        [issue] = pull["closing_issues"]
+        # The issue reproduces a field option and states the rule by its effect, as a gh classifier's issue once did
+        # whose fix taught it the field options alone, and another body source was found open after the merge.
+        self.assertIn('is_read(["api", "repos/o/r/issues", "-f", "title=Flaky"])', issue["body"])
+        self.assertIn("`is_read` is false for every `gh api` call gh sends with a method other than GET", issue["body"])
+        path = "skills/ejryan89-skill-core/scripts/github_client.py"
+        head = (directory / "head" / f"{path}.fixture").read_text(encoding="utf-8")
+        # Every spelling of a parameter is read, and nothing reads another body source, the open form.
+        self.assertIn('FIELD_OPTIONS = ("--field", "--raw-field")', head)
+        self.assertIn('FIELD_SHORTHANDS = "fF"', head)
+        self.assertNotIn("--input", head)
+        expectations = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))["expectations"]
+        self.assertEqual(
+            [
+                {
+                    "kind": "finding",
+                    "path": path,
+                    # The fix's added lines: its option tables, the reader of their spellings, and the method it gives.
+                    "lines": [*range(18, 24), *range(26, 34), 37, 38, 39, 41, 44, 45, *range(47, 62)],
+                    "severity": "MUST_FIX",
+                    "category": "Missed sibling",
+                    "source": "sibling-spellings",
+                },
+            ],
+            expectations,
+        )
+        routed = route(MANIFEST, [path], lambda name: True, title=pull["title"])
+        self.assertEqual([path], routed.get("sibling-spellings"))
+
 
 def untested_route() -> dict[str, Any]:
     return next(item for item in MANIFEST["specialists"] if item["id"] == "untested-changes")
