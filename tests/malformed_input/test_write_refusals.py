@@ -171,7 +171,7 @@ def _journal(folder: Path) -> None:
 
 
 def _manifest(folder: Path) -> None:
-    manifest.Manifest(folder / "manifest.json", cast(manifest.ManifestData, {})).save()
+    manifest.Manifest(folder / "manifest.json", {"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}).save()
 
 
 def _hub_guard(folder: Path) -> object:
