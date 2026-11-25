@@ -261,7 +261,9 @@ pipeline feeds a parameter it would read, `Get-Command` given `-Verb`, `-Noun`, 
 name, as `Microsoft.PowerShell.Management\Start-Process`, is read as a program of that name, which the policy refuses
 as undeclared rather than binding its arguments; Windows PowerShell's start-up, which no runner can parse in
 process, is read with pwsh's start-up parser; and a splatted hashtable changed by code the source builds at run time,
-or reached through `$PSCmdlet.GetVariableValue` or a drive path built from text, is read as its literal. In Python it
+or reached through `$PSCmdlet.GetVariableValue` or a drive path built from text, is read as its literal, as is a
+splat in a named block that runs before the block assigning it, as `end` written before `begin`, or after a
+`process` block that empty pipeline input skips. In Python it
 reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell

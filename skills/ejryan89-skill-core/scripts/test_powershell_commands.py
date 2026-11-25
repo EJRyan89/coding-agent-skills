@@ -403,3 +403,14 @@ def test_only_the_bare_call_in_parentheses_runs_the_command_get_command_names() 
     assert powershell_commands.read(
         ["& (Get-Command git) push", "& (Get-Command git).Source push", "& (Get-Command git)[0] push"]
     ) == [[["git", "push"]], [], []]
+
+
+def test_a_get_command_name_holding_a_wildcard_leaves_the_command_unread() -> None:
+    # Get-Command finds every command a wildcard matches, as i?x finds iex, so the name is no program's.
+    assert powershell_commands.listed(
+        ["& (Get-Command i?x) 'git push'", "& (gcm 'g*') push", "& (Get-Command git) push"]
+    ) == [
+        {"source": 0, "unread": "(Get-Command i?x)"},
+        {"source": 1, "unread": "(gcm 'g*')"},
+        {"source": 2, "name": "git", "words": ["push"]},
+    ]
