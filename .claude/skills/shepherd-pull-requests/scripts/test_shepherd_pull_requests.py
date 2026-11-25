@@ -692,6 +692,25 @@ class HubTest(FixtureTestCase):
                 self.assertEqual(head, git("rev-parse", "HEAD", directory=self.hub))
                 git("update-ref", "-d", planted, directory=self.hub)
 
+    def test_a_tag_named_like_the_hub_s_branch_never_stops_its_fast_forward(self) -> None:
+        # git symbolic-ref --short names the branch heads/main beside a tag main, which is not main.
+        before = git("rev-parse", "HEAD", directory=self.hub)
+        git("tag", "main", directory=self.hub)
+        after = self.advance_origin()
+        status, lines = self.tick(StubGh())
+        self.assertEqual(0, status)
+        self.assertEqual(after, git("rev-parse", "HEAD", directory=self.hub))
+        self.assertEqual("refs/heads/main", git("symbolic-ref", "HEAD", directory=self.hub))
+        self.assertEqual(
+            f'HUB "{self.hub.as_posix()}" fast-forwarded {before[:7]} to {after[:7]}', self.line(lines, "HUB ")
+        )
+        self.assertEqual([], [line for line in lines if line.startswith("HUB_DIFFERS")])
+        git("switch", "-q", "-c", "side", directory=self.hub)
+        git("tag", "side", directory=self.hub)
+        self.assertEqual(
+            "not fast-forwarded: it is on side, not main", shepherd.fast_forward(GitClient(), self.hub, True)
+        )
+
     def test_a_hub_already_at_origin_is_current(self) -> None:
         head = git("rev-parse", "HEAD", directory=self.hub)
         _, lines = self.tick(StubGh())

@@ -472,8 +472,10 @@ def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | Non
 
 
 def current_branch(services: Services, root: str | Path) -> str:
-    head = git_client.output_line(quiet(services, root, "symbolic-ref", "--quiet", "--short", "HEAD") or "")
-    return head or "a detached HEAD"
+    """The branch HEAD is on, named from its full ref, which --short would give as heads/<branch> beside a tag of the
+    same name; a ref that is no branch by its full name; or a detached HEAD."""
+    head = git_client.output_line(quiet(services, root, "symbolic-ref", "--quiet", "HEAD") or "")
+    return head.removeprefix("refs/heads/") or "a detached HEAD"
 
 
 def default_branch(services: Services, root: str | Path) -> DefaultBranch:

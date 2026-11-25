@@ -10,6 +10,11 @@ on: a command names its repository by the directory it runs in or names, as `git
 do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
 such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them.
 `without_repository_variables` is the one builder of such an environment, which a start outside this module uses too.
+Every command this module starts also runs without git's trace variables, each name starting `GIT_TRACE`, and the
+`GIT_REDIRECT_STD*` ones with which Git for Windows moves a stream elsewhere, in any case, and with trace2's three
+targets set to `0`, which outranks a target the system or global configuration names: a trace on stderr would turn
+git's quiet no, an exit 1 with nothing on stderr, into a failure, and a stream moved away would empty an answer or join
+stderr to it. `command_environment` holds both rules for every command this module starts.
 The one way to set one of them is `run_bounded`'s `index_file`, which names the index a git command reads and writes,
 as `deploy.py --at` does to read a commit's attributes through a throwaway index; no environment, inherited or given,
 sets it.
@@ -100,6 +105,12 @@ REPOSITORY_VARIABLES = frozenset(
         "GIT_WORK_TREE",
     }
 )
+# The prefixes of git's variables that write a trace, as GIT_TRACE, GIT_TRACE_PACKET, and GIT_TRACE2_EVENT do, or move
+# a stream elsewhere, as Git for Windows' GIT_REDIRECT_STDIN, GIT_REDIRECT_STDOUT, and GIT_REDIRECT_STDERR do; a command
+# this module starts runs with none of them.
+STREAM_VARIABLE_PREFIXES = ("GIT_TRACE", "GIT_REDIRECT_STD")
+# trace2's targets, each set to 0, which turns it off and outranks a target the system or global configuration names.
+TRACE2_OFF = {"GIT_TRACE2": "0", "GIT_TRACE2_PERF": "0", "GIT_TRACE2_EVENT": "0"}
 # The repository-selecting variable `run_bounded`'s `index_file` sets, and nothing else can.
 INDEX_FILE_VARIABLE = "GIT_INDEX_FILE"
 # Ends a stream cut at an output limit, so whoever reads it learns that more was written than it holds.
@@ -132,6 +143,15 @@ def without_repository_variables(environment: Mapping[str, str]) -> dict[str, st
     deployer, or a repository tool starts some other way, so none reads a repository a variable points at.
     """
     return {name: value for name, value in environment.items() if name.upper() not in REPOSITORY_VARIABLES}
+
+
+def command_environment(env: Mapping[str, str] | None) -> dict[str, str]:
+    """The whole environment of a command this module starts: `env`, or `non_interactive_environment()` when it is
+    None, without git's repository-selecting variables and without any variable named by a STREAM_VARIABLE_PREFIXES
+    prefix, each matched in any case, and with TRACE2_OFF, so git's answer is its stdout and its exit status alone."""
+    given = non_interactive_environment() if env is None else without_repository_variables(env)
+    kept = {name: value for name, value in given.items() if not name.upper().startswith(STREAM_VARIABLE_PREFIXES)}
+    return {**kept, **TRACE2_OFF}
 
 
 def non_interactive_environment() -> dict[str, str]:
@@ -168,9 +188,10 @@ def run_bounded(
 
     With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
     file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
-    With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. With
-    `env`, that is the command's whole environment but git's repository-selecting variables, and no prompt is turned
-    off for it; otherwise it is `non_interactive_environment()`. With `output_limit`, at most that many bytes of each
+    With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. Its
+    environment is `command_environment(env)`: with `env`, that environment, and no prompt is turned off for it;
+    otherwise `non_interactive_environment()`; either way without git's repository-selecting, trace, and stream-moving
+    variables, and with trace2's targets off. With `output_limit`, at most that many bytes of each
     stream are read back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree
     says, and every process it started that stays in the tree is ended once it has finished or been killed. With
     `index_file`, the command's GIT_INDEX_FILE names that file, the one repository-selecting variable a caller can set,
@@ -179,7 +200,7 @@ def run_bounded(
     subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds; the exception
     carries the output written by then, read back as a result's would be.
     """
-    environment = non_interactive_environment() if env is None else without_repository_variables(env)
+    environment = command_environment(env)
     if index_file is not None:
         environment[INDEX_FILE_VARIABLE] = str(index_file)
     with tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as output, _stdin(input_bytes) as stdin:
@@ -244,8 +265,7 @@ def streaming(
     """Start a command that takes requests on stdin and answers on stdout while it runs, and close it on leaving.
 
     With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
-    `Streaming` describes. With `env`, that is the command's whole environment but git's repository-selecting
-    variables, and no prompt is turned off for it; otherwise it is `non_interactive_environment()`. Raises OSError
+    `Streaming` describes. Its environment is `command_environment(env)`, as `run_bounded` describes. Raises OSError
     when the command cannot start (FileNotFoundError when it does not exist). With `merge_stderr`, both output
     streams go through the bounded stdout reader, rather than keeping diagnostics in a file. With `tree`, the command
     starts as the tree says, and every process it started that stays in the tree is ended once it has been closed.
@@ -256,7 +276,7 @@ def streaming(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else errors,
-            env=non_interactive_environment() if env is None else without_repository_variables(env),
+            env=command_environment(env),
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )

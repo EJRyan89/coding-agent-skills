@@ -510,6 +510,40 @@ class BoundedProcessTests(unittest.TestCase):
                 seen = json.loads(run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=given).stdout)
                 self.assertNotIn(name, seen)
 
+    def test_a_command_sees_no_trace_or_stream_redirection_and_trace2_s_targets_off(self) -> None:
+        # A trace on stderr would turn git's quiet no, exit 1 with nothing on stderr, into a failure, and Git for
+        # Windows would move a stream elsewhere; trace2's three targets set to 0 outrank one a configuration names.
+        traced = {
+            "GIT_TRACE": "1",
+            "GIT_TRACE_PACKET": "1",
+            "GIT_TRACE_SETUP": "1",
+            "GIT_TRACE2": "1",
+            "GIT_TRACE2_PERF": "/a trace",
+            "GIT_TRACE2_EVENT": "2",
+            "GIT_TRACE2_BRIEF": "1",
+            "GIT_REDIRECT_STDIN": "a file",
+            "GIT_REDIRECT_STDOUT": "a file",
+            "GIT_REDIRECT_STDERR": "2>&1",
+        }
+        if sys.platform != "win32":  # Windows holds one variable per name whatever its case
+            traced.update({"git_trace": "1", "Git_Redirect_Stderr": "2>&1"})
+        expected = {"GIT_TRACE2": "0", "GIT_TRACE2_PERF": "0", "GIT_TRACE2_EVENT": "0"}
+        program = [sys.executable, "-c", GIT_VARIABLES_PROGRAM]
+
+        def tracing(seen: dict[str, str]) -> dict[str, str]:
+            return {name: value for name, value in seen.items() if name.startswith(("GIT_TRACE", "GIT_REDIRECT"))}
+
+        with mock.patch.dict(os.environ, traced):
+            for given in (None, dict(os.environ)):
+                with self.subTest(environment="given" if given else "inherited"):
+                    finished = run_bounded(program, 60, env=given)
+                    self.assertEqual(0, finished.returncode, finished.stderr)
+                    self.assertEqual(expected, tracing(json.loads(finished.stdout)))
+                    with bounded_process.streaming(program, idle_timeout=60, env=given) as running:
+                        running.end_input()
+                        self.assertEqual(expected, tracing(json.loads(running.read(1 << 20))))
+                        self.assertEqual(0, running.wait())
+
     def test_the_index_file_keyword_alone_names_the_commands_index(self) -> None:
         # index_file is the one way to set GIT_INDEX_FILE: it names the index whatever an environment, given or
         # inherited, holds, and without it none reaches the command.

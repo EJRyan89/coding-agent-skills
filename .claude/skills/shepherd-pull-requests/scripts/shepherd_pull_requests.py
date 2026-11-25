@@ -353,9 +353,11 @@ def hub_line(git: GitClient, place: Place, dry_run: bool) -> tuple[str, bool]:
 
 def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     """Fast-forward the hub to origin's main, or with `dry_run` compare it with origin's main, and say what happened."""
-    # None only for a detached HEAD; a HEAD git cannot read raises, which the HUB line names.
-    name = output_line(git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "")
-    if name != BASE:
+    # None only for a detached HEAD; a HEAD git cannot read raises, which the HUB line names. HEAD's ref is read by its
+    # full name, which --short would give as heads/main beside a tag main.
+    ref = output_line(git.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=hub) or "")
+    if ref != f"{git_worktrees.BRANCH_PREFIX}{BASE}":
+        name = ref.removeprefix(git_worktrees.BRANCH_PREFIX)
         return f"not fast-forwarded: it is on {flat_text(name) or 'a detached HEAD'}, not {BASE}"
     # Read without the index refresh a status otherwise writes back, so the check never takes the hub's index lock;
     # git takes the later untracked-files mode, so untracked files are not counted.

@@ -90,12 +90,17 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     request and which therefore cannot be told from the user's own fork, or any other ref that is not a branch, or its
     HEAD is detached at a commit no branch of origin holds. Raises GitError when git cannot read the checkout."""
     # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
-    branch = git.quiet_output(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
-    if branch is None:
+    # HEAD's ref is read by its full name: --short gives a branch beside a tag of the same name as heads/<branch>, whose
+    # settings are none, which would read as a branch that follows nothing.
+    head = git.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=directory)
+    if head is None:
         if origin_branches_holding_head(git, directory):
             return None
         return "its HEAD is detached at a commit no branch of origin holds"
-    name = output_line(branch)
+    ref = output_line(head)
+    if not ref.startswith(BRANCH_PREFIX):
+        return f"its HEAD names {ref}, not a branch"
+    name = ref.removeprefix(BRANCH_PREFIX)
     remote = output_line(git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "")
     merge = output_line(git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "")
     if merge.startswith("refs/pull/"):
