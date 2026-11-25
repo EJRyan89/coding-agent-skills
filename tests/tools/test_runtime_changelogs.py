@@ -714,13 +714,16 @@ class MainTests(unittest.TestCase):
         self.assertIn("| 99.0.0 | --allowedTools allowed-tools | Changed --allowedTools and `allowed-tools` |", text)
         self.assertIn(f"- MOVED {record.pages[0].url} https://example.com/moved", text)
         self.assertIn(watch.NO_WATCHED_ENTRY, text)
-        # Every runtime's latest release is 99.0.0 here, so every captured sample is behind it.
+        # Every runtime's latest release is 99.0.0 here, so every captured sample of a runtime's output is behind it,
+        # and one of gh's or git's alone, whose releases no changelog here records, never is.
         samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
         recorded = samples["changelogs/copilot-cli-changelog.md"]["versions"]["copilot-cli"]
         self.assertIn(f"SAMPLE_BEHIND copilot-cli changelogs/copilot-cli-changelog.md {recorded} 99.0.0", lines)
         self.assertIn(f"| copilot-cli | changelogs/copilot-cli-changelog.md | {recorded} | 99.0.0 |", text)
         behind = {line.split(" ")[2] for line in lines if line.startswith("SAMPLE_BEHIND ")}
-        self.assertEqual(set(samples), behind)
+        watched = {changelog.subject for changelog in record.changelogs}
+        self.assertEqual({path for path, sample in samples.items() if watched & set(sample["versions"])}, behind)
+        self.assertIn("gh/pr-view.json", set(samples) - behind)
 
     def test_a_sample_at_its_runtimes_latest_release_is_not_behind(self) -> None:
         table = self.table()
@@ -740,6 +743,7 @@ class MainTests(unittest.TestCase):
             if any(
                 tuple(map(int, version.split("."))) < tuple(map(int, latest[runtime].split(".")))
                 for runtime, version in sample["versions"].items()
+                if runtime in latest
             )
         }
         code, lines = self.run_main(table)
