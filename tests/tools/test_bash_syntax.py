@@ -1254,3 +1254,8 @@ def test_a_here_documents_unclosed_expansion_is_refused_by_name() -> None:
         bash_syntax.NotRead, match=r"^a here-document's body holds an expansion the reader does not close$"
     ):
         bash_syntax.simple_commands('cat <<EOF\n$(echo "a)\nEOF\n')
+
+
+def test_a_body_s_refused_substitution_is_refused_by_name_with_the_grammar_s_reason() -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^a here-document body's substitution is not read \(.+\)$"):
+        bash_syntax.simple_commands("cat <<EOF\n$(if)\nEOF\n")
