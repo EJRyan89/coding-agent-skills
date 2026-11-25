@@ -2,8 +2,8 @@
 the scripts they read, the paths the snapshot records it leaves out and how a route's `reads` glob matches one, this
 repository's rule for a suite, and how a condition fails.
 
-doc_passages.py and untested_functions.py import it, and the specialists manifest declares it as a resource, so it
-sits beside them in the reviewer folder a review materializes.
+doc_passages.py, untested_functions.py, and token_mentions.py import it, and the specialists manifest declares it as a
+resource, so it sits beside them in the reviewer folder a review materializes.
 """
 
 from __future__ import annotations

@@ -18,6 +18,7 @@ LESSONS_PATTERNS = ".claude/skills/implement-change/scripts/lessons_patterns.py"
 FIX_BRIEF = ".claude/skills/implement-change/scripts/fix_brief.py"
 DOC_PASSAGES = ".claude/skills/review-repository/scripts/doc_passages.py"
 UNTESTED = ".claude/skills/review-repository/scripts/untested_functions.py"
+MENTIONS_CONDITION = ".claude/skills/review-repository/scripts/token_mentions.py"
 SHEPHERD = ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py"
 # The configuration deploy.py reads for this repository's source ID, under the fixture's home.
 SOURCE_ID = "ejryan89/coding-agent-skills"
@@ -313,6 +314,7 @@ DRIVERS: list[Driver] = [
     condition(UNTESTED, (DIFF,), stat_raises=OPENED_ONLY),
     condition(UNTESTED, (f"{SNAPSHOT}/tools/widget_tool.py",)),
     condition(UNTESTED, (SNAPSHOT_MANIFEST,), missing=NO_MANIFEST, stat_raises=OPENED_ONLY),
+    condition(MENTIONS_CONDITION, (DIFF,), stat_raises=OPENED_ONLY),
     Driver(SHEPHERD, "", ("--dry-run",), shepherd_hub, git=True, gh=True),
     Driver(
         "tests/known_failure_issues.py",

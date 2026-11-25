@@ -5,6 +5,9 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,7 +18,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+
 import workflows
+from review_specialists import route
+from validation_support import REPOSITORY_ROOT
 from workflows import (
     ACTION_INPUT_STATEMENT,
     CREDENTIALS_ROW,
@@ -2955,7 +2964,7 @@ NO_STEP, NO_TOKEN, ONLY_JOB = (
 RETIRED_CLAIM_SPELLINGS = [
     ("no step here is given the token", NO_STEP),
     ("no step is given the token", NO_STEP),
-    ("hold no token", NO_TOKEN),
+    ("the steps hold no token", NO_TOKEN),
     ("the only job given the run's token", ONLY_JOB),
     ("the one job given the run's read-only token", ONLY_JOB),
     # The respellings a review found passing the exact-substring check.
@@ -3053,6 +3062,36 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the only job that has been given the token", ONLY_JOB),
     ("only the known-failures job will be given the token", ONLY_JOB),
     ("the legs did not get passed the token", NO_STEP),
+    # The spellings a review of the policy found passing: "access to" or "use of" before the token, a passive with the
+    # holder after "by", and the sole holder after any giving verb, each with the respellings the classes derive.
+    ("no step is given access to the token", NO_STEP),
+    ("no step is granted access to the run's token", NO_STEP),
+    ("no job is given use of the token", NO_STEP),
+    ("the legs are not given access to the token", NO_STEP),
+    ("the legs are given no access to the token", NO_TOKEN),
+    ("the token is held by no step", NO_STEP),
+    ("the token has been received by no job", NO_STEP),
+    ("the token is not held by any step", NO_STEP),
+    ("the token is accessible to no leg", NO_STEP),
+    ("access to the token is given to no step", NO_STEP),
+    ("the token is held by the known-failures job alone", ONLY_JOB),
+    ("the token is held only by the known-failures job", ONLY_JOB),
+    ("the token is given to only the query job", ONLY_JOB),
+    ("the only job granted the token", ONLY_JOB),
+    ("the only job passed the token", ONLY_JOB),
+    ("the only job handed the token", ONLY_JOB),
+    ("the only job with access to the token", ONLY_JOB),
+    ("the sole job receiving the run's token", ONLY_JOB),
+    ("there is no step that is given the token", NO_STEP),
+    ("there is no job which holds the token", NO_STEP),
+    ("the token is held by none of the steps", NO_STEP),
+    ("the only job to be given the token", ONLY_JOB),
+    ("the only job to hold the token", ONLY_JOB),
+    ("the token is available only to the query job", ONLY_JOB),
+    ("the token is given solely to the query job", ONLY_JOB),
+    ("the token goes exclusively to the query job", ONLY_JOB),
+    ("the token is not accessible to any step", NO_STEP),
+    ("the token is never visible to a job", NO_STEP),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -3088,6 +3127,19 @@ TRUE_TOKEN_STATEMENTS = [
     "no command a step runs has been given the token",
     "the token will reach no step's command",
     "the tokens a contributor's shell holds reach no suite",
+    # The near misses of those spellings: a command holds the token, or a holder owns what it reaches.
+    "no command a step runs is given access to the token",
+    "the legs' commands are given no access to the token",
+    "no step is given access to the command that holds the token",
+    "the token is held by no step's command",
+    "the token is not held by any step's command",
+    "the token is held only by the query job's command",
+    "the token is given to only the query job's command",
+    "the only job whose command is granted the token",
+    "the sole job whose step receives the token",
+    "no command that a step runs is given the token",
+    "the only job to hand its command the token",
+    "the token is available only to the query job's command",
 ]
 
 
@@ -3165,6 +3217,67 @@ def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_plac
     assert token_claim_read_problems(missing_one) == [
         f"the token-claim policy read no {required[0]}, where a retired claim was made"
     ]
+
+
+WORKFLOW_TOKEN_MANIFEST = (
+    REPOSITORY_ROOT / ".claude" / "skills" / "review-repository" / "references" / "specialists.json"
+)
+
+
+def test_each_file_a_retired_token_claim_was_made_in_reaches_the_token_reviewer_on_a_mention() -> None:
+    # The patterns read the retired sentences and their closest respellings; the reviewer judges any other sentence
+    # about the token against the design document's row, wherever a pull request adds one, beside the file's other
+    # reviewers, and only when the token-mentions condition finds a line that mentions the token.
+    manifest = json.loads(WORKFLOW_TOKEN_MANIFEST.read_text(encoding="utf-8"))
+    required = [problem.split(" read no ")[1].split(", where ")[0] for problem in token_claim_read_problems({})]
+    files = sorted([*required, "docs/design.md", "tests/validation/workflows.py", "README.md", "tools/new_skill.py"])
+    assert route(manifest, files, lambda name: True)["workflow-token"] == files
+    assert "workflow-token" not in route(manifest, files, lambda name: name != "token-mentions")
+    specialist = next(item for item in manifest["specialists"] if item["id"] == "workflow-token")
+    assert (specialist["when"], specialist.get("shares_files")) == ("token-mentions", True)
+    assert manifest["conditions"]["token-mentions"] == {
+        "script": ".claude/skills/review-repository/scripts/token_mentions.py",
+        "reads": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "retired"),
+    [
+        pytest.param(text, retired, id=f"{claim}-{spelling}")
+        for claim, retired in RETIRED_CLAIM_SPELLINGS
+        for spelling, text in _token_sentence_spellings(claim).items()
+    ],
+)
+def test_each_retired_token_claim_a_pull_request_adds_opens_the_workflow_token_route(
+    text: str, retired: str, tmp_path: Path
+) -> None:
+    # A claim the condition missed would reach no reviewer, so every spelling the patterns refuse, in each of the
+    # suite's four spellings, opens the route too, with the condition's script run as a review runs it. Stated limit: a
+    # refused sentence that names no workflow word, as "They hold no token." does, is the policy's alone to refuse; the
+    # route does not open on it, so every row here names its holder.
+    added = "".join(f"+{line}\n" for line in text.splitlines())
+    diff = tmp_path / "pull.diff"
+    diff.write_bytes(
+        (
+            "diff --git a/.github/workflows/validate.yml b/.github/workflows/validate.yml\n"
+            "--- a/.github/workflows/validate.yml\n+++ b/.github/workflows/validate.yml\n"
+            f"@@ -1,0 +1,{added.count(chr(10))} @@\n{added}"
+        ).encode()
+    )
+    output = tmp_path / "token-mentions.txt"
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+    environment |= {"CODE_REVIEW_DIFF_FILE": str(diff), "CODE_REVIEW_CONDITION_OUTPUT": str(output)}
+    script = REPOSITORY_ROOT / ".claude" / "skills" / "review-repository" / "scripts" / "token_mentions.py"
+    finished = subprocess.run(
+        [sys.executable, "-B", str(script), "--source-root", str(tmp_path)],
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert (finished.returncode, retired) == (0, retired), finished.stdout
+    assert output.read_bytes().startswith(b'MENTION ".github/workflows/validate.yml":'), text
 
 
 def test_the_parts_the_token_claim_policy_leaves_out_are_pinned_with_their_reasons() -> None:

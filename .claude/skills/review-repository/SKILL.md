@@ -26,8 +26,9 @@ allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_
 | `sibling-search` | scripts, beside the reviewers above | A fix's `Siblings:` line, held against the twins in the diff's own files |
 | `sibling-spellings` | the `trust-boundary` and `validation-policy` files, beside their reviewers, on a pull request titled `fix` | What the closing issue's reasoning implies that the fix leaves open, read from the issue and the diff without the pull request's description or comments; a reproduced spelling blocks the merge |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py`, `pdf_tool.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
+| `workflow-token` | any file, beside the reviewers above, when an added line names the run's token by its variable, secret, or expression, or says "token" near a workflow word | Each sentence about the token true of its row in `docs/design.md`, in words `token_claim_problems` does not read |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `documentation-drift` and `untested-changes` open only when their conditions find something, and `sibling-spellings` only for a title the title check reads as a fix; they, `sibling-search`, and `skill-scripts` share their files, so the generic reviewer still reviews those files.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `documentation-drift`, `untested-changes`, and `workflow-token` open only when their conditions find something, and `sibling-spellings` only for a title the title check reads as a fix; they, `sibling-search`, `skill-scripts`, and `workflow-token` share their files, so the generic reviewer still reviews those files.
 
 ## 1. Configure
 

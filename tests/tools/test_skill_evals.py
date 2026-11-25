@@ -107,6 +107,8 @@ REVIEW_REPOSITORY_ROLES = {
     ),
     "tested-change": "documentation-drift,generic-review,sibling-search",
     "text-read-policy": "documentation-drift,sibling-search,validation-policy",
+    "token-respelling": "generic-review,workflow-token",
+    "token-statement": "generic-review,workflow-token",
     "undocumented-change": "documentation-drift,generic-review,sibling-search",
     "unnoted-flag-rename": "deployer,documentation-drift,sibling-search,upgrade-notes",
     "untested-change": "documentation-drift,generic-review,sibling-search,untested-changes",
@@ -4898,6 +4900,8 @@ REVIEW_REPOSITORY_EXPECTATIONS = {
     "open-spelling": 1,
     "tested-change": 2,
     "text-read-policy": 1,
+    "token-respelling": 1,
+    "token-statement": 1,
     "undocumented-change": 2,
     "unnoted-flag-rename": 1,
     "untested-change": 1,
@@ -4975,10 +4979,10 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
 
 def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_whole_rows() -> None:
     # Each sweep's cases together are its skill's whole run: every scenario once, whose counts are the totals a full
-    # run's row gives, 28 for review-document and 16 for review-repository on each model.
+    # run's row gives, 28 for review-document and 18 for review-repository on each model.
     for skill, cases, total in (
         ("review-document", REVIEW_DOCUMENT_EXPECTATIONS, 28),
-        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 16),
+        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 18),
     ):
         assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
         assert sum(cases.values()) == total

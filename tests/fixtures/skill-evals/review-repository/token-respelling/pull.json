@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/checks",
+  "number": 31,
+  "title": "docs(ci): say why a validation leg cannot reach GitHub",
+  "base_ref": "main",
+  "head_ref": "token-respelling",
+  "threads": [],
+  "body": "States, above the validation legs, why the suites they run cannot reach GitHub.\n\n## Upgrade note\n\nNone.\n",
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
