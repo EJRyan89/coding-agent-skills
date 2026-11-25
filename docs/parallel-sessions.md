@@ -528,8 +528,9 @@ The configuration's limits:
   and `||`, pipelines, `( )` subshells, `{ }` groups, `(( ))` arithmetic commands, `if`, `case`, `while`, `until`,
   `for`, an arithmetic `for`'s header among them, `select`, `!`, `time` with its `-p` and `--`, and a `coproc`, whose
   command is read as a subshell's. The guard reads each simple command whose name is literal once quotes are removed, wherever the
-  tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. A
-  wrapper ejryan89-skill-core's `command_wrappers.COMMAND_WRAPPERS` names, as `env`, `timeout`, `command`, `exec`,
+  tree holds it: git as a git call, `gh`'s checkouts as one, `cd`, `pushd`, and `popd` as moves of the shell, and
+  `dirs` as a change to its stack. A wrapper ejryan89-skill-core's `command_wrappers.COMMAND_WRAPPERS` names,
+  as `env`, `timeout`, `command`, `exec`,
   `nohup`, `sudo`, or `xargs`, is read as the command it runs, past its options by `command_wrappers.unwrapped`, its
   assignments judged as ones before that command, and a literal `bash -c` script, or a `pwsh` or `powershell`
   start-up's script, its parameters read by ejryan89-skill-core's `powershell_startup.startup_command`, is read by its
@@ -547,14 +548,23 @@ The configuration's limits:
 - **Directories.** `cd`, `pushd`, and `popd` to a literal directory move the shell, and each git call after them is
   placed there: along `&&` where the change succeeded, along `||` where it failed, and after `;` where the target is
   a directory now, or else nowhere the text settles, since an earlier command may make it one. A pipeline's commands
-  and a background job run in subshells of their own, so a change there moves nothing after them. A target the text
-  does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and `pushd`'s rotations leave the directory unknown,
-  and a compound command that holds a change leaves every git call in it and after it in a directory the text does not
-  settle. So do the commands that may move the shell in a way the guard does not follow: a builtin
+  and a background job run in subshells of their own, so a change there moves nothing after them, but for the stated
+  limit on `lastpipe` below. A target the text does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and
+  `pushd`'s rotations leave the directory unknown; a `pushd` to a target the text does not settle, or an empty one,
+  which Bash 5.3 refuses, pushes only where its `cd` succeeds, as Bash's does. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
+  as Bash reads them, clears it, so a later `popd` stays where it is, and an operand `dirs` refuses clears nothing. A
+  `dirs` word the text does not settle, `--`, or any other word starting with `+` or `-`, a `pushd` or `popd` given an
+  option or an entry's number, a plain assignment to `DIRSTACK` or one of its elements, in a compound command too,
+  and every move the guard does not follow leave the stack unknown, so a later `popd` goes where the text does not
+  settle. A compound command that holds a change leaves every git call in it and after it in a directory the text does
+  not settle. So do the commands that may move the shell in a way the guard does not follow: a builtin
   `BUILTINS_NOT_FOLLOWED` names (`.`, `source`, `eval`, `builtin`, `command` but with `-v` or `-V`, `trap`, `fc`,
-  `alias`, `unalias`, `enable`, and `hash`), a function definition, a function the environment hands the shell as
-  `BASH_FUNC_<name>%%`, and a command whose name the text does not settle. A git call whose place is unknown is judged
-  as the bullet on where a git call acts says.
+  `alias`, `unalias`, `enable`, `hash`, `mapfile` and `readarray` given `-C`, whose callback Bash 4 and later run in
+  the shell itself, `compgen` given `-F`, whose function runs there too, and `jobs` given `-x`, whose command does,
+  each also where a word the text does not settle may be that option), a function definition, a function the
+  environment hands the shell as `BASH_FUNC_<name>%%`, and a command whose name the text does not settle. Every other
+  builtin Bash's `compgen -b` lists is one `MOVES_NOTHING` names, each with why. A git call whose place is unknown is
+  judged as the bullet on where a git call acts says.
 - **Assignments before git.** An assignment before git is understood to a name git does not read to choose a file or
   a program, that is, no `GIT_` name and none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
   `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`, `SSH_ASKPASS`, and
@@ -587,7 +597,8 @@ The configuration's limits:
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
   calls and its redirections read, each placed where the text does not settle once any command in it may move the
   location. A command is read as git, as `gh`, as a location cmdlet, followed as Bash's `cd`, `pushd`, and `popd` are
-  to a literal file-system path given by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, or as one
+  to a literal file-system path given by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, any other
+  parameter, as `-StackName`, leaving the location and the stack unknown, or as one
   of these cmdlets, by its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
   `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,
   `ForEach-Object`, `Where-Object`, `Group-Object`,
@@ -678,7 +689,16 @@ names what they changed there.
 Within what it reads, it judges only what the text shows, so these too are left to the check:
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
-  `cd`, and the git call after it, where the guard does not follow;
+  `cd`, and the git call after it, where the guard does not follow, and an element of `DIRSTACK` a builtin sets, as
+  `declare`, `read`, `printf -v`, or a name reference does, or `mapfile` or `readarray` through a name reference, a
+  word naming `DIRSTACK` among theirs being read as moving the shell, which moves a later `popd` the same way;
+- `shopt -s lastpipe`, under which Bash 4.2 and later run a pipeline's last command in the shell itself, so `echo |
+  cd "<dir>"` moves it, where the guard reads that command as a subshell's;
+- `shopt -s cdable_vars`, after which a later `cd name` goes to the directory a variable of that name holds, where the
+  guard places it in a folder of that name;
+- Bash 5.3's `${ command; }` and `${| command; }` substitutions, which run their commands in the shell itself, so a
+  `cd` in one moves it and a git call in one runs, where ejryan89-skill-core's `bash_syntax.py` reads each as a
+  parameter expansion whose value the text does not settle, running nothing;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
   not cover, such as a `for` or `select` loop whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }` whose
   own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, an arithmetic expansion holding a quoted parenthesis, as

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import itertools
 import json
@@ -3693,6 +3694,11 @@ class UnderstoodSetTests(GuardTestCase):
             f"f() {{ cd {self.hub}; }}; git commit -m x",
             f"if true; then eval 'cd {self.hub}'; fi; git commit -m x",
             f"{{ f() {{ cd {self.hub}; }}; }}; git commit -m x",
+            # Bash 5 runs a mapfile or readarray -C callback, and a compgen -F function, in the shell itself.
+            f"mapfile -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"readarray -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"g() {{ cd {self.hub}; }}; compgen -F g x; git commit -m x",
+            "compgen -F g x >/dev/null; git commit -m x",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3701,8 +3707,126 @@ class UnderstoodSetTests(GuardTestCase):
         for command in ("command -v git; git commit -m x", "command -V git && git commit -m x"):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
+
+    def test_dirs_clears_the_stack_only_as_bash_does_so_a_later_popd_goes_where_bash_goes(self) -> None:
+        # Bash clears the stack only for an exact -c among words dirs reads, and its popd then stays where it is, so
+        # the commit after it runs in the hub.
+        for command in (
+            f'pushd "{self.hub}"; dirs -c; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -l -c; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c +5; popd; git commit -m x',
+            f'pushd "{self.hub}"; if true; then dirs -c; fi; popd; git commit -m x',
+            # A bundle, or a word dirs refuses, clears nothing, so popd goes back to the hub it left.
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -lc; popd; git commit -m x',
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -x -c; popd; git commit -m x',
+            # A word the text does not settle, and `--`, leave the stack unknown, so popd goes where it does not.
+            f'pushd "{self.hub}"; dirs "$OPTION"; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -- -c; popd; git commit -m x',
+            # Any other word starting with + or - may be a number Bash reads more loosely, or one past its range, or
+            # an option it refuses, so it leaves the stack unknown too.
+            f'pushd "{self.hub}"; dirs -lc; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c -x; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c +-1; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c -+1; popd; git commit -m x',
+            f"pushd \"{self.hub}\"; dirs -c '+1 '; popd; git commit -m x",
+            f"pushd \"{self.hub}\"; dirs -c '+ 1'; popd; git commit -m x",
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -c +99999999999999999999; popd; git commit -m x',
+            # An operand dirs refuses ends it unrun, so the stack stays and popd goes back to the hub.
+            f'cd "{self.hub}"; pushd "{self.tree}"; dirs -c foo; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+        # A dirs that clears nothing leaves the stack, so popd goes back to the worktree.
+        for command in (
+            f'pushd "{self.hub}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -v; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -v +0; popd; git commit -m x',
+            f'pushd "{self.hub}"; dirs -c foo; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_stack_the_text_does_not_settle_leaves_a_later_popd_where_the_text_does_not_settle(self) -> None:
+        # A move the guard does not follow, a pushd or popd given an option or an entry's number, and an assignment to
+        # DIRSTACK or one of its elements may change the stack, so the popd after them, even past a cd that settles
+        # where the shell is, goes where the text does not settle.
+        for command in (
+            f"""mapfile -C 'pushd -n "{self.hub}" >/dev/null; :' -c 1 <<< x; cd "{self.tree}"; popd; git commit -m x""",
+            f'pushd -n "{self.hub}"; cd "{self.tree}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; pushd +1; cd "{self.tree}"; popd; git commit -m x',
+            f'pushd "{self.hub}"; pushd "{self.tree}"; popd +2; popd; git commit -m x',
+            f'pushd "{self.tree}"; DIRSTACK[1]="{self.hub}"; popd; git commit -m x',
+            f'pushd "{self.tree}"; DIRSTACK=("{self.tree}" "{self.hub}"); popd; git commit -m x',
+            f'eval \'pushd -n "{self.hub}"\'; cd "{self.tree}"; popd; git commit -m x',
+            # An assignment to DIRSTACK inside a compound command changes the stack after it too.
+            f'pushd "{self.tree}"; if true; then DIRSTACK[1]="{self.hub}"; fi; popd; git commit -m x',
+            f'pushd "{self.tree}"; {{ DIRSTACK[1]="{self.hub}"; }}; popd; git commit -m x',
+            f'pushd "{self.tree}"; while true; do DIRSTACK[1]="{self.hub}"; break; done; popd; git commit -m x',
+            f'pushd "{self.tree}"; for i in 1; do DIRSTACK[1]="{self.hub}"; done; popd; git commit -m x',
+            f'pushd "{self.tree}"; case x in x) DIRSTACK[1]="{self.hub}";; esac; popd; git commit -m x',
+            f'pushd "{self.tree}"; {{ DIRSTACK=("{self.tree}" "{self.hub}"); }}; popd; git commit -m x',
+            # A pushd whose target the text does not settle pushes nothing where its cd fails, as Bash's does.
+            f'cd "{self.hub}"; pushd "{self.tree}"; x=/nonexistent; pushd "$x"; popd; git commit -m x',
+            f'cd "{self.hub}"; pushd "{self.tree}"; OLDPWD=/nonexistent; pushd -; popd; git commit -m x',
+            # Two stacks that differ, one with the pushd and one without, join to one the text does not settle.
+            f'true && pushd "{self.hub}"; popd; git commit -m x',
+            f'if test -e x; then pushd "{self.hub}"; fi; popd; git commit -m x',
+            # mapfile and readarray fill the array a word names, DIRSTACK among them.
+            f'pushd "{self.tree}"; mapfile -t -O 1 DIRSTACK <<< "{self.hub}"; popd; git commit -m x',
+            # Bash 5.3 refuses an empty directory, so pushd pushes nothing there, and Bash 3.2 pushes `.`.
+            f'cd "{self.hub}"; pushd "{self.tree}"; pushd \'\'; popd; git commit -m x',
+            # A bare pushd swaps the top two entries, or fails on a stack of one and stays.
+            f'pushd "{self.hub}"; pushd; popd; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A stack the text settles stays settled, so a popd back to the worktree is placed there.
+        self.assertIsNone(self.bash(f'pushd "{self.hub}"; pushd "{self.tree}"; popd; popd; git status', self.tree))
+        self.assertIsNone(self.bash(f'cd "{self.hub}"; cd "{self.tree}"; popd; git commit -m x', self.tree))
+        # Two branches that leave the same stack join to it, so the popd after them goes back to the worktree.
+        self.assertIsNone(self.bash(f'pushd "{self.hub}" && cd "{self.hub}"; popd; git commit -m x', self.tree))
+
+    def test_a_push_location_given_another_parameter_leaves_the_location_and_the_stack_unknown(self) -> None:
+        # -StackName pushes onto another stack, so Pop-Location then pops the default one, which may be empty.
+        for command in (
+            f"Push-Location '{self.hub}' -StackName s; Pop-Location; git commit -m x",
+            f"Push-Location -Path '{self.hub}' -StackName s; Pop-Location; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+
+    def test_the_builtins_the_guard_does_not_follow_are_the_ones_that_move_the_shell_unseen(self) -> None:
+        for command in (
+            f'jobs -x cd "{self.hub}"; git commit -m x',
+            f"mapfile -tC 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            'mapfile "$OPTION" cb <<< x; git commit -m x',
+            # `--` may be an option's value, so a callback's option after it still counts.
+            f"mapfile -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            f"readarray -d -- -C 'cd \"{self.hub}\"; :' -c 1 <<< x; git commit -m x",
+            "compgen -W -- -F g x; git commit -m x",
+            f"mapfile -C 'cd \"{self.hub}\"; :' lines <<< x; git commit -m x",
+            f'g() {{ cd "{self.hub}"; }}; compgen -o default -F g x; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Without its callback's option, each runs nothing in the shell, so the commit after it stays placed.
+        for command in (
+            "jobs; git commit -m x",
+            "jobs -l %1; git commit -m x",
+            'mapfile -t f < <(git diff --name-only); git add -- "${f[@]}"',
+            "readarray -t lines <<< x; git commit -m x",
+            # mapfile's -c is the count between callbacks, no callback of its own, so only -C moves the shell.
+            "mapfile -t -c 1 lines <<< x; git commit -m x",
+            "compgen -W 'a b' a; git commit -m x",
+            "if true; then mapfile -t f <<< x; fi; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
         self.assertEqual(
-            {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"},
+            {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"}
+            | {"mapfile", "readarray", "compgen", "jobs"},
             set(hub_guard.BUILTINS_NOT_FOLLOWED),
         )
 
@@ -4970,3 +5094,124 @@ class GitDirectoryNameTests(unittest.TestCase):
 )
 def test_a_pattern_s_matches_lie_in_the_folder_before_its_last_separator(prefix: str, expected: str) -> None:
     assert expected == hub_guard.pattern_folder(prefix)
+
+
+# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
+# /bin/bash 3.2, which has no mapfile, still holds the guard to every one, and the release they were printed by, from
+# which on every pinned builtin must still be one the runner's Bash prints.
+PINNED_BUILTINS = frozenset(
+    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
+    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
+    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
+    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
+    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
+)
+PINNED_FROM_BASH = (5, 3)
+
+
+@functools.cache
+def runner_builtins() -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the builtins it prints: Git Bash on Windows
+    and the first bash on PATH elsewhere."""
+    script = 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"; compgen -b'
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    major, minor, *names = result.output.split()
+    assert "cd" in names, f"compgen -b printed no builtins: {result.output!r}"
+    return (int(major), int(minor)), frozenset(names)
+
+
+def test_every_builtin_bash_prints_is_followed_not_followed_or_moves_nothing() -> None:
+    release, names = runner_builtins()
+    catalogue = names | PINNED_BUILTINS
+    tables = {
+        "FOLLOWED_BUILTINS": set(hub_guard.FOLLOWED_BUILTINS),
+        "BUILTINS_NOT_FOLLOWED": set(hub_guard.BUILTINS_NOT_FOLLOWED),
+        "MOVES_NOTHING": set(hub_guard.MOVES_NOTHING),
+    }
+    decided = set().union(*tables.values())
+    assert sorted(catalogue - decided) == [], (
+        "decide each in tools/hub_guard.py: FOLLOWED_BUILTINS, BUILTINS_NOT_FOLLOWED, or MOVES_NOTHING with its reason"
+    )
+    assert sorted(names - PINNED_BUILTINS) == [], "pin each in PINNED_BUILTINS"
+    if release >= PINNED_FROM_BASH:
+        assert sorted(PINNED_BUILTINS - names) == [], f"Bash {release} no longer has these: unpin and undecide each"
+    assert sorted(decided - catalogue) == [], "remove each from its table: no Bash has it"
+    for (first, one), (second, other) in itertools.combinations(tables.items(), 2):
+        assert sorted(one & other) == [], f"each is in both {first} and {second}"
+
+
+# Each builtin that runs text in the shell itself, with the text that moves it, where `$2` is the folder to move to.
+MOVING_TEXT = {
+    "mapfile": """mapfile -C 'cd "$2"; :' -c 1 <<< x""",
+    "readarray": """readarray -C 'cd "$2"; :' -c 1 <<< x""",
+    # A function compgen -F runs is given the command, the word, and the word before as its own $1 to $3.
+    "compgen": """target="$2"; g() { cd "$target"; }; compgen -F g x > /dev/null 2>&1""",
+    "jobs": 'jobs -x cd "$2"',
+}
+
+
+def probe_folders(root: Path) -> list[str]:
+    """A folder to start in and one to move to, under root, as the validated Bash names them."""
+    start, target = root / "start", root / "target"
+    start.mkdir()
+    target.mkdir()
+    return [platform_support.normalize(start), platform_support.normalize(target)]
+
+
+@pytest.mark.parametrize("name", list(MOVING_TEXT))
+def test_a_builtin_the_guard_does_not_follow_for_its_callback_moves_the_shell_in_bash_itself(
+    name: str, tmp_path: Path
+) -> None:
+    # Bash runs the callback in the shell itself, so the shell ends in the folder the callback moved to; a Bash that
+    # has no such builtin, as Bash 3.2 has no mapfile, is not asked.
+    assert name in hub_guard.BUILTINS_NOT_FOLLOWED
+    if name not in runner_builtins()[1]:
+        return
+    script = f'cd "$1" && {MOVING_TEXT[name]}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
+    command = [bash_agreement.find_bash(), "-c", script, "probe", *probe_folders(tmp_path)]
+    result = platform_support.run_tool(command)
+    assert result.output.split()[-1:] == ["moved"], result.output
+
+
+def test_dirs_c_clears_the_stack_so_a_later_popd_stays_in_bash_itself(tmp_path: Path) -> None:
+    script = (
+        'cd "$1" && pushd "$2" > /dev/null && dirs -c; popd > /dev/null 2>&1; '
+        '[ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo stayed || echo moved'
+    )
+    command = [bash_agreement.find_bash(), "-c", script, "probe", *probe_folders(tmp_path)]
+    result = platform_support.run_tool(command)
+    assert result.output.split()[-1:] == ["stayed"], result.output
+
+
+@pytest.mark.parametrize("name", sorted(hub_guard.MOVES_NOTHING))
+def test_a_builtin_that_moves_nothing_runs_no_cd_its_words_name_in_bash_itself(name: str, tmp_path: Path) -> None:
+    # Given words that would move the shell if the builtin ran them as a command, alone and after the -x and -c
+    # options some builtins take to run one, the shell stays, or the builtin ends it, so nothing after it runs there.
+    if name not in runner_builtins()[1]:
+        return
+    folders = probe_folders(tmp_path)
+    for form in (f'{name} cd "$2"', f'{name} -x cd "$2"', f'{name} -c cd "$2"'):
+        body = f"f() {{ {form}; }}; f" if name in {"local", "return"} else form
+        script = f'cd "$1" && {body}; [ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
+        result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script, "probe", *folders])
+        assert result.output.split()[-1:] != ["moved"], (form, result.output)
+
+
+def test_a_join_keeps_each_entry_both_stacks_settle_and_no_more() -> None:
+    first, second, third = (Path(name).resolve() for name in ("/a", "/b", "/c"))
+    Directory = hub_guard.Directory
+    # Equal lengths: an entry the two differ on is one the text does not settle; the rest stay, and so does the end.
+    joined = hub_guard.joined(Directory(first, (second, third)), Directory(first, (second, first)))
+    assert joined == Directory(first, (second, None), known_below=True)
+    # Unequal lengths, even with a common prefix: no entry is settled, and the stack below them is not known.
+    joined = hub_guard.joined(Directory(first, (second, third)), Directory(first, (second,)))
+    assert joined == Directory(first, (None,), known_below=False)
+    # Places that differ leave the place unsettled, whatever the stacks agree on.
+    assert hub_guard.joined(Directory(first, (second,)), Directory(third, (second,))) == Directory(None, (second,))
+    assert hub_guard.joined(Directory(first), hub_guard.UNKNOWN) == hub_guard.UNKNOWN
+
+
+def test_every_builtin_the_guard_decides_names_why() -> None:
+    for table in (hub_guard.BUILTINS_NOT_FOLLOWED, hub_guard.MOVES_NOTHING):
+        assert [name for name, reason in table.items() if not reason.strip()] == []
