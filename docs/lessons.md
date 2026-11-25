@@ -1788,6 +1788,31 @@ or removed fails validation until its pattern follows it.
   program's release notes say was added or changed, read with no version floor in `deployer/tools.py`.
 - **Examples:** #2762
 
+### A pytest started on a suite outside the repository pins its root
+
+- **Rule:** A suite that starts pytest from the repository on a suite it wrote outside the repository, such as under
+  a temporary folder, pins that pytest's root to the suite's own folder: a pytest.ini written beside the suite before
+  the start, or --confcutdir or --rootdir naming the suite's folder.
+- **Why:** With no configuration beside a suite, pytest roots at the path the suite and the working directory share.
+  On Windows the repository and the temporary folder sit on different drives, so pytest roots at the repository,
+  whose confcutdir excludes no folder on the other drive, and collects every folder above the suite, the temporary
+  folder every parallel suite writes in among them; matching each entry there against the suite's 8.3 short path
+  stats it, and an entry another suite removes meanwhile stops collection with exit 2. The race shows only on Windows
+  and only under load, so a suite that misses the rule passes locally and on its own pull request, then fails at
+  random on main.
+- **Use:** `tests.validation.suite_discovery:PYTEST_INI`, the file written beside the suite, as tests/test_conftest.py,
+  tests/validation/test_suite_discovery.py, and tests/tools/test_python_diagnostics.py write it; or one of
+  `tests.validation.suite_discovery:ROOT_PINNING_OPTIONS` naming the suite's folder, as
+  tests/validation/test_job_pool.py passes --confcutdir.
+- **Guard:**
+  `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_a_pytest_a_suite_starts_on_a_suite_outside_the_repository_pins_its_root`,
+  `tests/validation/test_suite_discovery.py::PytestRootPolicy`
+- **Search for:** `pytest_command(` and `"-m", "pytest"` in a suite that writes the suite it starts under a temporary
+  folder; a call into a module whose function starts pytest on the suite it is given, such as
+  `python_diagnostics.run_suite(`, on a suite under a temporary folder with nothing beside it.
+- **Examples:** #3301, whose `tests/tools/test_python_diagnostics.py` turned main's Windows legs red; #3304, which
+  wrote a pytest.ini beside its fixture suites.
+
 ## Prompt patterns
 
 These patterns are about the prompts that do the work: a skill's steps and description, a reviewer's instructions,
