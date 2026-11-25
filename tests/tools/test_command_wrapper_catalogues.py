@@ -596,29 +596,41 @@ def test_every_builtin_bash_prints_is_decided_once() -> None:
 
 # For each use REFUSED_BUILTINS names, a script whose use runs the command `touch M` hidden from every reader, in a
 # folder of its own, with the first Bash release known to run it: Bash 3.2 runs a subscript's command for let,
-# declare, typeset, local, read, and unset, and Bash 5.3 for printf -v, test -v, and [ -v too. fc runs history, which a
-# script keeps off, and enable -f needs a shared object, so neither is probed.
-REFUSED_PROBES = {
-    "source": ("printf 'touch M\\n' > s.sh; source ./s.sh", (3, 2)),
-    ".": ("printf 'touch M\\n' > s.sh; . ./s.sh", (3, 2)),
-    "mapfile": ("mapfile -C 'touch M' -c 1 <<< x", (4, 0)),
-    "readarray": ("readarray -C 'touch M' -c 1 <<< x", (4, 0)),
-    "compgen": ("compgen -C 'touch M' x", (3, 2)),
-    "let": ("let 'a[$(touch M)]=1'", (3, 2)),
-    "declare": ("declare 'a[$(touch M)]=1'", (3, 2)),
-    "typeset": ("typeset 'a[$(touch M)]=1'", (3, 2)),
-    "local": ("f() { local 'a[$(touch M)]=1'; }; f", (3, 2)),
-    "read": ("read 'a[$(touch M)]' <<< x", (3, 2)),
-    "unset": ("unset 'a[$(touch M)]'", (3, 2)),
-    "printf": ("printf -v 'a[$(touch M)]' x", PINNED_FROM_BASH),
-    "test": ("test -v 'a[$(touch M)]'", PINNED_FROM_BASH),
-    "[": ("[ -v 'a[$(touch M)]' ]", PINNED_FROM_BASH),
-}
-# Builtins that take a variable's name, whose subscript no Bash expands, so RUNS_NOTHING holds them.
+# declare, typeset, local, read, and unset, and, once the variable has the integer attribute, for export, readonly,
+# and getopts; Bash 5.3 for printf -v, test -v, [ -v, and compgen -V too. fc runs history, which a script keeps off,
+# and enable -f needs a shared object, so neither is probed.
+REFUSED_PROBES = [
+    ("source", "printf 'touch M\\n' > s.sh; source ./s.sh", (3, 2)),
+    (".", "printf 'touch M\\n' > s.sh; . ./s.sh", (3, 2)),
+    ("mapfile", "mapfile -C 'touch M' -c 1 <<< x", (4, 0)),
+    ("readarray", "readarray -C 'touch M' -c 1 <<< x", (4, 0)),
+    ("compgen", "compgen -C 'touch M' x", (3, 2)),
+    ("let", "let 'a[$(touch M)]=1'", (3, 2)),
+    ("let", "let 'a[b[0]+$(touch M)]=1'", (3, 2)),
+    ("let", "let 'a[$[0]+$(touch M)]=1'", (3, 2)),
+    ("declare", "declare 'a[$(touch M)]=1'", (3, 2)),
+    ("declare", "declare 'a[b[0]+$(touch M)]=1'", (3, 2)),
+    ("typeset", "typeset 'a[$(touch M)]=1'", (3, 2)),
+    ("local", "f() { local 'a[$(touch M)]=1'; }; f", (3, 2)),
+    ("read", "read 'a[$(touch M)]' <<< x", (3, 2)),
+    ("read", "read 'a[b[0]+$(touch M)]' <<< x", (3, 2)),
+    ("unset", "unset 'a[$(touch M)]'", (3, 2)),
+    ("unset", "unset 'a[b[0]+$(touch M)]'", (3, 2)),
+    ("export", "declare -i x; export x='a[$(touch M)]'", (3, 2)),
+    ("readonly", "declare -i y; readonly y='a[$(touch M)]'", (3, 2)),
+    ("getopts", "declare -i OPTARG; getopts a: o -a 'a[$(touch M)]'", (3, 2)),
+    ("printf", "printf -v 'a[$(touch M)]' x", PINNED_FROM_BASH),
+    ("printf", "printf -v 'a[b[0]+$(touch M)]' x", PINNED_FROM_BASH),
+    ("test", "test -v 'a[$(touch M)]'", PINNED_FROM_BASH),
+    ("test", "test -v 'a[b[0]+$(touch M)]'", PINNED_FROM_BASH),
+    ("[", "[ -v 'a[$(touch M)]' ]", PINNED_FROM_BASH),
+    ("compgen", "declare -ai arr; compgen -V arr -W 'a[$(touch M)]'", PINNED_FROM_BASH),
+]
+# Builtins that RUNS_NOTHING holds, given a word whose subscript holds a command, which no Bash expands.
 QUIET_PROBES = {
-    "export": "export 'a[$(touch M)]=1'",
-    "readonly": "readonly 'b[$(touch M)]=1'",
-    "getopts": "getopts a 'a[$(touch M)]'",
+    "shift": "shift 'a[$(touch M)]'",
+    "kill": "kill -l 'a[$(touch M)]'",
+    "ulimit": "ulimit 'a[$(touch M)]'",
 }
 
 
@@ -635,11 +647,10 @@ def builtin_words(script: str, name: str) -> list[str]:
     return next(words for words in commands if words[:1] == [name])
 
 
-@pytest.mark.parametrize("name", list(REFUSED_PROBES))
+@pytest.mark.parametrize(("name", "script", "since"), REFUSED_PROBES)
 def test_each_refused_builtin_use_runs_its_hidden_command_in_bash_and_every_reader_refuses_it(
-    name: str, tmp_path: Path
+    name: str, script: str, since: tuple[int, int], tmp_path: Path
 ) -> None:
-    script, since = REFUSED_PROBES[name]
     assert name in command_wrappers.REFUSED_BUILTINS
     assert unwrapped(builtin_words(script, name))[0].startswith(UNREAD_PROGRAM)
     release, names = runner_builtins()
@@ -666,6 +677,9 @@ def test_a_builtin_that_runs_nothing_runs_no_command_a_subscript_holds_and_is_re
         ["printf", "%s\n", "a[b]"],
         ["read", "-r", "line"],
         ["let", "a[1]=2"],
+        ["export", "PATH=/usr/bin"],
+        ["getopts", "ab:", "option"],
+        ["compgen", "-V", "names", "-W", "a b"],
     ],
 )
 def test_a_builtin_use_that_runs_no_hidden_text_is_read(words: list[str]) -> None:
@@ -683,6 +697,9 @@ def test_a_builtin_use_that_runs_no_hidden_text_is_read(words: list[str]) -> Non
         (["mapfile", "-tC", "cb", "lines"], "runs its -C callback in the shell itself"),
         (["readarray", "-C", "cb"], "runs its -C callback in the shell itself"),
         (["compgen", "-F", "f", "x"], "runs its -C command or its -F function"),
+        (["compgen", "-V", "arr", "-W", "a[$(x)]"], "expands a command substitution in an array subscript"),
+        (["let", "a[b[0]+$(x)]=1"], "expands a command substitution in an array subscript"),
+        (["export", "x=a[`y`]"], "expands a command substitution in an array subscript"),
         (["enable", "-f", "lib.so", "x"], "loads a builtin from a shared object"),
         (["printf", "-v", "a[`x`]", "y"], "expands a command substitution in an array subscript"),
         (["test", "-v", "a[<(x)]"], "expands a command substitution in an array subscript"),
@@ -715,3 +732,9 @@ def test_jobs_given_x_runs_its_command_in_bash_itself(tmp_path: Path) -> None:
     assert "jobs" in command_wrappers.OPTION_WRAPPERS
     assert runs_hidden_command("jobs -x touch M", tmp_path)
     assert unwrapped(builtin_words("jobs -x touch M", "jobs")) == ["touch", "M"]
+
+
+def test_each_option_runner_s_reason_names_every_letter_that_refuses_it() -> None:
+    for name, (letters, _) in command_wrappers.OPTION_RUNNERS.items():
+        reason = command_wrappers.REFUSED_BUILTINS[name]
+        assert [letter for letter in letters if f"-{letter}" not in reason] == [], name
