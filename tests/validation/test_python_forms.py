@@ -229,11 +229,20 @@ def test_the_indirection_policy_refuses_an_attribute_called_on_an_assignment_exp
 @pytest.mark.parametrize(
     "body",
     [
-        # Stated limits: a method of a value an `or` or an if-expression chooses is read as a value's method, and an
-        # assignment expression passed as a value is not refused.
+        # Stated limits: a method of a value an `or` or an if-expression chooses is read as a value's method; a name an
+        # `or` or an if-expression binds is called as the name; an assignment expression used as a value elsewhere than
+        # a call's function or an attribute's receiver is not refused; and a subscript of a subscript, a
+        # comprehension, a `:=`, or an `or` is read as a dispatch table.
         "(quiet or '').strip()",
         "(quiet if others else '').strip()",
+        "call = quiet or os.system\n    call('x')",
+        "call = os.system if quiet else print\n    call('x')",
         "list(map((rm := os.remove), paths))",
+        "call = (chosen := os.system) or print",
+        "[[os.system]][0][0]('x')",
+        "[os.system for _ in paths][0]('x')",
+        "(table := [os.system])[0]('x')",
+        "(others or [os.system])[0]('x')",
         # A dispatch table and a generic class name nothing and are not refused.
         "{'run': print}.get(quiet, print)('x')",
         "frozenset[int]()",

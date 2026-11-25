@@ -261,9 +261,14 @@ COMPUTED_NAME = "?"
 # docs/design.md that Python indirection is restricted rather than modelled holds: a call's function that is any other
 # call, or a subscript of anything but a namespace or a literal, names nothing, since what a function returns or a
 # container holds at run time is not read: a dispatch table, as `KINDS[kind](spec)`, and a generic class, as
-# `frozenset[int]()`, which runs the class, among them. A method called on the value an `and`, an `or`, or an
-# if-expression chooses, as `(text or "").strip()`, is read as a method of a value, not refused, and so is an
-# assignment expression passed as a value, as `map((rm := shutil.rmtree), paths)`: stated limits.
+# `frozenset[int]()`, which runs the class, among them. Stated limits, each read as it is written and not refused:
+# - a method called on the value an `and`, an `or`, or an if-expression chooses, as `(text or "").strip()`;
+# - a name bound by an `and`, an `or`, or an if-expression and then called, read as the name, as the default-parameter
+#   idiom `find = find or shutil.which` followed by `find(name)`;
+# - an assignment expression used as a value anywhere but a call's function or an attribute's receiver, as
+#   `map((rm := shutil.rmtree), paths)` or `H = (h := f) or print`;
+# - a subscript of a subscript, or of a comprehension, a `:=`, or an `or`, as `[[f]][0][0](x)`, `[f for _ in x][0](x)`,
+#   or `(t := [f])[0](x)`, read as a dispatch table.
 CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript"})
 # The expressions that choose a call's function by a value, which the indirection policy in python_checks.py refuses
 # at the source as a call's function, in every module the claim policies read: an `and` or an `or`, an if-expression,
