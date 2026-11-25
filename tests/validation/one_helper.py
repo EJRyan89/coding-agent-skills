@@ -485,8 +485,8 @@ HELPER_MODULE = closing_references.__name__
 KEYWORD = re.compile(
     rf"(?:(?<![A-Za-z0-9])|(?<=\\[A-Za-z])){closing_references.CLOSING_KEYWORDS}(?![A-Za-z0-9])", re.IGNORECASE
 )
-# A reference in each form the helper reads, which a closing keyword before it closes.
-SAMPLE_REFERENCES = ("#1", "o/r#1", "GH-1", "https://github.com/o/r/issues/1")
+# A reference in each form the helper reads, an issue's or a pull request's, which a closing keyword before it closes.
+SAMPLE_REFERENCES = ("#1", "o/r#1", "GH-1", "https://github.com/o/r/issues/1", "https://github.com/o/r/pull/1")
 
 
 def pattern_functions(source: Path, exported: Iterable[str]) -> frozenset[str]:
