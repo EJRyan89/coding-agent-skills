@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from apple_double import is_sidecar
+from test_atomic_file import attached_volume
 
 # The header macOS writes at the start of a sidecar, written out so the rule is held to it, not to the constant: the
 # magic number 0x00051607, then the version 0x00020000, big-endian.
@@ -102,19 +103,8 @@ class RealVolumeTests(unittest.TestCase):
 
     def test_the_sidecar_macos_writes_beside_a_file_and_a_folder_is_one_and_the_file_is_not(self) -> None:
         for file_system in ("MS-DOS", "ExFAT"):
-            with self.subTest(file_system=file_system), tempfile.TemporaryDirectory() as temporary:
-                image = Path(temporary) / "volume.dmg"
-                mount = Path(temporary) / "mount"
-                mount.mkdir()
-                hdiutil = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE"]
-                subprocess.run([*hdiutil, str(image)], check=True, capture_output=True, timeout=120)
-                attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
-                subprocess.run(attach, check=True, capture_output=True, timeout=120)
-                try:
-                    self._check_volume(mount)
-                finally:
-                    detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
-                    subprocess.run(detach, check=True, capture_output=True, timeout=120)
+            with self.subTest(file_system=file_system), attached_volume(file_system) as mount:
+                self._check_volume(mount)
 
     def _check_volume(self, volume: Path) -> None:
         (volume / "docs").mkdir()

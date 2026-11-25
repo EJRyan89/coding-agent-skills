@@ -38,6 +38,9 @@ from path_containment import without_extended_prefix
 from validation_notes import NOTE_MARKER, note_line
 
 SKIP_ALLOWED = {
+    "attached_volume": "a disk image hdiutil refuses to make or attach, as a loaded macOS runner may, leaves no volume "
+    "for the checks to run on; the skip is reported as a note the validation runner prints",
+    "AttachedVolumeTests.attach": "it skips nothing: it catches the skip attached_volume raises, to hold its reason",
     "LinkAtTheTargetTests.setUp": "the races it holds are a symbolic link put at the target, which Windows makes only "
     "with a privilege or developer mode a machine may lack",
 }
@@ -1260,35 +1263,84 @@ HDIUTIL_BUSY = 16
 DETACH_BUSY_WAITS = (0.5, 1.0, 2.0, 4.0)
 
 
+def hdiutil_refusal(command: list[str]) -> tuple[int | None, str] | None:
+    """Run the hdiutil `command` and return None once it succeeds, or its exit status, None for one that ran out its
+    time limit, and why it failed. It raises nothing hdiutil answers."""
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None, f"hdiutil {command[1]} did not finish within 120 seconds"
+    if result.returncode == 0:
+        return None
+    stderr = result.stderr.decode("utf-8", "replace").strip()
+    return result.returncode, f"hdiutil {command[1]} exited with status {result.returncode}: {stderr}"
+
+
 def detach_volume(mount: Path) -> str | None:
     """Detach the test volume at `mount`, trying again after each wait of DETACH_BUSY_WAITS while hdiutil reports it
     busy, and return None once it is detached, or why it is not. It raises nothing hdiutil answers, so a teardown that
     calls it neither fails a check that passed nor hides one that failed."""
     detach = ["hdiutil", "detach", "-quiet", "-force", str(mount)]
     for wait in (*DETACH_BUSY_WAITS, None):
-        try:
-            result = subprocess.run(detach, check=False, capture_output=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            return "hdiutil detach did not finish within 120 seconds"
-        if result.returncode == 0:
+        refusal = hdiutil_refusal(detach)
+        if refusal is None:
             return None
-        if result.returncode != HDIUTIL_BUSY or wait is None:
-            stderr = result.stderr.decode("utf-8", "replace").strip()
-            return f"hdiutil detach exited with status {result.returncode}: {stderr}"
+        status, reason = refusal
+        if status != HDIUTIL_BUSY or wait is None:
+            return reason
         time.sleep(wait)
     raise AssertionError("unreachable: the last try returns")
 
 
-def report_volume_left(file_system: str, mount: Path, reason: str) -> None:
-    """Report a test volume detach_volume could not detach, apart from the test's verdict: as a line the validation
-    runner keeps from a suite that passes, and as a warning pytest's summary lists when the suite runs on its own."""
-    report = flat_text(f"the {file_system} test volume at {mount} stays attached: {reason}")
+def report_apart(report: str) -> None:
+    """Report what is not a test's verdict: as a line the validation runner keeps from a suite that passes, and as a
+    warning pytest's summary lists when the suite runs on its own."""
+    report = flat_text(report)
     print(note_line(report), flush=True)
-    warnings.warn(report, stacklevel=2)
+    warnings.warn(report, stacklevel=3)
+
+
+def report_volume_left(file_system: str, mount: Path, reason: str) -> None:
+    """Report a test volume detach_volume could not detach, apart from the test's verdict."""
+    report_apart(f"the {file_system} test volume at {mount} stays attached: {reason}")
+
+
+@contextlib.contextmanager
+def attached_volume(file_system: str) -> Iterator[Path]:
+    """The folder a new test volume of `file_system`, such as MS-DOS or ExFAT, is attached at, made from a disk image
+    in a temporary folder of its own and detached when the block ends. The one way each suite attaches a test volume,
+    so none decides a result its checks did not: a create or attach hdiutil refuses, as a loaded runner may, skips
+    the block's test with hdiutil's answer, and a detach that fails is reported apart from the verdict."""
+    # A volume that stays attached keeps its mount folder from being removed, so the folder's clean-up leaves what it
+    # cannot remove, and the report names the volume.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+        folder = Path(temporary).resolve()
+        image = folder / "volume.dmg"
+        mount = folder / "mount"
+        mount.mkdir()
+        create = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE", str(image)]
+        refusal = hdiutil_refusal(create)
+        if refusal is None:
+            attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
+            refusal = hdiutil_refusal(attach)
+            # An attach that ran out its time limit may still have attached the volume.
+            if refusal is not None and os.path.ismount(mount) and (reason := detach_volume(mount)) is not None:
+                report_volume_left(file_system, mount, reason)
+        if refusal is not None:
+            report = f"the {file_system} test volume was not made, so its checks did not run: {refusal[1]}"
+            report_apart(report)
+            raise unittest.SkipTest(flat_text(report))
+        try:
+            yield mount
+        finally:
+            # Reported apart from the checks, so a detach that fails neither fails the test nor hides the failure of
+            # a check.
+            if (reason := detach_volume(mount)) is not None:
+                report_volume_left(file_system, mount, reason)
 
 
 class DetachVolumeTests(unittest.TestCase):
-    """The teardown of RealFileSystemWithoutHardLinksTests, held on every platform by a stand-in for hdiutil."""
+    """The teardown of every test volume attached_volume attaches, held on every platform by a stand-in for hdiutil."""
 
     def detach(self, statuses: list[int | None]) -> tuple[str | None, list[float], int]:
         """detach_volume where hdiutil answers each try with the next of `statuses`, None for a try that runs out
@@ -1343,33 +1395,94 @@ class DetachVolumeTests(unittest.TestCase):
         self.assertEqual([UserWarning], [warning.category for warning in warned])
 
 
+class AttachedVolumeTests(unittest.TestCase):
+    """How every suite makes, attaches, and detaches a test volume, held on every platform by a stand-in for hdiutil
+    that answers each step with the status `answers` gives it, None for one that runs out its time limit."""
+
+    def attach(
+        self, answers: dict[str, list[int | None]], *, mounted: bool = False, fails: bool = False
+    ) -> tuple[list[str], str, str | None]:
+        """The hdiutil steps attached_volume ran, the notes it printed, and the reason it skipped the block, or None
+        when the block ran; the block raises an AssertionError when `fails`, which must reach the caller."""
+        steps: list[str] = []
+        folders: list[Path] = []
+
+        def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            steps.append(command[1])
+            status = answers[command[1]].pop(0)
+            if status is None:
+                raise subprocess.TimeoutExpired(command, 120)
+            return subprocess.CompletedProcess(command, status, b"", f"hdiutil: {command[1]} failed\n".encode())
+
+        skipped = None
+        with (
+            mock.patch.object(subprocess, "run", run),
+            mock.patch.object(time, "sleep"),
+            mock.patch.object(os.path, "ismount", return_value=mounted),
+            contextlib.redirect_stdout(io.StringIO()) as printed,
+            warnings.catch_warnings(record=True),
+        ):
+            warnings.simplefilter("always")
+            try:
+                with attached_volume("ExFAT") as mount:
+                    folders.append(mount)
+                    self.assertEqual("mount", mount.name)
+                    self.assertTrue(mount.is_dir(), "the mount folder exists while the block runs")
+                    self.assertEqual(mount.resolve(), mount, "the folder is given resolved")
+                    if fails:
+                        raise AssertionError("a check failed")
+            except unittest.SkipTest as skip:
+                skipped = str(skip)
+        for folder in folders:
+            self.assertFalse(folder.parent.exists(), "the temporary folder is removed")
+        self.assertEqual(skipped is None, bool(folders), "the block runs exactly when it is not skipped")
+        return steps, printed.getvalue(), skipped
+
+    def test_a_volume_made_and_attached_runs_the_block_and_is_detached_after_it(self) -> None:
+        steps, printed, skipped = self.attach({"create": [0], "attach": [0], "detach": [0]})
+        self.assertEqual((["create", "attach", "detach"], "", None), (steps, printed, skipped))
+
+    def test_a_create_hdiutil_refuses_skips_the_block_with_its_answer_and_notes_it(self) -> None:
+        reason = "the ExFAT test volume was not made, so its checks did not run: "
+        for status, answer in (
+            (1, "hdiutil create exited with status 1: hdiutil: create failed"),
+            (None, "hdiutil create did not finish within 120 seconds"),
+        ):
+            with self.subTest(status=status):
+                steps, printed, skipped = self.attach({"create": [status]})
+                self.assertEqual((["create"], reason + answer), (steps, skipped), "nothing to attach or detach")
+                self.assertEqual(f"{NOTE_MARKER}{reason}{answer}\n", printed, "the skip is a note the runner keeps")
+
+    def test_an_attach_hdiutil_refuses_skips_the_block_and_detaches_only_what_it_attached(self) -> None:
+        reason = "the ExFAT test volume was not made, so its checks did not run: "
+        refused = "hdiutil attach exited with status 1: hdiutil: attach failed"
+        steps, printed, skipped = self.attach({"create": [0], "attach": [1]})
+        self.assertEqual((["create", "attach"], reason + refused), (steps, skipped))
+        self.assertEqual(f"{NOTE_MARKER}{reason}{refused}\n", printed)
+        timed_out = "hdiutil attach did not finish within 120 seconds"
+        steps, printed, skipped = self.attach({"create": [0], "attach": [None], "detach": [0]}, mounted=True)
+        self.assertEqual((["create", "attach", "detach"], reason + timed_out), (steps, skipped))
+        self.assertEqual(f"{NOTE_MARKER}{reason}{timed_out}\n", printed)
+
+    def test_a_detach_that_fails_is_a_note_and_never_decides_the_verdict(self) -> None:
+        steps, printed, skipped = self.attach({"create": [0], "attach": [0], "detach": [HDIUTIL_BUSY] * 5})
+        self.assertEqual((["create", "attach", *["detach"] * 5], None), (steps, skipped), "a passing block passes")
+        self.assertIn("test volume at", printed)
+        self.assertIn("stays attached: hdiutil detach exited with status 16: hdiutil: detach failed", printed)
+        self.assertTrue(printed.startswith(NOTE_MARKER))
+        self.assertEqual(1, printed.count("\n"))
+        with self.assertRaisesRegex(AssertionError, "^a check failed$"):
+            self.attach({"create": [0], "attach": [0], "detach": [1]}, fails=True)
+
+
 @unittest.skipUnless(sys.platform == "darwin", "only macOS makes and mounts a FAT image without privileges")
 class RealFileSystemWithoutHardLinksTests(unittest.TestCase):
     """create_bytes on a real FAT and exFAT volume, which refuse hard links, attached from a disk image."""
 
     def test_a_volume_without_hard_links_refuses_by_default_and_reserves_when_allowed(self) -> None:
-        # A volume that stays attached keeps its mount folder from being removed, so the folder's clean-up leaves what
-        # it cannot remove, and the warning names the volume.
         for file_system in ("MS-DOS", "ExFAT"):
-            with (
-                self.subTest(file_system=file_system),
-                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
-            ):
-                image = Path(temporary) / "volume.dmg"
-                mount = Path(temporary) / "mount"
-                mount.mkdir()
-                hdiutil = ["hdiutil", "create", "-quiet", "-size", "8m", "-fs", file_system, "-volname", "PROBE"]
-                subprocess.run([*hdiutil, str(image)], check=True, capture_output=True, timeout=120)
-                attach = ["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]
-                subprocess.run(attach, check=True, capture_output=True, timeout=120)
-                try:
-                    self._check_volume(mount)
-                finally:
-                    # Reported apart from the checks, so a detach that fails neither fails the subtest nor hides
-                    # the failure of a check.
-                    reason = detach_volume(mount)
-                    if reason is not None:
-                        report_volume_left(file_system, mount, reason)
+            with self.subTest(file_system=file_system), attached_volume(file_system) as mount:
+                self._check_volume(mount)
 
     def _check_volume(self, volume: Path) -> None:
         def names() -> set[str]:
