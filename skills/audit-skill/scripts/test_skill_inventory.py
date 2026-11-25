@@ -2509,6 +2509,7 @@ def test_provenance_of_expands_says_no_page_states_it_and_what_it_rests_on() -> 
     assert lines[0].startswith("DECISION EXPANDS ")
     assert "No Claude Code page states this" in lines[0]
     assert "the fixture skill runtime-canary-expansion" in lines[0]
+    assert "an unquoted $NAME, a ${NAME}, and a command substitution, which EXPANDS also reports, rest on" in lines[0]
 
 
 def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
