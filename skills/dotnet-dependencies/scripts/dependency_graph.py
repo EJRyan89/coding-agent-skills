@@ -1437,12 +1437,16 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
     """Everything the project reaches under one framework, breadth first, each name once per version, with the
     direct reference that brought it in first. A project's packages are taken as the walk takes them (`entered`): a
     referenced project's from the project's own restore where they flow into it, at the versions it resolves, else
-    from that project's own, so a package met again through another project may be walked again there."""
-    found: dict[tuple[str, str, str], Reached] = {}
-    walked_projects = {graph.key(project.file.path)}
-    walked_packages: set[tuple[int, str]] = set()  # the target's identity and the package's case-folded id
-    queue: deque[tuple[Step, str]] = deque()
+    from that project's own, so a package met again through another project may be walked again there. A project is
+    walked once for each way it is entered (`Visit`), so one met first through a private reference is still walked
+    where it flows, and a name reached both ways takes its first hop from a route that flows, whatever the order of
+    the references."""
+    found: dict[tuple[str, str, str], tuple[Reached, bool]] = {}  # the name -> how first reached, and whether it flows
     root = next((target for target in project.targets if target.framework == framework), None)
+    start = Visit(framework, root if project.edges == "assets" else None)
+    walked_projects = {(graph.key(project.file.path), start.framework, start.root is not None)}
+    walked_packages: set[tuple[int, str]] = set()  # the target's identity and the package's case-folded id
+    queue: deque[tuple[Step, str, bool]] = deque()
 
     def own_steps(owner: Project, visit: Visit) -> list[Step]:
         step = entered(graph, owner, visit)
@@ -1453,20 +1457,26 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
         steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in step.assemblies]
         return steps
 
-    def enqueue(steps: Iterable[Step], first: str | None) -> None:
-        queue.extend((step, first or hop_text(step[0])) for step in steps)
+    def enqueue(steps: Iterable[Step], first: str | None, flows: bool) -> None:
+        queue.extend((step, first or hop_text(step[0]), flows) for step in steps)
 
-    enqueue(own_steps(project, Visit(framework, root if project.edges == "assets" else None)), None)
+    # Below a starting project with no restore nothing is told apart, so every route counts as one that flows.
+    enqueue(own_steps(project, start), None, True)
     while queue:
-        (hop, target, child), first = queue.popleft()
+        (hop, target, child), first, flows = queue.popleft()
         kind, name, version = hop
-        found.setdefault(
-            (kind if kind != "framework" else "assembly", ordinal_fold(name), version),
-            Reached(kind, name, version, first),
-        )
-        if child is not None and graph.key(child[0].file.path) not in walked_projects:
-            walked_projects.add(graph.key(child[0].file.path))
-            enqueue(own_steps(*child), first)
+        if child is not None:
+            # A project hop flows when the project is entered where it flows.
+            flows = flows and (child[1].root is not None or start.root is None)
+        key = (kind if kind != "framework" else "assembly", ordinal_fold(name), version)
+        if key not in found or (flows and not found[key][1]):
+            found[key] = (Reached(kind, name, version, first), flows)
+        if child is not None:
+            entered_project, visit = child
+            visit_key = (graph.key(entered_project.file.path), visit.framework, visit.root is not None)
+            if visit_key not in walked_projects:
+                walked_projects.add(visit_key)
+                enqueue(own_steps(entered_project, visit), first, flows)
         elif target is not None and (id(target), ordinal_fold(name)) not in walked_packages:
             walked_packages.add((id(target), ordinal_fold(name)))
             node = target.node(name)
@@ -1474,8 +1484,9 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
                 enqueue(
                     [(package_hop(target, dep, wanted), target, None) for dep, wanted in node.dependencies.items()],
                     first,
+                    flows,
                 )
-    return list(found.values())
+    return [reached for reached, _ in found.values()]
 
 
 def named_project(graph: Graph, narrowed: Path) -> Project | None:

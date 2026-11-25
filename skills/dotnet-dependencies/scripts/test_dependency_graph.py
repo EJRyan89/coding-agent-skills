@@ -6505,3 +6505,94 @@ class RootEntryTests(Fixture):
         _, rows = self.run_main("why", "--all", "--project", str(app_file), "--root", str(root))
         reached = {(row[2], row[3]) for row in self.lines(rows, "REACHES") if row[4] == "package"}
         self.assertEqual({("A", "2.0.0"), ("D", "1.0.0")}, reached)
+
+
+class ReachOrderTests(Fixture):
+    """`reaches` walks a project once for each way it is entered, on the starting restore and on its own, so a project
+    met first through a private reference is still walked where it flows, and the order of the references changes
+    neither what `why --all`, `where`, and `conflicts` print nor the first hop they name. Shapes from SDK 10.0.403."""
+
+    def diamond(self, app: str, references: tuple[str, ...], direct: dict[str, str]) -> Path:
+        # LibD3 asks for A 1.0.0, which depends on C, and T, which depends on U; LibD2p references it privately and
+        # LibD1 plainly, so it flows into the app's restore through LibD1 alone, where A resolves at 2.0.0, which
+        # depends on D.
+        net10 = "<PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+        own = {"A/1.0.0": package("C/1.0.0"), "C/1.0.0": package(), "T/1.0.0": package("U/1.0.0"), "U/1.0.0": package()}
+        lib3 = (
+            '<ItemGroup><PackageReference Include="A" Version="1.0.0" />'
+            '<PackageReference Include="T" Version="1.0.0" />'
+        )
+        self.project(
+            "LibD3",
+            net10 + lib3 + "</ItemGroup>",
+            restored_project(self.root, "LibD3", {"net10.0": own}, {"A": "1.0.0", "T": "1.0.0"}),
+        )
+        for name, private in (("LibD1", ""), ("LibD2p", ' PrivateAssets="all"')):
+            self.project(
+                name,
+                net10 + f'<ItemGroup><ProjectReference Include="../LibD3/LibD3.csproj"{private} /></ItemGroup>',
+                restored_project(
+                    self.root,
+                    name,
+                    {"net10.0": {**own, "LibD3/1.0.0": entry(NET10, "A/1.0.0", "T/1.0.0")}},
+                    {},
+                    ("LibD3",),
+                ),
+            )
+        resolved = {
+            "A/2.0.0": package("D/1.0.0"),
+            "D/1.0.0": package(),
+            "T/1.0.0": package("U/1.0.0"),
+            "U/1.0.0": package(),
+            "LibD1/1.0.0": entry(NET10, "LibD3/1.0.0"),
+            "LibD2p/1.0.0": entry(NET10),
+            "LibD3/1.0.0": entry(NET10, "A/1.0.0", "T/1.0.0"),
+        }
+        items = "".join(
+            f'<PackageReference Include="{name}" Version="{version}" />' for name, version in direct.items()
+        )
+        items += "".join(f'<ProjectReference Include="../{ref}/{ref}.csproj" />' for ref in references)
+        return self.project(
+            app,
+            net10 + f"<ItemGroup>{items}</ItemGroup>",
+            restored_project(self.root, app, {"net10.0": resolved}, direct, references),
+        )
+
+    def project(self, name: str, body: str, assets: str) -> Path:
+        path = self.write(f"{name}/{name}.csproj", sdk_project(body))
+        self.write(f"{name}/obj/project.assets.json", assets)
+        return path
+
+    def answers(self, app: Path) -> tuple[list[list[str]], list[list[str]], list[list[str]]]:
+        """The REACHES, WHERE (for A and T), and CONFLICT lines for `app`, without its label."""
+        root = self.write("X.sln", solution(f"{app.parent.name}\\{app.name}"))
+        _, reached = self.run_main("why", "--all", "--project", str(app), "--root", str(root))
+        where = [
+            row[1:]
+            for name in ("A", "T")
+            for row in self.lines(self.run_main("where", name, "--root", str(root))[1], "WHERE")
+        ]
+        _, conflicts = self.run_main("conflicts", "--root", str(root))
+        return (
+            sorted(row[1:] for row in self.lines(reached, "REACHES")),
+            sorted(where),
+            sorted([row[0], row[2], *row[4:]] for row in self.lines(conflicts, "CONFLICT")),
+        )
+
+    def test_a_project_met_first_through_a_private_reference_is_still_walked_where_it_flows(self) -> None:
+        app = self.diamond("AppD5", ("LibD2p", "LibD1"), {})
+        reached, where, _ = self.answers(app)
+        self.assertIn(["net10.0", "A", "2.0.0", "package", "LibD1 (project)"], reached)
+        self.assertIn(["net10.0", "D", "1.0.0", "package", "LibD1 (project)"], reached)
+        self.assertIn(["net10.0", "A", "package", "2.0.0", "LibD1 (project)"], where)
+
+    def test_the_order_of_the_references_changes_nothing_reaches_where_or_conflicts_print(self) -> None:
+        first = self.answers(self.diamond("AppD2", ("LibD2p", "LibD1"), {"A": "2.0.0"}))
+        for path in sorted(self.root.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        second = self.answers(self.diamond("AppD2", ("LibD1", "LibD2p"), {"A": "2.0.0"}))
+        self.assertEqual(first, second)
+        reached, where, _ = first
+        # The flowing route is named first, wherever the private one is listed.
+        self.assertIn(["net10.0", "T", "1.0.0", "package", "LibD1 (project)"], reached)
+        self.assertIn(["net10.0", "T", "package", "1.0.0", "LibD1 (project)"], where)
