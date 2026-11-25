@@ -767,12 +767,13 @@ PINNED_PYTEST_EXITS = {
     "MAX_WARNINGS_ERROR": 6,
 }
 PINNED_FROM_PYTEST = (9, 2, 0)
-# coverage.py's exit codes as coverage/cmdline.py binds them in coverage.py 7.17.5, its newest release when they were
-# pinned: `OK, ERR, FAIL_UNDER = 0, 1, 2`. Only the Mutation workflow installs coverage.py, so where it is not
-# installed these alone hold the gate, and the release they were read from must be at least as new, in its major and
-# minor version, as the one requirements/requirements-mutation.in pins.
+# coverage.py's exit codes as coverage/cmdline.py binds them in coverage.py 7.17.4, the release
+# requirements/requirements-mutation.in pins: `OK, ERR, FAIL_UNDER = 0, 1, 2`. Only the Mutation workflow installs
+# coverage.py, so where it is not installed these alone hold the gate, and the release they were read from must be at
+# least as new, in its major and minor version, as the one requirements-mutation.in pins; "Mutation tools" in
+# docs/dependency-updates.md says what a minor release's update does here.
 PINNED_COVERAGE_EXITS = {"OK": 0, "ERR": 1, "FAIL_UNDER": 2}
-PINNED_FROM_COVERAGE = (7, 17, 5)
+PINNED_FROM_COVERAGE = (7, 17, 4)
 MUTATION_REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "requirements-mutation.in"
 # Exits neither program documents, which a process's end gives instead: a signal's on POSIX, as a kill or a Ctrl-C
 # sends it, which subprocess reads as its negative number; a Windows status, such as an access violation's or a
