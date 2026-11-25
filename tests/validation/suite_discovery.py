@@ -187,8 +187,8 @@ def pytest_command(target: str, *options: str) -> list[str]:
 # What every pytest the runner and the mutation gate start holds over the environment it inherits, so a suite is judged
 # by the repository's pytest configuration and the suite alone: no options from the user's PYTEST_ADDOPTS, no plugin
 # from PYTEST_PLUGINS, and no plugin an installed package registers, each of which can deselect or hide a test and
-# leave the suite passing. Turning plugin autoloading off is safe because no package requirements-dev.txt or
-# requirements-mutation.txt pins registers a pytest plugin.
+# leave the suite passing. Autoloading is off, so a plugin a pinned package registers, such as hypothesis's, never
+# loads either, and no suite may depend on one.
 PYTEST_ENVIRONMENT = {"PYTEST_ADDOPTS": "", "PYTEST_PLUGINS": "", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
 
 

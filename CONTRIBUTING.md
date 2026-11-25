@@ -35,7 +35,7 @@ Development and deployment are supported on Windows, macOS, and Linux, and the w
 - ShellCheck;
 - PowerShell 7 (`pwsh`);
 - the PSScriptAnalyzer module;
-- the pinned development dependencies, `ruff`, `mypy`, and `pytest`; and
+- the pinned development dependencies, `ruff`, `mypy`, `pytest`, and `hypothesis`; and
 - GitHub CLI for code-review-operation changes.
 
 Install the development dependencies into the Python that runs validation:
@@ -53,7 +53,7 @@ python3 -m venv ~/.venvs/coding-agent-skills
 
 In a clone that guards its hub ([The guard](docs/parallel-sessions.md#the-guard)), run it from a worktree with the hub's interpreter, as `<hub>/.venv/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`, so the hub stays a clean checkout of `main`.
 
-`requirements-dev.in` pins the only ones, `ruff`, `mypy`, and `pytest`, as contributor and CI tools, and `requirements-dev.txt` is its lock, every package they install pinned and hashed, which the command installs as CI does, checking every hash and building no source distribution, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+`requirements-dev.in` pins the only ones, `ruff`, `mypy`, `pytest`, and `hypothesis`, the library the generated suites run on, as contributor and CI tools, and `requirements-dev.txt` is its lock, every package they install pinned and hashed, which the command installs as CI does, checking every hash and building no source distribution, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
 
 Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older version and answers the untrusted-repository prompt:
 
