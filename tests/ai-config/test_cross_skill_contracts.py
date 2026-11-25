@@ -543,9 +543,11 @@ class CrossSkillContractTests(unittest.TestCase):
             run = root / "code-review-run-spaced"
             role = "generic-review"
             # A path or pattern goes between single quotes, each of its own written as '"'"'; a PowerShell smart
-            # single quote, which ends a single-quoted string there, is one the guard refuses.
+            # single quote, which ends a single-quoted string there, is one the guard refuses. This test hands the
+            # command to each shell as an argument, so an ASCII double quote in a value passes Windows' command-line
+            # quoting too; test_review_source.py's ShellValueTests run one through both shells from stdin.
             value = "src/O'Neil \u201cservice\u201d [new] (old) & newer;|.cs"
-            pattern = 'class [A-Z]+Service;|GetAssignments( |[(])|it\'s "q" `x` $(y) \\d'
+            pattern = "class [A-Z]+Service;|GetAssignments( |[(])|it's `x` $(y) \\d"
             commands = [
                 (
                     review_run.SELF_CHECK_COMMAND.format(script=script.as_posix(), run=run.as_posix(), role=role),
