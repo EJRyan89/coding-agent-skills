@@ -30,7 +30,9 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   `$` stands before a letter, even in single quotes, so a pattern holding one is denied with the step to write it as
   `[$]`; a path holding one, which has no other spelling, is allowed and is asked about. The script and the run are
   in double quotes, and may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, or
-  line break, nor end in a backslash, which would escape the closing quote.
+  line break, nor end in a backslash, which would escape the closing quote. Each command is read as the reviewer
+  wrote it, less the ASCII spaces, tabs, and line feeds at either end, so a character Bash keeps there, such as a
+  form feed, a carriage return, U+001C to U+001F, U+0085, or a Unicode space, is read, and no allowed form holds it.
   The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
 - A role whose `run.json` entry declares its `self_check`, as the review-insights synthesis run does, runs that one
   command, exactly as declared, and none of the reviewer commands above. The run's author is the script that made
@@ -121,7 +123,7 @@ QUOTED_VALUE = rf"[^{SHELL_BREAKS}]*[^{SHELL_BREAKS}\\]"
 # Each command names Python as review-prs's rendered grant does, by the platform's command.
 SELF_CHECK = re.compile(
     rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
-    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
+    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"\Z'
 )
 # The two commands review_source.py gives a reviewer: a lazy snapshot's both, or any other snapshot's search. The
 # script and the run must be the known ones; the path or pattern, the one value the reviewer chooses, is in single
@@ -138,6 +140,11 @@ SOURCE_COMMAND = re.compile(
 QUOTE_IN_VALUE = "'\"'\"'"
 # What no path or pattern may hold: a line break or NUL, which ends the command or the argument, and PowerShell's
 # smart single quotes, each of which ends a single-quoted string there while Bash reads it as text.
+# What the guard drops from either end of a command before it reads it: the ASCII spaces, tabs, and line feeds Bash
+# reads as nothing there. Python's str.strip would also drop characters Bash keeps as a word or a command of their
+# own, such as a form feed, U+001C to U+001F, U+0085, or a Unicode space, so any of those left at an end is read, and
+# no allowed form holds one.
+COMMAND_PADDING = " \t\n"
 VALUE_BREAKS = frozenset("\r\n\0\u2018\u2019\u201a\u201b")
 # A dollar sign before a letter, which Claude Code asks about before it runs a granted command even inside single
 # quotes, so a headless review would deny it; a pattern writes a literal dollar sign as [$] instead.
@@ -631,7 +638,7 @@ def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
 
 def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
     try:
-        text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip()
+        text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip(COMMAND_PADDING)
     except FieldError:
         text = ""  # no command, which no allowed form matches
     declared = claim[1].get("self_check")

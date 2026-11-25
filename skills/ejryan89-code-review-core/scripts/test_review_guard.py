@@ -1024,6 +1024,56 @@ class BashTests(GuardFixture):
                 self.assertIsNone(self.decide("Bash", command=filled(search, pattern)))
         self.assertIsNone(self.decide("Bash", command=filled(fetch, "app/routes/posts.$slug.tsx")))
 
+    # Characters Python's str.strip drops that Bash keeps, as part of the last word or as a command of its own after a
+    # line break: a form feed, a vertical tab, U+001C to U+001F, U+0085, Unicode spaces, and a carriage return.
+    KEPT_BY_BASH = (
+        "\x0c",
+        "\x0b",
+        "\x1c",
+        "\x1d",
+        "\x1e",
+        "\x1f",
+        "\x85",
+        "\u00a0",
+        "\u2003",
+        "\u202f",
+        "\u3000",
+        "\r",
+        "\r\n",
+        "\n\x1c",
+        "\n\u2003",
+    )
+
+    def test_a_character_bash_keeps_at_either_end_of_a_command_is_denied_and_ascii_padding_is_not(self) -> None:
+        self.claim()
+        check = review_run.self_check_command(self.run_directory, "csharp-review")
+        commands = [check, *(filled(command, "a") for command in source_commands(self.run_directory, "csharp-review"))]
+        for command in commands:
+            for kept in self.KEPT_BY_BASH:
+                for bad in (f"{command}{kept}", f"{kept}{command}"):
+                    with self.subTest(command=bad):
+                        self.assert_denied(self.decide("Bash", command=bad))
+            for padded in (f"  {command}  ", f"\t{command}\n", f"\n{command} \n\n"):
+                with self.subTest(command=padded):
+                    self.assertIsNone(self.decide("Bash", command=padded))
+
+    def test_a_declared_self_check_with_a_character_bash_keeps_at_its_end_is_denied(self) -> None:
+        run = self.root / "code-review-run-synthesis"
+        run.mkdir()
+        check = f'{PYTHON} -B "{self.root / "review_insights.py"}" synthesize --report "{self.root / "i.json"}" --check'
+        role = {
+            "id": "synthesis",
+            "prompt_file": str(run / "synthesis-prompt.md"),
+            "result_file": str(run / "synthesis-result.json"),
+            "self_check": check,
+        }
+        (run / "run.json").write_text(json.dumps({"roles": [role]}), encoding="utf-8")
+        self.assertIsNone(self.decide("Read", agent=OTHER_AGENT, file_path=role["prompt_file"]))
+        self.assertIsNone(self.decide("Bash", agent=OTHER_AGENT, command=f"\t{check}\n"))
+        for kept in self.KEPT_BY_BASH:
+            with self.subTest(kept=kept):
+                self.assert_denied(self.decide("Bash", agent=OTHER_AGENT, command=f"{check}{kept}"))
+
 
 class ClaimTests(GuardFixture):
     def test_a_racing_first_read_keeps_the_first_written_run_and_role(self) -> None:
