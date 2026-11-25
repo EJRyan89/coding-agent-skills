@@ -1,14 +1,15 @@
 """Run `dotnet nuget why` for the projects the SDK can answer, and read its tree back into paths.
 
-The command is run once per project, with the project and one package, in the project's folder, so the .NET host picks
-the SDK by the nearest global.json at or above the project, the one MSBuild's resolvers read, and prints a block: a
-heading naming the project by its file stem, then for each target framework a tree of the dependency chains that reach
-the package, drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the
-console width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether
-it found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
-That text is in the CLI's language, which follows the machine's display language unless `DOTNET_CLI_UI_LANGUAGE` or
-`VSLANG` names another, so the command runs with `DOTNET_CLI_UI_LANGUAGE` set to English (`CLI_LANGUAGE`) and every
-other variable kept, and prints the English the parser reads on every machine. The parser strips the colors, reads a
+The command is run once per project, with the project and one package, in the project's folder, by the runner the caller
+passes (ask_sdk.py's, the only one that starts the SDK; `no_sdk` otherwise), so the .NET host picks the SDK by the
+nearest global.json at or above the project, the one MSBuild's resolvers read, and prints a block: a heading naming the
+project by its file stem, then for each target framework, and each runtime-specific target as `<framework>/<runtime>`, a
+tree of the dependency chains that reach the package, drawn with box-drawing branches, each package with its version and
+each referenced project by its name alone, frameworks whose trees are alike printed as consecutive lines over one tree,
+and the package highlighted with a terminal color. The heading wraps at the console width even when the output is a
+pipe, the tree lines are padded to it instead, and the command exits 0 whether it found the package, found no dependency
+on it, or found no assets file for a project, so the text alone says which. That text is in the CLI's language, which
+ask_sdk.py's runner sets to English, so the parser reads it on every machine. The parser strips the colors, reads a
 chain's depth from the column of its branch, and keeps every chain that ends at the package; a project with no heading
 in the output, or whose run exited nonzero after printing one, was not answered, and the caller walks its own graph, a
 run with no heading naming the first line it printed, which the parser could not read. The answer is keyed by the
@@ -18,7 +19,6 @@ project path the run was for, never by the heading's stem, which two projects ma
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -26,8 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from bounded_process import non_interactive_environment, run_bounded
-from executable_locator import find_program, located_command
+from executable_locator import find_program
 from flat_text import flat_text, reason_line
 from ordinal_case import ordinal_fold
 from text_lines import program_lines
@@ -37,12 +36,9 @@ HEADING = re.compile(
     r"^Project '(?P<name>.+?)' (?P<state>has the following dependency graph|does not have a dependency)"
 )
 FRAMEWORK = re.compile(r"^\s*\[(?P<framework>[^\]]+)\]\s*$")
-NODE = re.compile(r"^(?P<indent>[\s│]*)[├└]──\s+(?P<name>.+?)\s+\(v(?P<version>[^)]+)\)\s*$")
+# A tree line: a package with its version, or a referenced project by its name alone.
+NODE = re.compile(r"^(?P<indent>[\s│]*)[├└]──\s+(?P<name>.+?)(?:\s+\(v(?P<version>[^)]+)\))?\s*$")
 NO_ASSETS = "No assets file was found"
-# The CLI language the command runs in, whatever the machine's display language or the variables naming another, so
-# its text is the English HEADING and NO_ASSETS match. The invariant globalization setting is not added: with it the
-# CLI refuses any language a variable names, printing an error line, and falls back to its own default.
-CLI_LANGUAGE = {"DOTNET_CLI_UI_LANGUAGE": "en"}
 # The column of the first branch, and the columns each deeper level adds.
 TREE_BASE = 2
 TREE_STEP = 4
@@ -61,36 +57,24 @@ class Completed:
     timed_out: bool = False
 
 
-# The function that starts a command whose program tests/run_validation.py cannot read here, with the reason.
-COMMANDS_ALLOWED = {
-    "subprocess_runner": "the default runner of Services, which runs the dotnet command why_command() builds; the"
-    " policy reads the program there",
-}
-
-
-def subprocess_runner(arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
-    """Run the command in `folder` with no stdin, every prompt off, and the CLI in English (`CLI_LANGUAGE`), at the path
-    ejryan89-skill-core's locator finds for its program."""
-    environment = {**non_interactive_environment(), **CLI_LANGUAGE}
-    try:
-        result = run_bounded(located_command(arguments), timeout, cwd=folder, env=environment)
-    except subprocess.TimeoutExpired as expired:
-        output = expired.output if isinstance(expired.output, bytes) else b""
-        return Completed(-1, output.decode("utf-8", errors="replace"), timed_out=True)
-    return Completed(result.returncode, (result.stdout + result.stderr).decode("utf-8", errors="replace"))
+def no_sdk(arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
+    """The runner of an entry point that may not start the SDK, dependency_graph.py's, which never asks it: only
+    ask_sdk.py, which the skill grants to no runtime, runs `dotnet nuget why`."""
+    raise OSError("this entry point starts no dotnet; ask_sdk.py does")
 
 
 @dataclass
 class Services:
     """External effects, replaceable in tests."""
 
-    run: Runner = subprocess_runner
+    run: Runner = no_sdk
     which: Callable[[str], str | None] = field(default=find_program)
 
 
 @dataclass(frozen=True)
 class SdkPath:
-    """One chain the SDK printed: the project's stem, the framework, and each hop's name and version."""
+    """One chain the SDK printed: the project's stem, the framework, and each hop's name and version, `""` for a
+    referenced project, which the SDK prints by its name alone."""
 
     project: str
     framework: str
@@ -125,11 +109,13 @@ def parse_why(text: str, package: str) -> ParsedWhy:
     the answer's last heading, framework, or tree line. A heading the CLI wraps at the console width goes on to the
     first blank line, so its wrapped part is never taken for a line after the answer. A line printed right after a
     heading, with no blank line between, is read as the heading's wrapped part, so an error there is not quoted and
-    the failure names the exit code alone."""
+    the failure names the exit code alone. Frameworks whose graphs are alike are printed as consecutive framework
+    lines over one tree, so a tree holds for every framework line before it since the last tree line."""
     answer = ParsedWhy()
     target = ordinal_fold(package)
     project: str | None = None
-    framework = ""
+    frameworks: list[str] = []
+    grouping = False
     stack: list[tuple[str, str]] = []
     lines = program_lines(ANSI.sub("", text))
     end = 0
@@ -141,7 +127,7 @@ def parse_why(text: str, package: str) -> ParsedWhy:
             project = heading.group("name")
             answer.answered.add(project)
             answer.paths.setdefault(project, [])
-            framework, stack = "", []
+            frameworks, grouping, stack = [], False, []
             end, in_heading = index + 1, True
             continue
         if in_heading and line.strip() and not FRAMEWORK.match(line) and not NODE.match(line):
@@ -152,18 +138,20 @@ def parse_why(text: str, package: str) -> ParsedWhy:
             continue
         bracket = FRAMEWORK.match(line)
         if bracket:
-            framework, stack = bracket.group("framework"), []
+            frameworks = [*frameworks, bracket.group("framework")] if grouping else [bracket.group("framework")]
+            grouping, stack = True, []
             end = index + 1
             continue
         node = NODE.match(line)
         if not node:
             continue
+        grouping = False
         end = index + 1
         depth = max(0, (len(node.group("indent")) - TREE_BASE) // TREE_STEP)
         del stack[depth:]
-        stack.append((node.group("name"), node.group("version")))
+        stack.append((node.group("name"), node.group("version") or ""))
         if ordinal_fold(node.group("name")) == target:
-            answer.paths[project].append(SdkPath(project, framework, tuple(stack)))
+            answer.paths[project] += [SdkPath(project, framework, tuple(stack)) for framework in frameworks or [""]]
     answer.after = lines[end:] if answer.answered else []
     return answer
 

@@ -70,6 +70,8 @@ NUSPEC_DEPENDENCY_ID = "id"
 PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
 ASSETS_FILE = "project.assets.json"
+# What separates a restore's runtime-specific target from its framework, as in `net8.0/win-x64`.
+RUNTIME_SEPARATOR = "/"
 CONFIG_FILES = ("web.config", "app.config")
 
 
@@ -127,13 +129,27 @@ class PackageNode:
 
 
 @dataclass(frozen=True)
+class ProjectEntry:
+    """What a restore recorded, under one of its targets, for a project the restored project references, directly or
+    through another: its name, its file as the restore's libraries name it, made absolute without reaching the file
+    system, or None when they do not, the framework of it the target resolves to, as the restore wrote it, and the
+    packages and projects that flow from it into the restored project, a private one left out."""
+
+    name: str
+    path: Path | None
+    framework: str | None
+    dependencies: dict[str, str]
+
+
+@dataclass(frozen=True)
 class Assets:
     """What a restore recorded: each framework's resolved packages, the direct dependencies, and, where the restore
-    recorded them, the projects each framework references."""
+    recorded them, the projects each framework references and each target's entries for the projects it reaches."""
 
     nodes: dict[str, dict[str, PackageNode]]  # framework -> package id (as written) -> node
     direct: dict[str, list[PackageRef]]  # framework -> the packages the project asked for
     project_refs: dict[str, list[Path]] = field(default_factory=dict)  # framework -> the projects it references
+    projects: dict[str, list[ProjectEntry]] = field(default_factory=dict)  # framework -> the projects' entries
 
 
 def children(element: Element, name: str) -> list[Element]:
@@ -476,15 +492,32 @@ def assets_direct(frameworks: dict[str, Any], path: Path) -> dict[str, list[Pack
     return direct
 
 
-def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) -> Assets:
+def runtime_target(framework: str, runtime: str) -> str:
+    """The name of a restore's target: its framework's, with `/<runtime>` after it for a runtime-specific target."""
+    return f"{framework}{RUNTIME_SEPARATOR}{runtime}" if runtime else framework
+
+
+def target_framework(target: str) -> str:
+    """The framework a restore's target builds, its runtime left off: what the project's build of it and its direct
+    dependencies are keyed by."""
+    return target.partition(RUNTIME_SEPARATOR)[0]
+
+
+def read_assets(
+    path: Path, reader: TreeReader, declared: Sequence[str] = (), project_dir: Path | None = None
+) -> Assets:
     """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
-    the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, repeats its
-    framework's packages and is passed over.
+    the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, is a target of its own,
+    keyed `<framework>/<runtime>` (`runtime_target`), since a package's runtime.json may add packages there that its
+    framework's target lacks, as `dotnet nuget why` prints it; its direct dependencies are its framework's.
 
     Both are keyed by the name `$(TargetFramework)` holds for the framework, so its conditions read as written: the
     first of the project file's `declared` frameworks, then of the project section's, that is the same framework as
     the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
-    version to the default (`matching_framework`), else the target's name as written."""
+    version to the default (`matching_framework`), else the target's name as written.
+
+    The projects the restore recorded are rebased on `project_dir`, the folder of the project it ran for, which a
+    restore moved out of obj/ does not hold; by default the folder above the file's, as obj/ lies in the project's."""
     try:
         document = json_reader.loads(read_bounded(path, reader).decode("utf-8-sig"))
     except ValueError as error:
@@ -499,19 +532,27 @@ def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) ->
     def named(written: str) -> str:
         return matching_framework(written, aliases) or written
 
+    project_dir = project_dir or path.parent.parent
+    libraries = mapping(document, "libraries", path, "libraries")
     nodes: dict[str, dict[str, PackageNode]] = {}
+    projects: dict[str, list[ProjectEntry]] = {}
     for target, entries in targets.items():
-        framework = named(target.split("/", 1)[0])
+        written, _, runtime = target.partition(RUNTIME_SEPARATOR)
+        framework = runtime_target(named(written), runtime)
         if not isinstance(entries, dict):
             raise Unreadable(path, f"the assets file's target {target} is not an object")
         if framework in nodes:
             continue
         nodes[framework] = {}
+        projects[framework] = []
         for key, entry in entries.items():
             where = f"target {target}'s {key}"
             if not isinstance(entry, dict):
                 raise Unreadable(path, f"the assets file's {where} is not an object")
-            if optional_text(entry.get("type"), path, f"{where}.type") != "package":
+            kind = optional_text(entry.get("type"), path, f"{where}.type")
+            if kind == "project":
+                projects[framework].append(project_entry(key, entry, libraries, project_dir, path))
+            if kind != "package":
                 continue
             if "/" not in key:
                 raise Unreadable(path, f"the assets file's {where} is a package that names no version")
@@ -525,10 +566,32 @@ def read_assets(path: Path, reader: TreeReader, declared: Sequence[str] = ()) ->
             )
     direct = {named(framework): refs for framework, refs in assets_direct(frameworks, path).items()}
     restore = mapping(project, "restore", path, "project.restore")
-    return Assets(nodes, direct, restored_project_refs(restore, named, path))
+    return Assets(nodes, direct, restored_project_refs(restore, named, path, project_dir), projects)
 
 
-def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], path: Path) -> dict[str, list[Path]]:
+def project_entry(
+    key: str, entry: dict[str, Any], libraries: dict[str, Any], project_dir: Path, path: Path
+) -> ProjectEntry:
+    """A target's entry for a referenced project (`ProjectEntry`), keyed `<name>/<version>`, its file taken from the
+    library of that key, relative to `project_dir`, the folder of the project the restore ran for, as NuGet takes it."""
+    where = f"target entry {key}"
+    dependencies = mapping(entry, "dependencies", path, f"{where}.dependencies")
+    for dependency, wanted in dependencies.items():
+        if not isinstance(wanted, str):
+            raise Unreadable(path, f"the assets file's {where}.dependencies.{dependency} is not text")
+    library = libraries.get(key)
+    written = optional_text(library.get("path"), path, f"library {key}.path") if isinstance(library, dict) else None
+    return ProjectEntry(
+        key.split("/", 1)[0],
+        None if written is None else project_path(project_dir, written),
+        optional_text(entry.get("framework"), path, f"{where}.framework"),
+        dict(dependencies),
+    )
+
+
+def restored_project_refs(
+    restore: dict[str, Any], named: Callable[[str], str], path: Path, project_dir: Path
+) -> dict[str, list[Path]]:
     """The projects each framework references, from the assets file's `project.restore.frameworks.<framework>
     .projectReferences`, keyed as the frameworks are (`read_assets`); none when the restore does not name the project
     it ran for, against which its paths are rebased (`restored_path`)."""
@@ -543,8 +606,7 @@ def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], 
         references = mapping(section, "projectReferences", path, f"{where}.projectReferences")
         # A section without projectReferences says nothing about them; an empty one says there are none.
         if section.get("projectReferences") is not None:
-            # The project's directory holds the obj folder the assets file is in.
-            found[named(framework)] = [restored_path(key, restored, path.parent.parent) for key in references]
+            found[named(framework)] = [restored_path(key, restored, project_dir) for key in references]
     return found
 
 
