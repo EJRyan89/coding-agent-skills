@@ -25,7 +25,10 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   redirection, pipeline, list, or expansion, and the value must be spelled exactly as `single_quoted` spells what
   Bash reads, in single quotes with each quote of its own written as `'"'"'`, which PowerShell reads as the same
   literal, and hold no line break, NUL, or PowerShell smart single quote, which ends a single-quoted string there. A
-  `$'...'` or a `'\''`, which Bash reads as a literal and PowerShell does not, is denied. The script and the run are
+  `$'...'` or a `'\''`, which Bash reads as a literal and PowerShell does not, is denied, and so is any word after
+  the value, which argparse could read as a second run or role. Claude Code asks before it runs a command in which a
+  `$` stands before a letter, even in single quotes, so a pattern holding one is denied with the step to write it as
+  `[$]`; a path holding one, which has no other spelling, is allowed and is asked about. The script and the run are
   in double quotes, and may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, or
   line break, nor end in a backslash, which would escape the closing quote.
   The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
@@ -136,6 +139,9 @@ QUOTE_IN_VALUE = "'\"'\"'"
 # What no path or pattern may hold: a line break or NUL, which ends the command or the argument, and PowerShell's
 # smart single quotes, each of which ends a single-quoted string there while Bash reads it as text.
 VALUE_BREAKS = frozenset("\r\n\0\u2018\u2019\u201a\u201b")
+# A dollar sign before a letter, which Claude Code asks about before it runs a granted command even inside single
+# quotes, so a headless review would deny it; a pattern writes a literal dollar sign as [$] instead.
+DOLLAR_BEFORE_LETTER = re.compile(r"\$[A-Za-z]")
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
 SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
 SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
@@ -643,10 +649,16 @@ def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
         and _same(_path(match.group("script"), cwd), SOURCE_SCRIPT)
         and SOURCE_OPTIONS[match.group("command")] == match.group("option")
     ):
-        if source_value(text, match.group("option")) is None:
+        value = source_value(text, match.group("option"))
+        if value is None:
             raise Denied(
                 f"give the {match.group('option')} on one line between the command's single quotes, as the prompt "
-                """gives it, writing each single quote in it as '"'"'"""
+                """gives it, as the command's last word, writing each single quote in it as '"'"'"""
+            )
+        if match.group("option") == "pattern" and DOLLAR_BEFORE_LETTER.search(value):
+            raise Denied(
+                "write each dollar sign in the pattern as [$]: Claude Code asks before it runs a command in which a $ "
+                "stands before a letter, even in single quotes"
             )
         _check_own_run(match, cwd, claim, match.group("command"))
         return
@@ -659,11 +671,14 @@ def single_quoted(value: str) -> str:
 
 
 def source_value(text: str, option: str) -> str | None:
-    """The path or pattern of a source command, `text`, named `option`, as Bash reads it: when bash_syntax reads the
-    command as one simple command with no redirection, pipeline, list, assignment, or expansion, whose last word is
-    `--<option>=` and a value of one line, without a PowerShell smart single quote, spelled as single_quoted spells
-    it. None for any other text, and for text bash_syntax refuses."""
-    if VALUE_BREAKS.intersection(text):
+    """The path or pattern of a source command, `text`, named `option`, as Bash reads it: when the text is a source
+    command whose last word, and only word after its role, is `--<option>=` and a value of one line, without a
+    PowerShell smart single quote, spelled as single_quoted spells it, and bash_syntax reads it as one simple command
+    with no redirection, pipeline, list, assignment, or expansion. None for any other text, and for text bash_syntax
+    refuses. A word after the value, such as a second --run or --role that argparse would take over the first, or a
+    comment, a glob, or PowerShell's --% or @args, leaves the text after the role longer than the value's spelling."""
+    match = SOURCE_COMMAND.fullmatch(text)
+    if match is None or match.group("option") != option or VALUE_BREAKS.intersection(text):
         return None
     try:
         tree = bash_syntax.parse(text)
@@ -684,7 +699,7 @@ def source_value(text: str, option: str) -> str | None:
     last = command.words[-1]
     read = bash_syntax.word_text(last)
     value = read.removeprefix(prefix)
-    if value == read or not value or last.raw != prefix + single_quoted(value):
+    if value == read or not value or match.group("value") != single_quoted(value):
         return None
     return value
 

@@ -935,7 +935,7 @@ class BashTests(GuardFixture):
         "a\\",
         "a\\.b",
         "print[ ]*[$]",
-        '$x `id` "q" \\ it\'s',
+        '${x} `id` "q" \\ it\'s [$]',
         "'",
         "''",
         "it's",
@@ -988,6 +988,41 @@ class BashTests(GuardFixture):
                 bad = command.replace(placeholder, spelled)
                 with self.subTest(command=bad):
                     self.assert_denied(self.decide("Bash", command=bad))
+
+    def test_a_word_after_the_value_is_denied_so_argparse_never_reads_another_run_or_role(self) -> None:
+        # argparse takes the last --run, --role, and option it reads, and an abbreviation of each, so any word after
+        # the value could name another run or role than the one the guard checked.
+        self.claim()
+        other = self.other_run
+        commands = source_commands(self.run_directory, "csharp-review")
+        for command, option in zip(commands, ("path", "pattern"), strict=True):
+            value = filled(command, "a")
+            for bad in (
+                f"{value} --run='{other}' --role='sql-review' --{option}='b'",
+                f"{value} --{option}='b'",
+                f"{value} --ru='{other}' --{option}='b'",
+                f"{value} --ro='sql-review'",
+                f"{value} * --{option}='b'",
+                f"{value} {{x,y}} --{option}='b'",
+                f"{value} #'",
+                f"{value} --% --{option}='%HOME%'",
+                f"{value} @args --{option}='b'",
+            ):
+                with self.subTest(command=bad):
+                    self.assert_denied(self.decide("Bash", command=bad), "as the command's last word")
+
+    def test_a_dollar_sign_before_a_letter_is_denied_in_a_pattern_and_allowed_in_a_path(self) -> None:
+        # Claude Code asks before a command with a $ before a letter, even in single quotes; a pattern writes it as
+        # [$], and a path, which has no other spelling, is left to that prompt.
+        self.claim()
+        fetch, search = source_commands(self.run_directory, "csharp-review")
+        for pattern in ("$HOME", "a$b", "print[ ]*$x", "${HOME}$Z"):
+            with self.subTest(pattern=pattern):
+                self.assert_denied(self.decide("Bash", command=filled(search, pattern)), "as [$]")
+        for pattern in ("print[ ]*[$]", "a$", "$(", "${x}", "$1", "[$]HOME"):
+            with self.subTest(pattern=pattern):
+                self.assertIsNone(self.decide("Bash", command=filled(search, pattern)))
+        self.assertIsNone(self.decide("Bash", command=filled(fetch, "app/routes/posts.$slug.tsx")))
 
 
 class ClaimTests(GuardFixture):

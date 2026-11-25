@@ -20,7 +20,7 @@ anything, and writes each single quote of its own as review_guard's QUOTE_IN_VAL
 as one quote. `filled` fills one in so, and the guard allows that spelling alone. Claude Code still asks before a
 granted command in which a `$` stands before a letter, as in `'a$b'`, even inside single quotes, though a backtick,
 `$(`, `${`, and a double quote there run unasked, so the prompt tells a reviewer to write a dollar sign in a pattern
-as `[$]`; a path holding one is asked about.
+as `[$]` and the guard denies a pattern that does not; a path holding one is asked about.
 
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
