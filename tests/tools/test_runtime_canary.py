@@ -2485,7 +2485,11 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
             commands,
         )
         process = subprocess.run(
-            [sys.executable, "-B", self.script(), "literal"], capture_output=True, text=True, check=False
+            [sys.executable, "-B", self.script(), "literal"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         self.assertEqual((0, "RUNTIME_CANARY_EXPANSION literal\n"), (process.returncode, process.stdout))
 
