@@ -129,13 +129,27 @@ class PackageNode:
 
 
 @dataclass(frozen=True)
+class ProjectEntry:
+    """What a restore recorded, under one of its targets, for a project the restored project references, directly or
+    through another: its name, its file as the restore's libraries name it, made absolute without reaching the file
+    system, or None when they do not, the framework of it the target resolves to, as the restore wrote it, and the
+    packages and projects that flow from it into the restored project, a private one left out."""
+
+    name: str
+    path: Path | None
+    framework: str | None
+    dependencies: dict[str, str]
+
+
+@dataclass(frozen=True)
 class Assets:
     """What a restore recorded: each framework's resolved packages, the direct dependencies, and, where the restore
-    recorded them, the projects each framework references."""
+    recorded them, the projects each framework references and each target's entries for the projects it reaches."""
 
     nodes: dict[str, dict[str, PackageNode]]  # framework -> package id (as written) -> node
     direct: dict[str, list[PackageRef]]  # framework -> the packages the project asked for
     project_refs: dict[str, list[Path]] = field(default_factory=dict)  # framework -> the projects it references
+    projects: dict[str, list[ProjectEntry]] = field(default_factory=dict)  # framework -> the projects' entries
 
 
 def children(element: Element, name: str) -> list[Element]:
@@ -518,7 +532,10 @@ def read_assets(
     def named(written: str) -> str:
         return matching_framework(written, aliases) or written
 
+    project_dir = project_dir or path.parent.parent
+    libraries = mapping(document, "libraries", path, "libraries")
     nodes: dict[str, dict[str, PackageNode]] = {}
+    projects: dict[str, list[ProjectEntry]] = {}
     for target, entries in targets.items():
         written, _, runtime = target.partition(RUNTIME_SEPARATOR)
         framework = runtime_target(named(written), runtime)
@@ -527,11 +544,15 @@ def read_assets(
         if framework in nodes:
             continue
         nodes[framework] = {}
+        projects[framework] = []
         for key, entry in entries.items():
             where = f"target {target}'s {key}"
             if not isinstance(entry, dict):
                 raise Unreadable(path, f"the assets file's {where} is not an object")
-            if optional_text(entry.get("type"), path, f"{where}.type") != "package":
+            kind = optional_text(entry.get("type"), path, f"{where}.type")
+            if kind == "project":
+                projects[framework].append(project_entry(key, entry, libraries, project_dir, path))
+            if kind != "package":
                 continue
             if "/" not in key:
                 raise Unreadable(path, f"the assets file's {where} is a package that names no version")
@@ -545,7 +566,27 @@ def read_assets(
             )
     direct = {named(framework): refs for framework, refs in assets_direct(frameworks, path).items()}
     restore = mapping(project, "restore", path, "project.restore")
-    return Assets(nodes, direct, restored_project_refs(restore, named, path, project_dir or path.parent.parent))
+    return Assets(nodes, direct, restored_project_refs(restore, named, path, project_dir), projects)
+
+
+def project_entry(
+    key: str, entry: dict[str, Any], libraries: dict[str, Any], project_dir: Path, path: Path
+) -> ProjectEntry:
+    """A target's entry for a referenced project (`ProjectEntry`), keyed `<name>/<version>`, its file taken from the
+    library of that key, relative to `project_dir`, the folder of the project the restore ran for, as NuGet takes it."""
+    where = f"target entry {key}"
+    dependencies = mapping(entry, "dependencies", path, f"{where}.dependencies")
+    for dependency, wanted in dependencies.items():
+        if not isinstance(wanted, str):
+            raise Unreadable(path, f"the assets file's {where}.dependencies.{dependency} is not text")
+    library = libraries.get(key)
+    written = optional_text(library.get("path"), path, f"library {key}.path") if isinstance(library, dict) else None
+    return ProjectEntry(
+        key.split("/", 1)[0],
+        None if written is None else project_path(project_dir, written),
+        optional_text(entry.get("framework"), path, f"{where}.framework"),
+        dict(dependencies),
+    )
 
 
 def restored_project_refs(

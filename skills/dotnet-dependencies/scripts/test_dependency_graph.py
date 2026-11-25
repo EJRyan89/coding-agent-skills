@@ -247,9 +247,12 @@ class Fixture(unittest.TestCase):
             (project.parent / "obj" / "project.assets.json").unlink(missing_ok=True)
 
     def run_main(self, *arguments: str, services: Services | None = None) -> tuple[int, list[list[str]]]:
+        """Run the script's main with `arguments`; given `--ask-sdk`, run it as ask_sdk.py runs it, the one entry point
+        that asks the SDK."""
         output = io.StringIO()
+        asked = "--ask-sdk" in arguments
         with contextlib.redirect_stdout(output):
-            code = main(list(arguments), services or self.without_dotnet)
+            code = main([item for item in arguments if item != "--ask-sdk"], services or self.without_dotnet, asked)
         return code, [line.split("\t") for line in output.getvalue().splitlines()]
 
     def lines(self, rows: list[list[str]], key: str) -> list[list[str]]:
@@ -922,12 +925,11 @@ class PathWalkBoundTests(Fixture):
         sets of what can reach the name were read, and as `references_read` how many times a project's references
         were read, so a set read again, or a project read again on another path, shows in the count."""
         finder = dependency_graph.PathFinder
-        project = dependency_graph.Project
         with (
             mock.patch.object(finder, "from_package", autospec=True, side_effect=finder.from_package) as packages,
             mock.patch.object(finder, "from_project", autospec=True, side_effect=finder.from_project) as projects,
             mock.patch.object(dependency_graph, "reaching_keys", wraps=dependency_graph.reaching_keys) as sets,
-            mock.patch.object(project, "references_for", autospec=True, side_effect=project.references_for) as listed,
+            mock.patch.object(dependency_graph, "references_of", wraps=dependency_graph.references_of) as listed,
         ):
             _, rows = self.run_main(*arguments)
         self.sets_read, self.references_read = sets.call_count, listed.call_count
@@ -1591,12 +1593,12 @@ class FrameworkAndAssemblyTests(Fixture):
         self.assertEqual([[str(host), "Lantern.Json"]], [command[3:] for command in sdk.commands])
         self.write("src/Harbor.Host/Harbor.Host.csproj", HOST_PROJECT)
         self.write("src/Harbor.Host/obj/project.assets.json", json.dumps(HOST_ASSETS))
-        # The versions the two restores resolve apart are a conflict, which `conflicts` reports.
+        # The versions the two restores resolve apart are a conflict, which `conflicts` reports: the host reaches the
+        # package only at the version its restore resolves, through the project too.
         code, rows = self.run_main("conflicts", "--root", str(self.root))
         self.assertEqual(
             [
                 ["Lantern.Json", "package", "12.0.3", data_label, "net8.0", "Lantern.Json (v12.0.3)"],
-                ["Lantern.Json", "package", "12.0.3", host_label, "net8.0", "Harbor.Data (project)"],
                 ["Lantern.Json", "package", "13.0.1", host_label, "net8.0", "Lantern.Json (v13.0.1)"],
             ],
             self.lines(rows, "CONFLICT"),
@@ -1716,8 +1718,8 @@ UNSETTLED_ASSETS = (
 )
 # What `--ask-sdk` adds to a line naming a project whose assets file the walk may not have read.
 ASK_SDK_ADVICE = (
-    "; rerun why with --ask-sdk to have dotnet nuget why locate it, which lets MSBuild and the .NET host read and run"
-    " whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
+    "; rerun the query through ask_sdk.py to have dotnet nuget why locate it, which lets MSBuild and the .NET host read"
+    " and run whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
 )
 # A project whose assets file lies where no file says, and the SDK's answer for it.
 UNPLACED_ASSETS = "<PropertyGroup><ProjectAssetsFile>$(Elsewhere)</ProjectAssetsFile></PropertyGroup>"
@@ -1918,17 +1920,26 @@ class AssetsWalkTests(Fixture):
         self.assertEqual(
             [
                 "src/Moved/Moved.csproj",
-                UNSETTLED_ASSETS + "; --ask-sdk was given, but dotnet is not installed",
+                UNSETTLED_ASSETS + "; ask_sdk.py ran, but dotnet is not installed",
             ],
             self.lines(rows, "SDK_NOT_ASKED")[0],
         )
 
-    def test_the_flag_is_refused_outside_why_and_with_all(self) -> None:
-        for arguments in (("where", "X", "--ask-sdk"), ("why", "--all", "--project", "x.csproj", "--ask-sdk")):
+    def test_the_granted_entry_point_takes_no_sdk_flag_and_starts_no_dotnet(self) -> None:
+        # dependency_graph.py, which the skill grants, refuses the flag the route once took, and its own runner, which
+        # no query reaches, refuses to start a process: only ask_sdk.py, which the skill grants to no runtime, does.
+        for arguments in (("why", "X", "--ask-sdk"), ("where", "X", "--ask-sdk")):
             with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as raised:
                     main(list(arguments), self.without_dotnet)
                 self.assertEqual(2, raised.exception.code)
+        root, _ = self.moved_solution()
+        _, rows = self.run_main(
+            "why", "Lantern.Json", "--root", str(root), services=Services(which=self.with_dotnet.which)
+        )
+        self.assertEqual(2, len(self.lines(rows, "SDK_NOT_ASKED")))
+        with self.assertRaises(OSError):
+            Services().run(["dotnet", "--version"], 1, self.root)
 
 
 class OrdinalNameTests(Fixture):
@@ -2109,9 +2120,12 @@ def sdk_ordinal_why(root: Path, answered: bool) -> list[list[str]]:
 
 
 def cli_lines(root: Path, *arguments: str, services: Services | None = None) -> list[list[str]]:
+    """The lines a query prints; given `--ask-sdk`, run as ask_sdk.py runs it."""
     output = io.StringIO()
+    asked = "--ask-sdk" in arguments
+    rest = [item for item in arguments if item != "--ask-sdk"]
     with contextlib.redirect_stdout(output):
-        main([*arguments, "--root", str(root)], services or Services(run=FakeSdk(), which=lambda name: None))
+        main([*rest, "--root", str(root)], services or Services(run=FakeSdk(), which=lambda name: None), asked)
     return [line.split("\t") for line in output.getvalue().splitlines()]
 
 
@@ -6183,6 +6197,36 @@ class ArtifactsAndFlagTests(Fixture):
         _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root / "Harbor.sln"))
         self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
 
+    def test_the_artifacts_switch_is_read_without_case_or_surrounding_space_and_an_unsettled_one_counts(self) -> None:
+        # MSBuild compares the switch with `true` ignoring case; one set under a condition the reader cannot settle may
+        # be on, so it leaves the restore unsettled too, while an explicit false of any case leaves obj/.
+        self.write("src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT)
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root = self.write("Harbor.sln", solution("src\\Harbor.Core\\Harbor.Core.csproj"))
+        unsettled = UNSETTLED_ASSETS.replace(
+            "$(ProjectAssetsFile)", "$(MSBuildProjectExtensionsPath)project.assets.json"
+        )
+        for setting, line in (
+            ("<UseArtifactsOutput>TRUE</UseArtifactsOutput>", True),
+            ("<UseArtifactsOutput Condition=\"'$(CI)' == 'true'\">true</UseArtifactsOutput>", True),
+            ("<UseArtifactsOutput> False </UseArtifactsOutput>", False),
+            ("<UseArtifactsOutput>FALSE</UseArtifactsOutput>", False),
+        ):
+            with self.subTest(setting=setting):
+                self.write("Directory.Build.props", f"<Project><PropertyGroup>{setting}</PropertyGroup></Project>\n")
+                _, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+                expected = [["src/Harbor.Core/Harbor.Core.csproj", unsettled + ASK_SDK_ADVICE]] if line else []
+                self.assertEqual(expected, self.lines(rows, "SDK_NOT_ASKED"))
+
+    def test_a_project_with_no_evaluation_places_its_restore_in_obj(self) -> None:
+        file = msbuild_evaluation.ProjectFile(self.root / "App" / "App.csproj", "sdk", "App", [], [], [], [])
+        self.assertEqual(
+            msbuild_evaluation.AssetsPlace(
+                "$(MSBuildProjectExtensionsPath)project.assets.json", self.root / "App" / "obj" / "project.assets.json"
+            ),
+            file.assets(),
+        )
+
     def stale_solution(self) -> Path:
         """Moved, whose assets place is unsettled, holding a stale obj/ restore that names Old.Pkg."""
         self.write("src/Moved/Moved.csproj", restored_with(UNPLACED_ASSETS))
@@ -6259,3 +6303,205 @@ class ArtifactsAndFlagTests(Fixture):
             ],
             self.lines(rows, "SDK_NOT_ASKED"),
         )
+
+
+def restored_project(
+    root: Path,
+    name: str,
+    frameworks: dict[str, dict[str, Any]],
+    direct: dict[str, str],
+    references: tuple[str, ...] = (),
+) -> str:
+    """A restore of `<root>/<name>/<name>.csproj` as SDK 10 writes it: each framework's target, the project entries a
+    referenced project leaves with the `framework` it resolves to and the `dependencies` that flow, each project's
+    library with its path, and the packages the project asks for."""
+    project = root / name / f"{name}.csproj"
+    libraries = {
+        key: {"type": "project", "path": f"../{key.split('/')[0]}/{key.split('/')[0]}.csproj"}
+        for target in frameworks.values()
+        for key, entry in target.items()
+        if entry.get("type") == "project"
+    }
+    asked = {package: {"target": "Package", "version": f"[{version}, )"} for package, version in direct.items()}
+    restore_frameworks: dict[str, Any] = {
+        framework: {"projectReferences": {str(root / ref / f"{ref}.csproj"): {} for ref in references}}
+        for framework in frameworks
+    }
+    return json.dumps(
+        {
+            "version": 3,
+            "targets": frameworks,
+            "libraries": libraries,
+            "project": {
+                "restore": {"projectPath": str(project), "frameworks": restore_frameworks},
+                "frameworks": {framework: {"dependencies": asked} for framework in frameworks},
+            },
+        }
+    )
+
+
+def package(*dependencies: str) -> dict[str, Any]:
+    """A package entry of a restore's target, depending on each `name/version` given."""
+    return {"type": "package", "dependencies": dict(item.split("/") for item in dependencies)}
+
+
+def entry(framework: str, *dependencies: str) -> dict[str, Any]:
+    """A referenced project's entry in a restore's target, resolved to `framework`, with the dependencies that flow."""
+    found: dict[str, Any] = {"type": "project", "framework": framework}
+    if dependencies:
+        found["dependencies"] = dict(item.split("/") for item in dependencies)
+    return found
+
+
+NET10 = ".NETCoreApp,Version=v10.0"
+NET8 = ".NETCoreApp,Version=v8.0"
+
+
+class RootEntryTests(Fixture):
+    """Below a project reference, the walk takes what the starting project's restore records for that project: the
+    framework it resolves to and the dependencies that flow, as `dotnet nuget why` does; what does not flow is walked
+    on the referenced project's own restore, a chain only the walk sees. Shapes from SDK 10.0.403 restores."""
+
+    def project(self, name: str, body: str, assets: str | None) -> Path:
+        path = self.write(f"{name}/{name}.csproj", sdk_project(body))
+        if assets is not None:
+            self.write(f"{name}/obj/project.assets.json", assets)
+        return path
+
+    def solve(self, *names: str) -> Path:
+        return self.write("X.sln", solution(*(f"{name}\\{name}.csproj" for name in names)))
+
+    def private_package_solution(self) -> Path:
+        # LibP asks for P 1.0.0 with PrivateAssets=all, and P 1.0.0 depends on Q; AppP3 asks for P 2.0.0, which
+        # depends on D, and references LibP, whose entry in AppP3's restore records no dependency.
+        net10 = "<PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+        lib = {"net10.0": {"P/1.0.0": package("Q/1.0.0"), "Q/1.0.0": package()}}
+        self.project(
+            "LibP",
+            net10 + '<ItemGroup><PackageReference Include="P" Version="1.0.0" PrivateAssets="all" /></ItemGroup>',
+            restored_project(self.root, "LibP", lib, {"P": "1.0.0"}),
+        )
+        app = {"net10.0": {"P/2.0.0": package("D/1.0.0"), "D/1.0.0": package(), "LibP/1.0.0": entry(NET10)}}
+        self.project(
+            "AppP3",
+            net10 + '<ItemGroup><PackageReference Include="P" Version="2.0.0" />'
+            '<ProjectReference Include="../LibP/LibP.csproj" /></ItemGroup>',
+            restored_project(self.root, "AppP3", app, {"P": "2.0.0"}, ("LibP",)),
+        )
+        return self.solve("AppP3", "LibP")
+
+    def test_a_private_package_of_a_referenced_project_is_not_walked_on_the_starting_restore(self) -> None:
+        root = self.private_package_solution()
+        _, rows = self.run_main("why", "D", "--root", str(root))
+        self.assertEqual(
+            [["AppP3/AppP3.csproj", "net10.0", "D", "graph", "P (v2.0.0) > D (v1.0.0)"]], self.lines(rows, "PATH")
+        )
+        _, rows = self.run_main("why", "Q", "--root", str(root))
+        self.assertEqual(
+            [
+                ["AppP3/AppP3.csproj", "net10.0", "Q", "graph", "LibP (project) > P (v1.0.0) > Q (v1.0.0)"],
+                ["LibP/LibP.csproj", "net10.0", "Q", "graph", "P (v1.0.0) > Q (v1.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_a_private_project_reference_is_walked_on_its_own_restore(self) -> None:
+        # Lib41 references Lib42 with PrivateAssets=all, so App4b's entry for Lib41 records no Lib42; App4b asks for
+        # R 2.0.0, which depends on nothing, and Lib42's own restore resolves R 1.0.0, which depends on S.
+        net10 = "<PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+        own = {"net10.0": {"R/1.0.0": package("S/1.0.0"), "S/1.0.0": package()}}
+        self.project(
+            "Lib42",
+            net10 + '<ItemGroup><PackageReference Include="R" Version="1.0.0" /></ItemGroup>',
+            restored_project(self.root, "Lib42", own, {"R": "1.0.0"}),
+        )
+        lib41 = {"net10.0": {**own["net10.0"], "Lib42/1.0.0": entry(NET10, "R/1.0.0")}}
+        self.project(
+            "Lib41",
+            net10 + '<ItemGroup><ProjectReference Include="../Lib42/Lib42.csproj" PrivateAssets="all" /></ItemGroup>',
+            restored_project(self.root, "Lib41", lib41, {}, ("Lib42",)),
+        )
+        app = {"net10.0": {"R/2.0.0": package(), "Lib41/1.0.0": entry(NET10)}}
+        self.project(
+            "App4b",
+            net10 + '<ItemGroup><PackageReference Include="R" Version="2.0.0" />'
+            '<ProjectReference Include="../Lib41/Lib41.csproj" /></ItemGroup>',
+            restored_project(self.root, "App4b", app, {"R": "2.0.0"}, ("Lib41",)),
+        )
+        root = self.solve("App4b")
+        _, rows = self.run_main("why", "S", "--root", str(root), "--project", str(self.root / "App4b" / "App4b.csproj"))
+        self.assertEqual(
+            [
+                [
+                    "App4b/App4b.csproj",
+                    "net10.0",
+                    "S",
+                    "graph",
+                    "Lib41 (project) > Lib42 (project) > R (v1.0.0) > S (v1.0.0)",
+                ]
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_a_referenced_project_is_walked_under_the_framework_the_starting_restore_resolves_it_to(self) -> None:
+        # App6b builds net10.0 and net8.0; Lib6b builds net8.0, holding X, and netstandard2.0, holding Y. Both of
+        # App6b's frameworks resolve Lib6b to net8.0, so Y is no dependency of App6b.
+        self.project(
+            "Lib6b",
+            "<PropertyGroup><TargetFrameworks>net8.0;netstandard2.0</TargetFrameworks></PropertyGroup>"
+            "<ItemGroup>"
+            '<PackageReference Include="X" Version="1.0.0" Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
+            '<PackageReference Include="Y" Version="1.0.0" Condition="\'$(TargetFramework)\' == \'netstandard2.0\'" />'
+            "</ItemGroup>",
+            json.dumps(
+                {
+                    "version": 3,
+                    "targets": {"net8.0": {"X/1.0.0": package()}, "netstandard2.0": {"Y/1.0.0": package()}},
+                    "project": {
+                        "frameworks": {
+                            "net8.0": {"dependencies": {"X": {"target": "Package", "version": "[1.0.0, )"}}},
+                            "netstandard2.0": {"dependencies": {"Y": {"target": "Package", "version": "[1.0.0, )"}}},
+                        }
+                    },
+                }
+            ),
+        )
+        resolved = {"X/1.0.0": package(), "Lib6b/1.0.0": entry(NET8, "X/1.0.0")}
+        self.project(
+            "App6b",
+            "<PropertyGroup><TargetFrameworks>net10.0;net8.0</TargetFrameworks></PropertyGroup>"
+            '<ItemGroup><ProjectReference Include="../Lib6b/Lib6b.csproj" /></ItemGroup>',
+            restored_project(self.root, "App6b", {"net10.0": resolved, "net8.0": resolved}, {}, ("Lib6b",)),
+        )
+        root = self.solve("App6b")
+        app = str(self.root / "App6b" / "App6b.csproj")
+        _, rows = self.run_main("why", "Y", "--root", str(root), "--project", app)
+        self.assertEqual(([], [["Y"]]), (self.lines(rows, "PATH"), self.lines(rows, "MISSING")))
+        _, rows = self.run_main("why", "X", "--root", str(root), "--project", app)
+        self.assertEqual(
+            [["App6b/App6b.csproj", "net10.0;net8.0", "X", "graph", "Lib6b (project) > X (v1.0.0)"]],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_why_all_and_conflicts_reach_a_referenced_projects_packages_on_the_starting_restore(self) -> None:
+        # App1 asks for A 2.0.0, which depends on D; Lib1 asks for A 1.0.0, which depends on C. App1 builds with A
+        # 2.0.0 and D through Lib1 too, never with C or A 1.0.0.
+        net10 = "<PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+        self.project(
+            "Lib1",
+            net10 + '<ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup>',
+            restored_project(
+                self.root, "Lib1", {"net10.0": {"A/1.0.0": package("C/1.0.0"), "C/1.0.0": package()}}, {"A": "1.0.0"}
+            ),
+        )
+        app = {"net10.0": {"A/2.0.0": package("D/1.0.0"), "D/1.0.0": package(), "Lib1/1.0.0": entry(NET10, "A/1.0.0")}}
+        app_file = self.project(
+            "App1",
+            net10 + '<ItemGroup><ProjectReference Include="../Lib1/Lib1.csproj" />'
+            '<PackageReference Include="A" Version="2.0.0" /></ItemGroup>',
+            restored_project(self.root, "App1", app, {"A": "2.0.0"}, ("Lib1",)),
+        )
+        root = self.solve("App1", "Lib1")
+        _, rows = self.run_main("why", "--all", "--project", str(app_file), "--root", str(root))
+        reached = {(row[2], row[3]) for row in self.lines(rows, "REACHES") if row[4] == "package"}
+        self.assertEqual({("A", "2.0.0"), ("D", "1.0.0")}, reached)

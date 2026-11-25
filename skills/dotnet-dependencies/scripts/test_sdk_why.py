@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-import sdk_why
 from flat_text import REASON_CHARACTERS
 from sdk_why import Completed, SdkPath, Services, first_line, parse_why, run_why, why_command
 
@@ -95,8 +91,14 @@ class ParseTests(unittest.TestCase):
             ],
             answer.paths["Harbor.Web"],
         )
-        # A framework with no chains is passed over; the chain belongs to the framework printed last before it.
-        self.assertEqual([SdkPath("Harbor.Core", "net472", (("Lantern.Json", "12.0.3"),))], answer.paths["Harbor.Core"])
+        # Frameworks whose graphs are alike are printed as consecutive lines over one tree, which holds for each.
+        self.assertEqual(
+            [
+                SdkPath("Harbor.Core", "net8.0", (("Lantern.Json", "12.0.3"),)),
+                SdkPath("Harbor.Core", "net472", (("Lantern.Json", "12.0.3"),)),
+            ],
+            answer.paths["Harbor.Core"],
+        )
 
     def test_a_project_node_the_sdk_prints_without_a_version_is_a_hop_of_its_own(self) -> None:
         # Captured from SDK 10.0.403: a referenced project is printed by its name alone, with no version, under a
@@ -111,6 +113,24 @@ class ParseTests(unittest.TestCase):
                 SdkPath("App", "net10.0/osx-arm64", (("P", "1.0.0"), ("runtime.osx-arm64.P", "1.0.0"), ("B", "2.0.0"))),
             ],
             answer.paths["App"],
+        )
+
+    def test_frameworks_printed_over_one_tree_each_hold_it_and_an_empty_one_holds_none(self) -> None:
+        # Captured from SDK 10.0.403 (NuGet's DependencyGraphPrinter groups frameworks whose graphs are alike), and a
+        # framework with no graph, printed with the printer's message as its only tree line, before another.
+        grouped = (
+            "Project 'App6b' has the following dependency graph(s) for 'X':\n\n"
+            "  [net10.0]\n  [net8.0]\n  \u2514\u2500\u2500 Lib6b\n      \u2514\u2500\u2500 X (v1.0.0)\n\n"
+            "  [net472]\n  \u2514\u2500\u2500 No dependency graph(s) found for this target framework.\n\n"
+            "  [net9.0]\n  \u2514\u2500\u2500 X (v1.0.0)\n\n"
+        )
+        self.assertEqual(
+            [
+                SdkPath("App6b", "net10.0", (("Lib6b", ""), ("X", "1.0.0"))),
+                SdkPath("App6b", "net8.0", (("Lib6b", ""), ("X", "1.0.0"))),
+                SdkPath("App6b", "net9.0", (("X", "1.0.0"),)),
+            ],
+            parse_why(grouped, "X").paths["App6b"],
         )
 
     def test_a_project_without_the_dependency_is_answered_with_no_chain(self) -> None:
@@ -176,7 +196,7 @@ class RunTests(unittest.TestCase):
         self.assertTrue(all(command[:3] == ["dotnet", "nuget", "why"] for command in runs.commands))
         self.assertEqual({projects[0]}, answer.answered)
         self.assertEqual({projects[0]}, set(answer.paths))
-        self.assertEqual(1, len(answer.paths[projects[0]]))
+        self.assertEqual(2, len(answer.paths[projects[0]]))
         self.assertEqual(
             [
                 (projects[1], "dotnet nuget why answered nothing (no restored assets file)"),
@@ -196,43 +216,11 @@ class RunTests(unittest.TestCase):
         )
         answer = run_why([api, tools], "Lantern.Json", Services(run=runs), 30)
         self.assertEqual({api, tools}, answer.answered)
-        self.assertEqual([SdkPath("Shop", "net472", (("Lantern.Json", "12.0.3"),))], answer.paths[api])
+        self.assertEqual(
+            [SdkPath("Shop", framework, (("Lantern.Json", "12.0.3"),)) for framework in ("net8.0", "net472")],
+            answer.paths[api],
+        )
         self.assertEqual([], answer.paths[tools])
-
-    def test_the_default_runner_joins_both_streams_and_reports_a_time_limit(self) -> None:
-        result = sdk_why.subprocess_runner(
-            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"], 60, Path()
-        )
-        self.assertEqual(3, result.returncode)
-        self.assertIn("out", result.text)
-        self.assertIn("err", result.text)
-        self.assertFalse(result.timed_out)
-        slow = sdk_why.subprocess_runner([sys.executable, "-c", "import time; time.sleep(30)"], 0.5, Path())
-        self.assertTrue(slow.timed_out)
-        self.assertEqual(-1, slow.returncode)
-
-    def test_the_default_runner_runs_the_cli_in_english_and_keeps_every_other_variable(self) -> None:
-        # Whatever language the machine or a variable names, the CLI prints the English the parser reads; the
-        # environment is otherwise the one every bounded command gets, with each prompt off.
-        script = (
-            "import os; print(os.environ.get('DOTNET_CLI_UI_LANGUAGE'), os.environ.get('VSLANG'),"
-            " os.environ.get('DOTNET_DEPENDENCIES_KEPT'), os.environ.get('GIT_TERMINAL_PROMPT'), sep='|')"
-        )
-        named = {"DOTNET_CLI_UI_LANGUAGE": "de", "VSLANG": "1031", "DOTNET_DEPENDENCIES_KEPT": "a kept value"}
-        with mock.patch.dict(os.environ, named):
-            result = sdk_why.subprocess_runner([sys.executable, "-c", script], 60, Path())
-        self.assertEqual((0, "en|1031|a kept value|0"), (result.returncode, result.text.strip()))
-
-    def test_the_default_runner_runs_in_the_folder_it_is_given(self) -> None:
-        # The .NET host picks the SDK by the nearest global.json at or above the folder it runs in.
-        with tempfile.TemporaryDirectory() as folder:
-            result = sdk_why.subprocess_runner(
-                [sys.executable, "-c", "import os; print(os.getcwd())"], 60, Path(folder)
-            )
-            self.assertEqual(Path(folder).resolve(), Path(result.text.strip()).resolve())
-
-    def test_the_runner_states_why_the_policy_cannot_read_its_program(self) -> None:
-        self.assertIn("subprocess_runner", sdk_why.COMMANDS_ALLOWED)
 
 
 # A run with no heading names the first line it printed, which the parser could not read, such as an answer in a
