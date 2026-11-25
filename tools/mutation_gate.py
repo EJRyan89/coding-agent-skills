@@ -111,11 +111,14 @@ Any exit but a pass whose output shows a MemoryError raised, as MEMORY_ERROR rea
 saying so; otherwise pytest's exit for
 a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
 module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
-named the module's tests by node id, and its internal error when a SystemExit ended its import of a test module, as
+named the module's tests by node id, or when it failed to import a conftest.py, as a mutant that breaks a module the
+root conftest.py imports makes it, and its internal error when a SystemExit ended its import of a test module, as
 skill_roots.MissingSibling does when a mutant breaks a `sibling_scripts` call, since pytest lets that exception end
-its run rather than collecting it as a failed module. Any other nonzero exit, an interruption, another internal error,
-a usage error such as a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the
-next suite, and is errored when none killed it, which leaves the run unfinished too, naming each such mutant.
+its run rather than collecting it as a failed module. Any other exit, an interruption, another internal error, a usage
+error such as a node id it cannot resolve, no test collected, or one pytest does not document, such as a signal's,
+judges nothing: the mutant runs against the next suite, and is errored when none killed it, which leaves the run
+unfinished too, naming each such mutant. Each exit pytest and coverage.py document is read, as TESTS_FAILED_EXIT and
+the tables beside it say, or named in NOT_READ with why.
 
 Once a leg's reach pass ends, before its mutants run, it estimates what they need: each mutant at its first suite's
 unmutated seconds, shared out by the count of that suite's tests it runs when it runs only some, summed by module, in
@@ -289,6 +292,9 @@ STEP_OUTPUT_CHARACTERS = 300
 # suite ran, measured, and executed no line of the changed modules. `coverage combine`'s "No data to combine" instead
 # means no measured process started, so the measurement itself failed, and stays a failed step.
 NO_DATA_TO_REPORT = "No data to report."
+# coverage.py's exit for an error, as coverage/cmdline.py names it ERR, which `coverage json` exits with when it prints
+# NO_DATA_TO_REPORT. A coverage step that exits anything but 0 fails, but for that one.
+COVERAGE_ERROR_EXIT = 1
 
 KILLED = "killed"
 TIMED_OUT = "timed out"
@@ -302,19 +308,46 @@ NOT_RUN = "not run"
 # A mutant a suite ran against ended with neither a pass nor a test failure, so that suite judged nothing.
 ERRORED = "errored"
 PASSED = "passed"
-# pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, or
-# ended in a usage error, either of which kills the mutant only when collecting a test module failed, as a mutant that
-# breaks an import or the syntax does; pytest reports that failure, then exits with the usage error when the run named
-# the module's tests by node id, since it then finds none of them. Its internal error kills the mutant when
+# pytest's exits that judge a mutant, as pytest.ExitCode numbers them and "Exit codes" in pytest's reference documents
+# them: a test failed, or the run was interrupted, or ended in a usage error, either of which kills the mutant only
+# when collecting a test module failed, as a mutant that breaks an import or the syntax does, or importing a
+# conftest.py did, as a mutant that breaks a module the root conftest.py imports does; pytest reports a failed module,
+# then exits with the usage error when the run named the module's tests by node id, since it then finds none of them,
+# and a conftest.py it could not import with the usage error alone. Its internal error kills the mutant when
 # COLLECTION_EXIT_FRAME shows a SystemExit ended the import of a test module. Any nonzero exit whose output shows a
-# MemoryError raised, as MEMORY_ERROR reads it, kills the mutant too. Every other nonzero exit, an interruption,
-# another internal error, a usage error such as a node id it cannot resolve, no test collected, or too many warnings,
-# judges nothing.
+# MemoryError raised, as MEMORY_ERROR reads it, kills the mutant too. Every other exit judges nothing: an interruption,
+# another internal error, a usage error such as a node id it cannot resolve, each of UNJUDGED_EXITS, each NOT_READ
+# names, and every exit pytest does not document, which a process's end gives instead: a signal's on POSIX, which
+# subprocess reads as its negative number, as a kill or a Ctrl-C sends it, and a Windows status, such as an access
+# violation's. Python itself exits 1 for an exception raised before pytest's main runs, and 2 for an error in its own
+# command line, which read as pytest's: a stated limit, since every module a mutant changes is imported only once
+# pytest's main runs, the root conftest.py's imports included, and the gate's command line is its own.
 TESTS_FAILED_EXIT = 1
 COLLECTION_EXITS = frozenset({2, 4})
 INTERNAL_ERROR_EXIT = 3
+# pytest's exits that judge no mutant, each with what it means, which the log gives beside the exit.
+UNJUDGED_EXITS = {5: "no test collected"}
+# Each exit pytest or coverage.py documents that the gate gives no reading of its own, by the program and the exit,
+# with why. Every other documented exit is read: pytest's 0, TESTS_FAILED_EXIT, COLLECTION_EXITS, INTERNAL_ERROR_EXIT,
+# and UNJUDGED_EXITS, where a mutant runs, and coverage.py's 0 and COVERAGE_ERROR_EXIT in a reach. Elsewhere pytest's 0
+# alone is read: a suite that exits anything else unmutated fails unmutated, and one pytest lists with anything else
+# runs whole. tools/mutation_gate.py starts no other program whose exit it reads: mutmut makes the mutants inside the
+# gate's process, through mutmut_mutants, and GitClient reads every git command's exit.
+NOT_READ = {
+    "pytest 6": "MAX_WARNINGS_ERROR, which pytest exits with only past a --max-warnings or max_warnings the gate never "
+    "sets: PYTEST_ENVIRONMENT empties PYTEST_ADDOPTS and pyproject.toml names neither; were it to come, the mutant's "
+    "run errors, as any exit the gate does not read does",
+    "coverage 2": "FAIL_UNDER, which only a report command exits with, when its total falls below a fail_under, which "
+    "coverage_settings never sets; were it to come, `coverage json` fails as a step, as any exit but 0 does",
+}
 # What pytest's report heads each module it failed to collect with, at the start of its output.
 COLLECTION_ERROR = b"ERROR collecting "
+# The line pytest opens its output with when importing a conftest.py raised an Exception, whatever its kind. Two
+# stated limits. A SystemExit raised there ends Python with exit 1 and prints no such line, so it reads as a test
+# failure, and a KeyboardInterrupt ends it by a signal, which errors. An Exception the environment raises at the root
+# conftest.py's import after the unmutated run passed, such as a transient OSError, reads as a kill, as a failed
+# collection does.
+CONFTEST_ERROR = re.compile(rb"^ImportError while loading conftest '", re.MULTILINE)
 # The frame of pytest's own import of a test module, as the traceback of its internal error prints it. pytest collects
 # any other exception that import raises as a failed module, but lets a SystemExit or a KeyboardInterrupt end its run,
 # and only a SystemExit ends it with an internal error, so that exit with this frame is a SystemExit raised while a test
@@ -1029,8 +1062,9 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     process it starts ended after it and each bounded to MEMORY_BOUND bytes of data where the platform bounds it:
     passed on pytest's exit 0, killed on any other exit whose output shows a MemoryError raised, which logs that
     reason, and on its exit for a failed test or for a test module it failed to collect, an interruption or, when the
-    run named tests, a usage error, or for a SystemExit that ended a test module's import, an internal error, timed out
-    past `timeout`, and errored on any other exit, which judges nothing and logs pytest's exit and the start of its
+    run named tests, a usage error, or for a conftest.py it failed to import, a usage error, or for a SystemExit that
+    ended a test module's import, an internal error, timed out past `timeout`, and errored on any other exit, which
+    judges nothing and logs pytest's exit, with what it means when UNJUDGED_EXITS names it, and the start of its
     output. The node ids go to pytest in an argument file, which no command line's length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-", dir=private_folder.temporary_directory()) as temporary:
         target = suite
@@ -1066,7 +1100,9 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     if MEMORY_ERROR.search(start) or MEMORY_ERROR.search(end):
         print(f"{KILLED:<11} {suite}: pytest exited {finished.returncode}: {MEMORY_REASON}", flush=True)
         return KILLED
-    collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in start
+    collection_failed = finished.returncode in COLLECTION_EXITS and (
+        COLLECTION_ERROR in start or CONFTEST_ERROR.search(start) is not None
+    )
     collection_exited = finished.returncode == INTERNAL_ERROR_EXIT and any(
         COLLECTION_EXIT_FRAME.search(part) for part in (start, end)
     )
@@ -1074,7 +1110,9 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
         return KILLED
     # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.
     output = flat_text(start.decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
-    print(f"{ERRORED:<11} {suite}: pytest exited {finished.returncode}: {output}", flush=True)
+    meaning = UNJUDGED_EXITS.get(finished.returncode)
+    exited = f"{finished.returncode} ({meaning})" if meaning else f"{finished.returncode}"
+    print(f"{ERRORED:<11} {suite}: pytest exited {exited}: {output}", flush=True)
     return ERRORED
 
 
@@ -1294,7 +1332,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 return f"timed out in {code(step)}"
             if done.returncode != 0:
                 output = output_end(done.stderr + done.stdout)
-                if command[0] == "json" and done.returncode == 1 and output == NO_DATA_TO_REPORT:
+                if command[0] == "json" and done.returncode == COVERAGE_ERROR_EXIT and output == NO_DATA_TO_REPORT:
                     return Reach(seconds, {module: frozenset[int]() for module in modules})
                 return f"failed in {code(step)} with exit code {done.returncode}" + (
                     f": {code(output)}" if output else ""
