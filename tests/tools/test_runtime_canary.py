@@ -2597,7 +2597,8 @@ class ExpansionProbeTests(RuntimeCanaryTestCase):
                 self.assertEqual(self.failed(never), line)
 
     def test_a_run_the_fence_does_not_give_is_never_read_as_the_rule_failing(self) -> None:
-        # A model that writes the directory out, or runs the script with --help, ran no expansion.
+        # A model that writes the directory out, or runs the script with --help, ran no expansion. The reason prints
+        # the arguments as the recorder kept them, so the expectation holds them as given, Windows separators too.
         for arguments in ([str(self.home)], ["--help"]):
             with self.subTest(arguments=arguments):
                 stray = (f'{PYTHON} -B "{probe_script(self.home)}" "{forward(self.home)}"', arguments, False)
