@@ -171,7 +171,7 @@ def transcript_calls(path: Path) -> list[dict[str, Any]]:
         raise RecordError(f"{path} counts for nothing: {exc}", RECORD) from exc
 
 
-def counts(outcomes: Sequence[Outcome], varies: bool = False) -> str:
+def counts(outcomes: Sequence[Outcome], varies: bool) -> str:
     """The expectations passed of those checked, and over several runs, the runs that passed every expectation of
     theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs. A run whose only
     outcomes are passes judged on the session's calls alone is no run judged, since it measured nothing of the

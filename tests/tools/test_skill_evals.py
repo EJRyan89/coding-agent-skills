@@ -7920,11 +7920,18 @@ def test_a_scenario_marked_as_varying_runs_three_times_at_least_and_any_other_as
     assert [skill_evals_scenarios.scenario_runs(steady, runs) for runs in (1, 5)] == [1, 5]
 
 
-@pytest.mark.parametrize("value", [False, "true", 1, None])
-def test_a_varies_field_is_true_or_left_out(value: object, tmp_path: Path) -> None:
+@pytest.mark.parametrize(("value", "shown"), [(False, '"False"'), ("true", '"true"'), (1, '"1"'), (None, '"None"')])
+def test_a_varies_field_is_true_or_left_out(value: object, shown: str, tmp_path: Path) -> None:
     write_scenario(tmp_path, "case", scenario_spec(varies=value))
-    with pytest.raises(ScenarioError, match="varies must be true; leave it out for a stable scenario, not"):
+    with pytest.raises(ScenarioError) as raised:
         skill_evals_scenarios.load_scenarios("demo", root=tmp_path)
+    assert str(raised.value) == f"case: varies must be true; leave it out for a stable scenario, not {shown}"
+
+
+def test_run_all_with_no_scenario_runs_nothing(tmp_path: Path) -> None:
+    with mock.patch.object(skill_evals_runs, "run_scenario") as run_scenario:
+        assert skill_evals_runs.run_all([], {"haiku": tmp_path / "haiku"}, mock.Mock(), 1) == {}
+    run_scenario.assert_not_called()
 
 
 def test_run_all_queues_a_varying_scenario_three_times_and_a_steady_one_once(tmp_path: Path) -> None:
