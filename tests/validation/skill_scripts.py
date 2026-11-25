@@ -2363,7 +2363,8 @@ def _bind_instances(reading: _ClassReading, aliases: Aliases, builders: set[str]
         called = builders | {f"{prefix}.{name}" for prefix in prefixes for name in reading.inherited_builders}
         for node in _own_nodes(method):
             for target in _parser_targets(node, aliases, called):
-                if (spelled := spelling(target)).startswith(f"{receiver}."):
+                spelled = spelling(target)
+                if spelled.startswith(f"{receiver}."):
                     reading.instance.add(spelled.removeprefix(f"{receiver}."))
                     found.append(target)
     return found
