@@ -163,11 +163,58 @@ def test_a_call_a_value_chooses_among_callables_that_start_no_git_records_nothin
         '(client or services.git).run(["push"])',
         'CALLS[kind](["push"])',
         '[[services.git.run]][0][0](["push"])',
+        '[services.git][0].run(["push"])',
+        '(t := [services.git.run])[0](["push"])',
+        '[services.git.run for _ in x][0](["push"])',
+        '([services.git.run] or x)[0](["push"])',
         '[*runners][0](["push"])',
+        '[*git_calls][0](["push"])',
     ],
 )
 def test_a_call_a_value_chooses_beyond_the_forms_chosen_callee_reads_is_not_read(line: str) -> None:
     assert runtime_support.python_git_subcommands(line) == set()
+
+
+def test_a_double_star_value_of_a_subscripted_dict_is_read_by_its_own_name() -> None:
+    assert runtime_support.python_git_subcommands('{**git_calls}["run"](["push"])') == {UNREAD_WORD}
+    assert runtime_support.python_git_subcommands('{**runners}["run"](["push"])') == set()
+
+
+@pytest.mark.parametrize(
+    "chosen",
+    [
+        "(push_all if services.ready else log)",
+        "[push_all][0]",
+        "(run := push_all)",
+        "(log or push_all)",
+    ],
+)
+def test_a_value_chosen_call_of_the_script_s_own_git_starting_function_starts_git(chosen: str) -> None:
+    source = f"""
+        def push_all(services, *args):
+            return services.git.run(list(args))
+
+        def git(services, *args):
+            return {chosen}(services, *args)
+
+        git(services, "push", "origin")
+    """
+    assert script_subcommands(source) == {"push"}
+
+
+def test_a_value_chosen_call_of_the_script_s_own_quiet_function_named_for_git_starts_none() -> None:
+    source = """
+        def git(message):
+            print(message)
+
+        def git_report(services, *args):
+            (git if services.quiet else log)("note")
+
+        git_report(services, "status")
+    """
+    assert script_subcommands(source) == set()
+    direct = source.replace("(git if services.quiet else log)", "git")
+    assert script_subcommands(direct) == set()
 
 
 def test_a_helper_named_for_git_that_calls_a_git_call_a_value_chooses_starts_git() -> None:
