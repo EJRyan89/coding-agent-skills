@@ -44,6 +44,14 @@ RENDERED_CHECK_REMEDY = "Correct the source the lines above name so its rendered
 # What ShellCheck failing without a finding on any rendered file, such as on an error of its own, asks of the user.
 SHELLCHECK_FAILED_REMEDY = "Check that ShellCheck runs, as 'shellcheck --version' shows, then retry."
 
+
+def tool_failed_remedy(tool: str, program: str) -> str:
+    """What a Bash syntax check or a PowerShell parse that failed without naming a rendered file asks of the user:
+    printing nothing, or only lines of its own, it found nothing wrong with the source, so the step is the tool's,
+    naming the program the deployer ran, which on Windows need not be the one on PATH."""
+    return f"Check that the {tool} at {platform_support.normalize(program)} runs, then retry."
+
+
 TOKEN = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 SUFFIX_CONTEXT = {
     ".sh": "shell",
@@ -520,15 +528,22 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             )
         )
     for unit, result in zip(units, results, strict=True):
-        if result.returncode != 0:
-            kind = "block syntax" if unit.is_block else "syntax"
-            # Bash's lines are the reason; a Bash that printed nothing is named by its exit code.
-            reason = program_lines(result.output.rstrip()) if result.output.strip() else []
+        if result.returncode == 0:
+            continue
+        kind = "block syntax" if unit.is_block else "syntax"
+        lines = program_lines(result.output.rstrip()) if result.output.strip() else []
+        path = platform_support.normalize(unit.path)
+        # Bash names the file it parsed on each syntax error, so its lines are the source's reason when one names it.
+        if any(line.startswith(path + ":") for line in lines):
             raise SourceRefusal(
-                f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}",
-                *(reason or [f"bash exited with code {result.returncode} and printed nothing"]),
-                RENDERED_CHECK_REMEDY,
+                f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}", *lines, RENDERED_CHECK_REMEDY
             )
+        # Otherwise Bash failed on its own: lines that name no file, or nothing, which is named by its exit code.
+        raise DeployError(
+            f"ERROR: {platform_support.BASH_NAME} failed checking rendered Bash {kind}: {unit.origin}",
+            *(lines or [f"bash exited with code {result.returncode} and printed nothing"]),
+            tool_failed_remedy(platform_support.BASH_NAME, bash),
+        )
 
 
 def _shellcheck_batches(command: list[str], paths: list[str]) -> list[list[str]]:
@@ -631,16 +646,25 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
         [powershell, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_PARSE],
         {"RENDERED_PS1_FILES": json_writer.dumps(list(origins))},
     )
-    if result.returncode != 0:
-        lines = program_lines(result.output.strip())
-        # A pwsh that names no file, having printed nothing, is named by its exit code.
-        if lines:
-            failed = origins.get(lines[0].strip(), lines[0].strip())
-        else:
-            failed = f"pwsh exited with code {result.returncode} and printed nothing"
+    if result.returncode == 0:
+        return
+    lines = program_lines(result.output.strip()) if result.output.strip() else []
+    # The parse prints a file's path before that file's errors, so the first line naming a file names the source's
+    # reason, and any line before it is kept after the reason, never dropped.
+    named = next((index for index, line in enumerate(lines) if line.strip() in origins), None)
+    if named is not None:
         raise SourceRefusal(
-            f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:], RENDERED_CHECK_REMEDY
+            f"ERROR: Rendered PowerShell syntax validation failed: {origins[lines[named].strip()]}",
+            *lines[named + 1 :],
+            *lines[:named],
+            RENDERED_CHECK_REMEDY,
         )
+    # Otherwise pwsh failed on its own: lines that name no file, or nothing, which is named by its exit code.
+    raise DeployError(
+        "ERROR: PowerShell failed parsing rendered .ps1 files",
+        *(lines or [f"pwsh exited with code {result.returncode} and printed nothing"]),
+        tool_failed_remedy("PowerShell", powershell),
+    )
 
 
 def validate_executables(staged: Staged) -> None:

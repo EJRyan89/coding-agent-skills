@@ -93,6 +93,16 @@ NOT_CONTENT = {
     ("deployer/render.py", "_escape", "_value_remedy(key)"): "a configured or derived value, which configure changes",
     ("deployer/render.py", "_require_tools", "'This run installed nothing.'"): "a tool the machine lacks",
     ("deployer/render.py", "_run_shellcheck", "SHELLCHECK_FAILED_REMEDY"): "ShellCheck failing with no finding",
+    (
+        "deployer/render.py",
+        "_check_bash_syntax",
+        "tool_failed_remedy(platform_support.BASH_NAME, bash)",
+    ): "Bash failing without naming a rendered file",
+    (
+        "deployer/render.py",
+        "_parse_powershell",
+        "tool_failed_remedy('PowerShell', powershell)",
+    ): "pwsh failing without naming a rendered file",
 }
 # The last line of a refusal whose lines are not written out at its raise site, which the guard cannot classify.
 UNCLASSIFIED = "<lines not written out>"
@@ -1052,6 +1062,32 @@ class DeployAtTests(DeployerTestCase):
                 "alpha/scripts/Notes.txt and alpha/scripts/notes.txt name one file where the deployer stages them",
                 render.FOLDED_PATHS_REMEDY,
             )
+
+    def test_a_bash_check_that_fails_printing_nothing_is_refused_with_the_step_for_bash_not_for_the_commit(
+        self,
+    ) -> None:
+        # A Bash that printed nothing found nothing wrong with the commit's files, so neither the checkout nor --at
+        # sends the user to change the source or another commit: the step is the one for the tool.
+        git(self.source, "switch", "-q", "-c", "script")
+        self.write(self.source / "skills" / "alpha" / "scripts" / "run.sh", "#!/usr/bin/env bash\necho alpha\n")
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "A script")
+        silent = platform_support.ToolResult(2, "")
+        error = f"ERROR: {platform_support.BASH_NAME} failed checking rendered Bash syntax: alpha/scripts/run.sh"
+        for arguments in (("--all",), ("--all", "--at", "script"), ("--all", "--at", "script", "--dry-run")):
+            if arguments == ("--all", "--at", "script"):
+                git(self.source, "switch", "-q", "main")
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.object(render, "run_bash_syntax_check", return_value=silent),
+            ):
+                output = self.deploy_fails(*arguments, pattern=re.escape(error)).output
+                self.assertIn("\nbash exited with code 2 and printed nothing\n", output)
+                self.assertRegex(output, rf"\nCheck that the {platform_support.BASH_NAME} at .+ runs, then retry\.\n")
+                self.assertNotIn(render.RENDERED_CHECK_REMEDY, output)
+                self.assertNotIn(SEE_EARLIER_COMMIT, output)
+        self.assert_head_unmoved()
+        self.assert_exports_removed(2)
 
     def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
         plain = self.snapshot_source("plain")

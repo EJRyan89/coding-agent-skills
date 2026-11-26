@@ -14,7 +14,7 @@ from harness import DEPLOY_COMMAND  # importing harness also puts the repository
 from markdown_sections import EXECUTABLE_FENCES, FENCE_LANGUAGES, find_fences
 
 from deployer import hashing, platform_support, render
-from deployer.errors import DeployError
+from deployer.errors import DeployError, SourceRefusal
 
 
 class SubstitutionContextTests(unittest.TestCase):
@@ -547,7 +547,8 @@ class RenderedRefusalStepTests(unittest.TestCase):
             raised.exception.lines,
         )
 
-    def test_a_bash_syntax_check_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
+    def test_a_bash_syntax_check_that_fails_printing_nothing_is_bash_s_failure_not_the_source_s(self) -> None:
+        # A Bash that printed nothing has said nothing about the source, so the step is to check Bash, as ShellCheck's.
         units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
         for output in ("", " \r\n\t\n"):
             with (
@@ -555,15 +556,53 @@ class RenderedRefusalStepTests(unittest.TestCase):
                 mock.patch.object(render, "run_bash_syntax_check", return_value=platform_support.ToolResult(2, output)),
                 self.assertRaises(DeployError) as raised,
             ):
-                render._check_bash_syntax(units, "bash")
+                render._check_bash_syntax(units, "/opt/my tools/bash")
+            self.assertNotIsInstance(raised.exception, SourceRefusal)
             self.assertEqual(
                 (
-                    "ERROR: Rendered Bash syntax validation failed: s/scripts/run.sh",
+                    f"ERROR: {platform_support.BASH_NAME} failed checking rendered Bash syntax: s/scripts/run.sh",
                     "bash exited with code 2 and printed nothing",
-                    render.RENDERED_CHECK_REMEDY,
+                    f"Check that the {platform_support.BASH_NAME} at /opt/my tools/bash runs, then retry.",
                 ),
                 raised.exception.lines,
             )
+
+    def test_a_bash_syntax_check_whose_lines_name_no_rendered_file_is_bash_s_failure(self) -> None:
+        # Bash names the file it parsed on each syntax error, so lines that name none are Bash's own, as ShellCheck's.
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", True)]
+        output = "bash: C:/work/files/run.sh: No such file or directory\r\n"
+        with (
+            mock.patch.object(render, "run_bash_syntax_check", return_value=platform_support.ToolResult(127, output)),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._check_bash_syntax(units, "bash")
+        self.assertNotIsInstance(raised.exception, SourceRefusal)
+        self.assertEqual(
+            (
+                f"ERROR: {platform_support.BASH_NAME} failed checking rendered Bash block syntax: s/scripts/run.sh",
+                "bash: C:/work/files/run.sh: No such file or directory",
+                f"Check that the {platform_support.BASH_NAME} at bash runs, then retry.",
+            ),
+            raised.exception.lines,
+        )
+
+    def test_a_bash_syntax_failure_naming_the_file_keeps_every_line_bash_printed(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        output = "bash: warning: setlocale: LC_ALL: cannot change locale\nC:/work/files/run.sh: line 2: syntax error\n"
+        with (
+            mock.patch.object(render, "run_bash_syntax_check", return_value=platform_support.ToolResult(2, output)),
+            self.assertRaises(SourceRefusal) as raised,
+        ):
+            render._check_bash_syntax(units, "bash")
+        self.assertEqual(
+            (
+                "ERROR: Rendered Bash syntax validation failed: s/scripts/run.sh",
+                "bash: warning: setlocale: LC_ALL: cannot change locale",
+                "C:/work/files/run.sh: line 2: syntax error",
+                render.RENDERED_CHECK_REMEDY,
+            ),
+            raised.exception.lines,
+        )
 
     def test_a_powershell_parse_failure_reports_the_parser_then_the_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -584,7 +623,7 @@ class RenderedRefusalStepTests(unittest.TestCase):
             raised.exception.lines,
         )
 
-    def test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
+    def test_a_powershell_parse_that_fails_printing_nothing_is_powershell_s_failure_not_the_source_s(self) -> None:
         for output in ("", " \r\n\t\n"):
             with (
                 tempfile.TemporaryDirectory() as temporary,
@@ -592,14 +631,55 @@ class RenderedRefusalStepTests(unittest.TestCase):
                 mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(3, output)),
                 self.assertRaises(DeployError) as raised,
             ):
-                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), "pwsh")
+                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), "/opt/my tools/pwsh")
+            self.assertNotIsInstance(raised.exception, SourceRefusal)
             self.assertEqual(
                 (
-                    "ERROR: Rendered PowerShell syntax validation failed: pwsh exited with code 3 and printed nothing",
-                    render.RENDERED_CHECK_REMEDY,
+                    "ERROR: PowerShell failed parsing rendered .ps1 files",
+                    "pwsh exited with code 3 and printed nothing",
+                    "Check that the PowerShell at /opt/my tools/pwsh runs, then retry.",
                 ),
                 raised.exception.lines,
             )
+
+    def test_a_powershell_parse_whose_lines_name_no_rendered_file_is_powershell_s_failure(self) -> None:
+        # The parse prints a file's path before that file's errors, so lines that name none are pwsh's own.
+        output = "ConvertFrom-Json: Conversion from JSON failed.\r\n"
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(1, output)),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), "pwsh")
+        self.assertNotIsInstance(raised.exception, SourceRefusal)
+        self.assertEqual(
+            (
+                "ERROR: PowerShell failed parsing rendered .ps1 files",
+                "ConvertFrom-Json: Conversion from JSON failed.",
+                "Check that the PowerShell at pwsh runs, then retry.",
+            ),
+            raised.exception.lines,
+        )
+
+    def test_a_powershell_parse_failure_after_other_lines_names_its_file_and_keeps_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = str(workspace / "powershell" / "0" / "s" / "run.ps1")
+            output = f"WARNING: a notice\n{target}\nMissing closing '}}' in statement block.\n"
+            with (
+                mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(1, output)),
+                self.assertRaises(SourceRefusal) as raised,
+            ):
+                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, workspace, "pwsh")
+        self.assertEqual(
+            (
+                "ERROR: Rendered PowerShell syntax validation failed: s/run.ps1",
+                "Missing closing '}' in statement block.",
+                "WARNING: a notice",
+                render.RENDERED_CHECK_REMEDY,
+            ),
+            raised.exception.lines,
+        )
 
 
 class PowerShellExtensionTests(unittest.TestCase):
