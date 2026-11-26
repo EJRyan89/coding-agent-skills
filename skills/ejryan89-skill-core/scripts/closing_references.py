@@ -8,9 +8,11 @@ issue or a pull request, `https://github.com/<owner>/<repo>/issues/<n>` or `.../
 spellings of them GitHub's pages leave open: a keyword or a reference in Markdown emphasis (`**Closes** #<n>`), no
 space after the keyword or its colon (`CLOSES:#<n>`), a URL in angle brackets, over `http`, through `www.`, or with no
 scheme. Every caller refuses what it reads, so a spelling GitHub may not close by costs a refusal the author can
-rewrite, while one left unread would let an issue close unseen. `KEYWORDS` holds the keywords, and the module's suite
-holds them to GitHub's documented list and every documented keyword and reference form to being read, refused as a
-keyword before the start of a reference, or named in `NOT_READ`.
+rewrite, while one left unread would let an issue close unseen. The reader's catalogue decides each spelling once:
+`KEYWORDS`, `SEPARATORS_READ`, and `REFERENCES_READ` hold what it reads, each with where GitHub documents it or why
+it is read, and `NOT_READ` what it does not. The module's suite pins every keyword, separator, and reference form
+GitHub's pages document, fails one no table decides, and reads every keyword in each case before each separator and
+reference the tables read.
 
 What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines or with a
 no-break space between them, `_` or `~` emphasis, a backslash-escaped `\\#<n>`, a keyword in another language, a
@@ -56,12 +58,51 @@ from github_remote import OWNER_AND_NAME
 from hidden_comments import Reading, hidden_spans, read_comments
 from text_lines import text_lines
 
-# GitHub's closing keywords, each read in any case. The module's suite holds them to the list GitHub's closing-keyword
-# page documents, and every keyword and reference form GitHub's pages document to being read, refused as a keyword
-# before the start of a reference, or named in NOT_READ with why.
+# The reader's catalogue: KEYWORDS, SEPARATORS_READ, and REFERENCES_READ, the spellings it reads, and NOT_READ, those it
+# neither reads nor refuses. The module's suite pins every keyword, separator, and reference form GitHub's pages
+# "Linking a pull request to an issue" and "Autolinked references and URLs" document, fails one that no table decides,
+# and generates each keyword in each case, before each separator and each reference read, to show it is read.
+#
+# GitHub's closing keywords, each read in any case, as the closing-keyword page lists them; it says a keyword may be in
+# upper case.
 KEYWORDS = ("close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved")
 # The keywords as a pattern a caller may build on.
 CLOSING_KEYWORDS = rf"(?:{'|'.join(KEYWORDS)})"
+# Each spelling of what may stand between a keyword, `{}`, and its reference that the reader reads, with where GitHub
+# documents it or why it is read where GitHub's pages leave it open: reading one costs a refusal the author can rewrite,
+# while one left unread would let an issue close unseen.
+SEPARATORS_READ = {
+    "{} ": "a space, as the closing-keyword page's `Closes #10` writes",
+    "{}: ": "a colon and a space, as the closing-keyword page's `Closes: #10` writes",
+    "{}:": "a colon with no space after it, which the closing-keyword page leaves open",
+    "{}": "nothing, before a reference that starts with `#` or `<`, which the closing-keyword page leaves open; "
+    "before a letter or a digit the keyword runs into the reference and stands as no word",
+    "{}\t": "a tab, which the closing-keyword page leaves open",
+    "{} : ": "a space before the colon, which the closing-keyword page leaves open",
+    "**{}** ": "the keyword in Markdown's `*` emphasis, which the closing-keyword page leaves open",
+    "**{}:** ": "the keyword and its colon in `*` emphasis, which the closing-keyword page leaves open",
+    "**{}**: ": "the keyword in `*` emphasis before its colon, which the closing-keyword page leaves open",
+    "{} **": "`*` emphasis opening before the reference, which the closing-keyword page leaves open",
+}
+# Each reference form the reader reads after a keyword, written for number 1 of o/r, with where GitHub documents it or
+# why it is read where GitHub's pages leave it open.
+REFERENCES_READ = {
+    "#1": "an issue in the same repository, the closing-keyword page's `KEYWORD #ISSUE-NUMBER`, and a pull request's "
+    "number, which that page says a keyword before closes",
+    "o/r#1": "an issue in another repository, the closing-keyword page's `KEYWORD OWNER/REPOSITORY#ISSUE-NUMBER`",
+    "GH-1": "the autolink page's `GH-` reference, which the closing-keyword page does not name",
+    "gh-1": "the autolink page's `GH-` reference in lower case, which GitHub's pages leave open",
+    "https://github.com/o/r/issues/1": "the autolink page's issue URL, which the closing-keyword page does not name",
+    "https://github.com/o/r/pull/1": "the autolink page's pull request URL, which the closing-keyword page does not "
+    "name",
+    "http://github.com/o/r/issues/1": "an issue URL over `http`, which GitHub's pages leave open",
+    "https://www.github.com/o/r/issues/1": "an issue URL through `www.`, which GitHub's pages leave open",
+    "github.com/o/r/issues/1": "an issue URL with no scheme, which GitHub's pages leave open",
+    "<https://github.com/o/r/issues/1>": "an issue URL in angle brackets, which GitHub's pages leave open",
+    "https://github.com/o/r/issues/1#issuecomment-1": "an issue URL to one of its comments, which GitHub's pages "
+    "leave open",
+    "https://github.com/o/r/pull/1/files": "a pull request URL to one of its tabs, which GitHub's pages leave open",
+}
 # Each spelling of a closing reference the reader neither reads nor refuses, with why; the docstring states them.
 NOT_READ = {
     "Closes\n#1": "a keyword and its reference on different lines: GitHub's pages write them on one, and read across a "
