@@ -41,6 +41,29 @@ The other records live elsewhere. What shipped is the milestone's closed issues 
 
 The [project board](../.github/CONTRIBUTING.md#issues-and-pull-requests) groups its items by its `Release` field, not by milestone, so each milestone needs an option of the same name in that field, at its place in version order, added in the board's settings when the milestone is created. Step 4 of [After tagging](#after-tagging) confirms it for the next release.
 
+## Outside review
+
+The sessions that write this repository run on one model family, which shares its blind spots, so every release is read by other coding agents before it is cut. The pass runs once the milestone's last issue has merged and before [Before tagging](#before-tagging) starts; the maintainer approves its prompt, and the cut waits for its findings to be filed.
+
+1. **Clones.** Clone `main` twice into a new folder under the system temporary directory, one clone per agent, never inside the hub or a worktree, and record the commit both read. Keep the folder's path short: Windows' path limit refuses the skill-evaluation fixtures' deeper paths under a long one.
+2. **Read-only runs.** Give each agent the approved prompt on its standard input, which asks for defects with a reproduction, each finding's location on both sides, and, for every finding, which of this repository's own checks should have caught it and why it did not. Run Codex with its read-only sandbox, no approvals, and the user's configuration and rules ignored, so the effort is set on the command line:
+
+   ```bash
+   codex exec --ignore-user-config --ignore-rules --ephemeral --sandbox read-only -c approval_policy=never -c model_reasoning_effort=high -C '<clone>' -o '<report>' - < '<prompt>'
+   ```
+
+   On Windows, add `-c windows.sandbox=elevated`, which its read-only sandbox needs there. Run Copilot CLI with its write tool, fetches, and memory denied and only `git`, `python`, and `rg` allowed. Allowing `python` lets it run any Python, which can write, so the throwaway clone, not the allowed tools, is what keeps the run from changing anything that matters:
+
+   ```bash
+   copilot -C '<clone>' --no-ask-user --sync-session=off --disable-builtin-mcps --stream=off '--allow-tool=shell(git:*)' '--allow-tool=shell(python:*)' '--allow-tool=shell(rg:*)' --deny-tool=write --deny-tool=url --deny-tool=memory < '<prompt>' > '<report>'
+   ```
+
+3. **Verification.** Give each finding of either report to its own Opus subagent, which tries to refute it in a clone at the commit the pass read, never in the hub, and reproduces it when it holds. A finding the subagent cannot confirm is dropped, and a finding an open issue already covers is named on that issue instead.
+4. **Filing.** File each confirmed defect from the bug template onto the release's milestone with `gh issue create --body-file '<file>' --milestone '<title>' --label bug`, adding `--label '<origin>'` for the origin label the template's comment asks for, since `--body-file` applies none of the template's labels; fill its `## Introduced` section as that comment asks, since the notes [Tagging](#tagging) writes count the milestone's bugs by that label. A confirmed defect is fixed before the tag, as a release audit defect is. A trust-boundary finding follows [.github/SECURITY.md](../.github/SECURITY.md).
+5. **Auditor gaps.** For each confirmed finding, name the check that should have caught it: `audit-skill`, the [`audit-repository`](../.claude/skills/audit-repository/SKILL.md) repository skill's questions, `review-repository`'s reviewers, `audit-ai-config`, a validation policy or the fault corpus, or the mutation gate. Say why that check did not, from what it reads and asks, and from the audits and reviews that read the defect's lines since it was introduced. Group the findings by blind spot, and file one issue per blind spot from the enhancement template onto the next milestone, with `--label enhancement --label auditor-gap`, naming the defects it let through and the change that would have caught them. A blind spot an open issue already holds is named there instead, and that issue takes the `auditor-gap` label.
+
+The issues are the pass's record, and the milestones hold them. A pass's defects land on the release it reviewed and its gaps on the next, so each release's notes count the defects its milestone fixed and the gaps on its milestone when the count runs, the previous release's pass's among them.
+
 ## Before tagging
 
 Run this section's repository tools and [Tagging](#tagging)'s, `tools/branch_protection.py` and `tools/release_notes.py` among them, from a worktree on `origin/main`, never from the hub, since some of them write the hub's files when their words ask, and the hub stays a clean checkout of `main` ([The guard](parallel-sessions.md#the-guard)).
@@ -84,7 +107,7 @@ Write the notes to a file and create the release from `main`:
 gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file '<file>'
 ```
 
-The notes open with the release's section of [upgrade-notes.md](upgrade-notes.md), which [Before tagging](#before-tagging) wrote. Just below the version heading, `Level: <level>.` states the largest leading level word any entry names, ordered by the **Levels** list in [Versioning](#versioning); an empty section instead says `Level: none (no upgrade-note entries).` The entries retain their explanations and the action, if any, each asks of the user, including when a minor carries a change that would be major after stability. The tool does not add summaries to published sections. The notes then say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Carry the release milestone's scope into them, with its closed issues and the pull requests that closed them. Drop `--prerelease` at `1.0.0`.
+The notes open with the release's section of [upgrade-notes.md](upgrade-notes.md), which [Before tagging](#before-tagging) wrote. Just below the version heading, `Level: <level>.` states the largest leading level word any entry names, ordered by the **Levels** list in [Versioning](#versioning); an empty section instead says `Level: none (no upgrade-note entries).` The entries retain their explanations and the action, if any, each asks of the user, including when a minor carries a change that would be major after stability. The tool does not add summaries to published sections. Below the level, the notes carry the line `python tools/release_notes.py vX.Y.Z --counts` prints, run once the milestone's last issue has closed: the bugs the milestone fixed, each closed as completed and counted by the origin label the bug template asks for, and the issues labeled `auditor-gap` on its milestone when the count runs, as [Outside review](#outside-review) files them. It refuses, naming each, an issue closed as completed with no kind label (`bug`, `enhancement`, `documentation`, or `question`) or with an origin label and no `bug`: label it as its template would, then count again. The notes then say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Carry the release milestone's scope into them, with its closed issues and the pull requests that closed them. Drop `--prerelease` at `1.0.0`.
 
 ### Release notes
 
