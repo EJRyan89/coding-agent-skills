@@ -122,14 +122,14 @@ def parser() -> _Parser:
             metavar="NAME",
             help="replace one item (backed up); repeatable",
         ),
-        top.add_argument("--migrate-from", default="", metavar="ID", help="take over items from another source ID"),
+        top.add_argument("--migrate-from", default=None, metavar="ID", help="take over items from another source ID"),
         top.add_argument(
             "--take-over-source",
             action="store_true",
             help="deploy from this checkout in place of the recorded one",
         ),
         top.add_argument(
-            "--canary-home", default="", metavar="DIR", help="deploy into a throwaway home under the temp directory"
+            "--canary-home", default=None, metavar="DIR", help="deploy into a throwaway home under the temp directory"
         ),
         top.add_argument(
             "--at", default=None, metavar="REF", help="deploy this commit, tag, or branch instead of the checkout"
@@ -206,7 +206,12 @@ _EXCLUSIVE = (
 
 
 def _check_deploy_options(top: _Parser, namespace: argparse.Namespace) -> None:
-    """Refuse deploy options that cannot run together, before anything is read."""
+    """Refuse deploy options that cannot run together, before anything is read.
+
+    An option is given when its value differs from its default, here and in _parse, so an option that takes a value
+    defaults to None or an empty list, never to a value it can be given: an empty --canary-home, which a caller whose
+    variable is unset passes, is the option given and refused, never the option left out.
+    """
     given = {
         action.option_strings[0] for action in top.deploy_options if getattr(namespace, action.dest) != action.default
     }

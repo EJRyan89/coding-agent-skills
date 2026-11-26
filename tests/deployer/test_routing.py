@@ -8,7 +8,8 @@ from unittest import mock
 
 from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
 
-from deployer.arguments import parse_command
+from deployer.arguments import parse_command, parser
+from deployer.context import Options
 
 # Every option and command the hand-written usage named before the subparsers replaced it, per help page.
 OLD_USAGE_NAMES = {
@@ -115,6 +116,83 @@ class DeployUsageErrorTests(DeployerTestCase):
         ):
             with self.subTest(arguments=arguments):
                 self.assert_usage_error(arguments, message)
+
+    def test_an_empty_canary_home_or_migration_source_is_refused_before_anything_is_read(self) -> None:
+        # An empty value is the option given with nothing in it, never the option left out: a caller whose variable is
+        # unset passes --canary-home "", which must not deploy into the real home.
+        absolute = "ERROR: --canary-home must be an absolute path (got: )"
+        for arguments, message in (
+            (("--canary-home", "", "--all"), absolute),
+            (("--canary-home=", "--all"), absolute),
+            (("--all", "--canary-home", ""), absolute),
+            (("--migrate-from", ""), "ERROR: Invalid migration source ID: "),
+            (("--migrate-from=",), "ERROR: Invalid migration source ID: "),
+        ):
+            with self.subTest(arguments=arguments), mock.patch("deployer.config.load") as load:
+                self.assert_usage_error(arguments, message)
+                load.assert_not_called()
+
+    def test_an_empty_canary_home_or_migration_source_counts_as_given_for_every_exclusion(self) -> None:
+        canary = str(self.root)
+        for arguments, message in (
+            (("--canary-home", "", "--dry-run"), "ERROR: --canary-home cannot be combined with --dry-run"),
+            (("--canary-home", "", "--all", "--dry-run"), "ERROR: --canary-home cannot be combined with --dry-run"),
+            (
+                ("--canary-home", "", "--migrate-from", "old/source"),
+                "ERROR: --canary-home cannot be combined with --migrate-from",
+            ),
+            (
+                ("--canary-home", canary, "--migrate-from", ""),
+                "ERROR: --canary-home cannot be combined with --migrate-from",
+            ),
+            (
+                ("--canary-home", "", "--migrate-from", ""),
+                "ERROR: --canary-home cannot be combined with --migrate-from",
+            ),
+            (
+                ("--canary-home=", "--take-over-source", "--dry-run"),
+                "ERROR: --canary-home cannot be combined with --dry-run",
+            ),
+            (
+                ("--canary-home", "", "--take-over-source"),
+                "ERROR: --canary-home cannot be combined with --take-over-source",
+            ),
+            (("--migrate-from", "", "--dry-run"), "ERROR: --migrate-from cannot be combined with --dry-run"),
+            (("--migrate-from", "", "--all", "--dry-run"), "ERROR: --migrate-from cannot be combined with --dry-run"),
+            (("--migrate-from", "", "--all"), "ERROR: --migrate-from cannot be combined with --all"),
+            (("--migrate-from", "", "--force"), "ERROR: --migrate-from cannot be combined with --force"),
+            (
+                ("--migrate-from", "", "--force-item", "alpha"),
+                "ERROR: --migrate-from cannot be combined with --force-item",
+            ),
+            (("--uninstall", "--migrate-from", ""), "ERROR: --uninstall cannot be combined with --migrate-from"),
+            (("--at", "v1.0.0", "--migrate-from", ""), "ERROR: --at cannot be combined with --migrate-from"),
+            (("--unpin", "--migrate-from", ""), "ERROR: --unpin cannot be combined with --migrate-from"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assert_usage_error(arguments, message)
+
+    def test_every_deploy_option_that_takes_a_value_counts_an_empty_one_as_given(self) -> None:
+        # The twin of the empty --canary-home: no option whose value can be empty reads that value as left out, so each
+        # is refused beside a command exactly as a non-empty value is.
+        valued = [action for action in parser().deploy_options if action.nargs != 0]
+        self.assertTrue(valued)
+        for action in valued:
+            option = action.option_strings[0]
+            for arguments in ((option, "", "check"), (f"{option}=", "check")):
+                with self.subTest(arguments=arguments):
+                    result = self.run_cli(*arguments)
+                    self.assertEqual(2, result.code, result.output)
+                    self.assertIn(f"ERROR: {option} cannot be combined with the check command\n", result.output)
+
+    def test_options_built_with_their_defaults_are_the_options_of_a_command_line_that_gives_none(self) -> None:
+        # The suites build Options directly, so a dataclass default that differs from the parser's, such as an empty
+        # --migrate-from, would run a migration or a canary no command line asks for.
+        namespace = parse_command([])
+        assert isinstance(namespace, argparse.Namespace)
+        self.assertEqual(
+            Options(**{key: value for key, value in vars(namespace).items() if key != "command"}), Options()
+        )
 
     def test_the_uninstall_refuses_every_option_that_selects_or_replaces(self) -> None:
         for extra, message in (

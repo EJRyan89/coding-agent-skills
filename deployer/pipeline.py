@@ -61,7 +61,7 @@ def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
     The parser refuses options that cannot run together; this checks what only the source can rule out.
     """
     options = Options(**{key: value for key, value in vars(namespace).items() if key != "command"})
-    if options.migrate_from:
+    if options.migrate_from is not None:
         if not source.SOURCE_ID_PATTERN.fullmatch(options.migrate_from):
             raise usage_error(f"Invalid migration source ID: {options.migrate_from}")
         if options.migrate_from == source_id:
@@ -228,7 +228,7 @@ def _deploy(
     # first change, and by the dry run, which answers as the deployment would.
     data.refuse_read_only()
     context = Context(paths, options, src, values, data, data.ownership(src.source_id), stdin, pin=pin)
-    if options.migrate_from:
+    if options.migrate_from is not None:
         migrate.migrate(context, options.migrate_from)
         return 0
     selection = selection_module.select(context)
@@ -453,14 +453,14 @@ def _prepare(
     platform_support.ensure_supported()
     source_id = source.load_source_id(paths) if pin is None else source_ref.exported_source_id(paths, pin)
     options = parse_arguments(namespace, source_id)
-    if options.canary_home:
+    if options.canary_home is not None:
         # The canary's runtimes read their configuration from the canary home, never from the user's COPILOT_HOME.
         paths = dataclasses.replace(paths, home=canary_home(options.canary_home), copilot_home=None)
     validate_managed_roots(paths)
     # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
     values = (
         {}
-        if options.canary_home
+        if options.canary_home is not None
         else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
     )
     with source_ref.exported_refusals(pin):
@@ -503,7 +503,7 @@ def _claim(
     paths: Paths, options: Options, source_id: str, values: dict[str, str], probe: lock.ProcessProbe
 ) -> tuple[dict[str, str], lock.Lock]:
     """Claim a canary home and its values, or refuse a linked worktree; then take the lock."""
-    if options.canary_home:
+    if options.canary_home is not None:
         # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it. Its
         # values are checked first, so a home or checkout path they refuse leaves the home without a marker.
         values = config.canary(source_id, paths.home, paths.source_dir)
