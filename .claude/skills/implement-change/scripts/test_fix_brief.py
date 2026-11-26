@@ -532,6 +532,18 @@ def test_a_path_outside_the_repository_is_refused_before_anything_is_written(
     assert not list((tmp_path / "out").iterdir())
 
 
+@pytest.mark.parametrize("given", ["tools//reader.py", "tools\\\\reader.py", "tools/reader.py/", "..\\outside.py"])
+def test_a_given_path_the_lister_refuses_as_written_is_refused_before_github_is_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], given: str
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("x"), "7", "--path", given)
+    assert result.code == 1
+    assert result.lines[0].startswith(f"FAILED\t{given} is refused: ")
+    assert result.calls == []
+    assert not list((tmp_path / "out").iterdir())
+
+
 @pytest.mark.parametrize("arguments", [[], ["0"], ["-3"], ["seven"], ["7", "--path"]])
 def test_an_issue_that_is_not_a_positive_number_is_a_usage_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], arguments: list[str]
@@ -598,6 +610,18 @@ def test_a_contract_entry_naming_a_file_exactly_lists_it(
     )
 
 
+def test_a_contract_entry_is_read_as_a_path_is_however_its_separators_are_spelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile = "## Contract files\n\n- `./tools/reader.py`;\n- `.\\tools\\`;\n- `tools`;\n"
+    root = repository(tmp_path, {"docs/implementing-changes.md": profile})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("`tools/reader.py`"), "7")
+    assert result.section("Contract") == (
+        "- `docs/implementing-changes.md:3` names `./tools/reader.py`, which holds `tools/reader.py`\n"
+        "- `docs/implementing-changes.md:4` names `.\\tools\\`, which holds `tools/reader.py`"
+    )
+
+
 def test_a_name_no_command_can_quote_sends_the_reader_to_git_ls_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -647,6 +671,46 @@ def test_a_path_with_a_test_a_line_range_or_a_leading_dot_names_its_file_once(
     root = repository(tmp_path)
     result = run(root, tmp_path, monkeypatch, capsys, issue(spans), "7")
     assert result.section("Files") == "- `tools/reader.py`: named by the issue"
+
+
+@pytest.mark.parametrize(
+    "spellings",
+    [["./tools/reader.py"], ["tools\\reader.py"], [".\\tools\\reader.py"], ["./tools/reader.py", "tools/reader.py"]],
+)
+def test_a_given_path_names_the_tracked_file_however_it_is_spelled_as_the_lister_reads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], spellings: list[str]
+) -> None:
+    contract = {"docs/implementing-changes.md": "## Contract files\n\n- `tools/reader.py`;\n"}
+    root = repository(tmp_path, contract)
+    given = [argument for spelling in spellings for argument in ("--path", spelling)]
+    for body in ("`tools/reader.py`", "Read the config."):
+        result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7", *given)
+        source = "named by the issue" if "`" in body else "given with `--path`"
+        assert result.section("Files") == f"- `tools/reader.py`: {source}"
+        assert result.section("Twins") == "No file has a twin in the other shell or another tracked file of its name."
+        assert result.section("Contract") == (
+            "- `docs/implementing-changes.md:3` names `tools/reader.py`, which holds `tools/reader.py`"
+        )
+        assert "`tools/reader.py` uses os.walk" not in result.section("Lessons patterns")
+        assert "`tools/reader.py:5 holds os.walk(`" in result.section("Lessons patterns")
+
+
+@pytest.mark.parametrize("span", ["`tools\\reader.py`", "`.\\tools\\reader.py:4`", "`.//tools/./reader.py`"])
+def test_an_issue_span_names_the_tracked_file_however_its_separators_are_spelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], span: str
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue(span), "7")
+    assert result.section("Files") == "- `tools/reader.py`: named by the issue"
+
+
+@pytest.mark.parametrize("span", ["`tools/`", "`tools\\`", "`./tools`"])
+def test_a_folder_span_is_never_read_as_the_module_of_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], span: str
+) -> None:
+    root = repository(tmp_path, {"other/tools.py": "VALUE = 1\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue(span), "7")
+    assert result.section("Files").startswith("The issue names no tracked file in a code span")
 
 
 def test_a_called_capitals_name_is_a_symbol_and_a_lone_status_word_is_not(
