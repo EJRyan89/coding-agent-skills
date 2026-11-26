@@ -3,7 +3,8 @@ change is planned and written knowing each rule, its helper, and its guard.
 
     lessons_patterns.py <path> [<path> ...]
 
-Each path is a file the change will edit or add, written from the top of the repository, such as `tools/x.py`. The
+Each path is a file the change will edit or add, written from the top of the repository, such as `tools/x.py`, and
+refused as written, then read with each `\\` as `/` and a `.` part dropped, so `./tools/x.py` is `tools/x.py`. The
 catalogue is read through ejryan89-skill-core's lessons_catalogue, the reader validation's ledger check holds it to,
 and the patterns are listed in the order it holds them, one line each, with what meets it. A pattern meets a file in
 three ways:
@@ -496,13 +497,25 @@ def _in_place(name: str, place: str) -> bool:
     return name == place or PurePosixPath(name).name == place or posix_within(name, place, strict=True)
 
 
-def read_target(root: Path, bases: Sequence[Path], name: str, facts: list[Fact]) -> Target:
-    """The path `name` as the lister reads it, appending a NEW or UNREAD fact it owes to `facts`; Refused for a path
-    refused inside the repository or one that is not a file, and the OSError of one that cannot be examined or read."""
+def posix_name(name: str) -> str:
+    """The path `name`, written from the top of the repository, as the lister reads it: each `\\` as `/`, with a `.`
+    part and a repeated or trailing `/` dropped, so `./tools/x.py` and `tools\\x.py` are `tools/x.py`."""
+    return PurePosixPath(name.replace("\\", "/")).as_posix()
+
+
+def target_name(root: Path, name: str) -> str:
+    """The path `name` given to the lister, by `posix_name`; Refused for a path refused, as written, inside the
+    repository at `root`."""
     reason = refusal(name, root)
     if reason is not None:
         raise Refused(f"{name} is refused: {reason}")
-    name = PurePosixPath(name.replace("\\", "/")).as_posix()
+    return posix_name(name)
+
+
+def read_target(root: Path, bases: Sequence[Path], name: str, facts: list[Fact]) -> Target:
+    """The path `name` as the lister reads it, appending a NEW or UNREAD fact it owes to `facts`; Refused for a path
+    refused inside the repository or one that is not a file, and the OSError of one that cannot be examined or read."""
+    name = target_name(root, name)
     own = own_modules(bases, root, name)
     path = root / name
     try:

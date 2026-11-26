@@ -9,9 +9,10 @@ What it names is read from its inline code spans, through markdown_sections' `pr
 
 - a span that names a tracked file, by its path from the top of the repository, or by a name only one tracked file
   has, is one of the brief's files; a line, a heading, or a test after it, as in `<path>:<line>`, `<path>#<heading>`,
-  or `<path>::<test>`, is left off, and an identifier alone names the Python module of its name, as `python_reader`
-  names `python_reader.py`. A name several tracked files have is listed, by that name, for the author to choose with
-  `--path`.
+  or `<path>::<test>`, is left off, the path is read as lessons_patterns' `posix_name` reads one, so `./tools/x.py`
+  and `tools\\x.py` name `tools/x.py`, a span written with a separator is a path and never a name alone, and an
+  identifier alone names the Python module of its name, as `python_reader` names `python_reader.py`. A name several
+  tracked files have is listed, by that name, for the author to choose with `--path`.
 - any other span written as code, an identifier holding `_`, a capital past its first letter, a `.` or `:` between
   identifiers, or ending in `()`, is a symbol, its last identifier searched for, in the files that also hold the
   identifier before it, as `exit_constants.resolve` is searched for in the files that hold `exit_constants` and in
@@ -19,7 +20,9 @@ What it names is read from its inline code spans, through markdown_sections' `pr
   identifier shorter than three characters, the extension of a tracked file, as in `lessons.md`, or a lone word of
   capitals, a status word such as `FAILED`, is no symbol.
 
-Each `--path` is a file the change edits or adds, written from the top of the repository, added to the issue's.
+Each `--path` is a file the change edits or adds, written from the top of the repository, added to the issue's, and
+read as the lister reads it, through lessons_patterns' `target_name`: refused as written, then read by `posix_name`, so
+`./tools/x.py` and `tools\\x.py` are `tools/x.py`, never a second file or its own twin.
 
 The brief, a Markdown file written to a new private folder under the temporary directory, holds:
 
@@ -51,7 +54,9 @@ Limits: a file or a symbol the issue names in its prose, outside a code span, is
 no file; a symbol's callers are the files that hold its name as a word, which counts a definition, a comment, and a
 different name spelled the same, and misses a call through another name; a tracked file that is refused inside the
 repository, not there, or not UTF-8 holds no caller; a symbol is the issue's identifiers as written, so one spelled as
-words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing.
+words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; a
+tracked file whose name holds a `\\`, which a POSIX file system allows and Windows does not, is never named, since a
+path is read with each `\\` as `/`, as the lister reads one.
 
 Every line is one fact, its fields tab-separated:
 
@@ -211,10 +216,12 @@ def path_of(span: str, tracked: frozenset[str], names: dict[str, list[str]]) -> 
     """The name a span gives a file, without the place inside it, and the tracked files it names: the one at its path,
     every file of its name when it is a name alone, or every Python module of its name when it is an identifier; none
     when it names no tracked file."""
-    name = LOCATION.sub("", span).removeprefix("./")
+    written = LOCATION.sub("", span)
+    name = lessons_patterns.posix_name(written)
     if name in tracked:
         return name, [name]
-    if "/" in name:
+    # A span written with a separator, `/` or `\`, is a path, never a name alone, as `tools/` is no `tools.py`.
+    if "/" in written or "\\" in written:
         return name, []
     if name not in names and re.fullmatch(IDENTIFIER, name):
         return f"{name}.py", names.get(f"{name}.py", [])
@@ -325,11 +332,13 @@ def contract_entries(root: Path, paths: Sequence[str]) -> list[tuple[int, str, s
         return None
     end = next((index for index in prose if index > start and lines[index].startswith("## ")), len(lines))
     spans = [(index, span.text.strip()) for index in prose if start < index < end for span in code_spans(lines[index])]
+    # A span is read as a path is, so `./tools/` and `tools\` hold what `tools/` does.
     return [
         (index + 1, place, path)
         for index, place in spans
         for path in paths
-        if path == place or (place.endswith("/") and posix_within(path, place.rstrip("/")))
+        if path == lessons_patterns.posix_name(place)
+        or (place.endswith(("/", "\\")) and posix_within(path, lessons_patterns.posix_name(place)))
     ]
 
 
@@ -522,10 +531,13 @@ def write_brief(
     root: Path, github: GitHubClient, git: GitClient, number: int, given: Sequence[str]
 ) -> tuple[Issue, Path]:
     """The issue read and the brief written for it; BriefError, GitError, CatalogueError, lessons_patterns' Refused,
-    or an OSError when one of them cannot be. The repository's files and the rules are read before GitHub is asked,
-    so a checkout git cannot read, or rules that cannot be read, fail without a call to GitHub."""
+    or an OSError when one of them cannot be. The repository's files, the rules, and each given path are read before
+    GitHub is asked, so a checkout git cannot read, rules that cannot be read, or a path refused fail without a call to
+    GitHub. Each given path is read as the lister reads it, refused as written and then by `posix_name`, so its
+    spelling never makes it a second file or its own twin."""
     tracked = git.names(["ls-files"], directory=root)
     rules = RULES.read_text(encoding="utf-8")
+    given = list(dict.fromkeys(lessons_patterns.target_name(root, name) for name in given))
     issue = read_issue(github, number)
     tracked_set = frozenset(tracked)
     names = by_name(tracked)
