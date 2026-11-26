@@ -35,6 +35,7 @@ from tools import (
     branch_protection,
     captured_samples,
     claude_stream,
+    context_probe,
     deployable_report,
     hub_guard,
     mutation_gate,
@@ -490,6 +491,15 @@ def _user_only(path: Path) -> object:
     return True
 
 
+def _probe_hooks(path: Path) -> object:
+    """The context probe's hook counts of the repository whose .claude/settings.json is at path: settings it counts as
+    unread are Refused, since the probe reads an unreadable, linked, or malformed file as that and never as absent."""
+    counts = context_probe.hook_counts(path.parents[1])
+    if counts.get("unread"):
+        raise Refused("the settings are counted as unread")
+    return counts
+
+
 def _snapshot_exclusions(path: Path) -> object:
     return conditions.snapshot_exclusions(path.parent)
 
@@ -813,6 +823,17 @@ READERS = [
         filename="pull.json",
         open_fields="the record goes on to the review pipeline with its manifest path and a thread set, and the "
         "pipeline's own reader of a pull request record, held in its table, reads every other field by kind",
+    ),
+    Reader(
+        "tools.context_probe.hook_counts",
+        "json",
+        b'{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}]}}',
+        _probe_hooks,
+        (Refused,),
+        filename=".claude/settings.json",
+        refuses_links=True,
+        open_fields="the probe counts each hook event and the handlers its groups list, and a value of another kind "
+        "counts as no event or no handler: only bucketed counts of names Claude Code documents reach the profile",
     ),
     Reader(
         "tools.hub_guard.guard",

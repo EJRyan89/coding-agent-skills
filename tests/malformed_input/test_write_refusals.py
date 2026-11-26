@@ -71,6 +71,7 @@ from deployer import journal, manifest, platform_support
 from deployer.errors import DeployError
 from tools import (
     checkout_trust,
+    context_probe,
     deployable_report,
     hub_guard,
     new_skill,
@@ -189,6 +190,19 @@ def _new_skill(*extra: str) -> Callable[[Path], object]:
         return ended(lambda: new_skill.main(["alpha", "--description", "Alpha.", "--root", str(REPOSITORY), *extra]))
 
     return drive
+
+
+def _context_probe(folder: Path) -> object:
+    """A preview of a repository of one file, with a term list, no review configuration, and no commit: the refusal
+    reaches main as the profile is written as canonical JSON for its digest, and main names its class alone."""
+    (folder / "repository").mkdir()
+    (folder / "repository" / "CLAUDE.md").write_text("# Rules\n", encoding="utf-8")
+    (folder / "terms.txt").write_text("absent-term\n", encoding="utf-8")
+    services = context_probe.ProbeServices(
+        commit=lambda: None, config_path=lambda: folder / "config.json", flags_path=lambda: folder / "flags.json"
+    )
+    arguments = ["preview", str(folder / "repository"), "--terms", str(folder / "terms.txt")]
+    return ended(lambda: context_probe.main(arguments, services))
 
 
 def _audit_ai_config(folder: Path) -> object:
@@ -380,6 +394,7 @@ REFUSALS: tuple[Row, ...] = (
         _hub_guard,
         (None, [f"could not hand pwsh the command ({REASON})"], False),
     ),
+    Row("tools.context_probe.main", DUMPS, _context_probe, (1, "FAILED JsonWriteRefused\n", "")),
     Row("tools.new_skill.main", "tools.new_skill.scaffold", _new_skill(), (2, "", f"FAILED {REASON}\n")),
     Row(
         "tools.new_skill._main_repository",
