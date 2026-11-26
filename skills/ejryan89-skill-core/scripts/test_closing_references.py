@@ -6,6 +6,7 @@ import itertools
 import re
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,9 @@ from closing_references import (
     CLOSING_KEYWORDS,
     KEYWORDS,
     NOT_READ,
+    REFERENCES_READ,
     REPOSITORY,
+    SEPARATORS_READ,
     ClosingReference,
     closing_references,
     pull_request_references,
@@ -91,34 +94,90 @@ def test_a_reference_is_in_a_repository_by_its_name_in_any_case_or_by_naming_non
 # GitHub's closing keywords as its page "Linking a pull request to an issue" lists them
 # (https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue),
 # pinned here because GitHub publishes no list a test can read, so a keyword the page adds is pinned by hand and then
-# fails the catalogue test until the reader reads it, refuses it, or names it in NOT_READ.
+# fails the catalogue test until KEYWORDS reads it or NOT_READ names it.
 DOCUMENTED_KEYWORDS = ("close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved")
-# What the same page says may follow a keyword: a space, or a colon, with the keyword in upper case too.
-DOCUMENTED_SEPARATORS = (" ", ": ")
+# The cases the same page writes a keyword in, `Closes` and `CLOSES`, and the lower case of its list.
+DOCUMENTED_CASES = (str.lower, str.title, str.upper)
+# What the same page writes between a keyword and its reference, `{}` marking the keyword: a space, as in its
+# `Closes #<n>`, and a colon, as in its `Closes: #<n>`.
+DOCUMENTED_SEPARATORS = ("{} ", "{}: ")
 # Each form of an issue or pull request reference GitHub's pages document, written for number 1 of o/r: the closing
 # page's two, `#<n>` and `<owner>/<repo>#<n>`, which also says a keyword before a pull request's reference closes that
 # pull request; the rows of the "Issues and pull requests" table of its autolink page
 # (https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls),
 # which adds `GH-<n>` and the URL of an issue or a pull request; and the `redirect.github.com` URL that page's
 # "Avoiding backlinks to linked references" offers in place of `github.com`.
-DOCUMENTED_REFERENCES = {
-    "#1": ClosingReference(None, 1),
-    "o/r#1": ClosingReference("o/r", 1),
-    "GH-1": ClosingReference(None, 1),
-    "https://github.com/o/r/issues/1": ClosingReference("o/r", 1),
-    "https://github.com/o/r/pull/1": ClosingReference("o/r", 1),
-    "https://redirect.github.com/o/r/issues/1": ClosingReference("o/r", 1),
+DOCUMENTED_REFERENCES = (
+    "#1",
+    "o/r#1",
+    "GH-1",
+    "https://github.com/o/r/issues/1",
+    "https://github.com/o/r/pull/1",
+    "https://redirect.github.com/o/r/issues/1",
+)
+# Each example the two pages write, after `Closes` where the autolink page writes a bare reference, and the issues the
+# reader reads it as closing, the closing page's list that names its keyword before each issue among them.
+DOCUMENTED_EXAMPLES = {
+    "Closes #10": [ClosingReference(None, 10)],
+    "Fixes octo-org/octo-repo#100": [ClosingReference("octo-org/octo-repo", 100)],
+    "Resolves #10, resolves #123, resolves octo-org/octo-repo#100": [
+        ClosingReference(None, 10),
+        ClosingReference(None, 123),
+        ClosingReference("octo-org/octo-repo", 100),
+    ],
+    "Closes: #10": [ClosingReference(None, 10)],
+    "CLOSES #10": [ClosingReference(None, 10)],
+    "CLOSES: #10": [ClosingReference(None, 10)],
+    "Closes https://github.com/jlord/sheetsee.js/issues/26": [ClosingReference("jlord/sheetsee.js", 26)],
+    "Closes #26": [ClosingReference(None, 26)],
+    "Closes GH-26": [ClosingReference(None, 26)],
+    "Closes jlord/sheetsee.js#26": [ClosingReference("jlord/sheetsee.js", 26)],
+    "Closes github-linguist/linguist#4039": [ClosingReference("github-linguist/linguist", 4039)],
 }
 
 
-def decided(text: str, expected: ClosingReference) -> bool:
-    """Whether the reader reads `text` as closing `expected` and nothing else, or refuses it as a keyword before the
-    start of a reference that names no issue it reads, in a title and in the middle of a body's line alike, since
-    GitHub closes by a reference wherever a line holds it."""
-    read = closing_references(text)
-    return read == [expected] or (
-        read == [] and title_holds_closing_reference(text) and stray_closing_lines(f"Prose, {text}\n", TEMPLATE) != []
-    )
+# The spellings GitHub's pages leave open that the reader reads, each found unread by an outside review, pinned here
+# apart from the module's tables, so a reader narrowed with its table row dropped leaves the spelling undecided and
+# fails the catalogue test.
+OPEN_SEPARATORS = ("{}:", "{}", "{}\t", "{} : ", "**{}** ", "**{}:** ", "**{}**: ", "{} **")
+OPEN_REFERENCES = (
+    "gh-1",
+    "http://github.com/o/r/issues/1",
+    "https://www.github.com/o/r/issues/1",
+    "github.com/o/r/issues/1",
+    "<https://github.com/o/r/issues/1>",
+    "https://github.com/o/r/issues/1#issuecomment-1",
+    "https://github.com/o/r/pull/1/files",
+)
+
+
+def not_read_keyword(keyword: str) -> bool:
+    """Whether NOT_READ names `keyword` as a spelling the reader leaves unread, before the first issue's reference."""
+    return f"{keyword} #1" in NOT_READ
+
+
+def not_read_separator(separator: str) -> bool:
+    """Whether NOT_READ names `separator` as a spelling the reader leaves unread, between `Closes` and the first
+    issue's reference."""
+    return f"{separator.format('Closes')}#1" in NOT_READ
+
+
+def not_read_reference(reference: str) -> bool:
+    """Whether NOT_READ names `reference` as a spelling the reader leaves unread, as `Closes <reference>`."""
+    return f"Closes {reference}" in NOT_READ
+
+
+def undecided(keywords: Iterable[str], separators: Iterable[str], references: Iterable[str]) -> list[tuple[str, str]]:
+    """Each keyword, separator, and reference of a catalogue that no table of the reader decides, or that a table reads
+    and NOT_READ also names, with its axis."""
+    found: list[tuple[str, str]] = []
+    for axis, forms, read, not_read in (
+        ("keyword", keywords, set(KEYWORDS), not_read_keyword),
+        ("separator", separators, set(SEPARATORS_READ), not_read_separator),
+        ("reference", references, set(REFERENCES_READ), not_read_reference),
+    ):
+        found.extend((axis, form) for form in forms if (form in read) == not_read(form))
+    return found
 
 
 def test_the_reader_reads_no_keyword_github_does_not_document() -> None:
@@ -131,68 +190,61 @@ def test_the_reader_reads_no_keyword_github_does_not_document() -> None:
         assert not re.fullmatch(CLOSING_KEYWORDS, word, re.IGNORECASE), word
 
 
-def test_every_documented_keyword_and_reference_is_read_refused_or_not_read_with_a_reason() -> None:
-    undecided = [
-        text
-        for keyword, separator, reference in itertools.product(
-            DOCUMENTED_KEYWORDS, DOCUMENTED_SEPARATORS, DOCUMENTED_REFERENCES
-        )
-        for spelled in (keyword, keyword.title(), keyword.upper())
-        if not decided(text := f"{spelled}{separator}{reference}", DOCUMENTED_REFERENCES[reference])
-        and not (
-            (f"{keyword} #1" in NOT_READ or f"Closes {reference}" in NOT_READ)
-            and closing_references(text) == []
-            and not title_holds_closing_reference(text)
-        )
-    ]
-    assert undecided == [], (
-        "read each in closing_references, refuse it as a keyword before a reference's start, or name its keyword as "
-        "`<keyword> #1`, or its reference as `Closes <reference>`, in closing_references.NOT_READ with the reason"
+def test_every_documented_and_open_keyword_separator_and_reference_is_decided_once() -> None:
+    separators = DOCUMENTED_SEPARATORS + OPEN_SEPARATORS
+    assert undecided(DOCUMENTED_KEYWORDS, separators, DOCUMENTED_REFERENCES + OPEN_REFERENCES) == [], (
+        "add each to KEYWORDS, SEPARATORS_READ, or REFERENCES_READ in closing_references.py with where GitHub "
+        "documents it, or name it in closing_references.NOT_READ as `<keyword> #1`, `<separator>#1` for `Closes`, or "
+        "`Closes <reference>` with the reason; never in both"
     )
 
 
-# The catalogue the reader covers, from which the table below is generated, so a spelling added to one axis is read in
-# every combination with the others. Each documented keyword, in three cases:
-SPELLED_KEYWORDS = [
-    spelled for keyword in DOCUMENTED_KEYWORDS for spelled in (keyword, keyword.title(), keyword.upper())
-]
-# What may stand between the keyword and the reference, `{}` marking where the keyword goes.
-SEPARATORS = ["{} ", "{}: ", "{}:", "{}", "{}\t", "{} : ", "**{}** ", "**{}:** ", "**{}**: ", "{} **"]
-# Each form of the issue: the two GitHub's closing-keyword page names, the two its autolink page adds, and the URL's
-# spellings its pages leave open.
-REFERENCES = {
-    "#12": ClosingReference(None, 12),
-    "o/r.name#12": ClosingReference("o/r.name", 12),
-    "GH-12": ClosingReference(None, 12),
-    "gh-12": ClosingReference(None, 12),
-    "https://github.com/o/r/issues/12": ClosingReference("o/r", 12),
-    "http://github.com/o/r/issues/12": ClosingReference("o/r", 12),
-    "https://www.github.com/o/r/issues/12": ClosingReference("o/r", 12),
-    "github.com/o/r/issues/12": ClosingReference("o/r", 12),
-    "<https://github.com/o/r/issues/12>": ClosingReference("o/r", 12),
-    "https://github.com/o/r/issues/12#issuecomment-1": ClosingReference("o/r", 12),
-    "https://github.com/o/r/pull/12": ClosingReference("o/r", 12),
-    "https://github.com/o/r/pull/12/files": ClosingReference("o/r", 12),
-}
+def test_a_form_no_table_decides_or_two_tables_decide_fails_the_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert undecided(["closes", "shuts"], ["{} ", "{} -> "], ["#1", "o/r!1"]) == [
+        ("keyword", "shuts"),
+        ("separator", "{} -> "),
+        ("reference", "o/r!1"),
+    ]
+    assert undecided([], [], ["https://redirect.github.com/o/r/issues/1"]) == []
+    monkeypatch.setitem(NOT_READ, "Closes #1", "a reference the reader reads, named here too")
+    assert undecided([], [], ["#1"]) == [("reference", "#1")]
 
 
-@pytest.mark.parametrize(
-    ("keyword", "separator", "reference"),
-    [
-        *((keyword, separator, "#12") for keyword, separator in itertools.product(SPELLED_KEYWORDS, SEPARATORS)),
-        *(
-            ("Closes", separator, reference)
-            for separator, reference in itertools.product(SEPARATORS, list(REFERENCES)[1:])
-        ),
-    ],
-)
-def test_every_keyword_separator_and_reference_in_the_catalogue_is_read(
-    keyword: str, separator: str, reference: str
-) -> None:
-    text = separator.format(keyword) + reference
-    # With nothing between them, a reference that starts with a letter runs into the keyword, which is then no word.
-    expected = [] if separator == "{}" and reference[0].isalnum() else [REFERENCES[reference]]
-    assert closing_references(f"Intro.\n{text} and more.\n") == expected, text
+def test_each_open_spelling_an_outside_review_found_unread_stays_read() -> None:
+    assert [form for form in OPEN_SEPARATORS if form not in SEPARATORS_READ] == []
+    assert [form for form in OPEN_REFERENCES if form not in REFERENCES_READ] == []
+
+
+def test_each_example_github_documents_is_read_as_its_page_says() -> None:
+    for text, expected in DOCUMENTED_EXAMPLES.items():
+        assert closing_references(text) == expected, text
+        assert title_holds_closing_reference(text), text
+
+
+def reference_read(reference: str) -> ClosingReference:
+    """The issue a reference of REFERENCES_READ names: number 1 of o/r, or of the same repository for a reference that
+    starts with `#` or `GH-`."""
+    return ClosingReference(None if reference.startswith("#") or reference.upper().startswith("GH-") else "o/r", 1)
+
+
+def test_every_keyword_case_separator_and_reference_the_catalogue_reads_is_read() -> None:
+    misread: list[str] = []
+    for keyword, case, separator, reference in itertools.product(
+        KEYWORDS, DOCUMENTED_CASES, SEPARATORS_READ, REFERENCES_READ
+    ):
+        text = separator.format(case(keyword)) + reference
+        # With nothing between them, a reference that starts with a letter runs into the keyword, which is then no word.
+        if separator == "{}" and reference[0].isalnum():
+            if closing_references(text) != [] or title_holds_closing_reference(text):
+                misread.append(text)
+            continue
+        if (
+            closing_references(f"Intro.\n{text} and more.\n") != [reference_read(reference)]
+            or not title_holds_closing_reference(f"fix: {text}")
+            or stray_closing_lines(f"Prose, {text}\n", TEMPLATE) == []
+        ):
+            misread.append(text)
+    assert misread == [], "each is read, held in a title, and named as a stray body line, as the catalogue says"
 
 
 # The spellings the third outside review found unread, each now read.
