@@ -3191,6 +3191,10 @@ class HookRules:
     types: dict[str, tuple[str, ...]]
     # The types among them it reads but never runs.
     skipped_types: frozenset[str]
+    # The types each event supports, for the events whose hooks page limits them.
+    event_types: dict[str, frozenset[str]]
+    # What the page says becomes of a handler of a type its event does not support, by event, where it says.
+    unsupported_outcomes: dict[str, str]
     # Events whose handlers default to a short timeout; every other handler without one runs up to DEFAULT_HOOK_TIMEOUT.
     short_timeout_events: frozenset[str]
     # Events whose handlers take a timeout of at most so many seconds, by event.
@@ -3202,6 +3206,15 @@ class HookRules:
 
 
 DEFAULT_HOOK_TIMEOUT = 600
+# The handler types whose names start with a vowel sound, read with "an": an agent, an http, an mcp_tool hook.
+VOWEL_SOUND_TYPES = frozenset({"agent", "http", "mcp_tool"})
+
+
+def a_hook(kind: str) -> str:
+    """A handler type named with its article, as a finding's message reads it: "a command hook", "an http hook"."""
+    return f"{'an' if kind in VOWEL_SOUND_TYPES else 'a'} {kind} hook"
+
+
 # The reader of a hook's timeout, which a number must pass before it is compared.
 FIELDS = FieldReader()
 CLAUDE_HOOKS = HookRules(
@@ -3212,6 +3225,8 @@ CLAUDE_HOOKS = HookRules(
             "Setup",
             "UserPromptSubmit",
             "UserPromptExpansion",
+            # From Claude Code v2.1.332 on; an earlier version ignores it and warns as Claude Code starts.
+            "PreSkillShellCommand",
             "PreToolUse",
             "PermissionRequest",
             "PermissionDenied",
@@ -3251,6 +3266,46 @@ CLAUDE_HOOKS = HookRules(
         "agent": ("prompt",),
     },
     skipped_types=frozenset(),
+    # "Prompt-based hooks": the events that support some of the five types; every other event supports all five.
+    event_types={
+        "PermissionRequest": frozenset({"command", "http", "mcp_tool", "prompt"}),
+        "SessionStart": frozenset({"command", "mcp_tool"}),
+        "Setup": frozenset({"command"}),
+        **dict.fromkeys(
+            (
+                "ConfigChange",
+                "CwdChanged",
+                "DirectoryAdded",
+                "Elicitation",
+                "ElicitationResult",
+                "FileChanged",
+                "InstructionsLoaded",
+                "MessageDisplay",
+                "Notification",
+                "PostCompact",
+                "PostModelSwitch",
+                "PreCompact",
+                "PreModelSwitch",
+                "PreSkillShellCommand",
+                "SessionEnd",
+                "StopFailure",
+                "SubagentStart",
+                "WorktreeCreate",
+                "WorktreeRemove",
+            ),
+            frozenset({"command", "http", "mcp_tool"}),
+        ),
+    },
+    unsupported_outcomes={
+        # "If you configure an agent hook on this event, Claude Code skips it and the permission flow proceeds
+        # unchanged."
+        "PermissionRequest": "it never runs",
+        # "Only type: "command" hooks run on Setup."
+        "Setup": "it never runs",
+        # "If you configure a prompt or agent hook on this event, Claude Code can't run it and blocks each command the
+        # hook matches."
+        "PreSkillShellCommand": "it blocks each command the hook matches",
+    },
     short_timeout_events=frozenset(
         {"UserPromptSubmit", "PreModelSwitch", "PostModelSwitch", "MessageDisplay", "SessionEnd"}
     ),
@@ -3378,9 +3433,12 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
     if not isinstance(kind, str) or kind not in rules.types:
         return [("ERROR", f"Hook on '{event}': type {kind!r} is not one {rules.runtime} runs")]
     if kind in rules.skipped_types:
-        return [("ERROR", f"Hook on '{event}': {rules.runtime} reads a {kind} hook but skips it, so it never runs")]
+        return [("ERROR", f"Hook on '{event}': {rules.runtime} reads {a_hook(kind)} but skips it, so it never runs")]
+    if kind not in rules.event_types.get(event, rules.types.keys()):
+        outcome = f", so {rules.unsupported_outcomes[event]}" if event in rules.unsupported_outcomes else ""
+        return [("ERROR", f"Hook on '{event}': {rules.runtime} does not support {a_hook(kind)} on this event{outcome}")]
     problems = [
-        ("ERROR", f"Hook on '{event}': a {kind} hook needs '{name}'")
+        ("ERROR", f"Hook on '{event}': {a_hook(kind)} needs '{name}'")
         for name in rules.types[kind]
         if not (isinstance(handler.get(name), str) and handler[name].strip())
     ]
@@ -3580,6 +3638,8 @@ CODEX_HOOKS = HookRules(
     ),
     types={"command": ("command",), "mcp_tool": ("server", "tool"), "prompt": (), "agent": ()},
     skipped_types=frozenset({"prompt", "agent"}),
+    event_types={},
+    unsupported_outcomes={},
     short_timeout_events=frozenset({"SessionEnd", "Interrupt"}),
     # "SessionEnd and Interrupt use 1 second by default and support up to 3 seconds."
     timeout_limits={"SessionEnd": 3, "Interrupt": 3},

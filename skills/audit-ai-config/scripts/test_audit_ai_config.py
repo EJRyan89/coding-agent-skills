@@ -5390,6 +5390,97 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                 },
                 [("ERROR", "Hook on 'PreToolUse': onFailure must be 'continue' or 'block'")],
             ),
+            # The hooks page's PreSkillShellCommand (Claude Code v2.1.332 on): its matcher names the tool that runs
+            # the injected command, Bash or PowerShell, and the if field is evaluated on it.
+            "a PreSkillShellCommand hook": (
+                {
+                    "hooks": {
+                        "PreSkillShellCommand": [
+                            {
+                                "matcher": "Bash|PowerShell",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "x",
+                                        "if": "Bash(git *)",
+                                        "timeout": 5,
+                                        "onFailure": "block",
+                                    },
+                                    {"type": "http", "url": "https://x.test", "timeout": 5},
+                                    {"type": "mcp_tool", "server": "s", "tool": "t", "timeout": 5},
+                                ],
+                            }
+                        ]
+                    }
+                },
+                [],
+            ),
+            # "If you configure a prompt or agent hook on this event, Claude Code can't run it and blocks each command
+            # the hook matches."
+            "prompt and agent hooks on PreSkillShellCommand": (
+                {
+                    "hooks": {
+                        "PreSkillShellCommand": [
+                            {
+                                "hooks": [
+                                    {"type": "prompt", "prompt": "Check."},
+                                    {"type": "agent", "prompt": "Check."},
+                                ]
+                            }
+                        ]
+                    }
+                },
+                [
+                    (
+                        "ERROR",
+                        "Hook on 'PreSkillShellCommand': Claude Code does not support a prompt hook on this event, "
+                        "so it blocks each command the hook matches",
+                    ),
+                    (
+                        "ERROR",
+                        "Hook on 'PreSkillShellCommand': Claude Code does not support an agent hook on this event, "
+                        "so it blocks each command the hook matches",
+                    ),
+                ],
+            ),
+            # "Prompt-based hooks" lists the types each event supports: all five on most guard events, no agent on
+            # PermissionRequest, command and mcp_tool on SessionStart, command on Setup, and no prompt or agent on
+            # the rest. It says a hook of another type never runs only on PermissionRequest ("Claude Code skips it")
+            # and Setup ("Only type: "command" hooks run").
+            "a type an event does not support": (
+                {
+                    "hooks": {
+                        "PermissionRequest": [
+                            {"hooks": [{"type": "prompt", "prompt": "Check."}, {"type": "agent", "prompt": "Check."}]}
+                        ],
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {"type": "mcp_tool", "server": "s", "tool": "t", "timeout": 5},
+                                    {"type": "http", "url": "https://x.test", "timeout": 5},
+                                ]
+                            }
+                        ],
+                        "Setup": [{"hooks": [{"type": "mcp_tool", "server": "s", "tool": "t", "timeout": 5}]}],
+                        "Notification": [{"hooks": [{"type": "prompt", "prompt": "Check."}]}],
+                        "Stop": [{"hooks": [{"type": "agent", "prompt": "Check."}]}],
+                    }
+                },
+                [
+                    (
+                        "ERROR",
+                        "Hook on 'PermissionRequest': Claude Code does not support an agent hook on this event, "
+                        "so it never runs",
+                    ),
+                    ("ERROR", "Hook on 'SessionStart': Claude Code does not support an http hook on this event"),
+                    (
+                        "ERROR",
+                        "Hook on 'Setup': Claude Code does not support an mcp_tool hook on this event, "
+                        "so it never runs",
+                    ),
+                    ("ERROR", "Hook on 'Notification': Claude Code does not support a prompt hook on this event"),
+                ],
+            ),
             "an event with a short default": (
                 {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "x"}]}]}},
                 [],
@@ -5408,8 +5499,8 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     }
                 },
                 [
-                    ("ERROR", "Hook on 'PostToolUse': a http hook needs 'url'"),
-                    ("ERROR", "Hook on 'PostToolUse': a mcp_tool hook needs 'tool'"),
+                    ("ERROR", "Hook on 'PostToolUse': an http hook needs 'url'"),
+                    ("ERROR", "Hook on 'PostToolUse': an mcp_tool hook needs 'tool'"),
                 ],
             ),
             "malformed levels": (
@@ -5940,8 +6031,8 @@ class CodexConfigurationTests(unittest.TestCase):
             "mcp_tool without server or tool": (
                 hook(type="mcp_tool", timeout=5),
                 [
-                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'server'"),
-                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'tool'"),
+                    ("ERROR", "Hook on 'PreToolUse': an mcp_tool hook needs 'server'"),
+                    ("ERROR", "Hook on 'PreToolUse': an mcp_tool hook needs 'tool'"),
                 ],
             ),
             "mcp_tool without a timeout": (
@@ -5954,7 +6045,7 @@ class CodexConfigurationTests(unittest.TestCase):
             ),
             "agent": (
                 hook(type="agent", prompt="Check."),
-                [("ERROR", "Hook on 'PreToolUse': Codex reads a agent hook but skips it, so it never runs")],
+                [("ERROR", "Hook on 'PreToolUse': Codex reads an agent hook but skips it, so it never runs")],
             ),
             "http": (
                 hook(type="http", url="https://example.test", timeout=5),
@@ -6104,6 +6195,15 @@ class CodexConfigurationTests(unittest.TestCase):
     def test_claude_code_sets_no_such_limit_on_its_session_end_hooks(self) -> None:
         hooks = {"SessionEnd": [{"hooks": [{"type": "command", "command": "x", "timeout": 30}]}]}
         self.assertEqual([], audit.hook_problems(audit.CLAUDE_HOOKS, hooks))
+
+    def test_the_types_an_event_runs_name_only_events_and_types_the_runtime_knows(self) -> None:
+        # A misspelt event in the table would leave that event's limit unread, and an unknown type would hide nothing.
+        for rules in (audit.CLAUDE_HOOKS, audit.CODEX_HOOKS):
+            with self.subTest(runtime=rules.runtime):
+                self.assertLessEqual(set(rules.event_types) | set(rules.unsupported_outcomes), rules.events)
+                self.assertLessEqual(set(rules.unsupported_outcomes), set(rules.event_types))
+                for event, kinds in rules.event_types.items():
+                    self.assertLessEqual(kinds, set(rules.types), event)
 
     def test_a_retired_approval_policy_is_reported_by_how_far_codex_has_retired_it(self) -> None:
         # The configuration reference: "untrusted is unsupported, and on-failure is deprecated; use on-request for
