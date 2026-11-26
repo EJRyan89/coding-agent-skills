@@ -72,7 +72,7 @@ from job_tree import process_tree
 from option_reader import Word
 from path_containment import may_lie_in, within
 from path_keys import name_key
-from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
+from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, UnknownWord, startup_command
 from text_lines import text_lines
 
 from deployer import platform_support
@@ -3683,14 +3683,37 @@ def read_powershell_start(program: str, arguments: list[Word], cwd: Path | None,
     command = startup_command(arguments, positional_command=program == "powershell", positional_file=program == "pwsh")
     if command is None or isinstance(command, UnknownWord):
         return
+    start = startup_directory(program, arguments, command, cwd, reading.environment)
     if command.encoded:
         reading.notes.append(f"{program} -EncodedCommand runs a script the text does not settle")
-        read_git([None], cwd, reading)
+        read_git([None], start, reading)
         return
     script = arguments[command.start : command.start + 1 if command.with_arguments else len(arguments)]
     if not script or None in script or script == ["-"]:
         return
-    read_powershell(" ".join(str(word) for word in script), cwd, reading, depth)
+    read_powershell(" ".join(str(word) for word in script), start, reading, depth)
+
+
+def startup_directory(
+    program: str, arguments: list[Word], command: StartupCommand, cwd: Path | None, environment: Mapping[str, str]
+) -> Path | None:
+    """Where a start-up's script starts: pwsh runs Set-Location -LiteralPath on the last -WorkingDirectory value it is
+    given, in any spelling startup_command reads, from its parent's directory, cwd, before the script, the value's last
+    character dropped under -RemoveWorkingDirectoryTrailingCharacter, as pwsh on Windows does; with none, the script
+    starts in cwd. A value that is no directory now leaves pwsh in cwd unless an earlier command makes it one, so it
+    leaves where the script starts unsettled, as a value the text does not settle does.
+
+    Windows PowerShell has no -WorkingDirectory: it takes the first parameter it does not know as the start of its
+    command, so it runs `-wd <dir>` as a command that fails and runs the script's later statements in cwd. A
+    `powershell` that is pwsh, as on a host that names pwsh so, starts in the directory instead, so a Windows PowerShell
+    start-up's script starts where both readings agree, and is unsettled wherever they differ."""
+    if command.working_directory is None:
+        return cwd
+    value = arguments[command.working_directory]
+    if value and command.trims_working_directory:
+        value = value[:-1]
+    start = location_after(value, Directory(cwd), Directory(cwd), home(environment)).merged().cwd
+    return start if program != "powershell" or same_place(start, cwd) else None
 
 
 def shell_script(arguments: list[Word]) -> str | None:
@@ -4131,19 +4154,26 @@ class PowerShellReader:
         if len(arguments) > 1:
             # A parameter beyond the path, as -StackName, which pushes onto another stack, is one not read.
             return certain(UNKNOWN)
-        if target is None or target in {"-", "+"} or PROVIDER_PATH.match(target):
+        return location_after(target, directory, stacked, start)
+
+
+def location_after(target: Word, directory: Directory, stacked: Directory, start: Path | None) -> Outcome:
+    """Where Set-Location or Push-Location to the literal file-system path target leaves PowerShell from directory, with
+    the stack `stacked` holds: a leading ~ is home, start; a relative path is read from directory; - and +, a path on
+    another provider, and a path the text does not settle leave the location unknown, as ~ does with no home."""
+    if target is None or target in {"-", "+"} or PROVIDER_PATH.match(target):
+        return certain(elsewhere(stacked))
+    if target == "~" or target.startswith(("~/", "~\\")):
+        if start is None:
             return certain(elsewhere(stacked))
-        if target == "~" or target.startswith(("~/", "~\\")):
-            if start is None:
-                return certain(elsewhere(stacked))
-            path = start / target[2:]
-        else:
-            path = Path(target)
-        if not path.is_absolute():
-            if directory.cwd is None:
-                return certain(elsewhere(stacked))
-            path = directory.cwd / path
-        return moved_to(directory, path, stacked)
+        path = start / target[2:]
+    else:
+        path = Path(target)
+    if not path.is_absolute():
+        if directory.cwd is None:
+            return certain(elsewhere(stacked))
+        path = directory.cwd / path
+    return moved_to(directory, path, stacked)
 
 
 ShellReader = Callable[[str, "Path | None", Reading, int], None]
