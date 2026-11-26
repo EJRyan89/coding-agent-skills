@@ -89,6 +89,15 @@ def fake_claude(fixture: Fixture) -> None:
         (folder / name).chmod(0o755)
 
 
+def probed_repository(fixture: Fixture) -> None:
+    """A repository holding one rule source for context_probe to profile, and a private-term list naming a term its
+    profile does not hold."""
+    folder = fixture.work / "repository"
+    folder.mkdir()
+    (folder / "CLAUDE.md").write_text("# Rules\n", encoding="utf-8")
+    (fixture.work / "terms.txt").write_text("absent-term\n", encoding="utf-8")
+
+
 def hub(fixture: Fixture) -> None:
     """The work folder as a hub checkout of its own, which ignores the worktrees folder as this repository does."""
     fixture.repository({".gitignore": ".claude/worktrees/\n"})
@@ -96,6 +105,32 @@ def hub(fixture: Fixture) -> None:
 
 DRIVERS: list[Driver] = [
     Driver("tools/branch_protection.py", "", (), gh=True),
+    # The probe's git call reads its own checkout's commit, recorded as unknown when git fails.
+    Driver(
+        "tools/context_probe.py",
+        "preview",
+        ("preview", "{work}/repository", "--terms", "{work}/terms.txt"),
+        prepare=probed_repository,
+        inputs=("{work}/terms.txt",),
+        git=True,
+    ),
+    Driver(
+        "tools/context_probe.py",
+        "write",
+        (
+            "write",
+            "{work}/repository",
+            "--digest",
+            "0" * 64,
+            "--out",
+            "{work}/profile.json",
+            "--terms",
+            "{work}/terms.txt",
+        ),
+        prepare=probed_repository,
+        inputs=("{work}/terms.txt",),
+        git=True,
+    ),
     Driver(
         "tools/deployable_report.py",
         "layout",

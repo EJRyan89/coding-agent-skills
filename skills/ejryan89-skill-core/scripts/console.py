@@ -55,19 +55,27 @@ def failed_line(error: BaseException) -> str:
     return f"FAILED {type(error).__name__}: {message}" if message else f"FAILED {type(error).__name__}"
 
 
+def failed_kind(error: BaseException) -> str:
+    """`FAILED <type>`, the line an unhandled exception ends a script with when its message must never be shown, as
+    when it may quote a path or text from a private repository the script read."""
+    return f"FAILED {type(error).__name__}"
+
+
 def run_main(
     main: Callable[[], int | None],
     *,
     errors: str = "strict",
     newline: str | None = None,
     traceback_requested: Callable[[], bool] | None = None,
+    failure: Callable[[BaseException], str] = failed_line,
 ) -> NoReturn:
     """Set up the console as `use_utf8_output` does, run `main`, and exit with what it returns.
 
-    A `SystemExit`, argparse's usage error included, passes through. Any other exception prints `failed_line` on
-    stdout and exits 1, and Ctrl+C prints `FAILED interrupted` and exits 130; neither prints a traceback unless
-    `traceback_requested`, asked only then, says to, as deploy.py's --debug does. A failure the script expects stays
-    its own to report, with its own line, before it reaches here.
+    A `SystemExit`, argparse's usage error included, passes through. Any other exception prints the line `failure`
+    writes for it, `failed_line` unless the script gives another such as `failed_kind`, on stdout and exits 1, and
+    Ctrl+C prints `FAILED interrupted` and exits 130; neither prints a traceback unless `traceback_requested`, asked
+    only then, says to, as deploy.py's --debug does. A failure the script expects stays its own to report, with its
+    own line, before it reaches here.
     """
     use_utf8_output(errors=errors, newline=newline)
     try:
@@ -77,7 +85,7 @@ def run_main(
         _print_requested_traceback(error, traceback_requested)
         raise SystemExit(INTERRUPTED_EXIT) from None
     except Exception as error:  # noqa: BLE001 - the last handler: any exception ends as one FAILED line
-        print(failed_line(error), flush=True)
+        print(failure(error), flush=True)
         _print_requested_traceback(error, traceback_requested)
         raise SystemExit(1) from None
     raise SystemExit(code)

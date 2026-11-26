@@ -3128,11 +3128,70 @@ def test_skill_command_policy_reads_the_tool_a_path_named_shell_wrapper_or_find_
     ]
 
 
+# The FAILED line the probe's injected LookupError ends in: run_main's default, which carries the message, or the one
+# `failure=failed_kind` writes, which names the kind alone for an entry point whose failure text may quote a private
+# repository it read.
+FAILED_WITH_MESSAGE = "FAILED LookupError: injected failure\n"
+FAILED_KIND_ONLY = "FAILED LookupError\n"
+
+
+def runner_failure_line(block: ast.If) -> str:
+    """The FAILED line a `__main__` block's run_main call ends the injected failure with: kind-only when it passes
+    `failure=failed_kind`, by that name or as an attribute, else the default. A `failure` given anything else is
+    refused, so a new formatter is named here before an entry point uses it."""
+    for node in ast.walk(block):
+        if not (
+            isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == "run_main"
+        ):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "failure":
+                continue
+            value = keyword.value
+            if getattr(value, "id", getattr(value, "attr", None)) == "failed_kind":
+                return FAILED_KIND_ONLY
+            raise AssertionError(f"run_main is given failure={ast.unparse(value)}, which this test does not know")
+    return FAILED_WITH_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("block", "line"),
+    [
+        pytest.param("run_main(main)", FAILED_WITH_MESSAGE, id="the default"),
+        pytest.param("run_main(lambda: main(sys.argv[1:]))", FAILED_WITH_MESSAGE, id="a lambda"),
+        pytest.param("run_main(main, failure=failed_kind)", FAILED_KIND_ONLY, id="the kind alone"),
+        pytest.param("console.run_main(main, failure=console.failed_kind)", FAILED_KIND_ONLY, id="by attribute"),
+    ],
+)
+def test_the_failed_line_follows_the_runner_s_failure_formatter(block: str, line: str) -> None:
+    tree = ast.parse(f"if __name__ == '__main__':\n    {block}\n")
+    assert runner_failure_line(main_blocks(tree)[0]) == line
+
+
+def test_an_unknown_failure_formatter_is_refused() -> None:
+    tree = ast.parse("if __name__ == '__main__':\n    run_main(main, failure=print)\n")
+    with pytest.raises(AssertionError, match="failure=print"):
+        runner_failure_line(main_blocks(tree)[0])
+
+
 class EntryPointRunnerTests(unittest.TestCase):
     def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
         # The policy proves each block starts with the runner; this runs each block as written with its main failing.
         entry_points = entry_points_with_a_main_block()
         self.assertIn(REPOSITORY_ROOT / "deploy.py", [path for path, _ in entry_points])
+        blocks = {
+            (path, line): next(
+                block for block in main_blocks(ast.parse(path.read_text(encoding="utf-8"))) if block.lineno == line
+            )
+            for path, line in entry_points
+        }
+        expected = {place: runner_failure_line(block) for place, block in blocks.items()}
+        # Both lines are held: deploy.py ends with the message, and the context probe with the kind alone.
+        lines_of = {
+            entry: sorted(line_ for (path, _), line_ in expected.items() if path == REPOSITORY_ROOT / entry)
+            for entry in ("deploy.py", "tools/context_probe.py")
+        }
+        self.assertEqual({"deploy.py": [FAILED_WITH_MESSAGE], "tools/context_probe.py": [FAILED_KIND_ONLY]}, lines_of)
         for path, line in entry_points:
             name = path.relative_to(REPOSITORY_ROOT).as_posix()
             with self.subTest(entry_point=name):
@@ -3148,7 +3207,7 @@ class EntryPointRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(
-                    [[1, "FAILED LookupError: injected failure\n", ""], [130, "FAILED interrupted\n", ""]],
+                    [[1, expected[(path, line)], ""], [130, "FAILED interrupted\n", ""]],
                     json.loads(result.stdout),
                 )
 

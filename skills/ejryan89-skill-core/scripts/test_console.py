@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import io
 import os
 import subprocess
@@ -72,12 +73,14 @@ class Utf8OutputTests(unittest.TestCase):
         self.assertEqual("→ ✓\n", output.getvalue())
 
 
-def run_in_process(main: Callable[[], int | None]) -> tuple[object, str, str]:
+def run_in_process(
+    main: Callable[[], int | None], failure: Callable[[BaseException], str] = console.failed_line
+) -> tuple[object, str, str]:
     """Run `main` through the runner with captured streams: the exit code, stdout, and stderr."""
     output, errors = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         try:
-            console.run_main(main)
+            console.run_main(main, failure=failure)
         except SystemExit as exited:
             return exited.code, output.getvalue(), errors.getvalue()
     raise AssertionError("run_main returned instead of exiting")
@@ -131,6 +134,28 @@ class RunMainTests(unittest.TestCase):
     def test_an_exception_with_no_message_names_its_type(self) -> None:
         self.assertEqual((1, "FAILED RuntimeError\n", ""), run_in_process(raises(RuntimeError())))
         self.assertEqual((1, "FAILED KeyError: 'title'\n", ""), run_in_process(raises(KeyError("title"))))
+
+    def test_a_failure_formatter_writes_the_failed_line_in_place_of_the_message(self) -> None:
+        private = "/private/example/checkout/notes.md"
+
+        self.assertEqual(
+            (1, "FAILED AssertionError\n", ""),
+            run_in_process(raises(AssertionError(private)), console.failed_kind),
+        )
+        self.assertEqual(
+            (1, "FAILED KeyError\n", ""),
+            run_in_process(raises(KeyError(private)), console.failed_kind),
+        )
+        # The formatter answers an unhandled exception alone: a usage error and Ctrl+C keep their own ends.
+        self.assertEqual((2, "", ""), run_in_process(raises(SystemExit(2)), console.failed_kind))
+        self.assertEqual(
+            (console.INTERRUPTED_EXIT, console.INTERRUPTED_LINE + "\n", ""),
+            run_in_process(raises(KeyboardInterrupt()), console.failed_kind),
+        )
+
+    def test_the_default_formatter_is_failed_line(self) -> None:
+        self.assertIs(inspect.signature(console.run_main).parameters["failure"].default, console.failed_line)
+        self.assertEqual(console.failed_kind(ValueError("text")), "FAILED ValueError")
 
     def test_output_printed_before_the_failure_stays_ahead_of_the_failed_line(self) -> None:
         def main() -> int:
