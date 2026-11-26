@@ -1004,6 +1004,14 @@ class CountsTests(unittest.TestCase):
                 self.assertEqual((2, ""), (code, printed))
                 self.assertTrue(error.startswith("ERROR: gh answered with "), error)
 
+    def test_a_listing_item_that_is_not_an_object_is_an_error_line(self) -> None:
+        for item in ("issue 2", 2, None, [issue(2, "bug")]):
+            with self.subTest(item=item):
+                items = [issue(1, "bug"), item]
+                code, printed, error, _ = self.counts(items)  # type: ignore[arg-type]  # a malformed answer
+                self.assertEqual((2, ""), (code, printed))
+                self.assertEqual("ERROR: gh answered with an item of milestone v0.2.0 that is not an object\n", error)
+
     def test_pages_that_are_not_arrays_are_an_error_line(self) -> None:
         def runner(command: Sequence[str]) -> CommandResult:
             return CommandResult(0, '{"message": "x"}', "")

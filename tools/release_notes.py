@@ -41,9 +41,10 @@ labeled `auditor-gap` and not closed as not planned. An outside review's gaps la
 counts those its previous release's pass filed. An issue closed as not planned, a duplicate among them, is in neither
 count, and a pull request on the milestone is no issue. It prints an `ERROR:` line, never a count, for a title no
 milestone has, a listing that holds fewer or more items than the milestone's own open and closed counts, an answer
-that is not the milestones or issues asked for, a fixed issue with no kind label (`bug`, `enhancement`,
-`documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed issue with an
-origin label and no `bug`, or a fixed bug with two origin labels. It takes no range and writes nothing.
+that is not the milestones or issues asked for, a fixed issue, one closed as completed, with no kind label (`bug`,
+`enhancement`, `documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed
+issue with an origin label and no `bug`, or a fixed bug with two origin labels. An issue closed as not planned or a
+duplicate is not read for labels. It takes no range and writes nothing.
 
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
