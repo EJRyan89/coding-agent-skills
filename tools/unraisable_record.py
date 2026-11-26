@@ -6,11 +6,14 @@ name, it installs a sys.unraisablehook that appends one line for each unraisable
 development mode and PYTHONWARNINGS=error raise in the destructor of a file left open, to a file of the process's own in
 the folder RECORD_VARIABLE names, and then hands the exception to the hook it replaced, which prints it as before. Such
 an exception never changes the process's exit status, so the record is how the run sees one in a process whose caller
-reads only its status. The line is built from what cannot raise: an object whose repr raises is shown by its type,
-and an exception whose text raises as Python's own hook shows it. A process that cannot write its line, as when the
-folder is gone, it is out of file descriptors, or it is kept from the folder, still hands the exception on, then says
-why on its error output and ends with UNRECORDED_STATUS, so a caller that reads its status sees it fail rather than
-read as a process that met none. A caller that reads neither its status nor its error output does not see it. It then
+reads only its status. The line is built so that a repr or text that raises is still shown: an object whose repr
+raises by its type, and an exception whose text raises as Python's own hook shows it. A process that cannot write its
+line, whatever stops it, as when the folder is gone, it is out of file descriptors, it is kept from the folder, or it
+is so late in shutting down that the modules the line needs are already cleared, still hands the exception on, flushes
+its output, says why on its error output, and ends with UNRECORDED_STATUS, so a caller that reads its status sees it
+fail rather than read as a process that met none. A caller that reads neither its status nor its error output does not
+see it, and nothing sees one met after the interpreter has cleared sys.unraisablehook and sys.stderr themselves, as a
+file held by a name of sys's own without a leading underscore is, since Python itself then prints nothing. It then
 runs the sitecustomize the interpreter would have found without it, if there is one, as a Homebrew Python has. It
 imports nothing outside the standard library, since every process imports it before its own path is set.
 """
@@ -51,6 +54,9 @@ SHOWN = reprlib.Repr(
     maxother=2000,
 )
 INDIRECTION_ALLOWED = {
+    "ending": "holds the module sys itself, taken as the hook is installed, since late in shutdown the interpreter "
+    "clears this module's global sys before it releases what sys holds, and the ending call still flushes sys.stdout "
+    "and sys.stderr then",
     "run_shadowed": "runs the sitecustomize module this copy hides, which only the import system's path finder can "
     "find, with the standard library alone, since every process imports this before its own path is set",
 }
@@ -70,13 +76,28 @@ def record_line(unraisable: sys.UnraisableHookArgs, arguments: object) -> str:
     return " ".join(f"{SHOWN.repr(arguments)} {seen}".split()) + "\n"
 
 
-def end_unrecorded(folder: Path, reason: str) -> None:
-    """Say on the error output, which may itself be gone at shutdown, that an unraisable exception went unrecorded and
-    why, and end the process with UNRECORDED_STATUS."""
-    said = f"unraisable_record: could not record an unraisable exception in {folder}: {reason}"
-    with contextlib.suppress(OSError):
-        os.write(2, (" ".join(said.split()) + "\n").encode("utf-8", "backslashreplace"))
-    os._exit(UNRECORDED_STATUS)
+def ending(folder: Path) -> Callable[[str], None]:
+    """A call that ends the process with UNRECORDED_STATUS for a reason its line went unwritten, after flushing its
+    output and saying so on its error output, any of which may already be gone at shutdown. Everything it calls is
+    taken now, as the hook is installed: the interpreter clears every module's globals, this one's, os's, and
+    pathlib's among them, before it releases what sys still holds, whose destructors can meet an unraisable
+    exception."""
+    shown, write, end, status, system = str(folder), os.write, os._exit, UNRECORDED_STATUS, sys
+    suppress = contextlib.suppress
+
+    def end_unrecorded(reason: str) -> None:
+        try:
+            with suppress(AttributeError, OSError, ValueError):
+                system.stdout.flush()
+            with suppress(AttributeError, OSError, ValueError):
+                system.stderr.flush()
+            said = f"unraisable_record: could not record an unraisable exception in {shown}: {reason}"
+            with suppress(OSError):
+                write(2, (" ".join(said.split()) + "\n").encode("utf-8", "backslashreplace"))
+        finally:
+            end(status)
+
+    return end_unrecorded
 
 
 def recording_hook(
@@ -84,10 +105,11 @@ def recording_hook(
 ) -> Callable[[sys.UnraisableHookArgs], None]:
     """A hook that appends each unraisable exception's line to this process's file in folder, naming the process by
     arguments, then calls previous, whether or not the line could be written, and ends the process when it was not,
-    whatever stopped it."""
+    whatever stopped it. What the hook needs once its line is lost is taken now, as ending does."""
+    end_unrecorded, unfinished = ending(folder), UNFINISHED
 
     def hook(unraisable: sys.UnraisableHookArgs) -> None:
-        unwritten: str | None = UNFINISHED
+        unwritten: str | None = unfinished
         try:
             line = record_line(unraisable, arguments)
             with (folder / f"{os.getpid()}.txt").open("a", encoding="utf-8", errors="backslashreplace") as record:
@@ -100,7 +122,7 @@ def recording_hook(
                 previous(unraisable)
             finally:
                 if unwritten is not None:
-                    end_unrecorded(folder, unwritten)
+                    end_unrecorded(unwritten)
 
     return hook
 

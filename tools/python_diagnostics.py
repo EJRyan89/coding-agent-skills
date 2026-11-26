@@ -32,8 +32,8 @@ It prints one fact per line, its fields tab-separated:
   CHILD_UNSET <reason>               the probe did not run in development mode with warnings as errors, or recorded
                                      nothing; no suite runs; exit 1
   PASSED <suite> <seconds>           pytest passed and no process recorded an unraisable exception
-  FAILED <suite> <reason>            pytest failed or ran past SUITE_SECONDS; pytest's output follows, indented;
-                                     exit 1
+  FAILED <suite> <reason>            pytest failed or ran past SUITE_SECONDS, or the record folder was gone after
+                                     it; pytest's output follows, indented; exit 1
   UNRAISABLE <suite> <record>        a process the suite started recorded an unraisable exception, named by its
                                      arguments, what Python was finalizing, and the exception, or left a record file
                                      with no line, named by the file; exit 1
@@ -221,6 +221,8 @@ def run_suite(suite: str, environment: Mapping[str, str], record: Path) -> Outco
                 failure = f"pytest exited {finished.returncode}"
         written.seek(0)
         output = written.read().decode("utf-8", errors="replace")
+    if failure is None and not file_presence.is_directory(record):
+        failure = f"its record folder {record} is gone, so nothing its processes met was recorded"
     return Outcome(suite, time.monotonic() - started, failure, output, taken_records(record))
 
 

@@ -425,6 +425,21 @@ class RecordReadingTests(unittest.TestCase):
         )
 
 
+class MissingRecordFolderTests(unittest.TestCase):
+    def test_a_suite_after_which_the_record_folder_is_gone_fails_never_reads_as_recording_nothing(self) -> None:
+        folder = suite_folder()
+        self.addCleanup(shutil.rmtree, folder)
+        suite = folder / "test_clean.py"
+        suite.write_bytes(b"def test_passes() -> None:\n    pass\n")
+        record = folder / "record"
+        environment = python_diagnostics.child_environment(dict(os.environ), folder / "site", record)
+        outcome = python_diagnostics.run_suite(str(suite), environment, record)
+        self.assertEqual(
+            f"its record folder {record} is gone, so nothing its processes met was recorded", outcome.failure
+        )
+        self.assertFalse(outcome.passed)
+
+
 class SettingsTests(unittest.TestCase):
     def test_each_setting_is_required_in_the_environment_and_taken_by_the_interpreter(self) -> None:
         problem = python_diagnostics.settings_problem
@@ -497,9 +512,8 @@ class RecorderTests(unittest.TestCase):
         handed: list[Any] = []
         sys.unraisablehook = handed.append
         missing = self.folder / "missing"
-        self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(missing)}))
         unraisable = self.unraisable()
-        said = self.ending_hook(unraisable)
+        said = self.ending_hook(missing, unraisable)
         self.assertEqual([unraisable], handed, "the hook it replaced still prints the exception")
         self.assertTrue(said.startswith(f"unraisable_record: could not record an unraisable exception in {missing}: "))
         self.assertNotIn(unraisable_record.UNFINISHED, said, "an OSError names its own cause")
@@ -513,12 +527,11 @@ class RecorderTests(unittest.TestCase):
 
         handed: list[Any] = []
         sys.unraisablehook = handed.append
-        self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(self.folder)}))
         arguments = SimpleNamespace(
             exc_type=ResourceWarning, exc_value=None, exc_traceback=None, err_msg=None, object=Interrupting()
         )
         unraisable = cast("sys.UnraisableHookArgs", arguments)
-        said = self.ending_hook(unraisable)
+        said = self.ending_hook(self.folder, unraisable)
         self.assertEqual([unraisable], handed, "the hook it replaced still prints the exception")
         self.assertEqual(
             f"unraisable_record: could not record an unraisable exception in {self.folder}: "
@@ -527,9 +540,10 @@ class RecorderTests(unittest.TestCase):
         )
         self.assertEqual([], list(self.folder.iterdir()))
 
-    def ending_hook(self, unraisable: sys.UnraisableHookArgs) -> str:
-        """Run the installed hook on unraisable, which must end the process with UNRECORDED_STATUS, and return what it
-        wrote to the error output."""
+    def ending_hook(self, folder: Path, unraisable: sys.UnraisableHookArgs) -> str:
+        """Install the hook recording in folder and run it on unraisable, which must end the process with
+        UNRECORDED_STATUS, and return what it wrote to the error output. os._exit is replaced before the hook is
+        installed, since the hook takes it then."""
         read, write = os.pipe()
         self.addCleanup(os.close, read)
         saved = os.dup(2)
@@ -537,24 +551,23 @@ class RecorderTests(unittest.TestCase):
         os.dup2(write, 2)
         os.close(write)
         try:
-            with (
-                mock.patch.object(os, "_exit", side_effect=SystemExit) as ended,
-                self.assertRaises(SystemExit),
-            ):
-                sys.unraisablehook(unraisable)
+            with mock.patch.object(os, "_exit", side_effect=SystemExit) as ended:
+                self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(folder)}))
+                with self.assertRaises(SystemExit):
+                    sys.unraisablehook(unraisable)
         finally:
             os.dup2(saved, 2)
         ended.assert_called_once_with(unraisable_record.UNRECORDED_STATUS)
         return os.read(read, 65536).decode("utf-8")
 
-    def test_a_child_that_cannot_write_its_record_exits_with_the_unrecorded_status(self) -> None:
+    def run_child(self, program: str, record: Path) -> subprocess.CompletedProcess[str]:
+        """Run program in a Python child that takes the run's settings and the recorder, recording in record."""
         site = self.folder / "site"
-        site.mkdir()
+        site.mkdir(exist_ok=True)
         (site / "sitecustomize.py").write_bytes(python_diagnostics.RECORDER.read_bytes())
-        missing = self.folder / "missing"
-        environment = python_diagnostics.child_environment({**os.environ, **DIAGNOSTIC_ENVIRONMENT}, site, missing)
-        completed = subprocess.run(
-            [sys.executable, "-B", "-c", "open(__import__('os').devnull, encoding='utf-8')"],
+        environment = python_diagnostics.child_environment({**os.environ, **DIAGNOSTIC_ENVIRONMENT}, site, record)
+        return subprocess.run(
+            [sys.executable, "-B", "-c", program],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -563,9 +576,44 @@ class RecorderTests(unittest.TestCase):
             timeout=RUN_SECONDS,
             check=False,
         )
+
+    def test_a_child_that_cannot_write_its_record_exits_with_the_unrecorded_status(self) -> None:
+        missing = self.folder / "missing"
+        completed = self.run_child("open(__import__('os').devnull, encoding='utf-8')", missing)
         self.assertEqual(unraisable_record.UNRECORDED_STATUS, completed.returncode, completed.stderr)
         self.assertIn("ResourceWarning: unclosed file", completed.stderr, "the exception is still printed")
         self.assertIn(f"could not record an unraisable exception in {missing}: ", completed.stderr)
+
+    def test_a_child_that_meets_one_after_shutdown_cleared_the_modules_exits_with_the_unrecorded_status(self) -> None:
+        # A file sys still holds under an underscore name is released after the interpreter has cleared every other
+        # module's globals, the recorder's, os's, and pathlib's among them, so its line can no longer be built, but
+        # before it clears sys.unraisablehook, which sys's names without an underscore go with.
+        record = self.folder / "record"
+        record.mkdir()
+        completed = self.run_child("import os, sys\nsys._kept = open(os.devnull, encoding='utf-8')\n", record)
+        self.assertEqual(unraisable_record.UNRECORDED_STATUS, completed.returncode, completed.stderr)
+        self.assertIn(
+            f"could not record an unraisable exception in {record}: {unraisable_record.UNFINISHED}", completed.stderr
+        )
+
+    def test_a_child_ended_unrecorded_keeps_the_output_it_had_buffered(self) -> None:
+        program = "print('result before')\nopen(__import__('os').devnull, encoding='utf-8')\nprint('result after')\n"
+        completed = self.run_child(program, self.folder / "missing")
+        self.assertEqual(unraisable_record.UNRECORDED_STATUS, completed.returncode, completed.stderr)
+        self.assertEqual("result before\n", completed.stdout)
+
+    def test_an_exception_with_no_value_is_shown_by_its_type_name(self) -> None:
+        handed: list[Any] = []
+        sys.unraisablehook = handed.append
+        self.assertTrue(unraisable_record.install({unraisable_record.RECORD_VARIABLE: str(self.folder)}))
+        arguments = SimpleNamespace(
+            exc_type=ResourceWarning, exc_value=None, exc_traceback=None, err_msg=None, object=None
+        )
+        sys.unraisablehook(cast("sys.UnraisableHookArgs", arguments))
+        [record] = list(self.folder.iterdir())
+        line = record.read_text(encoding="utf-8")
+        self.assertTrue(line.endswith("Exception ignored in: None: ResourceWarning\n"), line)
+        self.assertEqual(1, len(handed))
 
     def test_an_object_whose_repr_raises_and_an_exception_whose_str_raises_are_still_recorded(self) -> None:
         class Torn(Exception):
