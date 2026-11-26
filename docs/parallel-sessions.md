@@ -732,7 +732,10 @@ Within what it reads, it judges only what the text shows, so these too are left 
   guard places it in a folder of that name;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
   not cover, such as a `for` or `select` loop whose body is a `{ }` group, a reserved word right after `]]`, as
-  `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and Bash 3.2 refuses, or a `]]` inside an `=~` regex's parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`: the whole
+  `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and Bash 3.2 refuses, a `]]` inside an `=~` regex's
+  parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`, an unclosed `$[` or `$((` inside a `${ }`, as
+  `git commit -m x; echo ${x%$[}`, which Bash 5.3 refuses and Bash 3.2 runs up to the `}` that ends the `${` there,
+  or a backslash and newline that split an unquoted `$` from the `(` or `{` after it, which Bash joins: the whole
   command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string

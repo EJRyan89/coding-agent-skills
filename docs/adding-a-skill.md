@@ -268,8 +268,10 @@ backquote, since Bash puts the text it spells into what it expands; or a `$$` be
 backslash there, which Bash 3.2 reads as `$` and an ANSI-C string. The policy does not see a value Bash runs as code,
 as `${!name}`, `${name@P}`, or arithmetic on a variable whose value holds an array subscript with a substitution, as
 `y='a[$(x)]'; echo $((y))`; nor Bash 3.2's ending of a `${ }` at a `}` inside a substitution it holds, or of a
-double-quoted `$( )` at a `)` inside a `${ }`, which it reads as Bash 4 and later do; nor a backslash and newline
-that split `$(` inside double quotes, a `${ }`'s word, or arithmetic, which Bash joins into a substitution. In
+double-quoted `$( )` at a `)` inside a `${ }`, which it reads as Bash 4 and later do, or of a `${ }` at its first
+`}` where an unclosed `$[` or `$((` inside it opens, which Bash 5.3 refuses as the grammar does; nor a backslash and
+newline that split `$(` inside double quotes, a `${ }`'s word, or arithmetic, which Bash joins into a substitution, or
+an unquoted `$` from the `(` or `{` after it, which the grammar refuses. In
 PowerShell it
 reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
 joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every

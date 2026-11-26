@@ -2018,6 +2018,7 @@ def test_an_ansi_c_string_bash_expands_as_double_quoted_text_spelling_a_substitu
     "text",
     [
         "echo \"${x:-$'\\n'}\"",
+        "echo \"${x:-$'X'}\"",
         "echo ${x:-$'\\x24(git push)'}",
         'echo "${x:-"$\'\\x24(git push)\'"}"',
         "echo $'\\x24(git push)'",
@@ -2222,8 +2223,126 @@ def test_a_double_quoted_word_bash_expands_holding_a_substitution_the_reader_can
         ("\\n", "\x00"),
         ("\\cA", "\x00A"),
         ("\\q", "\\q"),
+        # An escape Bash does not know, as `\X`, keeps its backslash, which a letter's escape does not.
+        ("\\X", "\\X"),
         ("a}", "a}"),
     ],
 )
 def test_an_ansi_c_string_spells_each_character_bash_reads_its_escapes_as(text: str, spelled: str) -> None:
     assert bash_syntax.ansi_c_text(text) == spelled
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a[$'\\x24(git commit -m x)']=1",
+        "declare a[$'\\x24(git commit -m x)']=1",
+        "a=([$'\\x24(git commit -m x)']=1)",
+        "a[$'\\x60git commit -m x\\x60']=1",
+        "a[1+$'\\x24(git commit -m x)']=1",
+    ],
+)
+def test_an_ansi_c_string_spelling_a_substitution_in_an_assignment_s_subscript_is_not_read(text: str) -> None:
+    # Bash 5.3 expands the subscript as arithmetic, putting what the string spells there before it expands it.
+    parse(text)
+    with pytest.raises(bash_syntax.NotRead, match=r"^an ANSI-C string Bash expands as a double-quoted string"):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize("text", ["a[1]=$'\\x24(x)'", "declare a[$'\\n']=1", "a=([$'1']=1)", "echo $'\\x24(x)'"])
+def test_an_ansi_c_string_outside_a_subscript_or_spelling_no_substitution_is_read(text: str) -> None:
+    parse(text)
+    bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo ${x:-<(git commit -m x)}",
+        "cat ${x:-<(git commit -m x)}",
+        "echo ${x/<(git commit -m x)/y}",
+        "x=${y:-<(git commit -m x)}",
+        "echo ${x:->(git commit -m x)}",
+        "echo ${x,,<(git commit -m x)}",
+        "echo ${a[<(git commit -m x)]}",
+        "x[<(git commit -m x)]=1",
+    ],
+)
+def test_a_process_substitution_in_an_unquoted_expansion_s_word_is_read(text: str) -> None:
+    parse(text)
+    assert simple_commands_of(text)[-1] == ["git", "commit", "-m", "x"]
+
+
+def test_a_process_substitution_in_a_double_quoted_expansion_s_word_is_text() -> None:
+    text = 'echo "${x:-<(git commit -m x)}"'
+    parse(text)
+    assert simple_commands_of(text) == [["echo", text.removeprefix("echo ")]]
+
+
+def test_a_double_quoted_word_read_again_holding_a_substitution_it_cannot_close_is_not_read() -> None:
+    # The first reading skips the escaped `$`, so it closes the expansion; read again as Bash expands the word, a
+    # substitution starts there that never closes.
+    text = 'echo "${x:-\\$(a}"'
+    parse(text)
+    with pytest.raises(
+        bash_syntax.NotRead, match=r"^a `\$\{ \}` Bash expands as a double-quoted string is not read \("
+    ):
+        bash_syntax.simple_commands(text)
+
+
+def test_a_substitution_in_a_nested_expansion_s_quotes_is_read_where_the_outer_word_is_read_again() -> None:
+    # Bash 3.2 runs the first substitution, inside the nested pattern's single quotes, as it expands the subscript.
+    text = "(( a[${a['${!x,,'$(git push)'$}\\'$(git status)],,:}] ))"
+    parse(text)
+    assert ["git", "push"] in simple_commands_of(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Bash reads arithmetic by its parentheses and quotes alone, so a `${ }` that never closes is refused only as it
+        # is expanded, and the next line runs.
+        ("(( ${x/'}'\\} ))\ngit push", [["git", "push"]]),
+        ("echo $(( ${x/'}'\\} ))\ngit push", [["echo", "$(( ${x/'}'\\} ))"], ["git", "push"]]),
+        # A `)` in a `${ }` closes the arithmetic, so Bash reads the two subshells instead.
+        ("(( ${x:-)} )); git push", [["${x:-)}"], ["git", "push"]]),
+        # Bash 3.2 runs a process substitution in arithmetic.
+        ("(( ${x[<(git push)]} ))", [["git", "push"]]),
+        # Bash counts a `$[`'s bracket in arithmetic as any other, so an unclosed one there opens nothing.
+        ("for (( i=${x/$[}[$((git push) )1+]; 0; )); do :; done", [["git", "push"], [":"]]),
+    ],
+)
+def test_arithmetic_is_read_by_its_parentheses_and_quotes_alone_as_bash_reads_it(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["(( ${x/a/$$'$\"$['}}'$(git push)' ))", "(( ${x##'$(($'}'$(git push)'\"$(git status)\" ))"],
+)
+def test_a_single_quoted_string_in_arithmetic_ends_at_its_quote_before_any_substitution_in_it_is_read(
+    text: str,
+) -> None:
+    # Bash reads single-quoted text in arithmetic as opaque and then expands what it holds, running the `$(git push)`
+    # after it; a reading that took the `$[` or `$((` inside for an opening ran past the quote and missed it.
+    parse(text)
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("cat <<E\n${#a[<(git push)%]#} x\nE\n", [["cat"], ["git", "push"]]),
+        ('echo "${a[<(git push)]}"', [["echo", '"${a[<(git push)]}"'], ["git", "push"]]),
+        ("echo $(( '$(git push)' ))", [["echo", "$(( '$(git push)' ))"], ["git", "push"]]),
+    ],
+)
+def test_a_process_substitution_bash_3_2_runs_in_a_subscript_and_a_substitution_in_arithmetic_s_quotes_are_read(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected

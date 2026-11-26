@@ -2802,6 +2802,12 @@ class CommandGuardTests(GuardTestCase):
             "((printf %s $'\\x24'); git commit -m x)",
             'echo $(( ")" )); git commit -m x',
             '(( x = "${y:-"))"}" )); git commit -m x',
+            "a[$'\\x24(git commit -m x)']=1",
+            "declare a[$'\\x24(git commit -m x)']=1",
+            "a=([$'\\x24(git commit -m x)']=1)",
+            "echo ${x:-<(git commit -m x)}",
+            "echo ${x/<(git commit -m x)/y}",
+            "(( ${x/'}'\\} ))\ngit commit -m x",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
