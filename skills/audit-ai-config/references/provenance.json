@@ -32,6 +32,14 @@
         "passage": "A hook is configured under hooks, by event name, as matcher groups whose hooks list holds handlers of type command, http, mcp_tool, prompt, or agent, each with its required field, an optional timeout in seconds that defaults to 600 for command, http, and mcp_tool, and, on command, http, and mcp_tool hooks, onFailure of continue or block, which on mcp_tool hooks requires Claude Code v2.1.328 or later."
       },
       {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "PreSkillShellCommand runs before a shell command a skill or command injects as it loads, matches on the tool that runs it, Bash or PowerShell, evaluates the if field, and requires Claude Code v2.1.332 or later; it supports command, http, and mcp_tool hooks but not prompt or agent, as do the other events \"Prompt-based hooks\" lists with it, and a prompt or agent hook on it blocks each command it matches. SessionStart supports only command and mcp_tool hooks, Setup runs only command hooks, and PermissionRequest supports every type but agent, whose hook Claude Code skips."
+      },
+      {
+        "page": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
+        "passage": "Claude Code 2.1.332 added a PreSkillShellCommand hook event that can refuse a skill or command's inline shell commands as it loads."
+      },
+      {
         "page": "https://code.claude.com/docs/en/settings",
         "passage": "A settings file with an unknown hook event name fails only that entry, so its hooks never run."
       }
