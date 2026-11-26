@@ -32,14 +32,18 @@ section was written is in the tag and in no section. It prints `CURRENT` when th
 otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
 beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
 
---counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, every
-issue of the milestone named VERSION, and prints the line the release notes carry: the bugs it fixed, each issue labeled
-`bug` and closed as completed, counted by its origin label, `regression`, `latent`, or `hardening`, or as having none;
-and the auditor gaps filed against it, each issue labeled `auditor-gap`, open or closed as completed. An outside
-review's gaps land on the next milestone, so a release counts those its previous release's pass filed. An issue closed
-as not planned, a duplicate among them, is in neither count. A bug with two origin labels, a listing GitHub cut at its
-limit, or an answer that is not the issues asked for is an `ERROR:` line, never a count. It takes no range and writes
-nothing.
+--counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, the
+milestone titled VERSION and every issue on it, through GitHub's REST API, since `gh issue list` searches and answers an
+unknown milestone, or one past the search's limit, as fewer issues. It prints the line the release notes carry: the
+bugs the milestone fixed, each issue labeled `bug` and closed as completed, counted by its origin label, `regression`,
+`latent`, or `hardening`, or as having none; and the auditor gaps on the milestone when the count runs, each issue
+labeled `auditor-gap` and not closed as not planned. An outside review's gaps land on the next milestone, so a release
+counts those its previous release's pass filed. An issue closed as not planned, a duplicate among them, is in neither
+count, and a pull request on the milestone is no issue. It prints an `ERROR:` line, never a count, for a title no
+milestone has, a listing that holds fewer or more items than the milestone's own open and closed counts, an answer
+that is not the milestones or issues asked for, a fixed issue with no kind label (`bug`, `enhancement`,
+`documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed issue with an
+origin label and no `bug`, or a fixed bug with two origin labels. It takes no range and writes nothing.
 
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
@@ -103,17 +107,20 @@ SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # and cuts a message at, so no message text can end a field early.
 FIELD_END = "\0"
 COMMIT_FIELDS = 3
-# The labels --counts reads. A bug's origin label is the one the bug template's `## Introduced` comment asks the filer
-# to apply, and an auditor gap is the issue an outside review's auditor-gap step files ("Outside review" in
-# docs/releasing.md).
+# The labels --counts reads. Each issue template applies its kind label; a bug's origin label is the one the bug
+# template's `## Introduced` comment asks the filer to apply, and an auditor gap is the issue an outside review's
+# auditor-gap step files ("Outside review" in docs/releasing.md).
 DEFECT_LABEL = "bug"
+KIND_LABELS = (DEFECT_LABEL, "enhancement", "documentation", "question")
 ORIGIN_LABELS = ("regression", "latent", "hardening")
 AUDITOR_GAP_LABEL = "auditor-gap"
-OPEN, CLOSED = "OPEN", "CLOSED"
-ISSUE_STATES = (OPEN, CLOSED)
-COMPLETED = "COMPLETED"
-# More issues than any milestone has held; a milestone past it is counted by hand rather than undercounted.
-MILESTONE_ISSUE_LIMIT = 1000
+# The REST API's issue states and close reasons. An issue closed before GitHub recorded reasons answers null, which
+# GitHub shows as completed, its default; a pull request also answers null and is dropped before reasons are read.
+OPEN, CLOSED = "open", "closed"
+CLOSE_REASONS = ("completed", "not_planned", "duplicate", "reopened", None)
+COMPLETED_REASONS = ("completed", None)
+MILESTONES = "repos/{owner}/{repo}/milestones?state=all&per_page=100"
+MILESTONE_ISSUES = "repos/{owner}/{repo}/issues?milestone={number}&state=all&per_page=100"
 
 
 GIT_STATUS_ALLOWED = {
@@ -418,51 +425,90 @@ class MilestoneIssue:
     completed: bool
 
 
-def _milestone_issue(item: object) -> MilestoneIssue:
-    """An issue of gh's `issue list --json number,labels,state,stateReason` answer; ReleaseNotesError when the item is
-    not one. An open issue's close reason is empty."""
-    if isinstance(item, dict):
-        number, labels = item.get("number"), item.get("labels")
-        state, reason = item.get("state"), item.get("stateReason")
-        if isinstance(number, int) and isinstance(labels, list) and state in ISSUE_STATES and isinstance(reason, str):
-            names = [label.get("name") if isinstance(label, dict) else None for label in labels]
-            if all(isinstance(name, str) for name in names):
-                found = frozenset(name for name in names if isinstance(name, str))
-                return MilestoneIssue(number, found, state == OPEN, state == CLOSED and reason == COMPLETED)
+def _pages(client: GitHubClient, endpoint: str) -> list[object]:
+    """Every item of a paginated REST listing, read with `--paginate --slurp`, which wraps each page's array in one;
+    ReleaseNotesError when gh fails or answers with something that is not pages of items."""
+    try:
+        pages = client.json(["api", endpoint, "--paginate", "--slurp"])
+    except GitHubError as error:
+        raise ReleaseNotesError(f"cannot read {endpoint}: {error}") from error
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise ReleaseNotesError(f"gh api {endpoint} answered with something that is not pages of items")
+    return [item for page in pages for item in page]
+
+
+def _milestone(client: GitHubClient, version: str) -> tuple[int, int]:
+    """The milestone titled version, as its number and the count of items on it, open and closed, pull requests
+    included, as GitHub keeps them; ReleaseNotesError when no milestone, or more than one, has the title."""
+    found = [item for item in _pages(client, MILESTONES) if isinstance(item, dict) and item.get("title") == version]
+    if len(found) != 1:
+        raise ReleaseNotesError(f"{len(found)} milestones are titled {version}; --counts reads exactly one")
+    values = [found[0].get(key) for key in ("number", "open_issues", "closed_issues")]
+    counts = [value for value in values if isinstance(value, int) and not isinstance(value, bool)]
+    if len(counts) != len(values):
+        raise ReleaseNotesError(f"gh answered with a milestone {version} that has no number and counts: {found[0]!r}")
+    number, opened, closed = counts
+    return number, opened + closed
+
+
+def _milestone_issue(item: dict[str, object]) -> MilestoneIssue:
+    """An issue of the REST listing; ReleaseNotesError when the item is not one."""
+    number, labels, state, reason = (item.get(key) for key in ("number", "labels", "state", "state_reason"))
+    if isinstance(number, int) and isinstance(labels, list) and state in (OPEN, CLOSED) and reason in CLOSE_REASONS:
+        names = [label.get("name") if isinstance(label, dict) else None for label in labels]
+        if all(isinstance(name, str) for name in names):
+            found = frozenset(name for name in names if isinstance(name, str))
+            return MilestoneIssue(number, found, state == OPEN, state == CLOSED and reason in COMPLETED_REASONS)
     raise ReleaseNotesError(f"gh answered with an issue that is not a number, labels, and a state: {item!r}")
 
 
-def milestone_counts(client: GitHubClient, version: str) -> str:
-    """The release notes' line counting the milestone's fixed bugs by origin label and the auditor gaps filed against
-    it, open or closed as completed.
-
-    Raises ReleaseNotesError when gh cannot list the milestone's issues, GitHub holds more than the listing's limit, an
-    item is not an issue, or a fixed bug carries more than one origin label.
-    """
-    arguments = ["issue", "list", "--milestone", version, "--state", "all", "--json", "number,labels,state,stateReason"]
-    try:
-        listing = client.capped_list(arguments, MILESTONE_ISSUE_LIMIT)
-    except GitHubError as error:
-        raise ReleaseNotesError(f"cannot read the issues of milestone {version}: {error}") from error
-    if listing.cut:
-        raise ReleaseNotesError(f"milestone {version} has more than {MILESTONE_ISSUE_LIMIT} issues; count them by hand")
-    issues = [_milestone_issue(item) for item in listing.items]
-    bugs = [
-        (issue.number, issue.labels & set(ORIGIN_LABELS))
-        for issue in issues
-        if issue.completed and DEFECT_LABEL in issue.labels
+def _refused(version: str, issues: list[MilestoneIssue]) -> list[str]:
+    """Why the milestone's fixed issues cannot be counted: each one with no kind label, an origin label and no `bug`, or
+    two origin labels, named by number."""
+    fixed = [issue for issue in issues if issue.completed]
+    problems = (
+        ("carry no kind label", [issue.number for issue in fixed if not issue.labels & set(KIND_LABELS)]),
+        (
+            f"carry an origin label without `{DEFECT_LABEL}`",
+            [issue.number for issue in fixed if issue.labels & set(ORIGIN_LABELS) and DEFECT_LABEL not in issue.labels],
+        ),
+        (
+            "carry more than one origin label",
+            [issue.number for issue in fixed if len(issue.labels & set(ORIGIN_LABELS)) > 1],
+        ),
+    )
+    return [
+        f"closed issues on milestone {version} {what}: {', '.join(f'#{number}' for number in sorted(numbers))}"
+        for what, numbers in problems
+        if numbers
     ]
-    doubled = sorted(number for number, origins in bugs if len(origins) > 1)
-    if doubled:
-        named = ", ".join(f"#{number}" for number in doubled)
-        raise ReleaseNotesError(f"closed bugs on milestone {version} carry more than one origin label: {named}")
-    by_origin = [f"{origin} {sum(origin in origins for _, origins in bugs)}" for origin in ORIGIN_LABELS]
-    unlabeled = sum(not origins for _, origins in bugs)
-    gaps = [issue for issue in issues if AUDITOR_GAP_LABEL in issue.labels and (issue.open or issue.completed)]
-    still_open = sum(issue.open for issue in gaps)
+
+
+def milestone_counts(client: GitHubClient, version: str) -> str:
+    """The release notes' line counting the milestone's fixed bugs by origin label and the auditor gaps on it.
+
+    Raises ReleaseNotesError when gh cannot read the milestone or its issues, no milestone has the title, the listing
+    disagrees with the milestone's own counts, an item is not an issue, or a fixed issue's labels cannot be counted.
+    """
+    number, held = _milestone(client, version)
+    items = _pages(client, MILESTONE_ISSUES.replace("{number}", str(number)))
+    if len(items) != held:
+        raise ReleaseNotesError(
+            f"milestone {version} holds {held} issues and pull requests, but its listing gave {len(items)}; "
+            "count them by hand"
+        )
+    if not all(isinstance(item, dict) for item in items):
+        raise ReleaseNotesError(f"gh answered with an item of milestone {version} that is not an object")
+    issues = [_milestone_issue(item) for item in items if isinstance(item, dict) and "pull_request" not in item]
+    refused = _refused(version, issues)
+    if refused:
+        raise ReleaseNotesError("; ".join(refused))
+    bugs = [issue.labels & set(ORIGIN_LABELS) for issue in issues if issue.completed and DEFECT_LABEL in issue.labels]
+    by_origin = [f"{origin} {sum(origin in origins for origins in bugs)}" for origin in ORIGIN_LABELS]
+    gaps = sum(AUDITOR_GAP_LABEL in issue.labels and (issue.open or issue.completed) for issue in issues)
     return (
-        f"Defects fixed: {len(bugs)} ({', '.join(by_origin)}, no origin label {unlabeled}). "
-        f"Auditor gaps filed: {len(gaps)} (open {still_open}, closed {len(gaps) - still_open})."
+        f"Defects fixed: {len(bugs)} ({', '.join(by_origin)}, no origin label {sum(not origins for origins in bugs)}). "
+        f"Auditor gaps: {gaps}."
     )
 
 
@@ -500,7 +546,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT, client: Gi
     action.add_argument(
         "--counts",
         action="store_true",
-        help="print the release notes' counts of the milestone's fixed bugs by origin and the auditor gaps filed on it",
+        help="print the release notes' counts of the milestone's fixed bugs by origin and the auditor gaps on it",
     )
     options = parser.parse_args(argv)
     if not is_release_tag(options.version):
