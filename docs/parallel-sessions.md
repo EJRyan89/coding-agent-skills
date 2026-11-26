@@ -542,8 +542,8 @@ The configuration's limits:
   unless an earlier command makes it one, leaves where the script starts unsettled. Windows PowerShell has no
   `-WorkingDirectory`: it takes the first parameter it does not know as the start of its command, so it runs
   `-wd <dir>` as a command that fails and then the script's later statements in the directory it was started in, while
-  a `powershell` that is pwsh starts in `<dir>`; a Windows PowerShell start-up's script is therefore placed where both
-  readings agree, and its git calls are unsettled wherever the two differ. An `-EncodedCommand` runs a script
+  a `powershell` that is pwsh starts in `<dir>`; a Windows PowerShell start-up's script therefore starts where both
+  readings agree, unsettled wherever the two differ, and is read whole, as pwsh runs it. An `-EncodedCommand` runs a script
   the text does not settle, so it is judged as a git call whose subcommand the text does not settle, placed where its
   start-up starts; a wrapper whose
   words do not settle its program, and any other script the text does not settle, are not read. Any other command is a program the guard does not
@@ -712,9 +712,12 @@ that is no wrapper, or `gh` but for its checkouts writes or runs, the git it sta
 variable a command sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check
 names what they changed there. A Windows PowerShell start-up's parameters are read with pwsh's start-up parser, which
 no runner can hold to Windows PowerShell's own, so a spelling only Windows PowerShell takes passes unread. The words
-before a Windows PowerShell start-up's script that name a parameter only pwsh takes, as `-wd`, and their values, which
-Windows PowerShell runs as the first statements of its command, are read as pwsh reads them, not as code, so
-`powershell -wd 'x; git commit -m x' -c 'echo'` runs a git call the guard does not read.
+before a Windows PowerShell start-up's script that name a parameter only pwsh takes, as `-wd`, `-Login`, or any other,
+and their values, which Windows PowerShell runs as the first statement of its command, are read as pwsh reads them,
+not as code, so `powershell -wd 'x; git commit -m x;' -c 'echo'` runs a git call the guard does not read; and the first
+statement of the script they precede, which Windows PowerShell takes as their arguments and does not run, is read as
+run, so `powershell -wd . -c 'cd <worktree>; git commit -m x'` from the hub, which Windows PowerShell commits in the
+hub, is read as a commit in the worktree.
 
 Within what it reads, it judges only what the text shows, so these too are left to the check:
 
