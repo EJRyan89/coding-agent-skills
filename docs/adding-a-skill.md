@@ -259,7 +259,15 @@ reference, or an arithmetic assignment sets one, or `${NAME:=word}` in an array 
 `$(( ))` does, as `x=( ${POSIXLY_CORRECT:=1} )`; nor a set or shopt behind a glob or a brace expansion in the
 command's name or in `command`'s options, as `{set,-k}` or `command -[p] set -k`; nor a brace expansion whose quoted
 or escaped text or inner braces split it, as `shopt -s {'extglob',x}`, `{x\,y,extglob}`, or `{{a},extglob}`, which
-it reads as the one word its text spells. In PowerShell it
+it reads as the one word its text spells. Every expansion and quoting form Bash's manual names is decided in
+`bash_syntax.EXPANSIONS_READ`, `EXPANSIONS_REFUSED`, or `NOT_READ`, and the grammar does not read a script holding
+Bash 5.3's `${ command; }` or `${| command; }`, which run in the shell itself; an ANSI-C string inside a double-quoted
+`${ }` that spells `$`, a quote, a backslash, or `}`, or one in arithmetic or a substring's offset that spells `$` or a
+backquote, since Bash puts the text it spells into what it expands; or a `$$` before a single-quoted string holding a
+backslash there, which Bash 3.2 reads as `$` and an ANSI-C string. The policy does not see a value Bash runs as code,
+as `${!name}`, `${name@P}`, or arithmetic on a variable whose value holds an array subscript with a substitution, as
+`y='a[$(x)]'; echo $((y))`; nor Bash 3.2's ending of a `${ }` at a `}` inside a substitution it holds, or of a
+double-quoted `$( )` at a `)` inside a `${ }`, which it reads as Bash 4 and later do. In PowerShell it
 reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
 joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every
 command of the string `Invoke-Expression` runs, and the program a wrapper or `find`'s `-exec` runs, read through the
