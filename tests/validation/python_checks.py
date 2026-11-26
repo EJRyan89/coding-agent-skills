@@ -54,6 +54,7 @@ from runtime_support import names_git
 from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from type_check_roots import (
+    PLATFORM_VARIABLE,
     PYPROJECT,
     TYPE_CHECK_ROOTS,
     shared_job_name,
@@ -6549,19 +6550,36 @@ def mypy_type_check(cwd: Path, targets: list[str], configuration: Path, *, stric
     mypy = find_mypy()
     if mypy is None:
         raise AssertionError(f"mypy was not found: {platform_support.install_hint('mypy')}")
+    platform = mypy_platform(os.environ)
+    options = [*(["--strict"] if strict else []), *(["--platform", platform] if platform else [])]
     with contextlib.ExitStack() as stack:
         root = mypy_cache_root(os.environ)
         if root is None:
             cache = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="mypy-cache-")))
         else:
-            cache = mypy_cache_directory(root, cwd, targets, strict=strict)
+            cache = mypy_cache_directory(root, cwd, targets, strict=strict, platform=platform)
         try:
-            mypy_job(mypy, configuration, ["--cache-dir", str(cache), *(["--strict"] if strict else []), *targets], cwd)
+            mypy_job(mypy, configuration, ["--cache-dir", str(cache), *options, *targets], cwd)
         except AssertionError as exc:
+            checked = f" (checked as on {platform}, as {PLATFORM_VARIABLE} names it)" if platform else ""
             raise AssertionError(
-                f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "
-                "comment after it."
+                f"{exc}\nFix each error named above{checked}; a `# type: ignore[<code>]` that must stay states its "
+                "reason in a comment after it."
             ) from exc
+
+
+def mypy_platform(environment: Mapping[str, str]) -> str | None:
+    """The platform PLATFORM_VARIABLE names in `environment`, which each type check gives mypy as `--platform`, or None
+    when it is unset or empty, for a check of the platform it runs on. Raises AssertionError, naming the variable, for
+    any value but a platform validation supports, as sys.platform spells it, so a typo never checks for a platform
+    that does not exist."""
+    value = environment.get(PLATFORM_VARIABLE, "")
+    if not value:
+        return None
+    supported = sorted(platform_support.SUPPORTED_PLATFORMS)
+    if value not in supported:
+        raise AssertionError(f"{PLATFORM_VARIABLE} must name one of {', '.join(supported)}, not {value!r}")
+    return value
 
 
 def mypy_cache_root(environment: Mapping[str, str]) -> Path | None:
@@ -6575,12 +6593,15 @@ def mypy_cache_root(environment: Mapping[str, str]) -> Path | None:
     return Path(value)
 
 
-def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: bool) -> Path:
-    """The cache folder under `root` of the type check run from `cwd` on `targets`: one per check, since each check
-    differs in one of them, and the same at every run, so a restored cache is found again."""
+def mypy_cache_directory(
+    root: Path, cwd: Path, targets: list[str], *, strict: bool, platform: str | None = None
+) -> Path:
+    """The cache folder under `root` of the type check run from `cwd` on `targets`, for `platform` when one is named:
+    one per check, since each check differs in one of them, and the same at every run, so a restored cache is found
+    again. A check of the platform it runs on keeps the folder it had before a platform could be named."""
     relative = relative_within(cwd, REPOSITORY_ROOT)
     place = cwd.as_posix() if relative is None else relative.as_posix()
-    check = "\0".join([place, *targets, "strict" if strict else "default"])
+    check = "\0".join([place, *targets, "strict" if strict else "default", *([platform] if platform else [])])
     return root / hashlib.sha256(check.encode("utf-8")).hexdigest()[:16]
 
 

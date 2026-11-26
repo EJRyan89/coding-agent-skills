@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "Bash(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/fix_brief.py *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "Bash(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "Bash(python -B .claude/skills/implement-change/scripts/local_checks.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/local_checks.py *)"]
 ---
 
 # Implementing a change
@@ -89,6 +89,14 @@ It prints `BASE <base> <commit>`, the base's tip after its fetch, then one of th
 
 Run the `RUN` command as printed, from the top of the repository. A last line `FAILED <reason>` is a stop to report.
 
+Before every push, the first included, run what continuous integration would fail on for the change, once the tree is final and after anything that changes it, adding `--title-file` and `--body-file` once the title and body exist (step 8). It takes as long as the suites the change reaches, so run it in the background:
+
+```bash
+python -B .claude/skills/implement-change/scripts/local_checks.py --base "<base>"
+```
+
+It prints `BASE <base> <commit>`, then for each run a `RUN <name> <command>` line, the runner's own output, and `PASSED <name>`, or `NOT_PASSED <name> <status>` with the exit status or `timeout`: `changed`, the runner's `--changed` selection, which is the policy checks, the format, lint, and type checks of a changed Python file, and every suite the change reaches, each whole; and `windows-types`, the type checks `type-checks` above names, run as on Windows. `SKIPPED windows-types` means no changed file is one a type check reads. It ends with `READY` when every run passed, or `NOT_READY <count>`: fix what the failing run's output names, and run it again until it prints `READY`. To rerun one run alone, run its `RUN` command as printed from the top of the repository, in Bash. A last line `FAILED <reason>` is a stop to report.
+
 ## 8. Pull request
 
 `.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Any command of it that cannot finish prints a last line `FAILED <reason>`: report it and stop. Take these in order:
@@ -107,12 +115,12 @@ Run the `RUN` command as printed, from the top of the repository. A last line `F
    python -B .claude/skills/implement-change/scripts/pull_request.py check --title-file "<title file>" --body-file "<body file>" --base "<base>"
    ```
 
-4. Push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from.
+4. Run `local_checks.py` (step 7) with the title and body files until it prints `READY`, then push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from.
 5. Open the pull request. `open` repeats the check, refuses a branch whose upstream does not hold `HEAD` with `UNPUSHED <upstream>`, or `UNPUSHED no upstream`, so push it (step 4), and prints `PULL_REQUEST <url>`:
 
    ```bash
    python -B .claude/skills/implement-change/scripts/pull_request.py open --title-file "<title file>" --body-file "<body file>" --base "<base>"
    ```
 
-When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. If a push is rejected, fetch and inspect the remote branch before anything else. Do not merge.
+When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, run `local_checks.py` again, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. If a push is rejected, fetch and inspect the remote branch before anything else. Do not merge.
 

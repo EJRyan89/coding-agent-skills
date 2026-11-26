@@ -611,6 +611,10 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "skills/ejryan89-skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
             "conftest.py",
+            "skills/a/SKILL.md",
+            ".claude/skills/b/SKILL.md",
+            "agents/c.md",
+            "tests/validation/policy.py",
             "requirements/requirements-dev.in",
             "requirements/requirements-dev.txt",
         ]
@@ -621,6 +625,8 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "tests/validation/test_toolchain.py",
             "tests/validation/test_upgrade_notes.py",
             "tests/malformed_input/test_faults.py",
+            ".claude/skills/review-repository/scripts/test_review_repository.py",
+            "tests/ai-config/test_cross_skill_contracts.py",
         ]
         self.assertEqual([], change_reach_problems(files, suites))
         self.assertEqual(
@@ -645,6 +651,29 @@ class ChangedSelectionFixtures(unittest.TestCase):
             names,
         )
         self.assertNotIn("tests/deployer/test_plan.py", names)
+
+    def test_any_change_selects_the_review_routing_suite_that_reads_the_whole_tree_in_this_repository(self) -> None:
+        # The routing suite reads every tracked file, and each trust-boundary module's imports, and names none of
+        # them, so neither a file's name nor an import reaches it.
+        routing = ".claude/skills/review-repository/scripts/test_review_repository.py"
+        for path in ("skills/dotnet-dependencies/scripts/sdk_why.py", "docs/dotnet.md", "tools/new_module.py"):
+            with self.subTest(path=path):
+                self.assertIn(routing, {job.name for job in changed_jobs(REPOSITORY_ROOT, [path])})
+
+    def test_a_skill_agent_metadata_or_policy_change_selects_the_cross_skill_suite_in_this_repository(self) -> None:
+        # The cross-skill suite reads every skill's SKILL.md, every agent, every skill's metadata, and every
+        # validation policy module by a glob, naming none of them.
+        contracts = "tests/ai-config/test_cross_skill_contracts.py"
+        for path in (
+            "skills/repo-cleanup/SKILL.md",
+            ".claude/skills/implement-change/SKILL.md",
+            "agents/code-review-reviewer.md",
+            "deploy-meta/repo-cleanup.json",
+            "tests/validation/upgrade_notes.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(contracts, {job.name for job in changed_jobs(REPOSITORY_ROOT, [path])})
+        self.assertNotIn(contracts, {job.name for job in changed_jobs(REPOSITORY_ROOT, ["skills/repo-cleanup/x.txt"])})
 
     def test_a_change_to_the_root_conftest_selects_every_python_suite_and_no_shell_suite(self) -> None:
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["conftest.py"])}

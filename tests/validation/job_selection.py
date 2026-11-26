@@ -40,7 +40,9 @@ LINT_JOB = "static lint check (ruff check)"
 # and the bundles-and-dependencies suite; the deployer's suites run deploy.py and every module behind it; and the files
 # that set a tool floor are read by the toolchain, upgrade-note, and check suites; and the root conftest.py sets up
 # every Python suite, whose git it isolates and whose shards it deals, and the development dependencies pin the pytest
-# that runs every Python suite. --changed adds them, so no contributor has to remember them.
+# that runs every Python suite; and a suite that reads the whole tree by a walk or a glob, such as the review routing
+# suite and the cross-skill suite, reads a changed file it never names. --changed adds them, so no contributor has to
+# remember them.
 CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("skills/*",), ("tests/deployer/test_rendering_locking.py",)),
     (
@@ -67,6 +69,19 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (
         ("*.py",),
         ("tests/malformed_input/test_faults*.py",),
+    ),
+    # The review routing suite reads every tracked file and the imports of each trust-boundary module, naming none.
+    (("*",), (".claude/skills/review-repository/scripts/test_review_repository.py",)),
+    # The cross-skill suite reads every skill's SKILL.md, agent, skill's metadata, and validation policy by a glob.
+    (
+        (
+            "skills/*/SKILL.md",
+            ".claude/skills/*/SKILL.md",
+            "agents/*.md",
+            "deploy-meta/*.json",
+            "tests/validation/*.py",
+        ),
+        ("tests/ai-config/test_cross_skill_contracts.py",),
     ),
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.

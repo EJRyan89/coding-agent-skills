@@ -42,8 +42,7 @@ documentation-only. A documentation-only pull request runs the subset the runner
 that name a changed file, and, when a changed file is Markdown, the Markdown fence checks), and a pull request merges
 only when the check passes on every platform.
 
-Locally, before the pull request, run what the change directly touches and leave the rest to continuous integration,
-which runs it anyway:
+Locally, while the change takes shape, run what it directly touches:
 
 1. Each suite the change adds or changes, and each suite of a module or script it changes, one at a time, as the
    runner starts it: a Python suite with `python -B -m pytest <suite> --basetemp <folder>`, with a base folder of its
@@ -71,15 +70,22 @@ which runs it anyway:
 python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
 ```
 
-`--changed` is optional, never required: from the files changed since `origin/main`, committed, uncommitted, or
-untracked, it selects the policy checks, the static checks that read the kinds of file changed (for Python, the format,
+Before every push, the first included, run what continuous integration would fail on for the change, with the
+`implement-change` repository skill's `local_checks.py --base origin/main`, adding `--title-file` and `--body-file` once
+they exist. It runs the runner's `--changed` selection, whole suites and no `-k`, and then the type checks item 3 names
+with `VALIDATION_MYPY_PLATFORM=win32`, which has mypy read the code as Windows' legs do, so a Windows-only type error,
+such as a call of `os.mkfifo`, fails on macOS and Linux too. It prints `READY` only when both runs pass. For a change to
+the deployer, ejryan89-skill-core, or the runner, `--changed` selects most suites and comes close to a full run, and it
+is still owed: those are the suites the change can fail.
+
+`--changed`, from the files changed since `origin/main`, committed, uncommitted, or untracked, selects the policy checks, the static checks that read the kinds of file changed (for Python, the format,
 lint, and type checks), and the suites the change reaches: a changed suite, a suite that imports a changed module
 directly or through others, one that names a changed file or such an importer, one in the `scripts/` of the skill a
 changed file sits in, and the suites `CHANGE_REACHES` in `tests/validation/job_selection.py` adds, such as the
 deployer's rendering suite for a change under `skills/` and the suites that read the floors for a change to a tool
-floor. It earns its run when that reach is narrow; for a change to the deployer, ejryan89-skill-core, or the runner it
-selects most suites and comes close to a full run. A reach no file name or import shows goes in that table, never in a
-list a contributor keeps. `-k <pattern>` instead runs only the policies and suites whose name or path matches, as when
+floor, and the suites that read the whole tree by a walk or a glob, such as the review routing suite for any change
+and the cross-skill suite for a skill's `SKILL.md`, an agent, a skill's metadata, or a validation policy. A reach no
+file name or import shows goes in that table, never in a list a contributor keeps. `-k <pattern>` instead runs only the policies and suites whose name or path matches, as when
 rerunning one suite, and a pattern that matches nothing, even beside one that matches, is refused.
 
 The runner decides what a documentation-only change needs. When every file changed since `origin/main` (the pull
