@@ -2221,6 +2221,7 @@ def test_a_double_quoted_word_bash_expands_holding_a_substitution_the_reader_can
         ("\\'", "'"),
         ('\\"', '"'),
         ("\\n", "\x00"),
+        ("\\E", "\x00"),
         ("\\cA", "\x00A"),
         ("\\q", "\\q"),
         # An escape Bash does not know, as `\X`, keeps its backslash, which a letter's escape does not.
@@ -2237,6 +2238,7 @@ def test_an_ansi_c_string_spells_each_character_bash_reads_its_escapes_as(text: 
     [
         "a[$'\\x24(git commit -m x)']=1",
         "declare a[$'\\x24(git commit -m x)']=1",
+        "declare A[$'\\x24(git commit -m x)']=1",
         "a=([$'\\x24(git commit -m x)']=1)",
         "a[$'\\x60git commit -m x\\x60']=1",
         "a[1+$'\\x24(git commit -m x)']=1",
@@ -2247,6 +2249,13 @@ def test_an_ansi_c_string_spelling_a_substitution_in_an_assignment_s_subscript_i
     parse(text)
     with pytest.raises(bash_syntax.NotRead, match=r"^an ANSI-C string Bash expands as a double-quoted string"):
         bash_syntax.simple_commands(text)
+
+
+def test_an_upper_case_name_is_read_as_a_lower_case_one_is(tmp_path: Path) -> None:
+    # The forms the reader tells apart by a name's first character: a `${ ` Bash 5.3 runs in the current shell, and
+    # a pattern in double quotes, whose single quotes quote.
+    texts = ["echo ${X}$(m 1)", "echo \"${HOME#'$(m 2)'}\""]
+    assert [listed_marks(text) for text in texts] == bash_runs(tmp_path, texts) == [{"1"}, set()]
 
 
 @pytest.mark.parametrize("text", ["a[1]=$'\\x24(x)'", "declare a[$'\\n']=1", "a=([$'1']=1)", "echo $'\\x24(x)'"])
