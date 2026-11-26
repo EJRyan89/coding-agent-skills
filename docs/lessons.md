@@ -236,8 +236,8 @@ or removed fails validation until its pattern follows it.
   `tests/deployer/test_check.py::CheckCommandTests::test_a_floored_tool_whose_version_cannot_be_read_is_unusable_never_found`,
   `skills/dotnet-dependencies/scripts/test_sdk_why.py::test_a_run_that_fails_after_part_of_an_answer_is_named_by_what_it_printed_after_it_on_one_line`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_an_export_git_fails_is_named_by_git_s_reason_on_one_line_or_by_its_exit_code`,
-  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code`,
-  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_bash_syntax_check_that_fails_printing_nothing_is_named_by_its_exit_code`,
+  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_powershell_s_failure_not_the_source_s`,
+  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_bash_syntax_check_that_fails_printing_nothing_is_bash_s_failure_not_the_source_s`,
   `tests/deployer/test_check.py::CodexSandboxProbeTests::test_a_failed_or_silent_probe_names_no_mode_and_says_why_on_one_line_or_by_its_exit_code`,
   `skills/ejryan89-skill-core/scripts/test_pdf_tool.py::PdfPolicyTests::test_a_probe_that_fails_is_named_by_its_status_before_its_output_is_decoded_or_read_as_a_banner`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
@@ -280,6 +280,7 @@ or removed fails validation until its pattern follows it.
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_source_json_does_not_read_is_refused_with_a_step_naming_its_commit`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_skill_metadata_the_deployer_refuses_is_refused_with_a_step_naming_its_commit`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_ref_whose_rendered_skill_the_deployer_refuses_is_refused_with_a_step_naming_its_commit`,
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_bash_check_that_fails_printing_nothing_is_refused_with_the_step_for_bash_not_for_the_commit`,
   `tests/deployer/test_deploy_at.py::SourceRefusalTests::test_every_refusal_of_the_source_s_content_is_a_source_refusal`,
   `tests/deployer/test_rendering_locking.py::LockTests::test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file`
 - **Search for:** a `DeployError(` with one positional argument under `deployer/`, or unpacked lines the guard follows
