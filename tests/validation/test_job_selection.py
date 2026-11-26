@@ -26,12 +26,15 @@ import job_selection
 from git_client import MISSING_GIT, GitError, GitResult
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
+    CROSS_SKILL_SUITE,
     FORMAT_JOB,
     JOB_SECONDS,
     LINT_JOB,
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
+    REVIEW_PIPELINE_MODULES,
     SHELL_JOB,
+    WHOLE_TREE_SUITES,
     change_reach_problems,
     changed_jobs,
     changed_paths,
@@ -44,11 +47,12 @@ from job_selection import (
     pre_push_direct_suites,
     pre_push_jobs,
     pre_push_wide_reason,
+    reached_suite_patterns,
     stale_job_seconds_problems,
     suites_naming,
 )
 from suite_discovery import regression_suites
-from validation_support import REPOSITORY_ROOT, relative
+from validation_support import REPOSITORY_ROOT, relative, repository_files
 
 from deployer import platform_support
 from tools import release_notes
@@ -752,6 +756,21 @@ class ChangedSelectionFixtures(unittest.TestCase):
         self.assertEqual(
             sorted(job.label for job in changed_jobs(REPOSITORY_ROOT, paths)), sorted(job.label for job in jobs)
         )
+
+    def test_a_wide_pre_push_run_keeps_the_cross_skill_suite_for_a_review_module_it_reads_by_a_built_name(self) -> None:
+        files = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in repository_files(REPOSITORY_ROOT)]
+        suites = regression_suites()
+        for path in REVIEW_PIPELINE_MODULES:
+            with self.subTest(path=path):
+                direct = pre_push_direct_suites(REPOSITORY_ROOT, [path], suites, files)
+                self.assertIn(CROSS_SKILL_SUITE, {relative(suite) for suite in direct})
+
+    def test_the_mutation_gate_s_reach_leaves_out_the_whole_tree_rows(self) -> None:
+        # A suite that reads the tree as text executes no mutant, so only --changed's reach adds it for any change.
+        for path in ("docs/guide.md", "skills/a/SKILL.md", "tests/validation/policy.py"):
+            with self.subTest(path=path):
+                self.assertTrue(set(WHOLE_TREE_SUITES) & reached_suite_patterns([path]))
+                self.assertFalse(set(WHOLE_TREE_SUITES) & reached_suite_patterns([path], whole_tree=False))
 
     def test_a_change_to_the_root_conftest_selects_every_python_suite_and_no_shell_suite(self) -> None:
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["conftest.py"])}

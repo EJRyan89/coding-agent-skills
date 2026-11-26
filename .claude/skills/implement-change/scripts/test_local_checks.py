@@ -215,6 +215,18 @@ class LocalChecksTests(unittest.TestCase):
             self.runs[0].command,
         )
 
+    def test_a_relative_title_or_body_is_read_from_the_caller_s_folder_not_the_top_of_the_repository(self) -> None:
+        caller = self.temporary / "caller folder"
+        caller.mkdir()
+        (caller / "title.txt").write_text("feat: x\n", encoding="utf-8")
+        (caller / "body.md").write_text("Body\n", encoding="utf-8")
+        with contextlib.chdir(caller):
+            code, lines = self.run_script("--title-file", "title.txt", "--body-file", "body.md")
+        self.assertEqual(0, code)
+        title, body = caller / "title.txt", caller / "body.md"
+        self.assertIn(f'RUN pre-push {PRE_PUSH_COMMAND} --pr-title "{title}" --pr-body "{body}"', lines)
+        self.assertEqual(["--pr-title", str(title), "--pr-body", str(body)], self.runs[0].command[-4:])
+
     def test_each_run_that_fails_is_named_with_its_status_and_every_run_still_runs(self) -> None:
         self.write("skills/alpha/scripts/run.py", "# changed\n")
         self.statuses = [1, None]

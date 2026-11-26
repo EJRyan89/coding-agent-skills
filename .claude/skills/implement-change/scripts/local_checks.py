@@ -110,10 +110,11 @@ def origin_base(value: str) -> Base:
 
 
 def pre_push_check(title_file: Path | None, body_file: Path | None) -> Check:
-    """The runner's --pre-push selection, given the title and body files when there are any."""
+    """The runner's --pre-push selection, given the title and body files when there are any, each from the folder this
+    script was started in, since the runner starts from the top of the repository."""
     files = [
-        *(["--pr-title", str(title_file)] if title_file else []),
-        *(["--pr-body", str(body_file)] if body_file else []),
+        *(["--pr-title", str(title_file.absolute())] if title_file else []),
+        *(["--pr-body", str(body_file.absolute())] if body_file else []),
     ]
     return Check("pre-push", ("--pre-push", *files))
 

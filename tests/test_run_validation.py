@@ -422,18 +422,19 @@ class SelectionOptions(unittest.TestCase):
                     printed,
                 )
 
-    def test_pre_push_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
-        every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
-        selection = mock.Mock()
+    def test_pre_push_refuses_a_change_it_cannot_determine_rather_than_run_every_job(self) -> None:
+        # Every job is a full run, which no session runs before a push; the base to fetch is named instead.
+        every, selection = mock.Mock(), mock.Mock()
         with git_not_on_path():
-            code, printed, _, started = self.run_main(
-                ["--pre-push"], pre_push_jobs=selection, all_jobs=mock.Mock(return_value=every)
-            )
-        self.assertEqual(0, code)
+            code, _, error, started = self.run_main(["--pre-push"], pre_push_jobs=selection, all_jobs=every)
+        self.assertEqual(2, code)
         selection.assert_not_called()
-        self.assertEqual([every], started)
-        self.assertIn(
-            f"Full validation: the files changed since origin/main could not be determined ({MISSING_GIT}).", printed
+        every.assert_not_called()
+        self.assertEqual([], started)
+        self.assertEqual(
+            "run_validation.py: error: --pre-push cannot tell the files changed since origin/main "
+            f"({MISSING_GIT}); fetch origin/main and run it again\n",
+            error,
         )
 
     def test_changed_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
@@ -539,10 +540,11 @@ class PullRequestOnlySelection(unittest.TestCase):
                 self.assertEqual(1, len(started[0]))
                 self.assertNotIn("Pull request checks only", printed)
 
-    def test_changed_full_and_a_shard_keep_their_own_selection(self) -> None:
+    def test_changed_pre_push_full_and_a_shard_keep_their_own_selection(self) -> None:
         reached = [Job("tests/test_b.py", "tests/test_b.py", 1, print)]
         for option, patches, jobs in (
             (["--changed"], {"changed_jobs": mock.Mock(return_value=reached)}, reached),
+            (["--pre-push"], {"pre_push_jobs": mock.Mock(return_value=(reached, None))}, reached),
             (["--full"], {}, self.EVERY),
             (["--shard", "1/1"], {"deal_to_leg": lambda policies, jobs, _: (policies, jobs, "Shard 1/1.")}, self.EVERY),
         ):

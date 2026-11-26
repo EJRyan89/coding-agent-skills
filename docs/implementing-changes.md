@@ -81,7 +81,10 @@ than `PRE_PUSH_WIDE_SHARE` in `tests/validation/job_selection.py` of the recorde
 comes close to a full run, which no session runs locally. For a wide change it runs the policy checks, the static checks
 of each kind of file changed, and the suites that read a changed file directly (a changed suite, one that imports a
 changed module itself or names a changed file, and the whole-tree suites `CHANGE_REACHES` adds for it), on at most
-`PRE_PUSH_WORKERS` workers, names each, and leaves the rest to continuous integration.
+`PRE_PUSH_WORKERS` workers, names each, and leaves the rest to continuous integration. When it cannot tell the files
+changed since the base, it refuses with exit 2 and names the base to fetch, rather than run every suite. The mutation
+gate's reach leaves out the whole-tree suites, which execute no mutated module, so a later change only they read keeps
+its verdict.
 
 `--changed`, from the files changed since `origin/main`, committed, uncommitted, or untracked, selects the policy checks, the static checks that read the kinds of file changed (for Python, the format,
 lint, and type checks), and the suites the change reaches: a changed suite, a suite that imports a changed module

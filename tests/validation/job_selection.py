@@ -37,6 +37,23 @@ LINT_JOB = "static lint check (ruff check)"
 # skill's SKILL.md, agent, skill's metadata, and validation policy.
 ROUTING_SUITE = ".claude/skills/review-repository/scripts/test_review_repository.py"
 CROSS_SKILL_SUITE = "tests/ai-config/test_cross_skill_contracts.py"
+# Those suites read the files they reach as text or a syntax tree and execute none of them, so the mutation gate, which
+# runs the suites that execute a mutated module, leaves them out of its reach and of the reach that decides whether a
+# later change keeps its verdict.
+WHOLE_TREE_SUITES = (ROUTING_SUITE, CROSS_SKILL_SUITE)
+# The review pipeline's modules the cross-skill suite reads by a name it builds, reading their source as one text.
+REVIEW_PIPELINE_MODULES = tuple(
+    f"skills/ejryan89-code-review-core/scripts/{name}.py"
+    for name in (
+        "review_pipeline",
+        "review_run",
+        "review_batches",
+        "review_snapshot",
+        "review_reviewer_setup",
+        "review_dispatch",
+        "review_reporting",
+    )
+)
 # What a change reaches beyond the suites that name, import, or sit in the skill of a changed file, as pairs of
 # changed-path patterns and the suite patterns they add, both fnmatch patterns over repository-relative paths, where *
 # crosses folders. A suite pattern is matched against the suites alone, so it names a folder or a suite and never
@@ -83,6 +100,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "agents/*.md",
             "deploy-meta/*.json",
             "tests/validation/*.py",
+            *REVIEW_PIPELINE_MODULES,
         ),
         (CROSS_SKILL_SUITE,),
     ),
@@ -224,25 +242,29 @@ def skill_scripts_folder(path: str) -> str | None:
     return None
 
 
-def reached_suite_patterns(paths: list[str]) -> set[str]:
-    """The suite patterns CHANGE_REACHES adds for the changed paths."""
+def reached_suite_patterns(paths: list[str], *, whole_tree: bool = True) -> set[str]:
+    """The suite patterns CHANGE_REACHES adds for the changed paths, WHOLE_TREE_SUITES left out unless `whole_tree`."""
     return {
         suite
         for changed, suites in CHANGE_REACHES
         if any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in changed)
         for suite in suites
+        if whole_tree or suite not in WHOLE_TREE_SUITES
     }
 
 
-def changed_suites(root: Path, paths: list[str], suites: list[Path], files: list[str]) -> list[Path]:
+def changed_suites(
+    root: Path, paths: list[str], suites: list[Path], files: list[str], *, whole_tree: bool = True
+) -> list[Path]:
     """The suites a change reaches: a changed suite; a suite that imports a changed module, directly or through
     others; a suite that names a changed file or one of those importers, by path or by a file name no other file in
-    files has; a suite in the scripts/ of a skill one of them sits in; and the suites CHANGE_REACHES adds."""
+    files has; a suite in the scripts/ of a skill one of them sits in; and the suites CHANGE_REACHES adds, the
+    WHOLE_TREE_SUITES among them only when `whole_tree`, though one that another of those ways reaches stays."""
     affected = set(paths) | importers(paths, python_imports(root, files))
     counts = Counter(name.rsplit("/", 1)[-1] for name in files)
     named = suites_naming(sorted(affected), suites, frozenset(name for name, count in counts.items() if count > 1))
     skills = {folder for path in affected if (folder := skill_scripts_folder(path))}
-    reached = reached_suite_patterns(paths)
+    reached = reached_suite_patterns(paths, whole_tree=whole_tree)
     selected = []
     for suite in suites:
         label = suite.relative_to(root).as_posix()
@@ -256,11 +278,11 @@ def changed_suites(root: Path, paths: list[str], suites: list[Path], files: list
     return selected
 
 
-def reached_suites(root: Path, paths: list[str]) -> list[Path]:
+def reached_suites(root: Path, paths: list[str], *, whole_tree: bool = True) -> list[Path]:
     """The suites the changed paths reach, as --changed selects them; tools/mutation_gate.py runs those that reach a
-    changed module against its mutants."""
+    changed module against its mutants, asking with `whole_tree` false, since a whole-tree suite executes none."""
     files = [path.relative_to(root).as_posix() for path in repository_files(root)]
-    return changed_suites(root, paths, regression_suites(root), files)
+    return changed_suites(root, paths, regression_suites(root), files, whole_tree=whole_tree)
 
 
 def changed_jobs(root: Path, paths: list[str]) -> list[Job]:
@@ -301,7 +323,7 @@ def pre_push_direct_suites(root: Path, paths: list[str], suites: list[Path], fil
     imports = python_imports(root, labels.values())
     counts = Counter(name.rsplit("/", 1)[-1] for name in files)
     named = suites_naming(paths, suites, frozenset(name for name, count in counts.items() if count > 1))
-    whole_tree = {CROSS_SKILL_SUITE, ROUTING_SUITE} & reached_suite_patterns(paths)
+    whole_tree = set(WHOLE_TREE_SUITES) & reached_suite_patterns(paths)
     return [
         suite
         for suite in suites

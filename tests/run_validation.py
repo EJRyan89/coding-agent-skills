@@ -30,7 +30,8 @@ selection for a narrow change. For a wide one, a change to the deployer or ejrya
 import, or one whose selection holds more than job_selection.PRE_PUSH_WIDE_SHARE of the recorded seconds of every job,
 it runs the policy checks, the static checks of each kind of file changed, and the suites that read a changed file
 directly, on at most job_selection.PRE_PUSH_WORKERS workers; it names each job it runs and says continuous integration
-runs the rest. A change it cannot determine runs everything.
+runs the rest. A change it cannot determine is a usage error naming the base, since running everything instead would be
+the full local run no session makes.
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag, and whose `## Forms considered` the forms-considered check holds
@@ -59,7 +60,8 @@ its suite, tests/test_run_validation.py, passes, and it constructs each check th
 Exit status:
   0  every selected policy check and suite job passed
   1  a policy check or suite job failed, or a last line FAILED <reason> when the runner itself crashed
-  2  a usage error, such as a -k pattern that matches nothing, -k beside --changed or --full, an empty
+  2  a usage error, such as a -k pattern that matches nothing, -k beside --changed or --full, --pre-push when
+     the files changed since the base cannot be determined, an empty
      selection, a VALIDATION_JOBS that is no worker count, or legs that cannot be dealt; or a missing prerequisite
 """
 
@@ -411,12 +413,18 @@ def read_changed_paths(base: str) -> tuple[list[str] | None, str]:
         return None, f" ({error})"
 
 
+class UndeterminedChange(Exception):
+    """--pre-push could not tell the files changed since the base, so it runs nothing."""
+
+
 def pre_push_selection(base: str) -> tuple[list[Job], str, bool]:
-    """--pre-push's jobs, the lines that say why, and whether the change is wide: every job, uncapped, when the
-    changed files cannot be determined."""
+    """--pre-push's jobs, the lines that say why, and whether the change is wide; UndeterminedChange, naming the base,
+    when the changed files cannot be determined."""
     paths, unknown = read_changed_paths(base)
     if paths is None:
-        return all_jobs(), f"Full validation: the files changed since {base} could not be determined{unknown}.", False
+        raise UndeterminedChange(
+            f"--pre-push cannot tell the files changed since {base}{unknown}; fetch {base} and run it again"
+        )
     jobs, reason = pre_push_jobs(REPOSITORY_ROOT, paths)
     count = len({job.name for job in jobs})
     changed = f"Before a push: {len(paths)} files changed since {base}"
@@ -508,13 +516,23 @@ def report_run(
     return passed
 
 
-def chosen_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], str, bool]:
-    """The jobs a run without -k selects, the lines that say why, and whether they are a wide change's reduced
-    selection, which runs on capped workers."""
-    if arguments.pre_push:
-        return pre_push_selection(base)
-    jobs, mode = select_jobs(arguments, base)
-    return jobs, mode, False
+def chosen_jobs(
+    arguments: argparse.Namespace, base: str, workers: int, out: TextIO | io.TextIOBase, errors: TextIO
+) -> tuple[list[Job], str, int] | None:
+    """The jobs a run without -k selects, the lines that say why, printed to out, and the workers to run them on, at
+    most PRE_PUSH_WORKERS for a wide change's reduced selection; None, once the refusal is printed to errors, for a
+    --pre-push run that cannot tell what changed."""
+    if not arguments.pre_push:
+        jobs, mode = select_jobs(arguments, base)
+        print(mode, file=out, flush=True)
+        return jobs, mode, workers
+    try:
+        jobs, mode, wide = pre_push_selection(base)
+    except UndeterminedChange as error:
+        print(f"run_validation.py: error: {error}", file=errors)
+        return None
+    print(mode, file=out, flush=True)
+    return jobs, mode, min(workers, PRE_PUSH_WORKERS) if wide else workers
 
 
 def base_of(environment: Mapping[str, str]) -> str:
@@ -577,9 +595,10 @@ def main(
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
-        jobs, mode, wide = chosen_jobs(arguments, base_of(environment))
-        workers = min(workers, PRE_PUSH_WORKERS) if wide else workers
-        print(mode, file=out, flush=True)
+        chosen = chosen_jobs(arguments, base_of(environment), workers, out, errors)
+        if chosen is None:
+            return 2
+        jobs, mode, workers = chosen
     unmatched = unmatched_patterns(arguments.patterns, policies, jobs)
     if unmatched:
         print("".join(f"No policy check or suite matches {pattern}.\n" for pattern in unmatched), end="", file=errors)
