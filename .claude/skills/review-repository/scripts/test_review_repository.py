@@ -215,6 +215,10 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/markdown_sections.py": (
         "splits guidance text it is given into blocks, opening and starting nothing; the files go to synthesis whole"
     ),
+    f"{SKILL_CORE}/prose_paths.py": (
+        "holds the characters a path written in prose or a code span holds, as pattern text, opening and starting "
+        "nothing; each importer judges the path"
+    ),
     f"{SKILL_CORE}/pull_carried.py": "judges from commits alone whether a merged pull request carried a worktree's tip",
     f"{SKILL_CORE}/seconds_option.py": "reads the user's own time option as a positive finite number of seconds",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
