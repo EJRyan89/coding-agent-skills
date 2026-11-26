@@ -124,7 +124,10 @@ QUESTION_LINES = [f"QUESTION {name} {what}" for name, what in QUESTIONS]
 INTRODUCED = (
     "for a bug, the commit and pull request that wrote the line, from git log -S or -G or git blame, the first "
     "release tag holding it, and whether that pull request was a fix; for drift against an outside page, the upstream "
-    "change that made it stale; or predates <tag> or unknown, naming what was searched; none for another template"
+    "change that made it stale; or predates <tag> or unknown, naming what was searched; then a bug's origin label: "
+    "hardening when only a crafted input or an injected fault triggers it, otherwise regression when that change is "
+    "in the release under way or the last release tagged and latent when older, predates <tag> included, and no "
+    "label for unknown; none for another template"
 )
 
 
@@ -2805,3 +2808,30 @@ class FixtureTemplateTests(AuditTestCase):
                 build(fresh / "audited repo")
                 template.copy(copied / "audited repo")
                 self.assertEqual(repository_shape(fresh, ["audited repo"]), repository_shape(copied, ["audited repo"]))
+
+
+def test_the_filing_step_labels_each_bug_by_origin_as_the_bug_template_asks() -> None:
+    # A release's notes count its closed bugs by these labels, so the skill's filing step and the bug template must
+    # give the same rule, and the command must apply the labels, since --body-file applies none of the template's.
+    skill = (REPOSITORY / ".claude" / "skills" / "audit-repository" / "SKILL.md").read_text(encoding="utf-8")
+    filing = skill.split("## 5. File", 1)[1].split("\n## ", 1)[0]
+    template = (REPOSITORY / ".github" / "ISSUE_TEMPLATE" / "bug.md").read_text(encoding="utf-8")
+    introduced = template.split("## Introduced", 1)[1].split("\n## ", 1)[0]
+    for rule in (
+        "`hardening` when only a crafted input or an injected fault triggers it",
+        "`regression` when the introducing change is in the release under way or the last release tagged",
+        "`latent` when it is older",
+        "no origin label when it is unknown",
+    ):
+        assert rule in filing, rule
+    for rule in (
+        "hardening when only a crafted input or an injected fault triggers",
+        "regression when the introducing change is in the release under way",
+        "or the last\n     release tagged, and latent when it is older",
+        "With unknown, apply none.",
+    ):
+        assert rule in introduced, rule
+    assert "--label '<template label>'" in filing
+    assert "adding `--label '<origin>'` for a bug with one" in filing
+    assert "is an auditor gap" in filing
+    assert "add `--label auditor-gap`" in filing

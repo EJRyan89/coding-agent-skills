@@ -242,7 +242,10 @@ SEVERITIES = ("defect", "drift", "polish")
 INTRODUCED = (
     "for a bug, the commit and pull request that wrote the line, from git log -S or -G or git blame, the first "
     "release tag holding it, and whether that pull request was a fix; for drift against an outside page, the upstream "
-    "change that made it stale; or predates <tag> or unknown, naming what was searched; none for another template"
+    "change that made it stale; or predates <tag> or unknown, naming what was searched; then a bug's origin label: "
+    "hardening when only a crafted input or an injected fault triggers it, otherwise regression when that change is "
+    "in the release under way or the last release tagged and latent when older, predates <tag> included, and no "
+    "label for unknown; none for another template"
 )
 FINDING_FIELDS = (
     ("location", "path:line of each side, with forward slashes"),

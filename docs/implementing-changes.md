@@ -330,7 +330,8 @@ A `fix` pull request names its sibling search, on a line of the body that opens 
 the same construct elsewhere, as the pattern of the [lessons catalogue](lessons.md) the defect violated, whose
 **Search for** forms are the search, or the pattern the fix adds, and the scope searched, and the outcome for each
 hit, fixed here, filed as #N, or not a sibling and why; a sibling filed as #N is a bug written from the bug template,
-its `## Introduced` section filled as the template's comment asks. A fix that reaches one instance of a construct
+its `## Introduced` section filled as the template's comment asks and filed with `--label bug` and the origin label
+that comment names, since `--body-file` applies none of the template's labels. A fix that reaches one instance of a construct
 leaves its twin wrong, and the author, with the code in hand, is the one placed to look. It is the author's judgment,
 never an automated result, and no check reads it: `review-repository`'s `sibling-search` reviewer holds the search
 against a change to a script.
