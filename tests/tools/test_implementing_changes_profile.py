@@ -134,14 +134,17 @@ class ImplementingChangesProfileTest(unittest.TestCase):
         # issues by the kind and origin labels, so every route that files a bug names both.
         for path in (
             "docs/releasing.md",
+            "docs/implementing-changes.md",
+            ".github/CONTRIBUTING.md",
+            "CLAUDE.md",
             ".claude/skills/implement-change/references/brief.md",
             ".claude/skills/evaluate-skill/SKILL.md",
         ):
             text = " ".join((REPOSITORY_ROOT / path).read_text(encoding="utf-8").split())
             with self.subTest(path=path):
-                self.assertIn("--label bug", text)
+                self.assertRegex(text, r"--label bug|pass (its|the template's) kind label with `--label`")
                 self.assertIn("origin label", text)
-                self.assertIn("applies none of the template's labels", text)
+                self.assertRegex(text, "applies none of (a|the) template's labels")
 
     def test_step_8_pastes_no_title_into_a_command(self) -> None:
         section = SKILL.read_text(encoding="utf-8").split("## 8. Pull request", 1)[1]
