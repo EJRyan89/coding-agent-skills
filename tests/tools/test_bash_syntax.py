@@ -2400,3 +2400,18 @@ def test_a_documented_limit_a_continued_line_between_a_dollar_and_its_parenthesi
     assert bash_agreement.bash_n_verdict(text)[0]
     with pytest.raises(BashSyntaxError):
         bash_syntax.parse(text)
+
+
+def test_a_single_quote_arithmetic_never_closes_is_refused_as_bash_refuses_it() -> None:
+    text = "echo $(( 'abc ))"
+    assert not bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError, match=r"^a quote in an arithmetic command is not closed$"):
+        bash_syntax.parse(text)
+
+
+def test_a_process_substitution_that_never_closes_in_arithmetic_s_quotes_is_text_and_the_rest_is_read() -> None:
+    # The `<(` inside the single quotes opens nothing that closes, so it is read as text, and the substitution after it
+    # in the same quotes, which Bash runs as it expands the expression, is still read.
+    text = "echo $(( '<(x $(git push)' ))"
+    parse(text)
+    assert simple_commands_of(text) == [["echo", "$(( '<(x $(git push)' ))"], ["git", "push"]]
