@@ -27,11 +27,12 @@ python tools/context_probe.py write '<repository>' --digest '<sha256>' --out '<f
 `write` builds the profile again and writes it, printing `WROTE <file>`, only when its digest is the one you
 previewed. When the repository, the review archive, or the flag store changed in between, it prints
 `CHANGED <sha256>` and writes nothing; preview again. A last line `FAILED <reason>` is a run that could not finish,
-such as one with no private-term list or a git that cannot read this checkout's commit. A FAILED line never quotes
-what was read: a failure while the repository or the review records are read names the part and the error's kind
-alone, such as `FAILED the repository's files could not be read: PermissionError`, since an error's text can name a
-private path or ref. The only paths it names are the private-term list's and `--out`'s, which you give. The exit
-statuses are in the tool's docstring.
+such as one with no private-term list or a git that cannot read the probe's own commit. No FAILED line quotes an
+error's text, since that text can name a private path or ref: a failure while the repository or the review records are
+read names the part and the error's class, such as `FAILED the repository's files could not be read: PermissionError`,
+a git that fails on the probe's own commit names the error's class and git's kind of failure, and any other failure
+names its class alone. The only paths a FAILED line names are the private-term list's and `--out`'s, which you give.
+The exit statuses are in the tool's docstring.
 
 Both commands take `--terms <file>`, the private-term list, which defaults to `~/.coding-agent-skills/private-terms.txt`.
 
@@ -40,8 +41,9 @@ Both commands take `--terms <file>`, the private-term list, which defaults to `~
 Every number in a profile is a count rounded down to a power of two, so a count narrows a repository to a range and
 never to one value. Every string is a word the probe defines or a closed vocabulary of the code-review core.
 
-- `probe`: the profile's layout version, `schema`, and `commit`, the commit of this checkout the probe ran from, or
-  `unknown` when git answers that it has none, so a reader knows which probe produced it.
+- `probe`: the profile's layout version, `schema`, and `commit`, the commit of the checkout the probe ran from, so a
+  reader knows which probe produced it, or `unknown` when that folder is not the top of a checkout of its own, as a
+  copy unpacked inside another repository is not, or git answers that it has no commit.
 - `files`: the files the walk found. The walk skips version control, dependency, and build output folders as
   `folder_walk` does, follows no link, and does not enter another checkout.
 - `languages`: files by language, from a table of file-name suffixes; a suffix in no entry counts as `other`.
@@ -55,11 +57,12 @@ never to one value. Every string is a word the probe defines or a closed vocabul
   `.agents` and `.github` skills and agents, and `.mcp.json`), its `files`, `bytes`, `lines`, and, for Markdown,
   `headings` and `fences`; `unread` counts a file that was a link or could not be read.
 - `hooks`: from `.claude/settings.json`, the number of hook `events` and `handlers`, and `hook_events` by name where
-  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`.
+  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`; `unread` when the file is a
+  link, cannot be read, is no JSON object, or holds a `hooks` that is no object.
 - `reviews`: from the code-review archive and flag store the code-review configuration names, for the configured
   repository whose checkout holds the one probed. `totals` counts records, unreadable records, pull requests,
-  findings, distinct finding categories, reviewer runs and their retries, unavailable sources, uncovered, unreviewed,
-  and excluded files, and review comments. Beside it, counts by closed vocabulary: `verdicts`, `severities`, `modes`,
+  findings, distinct finding categories, reviewer runs, their retries, and those that judged dispositions only
+  (`dispositions_only`), unavailable sources, uncovered, unreviewed, and excluded files, and review comments. Beside it, counts by closed vocabulary: `verdicts`, `severities`, `modes`,
   `dispatch`, `dispositions`, `comment_dispositions`, `ledger_states`, `snapshot_sources`, `diff_fallbacks`,
   `scope_requested`, `scope_used`, and `analyzer_coverages`; `unreviewed_languages`, the unreviewed files by language;
   and `flags`, the flags on the repository by status. A value outside a vocabulary counts as `other`.

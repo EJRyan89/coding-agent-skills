@@ -12,7 +12,7 @@ import json
 import os
 import re
 
-from fault_table import MISSING, OPENED_ONLY, STAT_RAISES, Driver, Fixture
+from fault_table import GIT_EXIT, MISSING, OPENED_ONLY, STAT_RAISES, Driver, Fixture
 
 from deployer.manifest import MANIFEST_VERSION
 
@@ -89,6 +89,13 @@ def fake_claude(fixture: Fixture) -> None:
         (folder / name).chmod(0o755)
 
 
+# The probe names a git that fails by the error's class and git's kind of failure alone, never git's text, which can
+# name a private path (docs/context-probe.md), so a git that exits 128 is refused without the reason this run looks
+# for; its run under git's time limit still names its kind, `timeout`, and tests/tools/test_context_probe.py holds the
+# kind-only line.
+PROBE_GIT_TEXT = "the probe withholds git's text, which can name a private path, and names git's kind of failure alone"
+
+
 def probed_repository(fixture: Fixture) -> None:
     """A repository holding one rule source for context_probe to profile, and a private-term list naming a term its
     profile does not hold."""
@@ -105,7 +112,7 @@ def hub(fixture: Fixture) -> None:
 
 DRIVERS: list[Driver] = [
     Driver("tools/branch_protection.py", "", (), gh=True),
-    # The probe's git call reads its own checkout's commit, recorded as unknown when git fails.
+    # The probe's git calls read its own checkout's top and commit; a git that fails there stops the run.
     Driver(
         "tools/context_probe.py",
         "preview",
@@ -113,6 +120,7 @@ DRIVERS: list[Driver] = [
         prepare=probed_repository,
         inputs=("{work}/terms.txt",),
         git=True,
+        not_run={GIT_EXIT: PROBE_GIT_TEXT},
     ),
     Driver(
         "tools/context_probe.py",
@@ -130,6 +138,7 @@ DRIVERS: list[Driver] = [
         prepare=probed_repository,
         inputs=("{work}/terms.txt",),
         git=True,
+        not_run={GIT_EXIT: PROBE_GIT_TEXT},
     ),
     Driver(
         "tools/deployable_report.py",

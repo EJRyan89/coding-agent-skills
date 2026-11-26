@@ -7,10 +7,11 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -21,7 +22,10 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import atomic_file
 import file_presence
+import json_reader
+import json_writer
 from git_client import GitError
 from review_archive import commit_record
 from review_config import write_config
@@ -415,16 +419,14 @@ def test_the_profile_records_the_probes_commit_or_unknown_and_a_failing_git_stop
     planted: dict[str, Path],
 ) -> None:
     def failing() -> str | None:
-        raise GitError("fatal: bad config line 1")
+        raise GitError(f"fatal: detected dubious ownership in repository at '{planted['checkout']}/qzvvendor'")
 
     assert printed_profile(preview(planted, services(planted, None))[1])["probe"]["commit"] == "unknown"
     probe = context_probe.ProbeServices(
         commit=failing, config_path=lambda: planted["config"], flags_path=lambda: planted["flags"]
     )
-    assert preview(planted, probe)[:2] == (
-        1,
-        "FAILED git could not read this checkout's commit: fatal: bad config line 1\n",
-    )
+    code, stdout, stderr = preview(planted, probe)
+    assert (code, stdout, stderr) == (1, "FAILED git could not read the probe's own commit: GitError git\n", "")
 
 
 def test_a_checkout_no_configured_repository_holds_has_no_review_counts(planted: dict[str, Path]) -> None:
@@ -514,7 +516,9 @@ def test_a_checkout_whose_git_points_at_a_private_path_names_no_path(planted: di
     assert code == 0, stdout
     assert MARKER not in (stdout + stderr).casefold()
     profile = printed_profile(stdout)
-    assert profile.get("reviews_absent") == "checkout_unreadable" or profile["reviews"]["totals"]["records"] == 1
+    # git refuses a .git file naming no folder, so the review counts are absent as unreadable, never matched by path.
+    assert profile["reviews_absent"] == "checkout_unreadable"
+    assert "reviews" not in profile
 
 
 def test_a_repository_argument_it_cannot_examine_names_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -539,7 +543,8 @@ def test_a_failure_of_a_kind_no_reader_raises_prints_only_its_kind_end_to_end(pl
             f"sys.path.insert(0, {str(CHECKOUT / 'skills' / 'ejryan89-skill-core' / 'scripts')!r})",
             "import folder_walk",
             "def failing(*arguments, **options):",
-            f"    raise AssertionError('walked into {planted['checkout']}/qzvprivate/qzvfile.md')",
+            # Every path goes into the source as a literal repr writes, so a Windows backslash is no escape.
+            f"    raise AssertionError({f'walked into {planted["checkout"]}/qzvprivate/qzvfile.md'!r})",
             "folder_walk.walk_files = failing",
             f"sys.argv = [{str(SCRIPT)!r}, 'preview', {str(planted['checkout'])!r},",
             f"    '--terms', {str(planted['terms'])!r}]",
@@ -563,3 +568,231 @@ def test_a_failure_of_a_kind_no_reader_raises_prints_only_its_kind_end_to_end(pl
     )
 
     assert (result.returncode, result.stdout, result.stderr) == (1, "FAILED AssertionError\n", "")
+
+
+def commit_repository(top: Path) -> str:
+    """A repository at `top` with one commit; its commit."""
+    top.mkdir(parents=True, exist_ok=True)
+    (top / "qzvrepofile.txt").write_text("qzvrepocontent\n", encoding="utf-8")
+    git(top, "init", "--quiet")
+    git(top, "add", "--all")
+    git(top, "-c", "user.name=Qzvauthor", "-c", "user.email=q@example.invalid", "commit", "--quiet", "-m", "qzvmsg")
+    head = subprocess.run(
+        ["git", "-C", str(top), "rev-parse", "HEAD"], capture_output=True, text=True, encoding="utf-8", check=True
+    )
+    return head.stdout.strip()
+
+
+def test_a_copy_of_the_probe_inside_another_repository_records_no_commit(tmp_path: Path) -> None:
+    outer = tmp_path / "qzvprivaterepo"
+    private_head = commit_repository(outer)
+    copy = outer / "vendor" / "cas"
+    copy.mkdir(parents=True)
+
+    assert context_probe.checkout_commit(copy) is None
+    assert context_probe.checkout_commit(outer) == private_head
+
+
+def test_a_copy_without_git_nested_in_a_repository_prints_unknown_end_to_end(planted: dict[str, Path]) -> None:
+    # The tool tree, with no .git of its own, unpacked inside the examined repository: git would answer with that
+    # repository's commit, so the profile must say unknown and hold no part of it.
+    private_head = commit_repository(planted["checkout"])
+    copy = planted["checkout"] / "vendor" / "cas"
+    (copy / "tools").mkdir(parents=True)
+    shutil.copy2(SCRIPT, copy / "tools" / "context_probe.py")
+    for skill in ("ejryan89-skill-core", "ejryan89-code-review-core", "review-insights", "audit-ai-config"):
+        shutil.copytree(
+            CHECKOUT / "skills" / skill / "scripts",
+            copy / "skills" / skill / "scripts",
+            ignore=shutil.ignore_patterns("test_*", "__pycache__"),
+        )
+    environment = {
+        **os.environ,
+        "CODE_REVIEW_CONFIG": str(planted["config"]),
+        "CODE_REVIEW_FLAGS": str(planted["flags"]),
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(copy / "tools" / "context_probe.py"),
+            "preview",
+            str(planted["checkout"]),
+            "--terms",
+            str(planted["terms"]),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert printed_profile(result.stdout)["probe"]["commit"] == "unknown"
+    assert private_head not in result.stdout + result.stderr
+    assert MARKER not in (result.stdout + result.stderr).casefold()
+
+
+# Each FAILED line the probe prints itself, by what raises: the error's text holds a marker path, and the line names
+# only the place the probe gives and the error's class.
+def test_a_term_list_that_cannot_be_read_names_its_path_and_the_class_alone(
+    planted: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(self: Path, *_arguments: object, **_options: object) -> str:
+        raise PermissionError(13, "Permission denied", "/qzvprivate/qzvlock")
+
+    monkeypatch.setattr(Path, "read_text", failing)
+
+    code, stdout, stderr = preview(planted)
+
+    assert code == 1
+    assert stdout == f"FAILED the private-term list at {planted['terms']} cannot be read: PermissionError\n"
+    assert "qzvprivate" not in stdout + stderr
+
+
+def test_a_term_list_whose_stat_fails_names_its_path_and_the_class_alone(
+    planted: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(path: Path) -> bool:
+        raise PermissionError(13, "Permission denied", "/qzvprivate/qzvparent")
+
+    monkeypatch.setattr(file_presence, "is_there", failing)
+
+    code, stdout, stderr = preview(planted)
+
+    assert code == 1
+    assert stdout == f"FAILED the private-term list at {planted['terms']} cannot be read: PermissionError\n"
+    assert "qzvprivate" not in stdout + stderr
+
+
+def test_a_profile_that_cannot_be_written_names_out_and_the_class_alone(
+    planted: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(path: Path, content: str, **_options: object) -> None:
+        raise OSError(28, "No space left on device", "/qzvprivate/qzvtemporary")
+
+    _, shown_profile, _ = preview(planted)
+    found = shown_profile.rstrip("\n").rpartition("DIGEST ")[2]
+    out = planted["root"] / "profile.json"
+    monkeypatch.setattr(atomic_file, "replace_text", failing)
+
+    code, stdout, stderr = run(
+        ["write", str(planted["checkout"]), "--digest", found, "--out", str(out), "--terms", str(planted["terms"])],
+        services(planted),
+    )
+
+    assert code == 1
+    assert stdout == f"FAILED the profile cannot be written to {out}: OSError\n"
+    assert "qzvprivate" not in stdout + stderr
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(5, "Input/output error", "/qzvprivate/qzvfile"),
+        json_writer.JsonWriteRefused("a key twice: qzvprivatekey"),
+    ],
+    ids=["OSError", "JsonWriteRefused"],
+)
+def test_any_other_failure_main_catches_names_its_class_alone(
+    planted: dict[str, Path], monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def failing(*_arguments: object, **_options: object) -> object:
+        raise error
+
+    monkeypatch.setattr(context_probe, "checked_profile", failing)
+
+    code, stdout, stderr = preview(planted)
+
+    assert (code, stdout) == (1, f"FAILED {type(error).__name__}\n")
+    assert MARKER not in (stdout + stderr).casefold()
+
+
+# hook_counts reads .claude/settings.json and counts it as unread, never as absent and never by its content, when it is
+# a link, cannot be read, or holds no JSON.
+def test_settings_that_are_a_link_are_unread(tmp_path: Path) -> None:
+    outside = tmp_path / "qzvoutside.json"
+    outside.write_text(json.dumps({"hooks": {"PreToolUse": []}}), encoding="utf-8")
+    (tmp_path / "repository" / ".claude").mkdir(parents=True)
+    (tmp_path / "repository" / ".claude" / "settings.json").symlink_to(outside)
+
+    assert context_probe.hook_counts(tmp_path / "repository") == {"unread": 1}
+
+
+def test_settings_that_cannot_be_read_are_unread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(path: Path, **_options: object) -> object:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(json_reader, "read_file", failing)
+
+    assert context_probe.hook_counts(tmp_path) == {"unread": 1}
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{qzvnotjson", "\ufeff{}", '{"a": 1, "a": 2}', "[]", '"qzvtext"', "null", '{"hooks": ["qzvevent"]}'],
+    ids=["malformed", "bom", "twice", "a list", "a string", "null", "hooks no object"],
+)
+def test_settings_that_hold_no_json_are_unread(tmp_path: Path, text: str) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(text, encoding="utf-8")
+
+    assert context_probe.hook_counts(tmp_path) == {"unread": 1}
+
+
+def test_absent_settings_or_settings_without_hooks_have_no_hook_counts(tmp_path: Path) -> None:
+    assert context_probe.hook_counts(tmp_path) == {}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text('{"model": "qzvmodel"}', encoding="utf-8")
+    assert context_probe.hook_counts(tmp_path) == {}
+
+
+def test_reviewer_runs_snapshots_diff_fallbacks_and_scopes_are_counted() -> None:
+    review: dict[str, Any] = {
+        "verdict": "APPROVED",
+        "mode": "re-review",
+        "dispatch": "subagents",
+        "reviewers": [
+            {"retries": 2, "dispositions_only": True},
+            {"retries": 1, "dispositions_only": False},
+        ],
+        "coverage": {
+            "unavailable_sources": ["a"],
+            "uncovered_files": ["b", "c"],
+            "unreviewed_files": {"d.png": ".png"},
+        },
+        "snapshot": {
+            "source": "checkout",
+            "excluded": {"binary": 3, "generated": 2},
+            "diff": {"source": "files-api", "limit": "300 files"},
+        },
+        "scope": {"requested": "auto", "used": "incremental"},
+    }
+    record = cast(ReviewRecord, {"review": review, "findings": [], "prior_dispositions": []})
+    tally = context_probe.ReviewTally()
+
+    tally.add(record)
+    tally.add(cast(ReviewRecord, {**record, "review": {**review, "snapshot": {"source": "tarball"}, "scope": None}}))
+    section = tally.profile(pulls=1)
+
+    assert section["totals"] == {
+        "records": 2,
+        "pulls": 1,
+        "reviewers": 4,
+        "reviewer_retries": 4,
+        "dispositions_only": 2,
+        "unavailable_sources": 2,
+        "uncovered_files": 4,
+        "unreviewed_files": 2,
+        "excluded_files": 4,
+    }
+    assert section["snapshot_sources"] == {"checkout": 1, "tarball": 1}
+    assert section["diff_fallbacks"] == {"files-api": 1}
+    assert section["scope_requested"] == {"auto": 1}
+    assert section["scope_used"] == {"incremental": 1}
+    assert section["unreviewed_languages"] == {"Image": 2}

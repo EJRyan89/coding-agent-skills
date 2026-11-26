@@ -24,17 +24,19 @@ cannot be read stops the run, since the scan never runs without one. A match pri
 `PRIVATE_TERM <field> value`, naming the field by the keys above it that matched no term, never the term, then
 `STOPPED private term`, and nothing of the profile is printed or written.
 
-A FAILED line never quotes what was read: a failure while the repository or the review records are read names the
-part and the error's kind alone, one examining the repository argument names the error's kind, and any other failure
-ends as `FAILED <kind>`, which run_main prints without the error's text. The paths a FAILED
-line may name are the private-term list's and `--out`'s, which the user gives, and git's reason for this checkout's
-own commit.
+No FAILED line quotes an error's text: a failure while the repository or the review records are read names the part
+and the error's class, a git that fails on the probe's own commit names the error's class and git's kind of failure,
+one examining the repository argument names the error's class, and any other failure ends as `FAILED <class>`, which
+run_main prints without the error's text. The only paths a FAILED line names are the private-term list's and
+`--out`'s, which the user gives.
 
 The repository is read without running anything it holds: a walk of its files, the size and the Markdown structure of
 its rule sources, and the hook events its `.claude/settings.json` declares. The review archive and the flag store are
 the ones the code-review configuration names (`CODE_REVIEW_CONFIG` and `CODE_REVIEW_FLAGS` choose others), read for the
 configured repository whose checkout holds `<repository>`, as review-insights finds it, through `GitClient`. The
-profile records this checkout's commit, read through git; a git that fails there stops the run with git's reason.
+profile records the commit of the checkout the probe runs from, read through git, only when that folder is the top of a
+checkout of its own, and `unknown` otherwise, so a copy unpacked inside another repository never records that
+repository's commit; a git that fails there stops the run.
 
 Exit status:
   0  preview: the profile and its DIGEST line; write: WROTE <file>
@@ -71,10 +73,10 @@ import json_reader
 import json_writer
 from audit_ai_config import CLAUDE_HOOKS
 from console import failed_kind, run_main
-from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import document_headings, find_fences
 from path_containment import resolved_path
+from path_keys import path_key
 from review_archive import record_files
 from review_config import ConfigurationError, default_config_path, load_config
 from review_flags import FlagError, default_flags_path, load_store
@@ -365,12 +367,12 @@ def allowlisted(profile: Mapping[str, Any]) -> None:
 
 def read_terms(path: Path) -> list[str]:
     """The private terms, one a line, blank lines aside. A list that is missing or unreadable stops the run."""
-    if not file_presence.is_there(path):
-        raise ProbeError(f"no private-term list at {path}; the profile is never shown without its scan")
     try:
+        if not file_presence.is_there(path):
+            raise ProbeError(f"no private-term list at {path}; the profile is never shown without its scan")
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
-        raise ProbeError(f"the private-term list at {path} cannot be read: {type(error).__name__}") from error
+        raise ProbeError(f"the private-term list at {path} cannot be read: {type(error).__name__}") from None
     terms = [line.strip() for line in text_lines(text)]
     return [term for term in terms if term]
 
@@ -517,7 +519,8 @@ def walk_shape(root: Path) -> Shape:
 
 def hook_counts(root: Path) -> dict[str, Any]:
     """The hook events `.claude/settings.json` declares, each by its name when Claude Code documents it, else as
-    `other`, and the handlers they hold; no matcher, command, or condition."""
+    `other`, and the handlers they hold; no matcher, command, or condition. Settings that are a link, cannot be read,
+    are no JSON object, or hold a `hooks` that is no object are counted as unread, never as holding no hooks."""
     settings = root / ".claude" / "settings.json"
     try:
         if not file_presence.is_occupied(settings):
@@ -529,9 +532,13 @@ def hook_counts(root: Path) -> dict[str, Any]:
         return {"unread": 1}
     except json_reader.CONTENT_ERRORS:
         return {"unread": 1}
-    hooks = data.get("hooks") if isinstance(data, dict) else None
-    if not isinstance(hooks, dict):
+    if not isinstance(data, dict):
+        return {"unread": 1}
+    hooks = data.get("hooks")
+    if hooks is None:
         return {}
+    if not isinstance(hooks, dict):
+        return {"unread": 1}
     events: Counter[str] = Counter()
     handlers = 0
     for event, groups in hooks.items():
@@ -658,13 +665,25 @@ def flag_counts(path: Path, repository: str) -> dict[str, int]:
     return bucketed(statuses)
 
 
+def checkout_commit(checkout: Path = CHECKOUT) -> str | None:
+    """The commit `checkout` holds when it is the top of a checkout of its own, else None. A copy of the probe with no
+    `.git` of its own, unpacked inside another repository such as the private one it examines, lies in that
+    repository's tree, and git, which searches the folders above, would answer with that repository's commit."""
+    client = GitClient()
+    top = client.rev_parse_path("--show-toplevel", directory=checkout)
+    if top is None or path_key(top, resolve=True) != path_key(checkout, resolve=True):
+        return None
+    return client.commit_of("HEAD", directory=checkout)
+
+
 def probe_commit(services: ProbeServices) -> str:
-    """This checkout's commit, so a reader knows what produced a profile, or `unknown` when git answers that it has
-    none. A git that fails stops the run, naming git's reason, which concerns this checkout alone."""
+    """This checkout's commit, so a reader knows what produced a profile, or `unknown` when it is no checkout of its
+    own or git answers that it has none. A git that fails stops the run, named by the error's class and git's kind of
+    failure alone: git's text can name the checkout's path, which may lie inside the private repository."""
     try:
         commit = services.commit()
     except GitError as error:
-        raise ProbeError(f"git could not read this checkout's commit: {flat_text(str(error))}") from error
+        raise ProbeError(f"git could not read the probe's own commit: {type(error).__name__} {error.kind}") from None
     return commit if commit is not None and COMMIT.fullmatch(commit) else UNKNOWN
 
 
@@ -672,7 +691,7 @@ def probe_commit(services: ProbeServices) -> str:
 class ProbeServices:
     """External effects, replaceable in tests."""
 
-    commit: Callable[[], str | None] = lambda: GitClient().commit_of("HEAD", directory=CHECKOUT)
+    commit: Callable[[], str | None] = checkout_commit
     config_path: Callable[[], Path] = default_config_path
     flags_path: Callable[[], Path] = default_flags_path
 
@@ -778,7 +797,11 @@ def lines(arguments: argparse.Namespace, services: ProbeServices) -> Iterator[st
     if found != arguments.digest.strip().lower():
         yield f"CHANGED {found}"
         return
-    atomic_file.replace_text(arguments.out, shown(profile))
+    text = shown(profile)
+    try:
+        atomic_file.replace_text(arguments.out, text)
+    except OSError as error:
+        raise ProbeError(f"the profile cannot be written to {arguments.out}: {type(error).__name__}") from None
     yield f"WROTE {arguments.out}"
 
 
@@ -790,8 +813,12 @@ def main(argv: Sequence[str] | None = None, services: ProbeServices | None = Non
             if line.startswith(("PRIVATE_TERM ", "STOPPED ", "CHANGED ")):
                 code = 1
             print(line, flush=True)
-    except (ProbeError, OSError, json_writer.JsonWriteRefused) as error:
+    except ProbeError as error:
+        # Every ProbeError's text is the probe's own: a field, a part, an error's class, or a path the user gave.
         print(f"FAILED {error}", flush=True)
+        return 1
+    except (OSError, json_writer.JsonWriteRefused) as error:
+        print(f"FAILED {type(error).__name__}", flush=True)
         return 1
     return code
 

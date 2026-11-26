@@ -3154,29 +3154,30 @@ def runner_failure_line(block: ast.If) -> str:
     return FAILED_WITH_MESSAGE
 
 
-@pytest.mark.parametrize(
-    ("block", "line"),
-    [
-        pytest.param("run_main(main)", FAILED_WITH_MESSAGE, id="the default"),
-        pytest.param("run_main(lambda: main(sys.argv[1:]))", FAILED_WITH_MESSAGE, id="a lambda"),
-        pytest.param("run_main(main, failure=failed_kind)", FAILED_KIND_ONLY, id="the kind alone"),
-        pytest.param("console.run_main(main, failure=console.failed_kind)", FAILED_KIND_ONLY, id="by attribute"),
-    ],
+# Each spelling of a __main__ block's run_main call, and the line the injected failure ends in, or None for a formatter
+# runner_failure_line refuses.
+RUNNER_SPELLINGS: tuple[tuple[str, str | None], ...] = (
+    ("run_main(main)", FAILED_WITH_MESSAGE),
+    ("run_main(lambda: main(sys.argv[1:]))", FAILED_WITH_MESSAGE),
+    ("run_main(main, failure=failed_kind)", FAILED_KIND_ONLY),
+    ("console.run_main(main, failure=console.failed_kind)", FAILED_KIND_ONLY),
+    ("run_main(main, failure=print)", None),
 )
-def test_the_failed_line_follows_the_runner_s_failure_formatter(block: str, line: str) -> None:
-    tree = ast.parse(f"if __name__ == '__main__':\n    {block}\n")
-    assert runner_failure_line(main_blocks(tree)[0]) == line
-
-
-def test_an_unknown_failure_formatter_is_refused() -> None:
-    tree = ast.parse("if __name__ == '__main__':\n    run_main(main, failure=print)\n")
-    with pytest.raises(AssertionError, match="failure=print"):
-        runner_failure_line(main_blocks(tree)[0])
 
 
 class EntryPointRunnerTests(unittest.TestCase):
     def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
         # The policy proves each block starts with the runner; this runs each block as written with its main failing.
+        # The line each spelling of the call ends in, read as the entry points below are; these share the test, since
+        # the suite's shards are full and a test of their own would deal this one beside others.
+        for spelling, expected_line in RUNNER_SPELLINGS:
+            with self.subTest(spelling=spelling):
+                block = main_blocks(ast.parse(f"if __name__ == '__main__':\n    {spelling}\n"))[0]
+                if expected_line is None:
+                    with self.assertRaisesRegex(AssertionError, "failure=print"):
+                        runner_failure_line(block)
+                else:
+                    self.assertEqual(expected_line, runner_failure_line(block))
         entry_points = entry_points_with_a_main_block()
         self.assertIn(REPOSITORY_ROOT / "deploy.py", [path for path, _ in entry_points])
         blocks = {
