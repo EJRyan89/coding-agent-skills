@@ -32,6 +32,11 @@ MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences ou
 SHELL_JOB = "static shell checks (bash -n and ShellCheck on skill scripts)"
 FORMAT_JOB = "static format check (ruff format --check)"
 LINT_JOB = "static lint check (ruff check)"
+# The suites that read the whole tree by a walk or a glob, which CHANGE_REACHES adds for a change they read: the review
+# routing suite reads every tracked file and each trust-boundary module's imports, and the cross-skill suite every
+# skill's SKILL.md, agent, skill's metadata, and validation policy.
+ROUTING_SUITE = ".claude/skills/review-repository/scripts/test_review_repository.py"
+CROSS_SKILL_SUITE = "tests/ai-config/test_cross_skill_contracts.py"
 # What a change reaches beyond the suites that name, import, or sit in the skill of a changed file, as pairs of
 # changed-path patterns and the suite patterns they add, both fnmatch patterns over repository-relative paths, where *
 # crosses folders. A suite pattern is matched against the suites alone, so it names a folder or a suite and never
@@ -70,9 +75,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         ("*.py",),
         ("tests/malformed_input/test_faults*.py",),
     ),
-    # The review routing suite reads every tracked file and the imports of each trust-boundary module, naming none.
-    (("*",), (".claude/skills/review-repository/scripts/test_review_repository.py",)),
-    # The cross-skill suite reads every skill's SKILL.md, agent, skill's metadata, and validation policy by a glob.
+    (("*",), (ROUTING_SUITE,)),
     (
         (
             "skills/*/SKILL.md",
@@ -81,9 +84,20 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "deploy-meta/*.json",
             "tests/validation/*.py",
         ),
-        ("tests/ai-config/test_cross_skill_contracts.py",),
+        (CROSS_SKILL_SUITE,),
     ),
 )
+# --pre-push, the run the implement-change repository skill's local_checks.py makes before every push, runs the
+# --changed selection when the change is narrow. A change is wide when a changed file sits in one of
+# PRE_PUSH_WIDE_PLACES, which most suites import, or when its selection holds more than PRE_PUSH_WIDE_SHARE of the
+# recorded seconds of every job: a deployer module's selection measured 65% of them, an ejryan89-skill-core module's
+# 53% to 99%, a shipped skill's script 24%, and a documentation change 18%, so the bound falls in the gap between them.
+# A wide change runs only the jobs continuous integration most often failed for a change whose author left them to it,
+# the static checks of each kind of file changed and the suites that read a changed file directly, on at most
+# PRE_PUSH_WORKERS workers, so no session's run takes the whole machine; continuous integration runs the rest.
+PRE_PUSH_WIDE_PLACES = ("deployer", "deploy.py", "skills/ejryan89-skill-core")
+PRE_PUSH_WIDE_SHARE = 0.4
+PRE_PUSH_WORKERS = 4
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
 SKILL_PARENTS = ("skills", REPOSITORY_SKILLS)
 # What each job took on CI's runners, by platform and then by job name (a suite's path, summed over its shards, or a
@@ -253,6 +267,62 @@ def changed_jobs(root: Path, paths: list[str]) -> list[Job]:
     """What --changed runs beside the policy checks: the static checks and the suites the changed paths reach."""
     type_checks = {job.label for job in type_check_jobs()}
     return [*changed_static_jobs(paths, static_jobs(), type_checks), *suite_jobs(reached_suites(root, paths))]
+
+
+def selection_seconds(jobs: list[Job], seconds: Mapping[str, float]) -> float:
+    """What `jobs` take in all, in seconds, each weighed as leg_cost weighs it."""
+    shards = Counter(job.name for job in jobs)
+    return sum(leg_cost(job, shards[job.name], seconds) for job in jobs)
+
+
+def pre_push_wide_reason(
+    paths: list[str], selected: list[Job], every: list[Job], seconds: Mapping[str, float]
+) -> str | None:
+    """Why a change whose --changed selection is `selected`, of `every` job, is too wide to run whole before a push,
+    weighed by `seconds`, or None for a change narrow enough."""
+    for path in paths:
+        place = next((place for place in PRE_PUSH_WIDE_PLACES if posix_within(path, place)), None)
+        if place is not None:
+            return f"{path} is in {place}, which most suites reach"
+    whole = selection_seconds(every, seconds)
+    share = selection_seconds(selected, seconds) / whole if whole else 0.0
+    if share > PRE_PUSH_WIDE_SHARE:
+        return f"its selection is {share:.0%} of the recorded seconds of every job, over {PRE_PUSH_WIDE_SHARE:.0%}"
+    return None
+
+
+def pre_push_direct_suites(root: Path, paths: list[str], suites: list[Path], files: list[str]) -> list[Path]:
+    """The suites that read a changed file directly: a changed suite, one that imports a changed module itself, one
+    that names a changed file, by path or by a file name no other file in `files` has, and each whole-tree suite
+    CHANGE_REACHES adds for the change. A suite that reaches a change only through another module, through the skill
+    it shares, or through a wider CHANGE_REACHES row is left out."""
+    changed = {module_name(path) for path in paths if path.endswith(".py")}
+    labels = {suite: suite.relative_to(root).as_posix() for suite in suites}
+    imports = python_imports(root, labels.values())
+    counts = Counter(name.rsplit("/", 1)[-1] for name in files)
+    named = suites_naming(paths, suites, frozenset(name for name, count in counts.items() if count > 1))
+    whole_tree = {CROSS_SKILL_SUITE, ROUTING_SUITE} & reached_suite_patterns(paths)
+    return [
+        suite
+        for suite in suites
+        if labels[suite] in paths
+        or labels[suite] in whole_tree
+        or suite in named
+        or imports.get(labels[suite], set()) & changed
+    ]
+
+
+def pre_push_jobs(root: Path, paths: list[str]) -> tuple[list[Job], str | None]:
+    """What --pre-push runs, and why the change is wide, or None: the --changed selection for a narrow change, and for
+    a wide one the static checks of each kind of file changed and the suites that read a changed file directly."""
+    selected = changed_jobs(root, paths)
+    reason = pre_push_wide_reason(paths, selected, all_jobs(), host_job_seconds())
+    if reason is None:
+        return selected, None
+    files = [path.relative_to(root).as_posix() for path in repository_files(root)]
+    type_checks = {job.label for job in type_check_jobs()}
+    direct = pre_push_direct_suites(root, paths, regression_suites(root), files)
+    return [*changed_static_jobs(paths, static_jobs(), type_checks), *suite_jobs(direct)], reason
 
 
 def change_reach_problems(files: list[str], suites: list[str]) -> list[str]:

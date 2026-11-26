@@ -1,6 +1,6 @@
 """Run the complete repository validation suite.
 
-Usage: python -B tests/run_validation.py [-k PATTERN ... | --changed | --full] [-v] [--pr-body FILE]
+Usage: python -B tests/run_validation.py [-k PATTERN ... | --changed | --pre-push | --full] [-v] [--pr-body FILE]
                                         [--pr-title FILE] [--shard INDEX/COUNT]
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
@@ -24,6 +24,13 @@ kind, and the suites the change reaches: a changed suite, a suite that imports a
 others, one that names a changed file or such an importer, one in the skill a changed file sits in, and the suites
 job_selection.CHANGE_REACHES adds, such as the deployer's rendering suite for a shipped skill's files and the floor
 suites for a tool floor. A change it cannot determine runs everything.
+
+--pre-push, the run the implement-change repository skill's local_checks.py makes before every push, runs the --changed
+selection for a narrow change. For a wide one, a change to the deployer or ejryan89-skill-core, which most suites
+import, or one whose selection holds more than job_selection.PRE_PUSH_WIDE_SHARE of the recorded seconds of every job,
+it runs the policy checks, the static checks of each kind of file changed, and the suites that read a changed file
+directly, on at most job_selection.PRE_PUSH_WORKERS workers; it names each job it runs and says continuous integration
+runs the rest. A change it cannot determine runs everything.
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag, and whose `## Forms considered` the forms-considered check holds
@@ -114,6 +121,7 @@ from job_pool import (
 from job_selection import (
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
+    PRE_PUSH_WORKERS,
     all_jobs,
     changed_jobs,
     changed_paths,
@@ -122,6 +130,7 @@ from job_selection import (
     leg_jobs,
     leg_policies,
     name_patterns,
+    pre_push_jobs,
 )
 from suite_discovery import regression_suites
 from toolchain import report_prerequisite_problems, tool_versions
@@ -308,6 +317,11 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         action="store_true",
         help="run the policy checks and the static checks and suites the files changed since the base reach",
     )
+    reach.add_argument(
+        "--pre-push",
+        action="store_true",
+        help="before a push: --changed's selection of a narrow change, or of a wide one the jobs that read it directly",
+    )
     parser.add_argument(
         "--pr-body",
         type=Path,
@@ -329,6 +343,8 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
     arguments = parser.parse_args(argv)
     if arguments.changed and arguments.patterns:
         parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
+    if arguments.pre_push and arguments.patterns:
+        parser.error("argument --pre-push: not allowed with argument -k, which selects by name instead")
     if arguments.full and arguments.patterns:
         parser.error("argument --full: not allowed with argument -k, which selects by name instead")
     for option, path in (("--pr-body", arguments.pr_body), ("--pr-title", arguments.pr_title)):
@@ -357,20 +373,15 @@ def pull_request_only(arguments: argparse.Namespace) -> bool:
     """Whether the run checks only the pull request: --pr-title or --pr-body was given, and nothing that selects the
     run's jobs or its leg."""
     given = arguments.pr_title is not None or arguments.pr_body is not None
-    return given and not (arguments.patterns or arguments.changed or arguments.full or arguments.shard)
+    selecting = arguments.patterns or arguments.changed or arguments.pre_push or arguments.full or arguments.shard
+    return given and not selecting
 
 
 def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], str]:
     """The jobs a run without -k selects and the line that says why: every job with --full; with --changed the static
     checks and suites the change since base reaches; otherwise, when every changed file is documentation, the fence
     checks and the suites that name a changed file; and every job when the changed files cannot be determined."""
-    paths: list[str] | None = None
-    unknown = ""
-    if not arguments.full:
-        try:
-            paths = changed_paths(REPOSITORY_ROOT, base)
-        except ReleaseNotesError as error:
-            unknown = f" ({error})"
+    paths, unknown = (None, "") if arguments.full else read_changed_paths(base)
     if arguments.changed:
         if paths is None:
             return all_jobs(), f"Full validation: the files changed since {base} could not be determined{unknown}."
@@ -389,6 +400,45 @@ def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], st
         f"Documentation only: {reason} since {base}. Running the policy checks, "
         + (f"the {len(fences)} Markdown fence checks, " if fences else "")
         + f"and the {len(suites)} suites that name a changed file; pass --full to run every suite."
+    )
+
+
+def read_changed_paths(base: str) -> tuple[list[str] | None, str]:
+    """The files changed since base, or None and why, in parentheses after a space, when they cannot be determined."""
+    try:
+        return changed_paths(REPOSITORY_ROOT, base), ""
+    except ReleaseNotesError as error:
+        return None, f" ({error})"
+
+
+def pre_push_selection(base: str) -> tuple[list[Job], str, bool]:
+    """--pre-push's jobs, the lines that say why, and whether the change is wide: every job, uncapped, when the
+    changed files cannot be determined."""
+    paths, unknown = read_changed_paths(base)
+    if paths is None:
+        return all_jobs(), f"Full validation: the files changed since {base} could not be determined{unknown}.", False
+    jobs, reason = pre_push_jobs(REPOSITORY_ROOT, paths)
+    count = len({job.name for job in jobs})
+    changed = f"Before a push: {len(paths)} files changed since {base}"
+    if reason is None:
+        return (
+            jobs,
+            (
+                f"{changed}, a narrow change. Running the policy checks and the {count} static checks and suites "
+                "--changed selects."
+            ),
+            False,
+        )
+    listed = "".join(f"\n  {name}" for name in dict.fromkeys(job.name for job in jobs))
+    return (
+        jobs,
+        (
+            f"{changed}, a wide change: {reason}. Running the policy checks and the {count} static checks and suites "
+            f"that read a changed file directly, on at most {PRE_PUSH_WORKERS} workers; continuous integration runs "
+            "the rest."
+            f"{listed}"
+        ),
+        True,
     )
 
 
@@ -458,6 +508,21 @@ def report_run(
     return passed
 
 
+def chosen_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], str, bool]:
+    """The jobs a run without -k selects, the lines that say why, and whether they are a wide change's reduced
+    selection, which runs on capped workers."""
+    if arguments.pre_push:
+        return pre_push_selection(base)
+    jobs, mode = select_jobs(arguments, base)
+    return jobs, mode, False
+
+
+def base_of(environment: Mapping[str, str]) -> str:
+    """The base a run compares with: origin's branch GITHUB_BASE_REF names, as continuous integration sets it on a pull
+    request, or origin/main."""
+    return f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}"
+
+
 def unmatched_patterns(patterns: list[str], policies: unittest.TestSuite, jobs: list[Job]) -> list[str]:
     """The -k patterns, each as given, that match no loaded policy check's ID and no selected suite job's name:
     unittest keeps a check any one pattern matches, so a pattern beside one that matches would otherwise drop out."""
@@ -512,7 +577,8 @@ def main(
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
-        jobs, mode = select_jobs(arguments, f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}")
+        jobs, mode, wide = chosen_jobs(arguments, base_of(environment))
+        workers = min(workers, PRE_PUSH_WORKERS) if wide else workers
         print(mode, file=out, flush=True)
     unmatched = unmatched_patterns(arguments.patterns, policies, jobs)
     if unmatched:

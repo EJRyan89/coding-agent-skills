@@ -1697,8 +1697,10 @@ or removed fails validation until its pattern follows it.
 - **Use:** `type_check_roots:file_type_check_jobs`, the jobs whose roots hold the changed files, and
   `type_check_roots:every_job_reasons`, the changed files that reach every job instead.
   `pull_request:type_checks` prints them with the runner's command that runs them, and `local_checks:local_checks`
-  runs, before every push, the runner's changed-file selection and those jobs again as on Windows, through
-  `type_check_roots:PLATFORM_VARIABLE`, since a type error only Windows' legs find is otherwise first seen in CI.
+  runs, before every push, the runner's pre-push selection, `tests.validation.job_selection:pre_push_jobs`, and those jobs again as on
+  Windows, through `type_check_roots:PLATFORM_VARIABLE`, since a type error only Windows' legs find is otherwise first
+  seen in CI. A wide change's pre-push selection keeps the jobs that read it directly, so no session runs a near-full
+  validation locally.
 - **Guard:** `.claude/skills/implement-change/scripts/test_local_checks.py::LocalChecksTests`,
   `tests/validation/test_python_checks.py::PythonChecksFixtures::test_a_check_for_windows_names_an_error_only_windows_reports_on_any_platform`,
   `.claude/skills/implement-change/scripts/test_pull_request.py::TypeChecksCommandTests`,

@@ -1,15 +1,17 @@
-"""Run, before a push, what continuous integration's Validation check would fail on for the change, each run whole.
+"""Run, before a push, what continuous integration's Validation check would most likely fail on for the change.
 
     python -B .claude/skills/implement-change/scripts/local_checks.py --base origin/<branch>
         [--title-file <file>] [--body-file <file>]
 
 It fetches the base, then runs the validation runner, `tests/run_validation.py`, from the top of the repository:
 
-    changed        `--changed` against the base, which the runner reads as `origin/<GITHUB_BASE_REF>`: the policy
-                   checks, the static checks of each kind of file changed (for Python the format, lint, and every type
-                   check), and each suite the change reaches whole, the suites `CHANGE_REACHES` in
-                   `tests/validation/job_selection.py` adds among them; with --title-file and --body-file, the title
-                   and body checks read those files
+    pre-push       `--pre-push` against the base, which the runner reads as `origin/<GITHUB_BASE_REF>`. For a narrow
+                   change it is the `--changed` selection: the policy checks, the static checks of each kind of file
+                   changed (for Python the format, lint, and every type check), and each suite the change reaches
+                   whole, the suites `CHANGE_REACHES` in `tests/validation/job_selection.py` adds among them. For a
+                   wide one, which the runner names and says why, it is the policy checks, those static checks, and
+                   the suites that read a changed file directly, on capped workers, and continuous integration runs
+                   the rest. With --title-file and --body-file, the title and body checks read those files
     windows-types  the type-check jobs that read a Python file changed since the base, committed, uncommitted, or
                    untracked, named as `pull_request.py type-checks` names them, or every type check for a change that
                    reaches them all, with ejryan89-skill-core's `type_check_roots.PLATFORM_VARIABLE` set to win32, so
@@ -17,7 +19,8 @@ It fetches the base, then runs the validation runner, `tests/run_validation.py`,
 
 Both run whatever the other's result, so one run names every failure. Each run writes to this process's standard output
 as it goes, between its RUN line and the line of its result, and starts in a process tree of its own, which ends
-whatever it started once it is done. The runner selects what runs; this script reads nothing of its selection.
+whatever it started once it is done. The runner selects what runs and decides when a change is wide; this script reads
+nothing of its selection.
 
 Every line of its own is one fact:
 
@@ -106,13 +109,13 @@ def origin_base(value: str) -> Base:
     return base
 
 
-def changed_check(title_file: Path | None, body_file: Path | None) -> Check:
-    """The runner's --changed selection, given the title and body files when there are any."""
+def pre_push_check(title_file: Path | None, body_file: Path | None) -> Check:
+    """The runner's --pre-push selection, given the title and body files when there are any."""
     files = [
         *(["--pr-title", str(title_file)] if title_file else []),
         *(["--pr-body", str(body_file)] if body_file else []),
     ]
-    return Check("changed", ("--changed", *files))
+    return Check("pre-push", ("--pre-push", *files))
 
 
 def windows_check(top: Path, changed: Sequence[str]) -> Check | None:
@@ -184,12 +187,12 @@ def local_checks(git: GitClient, repository: Path, options: argparse.Namespace) 
     print(single_line(f"BASE {base} {commit}"), flush=True)
     changed = changed_files(git, top, commit)
     windows = windows_check(top, changed)
-    checks = [changed_check(options.title_file, options.body_file), *([windows] if windows else [])]
+    checks = [pre_push_check(options.title_file, options.body_file), *([windows] if windows else [])]
     results = []
     for check in checks:
         results.append(run_check(check, top, base.branch))
         print(single_line(results[-1]), flush=True)
-        if check.name == "changed" and windows is None:
+        if check.name == "pre-push" and windows is None:
             print("SKIPPED windows-types no changed file is one a type check reads", flush=True)
     failed = [result for result in results if not result.startswith("PASSED ")]
     print(single_line(f"NOT_READY {len(failed)}" if failed else "READY"), flush=True)

@@ -70,13 +70,18 @@ Locally, while the change takes shape, run what it directly touches:
 python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
 ```
 
-Before every push, the first included, run what continuous integration would fail on for the change, with the
+Before every push, the first included, run the checks continuous integration most often fails a change for, with the
 `implement-change` repository skill's `local_checks.py --base origin/main`, adding `--title-file` and `--body-file` once
-they exist. It runs the runner's `--changed` selection, whole suites and no `-k`, and then the type checks item 3 names
-with `VALIDATION_MYPY_PLATFORM=win32`, which has mypy read the code as Windows' legs do, so a Windows-only type error,
-such as a call of `os.mkfifo`, fails on macOS and Linux too. It prints `READY` only when both runs pass. For a change to
-the deployer, ejryan89-skill-core, or the runner, `--changed` selects most suites and comes close to a full run, and it
-is still owed: those are the suites the change can fail.
+they exist. It runs the runner's `--pre-push` selection, then the type checks item 3 names with
+`VALIDATION_MYPY_PLATFORM=win32`, which has mypy read the code as Windows' legs do, so a Windows-only type error, such as
+a call of `os.mkfifo`, fails on macOS and Linux too, and prints `READY` only when both runs pass. `--pre-push` runs the
+`--changed` selection below, whole suites and no `-k`, for a narrow change. A change is wide when a changed file is in
+`deployer/`, `deploy.py`, or ejryan89-skill-core, which most suites import, or when its `--changed` selection holds more
+than `PRE_PUSH_WIDE_SHARE` in `tests/validation/job_selection.py` of the recorded seconds of every job; such a selection
+comes close to a full run, which no session runs locally. For a wide change it runs the policy checks, the static checks
+of each kind of file changed, and the suites that read a changed file directly (a changed suite, one that imports a
+changed module itself or names a changed file, and the whole-tree suites `CHANGE_REACHES` adds for it), on at most
+`PRE_PUSH_WORKERS` workers, names each, and leaves the rest to continuous integration.
 
 `--changed`, from the files changed since `origin/main`, committed, uncommitted, or untracked, selects the policy checks, the static checks that read the kinds of file changed (for Python, the format,
 lint, and type checks), and the suites the change reaches: a changed suite, a suite that imports a changed module

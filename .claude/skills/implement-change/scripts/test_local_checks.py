@@ -26,7 +26,7 @@ from git_client import GitClient, GitError, GitResult, subprocess_runner
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 # The literals the script's lines are pinned against, independent of the constants that build them.
-CHANGED_COMMAND = "python -B tests/run_validation.py --changed"
+PRE_PUSH_COMMAND = "python -B tests/run_validation.py --pre-push"
 SKILL_JOB = "static type check (mypy skills/alpha/scripts)"
 SHARED_JOB = "static type check (mypy deployer, tools, deploy.py, tests, conftest.py)"
 STRICT_TESTS_JOB = "static type check (mypy --strict tests)"
@@ -124,8 +124,8 @@ class LocalChecksTests(unittest.TestCase):
                 0,
                 [
                     self.base_line(),
-                    f"RUN changed {CHANGED_COMMAND}",
-                    "PASSED changed",
+                    f"RUN pre-push {PRE_PUSH_COMMAND}",
+                    "PASSED pre-push",
                     f"RUN windows-types VALIDATION_MYPY_PLATFORM=win32 {windows}",
                     "PASSED windows-types",
                     "READY",
@@ -134,7 +134,7 @@ class LocalChecksTests(unittest.TestCase):
             self.run_script(),
         )
         changed, types = self.runs
-        self.assertEqual([sys.executable, "-B", "tests/run_validation.py", "--changed"], changed.command)
+        self.assertEqual([sys.executable, "-B", "tests/run_validation.py", "--pre-push"], changed.command)
         self.assertEqual(
             [
                 sys.executable,
@@ -174,8 +174,8 @@ class LocalChecksTests(unittest.TestCase):
                 0,
                 [
                     self.base_line(),
-                    f"RUN changed {CHANGED_COMMAND}",
-                    "PASSED changed",
+                    f"RUN pre-push {PRE_PUSH_COMMAND}",
+                    "PASSED pre-push",
                     "SKIPPED windows-types no changed file is one a type check reads",
                     "READY",
                 ],
@@ -200,13 +200,13 @@ class LocalChecksTests(unittest.TestCase):
         body.write_text("Body\n", encoding="utf-8")
         code, lines = self.run_script("--title-file", str(title), "--body-file", str(body))
         self.assertEqual(0, code)
-        self.assertIn(f'RUN changed {CHANGED_COMMAND} --pr-title "{title}" --pr-body "{body}"', lines)
+        self.assertIn(f'RUN pre-push {PRE_PUSH_COMMAND} --pr-title "{title}" --pr-body "{body}"', lines)
         self.assertEqual(
             [
                 sys.executable,
                 "-B",
                 "tests/run_validation.py",
-                "--changed",
+                "--pre-push",
                 "--pr-title",
                 str(title),
                 "--pr-body",
@@ -221,7 +221,7 @@ class LocalChecksTests(unittest.TestCase):
         code, lines = self.run_script()
         self.assertEqual(1, code)
         self.assertEqual(
-            ["NOT_PASSED changed 1", "NOT_PASSED windows-types timeout", "NOT_READY 2"],
+            ["NOT_PASSED pre-push 1", "NOT_PASSED windows-types timeout", "NOT_READY 2"],
             [line for line in lines if line.startswith(("NOT_", "PASSED", "READY"))],
         )
         self.assertEqual(2, len(self.runs))

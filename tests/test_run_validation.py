@@ -25,7 +25,7 @@ import executable_locator
 import known_failures
 from git_client import MISSING_GIT
 from job_pool import Failure, Job, PoolResult, Retry
-from job_selection import MARKDOWN_SHELL_JOB, flatten
+from job_selection import MARKDOWN_SHELL_JOB, PRE_PUSH_WORKERS, flatten
 from suite_names import is_suite_name
 from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 
@@ -253,6 +253,16 @@ class ShardOption(unittest.TestCase):
         versions.assert_not_called()
 
 
+def recording_pool(calls: list[tuple[int, list[Job]]]) -> Any:
+    """A pool that records the worker count and the jobs it was given, and runs nothing."""
+
+    def pool(_policies: object, jobs: list[Job], _verbose: bool, count: int) -> tuple[Any, PoolResult]:
+        calls.append((count, jobs))
+        return unittest.TestResult(), PoolResult([], [])
+
+    return pool
+
+
 class SelectionOptions(unittest.TestCase):
     """What -k and --changed select, read through the stream and the environment main is given."""
 
@@ -368,6 +378,64 @@ class SelectionOptions(unittest.TestCase):
         self.assertEqual([[reached]], started)
         self.assertIn("Changed files: 1 files changed since origin/main.", printed)
 
+    def test_pre_push_runs_the_changed_selection_of_a_narrow_change_on_every_worker(self) -> None:
+        reached = Job("skills/a/scripts/test_tool.py", "skills/a/scripts/test_tool.py", 1, print)
+        paths = ["skills/a/scripts/tool.py"]
+        selection = mock.Mock(return_value=([reached], None))
+        calls: list[tuple[int, list[Job]]] = []
+        code, printed, _, _ = self.run_main(
+            ["--pre-push"],
+            changed_paths=mock.Mock(return_value=paths),
+            pre_push_jobs=selection,
+            worker_count=mock.Mock(return_value=16),
+            run_beside=recording_pool(calls),
+        )
+        self.assertEqual(0, code)
+        selection.assert_called_once_with(REPOSITORY_ROOT, paths)
+        self.assertEqual([(16, [reached])], calls)
+        self.assertIn(
+            "Before a push: 1 files changed since origin/main, a narrow change. Running the policy checks and the 1 "
+            "static checks and suites --changed selects.",
+            printed,
+        )
+
+    def test_pre_push_runs_the_reduced_selection_of_a_wide_change_on_capped_workers_and_names_each_job(self) -> None:
+        kept = [Job(name, name, 1, print) for name in ("static lint check (ruff check)", "tests/deployer/test_plan.py")]
+        selection = mock.Mock(return_value=(kept, "deployer/plan.py is in deployer, which most suites reach"))
+        for configured, expected in ((16, PRE_PUSH_WORKERS), (2, 2)):
+            calls: list[tuple[int, list[Job]]] = []
+            with self.subTest(configured=configured):
+                code, printed, _, _ = self.run_main(
+                    ["--pre-push"],
+                    changed_paths=mock.Mock(return_value=["deployer/plan.py"]),
+                    pre_push_jobs=selection,
+                    worker_count=mock.Mock(return_value=configured),
+                    run_beside=recording_pool(calls),
+                )
+                self.assertEqual(0, code)
+                self.assertEqual([(expected, kept)], calls)
+                self.assertIn(
+                    "Before a push: 1 files changed since origin/main, a wide change: deployer/plan.py is in deployer, "
+                    "which most suites reach. Running the policy checks and the 2 static checks and suites that read "
+                    f"a changed file directly, on at most {PRE_PUSH_WORKERS} workers; continuous integration runs the "
+                    "rest.\n  static lint check (ruff check)\n  tests/deployer/test_plan.py\n",
+                    printed,
+                )
+
+    def test_pre_push_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
+        every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
+        selection = mock.Mock()
+        with git_not_on_path():
+            code, printed, _, started = self.run_main(
+                ["--pre-push"], pre_push_jobs=selection, all_jobs=mock.Mock(return_value=every)
+            )
+        self.assertEqual(0, code)
+        selection.assert_not_called()
+        self.assertEqual([every], started)
+        self.assertIn(
+            f"Full validation: the files changed since origin/main could not be determined ({MISSING_GIT}).", printed
+        )
+
     def test_changed_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
         # The real git, missing from PATH and the link folders, cannot tell; the run says why and runs every job.
         every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
@@ -390,6 +458,8 @@ class SelectionOptions(unittest.TestCase):
             (["--changed", "-k", "deployer"], "argument --changed: not allowed with argument -k"),
             (["--changed", "--full"], "argument --full: not allowed with argument --changed"),
             (["--full", "-k", "deployer"], "argument --full: not allowed with argument -k"),
+            (["--pre-push", "-k", "deployer"], "argument --pre-push: not allowed with argument -k"),
+            (["--pre-push", "--changed"], "argument --changed: not allowed with argument --pre-push"),
         ):
             with self.subTest(argv=argv):
                 error = io.StringIO()

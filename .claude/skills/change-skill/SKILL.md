@@ -81,7 +81,7 @@ python -B .claude/skills/change-skill/scripts/change_skill.py gates
 
 ## 5. Verify
 
-Run the local checks "Validation" in `docs/implementing-changes.md` names for the files the change touches, and get them green; continuous integration runs the full suite, and `implement-change`'s `local_checks.py` runs before every push. Those are the skill's suites one at a time, `tests/deployer/test_rendering_locking.py` among them for a shipped skill, each new regression test with the fix reverted, and, for a changed script, ruff and the type check of its `scripts/`:
+Run the local checks "Validation" in `docs/implementing-changes.md` names for the files the change touches, and get them green; continuous integration runs the full suite, and `implement-change`'s `local_checks.py` runs before every push, its selection reduced for a wide change. Those are the skill's suites one at a time, `tests/deployer/test_rendering_locking.py` among them for a shipped skill, each new regression test with the fix reverted, and, for a changed script, ruff and the type check of its `scripts/`:
 
 ```bash
 python -B tests/run_validation.py -k '<suite path>'
