@@ -65,6 +65,9 @@ RECORD_GRACE_SECONDS = 60.0
 # The names a stale record is moved aside to while it is removed: `.deploy.lock.stale.<pid>` by a deployer from before
 # the file lock, `.deploy.lock.stale.<token>` by this one. One left behind is named until it is deleted.
 LEFT_ASIDE = ".deploy.lock.stale.*"
+# What a failed open of the lock file and a failed read of the record name, in the deployment and in its dry run alike.
+OPEN_THE_LOCK = "open the deployment lock"
+READ_THE_RECORD = "read the deployment lock's record"
 
 
 @dataclass(frozen=True)
@@ -309,8 +312,8 @@ def _waiting[Taken](paths: Paths, attempt: Callable[[], Taken | None]) -> Taken:
 def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> None:
     """Judge the lock as acquire judges it, taking and changing nothing, for the dry run: wait as acquire waits while
     another process holds the file lock, then refuse, refuse a record acquire refuses, and warn of what the deployment
-    would remove. The file lock is tried and let go at once when it is free. A stat or open that fails raises its
-    OSError."""
+    would remove. The file lock is tried and let go at once when it is free. A stat or open that fails, and a link to
+    nothing in the lock file's place, which acquire's open refuses, are refused with the line acquire gives."""
 
     def free() -> bool | None:
         return None if file_lock.held_elsewhere(paths.lock_file) else True
@@ -319,7 +322,12 @@ def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_st
         _waiting(paths, free)
     except file_lock.FileLockError as exc:
         raise _unlockable(paths, exc) from exc
-    _judge_left_record(paths, probe)
+    except OSError as exc:
+        raise os_error(exc, OPEN_THE_LOCK) from exc
+    try:
+        _judge_left_record(paths, probe)
+    except OSError as exc:
+        raise os_error(exc, READ_THE_RECORD) from exc
 
 
 def _take_file_lock(paths: Paths) -> int:
@@ -336,7 +344,7 @@ def _take_file_lock(paths: Paths) -> int:
                     fsops.remove(paths.lock_file)
             raise _unlockable(paths, exc) from exc
         except OSError as exc:
-            raise os_error(exc, "open the deployment lock") from exc
+            raise os_error(exc, OPEN_THE_LOCK) from exc
 
     return _waiting(paths, take)
 
@@ -400,7 +408,7 @@ def _make_record(paths: Paths, token: str, probe: ProcessProbe) -> None:
     try:
         judged = _judge_left_record(paths, probe)
     except OSError as exc:
-        raise os_error(exc, "read the deployment lock's record") from exc
+        raise os_error(exc, READ_THE_RECORD) from exc
     if judged is not None:
         _remove_stale(paths, token, judged)
     try:
