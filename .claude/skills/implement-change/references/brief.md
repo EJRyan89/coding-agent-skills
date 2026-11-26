@@ -26,7 +26,8 @@ Each rule below is held by the document it names; read that section when a rule 
   change: state it under `## Upgrade note` (*Contract files* and *Pull requests* in `docs/implementing-changes.md`).
 - **Stated limits.** A check's miss that no repository code writes becomes a stated-limit line in the same pull
   request, not an issue; file any other finding outside the scope as an issue from its template, a bug with its
-  `## Introduced` section filled as the template's comment asks.
+  `## Introduced` section filled as the template's comment asks, filed with `--label bug` and the origin label that
+  comment names, since `--body-file` applies none of the template's labels.
 - **Prompts.** A change that writes a prompt, such as a `SKILL.md` step, a reviewer's instructions, or a brief, meets
   the `## Prompt patterns` of `docs/lessons.md`: each check it asks for names its command, and each rule its step
   must meet is stated or pointed at.

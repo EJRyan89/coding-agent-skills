@@ -113,6 +113,10 @@ class ImplementingChangesProfileTest(unittest.TestCase):
         for answer in ("predates <tag>", "unknown", "name what you searched"):
             with self.subTest(answer=answer):
                 self.assertIn(answer, section)
+        # A release's notes count its closed bugs by origin label, so the comment names each label and when it applies.
+        for label in ("apply one origin label", "hardening when", "regression when", "latent when", "apply none"):
+            with self.subTest(label=label):
+                self.assertIn(label, section)
 
     def test_each_procedure_that_files_a_bug_fills_its_introduced_section(self) -> None:
         for path in (
@@ -124,6 +128,23 @@ class ImplementingChangesProfileTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertIn("`## Introduced`", (REPOSITORY_ROOT / path).read_text(encoding="utf-8"))
+
+    def test_each_route_that_files_a_bug_from_a_body_file_applies_its_labels(self) -> None:
+        # gh issue create --body-file applies none of the template's labels, and a release's notes count its fixed
+        # issues by the kind and origin labels, so every route that files a bug names both.
+        for path in (
+            "docs/releasing.md",
+            "docs/implementing-changes.md",
+            ".github/CONTRIBUTING.md",
+            "CLAUDE.md",
+            ".claude/skills/implement-change/references/brief.md",
+            ".claude/skills/evaluate-skill/SKILL.md",
+        ):
+            text = " ".join((REPOSITORY_ROOT / path).read_text(encoding="utf-8").split())
+            with self.subTest(path=path):
+                self.assertRegex(text, r"--label bug|pass (its|the template's) kind label with `--label`")
+                self.assertIn("origin label", text)
+                self.assertRegex(text, "applies none of (a|the) template's labels")
 
     def test_step_8_pastes_no_title_into_a_command(self) -> None:
         section = SKILL.read_text(encoding="utf-8").split("## 8. Pull request", 1)[1]
