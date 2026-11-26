@@ -41,7 +41,8 @@ from bounded_process import Finished
 from fixture_template import FixtureTemplate, repository_shape
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
-from job_selection import importers, python_imports, reached_suites
+from job_selection import importers, python_imports, reached_suites, suites_naming
+from suite_discovery import regression_suites
 from suite_names import is_suite_name
 from test_private_folder import judged_folder_calls, recording_temporary_folders
 from validation_support import repository_files
@@ -6276,3 +6277,32 @@ def test_a_name_in_a_comment_after_a_lone_cr_is_not_reached() -> None:
     # Python ends a line at a lone CR, so the `f` after `#` is a comment's text, as the parser reads it.
     source = "import x\r# f\n"
     assert not mutation_gate.reached_otherwise(ast.parse(source), source, frozenset({"f"}))
+
+
+def unnamed_document() -> str:
+    """A document under docs/ that no regression suite names, by path or by its file name, chosen as the tests run so
+    that this suite, which would otherwise name it, does not reach it."""
+    suites = regression_suites(REPOSITORY)
+    for document in sorted((REPOSITORY / "docs").glob("*.md")):
+        name = document.relative_to(REPOSITORY).as_posix()
+        if not suites_naming([name], suites):
+            return name
+    raise AssertionError("every document under docs/ is named by a suite")
+
+
+@pytest.mark.parametrize(
+    "mutated", ["skills/dotnet-dependencies/scripts/msbuild_reader.py", "tests/validation/upgrade_notes.py"]
+)
+def test_a_later_change_no_suite_of_the_mutants_reads_carries_the_verdict_in_this_repository(mutated: str) -> None:
+    # The suites that read the whole tree by a walk or a glob, which CHANGE_REACHES adds for --changed whatever
+    # changed, execute no mutated module, so a later change that only they read holds no verdict back.
+    later = unnamed_document()
+    selected = Selected(
+        "origin/main",
+        "3.8.0",
+        (many(1, mutated),),
+        "cd" * 20,
+        suites=tuple(mutation_gate.reaching_suites(REPOSITORY, [mutated])),
+    )
+    verdict = mutation_gate.Verdict(VERDICT_RUN, selected, {later: "aa" * 20}, VERDICT_SUMMARY)
+    assert mutation_gate.carry_problem(verdict, selected, {later: "bb" * 20}, REPOSITORY) is None

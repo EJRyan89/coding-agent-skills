@@ -224,3 +224,9 @@ class EveryJobTests(unittest.TestCase):
             "tests/unit/test_run.py",
         ]
         self.assertEqual([], every_job_reasons(changed, ["deployer", "tools", "skills/core/scripts"]))
+
+
+def test_the_platform_variable_is_the_name_the_runner_and_the_local_checks_share() -> None:
+    # A pinned contract value: the implement-change local checks set it for the validation runner's type checks, and
+    # .github/CONTRIBUTING.md names it to contributors.
+    assert type_check_roots.PLATFORM_VARIABLE == "VALIDATION_MYPY_PLATFORM"

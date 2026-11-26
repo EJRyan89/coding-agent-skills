@@ -5,9 +5,10 @@ and each of those that `[tool.validation] mypy-strict` in `pyproject.toml` lists
 each skill's `scripts/` that holds a module from inside it, in a run of its own, strict when the list names it.
 tests/validation/python_checks.py builds its jobs from these, and the implement-change repository skill's script
 names, from the same reading, the jobs that check the files a change touches, so the command it prints runs the jobs
-continuous integration runs. A change to a file that configures or pins every check, or to a module other roots import,
-reaches every job instead, as `every_job_reasons` says. Every function is given the repository's root or its
-`pyproject.toml`, and finds neither itself.
+continuous integration runs, and its local checks run those jobs again as on Windows through PLATFORM_VARIABLE. A
+change to a file that configures or pins every check, or to a module other roots import, reaches every job instead, as
+`every_job_reasons` says. Every function is given the repository's root or its `pyproject.toml`, and finds neither
+itself.
 """
 
 from __future__ import annotations
@@ -46,6 +47,9 @@ PACKAGE_ROOTS = ("deployer", "tools")
 MYPY_PATH_PREFIX = "$MYPY_CONFIG_FILE_DIR/"
 # The words every type-check job's name starts with, so a runner pattern of them alone selects every job.
 JOB_PREFIX = "static type check"
+# The environment variable that, set to a platform validation supports, such as win32, has every type-check job check
+# the code as mypy's `--platform` reads it, so a check off Windows finds what only Windows' run would.
+PLATFORM_VARIABLE = "VALIDATION_MYPY_PLATFORM"
 
 
 def skill_directories(root: Path) -> list[Path]:

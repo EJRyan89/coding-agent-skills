@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "Bash(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/fix_brief.py *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "Bash(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/lessons_patterns.py *)", "Bash(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/fix_brief.py *)", "Bash(python -B .claude/skills/implement-change/scripts/local_checks.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/local_checks.py *)"]
 ---
 
 Read and follow `../../../.claude/skills/implement-change/SKILL.md`, a path relative to this file, as the authoritative workflow.

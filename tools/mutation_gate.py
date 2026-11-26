@@ -138,7 +138,8 @@ VERDICT_FOLDER/VERDICT_FILE in FOLDER, and names the cache key the workflow save
 run, when carry_problem finds nothing against it: the same base, mutmut release, module texts, changed lines,
 mutants, tables, and legs, the same suites reaching the mutated modules, and no file changed since the verdict's tree
 that is one of GATE_FILES, the gate's own module or one it imports, directly or through others, or that reaches one of
-those suites, as `job_selection.reached_suites` selects them. A test change that reaches such a suite, as a kill
+those suites, as `job_selection.reached_suites` selects them, without the suites that read the whole tree as text and
+execute none of it. A test change that reaches such a suite, as a kill
 commit does, runs the mutants, since it can change which die; one that reaches none cannot change what the gate would
 run. A run that carries a verdict deals no shard, and its join reports the verdict's summary under a first line naming
 the run it came from; it leaves no verdict of its own, so the next run is held to the tree the verdict tested. A
@@ -2698,10 +2699,12 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
 
 def reaching_suites(root: Path, modules: Sequence[str]) -> list[str]:
     """The Python suites that reach the modules, as `job_selection.reached_suites` selects them for --changed, each by
-    its path from the root; the Bash and PowerShell suites run no Python module."""
+    its path from the root, but for the suites that read the whole tree without executing it, which no mutant can
+    change, so a later change that only they read carries the verdict; the Bash and PowerShell suites run no Python
+    module."""
     return [
         suite.relative_to(root).as_posix()
-        for suite in reached_suites(root, list(modules))
+        for suite in reached_suites(root, list(modules), whole_tree=False)
         if suite.suffix.casefold() == ".py"
     ]
 

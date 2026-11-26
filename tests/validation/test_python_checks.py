@@ -362,6 +362,65 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertEqual(messages[0], messages[1])
             self.assertEqual(["module.py", "pyproject.toml"], sorted(path.name for path in root.iterdir()))
 
+    def test_a_named_platform_is_given_to_mypy_and_keeps_a_cache_of_its_own(self) -> None:
+        commands: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "mypy cache"
+            with (
+                mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
+                mock.patch.object(
+                    toolchain,
+                    "run_process",
+                    side_effect=lambda arguments, environment, cwd: commands.append(arguments),
+                ),
+            ):
+                for platform in ("", "win32", "linux"):
+                    variables = {"VALIDATION_MYPY_CACHE": str(root), "VALIDATION_MYPY_PLATFORM": platform}
+                    with mock.patch.dict("os.environ", variables):
+                        mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml", strict=True)
+        native, windows, linux = commands
+        self.assertNotIn("--platform", native)
+        self.assertEqual(["--strict", "--platform", "win32", "deploy.py"], windows[-4:])
+        self.assertEqual(["--strict", "--platform", "linux", "deploy.py"], linux[-4:])
+        caches = [command[command.index("--cache-dir") + 1] for command in commands]
+        # A platform's run never reads another's cache, and the native run's folder is the one it had before.
+        self.assertEqual(3, len(set(caches)))
+        self.assertEqual(
+            str(python_checks.mypy_cache_directory(root, REPOSITORY_ROOT, ["deploy.py"], strict=True)), caches[0]
+        )
+
+    def test_a_platform_validation_does_not_support_is_refused_by_the_variable_s_name(self) -> None:
+        for platform in ("windows", "Win32", " win32"):
+            with (
+                self.subTest(platform=platform),
+                mock.patch.dict("os.environ", {"VALIDATION_MYPY_PLATFORM": platform}),
+                mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
+                mock.patch.object(toolchain, "run_process") as started,
+                self.assertRaises(AssertionError) as raised,
+            ):
+                mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
+            started.assert_not_called()
+            self.assertIn(
+                f"VALIDATION_MYPY_PLATFORM must name one of darwin, linux, win32, not {platform!r}",
+                str(raised.exception),
+            )
+
+    def test_a_check_for_windows_names_an_error_only_windows_reports_on_any_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "pyproject.toml"
+            configuration.write_text('[tool.mypy]\npython_version = "3.12"\n', encoding="utf-8")
+            (root / "module.py").write_text('import os\n\nos.mkfifo("pipe")\n', encoding="utf-8")
+            with mock.patch.dict("os.environ", {"VALIDATION_MYPY_PLATFORM": "linux"}):
+                mypy_type_check(root, ["module.py"], configuration)
+            with (
+                mock.patch.dict("os.environ", {"VALIDATION_MYPY_PLATFORM": "win32"}),
+                self.assertRaises(AssertionError) as raised,
+            ):
+                mypy_type_check(root, ["module.py"], configuration)
+            self.assertRegex(str(raised.exception), r'(?m)^module\.py:3: error: Module has no attribute "mkfifo"')
+            self.assertIn("checked as on win32", str(raised.exception))
+
     def test_type_check_in_strict_mode_names_an_error_only_strict_mode_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
