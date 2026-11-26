@@ -529,14 +529,20 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual([unraisable], handed, "the hook it replaced still prints the exception")
         self.assertTrue(said.startswith(f"unraisable_record: could not record an unraisable exception in {missing}: "))
         self.assertNotIn(UNFINISHED, said, "an OSError names its own cause")
-        self.assertIn(str(missing / f"{os.getpid()}.txt"), said)
+        # The OSError's text, which names the file it could not open by its repr.
+        self.assertIn(repr(str(missing / f"{os.getpid()}.txt")), said)
         self.assertEqual([], list(self.folder.iterdir()))
 
     def test_a_line_stopped_by_anything_but_an_os_error_also_ends_the_process_by_its_status(self) -> None:
+        # Not an Exception, so reprlib lets it through, as it does KeyboardInterrupt or SystemExit, and not one of
+        # those, so a hook that let it escape fails this test rather than stopping pytest.
+        class Stopping(BaseException):
+            pass
+
         class Interrupting:
             @override
             def __repr__(self) -> str:
-                raise KeyboardInterrupt
+                raise Stopping
 
         handed: list[Any] = []
         sys.unraisablehook = handed.append
