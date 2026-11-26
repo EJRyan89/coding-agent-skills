@@ -3206,6 +3206,15 @@ class HookRules:
 
 
 DEFAULT_HOOK_TIMEOUT = 600
+# The handler types whose names start with a vowel sound, read with "an": an agent, an http, an mcp_tool hook.
+VOWEL_SOUND_TYPES = frozenset({"agent", "http", "mcp_tool"})
+
+
+def a_hook(kind: str) -> str:
+    """A handler type named with its article, as a finding's message reads it: "a command hook", "an http hook"."""
+    return f"{'an' if kind in VOWEL_SOUND_TYPES else 'a'} {kind} hook"
+
+
 # The reader of a hook's timeout, which a number must pass before it is compared.
 FIELDS = FieldReader()
 CLAUDE_HOOKS = HookRules(
@@ -3424,12 +3433,12 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
     if not isinstance(kind, str) or kind not in rules.types:
         return [("ERROR", f"Hook on '{event}': type {kind!r} is not one {rules.runtime} runs")]
     if kind in rules.skipped_types:
-        return [("ERROR", f"Hook on '{event}': {rules.runtime} reads a {kind} hook but skips it, so it never runs")]
+        return [("ERROR", f"Hook on '{event}': {rules.runtime} reads {a_hook(kind)} but skips it, so it never runs")]
     if kind not in rules.event_types.get(event, rules.types.keys()):
         outcome = f", so {rules.unsupported_outcomes[event]}" if event in rules.unsupported_outcomes else ""
-        return [("ERROR", f"Hook on '{event}': {rules.runtime} does not support a {kind} hook on this event{outcome}")]
+        return [("ERROR", f"Hook on '{event}': {rules.runtime} does not support {a_hook(kind)} on this event{outcome}")]
     problems = [
-        ("ERROR", f"Hook on '{event}': a {kind} hook needs '{name}'")
+        ("ERROR", f"Hook on '{event}': {a_hook(kind)} needs '{name}'")
         for name in rules.types[kind]
         if not (isinstance(handler.get(name), str) and handler[name].strip())
     ]

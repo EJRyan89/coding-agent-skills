@@ -5438,7 +5438,7 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     ),
                     (
                         "ERROR",
-                        "Hook on 'PreSkillShellCommand': Claude Code does not support a agent hook on this event, "
+                        "Hook on 'PreSkillShellCommand': Claude Code does not support an agent hook on this event, "
                         "so it blocks each command the hook matches",
                     ),
                 ],
@@ -5469,13 +5469,14 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                 [
                     (
                         "ERROR",
-                        "Hook on 'PermissionRequest': Claude Code does not support a agent hook on this event, "
+                        "Hook on 'PermissionRequest': Claude Code does not support an agent hook on this event, "
                         "so it never runs",
                     ),
-                    ("ERROR", "Hook on 'SessionStart': Claude Code does not support a http hook on this event"),
+                    ("ERROR", "Hook on 'SessionStart': Claude Code does not support an http hook on this event"),
                     (
                         "ERROR",
-                        "Hook on 'Setup': Claude Code does not support a mcp_tool hook on this event, so it never runs",
+                        "Hook on 'Setup': Claude Code does not support an mcp_tool hook on this event, "
+                        "so it never runs",
                     ),
                     ("ERROR", "Hook on 'Notification': Claude Code does not support a prompt hook on this event"),
                 ],
@@ -5498,8 +5499,8 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     }
                 },
                 [
-                    ("ERROR", "Hook on 'PostToolUse': a http hook needs 'url'"),
-                    ("ERROR", "Hook on 'PostToolUse': a mcp_tool hook needs 'tool'"),
+                    ("ERROR", "Hook on 'PostToolUse': an http hook needs 'url'"),
+                    ("ERROR", "Hook on 'PostToolUse': an mcp_tool hook needs 'tool'"),
                 ],
             ),
             "malformed levels": (
@@ -6030,8 +6031,8 @@ class CodexConfigurationTests(unittest.TestCase):
             "mcp_tool without server or tool": (
                 hook(type="mcp_tool", timeout=5),
                 [
-                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'server'"),
-                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'tool'"),
+                    ("ERROR", "Hook on 'PreToolUse': an mcp_tool hook needs 'server'"),
+                    ("ERROR", "Hook on 'PreToolUse': an mcp_tool hook needs 'tool'"),
                 ],
             ),
             "mcp_tool without a timeout": (
@@ -6044,7 +6045,7 @@ class CodexConfigurationTests(unittest.TestCase):
             ),
             "agent": (
                 hook(type="agent", prompt="Check."),
-                [("ERROR", "Hook on 'PreToolUse': Codex reads a agent hook but skips it, so it never runs")],
+                [("ERROR", "Hook on 'PreToolUse': Codex reads an agent hook but skips it, so it never runs")],
             ),
             "http": (
                 hook(type="http", url="https://example.test", timeout=5),
