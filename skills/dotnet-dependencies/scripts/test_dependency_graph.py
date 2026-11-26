@@ -1721,6 +1721,14 @@ ASK_SDK_ADVICE = (
     "; rerun the query through ask_sdk.py to have dotnet nuget why locate it, which lets MSBuild and the .NET host read"
     " and run whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
 )
+# What a line adds for a project the SDK would not be asked about: under a query other than `why <name>`, or one a
+# narrowed `why` reaches through a project reference.
+NOT_ASKED_HERE = (
+    "; the SDK is asked only by why <name> run through ask_sdk.py, about the projects that query starts from, so this"
+    " answer stands on what the walk read for the project; rerun why <name> --project <project> through ask_sdk.py to"
+    " have dotnet nuget why locate it, which lets MSBuild and the .NET host read and run whatever the project and the"
+    " machine's SDK configuration lead them to, beyond the examined tree"
+)
 # A project whose assets file lies where no file says, and the SDK's answer for it.
 UNPLACED_ASSETS = "<PropertyGroup><ProjectAssetsFile>$(Elsewhere)</ProjectAssetsFile></PropertyGroup>"
 UNPLACED_SDK_TEXT = (
@@ -1862,15 +1870,16 @@ class AssetsWalkTests(Fixture):
         outside = (self.root / "outside" / "project.assets.json").as_posix()
         tree = (self.root / "repo").as_posix()
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual(0, code)
+        # The assets file outside the tree is reported as any path a file names outside it is.
+        refused = f"the path is outside the examined tree {tree}, which the reader does not leave"
+        self.assertEqual((1, [[outside, refused]]), (code, self.lines(rows, "UNREADABLE")))
         self.assertEqual([], self.sdk.commands)
         self.assertEqual(
             [
                 ["src/Moved/Moved.csproj", UNSETTLED_ASSETS + ASK_SDK_ADVICE],
                 [
                     "src/Out/Out.csproj",
-                    f"the walk does not read the restore's assets file at {outside}: the path is outside the examined"
-                    f" tree {tree}, which the reader does not leave" + ASK_SDK_ADVICE,
+                    f"the walk does not read the restore's assets file at {outside}: {refused}" + ASK_SDK_ADVICE,
                 ],
             ],
             self.lines(rows, "SDK_NOT_ASKED"),
@@ -1883,11 +1892,70 @@ class AssetsWalkTests(Fixture):
             ],
             self.lines(rows, "PROJECT"),
         )
-        # The line names the project once, whatever the names asked; another query asks no SDK and names none.
+        # The line names the project once, whatever the names asked.
         _, rows = self.run_main("why", "Lantern.Json", "Quill.Http", "--root", str(root))
         self.assertEqual(2, len(self.lines(rows, "SDK_NOT_ASKED")))
-        _, rows = self.run_main("conflicts", "--root", str(root))
-        self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
+
+    def test_every_other_query_names_each_project_whose_assets_file_the_walk_cannot_place(self) -> None:
+        # Moved's guessed restore in obj/ is read, and Out's outside the tree is not; every query reading their
+        # packages says so, and that only `why <name>` asks the SDK, which none of these does, dotnet installed or not.
+        # Out's assets file is an UNREADABLE line only where the answer reads Out's packages.
+        root, _ = self.moved_solution()
+        self.write("repo/src/Moved/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        outside = (self.root / "outside" / "project.assets.json").as_posix()
+        tree = (self.root / "repo").as_posix()
+        refused = f"the path is outside the examined tree {tree}, which the reader does not leave"
+        moved = ["src/Moved/Moved.csproj", UNSETTLED_ASSETS + NOT_ASKED_HERE]
+        out = [
+            "src/Out/Out.csproj",
+            f"the walk does not read the restore's assets file at {outside}: {refused}" + NOT_ASKED_HERE,
+        ]
+        graph_file = str(self.root / "graph" / "graph.mmd")
+        unreadable = [[outside, refused]]
+        queries: list[tuple[tuple[str, ...], list[list[str]], list[list[str]]]] = [
+            (("conflicts",), [moved, out], unreadable),
+            (("where", "Lantern.Json"), [moved, out], unreadable),
+            (("graph", "--output", graph_file), [moved, out], unreadable),
+            (("why", "--all", "--project", str(self.root / "repo" / "src" / "Moved" / "Moved.csproj")), [moved], []),
+            (("why", "--all", "--project", str(self.root / "repo" / "src" / "Out" / "Out.csproj")), [out], unreadable),
+        ]
+        for arguments, expected, refusals in queries:
+            with self.subTest(arguments=arguments):
+                code, rows = self.run_main(*arguments, "--root", str(root), services=self.with_dotnet)
+                self.assertEqual(
+                    (int(bool(refusals)), [], expected, refusals),
+                    (code, self.sdk.commands, self.lines(rows, "SDK_NOT_ASKED"), self.lines(rows, "UNREADABLE")),
+                )
+        # Moved's answer comes from the restore in obj/ the line names.
+        _, rows = self.run_main("where", "Lantern.Json", "--root", str(root))
+        self.assertIn("src/Moved/Moved.csproj", [row[0] for row in self.lines(rows, "WHERE")])
+
+    def test_a_narrowed_query_names_a_project_it_reaches_whose_assets_file_the_walk_cannot_place(self) -> None:
+        # App, restored in obj/, references Moved, whose restore the walk guesses at: every query narrowed to App
+        # reads Moved's packages and names it, `why <name>` too, which asks the SDK only about App.
+        root, _ = self.moved_solution()
+        self.write("repo/src/Moved/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        app = self.write(
+            "repo/src/App/App.csproj",
+            restored_with('<ItemGroup><ProjectReference Include="../Moved/Moved.csproj" /></ItemGroup>'),
+        )
+        self.write("repo/src/App/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        root.write_text(solution("src\\App\\App.csproj", "src\\Moved\\Moved.csproj"), encoding="utf-8")
+        expected = [["src/Moved/Moved.csproj", UNSETTLED_ASSETS + NOT_ASKED_HERE]]
+        queries = [
+            ("why", "Lantern.Json"),
+            ("why", "Lantern.Json", "--ask-sdk"),
+            ("why", "--all"),
+            ("where", "Lantern.Json"),
+            ("conflicts",),
+            ("graph", "--output", str(self.root / "graph" / "graph.mmd")),
+        ]
+        for arguments in queries:
+            with self.subTest(arguments=arguments):
+                _, rows = self.run_main(
+                    *arguments, "--project", str(app), "--root", str(root), services=self.with_dotnet
+                )
+                self.assertEqual(([], expected), (self.sdk.commands, self.lines(rows, "SDK_NOT_ASKED")))
 
     def test_under_the_flag_the_sdk_locates_an_assets_file_the_walk_cannot_place_and_nothing_withholds_it(
         self,
@@ -1903,7 +1971,10 @@ class AssetsWalkTests(Fixture):
         services = Services(run=sdk, which=self.with_dotnet.which)
         out = self.root / "repo" / "src" / "Out" / "Out.csproj"
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), "--ask-sdk", services=services)
-        self.assertEqual(1, code)  # the import outside the tree is an UNREADABLE line
+        # The import outside the tree is an UNREADABLE line against Moved; Out's assets file, which the SDK answered
+        # from, is not.
+        self.assertEqual(1, code)
+        self.assertEqual(["src/Moved/Moved.csproj"], [row[0] for row in self.lines(rows, "UNREADABLE")])
         self.assertEqual(
             [[str(moved), "Lantern.Json"], [str(out), "Lantern.Json"]], sorted(c[3:] for c in sdk.commands)
         )
@@ -1912,6 +1983,45 @@ class AssetsWalkTests(Fixture):
             self.lines(rows, "PATH"),
         )
         self.assertEqual([], self.lines(rows, "SDK_NOT_ASKED"))
+
+    def test_under_the_flag_a_project_the_sdk_answers_from_an_assets_file_outside_the_tree_is_answered_whole(
+        self,
+    ) -> None:
+        # The SDK read Out's assets file, outside the tree, and answered Out: nothing says the answer is partial or
+        # names the file unread, and the run exits 0. A run that fails leaves the walk answering Out from its project
+        # file alone, so then the file is an UNREADABLE line.
+        root, _ = self.moved_solution()
+        out = self.root / "repo" / "src" / "Out" / "Out.csproj"
+        tree = (self.root / "repo").as_posix()
+        outside = (self.root / "outside" / "project.assets.json").as_posix()
+        sdk = TableSdk({(same_path(out), "lantern.json"): UNPLACED_SDK_TEXT.replace("'Moved'", "'Out'")})
+        arguments = ("why", "Lantern.Json", "--project", str(out), "--root", str(root), "--ask-sdk")
+        code, rows = self.run_main(*arguments, services=Services(run=sdk, which=self.with_dotnet.which))
+        self.assertEqual(
+            (0, [], [], []),
+            (code, self.lines(rows, "UNREADABLE"), self.lines(rows, "SDK_NOT_ASKED"), self.lines(rows, "SDK_FAILED")),
+        )
+        self.assertEqual(
+            [["src/Out/Out.csproj", "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"]],
+            self.lines(rows, "PATH"),
+        )
+
+        def failing(arguments: Sequence[str], timeout: float, folder: Path) -> Completed:
+            return Completed(1, "error: the restore failed\r\n")
+
+        code, rows = self.run_main(*arguments, services=Services(run=failing, which=self.with_dotnet.which))
+        refused = f"the path is outside the examined tree {tree}, which the reader does not leave"
+        self.assertEqual((1, [[outside, refused]]), (code, self.lines(rows, "UNREADABLE")))
+        self.assertEqual(["src/Out/Out.csproj"], [row[0] for row in self.lines(rows, "SDK_FAILED")])
+        # Each name a run failed for leaves the file reported once.
+        code, rows = self.run_main(
+            "why",
+            "Lantern.Json",
+            "Quill.Http",
+            *arguments[2:],
+            services=Services(run=failing, which=self.with_dotnet.which),
+        )
+        self.assertEqual((1, [[outside, refused]]), (code, self.lines(rows, "UNREADABLE")))
 
     def test_under_the_flag_without_dotnet_the_line_says_so(self) -> None:
         root, _ = self.moved_solution()
@@ -4515,7 +4625,7 @@ class PathBoundTests(Fixture):
             "</PropertyGroup></Project>\n",
         )
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
-        self.assertEqual((0, []), (code, self.sdk.commands))
+        self.assertEqual((1, []), (code, self.sdk.commands))  # the assets files outside the tree are UNREADABLE lines
         edges = {row[0]: row[2] for row in self.lines(rows, "PROJECT")}
         self.assertEqual(
             {
@@ -4530,6 +4640,11 @@ class PathBoundTests(Fixture):
             edges,
         )
         tree = (self.root / "repo").as_posix()
+        refused = f"the path is outside the examined tree {tree}, which the reader does not leave"
+        self.assertEqual(
+            [[(outside / folder / "project.assets.json").as_posix(), refused] for folder in ("ext", "obj")],
+            self.lines(rows, "UNREADABLE"),
+        )
         not_read = "the walk does not read the restore's assets file at {}: the path is outside the examined tree {}, "
         not_read += "which the reader does not leave"
         unsettled = UNSETTLED_ASSETS.replace(
