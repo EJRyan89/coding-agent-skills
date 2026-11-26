@@ -298,6 +298,7 @@ from module_assignments import assigned_names, sole_assignment
 from path_containment import resolved_path, within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
+from prose_paths import PATH_CHARACTER, PATH_START
 from python_names import import_aliases, qualified_name, type_parameter_names
 from suite_names import is_suite_name
 from text_lines import LINE_FEED, line_index, line_starts, text_lines
@@ -777,11 +778,13 @@ SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # `~`, or `&`, so `%` is read as written, as prose is not percent-encoded, and `\` is kept for `markdown_links` to read
 # as the platform reads a path: a separator on Windows, part of the name elsewhere. It ends at `.md` that is followed
 # by none of those characters other than `.`, and by no `.` followed by one. `markdown_links` resolves where it leads.
-PATH_CHARACTER = r"[\w%+@~&./\\-]"
+# PATH_START and PATH_CHARACTER are ejryan89-skill-core's prose_paths classes, which review-insights reads a path in a
+# code span with too.
 PROSE_REFERENCE = re.compile(
     rf"(?:(?<![^\s(\[<])|(?<=(?<!{PATH_CHARACTER})[`'\"])"
-    rf"|(?<=(?<!{PATH_CHARACTER})\*)(?=(?:\$\{{CLAUDE_SKILL_DIR\}}/)?[\w.%-][\w%+@~&./\\-]*\.md\*))"
-    r"(\$\{CLAUDE_SKILL_DIR\}/)?((?:[A-Za-z]:[/\\]|[/\\])?[\w.%-][\w%+@~&./\\-]*\.md)(?!\.?[\w%+@~&/\\-])"
+    rf"|(?<=(?<!{PATH_CHARACTER})\*)(?=(?:\$\{{CLAUDE_SKILL_DIR\}}/)?{PATH_START}{PATH_CHARACTER}*\.md\*))"
+    r"(\$\{CLAUDE_SKILL_DIR\}/)?"
+    rf"((?:[A-Za-z]:[/\\]|[/\\])?{PATH_START}{PATH_CHARACTER}*\.md)(?!\.?[\w%+@~&/\\-])"
 )
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")

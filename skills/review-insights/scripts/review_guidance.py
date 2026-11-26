@@ -37,7 +37,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TypedDict
 
 from dotnet_solution import FileRefused
@@ -47,6 +47,7 @@ from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
 from markdown_sections import PROSE_BLOCKS, blocks, code_spans
 from path_containment import resolved_path, written_refusal
+from prose_paths import PATH_CHARACTER, PATH_START
 from review_config import safe_repository_path
 from review_records import ReviewRecord, is_suite_profile
 from text_lines import text_lines
@@ -110,8 +111,10 @@ FORCE_WORDS = {
 }
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
-# A Markdown path a code span names, matched against the span's whole text as written.
-CODE_PATH = re.compile(r"[A-Za-z0-9_./-]+\.md")
+# A Markdown path a code span names, matched against the span's whole text as written: after an optional `/` or `\`,
+# ejryan89-skill-core's prose_paths classes, the characters a path audit-skill reads in prose holds. A leading `/` roots
+# the path at the repository root; a leading `\` does on Windows, and is part of the name elsewhere, as in a link.
+CODE_PATH = re.compile(rf"[/\\]?{PATH_START}{PATH_CHARACTER}*\.md")
 # The cover of a line that holds no link.
 NO_LINKS = Cover.of([])
 
@@ -566,14 +569,20 @@ def _markdown_links(lines: list[str]) -> tuple[dict[int, list[str]], dict[int, C
 
 
 def _code_references(line: str, links: Cover) -> list[str]:
-    """The Markdown paths a line names in code outside its links, each with a leading `./` dropped, as a path from the
-    repository root reads it. A code span is read through markdown_sections' code_spans, which pairs whole backtick
-    runs, so a path written with two backticks is read and one between two spans is prose.
+    """The Markdown paths a line names in code outside its links, each as a link's destination is read, with a leading
+    `./` dropped, as a path from the repository root reads it, and a backslash read as the platform reads one in a
+    path: a separator on Windows, part of the name elsewhere, so `\\docs\\a.md` is rooted on Windows and one name
+    beside the guidance file elsewhere. A code span is read through markdown_sections' code_spans, which pairs whole
+    backtick runs, so a path written with two backticks is read and one between two spans is prose. A span is a path
+    when its whole text is one by CODE_PATH, so `docs/c++.md`, `docs/über.md`, and `docs/Q&A.md` are read, and
+    `~/a.md`, `@a.md`, `$HOME/a.md`, `C:/a.md`, and `**/*.md` are not.
 
-    Limit: a span's text is matched as written, without the space CommonMark strips from each side, so a path
-    written with a space inside each backtick, as `` ` d.md ` ``, is no path, where GitHub renders it as code."""
+    Limits: a span's text is matched as written, without the space CommonMark strips from each side, so a path
+    written with a space inside each backtick, as `` ` d.md ` ``, is no path, where GitHub renders it as code; and a
+    span holding a space, as `` `my notes.md` ``, is no path, since a span such as `` `cat docs/a.md` `` names a path
+    in a command more often than a path holds a space."""
     return [
-        span.text.removeprefix("./")
+        PurePath(span.text).as_posix()
         for span in code_spans(line)
         if CODE_PATH.fullmatch(span.text) and not links.overlaps(span.start, span.end)
     ]
