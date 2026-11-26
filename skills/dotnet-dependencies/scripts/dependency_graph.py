@@ -111,9 +111,10 @@ after `graph` where it differs, a private package or project being walked on its
 chain, version, and framework `dotnet nuget why` prints from the same file, which is all that command reads once it has
 located the file. Where the files leave the place unsettled, such as after an Import the reader did not read, which may
 set it, or under the SDK's artifacts layout, the walk reads the assets file in obj/, where a restore writes it unless a
-file moves it, which may not be the one the build uses; where they leave it outside the tree, it reads none, and reports
-the file as an UNREADABLE line. For each such project whose packages a query's answer reads, a project it starts from or
-one they reach through project references, every query prints an SDK_NOT_ASKED line saying so, and asks the SDK nothing:
+file moves it, which may not be the one the build uses; where they leave it outside the tree, it reads none. For each
+such project whose packages a query's answer reads, a project it starts from or one they reach through project
+references, every query prints an SDK_NOT_ASKED line saying so, after an UNREADABLE line naming a file outside the tree,
+and asks the SDK nothing:
 `dotnet nuget why` evaluates the project through MSBuild, and MSBuild and the .NET host that starts it read and run
 whatever the project and the machine's SDK configuration lead them to, beyond the examined tree: imports, the restore's
 generated .nuget.g.props and .targets, the project's .user file, the nearest global.json, whose sdk.paths names the SDK
@@ -146,8 +147,9 @@ way, and one that climbs out of the checkout at its top leaves it there and is j
 project the search finds or a solution lists, an import, the nearest Directory.Build.props or Directory.Packages.props,
 a restore's assets, a packages.config, a config, the packages folder, a package's folder, its lib folder, or its nuspec,
 that a link on its way, its own name included, leads outside the tree is an UNREADABLE line naming the link and its
-target; and an Exists() condition below such a link is reported and unsettled. A link whose target stays inside the tree
-is read through. The NuGet cache lies outside the tree and is read where it is, resolved first, through a reader bound
+target, a restore's assets only where a query's answer reads the project's packages and the SDK did not answer it;
+and an Exists() condition below such a link is reported and unsettled. A link whose target stays inside the tree is
+read through. The NuGet cache lies outside the tree and is read where it is, resolved first, through a reader bound
 to the cache folder, so a link inside it that leads out of it is reported, not followed. A path a file names outside the
 tree is compared with another by its text, never by asking its folders how they compare names, so no folder outside the
 tree is listed to compare it. Limits: the names of the assemblies below a package's lib folder are found by the reader's
@@ -289,6 +291,10 @@ class Project:
     # Why the walk may not have read the SDK-style project's assets file MSBuild reads (`located_assets`), which
     # ask_sdk.py has `dotnet nuget why` locate; None when it read it or the project has none to read.
     assets_unread: str | None = None
+    # Why the walk refused the assets file's place, outside the tree or through a link leading out of it, reported as
+    # an UNREADABLE line by a query whose answer the walk gives for the project (`unread_assets_file`), never where the
+    # SDK answered it from that file.
+    assets_refused: Unreadable | None = None
     # The targets the project file alone gives (`file_target`), which the walk takes for a project the SDK answered in
     # place of a restore it may have guessed at (`answered_view`).
     unrestored: list[Target] = field(default_factory=list)
@@ -351,12 +357,14 @@ class Graph:
     def project_at(self, path: Path) -> Project | None:
         return self.projects.get(self.key(path))
 
-    def refuse(self, error: Unreadable) -> None:
+    def refuse(self, error: Unreadable) -> bool:
         """Report a file the readers refused, each file and reason once, so a file several projects import, such as
-        an unreadable Directory.Packages.props, is reported once."""
+        an unreadable Directory.Packages.props, is reported once; whether it was not reported before."""
         key = (self.key(error.file), error.reason)
-        if key not in {(self.key(file), reason) for file, reason in self.unreadable}:
-            self.unreadable.append((error.file, error.reason))
+        if key in {(self.key(file), reason) for file, reason in self.unreadable}:
+            return False
+        self.unreadable.append((error.file, error.reason))
+        return True
 
     def refuse_unsettled(self, project: Project, unsettled: Iterable[Unsettled], kinds: Iterable[str]) -> None:
         """Report each item of `kinds`, or metadata value of one, a build did not apply because it could not settle
@@ -1054,15 +1062,15 @@ def located_assets(graph: Graph, project: Project) -> Path | None:
     did not read, which may set it, project.assets.json in obj/, where a restore writes it by default. The project's
     `assets_unread` then says why the walk may not have read the file MSBuild reads: a place the evaluation cannot
     settle, or one outside the tree, which only MSBuild, through `dotnet nuget why`, can read, the walk reading none
-    for the second, which is also reported against the file, as a path outside the tree or a link on its way leading
-    out of it, never followed."""
+    for the second, which is also kept as the refusal of the file, a path outside the tree or a link on its way leading
+    out of it, never followed, which the query reports where the walk answers the project (`unread_assets_file`)."""
     place = project.file.assets()
     if place.path is None:
         project.assets_unread = ASSETS_UNSETTLED.format(written=place.written)
         return project.file.path.parent / DEFAULT_RESTORE_FOLDER / ASSETS_FILE
     reason = refusal(place.path, graph.tree) or outside_link_refusal(place.path, graph.tree)
     if reason is not None:
-        graph.refuse(Unreadable(place.path, reason))
+        project.assets_refused = Unreadable(place.path, reason)
         project.assets_unread = ASSETS_NOT_READ.format(file=graph.relative(place.path), reason=reason)
         return None
     return place.path
@@ -1557,7 +1565,17 @@ def unread_assets_lines(graph: Graph, projects: Iterable[Project], advice: str, 
     nothing, with `NOT_ASKED_HERE`."""
     for project in projects:
         if project.assets_unread is not None:
+            unread_assets_file(graph, project, out)
             out.line("SDK_NOT_ASKED", graph.label(project), f"{project.assets_unread}{advice}")
+
+
+def unread_assets_file(graph: Graph, project: Project, out: Emitter) -> None:
+    """An UNREADABLE line for the project's assets file the walk refused (`located_assets`), once per file and reason,
+    printed by the query rather than with the graph's, since it holds only where the walk answers the project: beside
+    its SDK_NOT_ASKED line, or for a project `dotnet nuget why` was asked about, after a run of it failed. A project the
+    SDK answered was answered from that very file, so its refusal is not reported."""
+    if project.assets_refused is not None and graph.refuse(project.assets_refused):
+        out.line("UNREADABLE", graph.relative(project.assets_refused.file), project.assets_refused.reason)
 
 
 def unread_reached(graph: Graph, projects: list[Project]) -> list[Project]:
@@ -1693,8 +1711,12 @@ def why_query(
     reached = [project for project in unread_reached(graph, projects) if graph.key(project.file.path) not in starts]
     unread_assets_lines(graph, reached, NOT_ASKED_HERE, out)
     paths, found, missing = 0, 0, 0
+    failed: dict[str, Project] = {}  # the candidates a run of `dotnet nuget why` failed for, which the walk answers
     for name in names:
         answered = sdk_answers(graph, candidates, name, services, out)
+        for project in candidates:
+            if (key := graph.key(project.file.path)) not in answered:
+                failed.setdefault(key, project)
         count = sum(
             project_paths(graph, project, name, answered.get(graph.key(project.file.path)), out) for project in projects
         )
@@ -1704,6 +1726,8 @@ def why_query(
             out.line("MISSING", name)
             missing += 1
         paths += count
+    for project in failed.values():
+        unread_assets_file(graph, project, out)
     out.line("SUMMARY", paths, found, missing)
 
 
