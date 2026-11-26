@@ -118,7 +118,9 @@ its run rather than collecting it as a failed module. Any other exit, an interru
 error such as a node id it cannot resolve, no test collected, or one pytest does not document, such as a signal's,
 judges nothing: the mutant runs against the next suite, and is errored when none killed it, which leaves the run
 unfinished too, naming each such mutant. Each exit pytest and coverage.py document is read, as TESTS_FAILED_EXIT and
-the tables beside it say, or named in NOT_READ with why.
+the tables beside it say, or named in NOT_READ with why. The log, and a reach's reason for a suite that failed
+unmutated or a coverage step that failed, give an exit with the signal or the Windows status that ended the process
+beside it, as `pytest exited -9 (status SIGKILL)`, and a program's own exit as its number alone.
 
 Once a leg's reach pass ends, before its mutants run, it estimates what they need: each mutant at its first suite's
 unmutated seconds, shared out by the count of that suite's tests it runs when it runs only some, summed by module, in
@@ -1057,6 +1059,14 @@ def suite_environment() -> dict[str, str]:
     return {**environment, **PYTEST_ENVIRONMENT, "PYTHONDONTWRITEBYTECODE": "1"}
 
 
+def exit_read(returncode: int) -> str:
+    """A process's exit as the log and a reach's reason give it: its number, with the termination status
+    platform_support.termination_status names beside it when a signal or a Windows status ended the process, as
+    tests/validation/job_pool.py's failure line names it, and the number alone for a program's own exit."""
+    status = platform_support.termination_status(returncode)
+    return f"{returncode} (status {status})" if status else f"{returncode}"
+
+
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
     process it starts ended after it and each bounded to MEMORY_BOUND bytes of data where the platform bounds it:
@@ -1064,8 +1074,9 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     reason, and on its exit for a failed test or for a test module it failed to collect, an interruption or, when the
     run named tests, a usage error, or for a conftest.py it failed to import, a usage error, or for a SystemExit that
     ended a test module's import, an internal error, timed out past `timeout`, and errored on any other exit, which
-    judges nothing and logs pytest's exit, with what it means when UNJUDGED_EXITS names it, and the start of its
-    output. The node ids go to pytest in an argument file, which no command line's length limits."""
+    judges nothing and logs pytest's exit, with what it means when UNJUDGED_EXITS names it or the termination status
+    exit_read names, and the start of its output. The node ids go to pytest in an argument file, which no command
+    line's length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-", dir=private_folder.temporary_directory()) as temporary:
         target = suite
         if tests:
@@ -1098,7 +1109,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     if finished.returncode == 0:
         return PASSED
     if MEMORY_ERROR.search(start) or MEMORY_ERROR.search(end):
-        print(f"{KILLED:<11} {suite}: pytest exited {finished.returncode}: {MEMORY_REASON}", flush=True)
+        print(f"{KILLED:<11} {suite}: pytest exited {exit_read(finished.returncode)}: {MEMORY_REASON}", flush=True)
         return KILLED
     collection_failed = finished.returncode in COLLECTION_EXITS and (
         COLLECTION_ERROR in start or CONFTEST_ERROR.search(start) is not None
@@ -1111,7 +1122,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.
     output = flat_text(start.decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
     meaning = UNJUDGED_EXITS.get(finished.returncode)
-    exited = f"{finished.returncode} ({meaning})" if meaning else f"{finished.returncode}"
+    exited = f"{finished.returncode} ({meaning})" if meaning else exit_read(finished.returncode)
     print(f"{ERRORED:<11} {suite}: pytest exited {exited}: {output}", flush=True)
     return ERRORED
 
@@ -1315,7 +1326,8 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         seconds = time.monotonic() - started
         if finished.returncode != 0:
             output = output_end(end)
-            return f"failed unmutated with exit code {finished.returncode}" + (f": {code(output)}" if output else "")
+            ended = exit_read(finished.returncode)
+            return f"failed unmutated with exit code {ended}" + (f": {code(output)}" if output else "")
         report = folder / "report.json"
         for command in (["combine", rcfile, "-q"], ["json", rcfile, "-q", "--show-contexts", "-o", str(report)]):
             step = f"coverage {command[0]}"
@@ -1334,7 +1346,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 output = output_end(done.stderr + done.stdout)
                 if command[0] == "json" and done.returncode == COVERAGE_ERROR_EXIT and output == NO_DATA_TO_REPORT:
                     return Reach(seconds, {module: frozenset[int]() for module in modules})
-                return f"failed in {code(step)} with exit code {done.returncode}" + (
+                return f"failed in {code(step)} with exit code {exit_read(done.returncode)}" + (
                     f": {code(output)}" if output else ""
                 )
         reason = file_presence.refusal_reason(report)
