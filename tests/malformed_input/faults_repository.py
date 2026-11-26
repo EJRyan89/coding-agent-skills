@@ -16,6 +16,7 @@ CHANGE_SKILL = ".claude/skills/change-skill/scripts/change_skill.py"
 PULL_REQUEST = ".claude/skills/implement-change/scripts/pull_request.py"
 LESSONS_PATTERNS = ".claude/skills/implement-change/scripts/lessons_patterns.py"
 FIX_BRIEF = ".claude/skills/implement-change/scripts/fix_brief.py"
+LOCAL_CHECKS = ".claude/skills/implement-change/scripts/local_checks.py"
 DOC_PASSAGES = ".claude/skills/review-repository/scripts/doc_passages.py"
 UNTESTED = ".claude/skills/review-repository/scripts/untested_functions.py"
 MENTIONS_CONDITION = ".claude/skills/review-repository/scripts/token_mentions.py"
@@ -273,6 +274,17 @@ DRIVERS: list[Driver] = [
         PULL_REQUEST,
         "type-checks",
         ("--repository", "{work}", "type-checks", *BASE),
+        strict_list_branch,
+        (PYPROJECT,),
+        git=True,
+        not_run={STAT_RAISES: OPENED_ONLY},
+    ),
+    # The checks read the base, the changed files, and pyproject.toml before they start the validation runner, so each
+    # fault stops them before any run; the fixture holds no runner for an unfaulted run to start.
+    Driver(
+        LOCAL_CHECKS,
+        "",
+        ("--repository", "{work}", *BASE),
         strict_list_branch,
         (PYPROJECT,),
         git=True,
