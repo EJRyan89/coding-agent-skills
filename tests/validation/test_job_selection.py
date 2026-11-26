@@ -669,6 +669,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             ".claude/skills/b/SKILL.md",
             "agents/c.md",
             "tests/validation/policy.py",
+            *REVIEW_PIPELINE_MODULES,
             "requirements/requirements-dev.in",
             "requirements/requirements-dev.txt",
         ]
