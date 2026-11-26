@@ -2779,6 +2779,50 @@ class CommandGuardTests(GuardTestCase):
                 event = {"tool_name": "Edit", "tool_input": {"file_path": str(self.hub / "README.md")}}
                 self.assertEqual("deny", self.decision(event, {**self.environment, name: str(other)}))
 
+    def test_a_git_call_in_or_beside_an_expansion_form_the_reader_reads_is_refused_in_the_hub(self) -> None:
+        # Bash 5.3 runs a single-quoted substitution in an indexed array's subscript, and one after a quoted `}` in a
+        # double-quoted `${ }`; and a form bash_syntax refuses to the readers of what a text runs leaves the git call
+        # beside it read, as does an arithmetic reading Bash does not take.
+        for command in (
+            "echo \"${a['$(git commit -m x)']#x}\"",
+            "echo \"${a['$(git commit -m x)']@Q}\"",
+            "echo \"${!a['$(git commit -m x)']}\"",
+            "echo ${a['$(git commit -m x)']}",
+            "echo ${#a['$(git commit -m x)']}",
+            "a['$(git commit -m x)']=1",
+            "b[${x:-'$(git commit -m x)'}]=1",
+            "cat <<E\n${a['$(git commit -m x)']#x}\nE",
+            "echo $(( ${a['$(git commit -m x)']#x} ))",
+            "x=; echo \"${x:-'}'\"'$(git commit -m x)'\"}\"",
+            "git commit -m x; echo ${ :; }",
+            "git commit -m x; echo ${| :; }",
+            "git commit -m x; echo \"${x:-$'\\x24'}\"",
+            "git commit -m x; echo $(( $'\\x24' ))",
+            "git commit -m x; echo ${x:$$'\\a'}",
+            "((printf %s $'\\x24'); git commit -m x)",
+            'echo $(( ")" )); git commit -m x',
+            '(( x = "${y:-"))"}" )); git commit -m x',
+            "a[$'\\x24(git commit -m x)']=1",
+            "declare a[$'\\x24(git commit -m x)']=1",
+            "a=([$'\\x24(git commit -m x)']=1)",
+            "echo ${x:-<(git commit -m x)}",
+            "echo ${x/<(git commit -m x)/y}",
+            "(( ${x/'}'\\} ))\ngit commit -m x",
+            "echo ${x:'${ git commit -m x; }'}",
+            "echo \"${x:-'${ git commit -m x; }'}\"",
+            "echo ${a['${ git commit -m x; }']}",
+            "(( ${x:-'${ git commit -m x; }'} ))",
+            "echo $(( '${ git commit -m x; }' ))",
+            "a['${ git commit -m x; }']=1",
+            "echo $((echo ${x:'${ git commit -m x; }'}) )",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+            # From the worktree, the same git call aimed at the hub.
+            aimed = command.replace("git commit", f"git -C '{self.hub.as_posix()}' commit")
+            with self.subTest(command=aimed):
+                self.assertEqual("deny", self.bash(aimed, self.tree))
+
 
 class WriteGuardTests(GuardTestCase):
     """A file a program or a cmdlet writes at a path its words name, a link a command makes, and a file the
@@ -3479,6 +3523,30 @@ class UnderstoodSetTests(GuardTestCase):
         outside.mkdir(exist_ok=True)
         self.assertIsNone(self.bash("cat <<EOF\n$(git push; echo a\nEOF", outside))
         self.assertIn(hub_guard.UNCLOSED_BODY, self.stderr)
+
+    def test_a_form_the_reader_refuses_is_refused_only_while_a_hub_is_in_view(self) -> None:
+        # Bash 5.3 runs a `${ command; }` or `${| command; }` in the shell itself, and an ANSI-C string inside a
+        # double-quoted `${ }` or arithmetic puts what it spells there, so what each runs is not read, and the guard
+        # refuses the command while a guarded hub is in view, with or without a git call.
+        current_shell = bash_syntax.EXPANSIONS_REFUSED["${ command;}"]
+        spelled = bash_syntax.spelled_expansion(["\\x24"])
+        assert spelled is not None
+        for command, reason in (
+            ("${ git commit -m x; }", current_shell),
+            ("${| git commit -m x; }", bash_syntax.EXPANSIONS_REFUSED["${| command;}"]),
+            ("echo ${\\\n git commit -m x; }", current_shell),
+            ("echo ${ :; }", current_shell),
+            ("echo \"${x:-$'\\x24(git commit -m x)'}\"", bash_syntax.TRANSLATED_REASON),
+            ("echo $(( $'\\x24(git commit -m x)' ))", spelled),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(reason, self.reason)
+        # With no hub in view, as "The guard's contract" says, the part it does not read is allowed with a note.
+        outside = self.root / "outside"
+        outside.mkdir(exist_ok=True)
+        self.assertIsNone(self.bash("${ git commit -m x; }", outside))
+        self.assertIn(current_shell, self.stderr)
 
     def test_a_bare_case_pattern_is_also_read_as_bash_3_2_reads_it_from_outside_the_hub(self) -> None:
         # From outside every checkout of the hub, nothing the Bash 4 reading reads reaches the hub, but Bash 3.2 ends
