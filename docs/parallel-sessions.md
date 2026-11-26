@@ -534,7 +534,12 @@ The configuration's limits:
   `nohup`, `sudo`, or `xargs`, is read as the command it runs, past its options by `command_wrappers.unwrapped`, its
   assignments judged as ones before that command, and a literal `bash -c` script, or a `pwsh` or `powershell`
   start-up's script, its parameters read by ejryan89-skill-core's `powershell_startup.startup_command`, is read by its
-  shell's reader, so git either runs is judged by the same rows as a bare git call; an `-EncodedCommand` runs a script
+  shell's reader, so git either runs is judged by the same rows as a bare git call. A start-up's script starts where
+  `Set-Location -LiteralPath` takes pwsh with the last `-WorkingDirectory` (`-wd`) value before it, in any spelling
+  `startup_command` reads, from the directory the start-up runs in, read as a `Set-Location` path is, `~` as home and
+  a link followed, the value's last character dropped under `-RemoveWorkingDirectoryTrailingCharacter` as pwsh on
+  Windows drops it; a value the text does not settle, or one that is no directory now, which pwsh would not move to
+  unless an earlier command makes it one, leaves where the script starts unsettled; an `-EncodedCommand` runs a script
   the text does not settle, so it is judged as a git call whose subcommand the text does not settle; a wrapper whose
   words do not settle its program, and any other script the text does not settle, are not read. Any other command is a program the guard does not
   read. A word is read as literal text or `~`; an expansion, a glob, or
@@ -755,6 +760,9 @@ Within what it reads, it judges only what the text shows, so these too are left 
   move its location, where the guard reads the name as a program's, which moves nothing;
 - in PowerShell, a method that moves the location, as `$ExecutionContext.SessionState.Path.SetLocation(...)`, which is
   no command;
+- in PowerShell, a program `Start-Process` starts, in its parent's directory or the one its `-WorkingDirectory` names,
+  as `Start-Process git -ArgumentList commit -WorkingDirectory <dir>`: `Start-Process` is a program the guard does
+  not read;
 - a shell one shell starts after code the guard does not read, as a `bash -c` from PowerShell after a dot-sourced
   script or after `${env:BASH_FUNC_g%%} = ...`, or a `pwsh -Command` from Bash after an `eval`, which that code may
   hand a function or `BASH_ENV` through the environment, where the guard reads the new shell as one holding no such
