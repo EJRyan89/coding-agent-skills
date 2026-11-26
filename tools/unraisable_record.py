@@ -39,9 +39,9 @@ UNRECORDED_STATUS = 70
 # Why a line went unwritten when what stopped it was not an OSError, which names its own cause.
 UNFINISHED = "building or writing its line stopped before it finished"
 # Shows an object without raising: reprlib shows one whose repr raises by its type and address. Its bounds are wide
-# enough for the file, socket, or process a destructor reports, and mark a longer repr cut with "...".
+# enough for the file, socket, or process a destructor reports, and mark a longer repr cut with "..."; how deep it
+# shows nested containers is reprlib's own.
 SHOWN = reprlib.Repr(
-    maxlevel=6,
     maxtuple=100,
     maxlist=100,
     maxarray=100,
