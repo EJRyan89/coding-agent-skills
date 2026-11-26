@@ -116,7 +116,7 @@ Working on this repository:
 | [Skill evaluations](docs/skill-evaluations.md) | The latest `evaluate-skill` result for each skill and reviewer model |
 | [Upgrade notes](docs/upgrade-notes.md) | What each release asks of a user who updates, and the entry a pull request body gives for a change |
 
-Report suspected vulnerabilities according to the [Security policy](.github/SECURITY.md), not through a public issue.
+Report suspected vulnerabilities according to the [Security policy](.github/SECURITY.md): before `1.0.0` as a public issue, and from `1.0.0` privately.
 
 ## Supporting the project
 

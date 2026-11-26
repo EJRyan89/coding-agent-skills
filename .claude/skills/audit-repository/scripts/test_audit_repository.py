@@ -530,6 +530,12 @@ class ReleaseTests(Fixture):
         self.assertEqual(
             ["location", "kind", "evidence", "introduced", "severity", "title", "template", "question"], fields
         )
+        # Before 1.0.0 a trust-boundary finding is filed as a public bug, and only from 1.0.0 as a private advisory.
+        self.assertIn(
+            "TEMPLATE template bug, documentation, or enhancement; a trust-boundary finding is a bug before 1.0.0 and "
+            "an advisory from it",
+            lines,
+        )
         sections = [line.split(" ")[1] for line in lines if line.startswith("SECTION ")]
         self.assertEqual(["findings", "unconfirmed", "coverage"], sections)
         for area, text in self.briefs(lines).items():
@@ -2123,7 +2129,8 @@ class TwinTests(Fixture):
                 "TEMPLATE pattern the pattern it is an instance of, by the name the Patterns section gives it",
                 "TEMPLATE severity defect (a user can hit it), drift (a statement and the code part ways), or polish",
                 "TEMPLATE title a one-line issue title",
-                "TEMPLATE template bug, documentation, or enhancement; advisory for a trust-boundary twin",
+                "TEMPLATE template bug, documentation, or enhancement; a trust-boundary twin is a bug before 1.0.0 and "
+                "an advisory from it",
                 "SECTION twins each twin confirmed against the fix's diff and the twin's line, as the TEMPLATE fields",
                 "SECTION patterns each pattern the twins share: its name, its twins, the docs/lessons.md pattern it is "
                 "an instance of or new, and the MECHANISM that would stop it recurring, with where it would live",
@@ -2446,7 +2453,8 @@ TWIN_BRIEF = "\n".join(
         "- **pattern**: the pattern it is an instance of, by the name the Patterns section gives it.",
         "- **severity**: defect (a user can hit it), drift (a statement and the code part ways), or polish.",
         "- **title**: a one-line issue title.",
-        "- **template**: bug, documentation, or enhancement; advisory for a trust-boundary twin.",
+        "- **template**: bug, documentation, or enhancement; a trust-boundary twin is a bug before 1.0.0 and an "
+        "advisory from it.",
         "",
     ]
 )

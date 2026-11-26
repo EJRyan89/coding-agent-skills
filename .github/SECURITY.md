@@ -6,7 +6,7 @@ An installation follows releases: tags on `main`, a release marked as a pre-rele
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use [GitHub private vulnerability reporting](https://github.com/EJRyan89/coding-agent-skills/security/advisories/new).
+Before `1.0.0`, every release is a pre-release, and a suspected vulnerability is reported and fixed as a public issue, written from the [bug template](ISSUE_TEMPLATE/bug.md): no private advisory or formal security statement is owed, and a user of a pre-release accepts that a security defect is public from the moment it is reported. A reporter who prefers not to publish one may still use [GitHub private vulnerability reporting](https://github.com/EJRyan89/coding-agent-skills/security/advisories/new). From `1.0.0`, do not open a public issue for a suspected vulnerability: report it through private vulnerability reporting.
 
 Include enough information to reproduce and assess the issue:
 
@@ -22,6 +22,8 @@ Avoid including credentials, tokens, personal configuration, private repository 
 The maintainer will assess the report, coordinate any fix, and disclose it as [Disclosure](#disclosure) says. No response or remediation deadline is guaranteed.
 
 ## Disclosure
+
+A vulnerability reported as a public issue is disclosed by that issue and the pull request that fixes it, and reaches users as [Supported versions](#supported-versions) says. The rest of this section applies to a report made through private vulnerability reporting.
 
 When a tagged release carried the defect, its advisory is published once the fix is on `main` and the next tag carries it, and names that tag as the first fixed release. A defect that entered and left `main` between two tags is fixed on `main`, and its draft advisory is closed without publication at the release whose tag carries the fix: no release carried it, so an advisory would name nothing a user can act on, and the fix's commit on `main` is the public record. Reporters who want attribution are credited in either case, in the published advisory or in the fix's commit and pull request.
 
@@ -44,4 +46,4 @@ Reports are especially useful when they involve a boundary the [trust model](../
 - The update's deployer: a deployer change on `origin/main` that a release-channel update runs before any release carries it, since the update deploys each release with `origin/main`'s deployer.
 - Secret disclosure through logs, generated files, archives, or diagnostics.
 
-Non-sensitive defects and feature requests go through normal GitHub issues.
+Non-sensitive defects and feature requests go through normal GitHub issues, as every defect does before `1.0.0`.

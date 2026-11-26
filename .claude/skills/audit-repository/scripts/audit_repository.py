@@ -251,7 +251,10 @@ FINDING_FIELDS = (
     ("introduced", INTRODUCED),
     ("severity", "defect (a user can hit it), drift (a statement and the code part ways), or polish"),
     ("title", "a one-line issue title"),
-    ("template", "bug, documentation, or enhancement; advisory for a trust-boundary finding"),
+    (
+        "template",
+        "bug, documentation, or enhancement; a trust-boundary finding is a bug before 1.0.0 and an advisory from it",
+    ),
 )
 # The questions every release and rotation brief asks beside the kinds of drift, each drawn from defects that kept
 # shipping past the briefs' own question; a finding names the one that found it, so later audits can count them.
@@ -334,7 +337,10 @@ TWIN_FIELDS = (
     ("pattern", "the pattern it is an instance of, by the name the Patterns section gives it"),
     ("severity", "defect (a user can hit it), drift (a statement and the code part ways), or polish"),
     ("title", "a one-line issue title"),
-    ("template", "bug, documentation, or enhancement; advisory for a trust-boundary twin"),
+    (
+        "template",
+        "bug, documentation, or enhancement; a trust-boundary twin is a bug before 1.0.0 and an advisory from it",
+    ),
 )
 MECHANISMS = (
     ("helper", "a shared helper every site calls, so the construct has one home"),
