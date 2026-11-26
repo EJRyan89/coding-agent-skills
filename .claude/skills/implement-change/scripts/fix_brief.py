@@ -22,7 +22,8 @@ What it names is read from its inline code spans, through markdown_sections' `pr
 
 Each `--path` is a file the change edits or adds, written from the top of the repository, added to the issue's, and
 read as the lister reads it, through lessons_patterns' `target_name`: refused as written, then read by `posix_name`, so
-`./tools/x.py` and `tools\\x.py` are `tools/x.py`, never a second file or its own twin.
+`./tools/x.py` and `tools\\x.py` are `tools/x.py`, and its separators and `.` parts never make it a second file or its
+own twin.
 
 The brief, a Markdown file written to a new private folder under the temporary directory, holds:
 
@@ -55,8 +56,10 @@ no file; a symbol's callers are the files that hold its name as a word, which co
 different name spelled the same, and misses a call through another name; a tracked file that is refused inside the
 repository, not there, or not UTF-8 holds no caller; a symbol is the issue's identifiers as written, so one spelled as
 words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; a
-tracked file whose name holds a `\\`, which a POSIX file system allows and Windows does not, is never named, since a
-path is read with each `\\` as `/`, as the lister reads one.
+tracked file whose name holds a `\\`, which a POSIX file system allows and Windows does not, is never named by a span
+or a `--path`, since a path is read with each `\\` as `/`, as the lister reads one; a `--path` in another case than
+the name git tracks, which a file system that folds case opens as the tracked file, is a second file, not there yet,
+with the tracked file as its twin.
 
 Every line is one fact, its fields tab-separated:
 
@@ -532,9 +535,9 @@ def write_brief(
 ) -> tuple[Issue, Path]:
     """The issue read and the brief written for it; BriefError, GitError, CatalogueError, lessons_patterns' Refused,
     or an OSError when one of them cannot be. The repository's files, the rules, and each given path are read before
-    GitHub is asked, so a checkout git cannot read, rules that cannot be read, or a path refused fail without a call to
-    GitHub. Each given path is read as the lister reads it, refused as written and then by `posix_name`, so its
-    spelling never makes it a second file or its own twin."""
+    GitHub is asked, so a checkout git cannot read, rules that cannot be read, or a path refused as written fail
+    without a call to GitHub. Each given path is read as the lister reads it, refused as written and then by
+    `posix_name`, so its separators and `.` parts never make it a second file or its own twin."""
     tracked = git.names(["ls-files"], directory=root)
     rules = RULES.read_text(encoding="utf-8")
     given = list(dict.fromkeys(lessons_patterns.target_name(root, name) for name in given))
