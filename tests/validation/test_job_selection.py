@@ -26,12 +26,15 @@ import job_selection
 from git_client import MISSING_GIT, GitError, GitResult
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
+    CROSS_SKILL_SUITE,
     FORMAT_JOB,
     JOB_SECONDS,
     LINT_JOB,
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
+    REVIEW_PIPELINE_MODULES,
     SHELL_JOB,
+    WHOLE_TREE_SUITES,
     change_reach_problems,
     changed_jobs,
     changed_paths,
@@ -41,11 +44,15 @@ from job_selection import (
     job_seconds,
     leg_jobs,
     leg_policies,
+    pre_push_direct_suites,
+    pre_push_jobs,
+    pre_push_wide_reason,
+    reached_suite_patterns,
     stale_job_seconds_problems,
     suites_naming,
 )
 from suite_discovery import regression_suites
-from validation_support import REPOSITORY_ROOT, relative
+from validation_support import REPOSITORY_ROOT, relative, repository_files
 
 from deployer import platform_support
 from tools import release_notes
@@ -582,6 +589,53 @@ class ChangedSelectionFixtures(unittest.TestCase):
             self.selected(["deploy-meta/a.json"]),
         )
 
+    def direct(self, paths: list[str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository with spaces"
+            for name, text in CHANGED_TREE.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            suites = [
+                root / name
+                for name in sorted(CHANGED_TREE)
+                if "/test_" in name and not name.startswith("tests/fixtures/")
+            ]
+            found = pre_push_direct_suites(root, paths, suites, list(CHANGED_TREE))
+            return [suite.relative_to(root).as_posix() for suite in found]
+
+    def test_a_wide_pre_push_run_keeps_the_suites_that_read_a_changed_file_directly(self) -> None:
+        # test_b.py reaches helper.py only through tool.py, and the rendering suite only through CHANGE_REACHES's
+        # skills/ row, so neither reads helper.py directly; tool.py's suite neighbours are not its readers either.
+        self.assertEqual([], self.direct(["skills/a/scripts/helper.py"]))
+        self.assertEqual(["skills/b/scripts/test_b.py"], self.direct(["skills/a/scripts/tool.py"]))
+        self.assertEqual(["tests/tools/test_names_the_skill_file.py"], self.direct(["skills/a/SKILL.md"]))
+        self.assertEqual(["tests/tools/test_unrelated.py"], self.direct(["tests/tools/test_unrelated.py"]))
+
+    def test_a_change_in_a_folder_most_suites_reach_or_over_the_share_is_wide(self) -> None:
+        def jobs(*names: str) -> list[Job]:
+            return [fixture_job(name, 1) for name in names]
+
+        every = jobs("a", "b", "c", "d", "e")
+        seconds = {"a": 10.0, "b": 10.0, "c": 10.0, "d": 10.0, "e": 10.0}
+        for path, place in (
+            ("deployer/pipeline.py", "deployer"),
+            ("deploy.py", "deploy.py"),
+            ("skills/ejryan89-skill-core/scripts/flat_text.py", "skills/ejryan89-skill-core"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    f"{path} is in {place}, which most suites reach",
+                    pre_push_wide_reason([path], jobs("a"), every, seconds),
+                )
+        # Two of five equal jobs are 40 percent, at the bound; three are over it.
+        self.assertIsNone(pre_push_wide_reason(["skills/a/scripts/tool.py"], jobs("a", "b"), every, seconds))
+        self.assertEqual(
+            "its selection is 60% of the recorded seconds of every job, over 40%",
+            pre_push_wide_reason(["skills/a/scripts/tool.py"], jobs("a", "b", "c"), every, seconds),
+        )
+        # A folder whose name only starts like one is not it.
+        self.assertIsNone(pre_push_wide_reason(["deployers/x.py", "deploy.pyc"], jobs("a"), every, seconds))
+
     def test_the_static_checks_follow_the_kind_of_file_changed(self) -> None:
         jobs = [
             fixture_job(label, UNSPLIT_SUITE_WEIGHT)
@@ -611,6 +665,11 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "skills/ejryan89-skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
             "conftest.py",
+            "skills/a/SKILL.md",
+            ".claude/skills/b/SKILL.md",
+            "agents/c.md",
+            "tests/validation/policy.py",
+            *REVIEW_PIPELINE_MODULES,
             "requirements/requirements-dev.in",
             "requirements/requirements-dev.txt",
         ]
@@ -621,6 +680,8 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "tests/validation/test_toolchain.py",
             "tests/validation/test_upgrade_notes.py",
             "tests/malformed_input/test_faults.py",
+            ".claude/skills/review-repository/scripts/test_review_repository.py",
+            "tests/ai-config/test_cross_skill_contracts.py",
         ]
         self.assertEqual([], change_reach_problems(files, suites))
         self.assertEqual(
@@ -645,6 +706,72 @@ class ChangedSelectionFixtures(unittest.TestCase):
             names,
         )
         self.assertNotIn("tests/deployer/test_plan.py", names)
+
+    def test_any_change_selects_the_review_routing_suite_that_reads_the_whole_tree_in_this_repository(self) -> None:
+        # The routing suite reads every tracked file, and each trust-boundary module's imports, and names none of
+        # them, so neither a file's name nor an import reaches it.
+        routing = ".claude/skills/review-repository/scripts/test_review_repository.py"
+        for path in ("skills/dotnet-dependencies/scripts/sdk_why.py", "docs/dotnet.md", "tools/new_module.py"):
+            with self.subTest(path=path):
+                self.assertIn(routing, {job.name for job in changed_jobs(REPOSITORY_ROOT, [path])})
+
+    def test_a_skill_agent_metadata_or_policy_change_selects_the_cross_skill_suite_in_this_repository(self) -> None:
+        # The cross-skill suite reads every skill's SKILL.md, every agent, every skill's metadata, and every
+        # validation policy module by a glob, naming none of them.
+        contracts = "tests/ai-config/test_cross_skill_contracts.py"
+        for path in (
+            "skills/repo-cleanup/SKILL.md",
+            ".claude/skills/implement-change/SKILL.md",
+            "agents/code-review-reviewer.md",
+            "deploy-meta/repo-cleanup.json",
+            "tests/validation/upgrade_notes.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(contracts, {job.name for job in changed_jobs(REPOSITORY_ROOT, [path])})
+        self.assertNotIn(contracts, {job.name for job in changed_jobs(REPOSITORY_ROOT, ["skills/repo-cleanup/x.txt"])})
+
+    def test_a_deployer_change_before_a_push_runs_the_reduced_selection_in_this_repository(self) -> None:
+        paths = ["deployer/pipeline.py"]
+        full = {job.name for job in changed_jobs(REPOSITORY_ROOT, paths)}
+        jobs, reason = pre_push_jobs(REPOSITORY_ROOT, paths)
+        names = {job.name for job in jobs}
+        self.assertEqual("deployer/pipeline.py is in deployer, which most suites reach", reason)
+        self.assertLess(names, full)
+        self.assertLessEqual(
+            {
+                ".claude/skills/review-repository/scripts/test_review_repository.py",
+                "static type check (mypy --strict deployer)",
+                FORMAT_JOB,
+                LINT_JOB,
+            },
+            names,
+        )
+        # The fault corpus reaches every Python file through CHANGE_REACHES alone, reading none of them directly.
+        self.assertNotIn("tests/malformed_input/test_faults_stat.py", names)
+        self.assertIn("tests/malformed_input/test_faults_stat.py", full)
+
+    def test_a_narrow_change_before_a_push_runs_the_whole_changed_selection_in_this_repository(self) -> None:
+        paths = ["skills/repo-cleanup/scripts/repo_cleanup.py"]
+        jobs, reason = pre_push_jobs(REPOSITORY_ROOT, paths)
+        self.assertIsNone(reason)
+        self.assertEqual(
+            sorted(job.label for job in changed_jobs(REPOSITORY_ROOT, paths)), sorted(job.label for job in jobs)
+        )
+
+    def test_a_wide_pre_push_run_keeps_the_cross_skill_suite_for_a_review_module_it_reads_by_a_built_name(self) -> None:
+        files = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in repository_files(REPOSITORY_ROOT)]
+        suites = regression_suites()
+        for path in REVIEW_PIPELINE_MODULES:
+            with self.subTest(path=path):
+                direct = pre_push_direct_suites(REPOSITORY_ROOT, [path], suites, files)
+                self.assertIn(CROSS_SKILL_SUITE, {relative(suite) for suite in direct})
+
+    def test_the_mutation_gate_s_reach_leaves_out_the_whole_tree_rows(self) -> None:
+        # A suite that reads the tree as text executes no mutant, so only --changed's reach adds it for any change.
+        for path in ("docs/guide.md", "skills/a/SKILL.md", "tests/validation/policy.py"):
+            with self.subTest(path=path):
+                self.assertTrue(set(WHOLE_TREE_SUITES) & reached_suite_patterns([path]))
+                self.assertFalse(set(WHOLE_TREE_SUITES) & reached_suite_patterns([path], whole_tree=False))
 
     def test_a_change_to_the_root_conftest_selects_every_python_suite_and_no_shell_suite(self) -> None:
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["conftest.py"])}
