@@ -103,6 +103,14 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A backslash and newline that split `$(` inside double quotes, a `${ }`'s word, or arithmetic, which Bash joins into
   a command substitution, leave the substitution unread; and ones that split an unquoted `$` from the `(` or `{` after
   it, which Bash joins too, raise BashSyntaxError.
+- A substitution in the quoted, escaped, or ANSI-C subscript of a declaration builtin's `NAME[...]=value` argument or
+  an array assignment's `[...]=value` element, as `declare a['$(x)']=1` or `a=(['$(x)']=1)`, which Bash runs, is
+  not read, but for an ANSI-C string spelling one there, which is refused.
+- A process substitution in a double-quoted `${ }`'s pattern or replacement word, or in an unquoted here-document's
+  body, as `"${x#<(cmd)}"`, `"${x/y/<(cmd)}"`, or `"${x,,<(cmd)}"`, which Bash runs, is not read; one in a
+  subscript there is.
+- An ANSI-C string in a nested `${ }`'s replacement inside a substring's offset, as `${x:${a/x/$'\x24(cmd)'}}`,
+  which Bash 3.2 runs, is read as its text.
 - A value Bash runs as code is not seen: a variable's value `${!parameter}` or `${parameter@P}` expands (NOT_READ),
   and one Bash evaluates as arithmetic, in `$(( ))`, `(( ))`, `$[ ]`, a substring's offset or length, or a subscript,
   whose array subscript holds a command substitution, as `y='a[$(cmd)]'; echo $((y))` runs `cmd`.
@@ -976,6 +984,9 @@ class Lexer:
                 substitutions.extend(self.arithmetic_quote(character))
             elif character == "$" and self.peek(1) == "'":
                 self.refuse(spelled_expansion([self.ansi_c_quoted(self.index + 2)]))
+            elif self.text.startswith("$$", self.index):
+                self.index += 2  # the shell's process ID, read whole as in arithmetic
+                self.quote_after_process_id()
             elif character == "$":
                 self.dollar([], substitutions, quoted=True)
             elif character in "<>" and self.peek(1) == "(":
@@ -1107,9 +1118,17 @@ class Lexer:
 
     def in_subscript(self) -> bool:
         """Whether the index stands inside the subscript a word opens with, `NAME[` as a declaration builtin's
-        argument or `[` as an array's element, before any `]`, where Bash expands the subscript as arithmetic."""
+        argument or `[` as an array's element, before the `]` that closes it, a nested subscript's brackets counted,
+        where Bash expands the subscript as arithmetic."""
         opened = SUBSCRIPT_START.match(self.text, self.word_start)
-        return opened is not None and "]" not in self.text[opened.end() : self.index]
+        if opened is None:
+            return False
+        depth = 0
+        for character in self.text[opened.end() : self.index]:
+            if character == "]" and depth == 0:
+                return False
+            depth += {"[": 1, "]": -1}.get(character, 0)
+        return True
 
     def balanced(self, start: int, form: str = "$(") -> Source:
         """The body of a `$( )`, `<( )`, or `>( )`, the form that opens before start, read as commands up to its
@@ -1255,12 +1274,7 @@ class Lexer:
         too. Bash 5.3's `${ command; }` and `${| command; }` are refused (refuse), read on to the first `}` as any
         other. With nested set, the variables it assigns are left to the expansion around it."""
         start = self.index + 2
-        # Bash joins the lines a backslash continues before it reads the character after `${`.
-        opener = start
-        while self.text.startswith("\\\n", opener):
-            opener += 2
-        if self.text[opener : opener + 1] and self.text[opener] in CURRENT_SHELL_OPENERS:
-            self.refuse(EXPANSIONS_REFUSED["${| command;}" if self.text[opener] == "|" else "${ command;}"])
+        self.current_shell_substitution()
         self.index = start
         found: list[str] = []
         ansi_c: list[str] = []
@@ -1281,6 +1295,15 @@ class Lexer:
             parts.append(Part("parameter", content, quoted=quoted))
         else:
             parts.append(Part("dynamic", "${" + content + "}", quoted=quoted))
+
+    def current_shell_substitution(self) -> None:
+        """Refuses the `${` at the index where it opens Bash 5.3's `${ command; }` or `${| command; }`: where the
+        character after it, once Bash joins the lines a backslash continues, is a blank or `|`."""
+        opener = self.index + 2
+        while self.text.startswith("\\\n", opener):
+            opener += 2
+        if self.text[opener : opener + 1] and self.text[opener] in CURRENT_SHELL_OPENERS:
+            self.refuse(EXPANSIONS_REFUSED["${| command;}" if self.text[opener] == "|" else "${ command;}"])
 
     def brace_part(self, found: list[str], ansi_c: list[str], quoted: bool) -> None:
         """Reads the next part of a `${ }` up to its `}`, as braced reads it: a quoted string, an escape, or an
@@ -1309,7 +1332,8 @@ class Lexer:
         elif character == "`":
             found.append(self.backquoted())
         elif not quoted and character in "<>" and self.peek(1) == "(":
-            # Outside double quotes, a process substitution in the word runs, as it does in any word.
+            # Outside double quotes, a process substitution in the word runs, as it does in any word; in double quotes
+            # one in a word the module states as a limit still runs.
             found.append(self.balanced(self.index + 2, character + "("))
         else:
             self.index += 1
@@ -1341,6 +1365,9 @@ class Lexer:
                     found.append(lexer.backquoted())
                 elif character == "$" and lexer.peek(1) in ("(", "["):
                     lexer.dollar([], found, quoted=True)
+                elif character == "$" and lexer.peek(1) == "{":
+                    lexer.current_shell_substitution()
+                    lexer.index += 2
                 elif processes and character in ("<", ">") and lexer.peek(1) == "(":
                     opened = lexer.index
                     try:

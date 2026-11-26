@@ -2346,3 +2346,57 @@ def test_a_process_substitution_bash_3_2_runs_in_a_subscript_and_a_substitution_
 ) -> None:
     parse(text)
     assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${x:-'${ git push; }'}\"",
+        "echo ${x:'${ git push; }'}",
+        "(( a['${| git push; }'] ))",
+        "echo $(( '${ git push; }' ))",
+        "a['${ git push; }']=1",
+        "cat <<E\n${x:'${ git push; }'}\nE\n",
+        "echo $((echo ${x:'${ git push; }'}) )",
+    ],
+)
+def test_a_command_substitution_run_in_the_current_shell_in_text_bash_reads_again_is_not_read(text: str) -> None:
+    # Bash 5.3 runs it as it expands the word, the single quotes around it being text there.
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{"):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize("text", ["a[$$'\\x24(git push)']=1", "declare a[x[1]$'\\x24(git push)']=1"])
+def test_a_quoted_string_bash_may_read_as_ansi_c_in_an_assignment_s_subscript_is_not_read(text: str) -> None:
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+
+
+def test_a_bare_case_pattern_bash_reads_again_in_a_double_quoted_word_is_marked_on_the_refusal() -> None:
+    # The substitution stands between the word's single quotes, which only the reading again sees through.
+    text = "echo \"${x:-'$(case x in a) :;; esac)'}\" )"
+    with pytest.raises(BashSyntaxError) as raised:
+        bash_syntax.parse(text)
+    assert raised.value.holds_bare_case
+
+
+def test_a_documented_limit_a_double_parenthesis_a_close_in_an_expansion_ends_is_read_as_a_subshell_s() -> None:
+    text = "echo $(( ${x:-)} ))"
+    assert not bash_agreement.bash_n_verdict(text)[0]
+    assert simple_commands_of(text) == [["echo", "$(( ${x:-)} ))"], ["${x:-)}"]]
+
+
+def test_a_documented_limit_an_unclosed_bracket_arithmetic_in_an_expansion_is_refused_with_its_line() -> None:
+    # Bash 3.2 ends the `${` at its `}` and runs the git call; Bash 4 and later refuse the line, as the reader does.
+    text = "git commit -m x; echo ${x%$[}"
+    if runner_transformations()[0] >= (4, 0):
+        assert not bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)
+
+
+def test_a_documented_limit_a_continued_line_between_a_dollar_and_its_parenthesis_is_refused() -> None:
+    text = "echo $\\\n(git push)"
+    assert bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)

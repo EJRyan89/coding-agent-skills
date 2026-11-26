@@ -242,9 +242,14 @@ subscript's included, for `let`, `declare`, `typeset`, `local`, `read`, `printf`
 variable has the integer attribute. Every builtin Bash's `compgen -b` lists is decided there. The policy does not see, and no script here
 writes: an ANSI-C `$'...'` word whose escape spells such a substitution; text an integer variable receives as data, as
 `declare -i i; read i <<< 'a[$(x)]'`; a quoted subscript's substitution outside a builtin's words, as
-`[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, or an assignment to an integer variable, which Bash 5.3 runs, while
-`bash_syntax.py` reads the single-quoted substitution of an array's subscript in an assignment or a `${ }`, as
-`a['$(x)']=1` or `${a['$(x)']}`, as Bash 5.3 runs it; an option word a variable or a substitution fills, as
+`[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, an assignment to an integer variable, or the quoted, escaped, or
+ANSI-C subscript of a declaration builtin's `NAME[...]=value` argument or an array assignment's `[...]=value`
+element, as `declare a['$(x)']=1` or `a=(['$(x)']=1)`, which Bash 5.3 runs, while `bash_syntax.py` reads the
+single-quoted substitution of an array's subscript in an assignment before a command's name or in a `${ }`, as
+`a['$(x)']=1` or `${a['$(x)']}`, as Bash 5.3 runs it, and refuses an ANSI-C string spelling one in any subscript;
+a process substitution in a double-quoted `${ }`'s pattern or replacement word or an unquoted here-document's
+body, as `"${x#<(x)}"`, and an ANSI-C string in a nested `${ }`'s replacement inside a substring's offset, as
+`${x:${a/x/$'\x24(x)'}}`, which Bash 3.2 runs; an option word a variable or a substitution fills, as
 `o=-W; compgen "$o" '$(x)' x`, which the policy takes as the literal its text is; and `enable -n`, which makes a later
 name run the program of that name, as `hash -p` makes one run another file. The grammar does not read a script, which the policy reports as Bash it
 cannot read, holding a command that turns on a `set -o` or `shopt` option under which Bash reads the text after it otherwise, as

@@ -2808,6 +2808,13 @@ class CommandGuardTests(GuardTestCase):
             "echo ${x:-<(git commit -m x)}",
             "echo ${x/<(git commit -m x)/y}",
             "(( ${x/'}'\\} ))\ngit commit -m x",
+            "echo ${x:'${ git commit -m x; }'}",
+            "echo \"${x:-'${ git commit -m x; }'}\"",
+            "echo ${a['${ git commit -m x; }']}",
+            "(( ${x:-'${ git commit -m x; }'} ))",
+            "echo $(( '${ git commit -m x; }' ))",
+            "a['${ git commit -m x; }']=1",
+            "echo $((echo ${x:'${ git commit -m x; }'}) )",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
