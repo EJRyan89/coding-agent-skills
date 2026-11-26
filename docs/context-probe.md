@@ -34,7 +34,7 @@ a git that fails on the probe's own commit names the error's class and git's kin
 names its class alone. The only paths a FAILED line names are the private-term list's and `--out`'s, which you give.
 The exit statuses are in the tool's docstring.
 
-Both commands take `--terms <file>`, the private-term list, which defaults to `~/.coding-agent-skills/private-terms.txt`.
+`preview` and `write` take `--terms <file>`, the private-term list, which defaults to `~/.coding-agent-skills/private-terms.txt`.
 
 ## What a profile holds
 
@@ -68,8 +68,10 @@ never to one value. Every string is a word the probe defines or a closed vocabul
   `dispatch`, `dispositions`, `comment_dispositions`, `ledger_states`, `snapshot_sources`, `diff_fallbacks`,
   `scope_requested`, `scope_used`, and `analyzer_coverages`; `unreviewed_languages`, the unreviewed files by language;
   and `flags`, the flags on the repository by status. A value outside a vocabulary counts as `other`.
-- `reviews_absent`, in place of `reviews`: `no_configuration`, `configuration_unreadable`, `checkout_unreadable`, or
-  `not_configured`, when no configured repository's checkout holds the one probed.
+- `reviews_absent`, in place of `reviews`, says why the profile holds no review counts: `no_configuration` when there
+  is no code-review configuration file, `configuration_unreadable` when it cannot be read or is not a valid
+  configuration, `checkout_unreadable` when git cannot read the probed checkout to match it with a configured one, and
+  `not_configured` when no configured repository's checkout holds the one probed.
 
 ## What a profile never holds
 
@@ -85,7 +87,8 @@ marker reaches the preview, the written file, or either output stream.
 
 ## The checks before anything is shown
 
-Three checks run, in this order, before any byte of a profile is printed or written:
+The allowlist, the private-term scan, and the preview run, in this order, before any byte of a profile is printed or
+written:
 
 1. **The allowlist.** The probe refuses a profile holding any string that is not one of its own words or a closed
    vocabulary, apart from its own commit, a hexadecimal object name, and any value that is not a whole number. A
@@ -112,14 +115,15 @@ the same private-term scan the release procedure runs over the tree, against its
 
 - Only the code-review skills keep records of their runs, so a profile's failure kinds come from review records
   alone; another skill's refusals are not profiled.
-- A rule source is measured over its first mebibyte, and the walk stops after a bounded number of folders, which it
-  reports as `bounded`.
+- A rule source's `bytes` count its whole size, but its `lines`, `headings`, and `fences` are counted over its first
+  mebibyte; and the walk stops after a bounded number of folders, which it reports as `bounded`.
 - The review counts follow the configuration's `checkout_path`: a repository reviewed but not configured with the
   checkout probed has `reviews_absent` `not_configured`.
 - The whole-word scan, like the release scan, does not match a term written inside a longer word.
 - Run the probe from its own clone, outside the repository it examines. A copy installed inside that repository, or
   one missing a skill its scripts import, may print the probe's own location when it cannot start, before any of its
-  checks run; and a repository that commits an unmodified copy of the probe at its own top would have its commit
-  recorded as the probe's.
+  checks run; and a repository that holds an unmodified copy of the probe at its own top in its commit, committed
+  there or reached through a `git replace` ref, which the probe's git reads as it reads any other object, would have
+  its commit recorded as the probe's.
 - A FAILED line withholds the text of every failure: one a reader raises names the part being read and the error's
   kind, and any other, a defect in the probe itself, ends as `FAILED <kind>`.

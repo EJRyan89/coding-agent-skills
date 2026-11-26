@@ -890,3 +890,36 @@ def test_a_flag_store_that_cannot_be_read_is_counted_as_unread(planted: dict[str
     assert code == 0, stdout
     assert MARKER not in (stdout + stderr).casefold()
     assert printed_profile(stdout)["reviews"]["flags"] == {"unread": 1}
+
+
+def test_an_empty_term_list_has_no_pattern_and_no_hits() -> None:
+    assert context_probe._term_pattern([]) is None
+    assert context_probe.private_hits({"languages": {"Python": 1}}, []) == []
+
+
+def test_a_review_value_outside_its_closed_vocabulary_counts_as_other() -> None:
+    tally = context_probe.ReviewTally()
+
+    tally.count("verdicts", "APPROVED")
+    tally.count("verdicts", "qzvverdict")
+    tally.count("verdicts", None)
+    tally.count("diff_fallbacks", "qzvsource")
+
+    assert tally.vocabularies == {"verdicts": {"APPROVED": 1, "other": 2}, "diff_fallbacks": {"other": 1}}
+    assert MARKER not in json.dumps(tally.profile(pulls=0)).casefold()
+
+
+def test_flags_are_counted_for_the_probed_repository_alone(tmp_path: Path) -> None:
+    flags = tmp_path / "qzvflags.json"
+    for repository in (REPOSITORY, REPOSITORY.upper(), "qzvother/qzvrepo", None):
+        add_flag(
+            flags,
+            category="QzvFlagCategory",
+            body="qzvflagbody",
+            repository=repository,
+            pull_number=None,
+            review_version=None,
+            finding_id=None,
+        )
+
+    assert context_probe.flag_counts(flags, REPOSITORY) == {"open": 2}
