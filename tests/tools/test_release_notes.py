@@ -1004,6 +1004,31 @@ class CountsTests(unittest.TestCase):
                 self.assertEqual((2, ""), (code, printed))
                 self.assertTrue(error.startswith("ERROR: gh answered with "), error)
 
+    def test_each_kind_label_lets_a_fixed_issue_be_counted(self) -> None:
+        for kind in ("bug", "enhancement", "documentation", "question"):
+            with self.subTest(kind=kind):
+                code, printed, error, _ = self.counts([issue(1, kind)])
+                self.assertEqual((0, ""), (code, error))
+                self.assertTrue(printed.startswith(f"Defects fixed: {int(kind == 'bug')} "), printed)
+
+    def test_an_open_gap_counts_and_a_gap_closed_as_not_planned_does_not(self) -> None:
+        reopened = {"number": 3, "labels": [{"name": "auditor-gap"}], "state": "open", "state_reason": "reopened"}
+        for items, gaps in (
+            ([issue(1, "enhancement", "auditor-gap", reason="open")], 1),
+            ([reopened], 1),
+            ([issue(2, "enhancement", "auditor-gap", reason="not_planned")], 0),
+        ):
+            with self.subTest(items=items):
+                code, printed, error, _ = self.counts(items)
+                self.assertEqual((0, ""), (code, error))
+                self.assertTrue(printed.endswith(f"Auditor gaps: {gaps}.\n"), printed)
+
+    def test_a_label_that_is_not_an_object_is_an_error_line(self) -> None:
+        item = {"number": 1, "labels": ["bug"], "state": "closed", "state_reason": "completed"}
+        code, printed, error, _ = self.counts([item])
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith("ERROR: gh answered with an issue that is not "), error)
+
     def test_a_listing_item_that_is_not_an_object_is_an_error_line(self) -> None:
         for item in ("issue 2", 2, None, [issue(2, "bug")]):
             with self.subTest(item=item):
@@ -1013,8 +1038,13 @@ class CountsTests(unittest.TestCase):
                 self.assertEqual("ERROR: gh answered with an item of milestone v0.2.0 that is not an object\n", error)
 
     def test_pages_that_are_not_arrays_are_an_error_line(self) -> None:
+        for answer in ('{"message": "x"}', '[{"message": "x"}]', '[[], {"message": "x"}]'):
+            with self.subTest(answer=answer):
+                self.assert_not_pages(answer)
+
+    def assert_not_pages(self, answer: str) -> None:
         def runner(command: Sequence[str]) -> CommandResult:
-            return CommandResult(0, '{"message": "x"}', "")
+            return CommandResult(0, answer, "")
 
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
@@ -1040,7 +1070,12 @@ class CountsTests(unittest.TestCase):
 
     def test_counts_takes_no_range_and_no_other_action(self) -> None:
         for arguments in (("--from", "v0.1.0"), ("--to", "HEAD"), ("--write",), ("--check",)):
-            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+            err = io.StringIO()
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(err):
                 with self.assertRaises(SystemExit) as raised:
                     release_notes.main(["v0.2.0", "--counts", *arguments], root=Path("unread"))
                 self.assertEqual(2, raised.exception.code)
+                if arguments[0] in ("--from", "--to"):
+                    self.assertRegex(
+                        err.getvalue(), r"error: --counts reads the milestone, not a range: drop --from and --to\n\Z"
+                    )
