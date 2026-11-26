@@ -956,6 +956,16 @@ HUB_FILE = {
 }
 
 
+def acts_on_hub(call: GitCall) -> bool:
+    """Whether a call's settled place is a guarded hub's (reached_hub), so a refusal of it gives the hub's step; a
+    place git cannot read gives the call's own step, which holds wherever it is."""
+    try:
+        hub, _ = reached_hub(call.place)
+    except GitError:
+        return False
+    return hub is not None
+
+
 def hub_write_refusal(opening: str, path: Path, protected: bool | None, what: str = "a file") -> str:
     """The refusal of a write of path that lies in a guarded hub, protected True, or in a checkout or git directory git
     answered with an error for, None, which may be a hub's; the first's step is the caller's (Judge.on_hub)."""
@@ -2635,21 +2645,18 @@ class Judge:
     def own_words(self, call: GitCall, reason: str, step: str) -> str:
         """A refusal of a call for its own words, with step, and HUB_ELSEWHERE_IT after it where the call acts on a
         guarded hub; there a step that sends the command to a terminal (TERMINAL_IT) gives way to the hub's."""
-        try:
-            hub, _ = reached_hub(call.place)
-        except GitError:
-            hub = None
-        if hub is None:
+        if not acts_on_hub(call):
             return f"{reason} {step}"
         return self.on_hub(reason if step == TERMINAL_IT else f"{reason} {step}")
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
             if self.hubs:
-                return (
+                refused = (
                     f"The guard does not settle part of a git call in this command ({reading.unread[0]}), so it is "
                     f"refused while a hub is guarded. {REWRITE_IT}"
                 )
+                return self.on_hub(refused) if any(map(acts_on_hub, reading.calls)) else refused
             self.notes.extend(reading.unread)
         writes = list(reading.writes)
         for write in writes:
@@ -4348,8 +4355,9 @@ def guard(stream: str) -> int:
     # variables that would have git write a trace or its output into a file they name.
     environment = dict(os.environ)
     withhold_written_variables(os.environ)
-    # The step a refusal ends with (closing_step), DENY_REASON until the session's own directory is looked up.
-    closing = DENY_REASON
+    # The step a refusal ends with (closing_step): until the session's own directory is looked up, none, so a refusal
+    # then ends with the steps that hold wherever the session is, never the claim that it is in the hub.
+    closing = ""
     try:
         event = json_reader.loads(stream)
         tool = event.get("tool_name", "")

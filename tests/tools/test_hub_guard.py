@@ -123,6 +123,26 @@ HUB_ELSEWHERE_STEP = (
     "A guarded hub stays on main and is never edited, so parallel sessions cannot carry each other's changes "
     "(docs/parallel-sessions.md): make the change in a worktree, not the hub."
 )
+# The remedies a refusal from outside the hub keeps although a call acts on the hub, since each names what to change
+# instead of the hub: the git configuration, the session's environment, a fast-forward's refs, a checkout git cannot
+# read, and a place the text does not settle.
+KEPT_STEPS = (
+    "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again.",
+    "Change it from a terminal.",
+    "Change the git configuration from a terminal.",
+    ", or run git from a terminal.",
+    " to 0, which outranks it.",
+    "from it from a terminal, then run the command again.",
+    "Repair the git configuration from a terminal, then run the command again.",
+    "Repair that checkout or git directory from a terminal, then run the command again.",
+    "Write the configuration in a command of its own.",
+    "or pull with `git pull --ff-only origin main`.",
+)
+# The refusals that judge no call's place: the guard failing, and a fast-forward whose refs it could not list.
+UNJUDGED = (
+    "The guard failed reading this command",
+    "`git merge --ff-only origin/main` is refused: the guard could not",
+)
 ELSEWHERE_STEPS = (
     "Write the git call with literal words and run it again; the guard's contract in docs/parallel-sessions.md lists "
     "what it reads.",
@@ -181,11 +201,21 @@ class GuardTestCase(HubTestCase):
             if isinstance(tool_input, Mapping) and isinstance(tool_input.get("command"), str):
                 self.bash_texts.append(tool_input["command"])
         stdin = event if isinstance(event, str) else json.dumps(event)
+        # The readings the guard judged, in this process, so a refusal is held to the hub's step where a call in one
+        # acts on the hub.
+        readings: list[hub_guard.Reading] = []
         if self.end_to_end:
             result = self.run_script([], cwd=self.root, stdin=stdin, environment=environment)
             code, stdout, stderr = result.returncode, result.stdout, result.stderr
         else:
-            code, stdout, stderr = guard_in_process(stdin, self.root, environment or self.environment)
+            judging = hub_guard.denied
+
+            def recorded(reading: hub_guard.Reading, hubs: Any = (), depth: int = 0) -> str | None:
+                readings.append(reading)
+                return judging(reading, hubs, depth)
+
+            with mock.patch.object(hub_guard, "denied", side_effect=recorded):
+                code, stdout, stderr = guard_in_process(stdin, self.root, environment or self.environment)
         self.assertEqual(0, code, stderr)
         self.stderr = stderr
         self.reason = ""
@@ -194,22 +224,37 @@ class GuardTestCase(HubTestCase):
         output = json.loads(stdout)["hookSpecificOutput"]
         self.assertEqual("PreToolUse", output["hookEventName"])
         self.reason = output["permissionDecisionReason"]
-        self.assert_closing_step(json.loads(stdin).get("cwd") if isinstance(event, str) else event.get("cwd"))
+        cwd = json.loads(stdin).get("cwd") if isinstance(event, str) else event.get("cwd")
+        self.assert_closing_step(cwd, readings)
         decision: str = output["permissionDecision"]
         return decision
 
-    def assert_closing_step(self, cwd: object) -> None:
+    def in_hub(self, place: Path) -> bool:
+        """Whether place lies in the fixture's hub, its checkout or git directory, rather than in a worktree."""
+        return path_containment.within(place, self.hub) and not path_containment.within(place, self.worktrees)
+
+    def assert_closing_step(self, cwd: object, readings: Sequence[hub_guard.Reading] = ()) -> None:
         """Every refusal ends with its step: from the hub, a worktree to work in; from anywhere else, as a worktree,
-        the step of what it refused, never the hub's sentence, since the session is not in the hub."""
+        the step of what it refused, never the hub's sentence, since the session is not in the hub. From anywhere
+        else, where a git call the guard read acts on the hub, the step is the hub's, but where the refusal keeps a
+        remedy of its own or places no call."""
         place = Path(cwd) if isinstance(cwd, str) else self.root
-        in_hub = path_containment.within(place, self.hub) and not path_containment.within(place, self.worktrees)
-        if in_hub:
+        if self.in_hub(place):
             # Where git cannot tell that the session is in the hub, a refusal ends with a step that holds anywhere.
             self.assertTrue(self.reason.endswith((HUB_STEP, *ELSEWHERE_STEPS)), self.reason)
-        else:
-            self.assertNotIn("This checkout is the hub", self.reason)
-            self.assertNotIn("tools/worktrees.py new", self.reason)
-            self.assertTrue(self.reason.endswith(ELSEWHERE_STEPS), self.reason)
+            return
+        self.assertNotIn("This checkout is the hub", self.reason)
+        self.assertNotIn("tools/worktrees.py new", self.reason)
+        self.assertTrue(self.reason.endswith(ELSEWHERE_STEPS), self.reason)
+        on_hub = any(
+            self.in_hub(where)
+            for reading in readings
+            for call in reading.calls
+            for where in (call.place.tree, call.place.start, call.place.repository)
+            if where is not None
+        )
+        if on_hub and not self.reason.endswith(KEPT_STEPS) and not self.reason.startswith(UNJUDGED):
+            self.assertTrue(self.reason.endswith(HUB_ELSEWHERE_STEP), self.reason)
 
     @staticmethod
     def unread_file_refusal(tool: str, path: Path) -> str:
@@ -1784,6 +1829,52 @@ class RefusalStepTests(GuardTestCase):
         self.assertEqual(f"The Edit tool writes {target}, a file of a guarded hub. {self.ELSEWHERE}", self.reason)
         self.assertEqual("deny", self.edit(target, cwd=self.hub))
         self.assertEqual(self.IN_HUB, self.reason)
+
+    def test_a_write_into_a_checkout_git_answers_with_an_error_for_asks_for_its_repair(self) -> None:
+        # A file in a checkout or git directory git answered with an error for may be a guarded hub's, so each write is
+        # refused, and the refusal says so, rather than call it a hub's file, with the repair as its step.
+        unread = self.root / "unread"
+        unread.mkdir()
+        target = unread / "file"
+        protecting = hub_guard.protecting_hub
+        failure = git_client.GitError("git could not read the checkout", returncode=128)
+
+        def answered_with_an_error(path: Path) -> Path | None:
+            if "unread" in path.parts:
+                raise failure
+            return protecting(path)
+
+        may = (
+            "in a checkout or git directory git answered with an error for, which may be a guarded hub's, so it is "
+            "refused. Repair that checkout or git directory from a terminal, then run the command again."
+        )
+        held = "into a file in a checkout or git directory git answered with an error for, which may be a guarded hub's"
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        config = other / ".git" / "config"
+        config.write_text(
+            config.read_text(encoding="utf-8") + f'[http]\n\tcookieFile = "{target.as_posix()}"\n\tsaveCookies = 1\n',
+            encoding="utf-8",
+        )
+        with mock.patch.object(hub_guard, "protecting_hub", side_effect=answered_with_an_error):
+            self.assertEqual("deny", self.bash(f'echo x > "{target}"', self.tree))
+            self.assertEqual(f"The command redirects its output into {target}, {may}", self.reason)
+            self.assertEqual("deny", self.bash(f'git log --output="{target}"', self.tree))
+            self.assertEqual(f"`git log` writes {target}, {may}", self.reason)
+            environment = {**self.environment, "GIT_TRACE": str(target)}
+            self.assertEqual("deny", self.bash("ls", self.tree, environment))
+            self.assertIn(f"{held}, so every command is refused while it does.", self.reason)
+            self.assertEqual("deny", self.bash(f'git -C "{other}" ls-remote https://example.com/x', self.tree))
+            self.assertIn(f"{held}, so the command is refused.", self.reason)
+
+    def test_a_part_the_guard_does_not_settle_beside_a_call_on_the_hub_says_the_hub_is_never_edited(self) -> None:
+        # A part of a git call the guard does not settle is refused whatever else the command holds; where one of its
+        # calls acts on the hub, the refusal ends with the hub's step after the literal-words step.
+        self.assertEqual("deny", self.bash(f'git -c core.pager=less -C "{self.hub}" log', self.tree))
+        self.assertTrue(self.reason.startswith("The guard does not settle part of a git call"), self.reason)
+        self.assertTrue(self.reason.endswith(f"{self.REWRITE} {self.ELSEWHERE}"), self.reason)
+        self.assertEqual("deny", self.bash(f'git -c core.pager=less -C "{self.tree}" log', self.hub))
+        self.assertTrue(self.reason.endswith(f"{self.REWRITE} {self.IN_HUB}"), self.reason)
 
     def test_a_guard_that_fails_from_a_worktree_asks_for_literal_words_alone(self) -> None:
         with mock.patch.object(hub_guard, "denied", side_effect=RuntimeError("the judge broke")):
