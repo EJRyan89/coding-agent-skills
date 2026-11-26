@@ -115,7 +115,7 @@ It prints `BASE <base> <commit>`, then for each run a `RUN <name> <command>` lin
    python -B .claude/skills/implement-change/scripts/pull_request.py check --title-file "<title file>" --body-file "<body file>" --base "<base>"
    ```
 
-4. Run `local_checks.py` (step 7) with the title and body files until it prints `READY`, then push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from.
+4. Push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from, once `local_checks.py` (step 7), given the title and body files, prints `READY`.
 5. Open the pull request. `open` repeats the check, refuses a branch whose upstream does not hold `HEAD` with `UNPUSHED <upstream>`, or `UNPUSHED no upstream`, so push it (step 4), and prints `PULL_REQUEST <url>`:
 
    ```bash
