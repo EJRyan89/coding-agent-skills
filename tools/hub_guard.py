@@ -772,11 +772,18 @@ READING_SECONDS = 15
 # How much of the reader's output is kept: far more than any command a tool call carries, and a reading cut short is
 # not JSON, so it is a command the guard cannot read rather than one read in part.
 POWERSHELL_OUTPUT_LIMIT = 1 << 22
+# The step a refusal ends with when the session's own directory is in a guarded hub (closing_step); elsewhere each
+# reason ends with a step of its own, and one that acts on a guarded hub with HUB_ELSEWHERE_IT, true wherever it is.
 DENY_REASON = (
     "This checkout is the hub: it stays on main and is never edited, so parallel sessions cannot carry each "
     "other's changes (docs/parallel-sessions.md). Create a worktree with "
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
+HUB_ELSEWHERE_IT = (
+    "A guarded hub stays on main and is never edited, so parallel sessions cannot carry each other's changes "
+    "(docs/parallel-sessions.md): make the change in a worktree, not the hub."
+)
+TERMINAL_IT = "Run it from a terminal."
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
 INHERITED_IT = (
     "The session inherited the variable, which no command can unset here: restart the session from an environment "
@@ -793,7 +800,9 @@ CONFIGURED_WRITE_IT = (
 )
 UNREAD_CONFIGURATION_IT = "Repair the git configuration from a terminal, then run the command again."
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
-UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
+UNWRITABLE = "The guard refused this command for a reason that holds what JSON cannot carry."
+UNWRITABLE_REASON = f"{UNWRITABLE} {DENY_REASON}"
+UNWRITABLE_ELSEWHERE = f"{UNWRITABLE} {TERMINAL_IT}"
 REWRITE_IT = (
     "Write the git call with literal words and run it again; the guard's contract in docs/parallel-sessions.md lists "
     "what it reads."
@@ -1043,6 +1052,9 @@ class Reading:
     places: list[Path] = field(default_factory=list)
     # When the guard's reading time ends, by reading_clock.
     deadline: float = math.inf
+    # The step a refusal of the command ends with, by where the session's own directory is (closing_step): looked up
+    # with the hubs in view, before the command is read, so a refusal at the reading's deadline needs no lookup.
+    closing: str = DENY_REASON
 
     def cannot_read(self, what: str) -> None:
         """A part of a git call's own words the guard does not settle: refused while a guarded hub is in view."""
@@ -1793,7 +1805,7 @@ def read_only_refusal(subcommand: str, arguments: Sequence[Word]) -> str | None:
         return None if why is None else f"{refused}: {why}."
     read = read_only_words(form, words)
     if read == UNSETTLED_WORD:
-        return f"`git {key}` {read}"
+        return f"`git {key}` {read} {REWRITE_IT}"
     if isinstance(read, str):
         return f"{refused} {read}"
     given, operands = read
@@ -1898,7 +1910,8 @@ def shadowed_fast_forward(hub: Path) -> str | None:
     if result.returncode != 0:
         said = reason_line(result.stderr) or f"git for-each-ref exited with {result.returncode}"
         return (
-            f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said})."
+            f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said}). "
+            f"{TERMINAL_IT}"
         )
     shadows = output_lines(result.stdout)
     if not shadows:
@@ -2585,6 +2598,14 @@ class Judge:
     deadline: float
     # The files git reads its system and global configuration from (configuration_files), once a write asks for them.
     configuration: list[Path | None] | None = None
+    # Whether the session's own directory lies outside every guarded hub (closing_step), so a refusal of what acts on
+    # one ends with HUB_ELSEWHERE_IT, where the hook adds no DENY_REASON.
+    outside: bool = False
+
+    def on_hub(self, reason: str) -> str:
+        """A refusal of what acts on a guarded hub, with HUB_ELSEWHERE_IT as its step when the session is outside it,
+        unless it is refused for a word the text does not settle, whose step is to write it out (REWRITE_IT)."""
+        return f"{reason} {HUB_ELSEWHERE_IT}" if self.outside and not reason.endswith(REWRITE_IT) else reason
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
@@ -2632,7 +2653,10 @@ class Judge:
             except GitError as exc:
                 lookups = []
                 if self.hubs:
-                    return f"The guard could not read where {call_named(call)} runs ({exc}), so it is refused."
+                    return (
+                        f"The guard could not read where {call_named(call)} runs ({exc}), so it is refused. "
+                        f"{TERMINAL_IT}"
+                    )
                 self.notes.append(f"could not read where {call_named(call)} runs")
             for lookup in lookups:
                 if lookup in seen:
@@ -2716,7 +2740,10 @@ class Judge:
             return reason
         if call.subcommand is None and self.hubs:
             # Whatever place it runs in, a subcommand the text does not settle may be an alias that writes a hub.
-            return "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded."
+            return (
+                "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded. "
+                f"{REWRITE_IT}"
+            )
         hub, unknown = reached_hub(call.place)
         if hub is None and not (unknown and self.hubs):
             if unknown and hub_refusal(call) is not None:
@@ -2731,6 +2758,8 @@ class Judge:
                 f"write a guarded hub. {PLACE_IT if hub is None else ''}".rstrip()
             )
         reason = hub_refusal(call)
+        if reason is not None and hub is not None:
+            reason = self.on_hub(reason)
         if reason is None and call.program == "git" and call.subcommand == "merge":
             reason = next(filter(None, map(shadowed_fast_forward, [hub] if hub else sorted(self.hubs))), None)
         if reason is not None and may_be_alias(call):
@@ -2879,14 +2908,14 @@ class Judge:
         if effects.runs is not None and self.hubs:
             return (
                 f"`git {subcommand} {effects.runs}` runs a command its words name, which may be git, so it is refused "
-                "while a hub is guarded."
+                f"while a hub is guarded. {TERMINAL_IT}"
             )
         writes = GIT_OUTPUT_SUBCOMMANDS | GIT_WRITING_OPTIONS.keys() | GIT_RUNNING_OPTIONS.keys() | PLAIN_ACTIONS.keys()
         writes |= GIT_DEFAULT_WRITES | GIT_OPERAND_SUBCOMMANDS | GIT_UNREAD_MODES.keys()
         if effects.unsettled and self.hubs and subcommand in writes:
             return (
                 f"`git {subcommand}` is given a word the text does not settle, which may be an option that writes a "
-                "file or runs a command, so it is refused while a hub is guarded."
+                f"file or runs a command, so it is refused while a hub is guarded. {REWRITE_IT}"
             )
         for value in effects.written:
             reason = self.written_refusal(call, value)
@@ -2900,7 +2929,9 @@ class Judge:
         while a hub is guarded, one whose path or directory the text does not settle."""
         if value in DEVICE_FILES:
             return None
-        unsettled = f"`git {call.subcommand}` writes a file the text does not settle, which may lie in a hub."
+        unsettled = (
+            f"`git {call.subcommand}` writes a file the text does not settle, which may lie in a hub. {REWRITE_IT}"
+        )
         if value is None:
             return unsettled if self.hubs else None
         path = Path(platform_support.from_shell_path(value))
@@ -2909,7 +2940,7 @@ class Judge:
                 return unsettled if self.hubs else None
             path = call.place.start / path
         if hub_protected(path):
-            return f"`git {call.subcommand}` writes {path}, a file of a guarded hub."
+            return self.on_hub(f"`git {call.subcommand}` writes {path}, a file of a guarded hub.")
         return self.configuration_write_refusal(path, f"`git {call.subcommand}` writes")
 
     def write_refusal(self, write: Write) -> str | None:
@@ -2918,7 +2949,7 @@ class Judge:
         configuration from. For a pattern, the folder its match lies in is judged."""
         opening = f"{write.opening} the file a pattern matches in" if write.pattern else write.opening
         if hub_protected(write.path):
-            return f"{opening} {write.path}, {'a folder' if write.pattern else 'a file'} of a guarded hub."
+            return self.on_hub(f"{opening} {write.path}, {'a folder' if write.pattern else 'a file'} of a guarded hub.")
         return self.configuration_write_refusal(write.path, opening)
 
     def configuration_write_refusal(self, path: Path, writer: str) -> str | None:
@@ -2982,7 +3013,7 @@ class Judge:
         be: it hides its subcommand. With none in view it is allowed with a note."""
         message = f"The alias `git {call.subcommand}` could not be read ({why})"
         if self.hubs:
-            return f"{message}, so it is refused."
+            return f"{message}, so it is refused. Write out the git call it stands for and run it again."
         self.notes.append(message)
         return None
 
@@ -3038,7 +3069,7 @@ class Judge:
                 return self.unreadable(call, str(exc))
             options = call.options.copy() if call.options is not None else GitOptions.initial(None, {}, opaque=True)
             record_git_call([*words, *call.arguments], options, reading)
-        reason = Judge(self.hubs, self.environment, [], self.deadline).denied(reading, depth + 1)
+        reason = Judge(self.hubs, self.environment, [], self.deadline, outside=self.outside).denied(reading, depth + 1)
         if reason is not None:
             return f"`git {call.subcommand}` is an alias for `{expansion}`: {reason}"
         if reading.notes or reading.unread:
@@ -3080,7 +3111,7 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
 
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
-    judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
+    judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline, outside=not reading.closing)
     with lookups_within(reading.deadline):
         return judge.session_written_refusal(reading.places) or judge.denied(reading, depth)
 
@@ -3562,7 +3593,8 @@ class BashReader:
 
     def read_cd(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
         """cd or pushd to a directory: a literal one settles where the shell goes; one the text does not settle, cd -,
-        a CDPATH search, an option, and pushd's rotations leave it unknown."""
+        a CDPATH search, an option, and pushd's rotations leave it unknown. With more than one directory, Bash 4 and
+        later refuse and stay, while Bash 3.2 goes to the first, so a success is the first's and a failure either."""
         if arguments[:1] == ["--"]:
             arguments = arguments[1:]
         elif arguments and arguments[0] is not None and arguments[0].startswith(("-", "+")) and arguments[0] != "-":
@@ -3577,7 +3609,10 @@ class BashReader:
                 return unsettled
             return moved_to(directory, self.start.home, stacked)
         if len(arguments) > 1:
-            return certain(directory)  # Bash refuses more than one directory, and stays
+            # Bash 4 and later refuse more than one directory and stay, which only a failure goes on from; Bash 3.2,
+            # macOS's /bin/bash, goes to the first and ignores the rest.
+            first = self.read_cd(["--", arguments[0]], directory, push)
+            return Outcome(first.ok, joined(first.fail, directory))
         target = arguments[0]
         # An empty target is one Bash 5.3 refuses, so its pushd pushes nothing, and Bash 3.2 reads as `.`.
         if target is None or target in {"-", ""}:
@@ -4204,10 +4239,11 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     guarded_hub_of_repository.cache_clear()
     # The hubs in view decide whether a command the guard cannot read in time is refused, so their lookups keep
     # GUARD_GIT_TIMEOUT_SECONDS for each git call rather than end with the reading time; the session's own directories
-    # bound them, never the command.
+    # bound them, never the command. So does the lookup of the step a refusal ends with (closing_step).
     project = environment.get("CLAUDE_PROJECT_DIR")
     places = [cwd, *([Path(platform_support.from_shell_path(project))] if project else [])]
-    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), places=places, deadline=deadline)
+    hubs = hubs_in_view(cwd, environment)
+    return Reading(environment, command, context_hubs=hubs, places=places, deadline=deadline, closing=closing_step(cwd))
 
 
 def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
@@ -4248,6 +4284,22 @@ def file_tool_refusal(tool: str, path: Path, cwd: Path, environment: Mapping[str
     return Judge(hubs, environment, [], math.inf).configuration_write_refusal(path, f"The {tool} tool writes")
 
 
+def closing_step(cwd: Path) -> str:
+    """The step the hook ends a refusal with for the session's own directory: DENY_REASON where it lies in a guarded
+    hub's checkout or git directory, and nothing elsewhere, such as in a worktree, where each reason ends with a step
+    of its own and one that acts on a guarded hub with HUB_ELSEWHERE_IT. Where git cannot tell, the refusal stands
+    and only its wording is at stake, so it ends with the steps that hold wherever the session is, never DENY_REASON's
+    claim that the session is in the hub."""
+    try:
+        return "" if guarded_hub_at(cwd) is None else DENY_REASON
+    except (GitError, OSError):
+        return ""
+
+
+def closed(reason: str, closing: str) -> str:
+    return f"{reason} {closing}" if closing else reason
+
+
 def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
@@ -4259,6 +4311,8 @@ def guard(stream: str) -> int:
     # variables that would have git write a trace or its output into a file they name.
     environment = dict(os.environ)
     withhold_written_variables(os.environ)
+    # The step a refusal ends with (closing_step), DENY_REASON until the session's own directory is looked up.
+    closing = DENY_REASON
     try:
         event = json_reader.loads(stream)
         tool = event.get("tool_name", "")
@@ -4270,22 +4324,26 @@ def guard(stream: str) -> int:
             if not isinstance(target, str):
                 print(f"hub guard skipped: the {tool} event names no file path", file=sys.stderr)
             elif hub_protected(resolve(target, cwd)):
-                refused = DENY_REASON
+                closing = closing_step(cwd)
+                written = f"The {tool} tool writes {resolve(target, cwd)}, a file of a guarded hub. {HUB_ELSEWHERE_IT}"
+                refused = closing or written
             else:
                 reason = file_tool_refusal(tool, resolve(target, cwd), cwd, environment)
-                refused = None if reason is None else f"{reason} {DENY_REASON}"
+                closing = closing_step(cwd) if reason is not None else closing
+                refused = None if reason is None else closed(reason, closing)
         elif tool in SHELL_READERS and not isinstance(tool_input.get("command"), str):
             print(f"hub guard skipped: the {tool} event names no command", file=sys.stderr)
         elif tool in SHELL_READERS:
             reading = start_reading(tool_input["command"], cwd, environment)
             hubs = set(reading.context_hubs)
+            closing = reading.closing
             in_view = (reading.text, hubs)
             read_into(reading, tool, cwd, environment)
             looking_up = True
             reached_hubs(reading, hubs)
             looking_up = False
             reason = denied(reading, hubs)
-            refused = None if reason is None else f"{reason} {DENY_REASON}"
+            refused = None if reason is None else closed(reason, closing)
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
@@ -4296,14 +4354,15 @@ def guard(stream: str) -> int:
         # Where a guarded hub is in view, a command the guard failed to read or judge is refused, whether a reader fails
         # on nesting past Python's recursion limit or on any other error: a guard that fails may have missed a git call
         # it reads, which is unlike a part of the command it does not read.
-        refused = (
+        failed = (
             f"The guard failed reading this command ({type(exc).__name__}: {exc}), so it is refused while a hub is "
-            f"guarded. {REWRITE_IT} {DENY_REASON}"
+            f"guarded. {REWRITE_IT}"
         )
+        refused = closed(failed, closing)
     if refused is not None:
         # A reason JSON cannot carry, such as one naming a path whose name decoded to a lone surrogate, gives way to
         # UNWRITABLE_REASON, so a refusal is always written: an error instead would let the command through.
-        print(hook_decision.denial(refused, UNWRITABLE_REASON))
+        print(hook_decision.denial(refused, UNWRITABLE_REASON if closing else UNWRITABLE_ELSEWHERE))
     return 0
 
 

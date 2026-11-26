@@ -561,7 +561,10 @@ The configuration's limits:
   and a background job run in subshells of their own, so a change there moves nothing after them, but for the stated
   limit on `lastpipe` below. A target the text does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and
   `pushd`'s rotations leave the directory unknown; a `pushd` to a target the text does not settle, or an empty one,
-  which Bash 5.3 refuses, pushes only where its `cd` succeeds, as Bash's does. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
+  which Bash 5.3 refuses, pushes only where its `cd` succeeds, as Bash's does. A `cd` or `pushd` given more than one
+  directory is read as each Bash runs it: Bash 3.2, macOS's `/bin/bash`, goes to the first and ignores the rest, and
+  Bash 4 and later refuse and stay, so a git call after `&&` is placed in the first directory, and one after `;` in
+  either, a directory the text does not settle unless the two are one. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
   as Bash reads them, clears it, so a later `popd` stays where it is, and an operand `dirs` refuses clears nothing. A
   `dirs` word the text does not settle, `--`, or any other word starting with `+` or `-`, a `pushd` or `popd` given an
   option or an entry's number, a plain assignment to `DIRSTACK` or one of its elements, in a compound command too,
@@ -671,7 +674,11 @@ refuses:
 
 The refusal names what it could not settle or place, and asks for the git call to be written with literal words, or
 for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded hub in view, the same is
-allowed with a note on stderr. A place whose lookup the reading time cuts short, between git calls or inside one, or
+allowed with a note on stderr. Each refusal ends with the step that works where the session is: from the hub's own
+checkout or git directory, to create a worktree and work there; from anywhere else, a worktree included, the step of
+what it refused, and, for what acts on a guarded hub, that the hub is never edited, so the change belongs in a
+worktree. Where git cannot tell whether the session's directory is the hub's, the refusal ends as it would elsewhere,
+since those steps hold wherever the session is. A place whose lookup the reading time cuts short, between git calls or inside one, or
 whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as if one
 were in view; it looks up every other place first, so the hubs they reach stay in view. A defect in the guard itself,
 once it has found a guarded hub in view, is refused the same way, since a failure says nothing about where a call
