@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import tomllib
@@ -519,6 +520,13 @@ def _require_tools(units: list[ShellUnit], has_powershell: bool) -> dict[str, st
     return {tool: path for tool, path in found.items() if path is not None}
 
 
+def echoed(argument: str) -> str:
+    """A path given to Bash or ShellCheck as it reads in their output once run_tool has decoded it: each writes back
+    the bytes it was given, the argument in the file system's encoding, which outside UTF-8, such as under a Latin-1
+    locale on Linux, a path holding a character outside ASCII does not share with the UTF-8 run_tool decodes."""
+    return os.fsencode(argument).decode("utf-8", "replace")
+
+
 def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
     with ThreadPoolExecutor(max_workers=min(8, len(units))) as pool:
         results = list(
@@ -532,9 +540,9 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             continue
         kind = "block syntax" if unit.is_block else "syntax"
         lines = program_lines(result.output.rstrip()) if result.output.strip() else []
-        path = platform_support.normalize(unit.path)
+        named = echoed(platform_support.normalize(unit.path)) + ":"
         # Bash names the file it parsed on each syntax error, so its lines are the source's reason when one names it.
-        if any(line.startswith(path + ":") for line in lines):
+        if any(line.startswith(named) for line in lines):
             raise SourceRefusal(
                 f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}", *lines, RENDERED_CHECK_REMEDY
             )
@@ -578,11 +586,11 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
             unattributed.append(f"ShellCheck exited with code {result.returncode} and printed nothing")
             continue
         for line in program_lines(result.output):
-            path = next((path for path in batch if line.startswith(path + ":")), None)
+            path = next((path for path in batch if line.startswith(echoed(path) + ":")), None)
             if path is None:
                 unattributed.append(line)
             else:
-                reported.setdefault(path, []).append(origins[path].origin + line[len(path) :])
+                reported.setdefault(path, []).append(origins[path].origin + line[len(echoed(path)) :])
     failing = [unit for unit in units if platform_support.normalize(unit.path) in reported]
     if failing:
         first = failing[0]
@@ -594,14 +602,23 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
         raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed, SHELLCHECK_FAILED_REMEDY)
 
 
+# The line the parse prints before a file's errors, naming the file by its index in RENDERED_PS1_FILES. pwsh writes in
+# the console's encoding, the OEM code page on Windows and the locale's elsewhere, which need not be the UTF-8 the
+# deployer reads, so a path with a character outside ASCII would not read back as written; ASCII reads back in each.
+POWERSHELL_FILE_MARK = "RENDERED_PS1_FILE "
 POWERSHELL_PARSE = (
-    "$ErrorActionPreference = 'Stop'; "
+    "$ErrorActionPreference = 'Stop'; $index = 0; "
     "foreach ($file in (ConvertFrom-Json $env:RENDERED_PS1_FILES)) { "
     "$tokens = $null; $errors = $null; "
     "[System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null; "
-    "if ($errors.Count -gt 0) { [Console]::Out.WriteLine($file); "
-    "$errors | ForEach-Object { [Console]::Out.WriteLine($_.Message) }; exit 1 } }"
+    f"if ($errors.Count -gt 0) {{ [Console]::Out.WriteLine('{POWERSHELL_FILE_MARK}' + $index); "
+    "$errors | ForEach-Object { [Console]::Out.WriteLine($_.Message) }; exit 1 }; $index++ }"
 )
+
+
+def powershell_file_line(index: int) -> str:
+    """The line the parse prints before the errors of the file at `index` in RENDERED_PS1_FILES."""
+    return f"{POWERSHELL_FILE_MARK}{index}"
 
 
 FOLDED_PATHS_REMEDY = "Rename one of them in the source so that no two names differ only in letter case, then rerun."
@@ -636,20 +653,22 @@ def _powershell_files(staged: Staged) -> dict[str, bytes]:
 
 
 def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str) -> None:
+    targets: list[str] = []
     origins: dict[str, str] = {}
     for index, (logical, content) in enumerate(sorted(files.items())):
         # A folder of its own for each script, as _extract_units gives each shell file.
         target = workspace / "powershell" / str(index) / logical
         _write(target, content)
-        origins[str(target)] = logical
+        targets.append(str(target))
+        origins[powershell_file_line(index)] = logical
     result = platform_support.run_tool(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_PARSE],
-        {"RENDERED_PS1_FILES": json_writer.dumps(list(origins))},
+        {"RENDERED_PS1_FILES": json_writer.dumps(targets)},
     )
     if result.returncode == 0:
         return
     lines = program_lines(result.output.strip()) if result.output.strip() else []
-    # The parse prints a file's path before that file's errors, so the first line naming a file names the source's
+    # The parse prints a file's line before that file's errors, so the first line naming a file names the source's
     # reason, and any line before it is kept after the reason, never dropped.
     named = next((index for index, line in enumerate(lines) if line.strip() in origins), None)
     if named is not None:
