@@ -3387,6 +3387,9 @@ class BashReader:
         """Each word's value, None where the text does not settle it, once every substitution in it is read."""
         values = []
         for word in words:
+            if word.refusal:
+                # A form bash_syntax does not read, as Bash 5.3's `${ command; }`: what it runs is not read.
+                self.reading.cannot_read(word.refusal)
             for text in word.substitutions:
                 self.nested().read_text(text, directory)
             values.append(self.word_value(word))

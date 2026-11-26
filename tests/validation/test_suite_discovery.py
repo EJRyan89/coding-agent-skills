@@ -969,6 +969,24 @@ def test_the_pipe_race_policy_names_a_suite_whose_substitution_bash_cannot_read(
     ]
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("x=${ printf a | grep -q a; }", id="a command substitution run in the shell itself"),
+        pytest.param("x=${| printf a | head -n 1; }", id="one that sets REPLY"),
+        pytest.param("cat <<EOF\n${ printf a | head -n 1; }\nEOF", id="one in a here-document's body"),
+        pytest.param("f() { x=${ printf a | grep -q a; }; }", id="one in a function"),
+    ],
+)
+def test_the_pipe_race_policy_names_a_suite_holding_a_form_the_grammar_refuses(tmp_path: Path, script: str) -> None:
+    # Bash 5.3 runs the pipe in the form, which bash_syntax refuses, so the suite is unread rather than passed.
+    [problem] = races_in(tmp_path, script)
+    assert problem.startswith(
+        "tests/test_race.sh cannot be read as Bash to find a pipe into a reader that ends early: Bash 5.3 runs the "
+        "command after `${"
+    )
+
+
 def test_a_here_document_s_substitution_bash_cannot_read_runs_nothing_and_the_rest_of_the_body_is_read(
     tmp_path: Path,
 ) -> None:
