@@ -34,10 +34,16 @@ a code block shows is the body's text, checked as any other. The title check ref
 reference, which the squash commit carries as its title, so every issue the pull request closes is named by a
 `Closes #<n>` line of the body.
 
+The issues `check` and `open` name closed are those of the base's repository, the GitHub repository its remote's URL
+names, the URL git fetches from or else the URL as configured: a reference that names another repository, by its name
+or its URL, closes none of its issues and is refused as any other closing line. When neither URL is a github.com one,
+only a reference that names no repository is named closed, since another may name any repository.
+
 Every line is one fact:
 
     TEMPLATE "<file>"              draft: the template read, from the top of the repository
-    CLOSES <n>                     each issue the title or the body closes, by any closing reference GitHub reads
+    CLOSES <n>                     draft: each --closes; check, open: each issue of the base's repository the title
+                                   or the body closes, by any closing reference GitHub reads
     BODY "<file>"                  draft: the body written, for the author to fill
     TITLE "<file>"                 draft: where to write the title, one line; nothing is there yet
     TITLE <title>                  check, open: the title read
@@ -103,6 +109,7 @@ from flat_text import LINE_UNSAFE, flat_text, single_line
 from forms_considered import forms_fault, forms_section, is_fix_title
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from github_remote import github_repository
 from hidden_comments import hidden_spans
 from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
 from text_lines import line_index, line_starts, text_lines
@@ -189,9 +196,11 @@ def draft_body(template: str, closes: Sequence[int]) -> str:
     return "".join(kept[:first] + closing + kept[first + 1 :])
 
 
-def closed_issues(body: str, title: str | None = None) -> list[int]:
-    """Each issue the title or the body closes, comments included, once, in order, by every closing reference GitHub
-    reads, as closing_references reads them, or PullRequestError for a number too long to read."""
+def closed_issues(body: str, title: str | None = None, *, repository: str | None = None) -> list[int]:
+    """Each issue of `repository`, `owner/name`, the title or the body closes, comments included, once, in order, by
+    every closing reference GitHub reads, as closing_references reads them, or PullRequestError for a number too long to
+    read. A reference that names another repository, by its name or its URL, closes none of its issues; with the
+    repository unknown, None, only a reference that names no repository surely closes one of them."""
     if any(
         whole_number.parse(reference_digits(match)) is None
         for match in CLOSING_REFERENCE.finditer(pull_request_text(title, body))
@@ -199,7 +208,13 @@ def closed_issues(body: str, title: str | None = None) -> list[int]:
         raise PullRequestError(
             f"a closing reference names an issue number of more than {whole_number.DIGIT_LIMIT} digits"
         )
-    return list(dict.fromkeys(reference.number for reference in pull_request_references(title, body)))
+    return list(
+        dict.fromkeys(
+            reference.number
+            for reference in pull_request_references(title, body)
+            if reference.repository is None or (repository is not None and reference.in_repository(repository))
+        )
+    )
 
 
 def headings(text: str) -> list[str]:
@@ -336,6 +351,17 @@ def fetched_base(git: GitClient, repository: Path, base: Base) -> str:
     return commit
 
 
+def base_repository(git: GitClient, repository: Path, base: Base) -> str | None:
+    """The GitHub repository, `owner/name`, of the base's remote, which the pull request merges into: from the URL git
+    fetches the base from, `insteadOf` applied, or else from the URL as configured, before a rewrite to a mirror or a
+    path; None when neither is a github.com URL."""
+    fetched = github_repository(git_output(git, repository, ["remote", "get-url", base.remote]))
+    if fetched is not None:
+        return fetched
+    configured = quiet_output(git, repository, ["config", "--get", f"remote.{base.remote}.url"])
+    return None if configured is None else github_repository(configured)
+
+
 def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str], list[str]]:
     """The base's tip after a fetch, and whether the branch holds it, adds to it, and has nothing uncommitted."""
     commit = fetched_base(git, repository, base)
@@ -363,9 +389,9 @@ def check(
     _, template = template_of(git, repository)
     title, title_problems = read_title(read_file(title_file))
     body = read_file(body_file)
-    closed = closed_issues(body, title or None)
-    facts = ([f"TITLE {flat_text(title)}"] if title else []) + [f"CLOSES {number}" for number in closed]
     base_facts, branch_problems = branch_facts(git, repository, base)
+    closed = closed_issues(body, title or None, repository=base_repository(git, repository, base))
+    facts = ([f"TITLE {flat_text(title)}"] if title else []) + [f"CLOSES {number}" for number in closed]
     template_text = read_file(template)
     body_lines = body_problems(body, template_text) + forms_lines(title, body, template_text)
     problems = title_problems + body_lines + branch_problems
