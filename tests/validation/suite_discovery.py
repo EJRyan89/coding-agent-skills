@@ -29,6 +29,7 @@ from bash_syntax import (
     Command,
     CommandList,
     FunctionDefinition,
+    NotRead,
     Simple,
     Source,
     command_bodies,
@@ -758,7 +759,8 @@ class _BashReading:
         each command or `<( )` substitution its words, its redirections, and an unquoted here-document's body hold,
         since each reads its command's standard input; a `>( )` substitution reads what the command writes into it.
         A function's definition runs nothing where it stands; its body is read as a command no pipe feeds, and kept
-        under its name for each command that calls it."""
+        under its name for each command that calls it. Raises NotRead at a word or an unquoted here-document's body
+        holding a form bash_syntax refuses, as Bash 5.3's `${ command; }`, whose commands are not read."""
         if isinstance(node, FunctionDefinition):
             self.bodies.append([])
             self.read_command(node.body, False)
@@ -766,6 +768,10 @@ class _BashReading:
             if node.name is not None:
                 self.functions[node.name] = body
             return
+        refusal = next((word.refusal for word in expanded_words(node) if word.refusal), "")
+        refusal = refusal or next((here.refusal for here in here_documents(node) if here.refusal), "")
+        if refusal:
+            raise NotRead(refusal)
         if isinstance(node, Simple) and (words := command_words(node)):
             self.commands.append((fed, node.line, words))
             if self.bodies:
@@ -790,8 +796,9 @@ def _read_bash(script: str) -> tuple[list[BashCommand], dict[str, list[list[str]
     list, a pipeline, a compound command, a function's body, and each command or process substitution, and never in a
     comment, a here-document's body, or a case's word or patterns. Every command of a group or a compound command a
     pipe feeds, and of one inside it, reads that pipe, and so does each command of a substitution a fed command holds.
-    Raises BashSyntaxError, a ValueError, for a script the grammar refuses, or one of whose substitutions it refuses:
-    Bash runs the lines before a syntax error, so none of its pipes can be trusted as read."""
+    Raises BashSyntaxError, a ValueError, for a script the grammar refuses, or one of whose substitutions it refuses,
+    and NotRead for one holding a form it refuses, as `${ command; }`: Bash runs the lines before a syntax error, and
+    the commands of such a form, so none of its pipes can be trusted as read."""
     reading = _BashReading()
     try:
         reading.read_list(parse(script), False)
