@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import functools
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -97,15 +98,43 @@ def test_a_command_is_plain_unless_its_parameter_says_it_is_encoded_or_takes_arg
     ],
 )
 def test_each_value_parameter_takes_the_next_word(parameter: str) -> None:
-    assert startup_command([parameter, "value", "jq ."], positional_command=True) == StartupCommand(2)
+    found = startup_command([parameter, "value", "jq ."], positional_command=True)
+    assert isinstance(found, StartupCommand)
+    assert (found.start, found.encoded, found.with_arguments) == (2, False, False)
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        (["-WorkingDirectory", "/w", "-c", "jq ."], StartupCommand(3, working_directory=1)),
+        (["-wd", "/w", "-c", "jq ."], StartupCommand(3, working_directory=1)),
+        (["-wo", "/w", "-c", "jq ."], StartupCommand(3, working_directory=1)),
+        (["--workingdir", "/w", "-cwa", "jq ."], StartupCommand(3, with_arguments=True, working_directory=1)),
+        (["/wd", "/w", "-e", "agBxAA=="], StartupCommand(3, encoded=True, working_directory=1)),
+        # pwsh takes the last -WorkingDirectory it is given.
+        (["-wd", "/a", "-NoProfile", "-wd", "/b", "-c", "jq ."], StartupCommand(6, working_directory=4)),
+        # -w names -WindowStyle, which pwsh tries first.
+        (["-w", "/w", "-c", "jq ."], StartupCommand(3)),
+        (
+            ["-wd", "/wx", "-RemoveWorkingDirectoryTrailingCharacter", "-c", "jq ."],
+            StartupCommand(4, working_directory=1, trims_working_directory=True),
+        ),
+        # A -WorkingDirectory after the command is a word of its script.
+        (["-c", "jq .", "-wd", "/w"], StartupCommand(1)),
+        # A value the caller cannot read is still the directory's word.
+        (["-wd", None, "-c", "jq ."], StartupCommand(3, working_directory=1)),
+    ],
+)
+def test_a_start_up_names_the_word_that_holds_its_working_directory(words: list[str | None], expected: object) -> None:
+    assert startup_command(words) == expected
 
 
 def test_a_first_positional_word_is_the_command_the_file_or_passed_over_as_the_caller_asks() -> None:
     words = ["-NoProfile", "-wd", "C:/w", "jq .", "-Command", "rg x"]
     # Windows PowerShell runs it as -Command's; pwsh runs it as -File's; a prose reading passes over it.
-    assert startup_command(words, positional_command=True) == StartupCommand(3)
+    assert startup_command(words, positional_command=True) == StartupCommand(3, working_directory=2)
     assert startup_command(words, positional_file=True) is None
-    assert startup_command(words) == StartupCommand(5)
+    assert startup_command(words) == StartupCommand(5, working_directory=2)
 
 
 def test_a_word_the_caller_cannot_read_is_named_where_the_reading_needs_it() -> None:
@@ -165,7 +194,8 @@ def test_a_word_names_a_parameter_after_a_dash_or_a_slash_as_pwsh_trims_it(word:
 
 
 # pwsh's start-up parser, run in process for each list of words in the JSON file COMMAND_SOURCES names: for each, what
-# it runs, {command, encoded, withArguments, stdin, abort}, or {threw} where it throws; then the parameters it lists
+# it runs, {command, encoded, withArguments, stdin, abort}, with the directory it starts in and whether it drops that
+# value's last character, which only pwsh on Windows reads, or {threw} where it throws; then the parameters it lists
 # of itself, the characters it takes as dashes, and those its Trim removes.
 PARSER = (
     "$ErrorActionPreference = 'Stop'; "
@@ -180,7 +210,10 @@ PARSER = (
     "encoded = $type.GetProperty('WasInitialCommandEncoded', $flags).GetValue($parser); "
     "withArguments = $type.GetField('_commandHasArgs', $flags).GetValue($parser); "
     "stdin = $type.GetProperty('ExplicitReadCommandsFromStdin', $flags).GetValue($parser); "
-    "abort = $type.GetProperty('AbortStartup', $flags).GetValue($parser) } }; "
+    "abort = $type.GetProperty('AbortStartup', $flags).GetValue($parser); "
+    "workingDirectory = $type.GetProperty('WorkingDirectory', $flags).GetValue($parser); "
+    "trims = $(if ($trims = $type.GetProperty('RemoveWorkingDirectoryTrailingCharacter', $flags)) { "
+    "$trims.GetValue($parser) } else { $false }) } }; "
     "$listed = @($type.GetField('s_validParameters', [Reflection.BindingFlags]'NonPublic,Static').GetValue($null)); "
     "$dash = $assembly.GetType('System.Management.Automation.Language.CharExtensions', $false); "
     "if ($null -eq $dash) { $dash = [Management.Automation.Language.Parser].Assembly.GetType("
@@ -230,7 +263,14 @@ def word_lists() -> list[list[str]]:
     names = sorted({name for name, _, _ in powershell_startup.PARAMETERS} | PINNED_PARAMETERS)
     tails = ([ENCODED, "-c", "X"], ["X"], ["-", "-c", "X"])
     lists = [[word, *tail] for name in names for word in spellings(name) for tail in tails]
-    return [*lists, ["--", "-c", "X"], ["-", "-c", "X"], ["X", "-c", "Y"], ["-c", "-"], ["-File", " -", "-c", "X"]]
+    directories = [["-wd", "A", "-NoProfile", "-WorkingDirectory", "B", "-c", "X"], ["-c", "X", "-wd", "A"]]
+    trimmed = [["-wd", "AB", "-RemoveWorkingDirectoryTrailingCharacter", "-c", "X"]]
+    return [
+        *lists,
+        *directories,
+        *trimmed,
+        *(["--", "-c", "X"], ["-", "-c", "X"], ["X", "-c", "Y"], ["-c", "-"], ["-File", " -", "-c", "X"]),
+    ]
 
 
 @functools.cache
@@ -242,15 +282,25 @@ def parsed() -> tuple[list[list[str]], list[dict[str, Any]], list[str], set[int]
 
 
 def pwsh_runs(words: list[str], result: dict[str, Any]) -> StartupCommand | None:
-    """The command pwsh's parser runs for the words, where the reader's start and kind must be the same, or None where
-    it runs none: it threw, it stopped the start-up, or it runs a file, or only what its standard input holds."""
+    """The command pwsh's parser runs for the words, where the reader's start, kind, and working directory must be the
+    same, or None where it runs none: it threw, it stopped the start-up, or it runs a file, or only what its standard
+    input holds."""
     if "threw" in result or result["abort"] or result["command"] is None:
         return None
     if result["encoded"]:
-        return StartupCommand(words.index(ENCODED), encoded=True)
-    if result["withArguments"]:
-        return StartupCommand(words.index(result["command"], 1), with_arguments=True)
-    return StartupCommand(next(start for start in range(1, len(words)) if " ".join(words[start:]) == result["command"]))
+        runs = StartupCommand(words.index(ENCODED), encoded=True)
+    elif result["withArguments"]:
+        runs = StartupCommand(words.index(result["command"], 1), with_arguments=True)
+    else:
+        runs = StartupCommand(
+            next(start for start in range(1, len(words)) if " ".join(words[start:]) == result["command"])
+        )
+    directory, trims = result["workingDirectory"], bool(result["trims"])
+    if directory is None:
+        return replace(runs, trims_working_directory=trims)
+    # The word pwsh starts in: the last before the command that is the directory, or that it drops a character of.
+    index = max(i for i in range(runs.start) if directory in {words[i], words[i][:-1] if trims else words[i]})
+    return replace(runs, working_directory=index, trims_working_directory=trims)
 
 
 def test_the_reader_runs_the_command_pwsh_s_parser_runs_for_every_spelling_of_every_parameter() -> None:

@@ -3749,6 +3749,93 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
 
+    def test_a_powershell_start_up_s_script_starts_where_its_working_directory_is(self) -> None:
+        # pwsh runs Set-Location -LiteralPath on the last -WorkingDirectory value before its script, in any spelling
+        # startup_command takes for it, so the script's git runs there: a relative value and .. read from the parent's
+        # directory, a link followed, ~ read as home, and a later Set-Location or Push-Location read from there.
+        # Windows PowerShell's start-up is read as pwsh's.
+        hub, tree, root = self.hub, self.tree, self.root
+        (root / "hub link").symlink_to(hub, target_is_directory=True)
+        (root / f"{hub.name}x").mkdir()
+        # A folder named as the hub inside the worktree, so a move to it by that name stays there from the worktree.
+        (tree / hub.name).mkdir()
+        home = {**self.environment, "HOME": str(root)}
+        for command, environment in (
+            (f"pwsh -WorkingDirectory \"{hub}\" -c 'git commit -m x'", None),
+            (f"pwsh -wd \"{hub}\" -c 'git commit -m x'", None),
+            (f"pwsh -NoProfile -wd \"{hub}\" -c 'git checkout -b y'", None),
+            (f"pwsh -wo \"{hub}\" -Command 'git commit -m x'", None),
+            (f"pwsh --workingdir \"{hub}\" -c 'git commit -m x'", None),
+            (f"pwsh /wd \"{hub}\" -c 'git commit -m x'", None),
+            (f"pwsh -wd \"{hub}\" -cwa 'git commit -m x'", None),
+            (f"powershell -wd \"{hub}\" -c 'git commit -m x'", None),
+            ("pwsh -wd ../../.. -c 'git commit -m x'", None),
+            (f"pwsh -wd \"{root}/hub link\" -c 'git commit -m x'", None),
+            (f"pwsh -wd . -wd \"{hub}\" -c 'git commit -m x'", None),
+            (f"pwsh -wd '~/{hub.name}' -c 'git commit -m x'", home),
+            (f'pwsh -wd "{root}" -c \'Set-Location "{hub.name}"; git commit -m x\'', None),
+            (f'pwsh -wd "{root}" -c \'Push-Location "{hub.name}"; git commit -m x\'', None),
+            # Windows pwsh drops the value's last character under -RemoveWorkingDirectoryTrailingCharacter.
+            (f"pwsh -wd \"{hub}x\" -RemoveWorkingDirectoryTrailingCharacter -c 'git commit -m x'", None),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, tree, environment))
+        # Each decision, from both shells, each command written as both parse it: the last -wd wins; a value the text
+        # does not settle, and one that is no directory now, which an earlier command may make one or pwsh stays in
+        # its parent's directory for, leave where the script runs unsettled; the trimmed value is the one the text
+        # settles, since pwsh elsewhere refuses -RemoveWorkingDirectoryTrailingCharacter and runs nothing; and
+        # -wd:<path> names no parameter, so pwsh runs it as its script file and runs no command.
+        script, trim = '-c "git commit -m x"', "-RemoveWorkingDirectoryTrailingCharacter"
+        for shell in (self.bash, self.powershell):
+            for command, cwd, expected, unplaced in (
+                (f"pwsh -wd '{hub}' {script}", tree, "deny", False),
+                (f"pwsh -nop -WorkingDirectory '{hub}' -c 'git stash'", tree, "deny", False),
+                (f"pwsh -wd . -wd '{hub}' {script}", tree, "deny", False),
+                (f"pwsh -wd '{hub}x' {trim} {script}", tree, "deny", False),
+                (f"pwsh -wd $D {script}", tree, "deny", True),
+                (f"pwsh -wd '{root}/missing' {script}", tree, "deny", True),
+                (f"pwsh -wd '{root}/missing' {script}", hub, "deny", True),
+                (f"pwsh -wd '{tree}' {script}", hub, None, False),
+                (f"pwsh -wd '{hub}' -wd '{tree}' {script}", hub, None, False),
+                (f"pwsh -wd '{root}/{hub.name}x' {trim} {script}", hub, "deny", False),
+                (f"pwsh -wd:'{hub}' {script}", tree, None, False),
+            ):
+                with self.subTest(shell=shell.__name__, command=command, cwd=cwd.name):
+                    self.assertEqual(expected, shell(command, cwd))
+                    if unplaced:
+                        self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Windows PowerShell has no -WorkingDirectory: it runs `-wd <dir>` as a command that fails, and the script's
+        # later statements in its parent's directory, while a `powershell` that is pwsh starts in <dir>; so its script
+        # is placed where both agree, and unplaced where they differ, in either direction.
+        for shell in (self.bash, self.powershell):
+            for command, cwd in (
+                (f"powershell -wd '{tree}' -c \"echo a; git commit -m x\"", hub),
+                (f"powershell -NoProfile -WorkingDirectory '{tree}' -Command \"git add -A; git commit -m x\"", hub),
+                (f"powershell -wd '{tree}' \"echo a; git commit -m x\"", hub),
+                (f"powershell -wd '{hub}' {script}", tree),
+            ):
+                with self.subTest(shell=shell.__name__, command=command, cwd=cwd.name):
+                    self.assertEqual("deny", shell(command, cwd))
+                    self.assertIn(UNPLACED.format("commit" if "git add" not in command else "add"), self.reason)
+            with self.subTest(shell=shell.__name__, command="powershell -wd ."):
+                self.assertIsNone(shell(f"powershell -wd . {script}", tree))
+        # An -EncodedCommand's git, whose subcommand the text does not settle, is placed where the start-up starts:
+        # from a repository no guarded hub is in view of, one started in the hub is refused, and from the hub one
+        # started elsewhere still is; each with its note.
+        other, encoded = self.other_repository(), "-EncodedCommand ZwBpAHQAIABzAHQAYQB0AHUAcwA="
+        note = "pwsh -EncodedCommand runs a script the text does not settle"
+        for shell in (self.bash, self.powershell):
+            for command, cwd, expected in (
+                (f"pwsh -EncodedCommand {encoded.split()[1]}", other, None),
+                (f"pwsh -WorkingDirectory '{hub}' {encoded}", other, "deny"),
+                (f"pwsh -wd '{other}' {encoded}", hub, "deny"),
+            ):
+                with self.subTest(shell=shell.__name__, command=command, cwd=cwd.name):
+                    self.assertEqual(expected, shell(command, cwd))
+                    self.assertIn(note, self.stderr if expected else self.stderr + self.reason)
+        # From the hub into a worktree by a relative path, the script's git runs in the worktree.
+        self.assertIsNone(self.bash("pwsh -wd .claude/worktrees/feat-demo -c 'git commit -m x'", hub))
+
     def test_a_builtin_or_a_function_the_guard_does_not_follow_leaves_the_directory_unknown(self) -> None:
         for command in (
             f"eval 'cd {self.hub}'; git commit -m x",
