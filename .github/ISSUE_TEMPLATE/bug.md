@@ -8,7 +8,8 @@ assignees: ''
 
 <!-- An action-oriented title naming the component, such as "deploy.py ..." or "review-prs ...".
      Remove personal paths, organization names, credentials, and private repository contents from everything
-     below. A suspected vulnerability goes through .github/SECURITY.md, not an issue. -->
+     below. Before 1.0.0 a suspected vulnerability is filed here too, as .github/SECURITY.md says; from 1.0.0 it
+     goes through private vulnerability reporting, not an issue. -->
 
 ## Reproduction
 
