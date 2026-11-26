@@ -1071,8 +1071,8 @@ class LinkDestinationTests(unittest.TestCase):
 
     def test_a_code_path_holds_every_character_a_path_written_in_prose_holds(self) -> None:
         # changed: CODE_PATH took only `[A-Za-z0-9_./-]`, so a span naming `docs/c++.md` or `docs/über.md` was no path,
-        # and guidance naming such a file the reviewer was not given read as fully supplied (#3445). A backslash is
-        # read as a link's destination reads one: a separator on Windows only.
+        # and guidance naming such a file the reviewer was not given read as fully supplied. A backslash is read as a
+        # link's destination reads one: a separator on Windows only.
         lines = [
             "Read `docs/c++.md` and `docs/über.md` and `docs/a.md`.",
             "`docs/x@y.md` `docs/PROGRA~1.md` `docs/Q&A.md` `docs/50%.md` `docs\\b.md` `\\docs\\c.md`",
