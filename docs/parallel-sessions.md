@@ -327,9 +327,9 @@ The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are 
 The hook is given the text of a command, not what runs under it. The guard catches the accidents a session makes in
 the hub, and is no sandbox: it reads a command for its git calls and where each acts, and for the files its
 redirections write, and a file tool's event for the file it edits. What it reads it judges; a part of a git call's own
-words it does not settle, a command substitution Bash 3.2 and Bash 4 and later read apart, and a here-document whose
-unquoted body holds an expansion it never closes are refused while a guarded hub is in view, with or without a git
-call; and every other part of a command is a program the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
+words it does not settle, a command substitution Bash 3.2 and Bash 4 and later read apart, a here-document whose
+unquoted body holds an expansion it never closes, and a form ejryan89-skill-core's `bash_syntax.py` refuses, as Bash
+5.3's `${ command; }`, are refused while a guarded hub is in view, with or without a git call; and every other part of a command is a program the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
 `hub_state.py`, which the `shepherd-pull-requests` tick and `repo-cleanup` run, names each way the hub differs from a
 clean checkout of `main` at `origin/main`, a change or an untracked file, another branch or a detached `HEAD`, or a
 commit `origin/main` lacks.
@@ -730,13 +730,9 @@ Within what it reads, it judges only what the text shows, so these too are left 
   cd "<dir>"` moves it, where the guard reads that command as a subshell's;
 - `shopt -s cdable_vars`, after which a later `cd name` goes to the directory a variable of that name holds, where the
   guard places it in a folder of that name;
-- Bash 5.3's `${ command; }` and `${| command; }` substitutions, which run their commands in the shell itself, so a
-  `cd` in one moves it and a git call in one runs, where the guard reads each as a parameter expansion whose value the
-  text does not settle, running nothing, though ejryan89-skill-core's `bash_syntax.py` refuses each to the readers
-  that judge what a text runs; a git call beside one is read;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
-  not cover, such as a `for` or `select` loop whose body is a `{ }` group, a reserved word right after `]]`, as `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and
-  Bash 3.2 refuses, or a `]]` inside an `=~` regex's parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`: the whole
+  not cover, such as a `for` or `select` loop whose body is a `{ }` group, a reserved word right after `]]`, as
+  `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and Bash 3.2 refuses, or a `]]` inside an `=~` regex's parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`: the whole
   command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
@@ -810,7 +806,11 @@ inside text it refuses, at any depth, and refuses the command while a hub is gua
 call it does not settle. It then reads the command a second time as Bash 3.2 does and judges the git calls and places
 of that reading too, so a `cd` into the hub before it is followed either way when Bash 3.2 reads the whole command. A
 here-document whose unquoted body holds an expansion it never closes is refused while a hub is guarded the same way,
-with or without a git call, since what the body runs after it is not read. What it does not reach:
+with or without a git call, since what the body runs after it is not read, and so is a word holding a form
+`bash_syntax.py` refuses (`Word.refusal`): Bash 5.3's `${ command; }` and `${| command; }`, which run their commands in
+the shell itself, an ANSI-C string that spells what Bash then reads as syntax or expands, inside a double-quoted
+`${ }` or arithmetic, and a `$$` before a single-quoted string holding a backslash, which Bash 3.2 reads as `$` and an ANSI-C string; a
+git call beside it is read. What it does not reach:
 
 - from outside the hub, a git call Bash 3.2 runs before a line it refuses, inside a substitution a case pattern's `)`
   ended early, since the second reading, like the first, reads none of a command it refuses;
