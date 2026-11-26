@@ -134,6 +134,7 @@ ELSEWHERE_STEPS = (
     " to 0, which outranks it.",
     "from it from a terminal, then run the command again.",
     "Repair the git configuration from a terminal, then run the command again.",
+    "Repair that checkout or git directory from a terminal, then run the command again.",
     "Change the git configuration from a terminal.",
     "Change it from a terminal.",
     "Write the configuration in a command of its own.",
@@ -211,9 +212,14 @@ class GuardTestCase(HubTestCase):
             self.assertTrue(self.reason.endswith(ELSEWHERE_STEPS), self.reason)
 
     @staticmethod
-    def hub_file_refusal(tool: str, path: Path) -> str:
-        """The refusal of a file tool's edit of a guarded hub's file from outside the hub, as the fixture's root is."""
-        return f"The {tool} tool writes {path}, a file of a guarded hub. {HUB_ELSEWHERE_STEP}"
+    def unread_file_refusal(tool: str, path: Path) -> str:
+        """The refusal of a file tool's edit, from outside the hub, as the fixture's root is, of a file in a checkout
+        or git directory git answered with an error for: it may lie in a hub, and the step is to repair the checkout."""
+        return (
+            f"The {tool} tool writes {path}, in a checkout or git directory git answered with an error for, which may "
+            "be a guarded hub's, so it is refused. Repair that checkout or git directory from a terminal, then run the "
+            "command again."
+        )
 
     def edit(
         self,
@@ -489,7 +495,7 @@ class UnreadableCheckoutFileTests(GuardTestCase):
         answered = git_client.GitError("git check-ignore could not read it", returncode=128)
         with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=answered):
             self.assertEqual("deny", self.edit(target))
-            self.assertEqual(self.hub_file_refusal("Edit", target), self.reason)
+            self.assertEqual(self.unread_file_refusal("Edit", target), self.reason)
         unanswered = git_client.GitError("git failed as timeout", kind="timeout")
         with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=unanswered):
             self.assertIsNone(self.edit(target))
@@ -500,9 +506,9 @@ class UnreadableCheckoutFileTests(GuardTestCase):
         for tool in ("Edit", "Write", "NotebookEdit"):
             with self.subTest(tool=tool), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
                 self.assertEqual("deny", self.edit(self.tree / "README.md", tool=tool))
-                self.assertEqual(self.hub_file_refusal(tool, self.tree / "README.md"), self.reason)
+                self.assertEqual(self.unread_file_refusal(tool, self.tree / "README.md"), self.reason)
         with mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
-            self.assertTrue(hub_guard.hub_protected(self.root / "elsewhere.txt"))
+            self.assertIsNone(hub_guard.hub_protected(self.root / "elsewhere.txt"))
 
     def test_an_edit_where_git_did_not_run_is_allowed_with_a_note(self) -> None:
         kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
@@ -516,7 +522,7 @@ class UnreadableCheckoutFileTests(GuardTestCase):
         answer = git_client.GitResult(0, "/a\nb\n/c\n", "")
         with mock.patch.object(worktrees, "git", return_value=answer):
             self.assertEqual("deny", self.edit(self.tree / "README.md"))
-            self.assertEqual(self.hub_file_refusal("Edit", self.tree / "README.md"), self.reason)
+            self.assertEqual(self.unread_file_refusal("Edit", self.tree / "README.md"), self.reason)
 
     def test_an_edit_in_a_git_directory_is_refused_when_git_answers_with_an_error_and_allowed_when_it_did_not_run(
         self,
@@ -529,7 +535,7 @@ class UnreadableCheckoutFileTests(GuardTestCase):
         for failure in answered:
             with self.subTest(failure=str(failure)), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
                 self.assertEqual("deny", self.edit(target))
-                self.assertEqual(self.hub_file_refusal("Edit", target), self.reason)
+                self.assertEqual(self.unread_file_refusal("Edit", target), self.reason)
         kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
         for kind in kinds:
             failure = git_client.GitError(f"git failed as {kind}", kind=kind)
@@ -627,7 +633,7 @@ class UnstatablePlaceTests(GuardTestCase):
     def test_an_edit_in_a_hub_git_directory_that_cannot_be_looked_at_is_refused(self) -> None:
         with unstatable(self.hub / ".git", self.hub):
             self.assertEqual("deny", self.edit(self.hub / ".git" / "config"))
-        self.assertEqual(self.hub_file_refusal("Edit", self.hub / ".git" / "config"), self.reason)
+        self.assertEqual(self.unread_file_refusal("Edit", self.hub / ".git" / "config"), self.reason)
 
 
 class AliasLookupPlaceTests(unittest.TestCase):
@@ -1720,9 +1726,53 @@ class RefusalStepTests(GuardTestCase):
         # A read-only form given a word the text does not settle is refused for that word, so its step is to write it.
         self.assertEqual("deny", self.bash(f'git -C "{self.hub}" status "$A"', self.tree))
         self.assertEqual(
-            f"`git status` is given a word the text does not settle, which may be any of its options. {self.REWRITE}",
+            "`git status` is given a word the text does not settle, which may be any of its options. "
+            f"{self.REWRITE} {self.ELSEWHERE}",
             self.reason,
         )
+
+    def test_a_call_refused_for_its_own_words_that_acts_on_the_hub_says_the_hub_is_never_edited(self) -> None:
+        # Refused for what its words make git do, a call that acts on the hub is still one the hub never takes: an
+        # option that runs a command is sent to a worktree, not to a terminal, and an unsettled word to both steps.
+        for tool in ("Bash", "PowerShell"):
+            with self.subTest(tool=tool):
+                self.assertEqual("deny", self.shell(tool, f"git -C '{self.hub}' rebase --exec true main", self.tree))
+                self.assertEqual(
+                    "`git rebase --exec` runs a command its words name, which may be git, so it is refused while a "
+                    f"hub is guarded. {self.ELSEWHERE}",
+                    self.reason,
+                )
+                self.assertEqual("deny", self.shell(tool, f"git -C '{self.tree}' rebase --exec true main", self.hub))
+                self.assertEqual(
+                    "`git rebase --exec` runs a command its words name, which may be git, so it is refused while a "
+                    f"hub is guarded. Run it from a terminal. {self.IN_HUB}",
+                    self.reason,
+                )
+        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" log --output="$O"', self.tree))
+        self.assertEqual(
+            "`git log` is given a word the text does not settle, which may be an option that writes a file or runs a "
+            f"command, so it is refused while a hub is guarded. {self.REWRITE} {self.ELSEWHERE}",
+            self.reason,
+        )
+        # A path git writes that the text does not settle, given to a call that acts on the hub, ends the same way.
+        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" log --output "$O"', self.tree))
+        self.assertEqual(
+            "`git log` writes a file the text does not settle, which may lie in a hub. "
+            f"{self.REWRITE} {self.ELSEWHERE}",
+            self.reason,
+        )
+
+    def test_a_refusal_inside_an_alias_ends_with_the_step_for_where_the_session_is(self) -> None:
+        # The alias's expansion is judged by a Judge of its own, which ends a refusal as the session's own does.
+        self.git(self.hub, "config", "alias.save", "commit -m x")
+        refused = (
+            "`git save` is an alias for `commit -m x`: `git commit` is not a read-only form the hub allows; the hub "
+            "allows only the forms READ_ONLY_FORMS in tools/hub_guard.py declares."
+        )
+        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" save', self.tree))
+        self.assertEqual(f"{refused} {self.ELSEWHERE}", self.reason)
+        self.assertEqual("deny", self.bash("git save", self.hub))
+        self.assertEqual(f"{refused} {self.IN_HUB}", self.reason)
 
     def test_a_write_into_the_hub_from_a_worktree_says_the_hub_is_never_edited(self) -> None:
         target = self.hub / "README.md"
@@ -4271,38 +4321,47 @@ class UnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash("cd - && git commit -m x", self.tree))
         self.assertIn(UNPLACED.format("commit"), self.reason)
 
-    def test_a_cd_or_pushd_given_more_than_one_directory_is_read_as_each_bash_runs_it(self) -> None:
-        # Bash 3.2, macOS's /bin/bash, goes to the first directory and ignores the rest; Bash 4 and later refuse and
-        # stay. So a git call after && runs in the first, and one after ; in either.
-        for command, cwd, expected in (
-            (f'cd "{self.hub}" x && git commit -m x', self.tree, WRITES),
-            (f'cd -- "{self.hub}" x && git commit -m x', self.tree, WRITES),
-            (f'cd "{self.hub}" "{self.tree}" && git commit -m x', self.tree, WRITES),
-            (f'pushd "{self.hub}" x && git commit -m x', self.tree, WRITES),
-            (f"bash -c 'cd \"{self.hub}\" x && git commit -m x'", self.tree, WRITES),
-            (f'cd "{self.hub}" x; git commit -m x', self.tree, UNPLACED),
-            (f'pushd "{self.hub}" x; git commit -m x', self.tree, UNPLACED),
-            (f'cd "{self.tree}" x; git commit -m x', self.hub, UNPLACED),
-            # Bash 4 and later run the commit after || in the worktree; the guard does not tell that Bash 3.2's cd to
-            # the hub cannot fail there, so it places the commit in either directory, which only refuses more.
-            (f'cd "{self.hub}" x || git commit -m x', self.tree, UNPLACED),
-            # Where the first directory is the worktree, the commit after && runs there or nowhere.
-            (f'cd "{self.tree}" x && git commit -m x', self.hub, None),
-            (f'pushd "{self.tree}" x && git commit -m x', self.tree, None),
+    def test_a_cd_or_pushd_given_more_than_one_word_goes_where_the_text_does_not_settle(self) -> None:
+        # Bash 4 and later refuse and stay; Bash 3.2, macOS's /bin/bash, goes to the first word; zsh and ksh, which the
+        # guard reads as Bash and which the Bash tool may be, replace the first word in the current path with the
+        # second. So a git call after && runs where the text does not settle, and one after || where the shell was.
+        parent = self.hub.parent
+        for command, cwd in (
+            (f'cd "{self.hub}" x && git commit -m x', self.tree),
+            (f'cd -- "{self.hub}" x && git commit -m x', self.tree),
+            (f'cd "{self.hub}" "{self.tree}" && git commit -m x', self.tree),
+            (f'pushd "{self.hub}" x && git commit -m x', self.tree),
+            (f"bash -c 'cd \"{self.hub}\" x && git commit -m x'", self.tree),
+            (f'cd "{self.hub}" x; git commit -m x', self.tree),
+            (f'pushd "{self.hub}" x; git commit -m x', self.tree),
+            (f'cd "{self.tree}" x; git commit -m x', self.hub),
+            (f'cd "{self.tree}" x && git commit -m x', self.hub),
+            # zsh and ksh: `cd OLD NEW` from a worktree whose path holds the hub's lands in the hub.
+            (f'cd "{self.tree}" "{self.hub}" && git commit -m x', self.tree),
+            (f'zsh -c \'cd "{parent}" "{parent}" && git commit -m x\'', self.hub),
+            (f'ksh -c \'cd "{parent}" "{parent}" && git commit -m x\'', self.hub),
+            ("zsh -c 'cd / / && git commit -m x'", self.hub),
+            ("zsh -c 'cd -- / / && git commit -m x'", self.hub),
+            ("zsh -c 'pushd / / && git commit -m x'", self.hub),
+            ("cd / / && git commit -m x", self.hub),
         ):
             with self.subTest(command=command, cwd=cwd):
-                if expected is None:
-                    self.assertIsNone(self.bash(command, cwd))
-                else:
-                    self.assertEqual("deny", self.bash(command, cwd))
-                    self.assertIn(expected.format("commit"), self.reason)
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A failure stays in every shell, so the commit after || runs where the shell was.
+        self.assertIsNone(self.bash(f'cd "{self.hub}" x || git commit -m x', self.tree))
+        self.assertEqual("deny", self.bash(f'cd "{self.tree}" x || git commit -m x', self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
         # A first directory a CDPATH search finds is one the text does not settle.
         environment = {**self.environment, "CDPATH": str(self.root)}
         self.assertEqual("deny", self.bash("cd sub x && git commit -m x", self.tree, environment))
         self.assertIn(UNPLACED.format("commit"), self.reason)
-        # The PowerShell tool starts the same Bash script, which macOS runs with /bin/bash.
-        self.assertEqual("deny", self.powershell(f"bash -c 'cd \"{self.hub}\" x && git commit -m x'", self.tree))
-        self.assertIn(WRITES.format("commit"), self.reason)
+        # The PowerShell tool starts the same scripts, which macOS runs with /bin/bash or zsh.
+        for shell in ("bash", "zsh"):
+            command = f"{shell} -c 'cd \"{self.hub}\" x && git commit -m x'"
+            with self.subTest(shell=shell):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
 
 
 class PowerShellUnderstoodSetTests(GuardTestCase):
@@ -5795,7 +5854,7 @@ def test_every_builtin_the_guard_decides_names_why() -> None:
 
 @pytest.mark.parametrize("name", ["cd", "pushd"])
 def test_a_cd_given_two_directories_goes_to_the_first_or_stays_in_bash_itself(name: str, tmp_path: Path) -> None:
-    # The guard reads a success as a move to the first directory and a failure as staying put, which covers every
+    # The guard reads a failure as staying put and a success as a move the text does not settle, which covers every
     # Bash it reads: the validated Bash and, where it is there, macOS's /bin/bash, a Bash 3.2 that moves.
     folders = probe_folders(tmp_path)
     script = (
@@ -5810,3 +5869,21 @@ def test_a_cd_given_two_directories_goes_to_the_first_or_stays_in_bash_itself(na
         assert (status == "0") == (where == "moved"), (shell, result.output)
         if major == "3":
             assert where == "moved", (shell, result.output)
+
+
+# ksh has no pushd.
+@pytest.mark.parametrize(("shell", "name"), [("zsh", "cd"), ("zsh", "pushd"), ("ksh", "cd")])
+def test_a_cd_given_two_words_replaces_the_first_in_the_path_or_stays_in_zsh_and_ksh(
+    shell: str, name: str, tmp_path: Path
+) -> None:
+    # zsh and ksh, which the guard reads as Bash, take `cd OLD NEW` as the current path with OLD replaced by NEW, so a
+    # success lands where the words alone do not say, and a failure stays; a host without the shell is not asked.
+    program = shutil.which(shell)
+    if program is None:
+        return
+    folders = probe_folders(tmp_path)
+    check = '[ "$(pwd -P)" = "$(cd "$2" && pwd -P)" ] && echo moved || echo stayed'
+    for words, expected in (("start target", "moved"), ("absent x", "stayed")):
+        script = f'cd "$1" && {name} {words} > /dev/null 2>&1; {check}'
+        result = platform_support.run_tool([program, "-c", script, "probe", *folders])
+        assert result.output.split()[-1:] == [expected], (shell, name, words, result.output)

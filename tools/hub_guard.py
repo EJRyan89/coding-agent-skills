@@ -799,6 +799,7 @@ CONFIGURED_WRITE_IT = (
     "again."
 )
 UNREAD_CONFIGURATION_IT = "Repair the git configuration from a terminal, then run the command again."
+UNREAD_CHECKOUT_IT = "Repair that checkout or git directory from a terminal, then run the command again."
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
 UNWRITABLE = "The guard refused this command for a reason that holds what JSON cannot carry."
 UNWRITABLE_REASON = f"{UNWRITABLE} {DENY_REASON}"
@@ -929,12 +930,14 @@ def git_builtins() -> frozenset[str]:
     return frozenset(output_lines(result.stdout)) if result.returncode == 0 else frozenset()
 
 
-def hub_protected(path: Path) -> bool:
+def hub_protected(path: Path) -> bool | None:
     """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory (protecting_hub), as
     written or with every link on the way to it followed, since a write through a link reaches what the link names.
+    Every answer but False protects the path.
 
-    A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected; where git
-    did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
+    A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected, as None
+    rather than True; where git did not run or finish, the GitError goes to the hook, which allows the edit with a
+    note."""
     try:
         if protecting_hub(path) is not None:
             return True
@@ -943,7 +946,25 @@ def hub_protected(path: Path) -> bool:
     except GitError as exc:
         if not exc.answered:
             raise
-        return True
+        return None
+
+
+# What a file hub_protected protects is: one of a guarded hub, True, or one that may be, None.
+HUB_FILE = {
+    True: "a file of a guarded hub",
+    None: "a file in a checkout or git directory git answered with an error for, which may be a guarded hub's",
+}
+
+
+def hub_write_refusal(opening: str, path: Path, protected: bool | None, what: str = "a file") -> str:
+    """The refusal of a write of path that lies in a guarded hub, protected True, or in a checkout or git directory git
+    answered with an error for, None, which may be a hub's; the first's step is the caller's (Judge.on_hub)."""
+    if protected:
+        return f"{opening} {path}, {what} of a guarded hub."
+    return (
+        f"{opening} {path}, in a checkout or git directory git answered with an error for, which may be a guarded "
+        f"hub's, so it is refused. {UNREAD_CHECKOUT_IT}"
+    )
 
 
 def protecting_hub(path: Path) -> Path | None:
@@ -2603,9 +2624,24 @@ class Judge:
     outside: bool = False
 
     def on_hub(self, reason: str) -> str:
-        """A refusal of what acts on a guarded hub, with HUB_ELSEWHERE_IT as its step when the session is outside it,
-        unless it is refused for a word the text does not settle, whose step is to write it out (REWRITE_IT)."""
-        return f"{reason} {HUB_ELSEWHERE_IT}" if self.outside and not reason.endswith(REWRITE_IT) else reason
+        """A refusal of what acts on a guarded hub, with HUB_ELSEWHERE_IT as its step when the session is outside it."""
+        return f"{reason} {HUB_ELSEWHERE_IT}" if self.outside else reason
+
+    def hub_write(self, opening: str, path: Path, protected: bool | None, what: str = "a file") -> str:
+        """The refusal of a write into a guarded hub, or one that may lie in one (hub_write_refusal)."""
+        refused = hub_write_refusal(opening, path, protected, what)
+        return self.on_hub(refused) if protected else refused
+
+    def own_words(self, call: GitCall, reason: str, step: str) -> str:
+        """A refusal of a call for its own words, with step, and HUB_ELSEWHERE_IT after it where the call acts on a
+        guarded hub; there a step that sends the command to a terminal (TERMINAL_IT) gives way to the hub's."""
+        try:
+            hub, _ = reached_hub(call.place)
+        except GitError:
+            hub = None
+        if hub is None:
+            return f"{reason} {step}"
+        return self.on_hub(reason if step == TERMINAL_IT else f"{reason} {step}")
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
@@ -2709,9 +2745,9 @@ class Judge:
                         f"refused while a hub is guarded. {target.remedy}"
                     )
                 self.notes.append(f"could not tell where {target.source} has git write")
-            elif hub_protected(target.path):
+            elif (protected := hub_protected(target.path)) is not False:
                 return (
-                    f"{target.named}, and {target.writer} writes there, into a file of a guarded hub, so the command "
+                    f"{target.named}, and {target.writer} writes there, into {HUB_FILE[protected]}, so the command "
                     f"is refused. {target.remedy}"
                 )
         if not (written and self.hubs):
@@ -2740,10 +2776,8 @@ class Judge:
             return reason
         if call.subcommand is None and self.hubs:
             # Whatever place it runs in, a subcommand the text does not settle may be an alias that writes a hub.
-            return (
-                "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded. "
-                f"{REWRITE_IT}"
-            )
+            refused = "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded."
+            return self.own_words(call, refused, REWRITE_IT)
         hub, unknown = reached_hub(call.place)
         if hub is None and not (unknown and self.hubs):
             if unknown and hub_refusal(call) is not None:
@@ -2825,9 +2859,9 @@ class Judge:
                         f"is refused while a hub is guarded. {target.remedy}"
                     )
                 self.notes.append(f"could not tell where {target.source} has git write")
-            elif hub_protected(target.path):
+            elif (protected := hub_protected(target.path)) is not False:
                 return (
-                    f"{target.named}, and {target.writer} writes there, into a file of a guarded hub, so every "
+                    f"{target.named}, and {target.writer} writes there, into {HUB_FILE[protected]}, so every "
                     f"command is refused while it does. {target.remedy}"
                 )
         return None
@@ -2906,17 +2940,19 @@ class Judge:
             return self.config_refusal(call)
         effects = git_effects(subcommand, call.arguments)
         if effects.runs is not None and self.hubs:
-            return (
+            refused = (
                 f"`git {subcommand} {effects.runs}` runs a command its words name, which may be git, so it is refused "
-                f"while a hub is guarded. {TERMINAL_IT}"
+                "while a hub is guarded."
             )
+            return self.own_words(call, refused, TERMINAL_IT)
         writes = GIT_OUTPUT_SUBCOMMANDS | GIT_WRITING_OPTIONS.keys() | GIT_RUNNING_OPTIONS.keys() | PLAIN_ACTIONS.keys()
         writes |= GIT_DEFAULT_WRITES | GIT_OPERAND_SUBCOMMANDS | GIT_UNREAD_MODES.keys()
         if effects.unsettled and self.hubs and subcommand in writes:
-            return (
+            refused = (
                 f"`git {subcommand}` is given a word the text does not settle, which may be an option that writes a "
-                f"file or runs a command, so it is refused while a hub is guarded. {REWRITE_IT}"
+                "file or runs a command, so it is refused while a hub is guarded."
             )
+            return self.own_words(call, refused, REWRITE_IT)
         for value in effects.written:
             reason = self.written_refusal(call, value)
             if reason is not None:
@@ -2929,18 +2965,17 @@ class Judge:
         while a hub is guarded, one whose path or directory the text does not settle."""
         if value in DEVICE_FILES:
             return None
-        unsettled = (
-            f"`git {call.subcommand}` writes a file the text does not settle, which may lie in a hub. {REWRITE_IT}"
-        )
-        if value is None:
-            return unsettled if self.hubs else None
-        path = Path(platform_support.from_shell_path(value))
-        if not path.is_absolute():
-            if call.place.start is None:
-                return unsettled if self.hubs else None
-            path = call.place.start / path
-        if hub_protected(path):
-            return self.on_hub(f"`git {call.subcommand}` writes {path}, a file of a guarded hub.")
+        path = None if value is None else Path(platform_support.from_shell_path(value))
+        if path is not None and not path.is_absolute():
+            path = None if call.place.start is None else call.place.start / path
+        if path is None:
+            if not self.hubs:
+                return None
+            refused = f"`git {call.subcommand}` writes a file the text does not settle, which may lie in a hub."
+            return self.own_words(call, refused, REWRITE_IT)
+        protected = hub_protected(path)
+        if protected is not False:
+            return self.hub_write(f"`git {call.subcommand}` writes", path, protected)
         return self.configuration_write_refusal(path, f"`git {call.subcommand}` writes")
 
     def write_refusal(self, write: Write) -> str | None:
@@ -2948,8 +2983,9 @@ class Judge:
         anywhere in its git directory, a link followed, and, while a hub is guarded, one git reads its system or global
         configuration from. For a pattern, the folder its match lies in is judged."""
         opening = f"{write.opening} the file a pattern matches in" if write.pattern else write.opening
-        if hub_protected(write.path):
-            return self.on_hub(f"{opening} {write.path}, {'a folder' if write.pattern else 'a file'} of a guarded hub.")
+        protected = hub_protected(write.path)
+        if protected is not False:
+            return self.hub_write(opening, write.path, protected, "a folder" if write.pattern else "a file")
         return self.configuration_write_refusal(write.path, opening)
 
     def configuration_write_refusal(self, path: Path, writer: str) -> str | None:
@@ -3593,8 +3629,10 @@ class BashReader:
 
     def read_cd(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
         """cd or pushd to a directory: a literal one settles where the shell goes; one the text does not settle, cd -,
-        a CDPATH search, an option, and pushd's rotations leave it unknown. With more than one directory, Bash 4 and
-        later refuse and stay, while Bash 3.2 goes to the first, so a success is the first's and a failure either."""
+        a CDPATH search, an option, and pushd's rotations leave it unknown. Given more than one word, a success goes
+        where the text does not settle and a failure stays: Bash 4 and later refuse and stay, Bash 3.2 goes to the first
+        word, and zsh and ksh, which the guard reads as Bash, replace the first word in the current path with the
+        second."""
         if arguments[:1] == ["--"]:
             arguments = arguments[1:]
         elif arguments and arguments[0] is not None and arguments[0].startswith(("-", "+")) and arguments[0] != "-":
@@ -3609,10 +3647,9 @@ class BashReader:
                 return unsettled
             return moved_to(directory, self.start.home, stacked)
         if len(arguments) > 1:
-            # Bash 4 and later refuse more than one directory and stay, which only a failure goes on from; Bash 3.2,
-            # macOS's /bin/bash, goes to the first and ignores the rest.
-            first = self.read_cd(["--", arguments[0]], directory, push)
-            return Outcome(first.ok, joined(first.fail, directory))
+            # Bash 4 and later refuse more than one word and stay; Bash 3.2, macOS's /bin/bash, goes to the first word;
+            # zsh and ksh go where the second replaces the first in the current path. Each that fails stays.
+            return Outcome(elsewhere(stacked), directory)
         target = arguments[0]
         # An empty target is one Bash 5.3 refuses, so its pushd pushes nothing, and Bash 3.2 reads as `.`.
         if target is None or target in {"-", ""}:
@@ -4323,10 +4360,10 @@ def guard(stream: str) -> int:
             target = tool_input.get("file_path") or tool_input.get("notebook_path")
             if not isinstance(target, str):
                 print(f"hub guard skipped: the {tool} event names no file path", file=sys.stderr)
-            elif hub_protected(resolve(target, cwd)):
+            elif (protected := hub_protected(resolve(target, cwd))) is not False:
                 closing = closing_step(cwd)
-                written = f"The {tool} tool writes {resolve(target, cwd)}, a file of a guarded hub. {HUB_ELSEWHERE_IT}"
-                refused = closing or written
+                written = hub_write_refusal(f"The {tool} tool writes", resolve(target, cwd), protected)
+                refused = closing or (f"{written} {HUB_ELSEWHERE_IT}" if protected else written)
             else:
                 reason = file_tool_refusal(tool, resolve(target, cwd), cwd, environment)
                 closing = closing_step(cwd) if reason is not None else closing

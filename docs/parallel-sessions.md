@@ -562,9 +562,10 @@ The configuration's limits:
   limit on `lastpipe` below. A target the text does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and
   `pushd`'s rotations leave the directory unknown; a `pushd` to a target the text does not settle, or an empty one,
   which Bash 5.3 refuses, pushes only where its `cd` succeeds, as Bash's does. A `cd` or `pushd` given more than one
-  directory is read as each Bash runs it: Bash 3.2, macOS's `/bin/bash`, goes to the first and ignores the rest, and
-  Bash 4 and later refuse and stay, so a git call after `&&` is placed in the first directory, and one after `;` in
-  either, a directory the text does not settle unless the two are one. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
+  word goes where the text does not settle when it succeeds and stays when it fails: Bash 4 and later refuse and stay,
+  Bash 3.2, macOS's `/bin/bash`, goes to the first word and ignores the rest, and zsh and ksh, which the guard reads as
+  Bash, go to the current path with the first word replaced by the second. So a git call after `&&` or `;` is placed
+  where the text does not settle, and one after `||` where the shell was. The stack `popd` reads is followed as well: an exact `-c` among words `dirs` reads,
   as Bash reads them, clears it, so a later `popd` stays where it is, and an operand `dirs` refuses clears nothing. A
   `dirs` word the text does not settle, `--`, or any other word starting with `+` or `-`, a `pushd` or `popd` given an
   option or an entry's number, a plain assignment to `DIRSTACK` or one of its elements, in a compound command too,
@@ -676,8 +677,10 @@ The refusal names what it could not settle or place, and asks for the git call t
 for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded hub in view, the same is
 allowed with a note on stderr. Each refusal ends with the step that works where the session is: from the hub's own
 checkout or git directory, to create a worktree and work there; from anywhere else, a worktree included, the step of
-what it refused, and, for what acts on a guarded hub, that the hub is never edited, so the change belongs in a
-worktree. Where git cannot tell whether the session's directory is the hub's, the refusal ends as it would elsewhere,
+what it refused, and, for every refusal of a call that acts on a guarded hub or a write into one, that the hub is never
+edited, so the change belongs in a worktree, after the literal-words step where a word is not settled. A write into a
+checkout or git directory git answered with an error for, which may be a guarded hub's, asks for that checkout to be
+repaired. Where git cannot tell whether the session's directory is the hub's, the refusal ends as it would elsewhere,
 since those steps hold wherever the session is. A place whose lookup the reading time cuts short, between git calls or inside one, or
 whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as if one
 were in view; it looks up every other place first, so the hubs they reach stay in view. A defect in the guard itself,
@@ -730,6 +733,14 @@ run, so `powershell -wd . -c 'cd <worktree>; git commit -m x'` from the hub, whi
 hub, is read as a commit in the worktree.
 
 Within what it reads, it judges only what the text shows, so these too are left to the check:
+
+- a shell's own reading where it is not Bash's: the guard reads the Bash tool's command, which Claude Code runs in the
+  user's shell, zsh by default on macOS, and a `zsh -c` or `ksh -c` script, as Bash, so a word zsh or ksh reads
+  otherwise is read by Bash's rules. A `cd` or `pushd` given two words is one: zsh and ksh go to the current path with
+  the first replaced by the second, which may be a hub, and the guard refuses the git call after it while a hub is
+  guarded, since it places that call where the text does not settle;
+- what a refusal whose reason JSON cannot carry refused, as one naming a path that decoded to a lone surrogate: it says
+  only that the guard refused the command, and, from outside the hub, to run it from a terminal, whatever it refused;
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, or before a `pwsh`
   start-up whose `-WorkingDirectory` holds `~`, as `HOME=<dir> pwsh -wd '~' -c ...`, which moves a later
