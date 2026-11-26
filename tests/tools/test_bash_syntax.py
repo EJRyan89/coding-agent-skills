@@ -858,13 +858,36 @@ def test_a_documented_limit_a_loop_with_a_group_body_which_bash_reads_is_not_rea
         bash_syntax.parse(text)
 
 
-@pytest.mark.parametrize("text", ['(( x = "${y:-"))"}" ))', 'echo $(( ")" ))'])
-def test_a_documented_limit_a_quoted_parenthesis_in_these_arithmetic_forms_which_bash_reads_is_an_error(
-    text: str,
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('(( x = "${y:-"))"}" ))', []),
+        ('echo $(( ")" ))', [["echo", '$(( ")" ))']]),
+        ('echo $(( ")" + $(git push) ))', [["echo", '$(( ")" + $(git push) ))'], ["git", "push"]]),
+        ("echo $(( ${y:-'))'} ))", [["echo", "$(( ${y:-'))'} ))"]]),
+        ("(( ${y:-'))'} )); git push", [["git", "push"]]),
+        ('echo $[ "]" + $(git push) ]', [["echo", '$[ "]" + $(git push) ]'], ["git", "push"]]),
+    ],
+)
+def test_a_quoted_parenthesis_or_bracket_in_arithmetic_closes_nothing_as_bash_reads_it(
+    text: str, expected: list[list[str]]
 ) -> None:
-    assert bash_agreement.bash_verdicts([text])[text][0]
-    with pytest.raises(BashSyntaxError):
-        bash_syntax.parse(text)
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("echo $((echo a); (git push))", [["echo", "$((echo a); (git push))"], ["echo", "a"], ["git", "push"]]),
+        ('x="$((echo a) | git push)"', [['x="$((echo a) | git push)"'], ["echo", "a"], ["git", "push"]]),
+    ],
+)
+def test_a_double_parenthesis_whose_first_close_another_does_not_follow_is_a_substitution_of_a_subshell(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected
 
 
 # A script whose every command is `:` with a tag, each on the line the comment beside it names, and the line the
@@ -1074,8 +1097,8 @@ def test_a_bash_as_new_as_the_pin_prints_every_pinned_word() -> None:
 
 
 def reserved_words_not_read() -> set[str]:
-    """The keys of bash_syntax.NOT_READ that name a reserved word, the rest naming an option."""
-    return bash_syntax.NOT_READ.keys() - option_keys(bash_syntax.NOT_READ)
+    """The keys of bash_syntax.NOT_READ that name a reserved word, the rest naming an option or an expansion form."""
+    return bash_syntax.NOT_READ.keys() - option_keys(bash_syntax.NOT_READ) - expansion_keys(bash_syntax.NOT_READ)
 
 
 def test_every_reserved_word_the_reader_reads_or_leaves_unread_is_one_bash_reserves() -> None:
@@ -1208,20 +1231,18 @@ def simple_commands_of(text: str) -> list[list[str]]:
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "expected"),
     [
-        'cat <<EOF\n$(echo $(( ")" )); git push)\nEOF\n',
-        'cat <<EOF\n$( (( x = "${y:-"))"}" )); git push)\nEOF\n',
-        'cat <<EOF\n`echo $(( ")" ))`; $(git push)\nEOF\n',
+        ('cat <<EOF\n$(echo $(( ")" )); git push)\nEOF\n', [["cat"], ["echo", '$(( ")" ))'], ["git", "push"]]),
+        ('cat <<EOF\n$( (( x = "${y:-"))"}" )); git push)\nEOF\n', [["cat"], ["git", "push"]]),
+        ('cat <<EOF\n`echo $(( ")" ))`; $(git push)\nEOF\n', [["cat"], ["echo", '$(( ")" ))'], ["git", "push"]]),
+        ("cat <<EOF\n$(: $(( 1 )); git push)\nEOF\n", [["cat"], [":", "$(( 1 ))"], ["git", "push"]]),
     ],
 )
-def test_arithmetic_the_reader_may_not_close_in_a_here_documents_body_is_refused(text: str) -> None:
-    # The reader refuses a quoted parenthesis in these arithmetic forms, which Bash reads, so the body's substitution is
-    # unread; a substitution with arithmetic the reader reads is still read.
-    with pytest.raises(bash_syntax.NotRead):
-        bash_syntax.simple_commands(text)
-    read = "cat <<EOF\n$(: $(( 1 )); git push)\nEOF\n"
-    assert simple_commands_of(read) == [["cat"], [":", "$(( 1 ))"], ["git", "push"]]
+def test_arithmetic_with_a_quoted_parenthesis_in_a_here_documents_body_is_read_as_bash_reads_it(
+    text: str, expected: list[list[str]]
+) -> None:
+    assert simple_commands_of(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -1687,3 +1708,719 @@ def test_bash_reads_the_same_commands_whatever_a_read_option_s_setting(tmp_path:
     for key in ("shopt extglob", "shopt expand_aliases", "set -o posix"):
         assert readings[f"{key} on"] != readings[""], key
     assert sorted(CORPUS_UNPRINTED.keys() - bash_syntax.OPTIONS_READ) == []
+
+
+# Bash's expansion and quoting forms as the newest Bash's manual names them, in bash(1)'s EXPANSION and QUOTING, keyed
+# as bash_syntax keys them, and `$[expression]`, which Bash 3.2's manual names and every Bash since still reads, pinned
+# so a runner whose Bash is older, as macOS's /bin/bash 3.2, which takes no `@` transformation, still holds the reader
+# to every one.
+PINNED_EXPANSIONS = frozenset(
+    {"$parameter", "${parameter}", "${parameter:-word}", "${parameter-word}", "${parameter:=word}"}
+    | {"${parameter=word}", "${parameter:?word}", "${parameter?word}", "${parameter:+word}", "${parameter+word}"}
+    | {"${parameter:offset}", "${parameter:offset:length}", "${!prefix*}", "${!prefix@}", "${!name[@]}"}
+    | {"${!name[*]}", "${#parameter}", "${parameter#word}", "${parameter##word}", "${parameter%word}"}
+    | {"${parameter%%word}", "${parameter/pattern/string}", "${parameter//pattern/string}"}
+    | {"${parameter/#pattern/string}", "${parameter/%pattern/string}", "${parameter^pattern}"}
+    | {"${parameter^^pattern}", "${parameter,pattern}", "${parameter,,pattern}", "${!parameter}"}
+    | {f"${{parameter@{operator}}}" for operator in "UuLQEPAKak"}
+    | {"$(command)", "`command`", "$(< file)", "${ command;}", "${| command;}", "$((expression))", "$[expression]"}
+    | {"<(list)", ">(list)", "{string,string}", "{x..y}", "{x..y..incr}", "~", "~login", "~+", "~-", "~N", "~+N"}
+    | {"~-N", "*", "?", "[...]", "$'string'", '$"string"'}
+)
+# The keys of bash_syntax's tables that name an expansion form, the rest naming a reserved word or an option.
+EXPANSION_KEY = re.compile(r"[$`<>~*?].*|\{.+\}|\[\.\.\.\]", re.DOTALL)
+
+
+def expansion_keys(table: object) -> set[str]:
+    """The keys of a table of bash_syntax's that name an expansion form."""
+    assert isinstance(table, (dict, frozenset))
+    return {key for key in table if EXPANSION_KEY.fullmatch(key)}
+
+
+@functools.cache
+def runner_transformations() -> tuple[tuple[int, int], frozenset[str]]:
+    """The validated Bash's release, as its major and minor numbers, and the `${parameter@operator}` forms it takes:
+    each letter after `@` that it does not refuse as a bad substitution."""
+    script = r"""echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"
+x=a
+for letter in {A..Z} {a..z}; do
+  if ( eval ": \"\${x@$letter}\"" ) 2> /dev/null; then echo "$letter"; fi
+done"""
+    result = platform_support.run_tool([bash_agreement.find_bash(), "-c", script], separate_errors=True)
+    assert result.returncode == 0, result.errors
+    major, minor, *letters = result.output.split()
+    return (int(major), int(minor)), frozenset(f"${{parameter@{letter}}}" for letter in letters)
+
+
+def decided_expansions() -> set[str]:
+    decided = bash_syntax.EXPANSIONS_READ | bash_syntax.EXPANSIONS_REFUSED.keys()
+    return set(decided) | expansion_keys(bash_syntax.NOT_READ)
+
+
+def test_every_expansion_form_bash_names_is_read_refused_or_not_read_with_a_reason() -> None:
+    catalogue = PINNED_EXPANSIONS | runner_transformations()[1]
+    tables = (bash_syntax.EXPANSIONS_READ, bash_syntax.EXPANSIONS_REFUSED, expansion_keys(bash_syntax.NOT_READ))
+    undecided = sorted(form for form in catalogue if sum(form in table for table in tables) != 1)
+    assert undecided == [], (
+        "decide each in exactly one of bash_syntax.EXPANSIONS_READ, EXPANSIONS_REFUSED, and NOT_READ, with the "
+        "reason, add it to PINNED_EXPANSIONS, and give it a sample in FORM_SAMPLES"
+    )
+    assert sorted(runner_transformations()[1] - PINNED_EXPANSIONS) == [], "pin each in PINNED_EXPANSIONS"
+
+
+def test_a_bash_as_new_as_the_pin_takes_every_pinned_transformation() -> None:
+    release, forms = runner_transformations()
+    if release >= PINNED_FROM_BASH:
+        pinned = {form for form in PINNED_EXPANSIONS if form.startswith("${parameter@")}
+        assert sorted(pinned - forms) == [], (
+            f"Bash {release} no longer takes these: remove each from PINNED_EXPANSIONS, FORM_SAMPLES, and "
+            "bash_syntax's tables, and pin PINNED_FROM_BASH to this release"
+        )
+
+
+def test_every_expansion_form_the_reader_decides_is_one_bash_names() -> None:
+    assert sorted(decided_expansions() - PINNED_EXPANSIONS - runner_transformations()[1]) == [], (
+        "remove each: no Bash names it"
+    )
+    other_keys = frozenset(bash_syntax.OPTIONS_READ | bash_syntax.OPTIONS_REFUSED.keys() | bash_syntax.RESERVED)
+    assert sorted(expansion_keys(other_keys)) == [], "no reserved word or option is keyed as an expansion form"
+
+
+# Runs each text from a file of its own, in a subshell of its own, from an empty folder, with `s` set to abc, `a` an
+# array, `u` unset, and `m` recording each marker it is given, so a text's markers are the commands Bash runs for it;
+# what a text's own subshell returns is no verdict, so the run succeeds once it reaches its end.
+RUN_EACH = r"""folder=$1
+cd "$folder/empty" || exit 1
+m() { printf '%s %s\n' "$index" "$1" >> "$folder/marks"; }
+for ((index = 0; index < $2; index++)); do
+  IFS= read -r -d '' text < "$folder/$index.sh"
+  ( s=abc a=(abc def); unset u; eval "$text"; wait ) < /dev/null > /dev/null 2>&1
+done
+exit 0"""
+
+
+def bash_runs(folder: Path, texts: list[str]) -> list[set[str]]:
+    """The markers the runner's Bash runs `m` with for each text, one Bash start for them all."""
+    (folder / "empty").mkdir()
+    for index, text in enumerate(texts):
+        (folder / f"{index}.sh").write_bytes(text.encode())
+    result = platform_support.run_tool(
+        [bash_agreement.find_bash(), "-c", RUN_EACH, "run-each", platform_support.normalize(folder), str(len(texts))]
+    )
+    assert result.returncode == 0, result.output
+    ran: list[set[str]] = [set() for _ in texts]
+    marks = folder / "marks"
+    for line in marks.read_text(encoding="utf-8").splitlines() if marks.exists() else []:
+        number, _, mark = line.partition(" ")
+        ran[int(number)].add(mark)
+    return ran
+
+
+def listed_marks(text: str) -> set[str] | BashSyntaxError:
+    """The markers of the `m` commands the reader lists for text, or the refusal it raises."""
+    try:
+        commands = bash_syntax.simple_commands(text)
+    except BashSyntaxError as error:
+        return error
+    return {words[1] for words in map(bash_syntax.command_words, commands) if words[:1] == ["m"] and len(words) > 1}
+
+
+ALL_RELEASES = (3, 2)
+# A text for each form Bash's manual names: a command substitution running `m` in each of its places that holds a
+# command, or, for a form that holds none, after it in the same word, with the markers Bash runs for it from the release
+# named on; for a form the reader does not read, the command Bash runs that no reader of the text lists.
+FORM_SAMPLES: dict[str, tuple[str, set[str], tuple[int, int]]] = {
+    "$parameter": ("echo $s$(m 1)", {"1"}, ALL_RELEASES),
+    "${parameter}": ("echo ${s}$(m 1)", {"1"}, ALL_RELEASES),
+    "${parameter:-word}": ("echo ${u:-$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter-word}": ("echo ${u-$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter:=word}": ("echo ${u:=$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter=word}": ("echo ${u=$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter:?word}": ("echo ${u:?$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter?word}": ("echo ${u?$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter:+word}": ("echo ${s:+$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter+word}": ("echo ${s+$(m 1)}", {"1"}, ALL_RELEASES),
+    "${parameter:offset}": ("echo ${s:$(m 1)0}", {"1"}, ALL_RELEASES),
+    "${parameter:offset:length}": ("echo ${s:$(m 1)0:$(m 2)1}", {"1", "2"}, ALL_RELEASES),
+    "${!prefix*}": ("echo ${!s*}$(m 1)", {"1"}, ALL_RELEASES),
+    "${!prefix@}": ("echo ${!s@}$(m 1)", {"1"}, ALL_RELEASES),
+    "${!name[@]}": ("echo ${!a[@]}$(m 1)", {"1"}, ALL_RELEASES),
+    "${!name[*]}": ("echo ${!a[*]}$(m 1)", {"1"}, ALL_RELEASES),
+    "${#parameter}": ("echo ${#s}$(m 1)", {"1"}, ALL_RELEASES),
+    "${parameter#word}": ("echo ${s#$(m 1)a}", {"1"}, ALL_RELEASES),
+    "${parameter##word}": ("echo ${s##$(m 1)a}", {"1"}, ALL_RELEASES),
+    "${parameter%word}": ("echo ${s%$(m 1)c}", {"1"}, ALL_RELEASES),
+    "${parameter%%word}": ("echo ${s%%$(m 1)c}", {"1"}, ALL_RELEASES),
+    "${parameter/pattern/string}": ("echo ${s/$(m 1)a/$(m 2)}", {"1", "2"}, ALL_RELEASES),
+    "${parameter//pattern/string}": ("echo ${s//$(m 1)a/$(m 2)}", {"1", "2"}, ALL_RELEASES),
+    "${parameter/#pattern/string}": ("echo ${s/#$(m 1)a/$(m 2)}", {"1", "2"}, ALL_RELEASES),
+    "${parameter/%pattern/string}": ("echo ${s/%$(m 1)c/$(m 2)}", {"1", "2"}, ALL_RELEASES),
+    "${parameter^pattern}": ("echo ${s^$(m 1)a}", {"1"}, (4, 0)),
+    "${parameter^^pattern}": ("echo ${s^^$(m 1)a}", {"1"}, (4, 0)),
+    "${parameter,pattern}": ("echo ${s,$(m 1)a}", {"1"}, (4, 0)),
+    "${parameter,,pattern}": ("echo ${s,,$(m 1)a}", {"1"}, (4, 0)),
+    **{
+        f"${{parameter@{operator}}}": (f"echo ${{s@{operator}}}$(m 1)", {"1"}, since)
+        for operators, since in (("QEAa", (4, 4)), ("UuLK", (5, 1)), ("k", (5, 2)))
+        for operator in operators
+    },
+    "${parameter@P}": ("p='$(m 1)'; echo ${p@P}", {"1"}, (4, 4)),
+    "${!parameter}": ("v='a[$(m 1)]'; echo ${!v}", {"1"}, ALL_RELEASES),
+    "$(command)": ("echo $(m 1)", {"1"}, ALL_RELEASES),
+    "`command`": ("echo `m 1`", {"1"}, ALL_RELEASES),
+    "$(< file)": ("echo $(< /dev/null)$(m 1)", {"1"}, ALL_RELEASES),
+    "${ command;}": ("echo ${ m 1; }", {"1"}, (5, 3)),
+    "${| command;}": ("echo ${| m 1; }", {"1"}, (5, 3)),
+    "$((expression))": ("echo $(( $(m 1)1 ))", {"1"}, ALL_RELEASES),
+    "$[expression]": ("echo $[ $(m 1)1 ]", {"1"}, ALL_RELEASES),
+    "<(list)": ("cat <(m 1)", {"1"}, ALL_RELEASES),
+    # Bash 3.2 does not wait for a process substitution.
+    ">(list)": ("echo > >(m 1)", {"1"}, (4, 4)),
+    "{string,string}": ("echo {a,$(m 1)}", {"1"}, ALL_RELEASES),
+    "{x..y}": ("echo {1..2}$(m 1)", {"1"}, ALL_RELEASES),
+    "{x..y..incr}": ("echo {1..4..2}$(m 1)", {"1"}, (4, 0)),
+    "~": ("echo ~/$(m 1)", {"1"}, ALL_RELEASES),
+    "~login": ("echo ~root/$(m 1)", {"1"}, ALL_RELEASES),
+    "~+": ("echo ~+/$(m 1)", {"1"}, ALL_RELEASES),
+    "~-": ("echo ~-/$(m 1)", {"1"}, ALL_RELEASES),
+    "~N": ("echo ~0/$(m 1)", {"1"}, ALL_RELEASES),
+    "~+N": ("echo ~+0/$(m 1)", {"1"}, ALL_RELEASES),
+    "~-N": ("echo ~-0/$(m 1)", {"1"}, ALL_RELEASES),
+    "*": ("echo *$(m 1)", {"1"}, ALL_RELEASES),
+    "?": ("echo ?$(m 1)", {"1"}, ALL_RELEASES),
+    "[...]": ("echo [a]$(m 1)", {"1"}, ALL_RELEASES),
+    "$'string'": ("echo $'\\''$(m 1)", {"1"}, ALL_RELEASES),
+    '$"string"': ('echo $"\\"$(m 1)"', {"1"}, ALL_RELEASES),
+}
+
+
+def test_every_expansion_form_has_a_sample() -> None:
+    assert sorted(FORM_SAMPLES) == sorted(PINNED_EXPANSIONS)
+
+
+def test_bash_runs_each_command_the_reader_lists_in_each_expansion_form_and_no_other(tmp_path: Path) -> None:
+    release = runner_transformations()[0]
+    keys = sorted(FORM_SAMPLES)
+    failures = []
+    for key, ran in zip(keys, bash_runs(tmp_path, [FORM_SAMPLES[key][0] for key in keys]), strict=True):
+        text, expected, since = FORM_SAMPLES[key]
+        if release >= since and not expected <= ran:
+            failures.append(f"{key}: Bash {release} does not run {sorted(expected - ran)} for {text!r}")
+        listed = listed_marks(text)
+        if key in bash_syntax.EXPANSIONS_READ and (not isinstance(listed, set) or not ran | expected <= listed):
+            failures.append(f"{key}: the reader lists {listed!r} for {text!r}, where Bash runs {sorted(ran)}")
+        elif key in bash_syntax.EXPANSIONS_REFUSED and not isinstance(listed, bash_syntax.NotRead):
+            failures.append(f"{key}: the reader does not refuse {text!r}: {listed!r}")
+        elif key in bash_syntax.NOT_READ and (not isinstance(listed, set) or not expected - listed):
+            failures.append(f"{key}: the reader lists {listed!r} for {text!r}, which Bash runs as the reason says")
+    assert failures == []
+
+
+# The places of a `${ }` form that hold text Bash expands, each with the text a generated row gives it when another
+# place holds the payload.
+SLOTS = {"word": "a", "pattern": "a", "string": "b", "offset": "0", "length": "1"}
+# The payloads a generated row puts in a place: each quoting form that may hold a `}` Bash reads as quoted, and each
+# way to hold a substitution, which Bash may run; and the text after a payload that may hold a `}`, inside the `${ }`,
+# which Bash reads as a double-quoted string after a quoted `}` and the reader once read as quoted text after the `}`
+# that ended its expansion, hiding the substitution inside it.
+CLOSING_PAYLOADS = ("'}'", '"}"', '$"}"', "\\}", "${s:+'}'}", "$(: })", "`: }`", "$'}'", "$'\\'}'")
+RUNNING_PAYLOADS = ("'$(m 2)'", '"$(m 2)"', "$(m 2)", "$'\\x24(m 2)'")
+AFTER_A_CLOSE = "\"'$(m 3)'\""
+# Where a generated row stands, its expansion written as EXPANSION, with text after it in the same word that runs a
+# substitution or quotes one; and the forms tried in the contexts that read the expansion as a double-quoted string
+# does and in arithmetic, each kind of place once.
+CONTEXTS = ("echo EXPANSION'$(m 4)'\"$(m 5)\"", "echo \"EXPANSION'$(m 4)'\"'$(m 5)'")
+DOUBLE_QUOTED_CONTEXTS = ("cat <<EOF\nEXPANSION'$(m 4)'\nEOF", "echo $(( EXPANSION ))")
+EVERY_CONTEXT_FORMS = frozenset(
+    {"${parameter:-word}", "${parameter#word}", "${parameter/pattern/string}", "${parameter:offset:length}"}
+)
+
+
+def generated_rows() -> list[tuple[str, str]]:
+    """Each `${ }` form the reader reads, its every place holding each payload, in each context: the payload and the
+    text. The parameter is `u`, unset, for a form that expands its word when the parameter is unset, and `s`
+    otherwise."""
+    rows: list[tuple[str, str]] = []
+    for key in sorted(bash_syntax.EXPANSIONS_READ):
+        places = [slot for slot in SLOTS if slot in key]
+        if not key.startswith("${") or not places:
+            continue
+        parameter = "u" if re.search(r"parameter:?[-=?]", key) else "s"
+        contexts = CONTEXTS + (DOUBLE_QUOTED_CONTEXTS if key in EVERY_CONTEXT_FORMS else ())
+        payloads = [payload + after for payload in CLOSING_PAYLOADS for after in ("", AFTER_A_CLOSE)]
+        for place in places:
+            for payload in [*payloads, *RUNNING_PAYLOADS]:
+                expansion = key.replace("parameter", parameter)
+                for slot, filler in SLOTS.items():
+                    expansion = expansion.replace(slot, payload if slot == place else filler)
+                rows.extend((payload, context.replace("EXPANSION", expansion)) for context in contexts)
+    return rows
+
+
+def test_every_command_bash_runs_in_a_generated_expansion_row_is_one_the_reader_lists(tmp_path: Path) -> None:
+    rows = generated_rows()
+    texts = [text for _, text in rows]
+    hidden, refused = [], []
+    for (payload, text), ran in zip(rows, bash_runs(tmp_path, texts), strict=True):
+        listed = listed_marks(text)
+        if isinstance(listed, bash_syntax.NotRead):
+            # Only an ANSI-C string that spells what Bash reads as syntax there is refused.
+            if not payload.startswith("$'"):
+                refused.append(f"{text!r}: {listed}")
+        elif isinstance(listed, set) and not ran <= listed:
+            hidden.append(f"{text!r}: Bash runs {sorted(ran)}, the reader lists {sorted(listed)}")
+    assert hidden == []
+    assert refused == []
+    # Bash and the reader agree on reading every row the reader does not refuse as unread, but where Bash 3.2 ends a
+    # `${ }` at the `}` a command substitution in it holds, a limit bash_syntax states.
+    bash_3_2 = runner_transformations()[0] < (4, 0)
+    bash_agreement.assert_reader_agrees(
+        text
+        for payload, text in rows
+        if not isinstance(listed_marks(text), bash_syntax.NotRead) and not (bash_3_2 and payload.startswith("$(: }"))
+    )
+
+
+def test_a_quote_inside_a_double_quoted_expansion_ends_no_expansion_so_the_command_after_it_is_read() -> None:
+    # Bash runs `echo HIDDEN`, since the single quotes inside the double-quoted `${ }` quote its `}`.
+    text = "x=; echo \"${x:-'}'\"'$(echo HIDDEN)'\"}\""
+    parse(text)
+    assert simple_commands_of(text) == [["x="], ["echo", "\"${x:-'}'\"'$(echo HIDDEN)'\"}\""], ["echo", "HIDDEN"]]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${x:-$'}'\"'$(git push)'\"}\"",
+        "echo \"${x:-$'\\x24(git push)'}\"",
+        "echo \"${x#$'\\''}\"",
+        "cat <<EOF\n${x:-$'\\x22'}\nEOF\n",
+        "echo $(( ${x:-$'\\x24(git push)'} ))",
+    ],
+)
+def test_an_ansi_c_string_in_a_double_quoted_expansion_spelling_what_bash_reads_as_syntax_is_not_read(
+    text: str,
+) -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^an ANSI-C string inside a double-quoted `\$\{ \}` spells"):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["echo ${x:$'\\x24(git push)'}", "echo $(( $'\\x24(git push)' ))", "(( $'\\140git push\\140' ))"],
+)
+def test_an_ansi_c_string_bash_expands_as_double_quoted_text_spelling_a_substitution_is_not_read(text: str) -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^an ANSI-C string Bash expands as a double-quoted string"):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${x:-$'\\n'}\"",
+        "echo \"${x:-$'X'}\"",
+        "echo ${x:-$'\\x24(git push)'}",
+        'echo "${x:-"$\'\\x24(git push)\'"}"',
+        "echo $'\\x24(git push)'",
+        "echo $(( $'1' ))",
+    ],
+)
+def test_an_ansi_c_string_bash_quotes_or_whose_text_bash_reads_as_text_is_read(text: str) -> None:
+    parse(text)
+    assert [words[0] for words in simple_commands_of(text)] == ["echo"]
+
+
+def test_bash_runs_what_an_ansi_c_string_in_a_double_quoted_expansion_spells_with_extquote_on_and_not_off(
+    tmp_path: Path,
+) -> None:
+    # The refusal stands under either setting: with extquote off Bash runs the substitution after the `$'}'`, which
+    # the `}` it spells ends the expansion before when it is on, and with extquote on it runs what `\x24` spells.
+    after = "echo \"${u:-$'}'\"'$(m 1)'\"}\"\necho \"${u:-$'\\x24(m 2)'}\""
+    ran = bash_runs(tmp_path, [f"shopt -s extquote\n{after}", f"shopt -u extquote\n{after}"])
+    assert ran == [{"2"}, {"1"}]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo ${ git push; }",
+        "echo ${\tgit push; }",
+        "echo ${\ngit push\n}",
+        "echo ${| git push; }",
+        'echo "${ git push; }"',
+        "echo ${x:-${ git push; }}",
+        "echo $(( ${ git push; } ))",
+        "(( ${ git push; } ))",
+        "cat <<EOF\n${ git push; }\nEOF\n",
+    ],
+)
+def test_a_command_substitution_run_in_the_current_shell_is_not_read_wherever_it_stands(text: str) -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{"):
+        bash_syntax.simple_commands(text)
+
+
+def test_deprecated_arithmetic_is_one_word_whose_substitutions_are_read() -> None:
+    text = "echo $[ 1 + $(git push) ] x"
+    parse(text)
+    [command] = [command for command in bash_syntax.simple_commands(text) if command.words[0].raw == "echo"]
+    assert [word.raw for word in command.words] == ["echo", "$[ 1 + $(git push) ]", "x"]
+    assert command.words[1].parts == (bash_syntax.Part("dynamic", "$["),)
+    assert bash_syntax.command_words(command, "%unread%") == ["echo", "%unread%", "x"]
+    assert simple_commands_of(text)[1:] == [["git", "push"]]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("echo ${x:'$(git push)'}", [["echo", "${x:'$(git push)'}"], ["git", "push"]]),
+        ("echo ${x:0:'`git push`'}", [["echo", "${x:0:'`git push`'}"], ["git", "push"]]),
+        ("echo \"${x:-'$(git push)'}\"", [["echo", "\"${x:-'$(git push)'}\""], ["git", "push"]]),
+        ("echo \"${x/a/'$(git push)'}\"", [["echo", "\"${x/a/'$(git push)'}\""], ["git", "push"]]),
+        ("echo ${x:-'$(git push)'}", [["echo", "${x:-'$(git push)'}"]]),
+        ("echo \"${x#'$(git push)'}\"", [["echo", "\"${x#'$(git push)'}\""]]),
+        ("echo \"${x^^'$(git push)'}\"", [["echo", "\"${x^^'$(git push)'}\""]]),
+    ],
+)
+def test_a_substitution_in_single_quotes_is_read_where_bash_expands_the_word_as_double_quoted_text(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo $(( $$'\\x24(git push)' ))",
+        "echo ${x:-$$'\\x24(git push)'}",
+        "cat <<EOF\n${x:0:$$'\\x24(git push)'}\nEOF\n",
+        "echo \"${x%%$$'`git push`'}\"",
+    ],
+)
+def test_a_process_id_before_a_quote_bash_may_read_as_an_ansi_c_string_spelling_syntax_is_not_read(text: str) -> None:
+    # Bash 3.2, and Bash 5.3 in a here-document's body, read the `$'` after `$$` here as an ANSI-C string and run what
+    # it spells; Bash 4 and later elsewhere read `$$` whole and the quote as plain.
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize("text", ["echo $(( $$ + 1 ))", "echo \"${x:-$$'a'}\"", "echo ${x:-$$'b'}", "echo $$'c'"])
+def test_a_process_id_before_a_quote_whose_readings_agree_is_read(text: str) -> None:
+    parse(text)
+    assert simple_commands_of(text) == [["echo", text.removeprefix("echo ")]]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "git commit -m x; echo ${ :; }",
+        "git commit -m x; echo ${| :; }",
+        "git commit -m x; echo \"${x:-$'\\x24'}\"",
+        "git commit -m x; echo $(( $'\\x24' ))",
+        "git commit -m x; echo ${x:$$'\\a'}",
+        'git commit -m x; y=( "${ :; }" )',
+    ],
+)
+def test_parse_reads_a_refused_form_and_the_commands_beside_it_and_the_walk_refuses_it(text: str) -> None:
+    # parse reads the tree as Bash does, so a reader by parse, as the hub guard, still reads the git call beside the
+    # form; the form's refusal rides on its word, which simple_commands and every_command raise.
+    commands = bash_agreement.simple_commands(bash_syntax.parse(text))
+    assert [word.raw for word in commands[0].words] == ["git", "commit", "-m", "x"]
+    assert commands[1].words[-1].refusal
+    with pytest.raises(bash_syntax.NotRead, match=re.escape(commands[1].words[-1].refusal)):
+        bash_syntax.simple_commands(text)
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.every_command(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("((printf %s $'\\x24'); git commit -m x)", [["printf", "%s", "$'\\x24'"], ["git", "commit", "-m", "x"]]),
+        (
+            "echo $((printf %s $'\\x24'); git commit -m x)",
+            [
+                ["echo", "$((printf %s $'\\x24'); git commit -m x)"],
+                ["printf", "%s", "$'\\x24'"],
+                ["git", "commit", "-m", "x"],
+            ],
+        ),
+    ],
+)
+def test_an_arithmetic_reading_bash_does_not_take_leaves_no_refusal(text: str, expected: list[list[str]]) -> None:
+    # Bash reads these as subshells, not arithmetic, where the ANSI-C string spells `$` as plain text.
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+def test_a_command_substitution_that_sets_reply_is_refused_with_its_own_reason() -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{\|` in the current shell"):
+        bash_syntax.simple_commands("echo ${| git push; }")
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{` and a blank"):
+        bash_syntax.simple_commands("echo ${\\\n git push; }")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${a['$(git push)']#x}\"",
+        "echo \"${a['$(git push)']%x}\"",
+        "echo \"${a['$(git push)']^^}\"",
+        "echo \"${a['$(git push)']@Q}\"",
+        "echo \"${!a['$(git push)']}\"",
+        "echo ${a['$(git push)']}",
+        "echo ${#a['$(git push)']}",
+        "cat <<E\n${a['$(git push)']#x}\nE\n",
+        "echo $(( ${a['$(git push)']#x} ))",
+        "echo \"${x:-${a['$(git push)']#x}}\"",
+        "[[ -n \"${a['$(git push)']#x}\" ]]",
+        "case \"${a['$(git push)']#x}\" in *) :;; esac",
+        "for i in \"${a['$(git push)']#x}\"; do :; done",
+        "y=( \"${a['$(git push)']#x}\" )",
+        "a['$(git push)']=1",
+        "b[${x:-'$(git push)'}]=1",
+    ],
+)
+def test_a_substitution_in_single_quotes_in_a_subscript_is_read_as_bash_5_3_runs_it(text: str) -> None:
+    # Bash 5.3 expands an indexed array's subscript as arithmetic, as a double-quoted string, wherever it stands.
+    parse(text)
+    assert ["git", "push"] in simple_commands_of(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo $[ a[b[1]] + $(git push) ]",
+        "echo $[ \\] + $(git push) ]",
+        "echo $(( 1 \\) + $(git push) ))",
+    ],
+)
+def test_arithmetic_reads_nested_brackets_and_escapes_as_bash_reads_them(text: str) -> None:
+    parse(text)
+    assert simple_commands_of(text)[1:] == [["git", "push"]]
+
+
+def test_a_double_quoted_word_bash_expands_holding_a_substitution_the_reader_cannot_close_is_not_read() -> None:
+    text = "echo \"${x:-'$(a'}\""
+    parse(text)
+    with pytest.raises(
+        bash_syntax.NotRead, match=r"^a `\$\{ \}` Bash expands as a double-quoted string is not read \("
+    ):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "spelled"),
+    [
+        ("\\x24", "$"),
+        ("\\044", "$"),
+        ("\\u0024", "$"),
+        ("\\U00000060", "`"),
+        ("\\U00110000", ""),
+        ("\\\\", "\\"),
+        ("\\'", "'"),
+        ('\\"', '"'),
+        ("\\n", "\x00"),
+        ("\\E", "\x00"),
+        ("\\cA", "\x00A"),
+        ("\\q", "\\q"),
+        # An escape Bash does not know, as `\X`, keeps its backslash, which a letter's escape does not.
+        ("\\X", "\\X"),
+        ("a}", "a}"),
+    ],
+)
+def test_an_ansi_c_string_spells_each_character_bash_reads_its_escapes_as(text: str, spelled: str) -> None:
+    assert bash_syntax.ansi_c_text(text) == spelled
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a[$'\\x24(git commit -m x)']=1",
+        "declare a[$'\\x24(git commit -m x)']=1",
+        "declare A[$'\\x24(git commit -m x)']=1",
+        "a=([$'\\x24(git commit -m x)']=1)",
+        "a[$'\\x60git commit -m x\\x60']=1",
+        "a[1+$'\\x24(git commit -m x)']=1",
+    ],
+)
+def test_an_ansi_c_string_spelling_a_substitution_in_an_assignment_s_subscript_is_not_read(text: str) -> None:
+    # Bash 5.3 expands the subscript as arithmetic, putting what the string spells there before it expands it.
+    parse(text)
+    with pytest.raises(bash_syntax.NotRead, match=r"^an ANSI-C string Bash expands as a double-quoted string"):
+        bash_syntax.simple_commands(text)
+
+
+def test_an_upper_case_name_is_read_as_a_lower_case_one_is(tmp_path: Path) -> None:
+    # The forms the reader tells apart by a name's first character: a `${ ` Bash 5.3 runs in the current shell, and
+    # a pattern in double quotes, whose single quotes quote.
+    texts = ["echo ${X}$(m 1)", "echo \"${HOME#'$(m 2)'}\""]
+    assert [listed_marks(text) for text in texts] == bash_runs(tmp_path, texts) == [{"1"}, set()]
+
+
+@pytest.mark.parametrize("text", ["a[1]=$'\\x24(x)'", "declare a[$'\\n']=1", "a=([$'1']=1)", "echo $'\\x24(x)'"])
+def test_an_ansi_c_string_outside_a_subscript_or_spelling_no_substitution_is_read(text: str) -> None:
+    parse(text)
+    bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo ${x:-<(git commit -m x)}",
+        "cat ${x:-<(git commit -m x)}",
+        "echo ${x/<(git commit -m x)/y}",
+        "x=${y:-<(git commit -m x)}",
+        "echo ${x:->(git commit -m x)}",
+        "echo ${x,,<(git commit -m x)}",
+        "echo ${a[<(git commit -m x)]}",
+        "x[<(git commit -m x)]=1",
+    ],
+)
+def test_a_process_substitution_in_an_unquoted_expansion_s_word_is_read(text: str) -> None:
+    parse(text)
+    assert simple_commands_of(text)[-1] == ["git", "commit", "-m", "x"]
+
+
+def test_a_process_substitution_in_a_double_quoted_expansion_s_word_is_text() -> None:
+    text = 'echo "${x:-<(git commit -m x)}"'
+    parse(text)
+    assert simple_commands_of(text) == [["echo", text.removeprefix("echo ")]]
+
+
+def test_a_double_quoted_word_read_again_holding_a_substitution_it_cannot_close_is_not_read() -> None:
+    # The first reading skips the escaped `$`, so it closes the expansion; read again as Bash expands the word, a
+    # substitution starts there that never closes.
+    text = 'echo "${x:-\\$(a}"'
+    parse(text)
+    with pytest.raises(
+        bash_syntax.NotRead, match=r"^a `\$\{ \}` Bash expands as a double-quoted string is not read \("
+    ):
+        bash_syntax.simple_commands(text)
+
+
+def test_a_substitution_in_a_nested_expansion_s_quotes_is_read_where_the_outer_word_is_read_again() -> None:
+    # Bash 3.2 runs the first substitution, inside the nested pattern's single quotes, as it expands the subscript.
+    text = "(( a[${a['${!x,,'$(git push)'$}\\'$(git status)],,:}] ))"
+    parse(text)
+    assert ["git", "push"] in simple_commands_of(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Bash reads arithmetic by its parentheses and quotes alone, so a `${ }` that never closes is refused only as it
+        # is expanded, and the next line runs.
+        ("(( ${x/'}'\\} ))\ngit push", [["git", "push"]]),
+        ("echo $(( ${x/'}'\\} ))\ngit push", [["echo", "$(( ${x/'}'\\} ))"], ["git", "push"]]),
+        # A `)` in a `${ }` closes the arithmetic, so Bash reads the two subshells instead.
+        ("(( ${x:-)} )); git push", [["${x:-)}"], ["git", "push"]]),
+        # Bash 3.2 runs a process substitution in arithmetic.
+        ("(( ${x[<(git push)]} ))", [["git", "push"]]),
+        # Bash counts a `$[`'s bracket in arithmetic as any other, so an unclosed one there opens nothing.
+        ("for (( i=${x/$[}[$((git push) )1+]; 0; )); do :; done", [["git", "push"], [":"]]),
+    ],
+)
+def test_arithmetic_is_read_by_its_parentheses_and_quotes_alone_as_bash_reads_it(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["(( ${x/a/$$'$\"$['}}'$(git push)' ))", "(( ${x##'$(($'}'$(git push)'\"$(git status)\" ))"],
+)
+def test_a_single_quoted_string_in_arithmetic_ends_at_its_quote_before_any_substitution_in_it_is_read(
+    text: str,
+) -> None:
+    # Bash reads single-quoted text in arithmetic as opaque and then expands what it holds, running the `$(git push)`
+    # after it; a reading that took the `$[` or `$((` inside for an opening ran past the quote and missed it.
+    parse(text)
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("cat <<E\n${#a[<(git push)%]#} x\nE\n", [["cat"], ["git", "push"]]),
+        ('echo "${a[<(git push)]}"', [["echo", '"${a[<(git push)]}"'], ["git", "push"]]),
+        ("echo $(( '$(git push)' ))", [["echo", "$(( '$(git push)' ))"], ["git", "push"]]),
+    ],
+)
+def test_a_process_substitution_bash_3_2_runs_in_a_subscript_and_a_substitution_in_arithmetic_s_quotes_are_read(
+    text: str, expected: list[list[str]]
+) -> None:
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${x:-'${ git push; }'}\"",
+        "echo ${x:'${ git push; }'}",
+        "(( a['${| git push; }'] ))",
+        "echo $(( '${ git push; }' ))",
+        "a['${ git push; }']=1",
+        "cat <<E\n${x:'${ git push; }'}\nE\n",
+        "echo $((echo ${x:'${ git push; }'}) )",
+    ],
+)
+def test_a_command_substitution_run_in_the_current_shell_in_text_bash_reads_again_is_not_read(text: str) -> None:
+    # Bash 5.3 runs it as it expands the word, the single quotes around it being text there.
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{"):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize("text", ["a[$$'\\x24(git push)']=1", "declare a[x[1]$'\\x24(git push)']=1"])
+def test_a_quoted_string_bash_may_read_as_ansi_c_in_an_assignment_s_subscript_is_not_read(text: str) -> None:
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.simple_commands(text)
+
+
+def test_a_bare_case_pattern_bash_reads_again_in_a_double_quoted_word_is_marked_on_the_refusal() -> None:
+    # The substitution stands between the word's single quotes, which only the reading again sees through.
+    text = "echo \"${x:-'$(case x in a) :;; esac)'}\" )"
+    with pytest.raises(BashSyntaxError) as raised:
+        bash_syntax.parse(text)
+    assert raised.value.holds_bare_case
+
+
+def test_a_documented_limit_a_double_parenthesis_a_close_in_an_expansion_ends_is_read_as_a_subshell_s() -> None:
+    text = "echo $(( ${x:-)} ))"
+    assert not bash_agreement.bash_n_verdict(text)[0]
+    assert simple_commands_of(text) == [["echo", "$(( ${x:-)} ))"], ["${x:-)}"]]
+
+
+def test_a_documented_limit_an_unclosed_bracket_arithmetic_in_an_expansion_is_refused_with_its_line() -> None:
+    # Bash 3.2 ends the `${` at its `}` and runs the git call; Bash 4 and later refuse the line, as the reader does.
+    text = "git commit -m x; echo ${x%$[}"
+    if runner_transformations()[0] >= (4, 0):
+        assert not bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)
+
+
+def test_a_documented_limit_a_continued_line_between_a_dollar_and_its_parenthesis_is_refused() -> None:
+    text = "echo $\\\n(git push)"
+    assert bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)
+
+
+def test_a_single_quote_arithmetic_never_closes_is_refused_as_bash_refuses_it() -> None:
+    text = "echo $(( 'abc ))"
+    assert not bash_agreement.bash_n_verdict(text)[0]
+    with pytest.raises(BashSyntaxError, match=r"^a quote in an arithmetic command is not closed$"):
+        bash_syntax.parse(text)
+
+
+def test_a_process_substitution_that_never_closes_in_arithmetic_s_quotes_is_text_and_the_rest_is_read() -> None:
+    # The `<(` inside the single quotes opens nothing that closes, so it is read as text, and the substitution after it
+    # in the same quotes, which Bash runs as it expands the expression, is still read.
+    text = "echo $(( '<(x $(git push)' ))"
+    parse(text)
+    assert simple_commands_of(text) == [["echo", "$(( '<(x $(git push)' ))"], ["git", "push"]]

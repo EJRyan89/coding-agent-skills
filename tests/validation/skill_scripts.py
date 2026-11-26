@@ -3088,8 +3088,8 @@ JUDGED_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:(?:##?|%%?)[^}]*)?\}|([A
 # The builtins whose arguments assign variables, as an assignment before a command's program does.
 DECLARING = frozenset({"export", "local", "readonly", "declare", "typeset"})
 # The dynamic parts of a Bash word whose own text the grammar does not keep: a `$'...'` string holding an escape,
-# arithmetic, and an array's value; the policy reads such a word as written.
-RAW_PARTS = frozenset({"$'", "$((", "((", "("})
+# arithmetic, the deprecated `$[ ]` among it, and an array's value; the policy reads such a word as written.
+RAW_PARTS = frozenset({"$'", "$((", "$[", "((", "("})
 # What a literal `$`, quoted, escaped, or in a quoted here-document's body, is read as, so it expands no variable: a
 # character none of the policy's patterns reads as one, which no word or path holds before a `/` either.
 LITERAL_DOLLAR = "\\"

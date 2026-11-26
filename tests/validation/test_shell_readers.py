@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import bash_agreement
+import bash_syntax
 import command_wrappers
 import git_subcommands
 import powershell_commands
@@ -1388,3 +1389,12 @@ def test_command_reader_answers_names_and_functions_that_lead_back_to_themselves
     started = [found for call in reader.calls for found in reader.started(call)]
     assert sorted(set(started)) == programs
     assert [problem.partition(";")[0] for problem in reader.problems("tool.py")] == expected
+
+
+def test_a_word_whose_part_the_grammar_keeps_no_text_of_is_read_as_written() -> None:
+    for text in ("echo $'\\t'/x", "echo $(( 1 ))/x", "echo $[ 1 + 2 ]/x", "a=(1 /tmp/x)"):
+        [command] = bash_syntax.simple_commands(text)
+        word = command.words[-1]
+        parts = word.assignment.value if word.assignment is not None else None
+        expected = word.raw if parts is None else word.raw.partition("=")[2]
+        assert skill_scripts._word_text(word, parts) == expected, text
