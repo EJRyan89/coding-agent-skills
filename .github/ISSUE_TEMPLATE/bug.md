@@ -32,7 +32,11 @@ assignees: ''
      holds that commit (git tag --contains); and whether that pull request was itself a fix, by its title's type.
      For drift against an outside page, name the upstream change that made the line stale instead, such as a
      runtime version or changelog entry. When the line is older than the history you reached, write predates <tag>;
-     when you cannot tell, write unknown. Either way, name what you searched. -->
+     when you cannot tell, write unknown. Either way, name what you searched.
+     Then apply one origin label: hardening when only a crafted input or an injected fault triggers the defect;
+     otherwise regression when the introducing change is in the release under way (no tag holds it yet) or the last
+     release tagged, and latent when it is older, predates <tag> included. With unknown, apply none. A release's
+     notes count its closed bugs by these labels. -->
 
 ## Commit and environment
 

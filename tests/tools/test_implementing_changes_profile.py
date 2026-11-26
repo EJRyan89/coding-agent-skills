@@ -113,6 +113,10 @@ class ImplementingChangesProfileTest(unittest.TestCase):
         for answer in ("predates <tag>", "unknown", "name what you searched"):
             with self.subTest(answer=answer):
                 self.assertIn(answer, section)
+        # A release's notes count its closed bugs by origin label, so the comment names each label and when it applies.
+        for label in ("apply one origin label", "hardening when", "regression when", "latent when", "apply none"):
+            with self.subTest(label=label):
+                self.assertIn(label, section)
 
     def test_each_procedure_that_files_a_bug_fills_its_introduced_section(self) -> None:
         for path in (

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from typing import override
 from unittest import mock
@@ -18,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import git_client
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
+from github_client import CommandResult, GitHubClient
 from test_time_in_proportion import assert_time_in_proportion
 
 from tools import release_notes
@@ -850,3 +853,118 @@ class GitProgramTests(unittest.TestCase):
                 self.assertRaisesRegex(release_notes.ReleaseNotesError, message),
             ):
                 release_notes.git(Path("a checkout"), "log")
+
+
+def issue(number: int, *labels: str, reason: str = "COMPLETED") -> dict[str, object]:
+    """An issue as gh's listing gives it; an empty reason is an open issue."""
+    state = "CLOSED" if reason else "OPEN"
+    return {"number": number, "labels": [{"name": label} for label in labels], "state": state, "stateReason": reason}
+
+
+class CountsTests(unittest.TestCase):
+    """--counts reads the release milestone's issues and prints the line the release notes carry."""
+
+    def counts(self, answer: str, *arguments: str, returncode: int = 0) -> tuple[int, str, str, list[list[str]]]:
+        asked: list[list[str]] = []
+
+        def runner(command: Sequence[str]) -> CommandResult:
+            asked.append(list(command))
+            return CommandResult(returncode, answer, "" if returncode == 0 else "no milestone found")
+
+        out, err = io.StringIO(), io.StringIO()
+        client = GitHubClient(runner, sleeper=lambda _: None)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_notes.main(["v0.2.0", "--counts", *arguments], root=Path("unread"), client=client)
+        return code, out.getvalue(), err.getvalue(), asked
+
+    def test_it_counts_the_fixed_bugs_by_origin_label_and_the_auditor_gaps_open_or_closed(self) -> None:
+        answer = json.dumps(
+            [
+                issue(1, "bug", "regression"),
+                issue(2, "bug", "regression"),
+                issue(3, "bug", "latent"),
+                issue(4, "bug", "hardening"),
+                issue(5, "bug"),
+                issue(6, "enhancement", "auditor-gap"),
+                issue(7, "enhancement"),
+                issue(8, "bug", "latent", reason="NOT_PLANNED"),
+                issue(9, "enhancement", "auditor-gap", reason="NOT_PLANNED"),
+                issue(10, "documentation"),
+                issue(11, "enhancement", "auditor-gap", reason=""),
+                issue(12, "bug", "regression", reason=""),
+                issue(13, "enhancement", "auditor-gap", reason="REOPENED"),
+            ]
+        )
+        code, printed, error, asked = self.counts(answer)
+        self.assertEqual(
+            (
+                0,
+                "Defects fixed: 5 (regression 2, latent 1, hardening 1, no origin label 1). "
+                "Auditor gaps filed: 2 (open 1, closed 1).\n",
+                "",
+            ),
+            (code, printed, error),
+        )
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "issue",
+                    "list",
+                    "--milestone",
+                    "v0.2.0",
+                    "--state",
+                    "all",
+                    "--json",
+                    "number,labels,state,stateReason",
+                    "--limit",
+                    "1001",
+                ]
+            ],
+            asked,
+        )
+
+    def test_a_milestone_with_no_closed_issue_counts_zero(self) -> None:
+        self.assertEqual(
+            "Defects fixed: 0 (regression 0, latent 0, hardening 0, no origin label 0). "
+            "Auditor gaps filed: 0 (open 0, closed 0).\n",
+            self.counts("[]")[1],
+        )
+
+    def test_a_bug_with_two_origin_labels_is_refused_by_number(self) -> None:
+        answer = json.dumps([issue(4, "bug", "latent", "regression"), issue(5, "bug", "hardening", "latent")])
+        self.assertEqual(
+            (2, "", "ERROR: closed bugs on milestone v0.2.0 carry more than one origin label: #4, #5\n", []),
+            (*self.counts(answer)[:3], []),
+        )
+
+    def test_a_listing_cut_at_its_limit_is_refused_rather_than_counted(self) -> None:
+        answer = json.dumps([issue(number, "bug") for number in range(1, 1003)])
+        code, printed, error, _ = self.counts(answer)
+        self.assertEqual((2, ""), (code, printed))
+        self.assertEqual("ERROR: milestone v0.2.0 has more than 1000 issues; count them by hand\n", error)
+
+    def test_gh_that_fails_is_an_error_line(self) -> None:
+        code, printed, error, _ = self.counts("", returncode=1)
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith("ERROR: cannot read the issues of milestone v0.2.0: "), error)
+
+    def test_an_answer_that_is_not_issues_is_an_error_line(self) -> None:
+        for answer in (
+            '{"number": 1}',
+            '[{"number": 1}]',
+            '[{"number": 1, "labels": [{}], "state": "CLOSED", "stateReason": "X"}]',
+            '[{"number": 1, "labels": [], "state": "MERGED", "stateReason": ""}]',
+            '[{"number": 1, "labels": [], "state": "OPEN", "stateReason": null}]',
+        ):
+            with self.subTest(answer=answer):
+                code, printed, error, _ = self.counts(answer)
+                self.assertEqual((2, ""), (code, printed))
+                self.assertTrue(error.startswith("ERROR: "), error)
+
+    def test_counts_takes_no_range_and_no_other_action(self) -> None:
+        for arguments in (("--from", "v0.1.0"), ("--to", "HEAD"), ("--write",), ("--check",)):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    release_notes.main(["v0.2.0", "--counts", *arguments], root=Path("unread"))
+                self.assertEqual(2, raised.exception.code)

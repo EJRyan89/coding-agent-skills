@@ -2,6 +2,7 @@
 
 Usage:
   python tools/release_notes.py VERSION [--from REF] [--to REF] [--write | --check]
+  python tools/release_notes.py VERSION --counts
 
 Each pull request states what it asks of a user who updates under a `## Upgrade note` heading in its body, and the
 repository squash-merges with the body as the commit message, so every merged change carries its entry into the
@@ -31,6 +32,15 @@ section was written is in the tag and in no section. It prints `CURRENT` when th
 otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
 beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
 
+--counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, every
+issue of the milestone named VERSION, and prints the line the release notes carry: the bugs it fixed, each issue labeled
+`bug` and closed as completed, counted by its origin label, `regression`, `latent`, or `hardening`, or as having none;
+and the auditor gaps filed against it, each issue labeled `auditor-gap`, open or closed as completed. An outside
+review's gaps land on the next milestone, so a release counts those its previous release's pass filed. An issue closed
+as not planned, a duplicate among them, is in neither count. A bug with two origin labels, a listing GitHub cut at its
+limit, or an answer that is not the issues asked for is an `ERROR:` line, never a count. It takes no range and writes
+nothing.
+
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
 documented levels, or an entry's Level; with --write, docs/upgrade-notes.md, when it cannot be read as UTF-8 text or
@@ -40,7 +50,7 @@ release procedure in docs/releasing.md runs it before tagging and again at the t
 tests/validation reads the same entries through the same git.
 
 Exit status:
-  0  the section was printed or written, or --check found it CURRENT
+  0  the section was printed or written, --check found it CURRENT, or --counts printed its line
   1  --write refused a version the file already has, --check found the section BEHIND, or a last line
      FAILED <reason>
   2  a usage error, or an ERROR: line naming what it could not read or write
@@ -49,6 +59,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import sys
 from dataclasses import dataclass
@@ -60,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
+from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import without_hidden_comments
 from markdown_sections import (
     HEADING,
@@ -91,6 +103,17 @@ SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # and cuts a message at, so no message text can end a field early.
 FIELD_END = "\0"
 COMMIT_FIELDS = 3
+# The labels --counts reads. A bug's origin label is the one the bug template's `## Introduced` comment asks the filer
+# to apply, and an auditor gap is the issue an outside review's auditor-gap step files ("Outside review" in
+# docs/releasing.md).
+DEFECT_LABEL = "bug"
+ORIGIN_LABELS = ("regression", "latent", "hardening")
+AUDITOR_GAP_LABEL = "auditor-gap"
+OPEN, CLOSED = "OPEN", "CLOSED"
+ISSUE_STATES = (OPEN, CLOSED)
+COMPLETED = "COMPLETED"
+# More issues than any milestone has held; a milestone past it is counted by hand rather than undercounted.
+MILESTONE_ISSUE_LIMIT = 1000
 
 
 GIT_STATUS_ALLOWED = {
@@ -387,6 +410,72 @@ def _check(root: Path, version: str, start: str, end: str) -> int:
     return 1
 
 
+@dataclass(frozen=True)
+class MilestoneIssue:
+    number: int
+    labels: frozenset[str]
+    open: bool
+    completed: bool
+
+
+def _milestone_issue(item: object) -> MilestoneIssue:
+    """An issue of gh's `issue list --json number,labels,state,stateReason` answer; ReleaseNotesError when the item is
+    not one. An open issue's close reason is empty."""
+    if isinstance(item, dict):
+        number, labels = item.get("number"), item.get("labels")
+        state, reason = item.get("state"), item.get("stateReason")
+        if isinstance(number, int) and isinstance(labels, list) and state in ISSUE_STATES and isinstance(reason, str):
+            names = [label.get("name") if isinstance(label, dict) else None for label in labels]
+            if all(isinstance(name, str) for name in names):
+                found = frozenset(name for name in names if isinstance(name, str))
+                return MilestoneIssue(number, found, state == OPEN, state == CLOSED and reason == COMPLETED)
+    raise ReleaseNotesError(f"gh answered with an issue that is not a number, labels, and a state: {item!r}")
+
+
+def milestone_counts(client: GitHubClient, version: str) -> str:
+    """The release notes' line counting the milestone's fixed bugs by origin label and the auditor gaps filed against
+    it, open or closed as completed.
+
+    Raises ReleaseNotesError when gh cannot list the milestone's issues, GitHub holds more than the listing's limit, an
+    item is not an issue, or a fixed bug carries more than one origin label.
+    """
+    arguments = ["issue", "list", "--milestone", version, "--state", "all", "--json", "number,labels,state,stateReason"]
+    try:
+        listing = client.capped_list(arguments, MILESTONE_ISSUE_LIMIT)
+    except GitHubError as error:
+        raise ReleaseNotesError(f"cannot read the issues of milestone {version}: {error}") from error
+    if listing.cut:
+        raise ReleaseNotesError(f"milestone {version} has more than {MILESTONE_ISSUE_LIMIT} issues; count them by hand")
+    issues = [_milestone_issue(item) for item in listing.items]
+    bugs = [
+        (issue.number, issue.labels & set(ORIGIN_LABELS))
+        for issue in issues
+        if issue.completed and DEFECT_LABEL in issue.labels
+    ]
+    doubled = sorted(number for number, origins in bugs if len(origins) > 1)
+    if doubled:
+        named = ", ".join(f"#{number}" for number in doubled)
+        raise ReleaseNotesError(f"closed bugs on milestone {version} carry more than one origin label: {named}")
+    by_origin = [f"{origin} {sum(origin in origins for _, origins in bugs)}" for origin in ORIGIN_LABELS]
+    unlabeled = sum(not origins for _, origins in bugs)
+    gaps = [issue for issue in issues if AUDITOR_GAP_LABEL in issue.labels and (issue.open or issue.completed)]
+    still_open = sum(issue.open for issue in gaps)
+    return (
+        f"Defects fixed: {len(bugs)} ({', '.join(by_origin)}, no origin label {unlabeled}). "
+        f"Auditor gaps filed: {len(gaps)} (open {still_open}, closed {len(gaps) - still_open})."
+    )
+
+
+def _counts(root: Path, version: str, client: GitHubClient | None) -> int:
+    client = client or GitHubClient(runner=functools.partial(subprocess_runner, cwd=root))
+    try:
+        print(milestone_counts(client, version))
+    except ReleaseNotesError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _read_releasing(root: Path) -> str:
     try:
         return (root / RELEASING_DOC).read_text(encoding="utf-8")
@@ -394,7 +483,7 @@ def _read_releasing(root: Path) -> str:
         raise ReleaseNotesError(f"cannot read {RELEASING_DOC}: {error}") from error
 
 
-def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
+def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT, client: GitHubClient | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write a release's upgrade-notes section from its merged commits.")
     parser.add_argument("version", help="the version being released, such as v0.5.0")
     parser.add_argument("--from", dest="start", help="the previous release's ref; defaults to the last tag before --to")
@@ -408,9 +497,18 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         action="store_true",
         help=f"compare the section {UPGRADE_NOTES} holds at --to with the entries the range carries",
     )
+    action.add_argument(
+        "--counts",
+        action="store_true",
+        help="print the release notes' counts of the milestone's fixed bugs by origin and the auditor gaps filed on it",
+    )
     options = parser.parse_args(argv)
     if not is_release_tag(options.version):
         parser.error(f"the version must be a release tag such as v1.2.3, not {options.version!r}")
+    if options.counts:
+        if options.start is not None or options.end is not None:
+            parser.error("--counts reads the milestone, not a range: drop --from and --to")
+        return _counts(root, options.version, client)
     options.end = options.end or (RELEASE_BRANCH if options.check else "HEAD")
     try:
         start = options.start or last_release_before(root, options.end)
