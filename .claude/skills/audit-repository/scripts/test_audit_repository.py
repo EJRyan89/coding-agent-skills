@@ -119,6 +119,13 @@ QUESTIONS = (
     ),
 )
 QUESTION_LINES = [f"QUESTION {name} {what}" for name, what in QUESTIONS]
+# What a finding's or a twin's introduced field asks for, which a bug's `## Introduced` section records, written out
+# here rather than read from the script so a change to either is seen.
+INTRODUCED = (
+    "for a bug, the commit and pull request that wrote the line, from git log -S or -G or git blame, the first "
+    "release tag holding it, and whether that pull request was a fix; for drift against an outside page, the upstream "
+    "change that made it stale; or predates <tag> or unknown, naming what was searched; none for another template"
+)
 
 
 def assert_questions(test: unittest.TestCase, brief: str) -> None:
@@ -520,13 +527,16 @@ class ReleaseTests(Fixture):
         )
         self.assertEqual(QUESTION_LINES, [line for line in lines if line.startswith("QUESTION ")])
         fields = [line.split(" ")[1] for line in lines if line.startswith("TEMPLATE ")]
-        self.assertEqual(["location", "kind", "evidence", "severity", "title", "template", "question"], fields)
+        self.assertEqual(
+            ["location", "kind", "evidence", "introduced", "severity", "title", "template", "question"], fields
+        )
         sections = [line.split(" ")[1] for line in lines if line.startswith("SECTION ")]
         self.assertEqual(["findings", "unconfirmed", "coverage"], sections)
         for area, text in self.briefs(lines).items():
             with self.subTest(area=area):
                 self.assertIn("read-only", text)
                 self.assertIn("Confirm it against both sides", text)
+                self.assertIn(f"- **introduced**: {INTRODUCED}.", text)
                 for kind in drift:
                     self.assertIn(f"- **{kind}**:", text)
                 for field in fields:
@@ -1543,7 +1553,7 @@ class GuidanceTests(Fixture):
         # A guidance brief keeps its own questions, so it neither asks the release and rotation ones nor names them.
         self.assertEqual([], [line for line in lines if line.startswith("QUESTION ")])
         self.assertEqual(
-            ["location", "kind", "evidence", "severity", "title", "template"],
+            ["location", "kind", "evidence", "introduced", "severity", "title", "template"],
             [line.split(" ")[1] for line in lines if line.startswith("TEMPLATE ")],
         )
         briefs = self.briefs(lines)
@@ -2109,6 +2119,7 @@ class TwinTests(Fixture):
                 "TEMPLATE fix the fix's commit and pull request",
                 "TEMPLATE location path:line of the twin, with forward slashes",
                 "TEMPLATE evidence the line the fix corrected and the twin's line, both quoted",
+                f"TEMPLATE introduced {INTRODUCED}",
                 "TEMPLATE pattern the pattern it is an instance of, by the name the Patterns section gives it",
                 "TEMPLATE severity defect (a user can hit it), drift (a statement and the code part ways), or polish",
                 "TEMPLATE title a one-line issue title",
@@ -2121,7 +2132,7 @@ class TwinTests(Fixture):
                 "SECTION coverage each fix: the construct named and searched, or why not",
                 "READERS twins 1",
             ],
-            lines[2:28],
+            lines[2:29],
         )
         brief = self.briefs(lines)["twins"]
         # The removed lines a search finds the construct by: not an import, a short line, a line the fix moved, even
@@ -2431,6 +2442,7 @@ TWIN_BRIEF = "\n".join(
         "- **fix**: the fix's commit and pull request.",
         "- **location**: path:line of the twin, with forward slashes.",
         "- **evidence**: the line the fix corrected and the twin's line, both quoted.",
+        f"- **introduced**: {INTRODUCED}.",
         "- **pattern**: the pattern it is an instance of, by the name the Patterns section gives it.",
         "- **severity**: defect (a user can hit it), drift (a statement and the code part ways), or polish.",
         "- **title**: a one-line issue title.",

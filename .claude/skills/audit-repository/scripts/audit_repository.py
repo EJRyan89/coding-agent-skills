@@ -237,10 +237,18 @@ DRIFT_KINDS = (
 )
 # The severities a finding may have; milestone_lines names the milestone each is filed into.
 SEVERITIES = ("defect", "drift", "polish")
+# When a finding's line was written, which a bug's `## Introduced` section records: the bug template's comment asks
+# for the same, so a release's counts tell a regression a change made from a latent defect found later.
+INTRODUCED = (
+    "for a bug, the commit and pull request that wrote the line, from git log -S or -G or git blame, the first "
+    "release tag holding it, and whether that pull request was a fix; for drift against an outside page, the upstream "
+    "change that made it stale; or predates <tag> or unknown, naming what was searched; none for another template"
+)
 FINDING_FIELDS = (
     ("location", "path:line of each side, with forward slashes"),
     ("kind", "one kind of drift"),
     ("evidence", "both sides quoted: what one says and what the other does"),
+    ("introduced", INTRODUCED),
     ("severity", "defect (a user can hit it), drift (a statement and the code part ways), or polish"),
     ("title", "a one-line issue title"),
     ("template", "bug, documentation, or enhancement; advisory for a trust-boundary finding"),
@@ -322,6 +330,7 @@ TWIN_FIELDS = (
     ("fix", "the fix's commit and pull request"),
     ("location", "path:line of the twin, with forward slashes"),
     ("evidence", "the line the fix corrected and the twin's line, both quoted"),
+    ("introduced", INTRODUCED),
     ("pattern", "the pattern it is an instance of, by the name the Patterns section gives it"),
     ("severity", "defect (a user can hit it), drift (a statement and the code part ways), or polish"),
     ("title", "a one-line issue title"),

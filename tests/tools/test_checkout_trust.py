@@ -243,6 +243,71 @@ class CheckoutTests(unittest.TestCase):
                 follow(self.root, self.git, "origin", merge)
                 self.assertEqual(f"its branch main follows {merge}, not a branch", self.foreign())
 
+    def add(self, key: str, value: str) -> None:
+        self.git.output(["config", "--add", key, value], directory=self.root)
+
+    def unset_upstream(self) -> None:
+        """Remove every value of the branch's upstream settings, which `follow` cannot overwrite once one holds two: git
+        branch --unset-upstream unsets every value of both."""
+        if self.git.quiet_output(["config", "--get-all", "branch.main.merge"], directory=self.root) is not None:
+            self.git.output(["branch", "--unset-upstream"], directory=self.root)
+        self.assertIsNone(self.git.quiet_output(["config", "--get-regexp", "^branch\\.main\\."], directory=self.root))
+
+    def test_a_pull_request_s_ref_is_refused_before_or_after_another_merge_value(self) -> None:
+        # git takes a branch's upstream from its first merge value, and git pull merges every one, so a pull request's
+        # ref is refused wherever it stands, through the check each tool runs first.
+        for values in (["refs/pull/7/head", "refs/heads/main"], ["refs/heads/main", "refs/pull/7/head"]):
+            with self.subTest(values=values):
+                self.unset_upstream()
+                follow(self.root, self.git, "origin", values[0])
+                self.add("branch.main.merge", values[1])
+                self.assertEqual(
+                    "the checkout may follow another repository's pull request: its branch main follows"
+                    " refs/pull/7/head, a pull request's ref",
+                    checkout_trust.refusal(checkout_trust.reader(self.root)),
+                )
+
+    def test_a_branch_setting_merge_or_remote_more_than_once_is_refused_naming_every_value(self) -> None:
+        # git reads remote's last value and takes the upstream from merge's first, so neither is read as one value.
+        cases = {
+            ("branch.main.merge", "refs/heads/topic"): (
+                "its branch main sets branch.main.merge more than once: refs/heads/main, refs/heads/topic"
+            ),
+            ("branch.main.remote", "someone"): (
+                "its branch main sets branch.main.remote more than once: origin, someone"
+            ),
+        }
+        for (key, value), reason in cases.items():
+            with self.subTest(key=key):
+                self.unset_upstream()
+                follow(self.root, self.git, "origin", "refs/heads/main")
+                self.add(key, value)
+                self.assertEqual(reason, self.foreign())
+        # A fork's remote set first, which git's last value hides, is refused too.
+        self.unset_upstream()
+        follow(self.root, self.git, "someone", "refs/heads/main")
+        self.add("branch.main.remote", "origin")
+        self.assertEqual("its branch main sets branch.main.remote more than once: someone, origin", self.foreign())
+
+    def test_an_empty_or_valueless_merge_setting_is_refused_never_read_as_no_upstream(self) -> None:
+        # git takes an empty merge value as an upstream named '', and refuses a valueless one; neither is unset.
+        follow(self.root, self.git, "origin", "")
+        self.assertEqual("its branch main follows an empty name, not a branch", self.foreign())
+        self.unset_upstream()
+        with (self.root / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write('[branch "main"]\n\tmerge\n')
+        self.assertEqual("its branch main follows an empty name, not a branch", self.foreign())
+
+    def test_a_setting_holding_a_newline_is_read_as_the_one_value_git_reads(self) -> None:
+        # One fetch refspec holding a newline is one refspec to git, which writes no ref from it, never two refspecs
+        # whose second maps a ref another remote wrote under refs/remotes/origin as a branch of origin.
+        self.git.output(["config", "--unset-all", "remote.origin.fetch"], directory=self.root)
+        self.add("remote.origin.fetch", f"refs/heads/none:refs/heads/none\n{BRANCHES_REFSPEC}")
+        self.git.output(["update-ref", "refs/remotes/origin/topic", "HEAD"], directory=self.root)
+        self.assertEqual([], checkout_trust.origin_branches_holding_head(self.git, self.root))
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/topic"], directory=self.root)
+        self.assertEqual("its HEAD is detached at a commit no branch of origin holds", self.foreign())
+
     def test_a_setting_or_head_git_cannot_read_raises_never_read_as_unset(self) -> None:
         refused = GitResult(1, "", "error: could not lock config file .git/config\n")
         for word in ("branch.main.remote", "branch.main.merge", "symbolic-ref"):

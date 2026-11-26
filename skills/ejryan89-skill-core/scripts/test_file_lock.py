@@ -187,6 +187,19 @@ class FileLockTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(target))
         self.assertTrue(self.path.is_symlink())
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_nothing_in_the_files_place_is_refused_by_held_elsewhere_as_by_take(self) -> None:
+        # A preview of a take asks held_elsewhere, so the link take refuses is refused there too, never read as free.
+        target = self.path.parent / "elsewhere"
+        self.path.symlink_to(target)
+        with self.assertRaises(FileExistsError) as raised:
+            file_lock.held_elsewhere(self.path)
+        self.assertEqual(errno.EEXIST, raised.exception.errno)
+        self.assertEqual(str(self.path), raised.exception.filename)
+        self.assertEqual("a symbolic link to nothing is in the lock file's place; remove it", raised.exception.strerror)
+        self.assertFalse(os.path.lexists(target))
+        self.assertTrue(self.path.is_symlink())
+
     def test_a_file_already_there_is_opened_as_it_is(self) -> None:
         self.path.write_bytes(b"kept")
         before = self.path.stat()

@@ -312,12 +312,14 @@ squash merge carries the body into `main`, and the release's notes are written f
 status lines, and exit codes are the contract items no check compares, so a change to them owes the note with nothing
 to catch its absence; the `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says how the entry names them.
 
-A `fix` pull request names its sibling search, on a line of the body that opens with `Siblings:`: the search run
-for the same construct elsewhere, as the pattern of the [lessons catalogue](lessons.md) the defect violated, whose
+A `fix` pull request names its sibling search, on a line of the body that opens with `Siblings:`: the search run for
+the same construct elsewhere, as the pattern of the [lessons catalogue](lessons.md) the defect violated, whose
 **Search for** forms are the search, or the pattern the fix adds, and the scope searched, and the outcome for each
-hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one instance of a construct leaves its twin wrong, and the
-author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
-no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
+hit, fixed here, filed as #N, or not a sibling and why; a sibling filed as #N is a bug written from the bug template,
+its `## Introduced` section filled as the template's comment asks. A fix that reaches one instance of a construct
+leaves its twin wrong, and the author, with the code in hand, is the one placed to look. It is the author's judgment,
+never an automated result, and no check reads it: `review-repository`'s `sibling-search` reviewer holds the search
+against a change to a script.
 
 A `fix` pull request also fills the body's `## Forms considered` section, which the template holds: the construct the
 fix corrects and the catalogue its spellings come from, such as builtins, options, binding modes, import forms,

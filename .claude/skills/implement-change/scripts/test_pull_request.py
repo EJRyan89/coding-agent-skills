@@ -868,14 +868,59 @@ class CheckCommandTests(Repository):
         code, lines = self.run_script("check", *self.files_arguments(), git_client=broken)
         self.assertEqual((1, "FAILED git status: fatal: index file corrupt"), (code, lines[-1]))
 
-    def test_a_title_closing_issues_is_refused_and_each_issue_it_closes_named(self) -> None:
+    def closes_lines(self, git_client: GitClient | None = None) -> list[str]:
+        """The CLOSES lines a check of a title closing issues of two repositories prints, having refused the title."""
         self.title.write_text("fix: resolves #5 and fixes owner/repo#6\n", encoding="utf-8")
-        self.body.write_text(FILLED.replace("Closes #12\nCloses #34\n", "Closes #7\n"), encoding="utf-8")
-        code, lines = self.run_script("check", *self.files_arguments())
+        self.body.write_text(
+            FILLED.replace("Closes #12\nCloses #34\n", "Closes #7\n").replace(
+                "Fixes the quoting of a title.",
+                "Fixes the quoting, as closes https://github.com/Owner/Repo/pull/8 did.",
+            ),
+            encoding="utf-8",
+        )
+        code, lines = self.run_script("check", *self.files_arguments(), git_client=git_client)
         self.assertEqual(1, code)
-        self.assertEqual(["CLOSES 5", "CLOSES 6", "CLOSES 7"], [line for line in lines if line.startswith("CLOSES")])
         self.assertIn("TITLE_CLOSES fix: resolves #5 and fixes owner/repo#6", lines)
+        self.assertIn("CLOSES_LINE 3 Fixes the quoting, as closes https://github.com/Owner/Repo/pull/8 did.", lines)
         self.assertNotIn("READY", lines)
+        return [line for line in lines if line.startswith("CLOSES ")]
+
+    def test_a_title_closing_issues_is_refused_and_each_issue_of_the_base_s_repository_named(self) -> None:
+        fetched = GitResult(0, "git@github.com:owner/repo.git\n", "")
+        git_client = self.failing_git("remote", "get-url", "origin", result=fetched)
+        self.assertEqual(["CLOSES 5", "CLOSES 6", "CLOSES 7", "CLOSES 8"], self.closes_lines(git_client))
+
+    def test_another_repository_s_issue_or_pull_request_is_never_named_closed(self) -> None:
+        fetched = GitResult(0, "https://github.com/me/proj\n", "")
+        git_client = self.failing_git("remote", "get-url", "origin", result=fetched)
+        self.assertEqual(["CLOSES 5", "CLOSES 7"], self.closes_lines(git_client))
+
+    def test_a_remote_rewritten_by_insteadof_is_read_as_configured(self) -> None:
+        url = "https://github.com/Owner/Repo.git"
+        git(self.root, "config", f"url.{self.temporary / 'origin.git'}.insteadOf", url)
+        git(self.root, "remote", "set-url", "origin", url)
+        self.assertEqual(["CLOSES 5", "CLOSES 6", "CLOSES 7", "CLOSES 8"], self.closes_lines())
+
+    def test_a_base_whose_remote_names_no_github_repository_names_only_references_that_name_none(self) -> None:
+        self.assertEqual(["CLOSES 5", "CLOSES 7"], self.closes_lines())
+
+    def test_a_remote_url_git_cannot_read_is_a_failed_line_with_git_s_reason(self) -> None:
+        for marker, result, line in (
+            (
+                ("remote", "get-url", "origin"),
+                GitResult(2, "", "error: No such remote 'origin'\n"),
+                "FAILED git remote: error: No such remote 'origin'",
+            ),
+            (
+                ("config", "--get", "remote.origin.url"),
+                GitResult(3, "", "error: could not lock config file\n"),
+                "FAILED git config: error: could not lock config file",
+            ),
+        ):
+            with self.subTest(marker=marker):
+                git_client = self.failing_git(*marker, result=result)
+                code, lines = self.run_script("check", *self.files_arguments(), git_client=git_client)
+                self.assertEqual((1, line), (code, lines[-1]), lines)
 
     def test_body_and_title_problems_are_each_named(self) -> None:
         self.title.write_text("", encoding="utf-8")
@@ -1131,7 +1176,7 @@ def test_a_closing_reference_in_any_other_line_is_refused(prose: str) -> None:
     body = FILLED.replace("Fixes the quoting of a title.", prose)
     [problem] = pull_request.body_problems(body, TEMPLATE)
     assert problem == f"CLOSES_LINE 4 {prose}"
-    assert 7 in pull_request.closed_issues(body)
+    assert 7 in pull_request.closed_issues(body, repository="o/r")
 
 
 # Neither a number with no closing keyword nor a keyword with no reference closes anything.
@@ -1221,6 +1266,27 @@ def test_a_closing_line_must_name_one_issue_with_closes(line: str) -> None:
 def test_a_closing_line_by_repository_or_url_must_be_written_closes_number(line: str) -> None:
     body = FILLED.replace("Closes #34", line)
     assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
+    assert pull_request.closed_issues(body, repository="o/r") == [12]
+
+
+# A reference to another repository's issue or pull request, by its name or its URL, closes none of the pull request's
+# own repository's issues, so only the own repository's are named closed, in any case GitHub compares names in; with
+# that repository unknown, only a reference that names no repository is surely one of its issues.
+CROSS_REPOSITORY = (
+    "Fixes other/repo#7, fixes Me/Proj#8, closes https://github.com/me/proj/pull/9, "
+    "and resolves https://github.com/Other/Repo/issues/10."
+)
+
+
+@pytest.mark.parametrize(
+    ("repository", "closed"),
+    [("me/proj", [5, 12, 34, 8, 9]), ("other/repo", [5, 12, 34, 7, 10]), (None, [5, 12, 34])],
+)
+def test_only_the_issues_of_the_pull_request_s_own_repository_are_named_closed(
+    repository: str | None, closed: list[int]
+) -> None:
+    body = FILLED.replace("Fixes the quoting of a title.", CROSS_REPOSITORY)
+    assert pull_request.closed_issues(body, "fix: resolves #5", repository=repository) == closed
 
 
 def test_a_failed_git_call_is_named_by_its_subcommand_behind_git_s_options() -> None:

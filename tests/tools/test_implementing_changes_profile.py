@@ -98,6 +98,33 @@ class ImplementingChangesProfileTest(unittest.TestCase):
             with self.subTest(template=name):
                 self.assertIn("known siblings", (ISSUE_TEMPLATES / name).read_text(encoding="utf-8"))
 
+    def test_bug_template_asks_when_the_defect_was_introduced(self) -> None:
+        # A milestone records when a defect was found; this section records when it was made, so a release's bugs
+        # tell a regression a change made from a latent defect found later.
+        text = (ISSUE_TEMPLATES / "bug.md").read_text(encoding="utf-8")
+        order = [line for line in text.splitlines() if line.startswith("## ")]
+        self.assertEqual(
+            ["## Reproduction", "## Expected", "## Actual", "## Introduced", "## Commit and environment"], order
+        )
+        section = headings(text)["Introduced"]
+        for asked in ("pull request", "git log -S", "git blame", "release tag", "was itself a fix", "upstream change"):
+            with self.subTest(asked=asked):
+                self.assertIn(asked, section)
+        for answer in ("predates <tag>", "unknown", "name what you searched"):
+            with self.subTest(answer=answer):
+                self.assertIn(answer, section)
+
+    def test_each_procedure_that_files_a_bug_fills_its_introduced_section(self) -> None:
+        for path in (
+            ".github/CONTRIBUTING.md",
+            "docs/implementing-changes.md",
+            ".claude/skills/audit-repository/SKILL.md",
+            ".claude/skills/implement-change/references/brief.md",
+            ".claude/skills/evaluate-skill/SKILL.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("`## Introduced`", (REPOSITORY_ROOT / path).read_text(encoding="utf-8"))
+
     def test_step_8_pastes_no_title_into_a_command(self) -> None:
         section = SKILL.read_text(encoding="utf-8").split("## 8. Pull request", 1)[1]
         commands = re.findall(r"^ *```bash\n *(.+)\n *```$", section, flags=re.MULTILINE)
