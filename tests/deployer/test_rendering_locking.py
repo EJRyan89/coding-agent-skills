@@ -553,18 +553,30 @@ class RenderedExecutableTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="ShellCheck failed for rendered Bash block: alpha/SKILL.md block 1")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def assert_bash_named_the_file(self, output: str) -> None:
+        """Hold that the real Bash's syntax error named the file by the path the deployer passed it, which is how the
+        deployer tells the source's error from Bash's own failure: on Windows, Git Bash keeps the drive-letter argument
+        as given in its messages, never another form of it, or the refusal would name Bash's failure instead."""
+        self.assertRegex(output, r"\n[^\n]*(run\.sh|\d+\.sh): line \d+: syntax error[^\n]*\n")
+        self.assertIn(f"\n{render.RENDERED_CHECK_REMEDY}\n", output)
+        self.assertNotIn(f"{platform_support.BASH_NAME} failed checking", output)
+
     def test_bash_syntax_error_in_shell_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Shell fence fixture\n\n```shell\nif then\n```")
         self.make_config()
-        self.deploy_fails("--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 1")
+        result = self.deploy_fails(
+            "--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 1"
+        )
+        self.assert_bash_named_the_file(result.output)
 
     def test_bash_syntax_error_blocks_deployment(self) -> None:
         self.make_source_json()
         directory = self.make_skill("alpha", "Syntax fixture")
         self.write(directory / "run.sh", "#!/usr/bin/env bash\nif then\n")
         self.make_config()
-        self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
+        result = self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
+        self.assert_bash_named_the_file(result.output)
 
     def test_powershell_syntax_error_names_the_rendered_file_it_came_from(self) -> None:
         self.make_source_json()
