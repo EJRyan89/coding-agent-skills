@@ -29,7 +29,7 @@
     "claude-hook": [
       {
         "page": "https://code.claude.com/docs/en/hooks",
-        "passage": "A hook is configured under hooks, by event name, as matcher groups whose hooks list holds handlers of type command, http, mcp_tool, prompt, or agent, each with its required field, an optional timeout in seconds that defaults to 600 for command, http, and mcp_tool, and, on command and http hooks, onFailure of continue or block."
+        "passage": "A hook is configured under hooks, by event name, as matcher groups whose hooks list holds handlers of type command, http, mcp_tool, prompt, or agent, each with its required field, an optional timeout in seconds that defaults to 600 for command, http, and mcp_tool, and, on command, http, and mcp_tool hooks, onFailure of continue or block, which on mcp_tool hooks requires Claude Code v2.1.328 or later."
       },
       {
         "page": "https://code.claude.com/docs/en/settings",
