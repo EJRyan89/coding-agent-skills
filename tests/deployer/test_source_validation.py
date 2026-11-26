@@ -1341,6 +1341,16 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
                 self.assert_canary_usage_error(linked, value, message)
         self.assertEqual([], list(target.iterdir()))
 
+    def test_an_empty_or_blank_canary_home_is_refused_as_no_absolute_path(self) -> None:
+        # An empty value is the option given, never the option left out, so it is refused as the blank one is rather
+        # than read as no canary home, which would refuse the linked worktree or, from a clone, deploy for real.
+        linked = self.make_linked_worktree()
+        for directory in (linked, self.source):
+            for value in ("", " "):
+                with self.subTest(directory=directory.name, value=value):
+                    self.assert_canary_usage_error(directory, value, "--canary-home must be an absolute path (got: )")
+        self.assertFalse(self.manifest_file.exists())
+
     def test_dry_run_migration_and_take_over_cannot_use_a_canary_home(self) -> None:
         linked = self.make_linked_worktree()
         for extra, pattern in (
