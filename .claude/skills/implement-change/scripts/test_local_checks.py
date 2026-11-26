@@ -255,6 +255,43 @@ class LocalChecksTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertRegex(lines[-1], r"^FAILED cannot start the validation runner: .*No such file or directory")
 
+    def test_a_pyproject_the_type_checks_cannot_read_is_a_failure_before_any_run(self) -> None:
+        # The base holds the configuration, since a changed pyproject.toml reaches every type check unread.
+        pyproject = self.root / "pyproject.toml"
+        for text, reason in (
+            ("[tool.mypy\n", f'FAILED cannot read "{pyproject}": '),
+            (
+                '[tool.mypy]\nmypy_path = "skills"\n',
+                "FAILED pyproject.toml: [tool.mypy] mypy_path is not a list of paths",
+            ),
+            (
+                '[tool.validation]\nmypy-strict = "tests"\n\n[tool.mypy]\nmypy_path = []\n',
+                "FAILED pyproject.toml: [tool.validation] mypy-strict is not a list of paths",
+            ),
+        ):
+            with self.subTest(text=text):
+                self.runs.clear()
+                self.write("pyproject.toml", text)
+                git(self.root, "commit", "--quiet", "-am", "configuration")
+                git(self.root, "push", "--quiet", "origin", "HEAD:main")
+                self.write("skills/alpha/scripts/run.py", f"# changed for {text!r}\n")
+                code, lines = self.run_script()
+                self.assertEqual(1, code)
+                self.assertEqual(self.base_line(), lines[0])
+                self.assertTrue(lines[-1].startswith(reason), lines)
+                self.assertEqual([], self.runs)
+
+    def test_a_job_name_no_single_quotes_can_hold_is_a_failure_before_any_run(self) -> None:
+        self.write("skills/al'pha/SKILL.md", "# al'pha\n")
+        self.write("skills/al'pha/scripts/run.py", "# changed\n")
+        code, lines = self.run_script()
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "FAILED a type-check job's name holds a single quote: static type check (mypy skills/al'pha/scripts)",
+            lines[-1],
+        )
+        self.assertEqual([], self.runs)
+
     def test_a_base_that_cannot_be_fetched_runs_nothing(self) -> None:
         def runner(command: Sequence[str], timeout: float) -> GitResult:
             if "fetch" in command:

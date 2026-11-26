@@ -37,9 +37,9 @@ LINT_JOB = "static lint check (ruff check)"
 # skill's SKILL.md, agent, skill's metadata, and validation policy.
 ROUTING_SUITE = ".claude/skills/review-repository/scripts/test_review_repository.py"
 CROSS_SKILL_SUITE = "tests/ai-config/test_cross_skill_contracts.py"
-# Those suites read the files they reach as text or a syntax tree and execute none of them, so the mutation gate, which
-# runs the suites that execute a mutated module, leaves them out of its reach and of the reach that decides whether a
-# later change keeps its verdict.
+# The rows that add those suites for any file they read leave them out of the mutation gate's reach, and of the reach
+# that decides whether a later change keeps its verdict: those rows stand for reading a file as text or a syntax tree,
+# which no mutant changes. Where such a suite imports or names a mutated module, that import or name keeps it there.
 WHOLE_TREE_SUITES = (ROUTING_SUITE, CROSS_SKILL_SUITE)
 # The review pipeline's modules the cross-skill suite reads by a name it builds, reading their source as one text.
 REVIEW_PIPELINE_MODULES = tuple(
